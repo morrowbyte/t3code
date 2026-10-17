@@ -17,6 +17,7 @@ import { loadRepoEnv } from "../../scripts/lib/public-config";
 import { thirdPartyLicensesPlugin } from "../../scripts/lib/third-party-licenses";
 import { tailwindPlugins } from "./vite/tailwind";
 import { localDevLoginPlugin } from "./vite/localDevLogin";
+import { jarvisDevMountPlugin } from "./vite/jarvisDevMount";
 
 const repoEnv = loadRepoEnv();
 Object.assign(process.env, repoEnv);
@@ -139,6 +140,10 @@ export default defineConfig(() => {
   return {
     assetsInclude: ["**/*.wasm"],
     plugins: [
+      jarvisDevMountPlugin(
+        process.env.T3CODE_JARVIS_DEV_ROOT,
+        process.env.T3CODE_JARVIS_TAURI_CORE,
+      ),
       localDevLoginPlugin({
         enabled: isSingleOriginDev && process.env.T3CODE_DEV_AUTO_LOGIN === "1",
         credential: process.env.T3CODE_DEV_AUTH_TOKEN,

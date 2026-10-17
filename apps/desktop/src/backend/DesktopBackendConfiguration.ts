@@ -523,6 +523,10 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
     const environment = yield* DesktopEnvironment.DesktopEnvironment;
     const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
     const backendExposure = yield* serverExposure.backendConfig;
+    const sharedBrowserDev =
+      !environment.isPackaged &&
+      environment.isDevelopment &&
+      process.env.T3CODE_SINGLE_ORIGIN_DEV === "1";
 
     const bootstrap = {
       mode: "desktop" as const,
@@ -558,6 +562,8 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
         environment.backendEntryPath,
         "--bootstrap-fd",
         "3",
+        // The shared Vite dev server keeps its web sessions; the private bootstrap still owns the FDs.
+        ...(sharedBrowserDev ? ["--mode", "web"] : []),
       ],
       entryPath: environment.backendEntryPath,
       cwd: environment.backendCwd,
