@@ -12,6 +12,8 @@ import {
   Project,
   ProjectCreatePayload,
   ProjectUpdatePayload,
+  ProjectFeatureTimingInput,
+  ProjectFeatureTiming,
   ProjectId,
   OrchestratorMcpFailure,
   SourceControlCloneRepositoryInput,
@@ -79,9 +81,18 @@ const ProjectCreateTool = Tool.make("t3_project_create", {
 const ProjectUpdateTool = Tool.make("t3_project_update", {
   ...shared,
   description:
-    "Update a registered project's settings. Omitted fields are preserved. Uses the same project service as the app.",
+    "Update a registered project's settings. Omitted fields are preserved. featureTiming appends a feature fact to the canonical project event log. Register concrete outcomes with linked threads and targets; unknown intake/estimate are null. Original estimates must precede linked work. target_accepted requires evidence pointing to a direct user message whose entire text is: Accept feature <featureId> on <targetId> at version <version>. Agent, scheduled and forwarded messages cannot accept. Uses the same project service as the app.",
   parameters: Schema.Struct({ projectId: ProjectId, ...ProjectUpdatePayload.fields }),
 }).annotate(Tool.Destructive, true);
+const ProjectTimingTool = Tool.make("t3_project_timing", {
+  ...shared,
+  description:
+    "Read recorded feature facts and observed run/request timing for one project. Unknown facts stay unavailable; completed runs and installed versions do not imply user acceptance.",
+  parameters: ProjectFeatureTimingInput,
+  success: ProjectFeatureTiming,
+})
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false);
 const ProjectDeleteTool = Tool.make("t3_project_delete", {
   ...shared,
   description:
@@ -157,6 +168,7 @@ export const ProjectToolkit = Toolkit.make(
   ProjectReadTool,
   ProjectCreateTool,
   ProjectUpdateTool,
+  ProjectTimingTool,
   ProjectDeleteTool,
   ProjectCloneTool,
 );

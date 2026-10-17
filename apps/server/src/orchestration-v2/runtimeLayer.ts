@@ -94,6 +94,7 @@ const layerLegacyV1ThreadImporterProvided = LegacyV1ThreadImporter.layer.pipe(
 export const layerProjectService = ProjectService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
+      layerEventInfrastructure,
       ProjectStore.layer,
       ProjectionStore.layer,
       layerEventSinkProvided,

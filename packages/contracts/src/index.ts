@@ -72,3 +72,4 @@ export * from "./jarvis.ts";
 export * from "./agentObservatory.ts";
 
 export * from "./updateHistory.ts";
+export * from "./featureTiming.ts";

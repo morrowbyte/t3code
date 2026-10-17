@@ -2711,6 +2711,8 @@ const layerWsRpc = (
                 }),
             ),
           ),
+        [WS_METHODS.projectsFeatureTiming]: (input) =>
+          projectService.featureTiming(input.projectId),
         [WS_METHODS.projectsListEntries]: (input) =>
           workspaceEntries.list(input).pipe(
             Effect.mapError(

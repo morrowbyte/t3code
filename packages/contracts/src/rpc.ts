@@ -1,4 +1,8 @@
-import { HostUpdateHistory, HostUpdateHistoryError, DeleteHostUpdateInput } from "./updateHistory.ts";
+import {
+  HostUpdateHistory,
+  HostUpdateHistoryError,
+  DeleteHostUpdateInput,
+} from "./updateHistory.ts";
 import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
@@ -374,6 +378,7 @@ import {
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
+import { ProjectFeatureTimingInput, ProjectFeatureTiming } from "./featureTiming.ts";
 import {
   LiveVoiceError,
   LiveVoiceEvent,
@@ -393,6 +398,7 @@ import {
 } from "./agentObservatory.ts";
 
 export const WS_METHODS = {
+  projectsFeatureTiming: "projects.featureTiming",
   projectsList: "projects.list",
   projectsAdd: "projects.add",
   projectsRemove: "projects.remove",
@@ -1281,6 +1287,12 @@ const WsProjectsWriteFileRpc = Rpc.make(WS_METHODS.projectsWriteFile, {
   error: Schema.Union([ProjectWriteFileError, EnvironmentAuthorizationError]),
 });
 
+const WsProjectsFeatureTimingRpc = Rpc.make(WS_METHODS.projectsFeatureTiming, {
+  payload: ProjectFeatureTimingInput,
+  success: ProjectFeatureTiming,
+  error: EnvironmentAuthorizationError,
+});
+
 const WsProjectsMutateRpc = Rpc.make(WS_METHODS.projectsMutate, {
   payload: ProjectMutation,
   success: Project,
@@ -2128,6 +2140,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsEnsureScratchRpc,
   WsProjectsCreateNewRpc,
   WsProjectsWriteFileRpc,
+  WsProjectsFeatureTimingRpc,
   WsProjectsMutateRpc,
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,

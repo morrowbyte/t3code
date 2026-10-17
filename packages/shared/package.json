@@ -7,6 +7,10 @@
       "types": "./src/updateHistory.ts",
       "import": "./src/updateHistory.ts"
     },
+    "./featureTiming": {
+      "types": "./src/featureTiming.ts",
+      "import": "./src/featureTiming.ts"
+    },
     "./githubMarkdownLinks": {
       "types": "./src/githubMarkdownLinks.ts",
       "import": "./src/githubMarkdownLinks.ts"
