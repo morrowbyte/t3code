@@ -348,6 +348,37 @@ it.layer(layerTest)("ProjectService", (it) => {
         assert.equal(result.firstAcceptedAt, DateTime.toEpochMillis(at(5)));
         assert.equal(result.targets[0]?.acceptedVersion, ".43");
         assert.deepEqual(result.originalEstimate, registration.featureTiming.originalEstimate);
+        yield* update({
+          type: "registered",
+          featureId: "missing-history",
+          title: "Real feature without historical thread coverage",
+          threadIds: [],
+          intake: null,
+          targets: [{ id: "laptop", label: "Laptop" }],
+          originalEstimate: null,
+        });
+        const unlinked = (yield* decodeTiming(
+          yield* encodeTiming(yield* service.featureTiming(projectId)),
+        )).features.find((feature) => feature.featureId === "missing-history")!;
+        assert.equal(unlinked.registeredAt, DateTime.formatIso(at(11)));
+        assert.isNull(unlinked.intakeAt);
+        assert.isNull(unlinked.workStartedAt);
+        assert.isNull(unlinked.elapsedFromIntakeMs);
+        assert.isNull(unlinked.elapsedFromWorkMs);
+        assert.isNull(unlinked.originalEstimate);
+        assert.isNull(unlinked.targets[0]?.acceptedVersion);
+        assert.equal(unlinked.runCount, 0);
+        assert.deepEqual(unlinked.phases, []);
+        yield* update({ type: "thread_linked", featureId: "missing-history", threadId });
+        const linked = (yield* service.featureTiming(projectId)).features.find(
+          (feature) => feature.featureId === "missing-history",
+        )!;
+        assert.equal(linked.runCount, 1);
+        assert.equal(linked.workStartedAt, DateTime.toEpochMillis(at(2)));
+        assert.equal(linked.registeredAt, unlinked.registeredAt);
+        assert.isNull(linked.intakeAt);
+        assert.isNull(linked.originalEstimate);
+        assert.isNull(linked.targets[0]?.acceptedVersion);
         const receipts = yield* sql<{
           readonly count: number;
         }>`SELECT count(*) AS count FROM orchestration_events WHERE command_id = ${registration.commandId}`;

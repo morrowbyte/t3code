@@ -207,6 +207,10 @@ Unrecorded intake, estimates, phases and effort stay unavailable. Existing threa
 classified as features automatically. Waiting remains part of calendar time; overlapping waits
 count once in the total. Phase and reason breakdowns describe recorded coverage only.
 
+A feature can be registered before its work threads are available and linked to real threads
+later. **Recorded since** marks when tracking began; it does not reconstruct the original request
+or work start. Missing historical dates remain unavailable.
+
 To record explicit version acceptance, send a message in the feature's project with the whole text
 `Accept feature <featureId> on <targetId> at version <version>`, using the IDs from its registration,
 and ask your agent to link that message as evidence. Agent messages and completed runs cannot

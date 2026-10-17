@@ -24,7 +24,7 @@ export const FeatureTimingFact = Schema.Union([
     featureId: Id,
     title: Label,
     intake: Schema.NullOr(FeatureTimingEvidence),
-    threadIds: Schema.Array(ThreadId).check(Schema.isMinLength(1), Schema.isMaxLength(16)),
+    threadIds: Schema.Array(ThreadId).check(Schema.isMaxLength(16)),
     targets: Schema.Array(
       Schema.Struct({ id: Id, label: Label, environmentId: Schema.optional(EnvironmentId) }),
     ).check(Schema.isMinLength(1), Schema.isMaxLength(16)),

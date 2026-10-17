@@ -140,6 +140,7 @@ export function ProjectFeatureTiming({ member }: { member: SidebarProjectGroupMe
         >
           <dl className="grid grid-cols-1 gap-x-6 gap-y-2 py-2 text-sm sm:grid-cols-2">
             {[
+              ["Recorded since", new Date(feature.registeredAt).toLocaleString()],
               [
                 "Original estimate",
                 feature.originalEstimate
