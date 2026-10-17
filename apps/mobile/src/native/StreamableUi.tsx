@@ -1,7 +1,7 @@
 /* oxlint-disable react/no-array-index-key -- Protocol lists only append; positional keys preserve existing rows, points and disclosures as records arrive. */
 import { memo, useMemo, useState } from "react";
 import { Linking, Pressable, ScrollView, View } from "react-native";
-import Svg, { Circle, G, Path, Polyline, Text as SvgText } from "react-native-svg";
+import Svg, { Circle, Path, Polyline } from "react-native-svg";
 import { useResolveClassNames } from "uniwind";
 import {
   chartGeometry,
@@ -80,10 +80,16 @@ function LineChart({ chart }: { chart: VisualChart }) {
   const geometry = chartGeometry(chart.points);
   const { color: primary } = useResolveClassNames("text-primary");
   const { color: border } = useResolveClassNames("text-border");
-  const { color: muted } = useResolveClassNames("text-foreground-muted");
   if (!geometry) return <Text className="text-xs text-foreground-muted">No data points yet.</Text>;
   return (
     <View className="gap-2">
+      {/* Native text keeps axis labels readable at narrow widths and follows the user's text scale. */}
+      <View className="flex-row gap-3">
+        <Text className="min-w-0 flex-1 text-xs text-foreground-muted">Min {geometry.minimum}</Text>
+        <Text className="min-w-0 flex-1 text-right text-xs text-foreground-muted">
+          Max {geometry.maximum}
+        </Text>
+      </View>
       <View style={{ aspectRatio: 3 }}>
         <Svg
           viewBox="0 0 600 200"
@@ -103,23 +109,23 @@ function LineChart({ chart }: { chart: VisualChart }) {
           {geometry.coordinates.map((point, index) => (
             <Circle key={index} cx={point.x} cy={point.y} r={3} fill={primary} />
           ))}
-          <G fill={muted} fontSize={12}>
-            <SvgText x={52} y={16}>
-              {geometry.maximum}
-            </SvgText>
-            <SvgText x={52} y={156}>
-              {geometry.minimum}
-            </SvgText>
-            <SvgText x={52} y={188}>
-              {chart.points[0]!.label.slice(0, 24)}
-            </SvgText>
-            {chart.points.length > 1 ? (
-              <SvgText x={548} y={188} textAnchor="end">
-                {chart.points.at(-1)!.label.slice(0, 24)}
-              </SvgText>
-            ) : null}
-          </G>
         </Svg>
+      </View>
+      <View className="flex-row gap-3">
+        <Text
+          className="min-w-0 flex-1 text-xs text-foreground-muted"
+          accessibilityLabel={chart.points[0]!.label}
+        >
+          {chart.points[0]!.label.slice(0, 24)}
+        </Text>
+        {chart.points.length > 1 ? (
+          <Text
+            className="min-w-0 flex-1 text-right text-xs text-foreground-muted"
+            accessibilityLabel={chart.points.at(-1)!.label}
+          >
+            {chart.points.at(-1)!.label.slice(0, 24)}
+          </Text>
+        ) : null}
       </View>
       {chart.xLabel || chart.yLabel ? (
         <Text className="text-xs text-foreground-muted">
@@ -163,7 +169,7 @@ function SourceError({ code, error }: { code: string; error: string }) {
         </Text>
       </Pressable>
       {showSource ? (
-        <ScrollView style={{ maxHeight: 256 }}>
+        <ScrollView nestedScrollEnabled style={{ maxHeight: 256 }}>
           <Text selectable className="font-mono text-xs text-foreground-muted">
             {code.slice(0, STREAMABLE_UI_LIMITS.characters)}
           </Text>
