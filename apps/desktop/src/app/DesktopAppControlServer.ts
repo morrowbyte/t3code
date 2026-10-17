@@ -7,6 +7,8 @@ import * as NodePath from "node:path";
 import {
   DESKTOP_APP_ACTIVATION_PROTOCOL_VERSION,
   DesktopAppActivationRequest,
+  DesktopResultConversationRequest,
+  type DesktopResultConversationResponse,
   MainRendererLocalDiagnosticsHello,
   MainRendererLocalDiagnosticsCapability,
   MainRendererLocalDiagnosticsRead,
@@ -100,6 +102,10 @@ export async function startDesktopAppControlServer(input: {
   readonly handle: (request: DesktopAppActivationRequest) => Promise<DesktopAppActivationResponse>;
   readonly cancel: (requestId: string) => void;
   readonly onReclaimError: (error: unknown) => void;
+  readonly openResultConversation?: (
+    request: DesktopResultConversationRequest,
+    alive: () => boolean,
+  ) => Promise<DesktopResultConversationResponse>;
   readonly diagnostics?: {
     readonly mainPid: number;
     readonly stateDir: string;
@@ -113,6 +119,9 @@ export async function startDesktopAppControlServer(input: {
   };
 }): Promise<RunningControlServer> {
   const sockets = new Set<NodeNet.Socket>();
+  const decodeResultConversation = Schema.decodeUnknownOption(DesktopResultConversationRequest, {
+    onExcessProperty: "error",
+  });
   let diagnosticOwner: NodeNet.Socket | undefined;
   const decodeHello = Schema.decodeUnknownOption(MainRendererLocalDiagnosticsHello, {
     onExcessProperty: "error",
@@ -143,7 +152,7 @@ export async function startDesktopAppControlServer(input: {
 
     socket.setTimeout(5_000, () => socket.destroy());
 
-    const finish = (response: DesktopAppActivationResponse) => {
+    const finish = (response: DesktopAppActivationResponse | DesktopResultConversationResponse) => {
       responseSent = true;
       if (!socket.destroyed) socket.end(`${JSON.stringify(response)}\n`);
     };
@@ -165,7 +174,40 @@ export async function startDesktopAppControlServer(input: {
       try {
         parsed = JSON.parse(line);
       } catch {
+        handled = true;
         finish(invalidResponse("invalid-request", "The desktop app request is not valid JSON."));
+        return;
+      }
+
+      if (
+        typeof parsed === "object" &&
+        parsed !== null &&
+        "type" in parsed &&
+        parsed.type === "open-result-conversation"
+      ) {
+        handled = true;
+        const decoded = decodeResultConversation(parsed);
+        if (Option.isNone(decoded) || buffer.length !== 0) {
+          finish(
+            invalidResponse(requestIdFromUnknown(parsed), "The result conversation is invalid."),
+          );
+          return;
+        }
+        const request = decoded.value;
+        const unavailable = (): DesktopResultConversationResponse => ({
+          version: 1,
+          requestId: request.requestId,
+          ok: false,
+          code: "result-window-unavailable",
+          message: "T3 Code could not open the result conversation.",
+        });
+        if (!input.openResultConversation) {
+          finish(unavailable());
+          return;
+        }
+        void input
+          .openResultConversation(request, () => !socket.destroyed)
+          .then(finish, () => finish(unavailable()));
         return;
       }
 

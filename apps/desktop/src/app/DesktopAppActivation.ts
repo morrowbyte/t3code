@@ -116,6 +116,29 @@ export const make = Effect.gen(function* () {
                 }
               : {}),
             handle: (request) => broker.request(request),
+            openResultConversation: (request, alive) =>
+              runPromise(
+                Effect.gen(function* () {
+                  if (!alive()) {
+                    return {
+                      version: 1 as const,
+                      requestId: request.requestId,
+                      ok: false as const,
+                      code: "result-window-unavailable" as const,
+                      message: "The result window request was disconnected.",
+                    };
+                  }
+                  const window = yield* desktopWindow.openThreadWindow(request, alive);
+                  return {
+                    version: 1 as const,
+                    requestId: request.requestId,
+                    ok: true as const,
+                    environmentId: request.environmentId,
+                    threadId: request.threadId,
+                    windowId: window.id,
+                  };
+                }),
+              ),
             cancel: (requestId) => broker.cancel(requestId),
             onReclaimError: (cause) =>
               void runPromise(

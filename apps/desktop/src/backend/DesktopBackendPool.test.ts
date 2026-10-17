@@ -92,6 +92,7 @@ function layerPool(labelRef: Ref.Ref<string>): Layer.Layer<DesktopBackendPool.De
         ElectronApp.layer,
         Layer.succeed(DesktopWindow.DesktopWindow, {
           createMain: Effect.die("unexpected window create"),
+          openThreadWindow: () => Effect.die("unexpected result window"),
           ensureMain: Effect.die("unexpected window ensure"),
           revealOrCreateMain: Effect.die("unexpected window reveal"),
           activate: Effect.die("unexpected window activate"),
@@ -114,30 +115,34 @@ function layerPool(labelRef: Ref.Ref<string>): Layer.Layer<DesktopBackendPool.De
 
 describe("DesktopBackendPool", () => {
   it.effect("fences a cached backend start until the update inventory window releases", () =>
-    Effect.scoped(Effect.gen(function* () {
-      const label = yield* Ref.make("Windows");
-      yield* Effect.gen(function* () {
-        const pool = yield* DesktopBackendPool.DesktopBackendPool;
-        const hold = pool.withUpdateInventory;
-        if (hold === undefined) return yield* Effect.die("missing inventory reservation");
-        const primary = yield* pool.primary;
-        const entered = yield* Deferred.make<void>();
-        const release = yield* Deferred.make<void>();
-        const window = yield* hold((instances) => Effect.gen(function* () {
-          assert.equal(instances.length, 1);
-          yield* Deferred.succeed(entered, undefined);
-          yield* Deferred.await(release);
-        })).pipe(Effect.forkScoped);
-        yield* Deferred.await(entered);
-        const start = yield* primary.start.pipe(Effect.exit, Effect.forkScoped);
-        yield* Effect.yieldNow;
-        assert.isUndefined(start.pollUnsafe());
-        assert.isFalse((yield* primary.snapshot).desiredRunning);
-        yield* Deferred.succeed(release, undefined);
-        yield* Fiber.join(window);
-        assert.equal((yield* Fiber.join(start))._tag, "Failure");
-      }).pipe(Effect.provide(layerPool(label)));
-    })),
+    Effect.scoped(
+      Effect.gen(function* () {
+        const label = yield* Ref.make("Windows");
+        yield* Effect.gen(function* () {
+          const pool = yield* DesktopBackendPool.DesktopBackendPool;
+          const hold = pool.withUpdateInventory;
+          if (hold === undefined) return yield* Effect.die("missing inventory reservation");
+          const primary = yield* pool.primary;
+          const entered = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          const window = yield* hold((instances) =>
+            Effect.gen(function* () {
+              assert.equal(instances.length, 1);
+              yield* Deferred.succeed(entered, undefined);
+              yield* Deferred.await(release);
+            }),
+          ).pipe(Effect.forkScoped);
+          yield* Deferred.await(entered);
+          const start = yield* primary.start.pipe(Effect.exit, Effect.forkScoped);
+          yield* Effect.yieldNow;
+          assert.isUndefined(start.pollUnsafe());
+          assert.isFalse((yield* primary.snapshot).desiredRunning);
+          yield* Deferred.succeed(release, undefined);
+          yield* Fiber.join(window);
+          assert.equal((yield* Fiber.join(start))._tag, "Failure");
+        }).pipe(Effect.provide(layerPool(label)));
+      }),
+    ),
   );
 
   it.effect("layerTest exposes registered instances by id", () =>
