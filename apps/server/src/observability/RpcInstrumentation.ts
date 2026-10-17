@@ -52,6 +52,8 @@ const RPC_AGGREGATES = {
   [WS_METHODS.liveVoiceStop]: "voice",
   [WS_METHODS.liveVoiceStatus]: "voice",
   [WS_METHODS.liveVoiceSubscribe]: "voice",
+  [WS_METHODS.nativeAuthorRead]: "orchestrationV2",
+  [WS_METHODS.nativeAuthorWrite]: "orchestrationV2",
   [WS_METHODS.providerInstallStart]: "provider",
   [WS_METHODS.providerInstallCancel]: "provider",
   [WS_METHODS.providerInstallSubscribe]: "provider",

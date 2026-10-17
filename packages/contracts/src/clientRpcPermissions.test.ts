@@ -2,10 +2,20 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   AuthEnvironmentMaintainScope,
   AuthOrchestrationReadScope,
+  AuthOrchestrationOperateScope,
   AuthSettingsWriteScope,
 } from "./auth.ts";
 import { CLIENT_GUARDED_RPC_SCOPES, clientRpcRequiredScopes } from "./clientRpcPermissions.ts";
 import { WS_METHODS } from "./rpc.ts";
+
+it("uses existing read and operate scopes for native author reconciliation and mutations", () => {
+  expect(clientRpcRequiredScopes(WS_METHODS.nativeAuthorRead, {})).toEqual([
+    AuthOrchestrationReadScope,
+  ]);
+  expect(clientRpcRequiredScopes(WS_METHODS.nativeAuthorWrite, {})).toEqual([
+    AuthOrchestrationOperateScope,
+  ]);
+});
 
 describe("observatory read destination permissions", () => {
   it("uses the exact read grant for all selected destinations without introducing publish authority", () => {

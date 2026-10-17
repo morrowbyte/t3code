@@ -135,6 +135,7 @@ import * as CommandOutputHub from "./orchestration-v2/CommandOutputHub.ts";
 import * as McpAppRequests from "./mcpApps/McpAppRequests.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts";
+import * as NativeAuthorService from "./orchestration-v2/NativeAuthorService.ts";
 import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts";
 import * as CodexLiveSessionService from "./voice/CodexLiveSessionService.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -1217,6 +1218,7 @@ const layerWsRpc = (
       const liveVoiceService = yield* CodexLiveSessionService.CodexLiveSessionService;
       const observatoryService = yield* AgentObservatory.AgentObservatoryService;
       const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
+      const nativeAuthor = yield* NativeAuthorService.NativeAuthorService;
       const threadSearch = yield* ThreadSearch.ThreadSearch;
 
       const providerSessionsV2 = yield* ProviderSessionManager.ProviderSessionManagerV2;
@@ -1829,6 +1831,8 @@ const layerWsRpc = (
       });
 
       const handlers = ServerWsRpcGroup.of({
+        [WS_METHODS.nativeAuthorRead]: (request) => nativeAuthor.execute(request),
+        [WS_METHODS.nativeAuthorWrite]: (request) => nativeAuthor.execute(request),
         ...agentObservatoryReadHandlers(observatoryService),
         [WS_METHODS.liveVoicePrepare]: (input) => liveVoiceService.prepare(currentSession, input),
         [WS_METHODS.liveVoiceStart]: (input) => liveVoiceService.start(currentSession, input),

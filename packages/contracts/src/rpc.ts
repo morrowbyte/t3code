@@ -27,6 +27,15 @@ import {
   ChatGptHandoffState,
 } from "./providerSetup.ts";
 import * as Schema from "effect/Schema";
+import {
+  NativeAuthorSubmit,
+  NativeAuthorRead,
+  NativeAuthorSteer,
+  NativeAuthorCancel,
+  NativeAuthorOpenResults,
+  NativeAuthorState,
+  NativeAuthorError,
+} from "./nativeAuthor.ts";
 import * as Effect from "effect/Effect";
 import * as SchemaGetter from "effect/SchemaGetter";
 import * as Rpc from "effect/rpc/Rpc";
@@ -455,6 +464,8 @@ export const WS_METHODS = {
   liveVoiceStop: "liveVoice.stop",
   liveVoiceStatus: "liveVoice.status",
   liveVoiceSubscribe: "liveVoice.subscribe",
+  nativeAuthorRead: "nativeAuthor.read",
+  nativeAuthorWrite: "nativeAuthor.write",
 
   // VCS methods
   vcsPull: "vcs.pull",
@@ -1670,6 +1681,17 @@ const WsOrchestrationV2DispatchCommandRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS
   error: Schema.Union([OrchestrationV2DispatchCommandError, EnvironmentAuthorizationError]),
 });
 
+const WsNativeAuthorReadRpc = Rpc.make(WS_METHODS.nativeAuthorRead, {
+  payload: Schema.Union([NativeAuthorRead, NativeAuthorOpenResults]),
+  success: NativeAuthorState,
+  error: Schema.Union([NativeAuthorError, EnvironmentAuthorizationError]),
+});
+const WsNativeAuthorWriteRpc = Rpc.make(WS_METHODS.nativeAuthorWrite, {
+  payload: Schema.Union([NativeAuthorSubmit, NativeAuthorSteer, NativeAuthorCancel]),
+  success: NativeAuthorState,
+  error: Schema.Union([NativeAuthorError, EnvironmentAuthorizationError]),
+});
+
 const WsOrchestrationV2GetTurnDiffRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.getTurnDiff, {
   payload: OrchestrationV2RpcSchemas.getTurnDiff.input,
   success: OrchestrationV2RpcSchemas.getTurnDiff.output,
@@ -2138,6 +2160,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsSearchContentsRpc,
   WsProjectsSearchEntriesRpc,
   WsProjectsEnsureScratchRpc,
+  WsNativeAuthorReadRpc,
+  WsNativeAuthorWriteRpc,
   WsProjectsCreateNewRpc,
   WsProjectsWriteFileRpc,
   WsProjectsFeatureTimingRpc,

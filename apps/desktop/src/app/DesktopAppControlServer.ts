@@ -16,6 +16,9 @@ import {
   type MainRendererDiagnosticsReadInput,
   type MainRendererDiagnosticsReadResult,
   type DesktopAppActivationResponse,
+  NativeAuthorRequest,
+  NativeAuthorResponse,
+  NATIVE_AUTHOR_MAX_FRAME_BYTES,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -102,6 +105,10 @@ export async function startDesktopAppControlServer(input: {
   readonly handle: (request: DesktopAppActivationRequest) => Promise<DesktopAppActivationResponse>;
   readonly cancel: (requestId: string) => void;
   readonly onReclaimError: (error: unknown) => void;
+  readonly nativeAuthor?: (
+    request: NativeAuthorRequest,
+    alive: () => boolean,
+  ) => Promise<NativeAuthorResponse>;
   readonly openResultConversation?: (
     request: DesktopResultConversationRequest,
     alive: () => boolean,
@@ -119,6 +126,12 @@ export async function startDesktopAppControlServer(input: {
   };
 }): Promise<RunningControlServer> {
   const sockets = new Set<NodeNet.Socket>();
+  const decodeNativeAuthor = Schema.decodeUnknownOption(NativeAuthorRequest, {
+    onExcessProperty: "error",
+  });
+  const decodeNativeResponse = Schema.decodeUnknownOption(NativeAuthorResponse, {
+    onExcessProperty: "error",
+  });
   const decodeResultConversation = Schema.decodeUnknownOption(DesktopResultConversationRequest, {
     onExcessProperty: "error",
   });
@@ -152,7 +165,12 @@ export async function startDesktopAppControlServer(input: {
 
     socket.setTimeout(5_000, () => socket.destroy());
 
-    const finish = (response: DesktopAppActivationResponse | DesktopResultConversationResponse) => {
+    const finish = (
+      response:
+        | DesktopAppActivationResponse
+        | DesktopResultConversationResponse
+        | NativeAuthorResponse,
+    ) => {
       responseSent = true;
       if (!socket.destroyed) socket.end(`${JSON.stringify(response)}\n`);
     };
@@ -176,6 +194,69 @@ export async function startDesktopAppControlServer(input: {
       } catch {
         handled = true;
         finish(invalidResponse("invalid-request", "The desktop app request is not valid JSON."));
+        return;
+      }
+
+      if (
+        typeof parsed === "object" &&
+        parsed !== null &&
+        "type" in parsed &&
+        parsed.type === "native-author"
+      ) {
+        handled = true;
+        const decoded = decodeNativeAuthor(parsed);
+        if (Option.isNone(decoded) || buffer.length !== 0) {
+          finish({
+            version: 1,
+            requestId: requestIdFromUnknown(parsed),
+            ok: false,
+            code: "invalid-request",
+          });
+          return;
+        }
+        const request = decoded.value;
+        const unavailable = (): NativeAuthorResponse => ({
+          version: 1,
+          requestId: request.requestId,
+          ok: false,
+          code:
+            request.operation === "read" || request.operation === "open-results"
+              ? "backend-unavailable"
+              : "outcome-unknown",
+        });
+        if (!input.nativeAuthor) {
+          finish({
+            version: 1,
+            requestId: request.requestId,
+            ok: false,
+            code: "backend-unavailable",
+          });
+          return;
+        }
+        socket.setTimeout(15_000, () => socket.destroy());
+        const finishNative = (response: NativeAuthorResponse) => {
+          const decodedResponse = decodeNativeResponse(response);
+          if (Option.isNone(decodedResponse)) {
+            finish(unavailable());
+            return;
+          }
+          if (
+            Buffer.byteLength(`${JSON.stringify(decodedResponse.value)}\n`, "utf8") >
+            NATIVE_AUTHOR_MAX_FRAME_BYTES
+          ) {
+            finish({
+              version: 1,
+              requestId: request.requestId,
+              ok: false,
+              code: "response-too-large",
+            });
+            return;
+          }
+          finish(decodedResponse.value);
+        };
+        void input
+          .nativeAuthor(request, () => !socket.destroyed)
+          .then(finishNative, () => finish(unavailable()));
         return;
       }
 
