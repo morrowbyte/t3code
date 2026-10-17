@@ -39,18 +39,15 @@ export function AttentionInboxView({
   };
   return (
     <div className="space-y-4">
-      <div className="space-y-1 text-xs text-muted-foreground">
-        <p role="status">{attentionCoverageLabel(status, hasSnapshot)}</p>
-        <p>
-          Selected environment: {environmentLabel}. {model.loadedThreads} loaded unarchived threads.
-          Latest pending request and latest unsettled completion per thread. Other environments are
-          not included.
-        </p>
+      <div
+        aria-label={`Attention in ${environmentLabel}`}
+        className="space-y-1 text-xs text-muted-foreground"
+      >
+        {status !== "live" || !hasSnapshot ? (
+          <p role="status">{attentionCoverageLabel(status, hasSnapshot)}</p>
+        ) : null}
         {model.completionTimeUnavailable > 0 ? (
-          <p>
-            Completion time is unavailable for {model.completionTimeUnavailable} loaded threads;
-            their completion is not inferred.
-          </p>
+          <p>Completion time unavailable for {model.completionTimeUnavailable} threads.</p>
         ) : null}
       </div>
       {synchronizationError ? (

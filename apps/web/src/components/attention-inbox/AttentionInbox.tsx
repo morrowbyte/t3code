@@ -80,9 +80,8 @@ function AttentionInboxContent({ onClose }: { onClose: () => void }) {
     <DialogPopup className="sm:max-w-3xl">
       <DialogHeader>
         <DialogTitle>Attention inbox</DialogTitle>
-        <DialogDescription>
-          Questions, approvals, completed work and warnings from your conversations. Review and
-          respond using the original controls in each source thread.
+        <DialogDescription className="sr-only">
+          Questions, approvals, completed work and warnings.
         </DialogDescription>
       </DialogHeader>
       <DialogPanel>

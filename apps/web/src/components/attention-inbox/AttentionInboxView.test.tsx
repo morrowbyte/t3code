@@ -72,8 +72,9 @@ describe("attention inbox user workflow", () => {
       await act(async () => button("Open thread").click());
       expect(open).toHaveBeenCalledWith({ environmentId, threadId: pending.id });
       expect(container.textContent).toContain("Questions (1)");
-      expect(container.textContent).toContain("Selected environment: Nixy");
-      expect(container.textContent).toContain("Other environments are not included");
+      expect(container.querySelector('[aria-label="Attention in Nixy"]')).not.toBeNull();
+      expect(container.textContent).not.toContain("Live environment data");
+      expect(container.textContent).not.toContain("Other environments are not included");
 
       await act(async () =>
         root.render(view([{ ...pending, pendingRuntimeRequest: null }, completed])),
