@@ -343,6 +343,7 @@ function layerTest(input: {
           attachGuest: () => () => {},
         }),
         Layer.mock(PreviewManager.PreviewManager)({
+          getAutofillTarget: () => Effect.succeed(undefined),
           getBrowserSession: () => Effect.succeed({} as Electron.Session),
           setMainWindow: () => Effect.void,
           prepareWebview: () => Effect.void,
@@ -462,6 +463,7 @@ const makeSplashScenario = (
             attachGuest: () => () => {},
           }),
           Layer.mock(PreviewManager.PreviewManager)({
+            getAutofillTarget: () => Effect.succeed(undefined),
             getBrowserSession: () => beforeBrowserSession.pipe(Effect.as({} as Electron.Session)),
             setMainWindow: (window) =>
               Effect.sync(() => {

@@ -191,6 +191,7 @@ interface RunBackendProcessOptions extends DesktopBackendStartConfig {
   readonly desktopTelemetryStream: Stream.Stream<Uint8Array>;
   readonly desktopBrowserStream?: Stream.Stream<Uint8Array>;
   readonly onDesktopBrowserCommand?: (line: string) => Effect.Effect<void>;
+  readonly onDesktopBrowserCommandClosed?: Effect.Effect<void>;
   readonly onDesktopTelemetryControl?: (
     message: DesktopTelemetryControlMessageValue,
   ) => Effect.Effect<void>;
@@ -546,6 +547,7 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
       Stream.splitLines,
       Stream.filter((line) => line.length > 0),
       Stream.runForEach(handleCommand),
+      Effect.ensuring(options.onDesktopBrowserCommandClosed ?? Effect.void),
       Effect.catchCause((cause) =>
         logBackendProcessWarning("desktop browser command stream stopped", {
           fd: browserFd,
@@ -911,13 +913,22 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
           desktopTelemetryPublisher.createDiagnosticsConnection?.(spec.id) ??
             Effect.succeed(undefined)
         );
+        const browserConnection =
+          config.value.bootstrap.desktopBrowserControlFd === undefined
+            ? undefined
+            : desktopBrowserHost.createConnection();
         const program = runBackendProcess({
           ...config.value,
           desktopTelemetryStream:
             diagnosticConnection?.encoded ?? desktopTelemetryPublisher.encoded,
           // Only a bootstrap that names the browser fds (the local primary) gets them.
-          desktopBrowserStream: desktopBrowserHost.events,
-          onDesktopBrowserCommand: desktopBrowserHost.handleCommandLine,
+          ...(browserConnection === undefined
+            ? {}
+            : {
+                desktopBrowserStream: browserConnection.events,
+                onDesktopBrowserCommand: browserConnection.handleCommandLine,
+                onDesktopBrowserCommandClosed: browserConnection.closed,
+              }),
           onDesktopTelemetryControl: (message) =>
             diagnosticConnection?.handleControl(message) ??
             desktopTelemetryPublisher.handleControlForSource(spec.id, message),
@@ -988,6 +999,7 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
             onFailure: (error) => finalizeRun(error.message),
             onSuccess: (exit) => finalizeRun(exit.reason, Option.getOrUndefined(exit.code)),
           }),
+          Effect.ensuring(browserConnection?.closed ?? Effect.void),
           Effect.ensuring(diagnosticConnection?.closed ?? Effect.void),
           Effect.ensuring(Scope.close(runScope, Exit.void).pipe(Effect.ignore)),
         );

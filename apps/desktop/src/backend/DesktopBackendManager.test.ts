@@ -194,60 +194,76 @@ function makeTestInstance(input: MakeInstanceInput) {
 }
 
 describe("DesktopBackendManager", () => {
-  it.effect("holds a private restart after it cleared its fiber when stop and update admission win", () =>
-    Effect.scoped(Effect.gen(function* () {
-      const lane = yield* Semaphore.make(1);
-      const restartReached = yield* Deferred.make<void>();
-      const allowRestartToReserve = yield* Deferred.make<void>();
-      const inventoryHeld = yield* Deferred.make<void>();
-      const releaseInventory = yield* Deferred.make<void>();
-      const spawned = yield* Queue.unbounded<number>();
-      const failures = yield* Queue.unbounded<string>();
-      let reservations = 0;
-      let starts = 0;
-      const instance = yield* makeTestInstance({
-        reserveStart: (operation) => Effect.gen(function* () {
-          reservations += 1;
-          if (reservations === 2) {
-            yield* Deferred.succeed(restartReached, undefined);
-            yield* Deferred.await(allowRestartToReserve);
-          }
-          yield* lane.withPermits(1)(operation);
-        }),
-        spawnerLayer: Layer.succeed(ChildProcessSpawner.ChildProcessSpawner,
-          ChildProcessSpawner.make(() => Effect.sync(() => {
-            starts += 1;
-            return makeProcess({ exitCode: Queue.offer(spawned, starts).pipe(
-              Effect.as(ChildProcessSpawner.ExitCode(1)),
-            ) });
-          })),
-        ),
-        httpClientLayer: layerHttpClient(() => Effect.never),
-        backendOutputLog: { persistFailure: ({ details }) => Queue.offer(failures, details).pipe(Effect.asVoid) },
-      });
-      yield* instance.start;
-      assert.equal(yield* Queue.take(spawned), 1);
-      yield* Queue.take(failures);
-      yield* TestClock.adjust(Duration.millis(500));
-      yield* Deferred.await(restartReached);
-      assert.isFalse((yield* instance.snapshot).restartScheduled);
-      yield* instance.stop();
-      const inventory = yield* lane.withPermits(1)(Effect.gen(function* () {
-        const snapshot = yield* instance.snapshot;
-        assert.isFalse(snapshot.desiredRunning);
-        assert.isTrue(Option.isNone(snapshot.activePid));
-        yield* Deferred.succeed(inventoryHeld, undefined);
-        yield* Deferred.await(releaseInventory);
-      })).pipe(Effect.forkScoped);
-      yield* Deferred.await(inventoryHeld);
-      yield* Deferred.succeed(allowRestartToReserve, undefined);
-      yield* Effect.yieldNow;
-      assert.equal(starts, 1);
-      assert.equal(yield* Queue.size(spawned), 0);
-      yield* Deferred.succeed(releaseInventory, undefined);
-      yield* Fiber.join(inventory);
-      assert.equal(yield* Queue.take(spawned), 2);
-    }).pipe(Effect.provide(TestClock.layer()))),
+  it.effect(
+    "holds a private restart after it cleared its fiber when stop and update admission win",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const lane = yield* Semaphore.make(1);
+          const restartReached = yield* Deferred.make<void>();
+          const allowRestartToReserve = yield* Deferred.make<void>();
+          const inventoryHeld = yield* Deferred.make<void>();
+          const releaseInventory = yield* Deferred.make<void>();
+          const spawned = yield* Queue.unbounded<number>();
+          const failures = yield* Queue.unbounded<string>();
+          let reservations = 0;
+          let starts = 0;
+          const instance = yield* makeTestInstance({
+            reserveStart: (operation) =>
+              Effect.gen(function* () {
+                reservations += 1;
+                if (reservations === 2) {
+                  yield* Deferred.succeed(restartReached, undefined);
+                  yield* Deferred.await(allowRestartToReserve);
+                }
+                yield* lane.withPermits(1)(operation);
+              }),
+            spawnerLayer: Layer.succeed(
+              ChildProcessSpawner.ChildProcessSpawner,
+              ChildProcessSpawner.make(() =>
+                Effect.sync(() => {
+                  starts += 1;
+                  return makeProcess({
+                    exitCode: Queue.offer(spawned, starts).pipe(
+                      Effect.as(ChildProcessSpawner.ExitCode(1)),
+                    ),
+                  });
+                }),
+              ),
+            ),
+            httpClientLayer: layerHttpClient(() => Effect.never),
+            backendOutputLog: {
+              persistFailure: ({ details }) => Queue.offer(failures, details).pipe(Effect.asVoid),
+            },
+          });
+          yield* instance.start;
+          assert.equal(yield* Queue.take(spawned), 1);
+          yield* Queue.take(failures);
+          yield* TestClock.adjust(Duration.millis(500));
+          yield* Deferred.await(restartReached);
+          assert.isFalse((yield* instance.snapshot).restartScheduled);
+          yield* instance.stop();
+          const inventory = yield* lane
+            .withPermits(1)(
+              Effect.gen(function* () {
+                const snapshot = yield* instance.snapshot;
+                assert.isFalse(snapshot.desiredRunning);
+                assert.isTrue(Option.isNone(snapshot.activePid));
+                yield* Deferred.succeed(inventoryHeld, undefined);
+                yield* Deferred.await(releaseInventory);
+              }),
+            )
+            .pipe(Effect.forkScoped);
+          yield* Deferred.await(inventoryHeld);
+          yield* Deferred.succeed(allowRestartToReserve, undefined);
+          yield* Effect.yieldNow;
+          assert.equal(starts, 1);
+          assert.equal(yield* Queue.size(spawned), 0);
+          yield* Deferred.succeed(releaseInventory, undefined);
+          yield* Fiber.join(inventory);
+          assert.equal(yield* Queue.take(spawned), 2);
+        }).pipe(Effect.provide(TestClock.layer())),
+      ),
   );
 
   it.effect("spawns the backend with fd3 bootstrap and fd4 telemetry", () =>
@@ -626,6 +642,93 @@ describe("DesktopBackendManager", () => {
       }),
     ),
   );
+
+  for (const termination of ["eof", "error", "interruption"] as const) {
+    it.effect(`revokes the bound browser connection on command reader ${termination}`, () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const inputStarted = yield* Deferred.make<void>();
+          const readerStarted = yield* Deferred.make<void>();
+          const finishReader = yield* Deferred.make<void>();
+          const closed = yield* Deferred.make<void>();
+          const inputAlive = yield* Ref.make(false);
+          const closeCount = yield* Ref.make(0);
+          const failure = PlatformError.systemError({
+            _tag: "Unknown",
+            module: "ChildProcessSpawner",
+            method: "getOutputFd",
+            description: "synthetic browser command read failure",
+          });
+          const layerSpawner = Layer.succeed(
+            ChildProcessSpawner.ChildProcessSpawner,
+            ChildProcessSpawner.make((command) =>
+              Effect.gen(function* () {
+                if (command._tag !== "StandardCommand")
+                  return yield* Effect.die("expected standard browser backend command");
+                const input = command.options.additionalFds?.fd6;
+                if (input?.type !== "input" || input.stream === undefined)
+                  return yield* Effect.die("missing browser input stream");
+                yield* Stream.runDrain(input.stream).pipe(Effect.forkScoped);
+                return makeProcess({
+                  getOutputFd: () =>
+                    Stream.fromEffect(
+                      Deferred.succeed(readerStarted, void 0).pipe(
+                        Effect.andThen(Deferred.await(finishReader)),
+                      ),
+                    ).pipe(
+                      Stream.flatMap(() =>
+                        termination === "error" ? Stream.fail(failure) : Stream.empty,
+                      ),
+                    ),
+                  exitCode: Effect.never,
+                });
+              }),
+            ),
+          );
+          const run = yield* DesktopBackendManager.runBackendProcess({
+            ...baseConfig,
+            bootstrap: {
+              ...baseConfig.bootstrap,
+              desktopBrowserFd: 6,
+              desktopBrowserControlFd: 7,
+            },
+            desktopTelemetryStream: Stream.empty,
+            desktopBrowserStream: Stream.fromEffect(
+              Ref.set(inputAlive, true).pipe(
+                Effect.andThen(Deferred.succeed(inputStarted, void 0)),
+                Effect.andThen(Effect.never),
+                Effect.ensuring(Ref.set(inputAlive, false)),
+              ),
+            ),
+            onDesktopBrowserCommand: () => Effect.void,
+            onDesktopBrowserCommandClosed: Ref.update(closeCount, (count) => count + 1).pipe(
+              Effect.andThen(Deferred.succeed(closed, void 0)),
+              Effect.asVoid,
+            ),
+          }).pipe(
+            Effect.provide(Layer.merge(layerSpawner, layerHealthyHttpClient)),
+            Effect.scoped,
+            Effect.forkChild,
+          );
+          yield* Deferred.await(inputStarted);
+          yield* Deferred.await(readerStarted);
+          if (termination === "interruption") {
+            yield* Fiber.interrupt(run);
+          } else {
+            yield* Deferred.succeed(finishReader, void 0);
+            yield* Deferred.await(closed);
+            // Command EOF/error revokes before the input consumer or backend exits.
+            assert.isTrue(yield* Ref.get(inputAlive));
+            assert.isUndefined(run.pollUnsafe());
+            yield* Fiber.interrupt(run);
+          }
+          yield* Deferred.await(closed);
+          assert.equal(yield* Ref.get(closeCount), 1);
+          assert.isFalse(yield* Ref.get(inputAlive));
+        }),
+      ),
+    );
+  }
 
   it.effect("continues routing desktop telemetry control messages after an invalid line", () =>
     Effect.scoped(

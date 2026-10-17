@@ -40,6 +40,9 @@ import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as DesktopRendererHistory from "../telemetry/DesktopRendererHistory.ts";
 import { makeQuitShortcutHandler } from "./QuitHold.ts";
 import { copyContextMenuImage } from "./ContextMenuImage.ts";
+import { makeProtonPassProvider } from "../preview/ProtonPassCli.ts";
+import { makeAutofill, makeBindingStore } from "../preview/ProtonPassAutofill.ts";
+import { makeAutofillMenu, makeNativeAutofillUi } from "../preview/ProtonPassAutofillMenu.ts";
 
 const TITLEBAR_HEIGHT = 40;
 // Matches --workspace-topbar-height in apps/web/src/index.css. Native macOS
@@ -547,6 +550,7 @@ export const make = Effect.gen(function* () {
     });
 
     const contextMenuContents = new WeakSet<Electron.WebContents>();
+    let protonAutofill: ReturnType<typeof makeAutofill> | undefined;
     const installContextMenu = (
       ownerWindow: Electron.BrowserWindow,
       contents: Electron.WebContents,
@@ -611,11 +615,38 @@ export const make = Effect.gen(function* () {
         );
 
         void runPromise(
-          electronMenu.popupTemplate({
-            window: ownerWindow,
-            template: menuTemplate,
-            ...(params.frame ? { frame: params.frame } : {}),
-          }),
+          Effect.gen(function* () {
+            const target =
+              isMainWindow && ownerWindow === window
+                ? yield* previewManager.getAutofillTarget(contents, params.frame ?? null)
+                : undefined;
+            if (target && (params.isEditable || target.privateEntry)) {
+              protonAutofill ??= makeAutofill(
+                makeProtonPassProvider(),
+                makeBindingStore(
+                  environment.path.join(
+                    Electron.app.getPath("userData"),
+                    "proton-pass-autofill.json",
+                  ),
+                ),
+              );
+              const items = yield* Effect.tryPromise(() =>
+                makeAutofillMenu(
+                  target,
+                  protonAutofill!,
+                  makeNativeAutofillUi(ownerWindow, contents, Electron),
+                ),
+              ).pipe(
+                Effect.orElseSucceed(() => [{ label: "Proton Pass unavailable", enabled: false }]),
+              );
+              menuTemplate.unshift(...items, { type: "separator" });
+            }
+            yield* electronMenu.popupTemplate({
+              window: ownerWindow,
+              template: menuTemplate,
+              ...(params.frame ? { frame: params.frame } : {}),
+            });
+          }).pipe(Effect.ignore),
         );
       });
       contents.on("did-create-window", (popup) => {
