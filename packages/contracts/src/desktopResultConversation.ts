@@ -2,8 +2,9 @@ import * as Schema from "effect/Schema";
 
 import { EnvironmentId, PositiveInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { JarvisNativeTaskOrigin } from "./jarvis.ts";
+import { NativeAuthorRootLocator } from "./nativeAuthor.ts";
 
-export const DesktopResultConversationLocator = Schema.Struct({
+const DelegatedResultConversationLocator = Schema.Struct({
   environmentId: EnvironmentId,
   threadId: ThreadId,
   origin: JarvisNativeTaskOrigin,
@@ -15,8 +16,22 @@ export const DesktopResultConversationLocator = Schema.Struct({
       Object.values(locator.origin).every((value) => value.trim().length > 0),
   ),
 );
+export const DesktopResultConversationLocator = Schema.Union([
+  DelegatedResultConversationLocator,
+  Schema.Struct({
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    origin: NativeAuthorRootLocator,
+  }).check(
+    Schema.makeFilter(
+      (locator) =>
+        locator.environmentId === locator.origin.environmentId &&
+        locator.threadId === locator.origin.threadId,
+    ),
+  ),
+]);
 export type DesktopResultConversationLocator = typeof DesktopResultConversationLocator.Type;
-const isResultConversationLocator = Schema.is(DesktopResultConversationLocator);
+const isResultConversationLocator = Schema.is(DelegatedResultConversationLocator);
 
 // The caller resolves a canonical delegation receipt. This operation only opens
 // its existing authenticated conversation; it never creates work or supplies content.
@@ -24,7 +39,7 @@ export const DesktopResultConversationRequest = Schema.Struct({
   version: Schema.Literal(1),
   requestId: TrimmedNonEmptyString,
   type: Schema.Literal("open-result-conversation"),
-  ...DesktopResultConversationLocator.fields,
+  ...DelegatedResultConversationLocator.fields,
 }).check(Schema.makeFilter(isResultConversationLocator));
 export type DesktopResultConversationRequest = typeof DesktopResultConversationRequest.Type;
 

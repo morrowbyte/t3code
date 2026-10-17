@@ -5,6 +5,8 @@ import {
   DesktopSnapShotId,
   DesktopResultConversationLocator,
   EnvironmentId,
+  ProjectId,
+  RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -505,45 +507,61 @@ describe("DesktopWindow", () => {
       childRootNodeId: "child-root-1",
     },
   };
+  const nativeResultLocator: DesktopResultConversationLocator = {
+    environmentId: resultLocator.environmentId,
+    threadId: resultLocator.threadId,
+    origin: {
+      kind: "native-author-root",
+      source: {
+        engineSessionId: "native-session-1",
+        conversationId: "native-conversation-1",
+        turnId: "native-turn-1",
+      },
+      environmentId: resultLocator.environmentId,
+      projectId: ProjectId.make("scratch-project-1"),
+      threadId: resultLocator.threadId,
+      runId: RunId.make("native-run-1"),
+      rootNodeId: null,
+    },
+  };
 
-  it.effect("opens and reuses an authenticated result window without replacing the main", () =>
-    Effect.gen(function* () {
-      const main = makeFakeBrowserWindow();
-      const result = makeFakeBrowserWindow();
-      const reopened = makeFakeBrowserWindow();
-      const scenario = yield* makeSplashScenario([main.window, result.window, reopened.window]);
-      yield* Effect.gen(function* () {
-        const desktopWindow = yield* DesktopWindow.DesktopWindow;
-        yield* desktopWindow.createMain;
-        const windows = yield* Effect.all(
-          [
-            desktopWindow.openThreadWindow(resultLocator),
-            desktopWindow.openThreadWindow(resultLocator),
-          ],
-          { concurrency: "unbounded" },
-        );
-        assert.deepEqual(windows, [result.window, result.window]);
-        assert.strictEqual(Option.getOrThrow(yield* Ref.get(scenario.mainWindow)), main.window);
-        assert.deepEqual(scenario.previewMainWindows, [main.window]);
-        assert.deepEqual(result.loadURL.mock.calls, [
-          ["t3code-dev://app/#/environment-1/child%2Fthread%20%3F%231"],
-        ]);
-        const preferences = scenario.createdWindowOptions[1]?.webPreferences;
-        assert.isTrue(preferences?.contextIsolation);
-        assert.isTrue(preferences?.sandbox);
-        assert.isFalse(preferences?.nodeIntegration);
-        assert.isUndefined(preferences?.partition);
-        assert.isUndefined(preferences?.session);
-        result.windowListeners.get("ready-to-show")?.();
-        assert.equal(result.showInactive.mock.calls.length, 2);
-        assert.equal(result.openDevTools.mock.calls.length, 0);
-        result.isDestroyed.mockReturnValue(true);
-        result.windowListeners.get("closed")?.();
-        assert.strictEqual(Option.getOrThrow(yield* Ref.get(scenario.mainWindow)), main.window);
-        assert.strictEqual(yield* desktopWindow.openThreadWindow(resultLocator), reopened.window);
-        assert.equal(yield* Ref.get(scenario.createCalls), 3);
-      }).pipe(Effect.provide(scenario.layer));
-    }),
+  it.effect.each([resultLocator, nativeResultLocator])(
+    "opens and reuses an authenticated result window without replacing the main (%#)",
+    (locator) =>
+      Effect.gen(function* () {
+        const main = makeFakeBrowserWindow();
+        const result = makeFakeBrowserWindow();
+        const reopened = makeFakeBrowserWindow();
+        const scenario = yield* makeSplashScenario([main.window, result.window, reopened.window]);
+        yield* Effect.gen(function* () {
+          const desktopWindow = yield* DesktopWindow.DesktopWindow;
+          yield* desktopWindow.createMain;
+          const windows = yield* Effect.all(
+            [desktopWindow.openThreadWindow(locator), desktopWindow.openThreadWindow(locator)],
+            { concurrency: "unbounded" },
+          );
+          assert.deepEqual(windows, [result.window, result.window]);
+          assert.strictEqual(Option.getOrThrow(yield* Ref.get(scenario.mainWindow)), main.window);
+          assert.deepEqual(scenario.previewMainWindows, [main.window]);
+          assert.deepEqual(result.loadURL.mock.calls, [
+            ["t3code-dev://app/#/environment-1/child%2Fthread%20%3F%231"],
+          ]);
+          const preferences = scenario.createdWindowOptions[1]?.webPreferences;
+          assert.isTrue(preferences?.contextIsolation);
+          assert.isTrue(preferences?.sandbox);
+          assert.isFalse(preferences?.nodeIntegration);
+          assert.isUndefined(preferences?.partition);
+          assert.isUndefined(preferences?.session);
+          result.windowListeners.get("ready-to-show")?.();
+          assert.equal(result.showInactive.mock.calls.length, 2);
+          assert.equal(result.openDevTools.mock.calls.length, 0);
+          result.isDestroyed.mockReturnValue(true);
+          result.windowListeners.get("closed")?.();
+          assert.strictEqual(Option.getOrThrow(yield* Ref.get(scenario.mainWindow)), main.window);
+          assert.strictEqual(yield* desktopWindow.openThreadWindow(locator), reopened.window);
+          assert.equal(yield* Ref.get(scenario.createCalls), 3);
+        }).pipe(Effect.provide(scenario.layer));
+      }),
   );
 
   it.effect("does not treat a standalone result window as the main on reopen", () =>
@@ -659,6 +677,8 @@ describe("DesktopWindow", () => {
           { ...resultLocator, threadId: ThreadId.make("unrelated-thread") },
           { ...resultLocator, environmentId: EnvironmentId.make("unrelated-environment") },
           { ...resultLocator, origin: { ...resultLocator.origin, childRunId: "" } },
+          { ...nativeResultLocator, threadId: ThreadId.make("unrelated-thread") },
+          { ...nativeResultLocator, environmentId: EnvironmentId.make("unrelated-environment") },
         ]) {
           assert.isTrue(
             Option.isSome(

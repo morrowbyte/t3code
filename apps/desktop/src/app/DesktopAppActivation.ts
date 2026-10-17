@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- The activation adapter resolves its per-user OS temporary directory.
 import * as NodeOS from "node:os";
 
+import { NativeAuthorError } from "@t3tools/contracts";
 import type {
   MainRendererDiagnosticsReadInput,
   DesktopAppActivationResponse,
@@ -22,6 +23,7 @@ import { DESKTOP_APP_ACTIVATION_REQUEST_CHANNEL } from "../ipc/channels.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as MainRendererDiagnostics from "../ipc/methods/mainRendererDiagnostics.ts";
 import { startDesktopAppControlServer } from "./DesktopAppControlServer.ts";
+import * as DesktopNativeAuthor from "./DesktopNativeAuthor.ts";
 import { DesktopAppActivationBroker } from "./DesktopAppActivationBroker.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import { makeComponentLogger } from "./DesktopObservability.ts";
@@ -59,6 +61,7 @@ export const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const userId = yield* HostProcess.UserId;
   const diagnostics = yield* Effect.serviceOption(MainRendererDiagnostics.MainRendererDiagnostics);
+  const nativeAuthor = yield* Effect.serviceOption(DesktopNativeAuthor.DesktopNativeAuthor);
   const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
   const address = resolveDesktopAppControlAddress({
     stateDir: path.resolve(desktopEnvironment.stateDir),
@@ -115,6 +118,56 @@ export const make = Effect.gen(function* () {
                   },
                 }
               : {}),
+            nativeAuthor: (request, alive) =>
+              runPromise(
+                Effect.gen(function* () {
+                  if (Option.isNone(nativeAuthor) || !alive()) {
+                    return yield* new NativeAuthorError({ code: "backend-unavailable" });
+                  }
+                  const state = yield* nativeAuthor.value.execute(request);
+                  if (request.operation !== "open-results") {
+                    return {
+                      version: 1 as const,
+                      requestId: request.requestId,
+                      ok: true as const,
+                      state,
+                    };
+                  }
+                  if (!alive())
+                    return yield* new NativeAuthorError({ code: "result-window-unavailable" });
+                  const window = yield* desktopWindow
+                    .openThreadWindow(
+                      {
+                        environmentId: state.locator.environmentId,
+                        threadId: state.locator.threadId,
+                        origin: state.locator,
+                      },
+                      alive,
+                    )
+                    .pipe(
+                      Effect.mapError(
+                        () => new NativeAuthorError({ code: "result-window-unavailable" }),
+                      ),
+                    );
+                  return {
+                    version: 1 as const,
+                    requestId: request.requestId,
+                    ok: true as const,
+                    state,
+                    windowId: window.id,
+                  };
+                }).pipe(
+                  Effect.catchTags({
+                    NativeAuthorError: (error) =>
+                      Effect.succeed({
+                        version: 1 as const,
+                        requestId: request.requestId,
+                        ok: false as const,
+                        code: error.code,
+                      }),
+                  }),
+                ),
+              ),
             handle: (request) => broker.request(request),
             openResultConversation: (request, alive) =>
               runPromise(
