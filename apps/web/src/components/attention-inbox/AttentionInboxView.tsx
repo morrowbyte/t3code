@@ -97,7 +97,9 @@ export function AttentionInboxView({
                 <Badge variant="secondary" size="sm">
                   {ATTENTION_CATEGORIES[entry.category]}
                 </Badge>
-                <span className="text-sm font-medium">{entry.title}</span>
+                {entry.category !== "completed" ? (
+                  <span className="text-sm font-medium">{entry.title}</span>
+                ) : null}
               </div>
               <p className="wrap-anywhere text-sm font-medium">{entry.threadTitle}</p>
               {entry.category === "warnings" && entry.title !== "Authentication required" ? (
