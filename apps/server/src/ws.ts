@@ -2,6 +2,9 @@ import { HostUpdateHistoryError } from "@t3tools/contracts";
 import type {
   MainRendererDiagnosticsReadInput,
   MainRendererDiagnosticsReadResult,
+  NativeAuthorRequest,
+  NativeAuthorState,
+  NativeAuthorError,
 } from "@t3tools/contracts";
 import * as MainRendererDiagnosticsLocalClient from "./diagnostics/MainRendererDiagnosticsLocalClient.ts";
 import {
@@ -579,6 +582,13 @@ const PROVIDER_STATUS_DEBOUNCE_MS = 200;
 
 // Middleware added later wraps middleware added earlier, so instrumentation wraps authorization.
 const ServerWsRpcGroup = WsRpcGroup.middleware(RpcInstrumentation);
+
+// Keeping the native service in the handler context avoids exceeding inference
+// depth in the large handler-builder generator.
+const nativeAuthorRpcHandler = (
+  request: NativeAuthorRequest,
+): Effect.Effect<NativeAuthorState, NativeAuthorError, NativeAuthorService.NativeAuthorService> =>
+  Effect.flatMap(NativeAuthorService.NativeAuthorService, (service) => service.execute(request));
 // Replaying each intervening event costs a shell refetch; past this gap a
 // single O(active-threads) snapshot is cheaper and bounded.
 const SHELL_RESUME_MAX_GAP = 1_000;
@@ -1218,7 +1228,6 @@ const layerWsRpc = (
       const liveVoiceService = yield* CodexLiveSessionService.CodexLiveSessionService;
       const observatoryService = yield* AgentObservatory.AgentObservatoryService;
       const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
-      const nativeAuthor = yield* NativeAuthorService.NativeAuthorService;
       const threadSearch = yield* ThreadSearch.ThreadSearch;
 
       const providerSessionsV2 = yield* ProviderSessionManager.ProviderSessionManagerV2;
@@ -1831,8 +1840,8 @@ const layerWsRpc = (
       });
 
       const handlers = ServerWsRpcGroup.of({
-        [WS_METHODS.nativeAuthorRead]: (request) => nativeAuthor.execute(request),
-        [WS_METHODS.nativeAuthorWrite]: (request) => nativeAuthor.execute(request),
+        [WS_METHODS.nativeAuthorRead]: nativeAuthorRpcHandler,
+        [WS_METHODS.nativeAuthorWrite]: nativeAuthorRpcHandler,
         ...agentObservatoryReadHandlers(observatoryService),
         [WS_METHODS.liveVoicePrepare]: (input) => liveVoiceService.prepare(currentSession, input),
         [WS_METHODS.liveVoiceStart]: (input) => liveVoiceService.start(currentSession, input),
