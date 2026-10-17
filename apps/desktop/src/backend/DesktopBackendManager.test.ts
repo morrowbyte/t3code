@@ -643,8 +643,9 @@ describe("DesktopBackendManager", () => {
     ),
   );
 
-  for (const termination of ["eof", "error", "interruption"] as const) {
-    it.effect(`revokes the bound browser connection on command reader ${termination}`, () =>
+  it.effect.each(["eof", "error", "interruption"] as const)(
+    "revokes the bound browser connection on command reader %s",
+    (termination) =>
       Effect.scoped(
         Effect.gen(function* () {
           const inputStarted = yield* Deferred.make<void>();
@@ -727,8 +728,7 @@ describe("DesktopBackendManager", () => {
           assert.isFalse(yield* Ref.get(inputAlive));
         }),
       ),
-    );
-  }
+  );
 
   it.effect("continues routing desktop telemetry control messages after an invalid line", () =>
     Effect.scoped(
