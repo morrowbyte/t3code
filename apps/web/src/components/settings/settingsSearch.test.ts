@@ -153,6 +153,17 @@ describe("searchSettings", () => {
     });
   });
 
+  it.each(["update history", "Updatehistorie", "last update result", "letztes Update Ergebnis"])(
+    "finds saved host update results by %s",
+    (query) => {
+      expect(searchSettings(query)[0]).toMatchObject({
+        id: "update-history",
+        to: "/settings/general",
+        targetId: "update-history",
+      });
+    },
+  );
+
   it("hides macOS-only settings on other platforms", () => {
     vi.stubGlobal("navigator", { platform: "Win32" });
     try {
