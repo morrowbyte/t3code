@@ -125,6 +125,7 @@ import {
   type NativeMarkdownTextStyle,
   type SelectableMarkdownSkill,
 } from "../../native/SelectableMarkdownText";
+import { StreamableAssistantMarkdown } from "../../native/StreamableAssistantMarkdown";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { VideoPreviewModal, type VideoPreviewSource } from "../../components/VideoPreviewModal";
@@ -794,6 +795,7 @@ function ArtifactTemplateCard(props: {
 
 const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
   readonly markdown: string;
+  readonly isStreaming?: boolean;
   readonly environmentId: EnvironmentId;
   readonly markdownStyles: MarkdownStyleSet;
   readonly linkHandlers: MarkdownLinkHandlers;
@@ -818,9 +820,10 @@ const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
 
     const markdown = renderCodexInlineDirectivesAsMarkdown(segment.markdown);
     return (
-      <SelectableMarkdownText
+      <StreamableAssistantMarkdown
         key={`markdown:${segment.sourceOffset}`}
         markdown={markdown}
+        isStreaming={props.isStreaming ?? false}
         skills={props.skills}
         textStyle={props.markdownStyles.nativeTextStyle}
         {...props.linkHandlers}
@@ -1377,6 +1380,7 @@ function renderFeedEntry(
           <MarkdownImageAvailableWidthContext value={props.markdownContentWidth}>
             <AssistantMarkdownContent
               markdown={renderedText}
+              isStreaming={message.streaming}
               environmentId={props.environmentId}
               markdownStyles={styles}
               linkHandlers={props.markdownLinkHandlers}
