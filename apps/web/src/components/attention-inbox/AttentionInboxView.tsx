@@ -100,9 +100,11 @@ export function AttentionInboxView({
                 <span className="text-sm font-medium">{entry.title}</span>
               </div>
               <p className="wrap-anywhere text-sm font-medium">{entry.threadTitle}</p>
-              <p className="wrap-anywhere whitespace-pre-wrap text-sm text-muted-foreground">
-                {entry.description}
-              </p>
+              {entry.category === "warnings" && entry.title !== "Authentication required" ? (
+                <p className="wrap-anywhere whitespace-pre-wrap text-sm text-muted-foreground">
+                  {entry.description}
+                </p>
+              ) : null}
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <time dateTime={entry.occurredAt} className="text-xs text-muted-foreground">
                   {new Date(entry.occurredAt).toLocaleString()}

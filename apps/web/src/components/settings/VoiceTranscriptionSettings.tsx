@@ -100,7 +100,6 @@ export function VoiceTranscriptionSettingsPanel() {
       <SettingsRow
         {...searchableSetting("voice-transcription")}
         title="Transcription provider"
-        description={`Applies to ${scope.label}. Recordings stay in their original draft.`}
         control={
           <div className="w-full min-w-0 @min-[32rem]/settings-row:w-60">
             <Select
@@ -130,7 +129,7 @@ export function VoiceTranscriptionSettingsPanel() {
       {provider === "codex-account" ? (
         <SettingsRow
           title="Codex account"
-          description="Uses this environment’s Codex sign-in. Transcription access depends on the account service. For HTTP 403, you can choose OpenAI API key instead."
+          description="Transcription access depends on your account."
           control={
             <div className="w-full min-w-0 @min-[32rem]/settings-row:w-60">
               <Select
@@ -198,7 +197,6 @@ export function VoiceTranscriptionSettingsPanel() {
       {provider === "openai-api" ? (
         <SettingsRow
           title="Transcription model"
-          description="Used for OpenAI API transcription."
           control={
             <div className="w-full min-w-0 @min-[32rem]/settings-row:w-60">
               <Input

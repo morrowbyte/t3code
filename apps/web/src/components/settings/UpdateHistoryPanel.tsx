@@ -30,10 +30,6 @@ export function UpdateHistoryPanel() {
   const { connectedEnvironments } = useSettingsScope();
   return (
     <SettingsSection id="update-history" title="Update history">
-      <p className="px-3 py-2 text-sm text-muted-foreground">
-        Current and previous update results are saved on each host across restarts. Closing an
-        update dialog or notification keeps these records.
-      </p>
       {connectedEnvironments.length === 0 && (
         <p className="px-3 py-2 text-sm">Connect to a host to read its update history.</p>
       )}

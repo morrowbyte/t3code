@@ -90,11 +90,11 @@ export function ProjectFeatureTiming({ member }: { member: SidebarProjectGroupMe
         : !feed
           ? "Feature history could not be read. Retry after reconnecting."
           : feed.coverage === "no_feature_history"
-            ? "No features have been recorded for this checkout. Existing threads are not automatically classified as features."
+            ? "No recorded features."
             : feed.coverage === "unavailable"
               ? "Feature history is unavailable. Retry after reconnecting."
               : feed.coverage === "incomplete"
-                ? "Feature history is incomplete or exceeds the bounded read. Timing is unavailable."
+                ? "Feature history is incomplete. Timing unavailable."
                 : null;
   return (
     <SettingsSection title="Feature time overview">
@@ -118,13 +118,16 @@ export function ProjectFeatureTiming({ member }: { member: SidebarProjectGroupMe
         </p>
       ) : null}
       {feed?.coverage === "complete" ? (
-        <p className="px-3 py-2 text-xs text-muted-foreground sm:px-4">
-          Observed as of {new Date(feed.asOf).toLocaleString()}. Calendar time includes waiting.
-          Waits and phases cover recorded intervals only; unrecorded history and active development
-          effort are unavailable. Reason totals can overlap; total waiting counts each interval
-          once. Feature-to-release mapping is unavailable. Published or installed releases do not
-          establish acceptance.
-        </p>
+        <details className="px-3 py-2 text-xs text-muted-foreground sm:px-4">
+          <summary className="cursor-pointer">Timing details</summary>
+          <p className="pt-2">
+            Observed as of {new Date(feed.asOf).toLocaleString()}. Calendar time includes waiting.
+            Waits and phases cover recorded intervals only; unrecorded history and active
+            development effort are unavailable. Reason totals can overlap; total waiting counts each
+            interval once. Feature-to-release mapping is unavailable. Published or installed
+            releases do not establish acceptance.
+          </p>
+        </details>
       ) : null}
       {features.map((feature) => (
         <SettingsRow
@@ -185,10 +188,13 @@ export function ProjectFeatureTiming({ member }: { member: SidebarProjectGroupMe
                       : "Acceptance unverified"}
                 </span>
                 {target.evidence ? (
-                  <span className="block text-xs text-muted-foreground">
-                    User acceptance via {target.source}, {date(target.acceptedAt)} · message{" "}
-                    {target.evidence.messageId} in thread {target.evidence.threadId}
-                  </span>
+                  <details className="text-xs text-muted-foreground">
+                    <summary className="cursor-pointer">Acceptance details</summary>
+                    <p>
+                      User acceptance via {target.source}, {date(target.acceptedAt)} · message{" "}
+                      {target.evidence.messageId} in thread {target.evidence.threadId}
+                    </p>
+                  </details>
                 ) : null}
               </li>
             ))}
