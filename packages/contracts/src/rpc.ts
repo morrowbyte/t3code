@@ -1,3 +1,4 @@
+import { HostUpdateHistory, HostUpdateHistoryError, DeleteHostUpdateInput } from "./updateHistory.ts";
 import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
@@ -496,6 +497,8 @@ export const WS_METHODS = {
   deviceAction: "device.action",
 
   serverProbe: "server.probe",
+  serverGetUpdateHistory: "server.getUpdateHistory",
+  serverDeleteUpdateHistory: "server.deleteUpdateHistory",
   serverGetConfig: "server.getConfig",
   serverRefreshProviders: "server.refreshProviders",
   serverUpdateProvider: "server.updateProvider",
@@ -739,6 +742,17 @@ const WsProviderInstallRemoveRpc = Rpc.make(WS_METHODS.providerInstallRemove, {
   payload: ProviderSetupInput,
   success: ProviderInstallState,
   error: ProviderSetupRpcError,
+});
+
+const WsServerGetUpdateHistoryRpc = Rpc.make(WS_METHODS.serverGetUpdateHistory, {
+  payload: Schema.Struct({}),
+  success: HostUpdateHistory,
+  error: Schema.Union([HostUpdateHistoryError, EnvironmentAuthorizationError]),
+});
+const WsServerDeleteUpdateHistoryRpc = Rpc.make(WS_METHODS.serverDeleteUpdateHistory, {
+  payload: DeleteHostUpdateInput,
+  success: Schema.Void,
+  error: Schema.Union([HostUpdateHistoryError, EnvironmentAuthorizationError]),
 });
 
 const WsServerUpdateServerRpc = Rpc.make(WS_METHODS.serverUpdateServer, {
@@ -2019,6 +2033,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderInstallCancelRpc,
   WsProviderInstallSubscribeRpc,
   WsProviderInstallRemoveRpc,
+  WsServerGetUpdateHistoryRpc,
+  WsServerDeleteUpdateHistoryRpc,
   WsServerUpdateServerRpc,
   WsServerUpdateServerWithProgressRpc,
   WsServerCommitDesktopUpdateRpc,

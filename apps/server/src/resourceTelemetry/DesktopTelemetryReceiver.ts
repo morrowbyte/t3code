@@ -183,6 +183,10 @@ export class DesktopTelemetryReceiver extends Context.Service<
     readonly setDiagnosticsDemand: (
       enabled: boolean,
     ) => Effect.Effect<void, DesktopTelemetryControlError>;
+    readonly requestDesktopUpdateHistory?: (
+      requestId: string,
+      deleteId?: string,
+    ) => Effect.Effect<void, DesktopTelemetryControlError>;
     readonly requestDesktopUpdate: (
       requestId: string,
     ) => Effect.Effect<void, DesktopTelemetryControlError>;
@@ -775,6 +779,13 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
     health: Ref.get(health),
     subscribeHealth: subscribeBeforeSnapshotWithoutMutex(healthChanges, Ref.get(health)),
     setDiagnosticsDemand,
+    requestDesktopUpdateHistory: (requestId, deleteId) =>
+      sendControlMessage({
+        version: 1,
+        type: "desktopUpdateHistoryRequest",
+        requestId,
+        ...(deleteId === undefined ? {} : { deleteId }),
+      }),
     requestDesktopUpdate: (requestId) =>
       sendControlMessage({
         version: 1,

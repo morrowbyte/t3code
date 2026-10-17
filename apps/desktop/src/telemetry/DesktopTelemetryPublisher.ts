@@ -1,3 +1,4 @@
+import type { DesktopTelemetryUpdateHistoryRequest } from "@t3tools/contracts";
 import {
   DesktopHostTelemetryMessage,
   type DesktopMainRendererDiagnosticsReply,
@@ -83,6 +84,7 @@ export class DesktopTelemetryPublisher extends Context.Service<
     ) => Effect.Effect<void>;
     readonly removeControlSource: (sourceId: string) => Effect.Effect<void>;
     readonly publishUpdateReport: (report: DesktopUpdateStatusReport) => Effect.Effect<void>;
+    readonly historyRequests?: Stream.Stream<DesktopTelemetryUpdateHistoryRequest>;
     readonly updateRequests: Stream.Stream<DesktopTelemetryRequestDesktopUpdate>;
     readonly updateCommits: Stream.Stream<DesktopTelemetryCommitDesktopUpdate>;
     readonly updateCancellations: Stream.Stream<DesktopTelemetryCancelDesktopUpdate>;
@@ -190,6 +192,7 @@ export const make = Effect.fn("desktop.telemetryPublisher.make")(function* () {
   const sequence = yield* Ref.make(0);
   const latestUpdateReport = yield* Ref.make(Option.none<DesktopUpdateStatusReport>());
   const updateReportChanges = yield* PubSub.sliding<DesktopUpdateStatusReport>(16);
+  const historyRequestQueue = yield* Queue.unbounded<DesktopTelemetryUpdateHistoryRequest>();
   const updateRequestQueue = yield* Queue.unbounded<DesktopTelemetryRequestDesktopUpdate>();
   const updateCommitQueue = yield* Queue.unbounded<DesktopTelemetryCommitDesktopUpdate>();
   const updateCancellationQueue = yield* Queue.unbounded<DesktopTelemetryCancelDesktopUpdate>();
@@ -363,6 +366,8 @@ export const make = Effect.fn("desktop.telemetryPublisher.make")(function* () {
           active: Duration.millis(message.activeIntervalMs),
           idle: Duration.millis(message.idleIntervalMs),
         }).pipe(Effect.andThen(Queue.offer(sampleTriggers, undefined)), Effect.asVoid);
+      case "desktopUpdateHistoryRequest":
+        return Queue.offer(historyRequestQueue, message).pipe(Effect.asVoid);
       case "requestDesktopUpdate":
         return Queue.offer(updateRequestQueue, message).pipe(Effect.asVoid);
       case "commitDesktopUpdate":
@@ -530,6 +535,7 @@ export const make = Effect.fn("desktop.telemetryPublisher.make")(function* () {
     handleControlForSource,
     removeControlSource,
     publishUpdateReport,
+    historyRequests: Stream.fromQueue(historyRequestQueue),
     updateRequests: Stream.fromQueue(updateRequestQueue),
     updateCommits: Stream.fromQueue(updateCommitQueue),
     updateCancellations: Stream.fromQueue(updateCancellationQueue),

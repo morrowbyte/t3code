@@ -1,3 +1,4 @@
+import { HostUpdateHistoryError } from "@t3tools/contracts";
 import type {
   MainRendererDiagnosticsReadInput,
   MainRendererDiagnosticsReadResult,
@@ -2378,6 +2379,16 @@ const layerWsRpc = (
         [WS_METHODS.providerInstallCancel]: (input) => providerInstallation.cancel(input),
         [WS_METHODS.providerInstallSubscribe]: (input) => providerInstallation.subscribe(input),
         [WS_METHODS.providerInstallRemove]: (input) => providerInstallation.remove(input),
+        [WS_METHODS.serverGetUpdateHistory]: () =>
+          serverSelfUpdate.history?.list ??
+          Effect.fail(
+            new HostUpdateHistoryError({ reason: "Update history is unavailable on this server." }),
+          ),
+        [WS_METHODS.serverDeleteUpdateHistory]: (input) =>
+          serverSelfUpdate.history?.remove(input) ??
+          Effect.fail(
+            new HostUpdateHistoryError({ reason: "Update history is unavailable on this server." }),
+          ),
         [WS_METHODS.serverUpdateServer]: (input) => serverSelfUpdate.update(input),
         [WS_METHODS.serverUpdateServerWithProgress]: (input) =>
           Stream.callback<ServerSelfUpdateProgressEvent, ServerSelfUpdateError>((queue) =>

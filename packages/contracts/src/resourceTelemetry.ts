@@ -1,3 +1,4 @@
+import { HostUpdateRecord } from "./updateHistory.ts";
 import * as Schema from "effect/Schema";
 
 import { NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
@@ -297,6 +298,8 @@ export const DesktopUpdateRemoteOutcome = Schema.Literals([
 export type DesktopUpdateRemoteOutcome = typeof DesktopUpdateRemoteOutcome.Type;
 
 export const DesktopUpdateStatusReport = Schema.Struct({
+  history: Schema.optionalKey(Schema.Array(HostUpdateRecord)),
+  historyError: Schema.optionalKey(Schema.String),
   version: Schema.Literal(1),
   type: Schema.Literal("desktopUpdateStatus"),
   requestId: Schema.optionalKey(TrimmedNonEmptyString),
@@ -380,7 +383,16 @@ export const DesktopTelemetryCancelDesktopUpdate = Schema.Struct({
 });
 export type DesktopTelemetryCancelDesktopUpdate = typeof DesktopTelemetryCancelDesktopUpdate.Type;
 
+export const DesktopTelemetryUpdateHistoryRequest = Schema.Struct({
+  version: Schema.Literal(1),
+  type: Schema.Literal("desktopUpdateHistoryRequest"),
+  requestId: TrimmedNonEmptyString,
+  deleteId: Schema.optionalKey(TrimmedNonEmptyString),
+});
+export type DesktopTelemetryUpdateHistoryRequest = typeof DesktopTelemetryUpdateHistoryRequest.Type;
+
 export const DesktopTelemetryControlMessage = Schema.Union([
+  DesktopTelemetryUpdateHistoryRequest,
   DesktopTelemetrySetDiagnosticsDemand,
   DesktopMainRendererDiagnosticsPeer,
   DesktopMainRendererDiagnosticsRequest,

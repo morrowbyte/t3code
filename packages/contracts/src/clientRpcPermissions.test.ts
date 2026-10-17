@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { AuthOrchestrationReadScope, AuthSettingsWriteScope } from "./auth.ts";
+import { AuthEnvironmentMaintainScope, AuthOrchestrationReadScope, AuthSettingsWriteScope } from "./auth.ts";
 import { CLIENT_GUARDED_RPC_SCOPES, clientRpcRequiredScopes } from "./clientRpcPermissions.ts";
 import { WS_METHODS } from "./rpc.ts";
 
@@ -32,5 +32,13 @@ describe("baseline guarded RPC compatibility", () => {
     expect(CLIENT_GUARDED_RPC_SCOPES[WS_METHODS.serverRunStorageCleanup]).toBe(
       AuthSettingsWriteScope,
     );
+  });
+});
+
+
+describe("update history permissions", () => {
+  it("requires host maintenance authority for deleting a receipt", () => {
+    expect(clientRpcRequiredScopes(WS_METHODS.serverDeleteUpdateHistory, { component: "desktop", id: "receipt" }))
+      .toEqual([AuthEnvironmentMaintainScope]);
   });
 });

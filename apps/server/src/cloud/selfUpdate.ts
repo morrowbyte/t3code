@@ -1,5 +1,8 @@
 import {
   ServerSelfUpdateError,
+  HostUpdateHistoryError,
+  type DeleteHostUpdateInput,
+  type HostUpdateHistory,
   type ServerSelfUpdateCapability,
   type ServerSelfUpdateInput,
   type ServerSelfUpdateProgressStage,
@@ -34,6 +37,11 @@ import {
 import { decodeServicePreflightResult } from "./servicePreflight.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
 import { isExactServiceVersion, SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
+import { makeServerUpdateHistory } from "./updateHistory.ts";
+import packageJson from "../../package.json" with { type: "json" };
+import * as DesktopTelemetryReceiver from "../resourceTelemetry/DesktopTelemetryReceiver.ts";
+import * as Crypto from "effect/Crypto";
+import * as Stream from "effect/Stream";
 
 const PREFLIGHT_TIMEOUT = Duration.seconds(30);
 
@@ -48,6 +56,12 @@ export function resolveServerSelfUpdateCapability(input: {
 export class ServerSelfUpdate extends Context.Service<
   ServerSelfUpdate,
   {
+    readonly history?: {
+      readonly list: Effect.Effect<HostUpdateHistory, HostUpdateHistoryError>;
+      readonly remove: (
+        input: typeof DeleteHostUpdateInput.Type,
+      ) => Effect.Effect<void, HostUpdateHistoryError>;
+    };
     readonly update: (
       input: ServerSelfUpdateInput,
       reportProgress?: (
@@ -137,6 +151,7 @@ export const withRunningThreadContinuation = Effect.fn(
   };
 
   return ServerSelfUpdate.of({
+    ...input.selfUpdate,
     update,
     commitDesktopUpdate: (requestId) =>
       Effect.gen(function* () {
@@ -179,6 +194,9 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
   const platform = yield* HostProcess.Platform;
   const arch = yield* HostProcess.Architecture;
   const httpClient = yield* HttpClient.HttpClient;
+  const receiver = yield* Effect.serviceOption(DesktopTelemetryReceiver.DesktopTelemetryReceiver);
+  const crypto = yield* Crypto.Crypto;
+  const history = yield* makeServerUpdateHistory(serverConfig.baseDir, packageJson.version);
   const releaseBaseUrl = Option.getOrUndefined(
     yield* Config.String(CLI_RELEASE_BASE_URL_ENV).pipe(Config.option),
   );
@@ -218,6 +236,15 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
       return yield* failWith("A server update is already in progress.");
     }
 
+    yield* history.recover.pipe(
+      Effect.mapError((error) => failWith(error.message)),
+      Effect.onError(() => Ref.set(inFlight, false)),
+    );
+    const attemptId = yield* history.start("server", packageJson.version, targetVersion).pipe(
+      Effect.mapError((error) => failWith(error.message)),
+      Effect.onError(() => Ref.set(inFlight, false)),
+    );
+    let handoffAccepted = false;
     return yield* Effect.gen(function* () {
       yield* reportProgress("downloading");
       const paths = yield* ensurePinnedRuntimeInstalled({
@@ -308,6 +335,9 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
       );
 
       yield* reportProgress("installing");
+      yield* history
+        .patch(attemptId, "installing")
+        .pipe(Effect.mapError((error) => failWith(error.message)));
       const updateId = yield* Effect.uninterruptible(
         launcher.requestUpdate({ targetVersion, dbPath: serverConfig.dbPath }).pipe(
           Effect.mapError((error) =>
@@ -317,6 +347,16 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
                 : "Could not ask the service launcher to activate the prepared update.",
               error,
             ),
+          ),
+          Effect.tap((receiptId) =>
+            history
+              .patch(attemptId, "awaiting-restart", { receiptId })
+              .pipe(Effect.mapError((error) => failWith(error.message))),
+          ),
+          Effect.tap(() =>
+            Effect.sync(() => {
+              handoffAccepted = true;
+            }),
           ),
           Effect.tap(() => onHandoffAccepted()),
         ),
@@ -328,10 +368,97 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         runtimePath: paths.entryPath,
       });
       return { targetVersion, method: "boot-service" as const, updateId };
-    }).pipe(Effect.onError(() => Ref.set(inFlight, false)));
+    }).pipe(
+      Effect.onError((cause) =>
+        Effect.gen(function* () {
+          if (!handoffAccepted || !Cause.hasInterruptsOnly(cause)) {
+            yield* history
+              .patch(attemptId, Cause.hasInterruptsOnly(cause) ? "interrupted" : "failed", {
+                observedVersion: packageJson.version,
+                error: Cause.hasInterruptsOnly(cause)
+                  ? "Update preparation was interrupted. Check the running version before retrying."
+                  : Option.match(Cause.findErrorOption(cause), {
+                      onNone: () =>
+                        "Update preparation failed. Check service logs before retrying.",
+                      onSome: (error) => error.message,
+                    }),
+              })
+              .pipe(Effect.ignore);
+          }
+          yield* Ref.set(inFlight, false);
+        }),
+      ),
+    );
   });
 
+  const desktopHistory = (deleteId?: string) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        if (Option.isNone(receiver) || receiver.value.requestDesktopUpdateHistory === undefined)
+          return yield* new HostUpdateHistoryError({
+            reason:
+              "The desktop host is unavailable. Reconnect before reading or deleting its history.",
+          });
+        const requestId = yield* crypto.randomUUIDv4.pipe(
+          Effect.mapError(
+            () => new HostUpdateHistoryError({ reason: "Could not create a history request." }),
+          ),
+        );
+        const { changes } = yield* receiver.value.desktopUpdates;
+        yield* receiver.value
+          .requestDesktopUpdateHistory(requestId, deleteId)
+          .pipe(
+            Effect.mapError(
+              () => new HostUpdateHistoryError({ reason: "Could not reach the desktop host." }),
+            ),
+          );
+        const reply = yield* changes.pipe(
+          Stream.filter(
+            (report) =>
+              report.requestId === requestId &&
+              (report.history !== undefined || report.historyError !== undefined),
+          ),
+          Stream.runHead,
+          Effect.timeoutOption("10 seconds"),
+        );
+        if (Option.isNone(reply) || Option.isNone(reply.value))
+          return yield* new HostUpdateHistoryError({
+            reason:
+              "The desktop host did not confirm the history request. Refresh to check the result.",
+          });
+        const report = reply.value.value;
+        const error = report.historyError ?? report.state.updateHistoryError;
+        if (error) return yield* new HostUpdateHistoryError({ reason: error });
+        return report.history ?? [];
+      }),
+    );
+
   return ServerSelfUpdate.of({
+    history: {
+      list: Effect.gen(function* () {
+        const entries = yield* history.list;
+        if (!desktopAppUpdate.available) return { entries, desktop: "not-applicable" as const };
+        return yield* desktopHistory().pipe(
+          Effect.map((desktopEntries) => ({
+            entries: [...entries, ...desktopEntries].sort((a, b) =>
+              b.updatedAt.localeCompare(a.updatedAt),
+            ),
+            desktop: "available" as const,
+          })),
+          Effect.catch((error) =>
+            Effect.succeed({
+              entries,
+              desktop: "unavailable" as const,
+              desktopError: error.message,
+            }),
+          ),
+        );
+      }),
+      remove: (input) =>
+        input.component === "server"
+          ? history.remove(input.id)
+          : desktopHistory(input.id).pipe(Effect.asVoid),
+    },
     update,
     commitDesktopUpdate: (requestId, onHandoffAccepted) =>
       desktopAppUpdate.commit(requestId, onHandoffAccepted),

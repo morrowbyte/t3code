@@ -98,6 +98,20 @@ If you run the server with `npx` rather than an installed `t3`, there is
 nothing to update on the host: stop the server and relaunch it as
 `npx t3@<client-version>` with the same subcommand and options.
 
+## Find a previous update result
+
+Open **Settings → General → Update history** to see current and previous desktop
+and background-service updates for your connected hosts. Each record shows the
+versions, when the attempt was observed, and any error or rollback reason.
+A restart is confirmed only after the host runs the expected version with a
+matching update receipt. An accepted update or a lost connection can still be
+waiting for restart confirmation.
+
+Closing an update dialog or notification keeps its saved history. Records stay
+on the host across restarts. To remove a completed record, choose **Delete** and
+confirm; this requires permission to maintain that host. Connect to an offline
+host before reading or deleting its records.
+
 ## If an update fails
 
 Keep the client open until it reconnects or reports a failure. A failed service

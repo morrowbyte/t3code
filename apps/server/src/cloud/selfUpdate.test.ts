@@ -349,6 +349,10 @@ it.layer(NodeServices.layer)("server self update", (it) => {
         updateId: "launcher-id",
       });
       expect(order).toEqual(["download", "extract", "preflight", "accept"]);
+      const history = (yield* selfUpdate.history!.list).entries;
+      expect(history[0]?.status).toBe("awaiting-restart");
+      expect(history[0]?.receiptId).toBe("launcher-id");
+      expect(history[0]?.completedAt).toBeNull();
     }),
   );
 
@@ -408,6 +412,11 @@ it.layer(NodeServices.layer)("server self update", (it) => {
       expect((yield* selfUpdate.update({ targetVersion: "1.1.0" }).pipe(Effect.flip)).reason).toBe(
         "local update required",
       );
+      const failed = (yield* selfUpdate.history!.list).entries[0]!;
+      expect(failed.status).toBe("failed");
+      expect(failed.error).toContain("local update required");
+      expect(failed.observedVersion).toBe(failed.fromVersion);
+      expect(failed.completedAt).not.toBeNull();
     }),
   );
 
