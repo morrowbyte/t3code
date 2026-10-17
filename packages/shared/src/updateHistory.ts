@@ -22,6 +22,14 @@ const Journal = Schema.fromJsonString(
 const decode = Schema.decodeUnknownEffect(Journal);
 const encode = Schema.encodeEffect(Journal);
 
+// Effect versions expose either a method or an Effect value on the injected service.
+export const updateHistoryUuid = <E>(crypto: {
+  readonly randomUUIDv4: Effect.Effect<string, E> | (() => Effect.Effect<string, E>);
+}) =>
+  Effect.suspend(() =>
+    typeof crypto.randomUUIDv4 === "function" ? crypto.randomUUIDv4() : crypto.randomUUIDv4,
+  );
+
 /** One updater owns each journal. Atomic replacement preserves the last receipt on a failed write. */
 export const makeUpdateHistory = Effect.fn("updates.history.make")(function* (file: string) {
   const fs = yield* FileSystem.FileSystem;
@@ -90,7 +98,7 @@ export const makeUpdateHistory = Effect.fn("updates.history.make")(function* (fi
       targetVersion: string | null,
     ) =>
       Effect.gen(function* () {
-        const id = yield* crypto.randomUUIDv4.pipe(
+        const id = yield* updateHistoryUuid(crypto).pipe(
           Effect.mapError(() => failure("Could not create an update receipt.")),
         );
         const now = DateTime.formatIso(yield* DateTime.now);

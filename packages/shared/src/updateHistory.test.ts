@@ -3,9 +3,41 @@ import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
-import { makeUpdateHistory } from "./updateHistory.ts";
+import { makeUpdateHistory, updateHistoryUuid } from "./updateHistory.ts";
 
 it.layer(NodeServices.layer)("durable update receipts", (it) => {
+  it.effect("uses injected UUID methods and Effect values lazily and preserves failures", () =>
+    Effect.gen(function* () {
+      let calls = 0;
+      let methodCalls = 0;
+      const methodService = {
+        prefix: "injected-method",
+        randomUUIDv4() {
+          methodCalls += 1;
+          return Effect.sync(() => `${this.prefix}-${++calls}`);
+        },
+      };
+      const method = updateHistoryUuid(methodService);
+      expect(calls).toBe(0);
+      expect(methodCalls).toBe(0);
+      expect(yield* method).toBe("injected-method-1");
+      expect(yield* method).toBe("injected-method-2");
+      expect(methodCalls).toBe(2);
+      const value = updateHistoryUuid({
+        randomUUIDv4: Effect.sync(() => `injected-value-${++calls}`),
+      });
+      expect(calls).toBe(2);
+      expect(yield* value).toBe("injected-value-3");
+      const error = { reason: "injected UUID failure" };
+      expect(
+        yield* Effect.flip(updateHistoryUuid({ randomUUIDv4: () => Effect.fail(error) })),
+      ).toBe(error);
+      expect(yield* Effect.flip(updateHistoryUuid({ randomUUIDv4: Effect.fail(error) }))).toBe(
+        error,
+      );
+    }),
+  );
+
   it.effect(
     "retains outcomes across reconstruction and prevents late writes or deletion from reviving them",
     () =>

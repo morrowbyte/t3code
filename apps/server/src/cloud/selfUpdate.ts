@@ -10,6 +10,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { updateHistoryUuid } from "@t3tools/shared/updateHistory";
 import * as Cause from "effect/Cause";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
@@ -399,7 +400,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
             reason:
               "The desktop host is unavailable. Reconnect before reading or deleting its history.",
           });
-        const requestId = yield* crypto.randomUUIDv4.pipe(
+        const requestId = yield* updateHistoryUuid(crypto).pipe(
           Effect.mapError(
             () => new HostUpdateHistoryError({ reason: "Could not create a history request." }),
           ),
