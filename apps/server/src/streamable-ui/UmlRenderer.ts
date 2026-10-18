@@ -1,5 +1,7 @@
 import * as NodeWorkerThreads from "node:worker_threads";
 import * as NodeSea from "node:sea";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Resolve the installed bin symlink before starting the isolated worker.
+import * as NodeFS from "node:fs";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- SEA rendering owns raw stdin/stdout and an interruptible child handle.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeURL from "node:url";
@@ -278,7 +280,9 @@ function renderIsolated(source: string) {
     }
     const extension = import.meta.url.endsWith(".ts") ? "ts" : "mjs";
     const base =
-      extension === "ts" ? import.meta.url : NodeURL.pathToFileURL(process.argv[1]!).href;
+      extension === "ts"
+        ? import.meta.url
+        : NodeURL.pathToFileURL(NodeFS.realpathSync(process.argv[1]!)).href;
     const url = new URL(
       extension === "ts" ? "./UmlRenderWorker.ts" : "./streamable-ui/UmlRenderWorker.mjs",
       base,

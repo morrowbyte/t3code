@@ -1,8 +1,17 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Exercises the installed Node entry and worker through real filesystem symlinks.
+import * as NodeFSP from "node:fs/promises";
+import * as NodeModule from "node:module";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeURL from "node:url";
+import * as NodeUtil from "node:util";
 import { expect, vi } from "vite-plus/test";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import type { UmlRenderRequest } from "@t3tools/contracts";
 import * as UmlRenderer from "./UmlRenderer.ts";
+import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 
 const workers = vi.hoisted(() => ({ started: 0 }));
 vi.mock(import("node:worker_threads"), async (original) => {
@@ -48,6 +57,63 @@ const examples: Array<[UmlRenderRequest["kind"], string]> = [
     "start\nif (Allowed?) then (yes)\n fork\n  :Read;\n fork again\n  :Verify;\n end fork\nelse (no)\n :Reject;\nendif\nstop",
   ],
 ];
+
+it.skipIf(!symlinksSupported)(
+  "renders with the installed module when Node starts through an npm .bin symlink",
+  async () => {
+    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-uml-bin-symlink-"));
+    try {
+      const packageRoot = NodePath.join(directory, "node_modules/t3");
+      const dist = NodePath.join(packageRoot, "dist");
+      const entry = NodePath.join(dist, "bin.mjs");
+      const launcher = NodePath.join(directory, "node_modules/.bin/t3");
+      await NodeFSP.mkdir(NodePath.join(dist, "streamable-ui"), { recursive: true });
+      await NodeFSP.mkdir(NodePath.dirname(launcher), { recursive: true });
+      await NodeFSP.symlink(
+        NodeURL.fileURLToPath(new URL("../../node_modules", import.meta.url)),
+        NodePath.join(packageRoot, "node_modules"),
+        "junction",
+      );
+      const renderer = NodeModule.stripTypeScriptTypes(
+        await NodeFSP.readFile(new URL("./UmlRenderer.ts", import.meta.url), "utf8"),
+      );
+      const worker = NodeModule.stripTypeScriptTypes(
+        await NodeFSP.readFile(new URL("./UmlRenderWorker.ts", import.meta.url), "utf8"),
+      );
+      await NodeFSP.writeFile(NodePath.join(dist, "streamable-ui/UmlRenderWorker.mjs"), worker);
+      const request = {
+        kind: "sequence",
+        source: "@startuml\nAlice -> Bob: Symlink\n@enduml",
+        palette,
+      };
+      await NodeFSP.writeFile(
+        entry,
+        renderer +
+          `\nconst result = await Effect.runPromise(Effect.gen(function* () {\n  const renderer = yield* UmlRenderer;\n  return yield* renderer.render(${JSON.stringify(request)});\n}).pipe(Effect.provide(layer)));\nconsole.log("T3_TEST_RESULT:" + JSON.stringify({ argv: process.argv[1], module: import.meta.url, result }));\n`,
+      );
+      await NodeFSP.symlink("../t3/dist/bin.mjs", launcher);
+      const { stdout } = await NodeUtil.promisify(NodeChildProcess.execFile)(
+        process.execPath,
+        [launcher],
+        {
+          cwd: directory,
+        },
+      );
+      const line = stdout.split("\n").find((line) => line.startsWith("T3_TEST_RESULT:"));
+      expect(line).toBeDefined();
+      const output = JSON.parse(line!.slice("T3_TEST_RESULT:".length));
+      expect(output.argv).toBe(launcher);
+      expect(NodeURL.fileURLToPath(output.module)).toBe(await NodeFSP.realpath(entry));
+      expect(output.result.status).toBe("ready");
+      expect(output.result.svg).toContain("Alice");
+      expect(output.result.svg).toContain("Bob");
+      expect(output.result.width).toBeGreaterThan(40);
+      expect(output.result.height).toBeGreaterThan(40);
+    } finally {
+      await NodeFSP.rm(directory, { recursive: true, force: true });
+    }
+  },
+);
 
 it.effect("renders identical queued UML requests in one worker and serves their cached SVG", () =>
   Effect.gen(function* () {
