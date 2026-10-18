@@ -1,0 +1,200 @@
+import { EnvironmentId } from "@t3tools/contracts";
+import {
+  createHashHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  Outlet,
+  RouterProvider,
+} from "@tanstack/react-router";
+import { act, StrictMode } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+
+const mocks = vi.hoisted(() => ({
+  connected: ["primary", "24efa85c-862c-4de4-9b5e-aaaa041e28a4"],
+  openThread: vi.fn(),
+  openScratchProject: vi.fn(),
+  openPreview: vi.fn(),
+  toast: vi.fn(),
+}));
+
+vi.mock(import("../../state/environments"), async (original) => ({
+  ...(await original()),
+  usePrimaryEnvironment: (() => ({
+    environmentId: "primary",
+    connection: { phase: "connected" },
+    serverConfig: {},
+  })) as never,
+  useConnectedEnvironmentIds: () => mocks.connected.map((id) => EnvironmentId.make(id)),
+  useEnvironmentHttpBaseUrl: () => null,
+}));
+vi.mock(import("../../hooks/useScratchProject"), () => ({
+  useScratchProject: () => ({
+    scratchWorkspaceRootFor: () => null,
+    scratchEnvironmentId: () => EnvironmentId.make("primary"),
+    openScratchProject: mocks.openScratchProject,
+    startScratchThread: vi.fn(),
+  }),
+}));
+vi.mock(import("../../hooks/useHandleNewThread"), () => ({
+  useNewThreadHandler: () => mocks.openThread,
+}));
+vi.mock(import("../../state/use-atom-command"), () => ({
+  useAtomCommand: (() => mocks.openPreview) as never,
+}));
+vi.mock(import("../../state/use-atom-query-runner"), () => ({
+  useAtomQueryRunner: (() => vi.fn()) as never,
+}));
+vi.mock(import("../ui/toast"), async (original) => ({
+  ...(await original()),
+  toastManager: { add: mocks.toast } as never,
+  stackedThreadToast: ((value: unknown) => value) as never,
+}));
+
+import { DesktopWebLinkCoordinator } from "./DesktopWebLinkCoordinator";
+
+const environmentId = "24efa85c-862c-4de4-9b5e-aaaa041e28a4";
+const threadId =
+  "thread:delegated-task:command%3Amcp%3A474c7d68-6293-4de4-9859-011aec7f079b%3Adelegate-task%3At3-iui-rich-components-e2e-20261018-bootstrap-v1";
+const encodedLink = `t3code://threads/${environmentId}/${encodeURIComponent(threadId)}`;
+let root: Root;
+let container: HTMLDivElement;
+let history: ReturnType<typeof createHashHistory>;
+let listener: ((url: string) => void) | undefined;
+let pending: string[];
+const setReady = vi.fn(async (ready: boolean) => {
+  if (ready) for (const url of pending.splice(0)) listener?.(url);
+});
+
+beforeEach(() => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.clearAllMocks();
+  mocks.connected = ["primary", environmentId];
+  pending = [];
+  listener = undefined;
+  vi.stubGlobal("desktopBridge", {
+    webLinks: {
+      setReady,
+      onOpen: (next: typeof listener) => {
+        listener = next;
+        return () => {
+          listener = undefined;
+        };
+      },
+    },
+  });
+  window.history.replaceState(null, "", "/#/primary/current");
+  history = createHashHistory();
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+});
+
+afterEach(async () => {
+  await act(async () => root.unmount());
+  history.destroy();
+  container.remove();
+  vi.unstubAllGlobals();
+});
+
+async function openApp() {
+  const rootRoute = createRootRoute({
+    component: () => (
+      <>
+        <DesktopWebLinkCoordinator />
+        <Outlet />
+      </>
+    ),
+  });
+  const threadRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/$environmentId/$threadId",
+    component: () => <output>{JSON.stringify(threadRoute.useParams())}</output>,
+  });
+  const newRoute = createRoute({ getParentRoute: () => rootRoute, path: "/new" });
+  const router = createRouter({
+    routeTree: rootRoute.addChildren([threadRoute, newRoute]),
+    history,
+  });
+  await router.load();
+  await act(async () =>
+    root.render(
+      <StrictMode>
+        <RouterProvider router={router} />
+      </StrictMode>,
+    ),
+  );
+  await vi.waitFor(() => expect(setReady).toHaveBeenCalledWith(true));
+  return router;
+}
+
+function expectNoCreation() {
+  expect(mocks.openThread).not.toHaveBeenCalled();
+  expect(mocks.openScratchProject).not.toHaveBeenCalled();
+  expect(mocks.openPreview).not.toHaveBeenCalled();
+}
+
+describe("desktop existing thread links", () => {
+  it("opens a queued encoded child in its connected remote environment using desktop hash history", async () => {
+    pending.push(encodedLink);
+    const router = await openApp();
+    await vi.waitFor(() =>
+      expect(container.textContent).toBe(JSON.stringify({ environmentId, threadId })),
+    );
+    expect(router.state.location.pathname).toBe(
+      `/${environmentId}/${encodeURIComponent(threadId)}`,
+    );
+    expect(window.location.hash).toBe(`#/${environmentId}/${encodeURIComponent(threadId)}`);
+    expect(mocks.toast).not.toHaveBeenCalled();
+    expectNoCreation();
+
+    await act(async () => listener!("t3code://threads/primary/normal-thread"));
+    await vi.waitFor(() =>
+      expect(container.textContent).toBe(
+        JSON.stringify({ environmentId: "primary", threadId: "normal-thread" }),
+      ),
+    );
+    expectNoCreation();
+  });
+
+  it("leaves the current thread in place when the destination environment is not connected", async () => {
+    mocks.connected = ["primary"];
+    const router = await openApp();
+    await act(async () => listener!(encodedLink));
+    await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalled());
+    expect(router.state.location.pathname).toBe("/primary/current");
+    expect(mocks.toast.mock.calls[0]?.[0].description).toContain("Connect to");
+    expectNoCreation();
+  });
+
+  it.each([
+    "t3code://threads/primary/%invalid",
+    "threads/primary/child",
+    "t3code://threads/primary/child/extra",
+  ])("does not turn an invalid app destination into a browser tab: %s", async (link) => {
+    const router = await openApp();
+    await act(async () => listener!(link));
+    await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalled());
+    expect(router.state.location.pathname).toBe("/primary/current");
+    expectNoCreation();
+  });
+
+  it("preserves the existing new-prompt path", async () => {
+    const router = await openApp();
+    await act(async () => listener!("t3code://new?prompt=hello"));
+    await vi.waitFor(() => expect(router.state.location.href).toBe("/new?prompt=hello"));
+    expectNoCreation();
+  });
+
+  it("reports failed navigation and keeps receiving subsequent links", async () => {
+    const router = await openApp();
+    vi.spyOn(router, "navigate").mockRejectedValueOnce(new Error("Navigation failed"));
+    await act(async () => listener!(encodedLink));
+    await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalled());
+    expect(router.state.location.pathname).toBe("/primary/current");
+    await act(async () => listener!("t3code://threads/primary/normal-thread"));
+    await vi.waitFor(() => expect(router.state.location.pathname).toBe("/primary/normal-thread"));
+    expectNoCreation();
+  });
+});
