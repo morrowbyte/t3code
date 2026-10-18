@@ -2,6 +2,30 @@ import { describe, expect, it } from "vite-plus/test";
 import { buildRuntimeInstructions } from "./runtimeInstructions.ts";
 
 describe("buildRuntimeInstructions", () => {
+  it("defaults useful human explanations to visuals without requiring a visual prompt", () => {
+    for (const harness of ["Codex", "Claude Code", "Cursor"]) {
+      const instructions = buildRuntimeInstructions({ harness });
+      expect(instructions).toContain("use relevant native t3-ui visuals by default");
+      expect(instructions).toContain('Do not wait for words such as "visualize"');
+      expect(instructions).toContain("verified facts or clearly identified calculations");
+      expect(instructions).toContain("never invent measurements");
+      expect(instructions).toContain(
+        "Email drafts, simple facts and tasks without a useful visual",
+      );
+      expect(instructions).toContain("should remain concise text");
+    }
+  });
+
+  it("uses intended audience rather than MCP attribution and renders only at the final agent", () => {
+    const instructions = buildRuntimeInstructions({ harness: "Codex" });
+    expect(instructions).toContain("not the message actor or transport");
+    expect(instructions).toContain("A thread created by an agent or MCP can still request");
+    expect(instructions).toContain("Internal agent-to-agent handoffs and steering messages");
+    expect(instructions).toContain("compact facts, sources");
+    expect(instructions).toContain("let that agent render the visuals once");
+    expect(instructions).toContain("do not duplicate components");
+  });
+
   it("includes the bounded output policy independently of model metadata", () => {
     const instructions = buildRuntimeInstructions({ harness: "Codex" });
     const policy =
