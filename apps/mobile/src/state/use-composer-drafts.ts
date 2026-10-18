@@ -7,6 +7,8 @@ import {
   COMPOSER_CONTEXT_MAX_RECORDS,
   ForwardCompatibleArray,
   OrchestrationMessageContext,
+  SpeechTranscription,
+  type SpeechTranscriptionRange,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   ProjectId as ProjectIdSchema,
   ProviderInteractionMode as ProviderInteractionModeSchema,
@@ -20,11 +22,17 @@ import {
   type RuntimeMode,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+import * as Effect from "effect/Effect";
 import { useEffect } from "react";
 import { Atom } from "effect/reactivity";
 
 import { writeFileAtomically } from "../lib/atomic-file";
-import { createComposerContextHistory, referencedComposerContext } from "../lib/composerContext";
+import {
+  createComposerContextHistory,
+  referencedComposerContext,
+  editedComposerContext,
+  withComposerSpeechTranscription,
+} from "../lib/composerContext";
 import { isQueuedEditDraftKey } from "./queued-edit-draft-key";
 import {
   collectComposerContextReferences,
@@ -141,7 +149,11 @@ function draftWithoutInsertionSelection(
 ) {
   const { start, end } = contextInsertionRange(draftKey, draft, target);
   const text = `${draft.text.slice(0, start)} ${draft.text.slice(end)}`;
-  return withReferencedContextFiles(draft, text, referencedComposerContext(text, draft.context));
+  return withReferencedContextFiles(
+    draft,
+    text,
+    editedComposerContext(draft.text, text, draft.context, { start, end }),
+  );
 }
 
 export function countComposerDraftAttachmentsAfterSelection(
@@ -244,7 +256,15 @@ export function setComposerDraftContext(
 ): void {
   updateComposerDrafts((current) => ({
     ...current,
-    [draftKey]: { ...normalizeDraft(current[draftKey]), context },
+    [draftKey]: {
+      ...normalizeDraft(current[draftKey]),
+      context: withComposerSpeechTranscription(
+        normalizeDraft(current[draftKey]).text,
+        context,
+        context?.speechTranscription?.ranges ??
+          current[draftKey]?.context?.speechTranscription?.ranges,
+      ),
+    },
   }));
 }
 
@@ -296,7 +316,11 @@ function draftWithInsertedContext(
   const text = before + insertion + after;
   const records = new Map(draft.context?.records.map((record) => [record.contextId, record]));
   for (const record of content.context.records) records.set(record.contextId, record);
-  const context = referencedComposerContext(text, { version: 1, records: [...records.values()] });
+  const context = referencedComposerContext(text, {
+    ...editedComposerContext(draft.text, text, draft.context, { start, end }),
+    version: 1,
+    records: [...records.values()],
+  });
   if ((context?.records.length ?? 0) > COMPOSER_CONTEXT_MAX_RECORDS) return null;
   lastComposerSelection = {
     draftKey,
@@ -377,6 +401,12 @@ const ComposerDraftProjectSchema = Schema.Struct({
 // attachments. Keep every payload reloadable; send guards ask the user to trim the draft.
 const PersistedComposerContextSchema = Schema.Struct({
   version: Schema.Literal(1),
+  speechTranscription: Schema.optional(
+    Schema.UndefinedOr(SpeechTranscription).pipe(
+      Schema.catchDecoding(() => Effect.succeedSome(undefined)),
+      Schema.catchEncoding(() => Effect.succeedSome(undefined)),
+    ),
+  ),
   records: ForwardCompatibleArray(ComposerContextRecord),
 });
 
@@ -525,7 +555,7 @@ function restoreMissingComposerFileReferences(draft: ComposerDraft): ComposerDra
     referenced.add(key);
     changed = true;
   }
-  return changed ? { ...draft, text, context: { version: 1, records } } : draft;
+  return changed ? { ...draft, text, context: { ...draft.context, version: 1, records } } : draft;
 }
 
 function normalizeDraft(draft: ComposerDraft | undefined): ComposerDraft {
@@ -535,6 +565,15 @@ function normalizeDraft(draft: ComposerDraft | undefined): ComposerDraft {
   return {
     ...draft,
     text: draft.text,
+    ...(draft.context?.speechTranscription
+      ? {
+          context: withComposerSpeechTranscription(
+            draft.text,
+            draft.context,
+            draft.context.speechTranscription.ranges,
+          ),
+        }
+      : {}),
     attachments: draft.attachments,
   };
 }
@@ -621,8 +660,8 @@ export function decodePersistedComposerState(value: unknown): {
               draft.runtimeMode === undefined &&
               draft.interactionMode === undefined &&
               draft.workspaceSelection === undefined
-              ? { ...draft, modelSelection: undefined }
-              : draft,
+              ? normalizeDraft({ ...draft, modelSelection: undefined })
+              : normalizeDraft(draft),
             now,
           ),
         )
@@ -645,7 +684,7 @@ export function decodePersistedComposerState(value: unknown): {
           {
             drafts: Object.fromEntries(
               Object.entries(saved.drafts).map(([key, draft]) =>
-                migrateLegacyNewTaskDraft(key, draft, now),
+                migrateLegacyNewTaskDraft(key, normalizeDraft(draft), now),
               ),
             ),
             queuedMessages: saved.queuedMessages.map(decodeQueuedThreadMessage),
@@ -1199,8 +1238,14 @@ export async function restoreCloudComposerDrafts(accountId: string): Promise<voi
               text: mergeComposerDraftText(existing.text, draft.text),
               context: mergeReferencedComposerContext(
                 mergeComposerDraftText(existing.text, draft.text),
-                draft.context,
+                withComposerSpeechTranscription(
+                  draft.text,
+                  draft.context,
+                  draft.context?.speechTranscription?.ranges,
+                ),
                 existing.context,
+                mergeComposerDraftText(existing.text, draft.text).length - draft.text.length,
+                0,
               ),
               // A concurrent import must not lose files, even above the send limit.
               attachments: [
@@ -1243,11 +1288,55 @@ export function setStickyComposerModelSelection(modelSelection: ModelSelection):
   schedulePersistComposerState();
 }
 
-export function setComposerDraftText(draftKey: string, value: string): void {
+export function setComposerDraftText(
+  draftKey: string,
+  value: string,
+  options?: { readonly replace?: boolean; readonly replacement?: SpeechTranscriptionRange },
+): void {
   let removed: ReadonlyArray<DraftComposerAttachment> = [];
   updateComposerDrafts((current) => {
     const existing = normalizeDraft(current[draftKey]);
-    const context = referencedComposerContext(value, existing.context);
+    const context = options?.replace
+      ? referencedComposerContext(
+          value,
+          existing.context ? { version: 1, records: existing.context.records } : undefined,
+        )
+      : editedComposerContext(existing.text, value, existing.context, options?.replacement);
+    const draft = withReferencedContextFiles(existing, value, context);
+    removed = existing.attachments.filter((attachment) => !draft.attachments.includes(attachment));
+    return withComposerDraft(current, draftKey, draft);
+  });
+  scheduleUnusedComposerAttachmentCleanup(removed);
+}
+
+export function commitComposerDraftSpeechTranscription(
+  draftKey: string,
+  value: string,
+  insertion: SpeechTranscriptionRange,
+  replacement: SpeechTranscriptionRange,
+): void {
+  let removed: ReadonlyArray<DraftComposerAttachment> = [];
+  updateComposerDrafts((current) => {
+    const existing = normalizeDraft(current[draftKey]);
+    if (
+      ![insertion.start, insertion.end, replacement.start, replacement.end].every(
+        Number.isInteger,
+      ) ||
+      insertion.start !== replacement.start ||
+      insertion.end <= insertion.start ||
+      insertion.end > value.length ||
+      replacement.start < 0 ||
+      replacement.end < replacement.start ||
+      replacement.end > existing.text.length ||
+      value.slice(0, insertion.start) !== existing.text.slice(0, replacement.start) ||
+      value.slice(insertion.end) !== existing.text.slice(replacement.end)
+    )
+      return current;
+    const edited = editedComposerContext(existing.text, value, existing.context, replacement);
+    const context = withComposerSpeechTranscription(value, edited, [
+      ...(edited?.speechTranscription?.ranges ?? []),
+      insertion,
+    ]);
     const draft = withReferencedContextFiles(existing, value, context);
     removed = existing.attachments.filter((attachment) => !draft.attachments.includes(attachment));
     return withComposerDraft(current, draftKey, draft);
@@ -1263,7 +1352,7 @@ export function insertComposerDraftText(
   const draft = getComposerDraftSnapshot(draftKey);
   const { start, end } = contextInsertionRange(draftKey, draft, target);
   const text = draft.text.slice(0, start) + value + draft.text.slice(end);
-  setComposerDraftText(draftKey, text);
+  setComposerDraftText(draftKey, text, { replacement: { start, end } });
   rememberComposerDraftSelection(draftKey, text, {
     start: start + value.length,
     end: start + value.length,
@@ -1373,7 +1462,7 @@ export function replaceComposerDraftAttachments(
     const draft = {
       ...existing,
       text,
-      context: referencedComposerContext(text, existing.context),
+      context: editedComposerContext(existing.text, text, existing.context),
       attachments,
     };
     return withComposerDraft(current, draftKey, draft);
@@ -1398,7 +1487,7 @@ export function removeComposerDraftAttachment(draftKey: string, imageId: string)
     const draft = {
       ...existing,
       text,
-      context: referencedComposerContext(text, existing.context),
+      context: editedComposerContext(existing.text, text, existing.context),
       attachments: existing.attachments.filter((image) => image.id !== imageId),
     };
     return withComposerDraft(current, draftKey, draft);
@@ -1533,11 +1622,25 @@ function mergeReferencedComposerContext(
   text: string,
   first?: OrchestrationMessageContext,
   second?: OrchestrationMessageContext,
+  firstOffset = 0,
+  secondOffset = 0,
 ) {
   const records = new Map((first?.records ?? []).map((record) => [record.contextId, record]));
   for (const record of second?.records ?? []) records.set(record.contextId, record);
-  if (records.size === 0) return undefined;
-  return referencedComposerContext(text, { version: 1, records: [...records.values()] });
+  const ranges = [
+    ...(first?.speechTranscription?.ranges ?? []).map((range) => ({
+      start: range.start + firstOffset,
+      end: range.end + firstOffset,
+    })),
+    ...(second?.speechTranscription?.ranges ?? []).map((range) => ({
+      start: range.start + secondOffset,
+      end: range.end + secondOffset,
+    })),
+  ];
+  return referencedComposerContext(
+    text,
+    withComposerSpeechTranscription(text, { version: 1, records: [...records.values()] }, ranges),
+  );
 }
 
 export function mergeComposerDraftContentState(
@@ -1562,7 +1665,17 @@ export function mergeComposerDraftContentState(
     PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   );
   const text = mergeComposerDraftText(existing.text, content.text);
-  const context = mergeReferencedComposerContext(text, existing.context, content.context);
+  const context = mergeReferencedComposerContext(
+    text,
+    existing.context,
+    withComposerSpeechTranscription(
+      content.text,
+      content.context,
+      content.context?.speechTranscription?.ranges,
+    ),
+    0,
+    text.length - content.text.length,
+  );
   const importedShareIds = content.sourceShareId
     ? [...(existing.importedShareIds ?? []), content.sourceShareId]
     : existing.importedShareIds;
@@ -1701,7 +1814,7 @@ export function undoComposerDraftMergeState(
   const draft = {
     ...existing,
     text,
-    context: referencedComposerContext(text, existing.context),
+    context: editedComposerContext(existing.text, text, existing.context),
     attachments: existing.attachments.filter(
       (attachment) => !insertedAttachmentIds.has(attachment.id),
     ),

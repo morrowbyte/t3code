@@ -23,7 +23,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createDebugLogger } from "../lib/debugLog";
 import { scopedThreadKey } from "../lib/scopedEntities";
 import { buildProjectThreadStartTurnInput } from "../lib/projectThreadStartTurn";
-import { serializeComposerMessageForServer, uploadedComposerContext } from "../lib/composerContext";
+import {
+  serializeComposerMessageForServer,
+  uploadedComposerContext,
+  trimmedComposerContext,
+} from "../lib/composerContext";
 import { prepareTurnAttachments, type PreparedTurnAttachments } from "../lib/attachmentUpload";
 import { randomHex } from "../lib/uuid";
 import {
@@ -1022,7 +1026,7 @@ export function useThreadOutboxDrain(): void {
           ...serializeComposerMessageForServer(
             queuedMessage.text.trim(),
             uploadedComposerContext(
-              queuedMessage.context,
+              trimmedComposerContext(queuedMessage.text, queuedMessage.context),
               queuedMessage.attachments,
               prepared.attachments,
             ),

@@ -1,7 +1,7 @@
 import { useFocusEffect } from "@react-navigation/native";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, SpeechTranscriptionRange } from "@t3tools/contracts";
 import {
   voiceInputBlocksSubmission,
   type VoiceInputState,
@@ -23,6 +23,11 @@ export function useVoiceInputController(input: {
   readonly selection: ComposerEditorSelection;
   readonly disabled?: boolean;
   readonly onChangeDraftMessage: (value: string) => void;
+  readonly onCommitSpeechTranscription?: (
+    value: string,
+    insertion: SpeechTranscriptionRange,
+    replacement: SpeechTranscriptionRange,
+  ) => void;
   readonly onChangeSelection: (selection: ComposerEditorSelection) => void;
 }) {
   const global = useGlobalVoiceInput();
@@ -59,7 +64,23 @@ export function useVoiceInputController(input: {
         captured.ownerKey,
         captured.readDraftMessage,
         (text, selection) => {
-          captured.onChangeDraftMessage(text);
+          if (captured.onCommitSpeechTranscription) {
+            const previous = captured.readDraftMessage();
+            if (previous === null) return;
+            const start = Math.max(
+              0,
+              Math.min(previous.length, Math.trunc(captured.selection.start)),
+            );
+            const end = Math.max(
+              start,
+              Math.min(previous.length, Math.trunc(captured.selection.end)),
+            );
+            captured.onCommitSpeechTranscription(
+              text,
+              { start, end: Math.trunc(selection.start) },
+              { start, end },
+            );
+          } else captured.onChangeDraftMessage(text);
           if (mounted.current && latestInput.current.ownerKey === captured.ownerKey) {
             latestInput.current.onChangeSelection(selection);
           }

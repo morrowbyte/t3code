@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import {
   ChatAttachmentId,
   ComposerContextId,
@@ -11,6 +11,12 @@ import {
 import { composerDraftEnvironmentId } from "../lib/composerAttachmentUploadQueue";
 import { isQueuedEditDraftKey, queuedEditDraftKey } from "./queued-edit-draft-key";
 import { resolveQueuedEditPayload, type QueuedRunEdit } from "./queued-run-edit";
+
+vi.mock("./use-composer-drafts", () => ({
+  clearComposerDraft: vi.fn(),
+  setComposerDraftContext: vi.fn(),
+  setComposerDraftText: vi.fn(),
+}));
 
 const image = (id: string): ChatAttachment => ({
   type: "image",
@@ -103,4 +109,20 @@ describe("resolveQueuedEditPayload", () => {
     expect(payload.attachments).toEqual([]);
     expect(payload.context).toBeUndefined();
   });
+});
+
+it("keeps explicit speech-only metadata in the queued edit payload", () => {
+  const speech: OrchestrationMessageContext = {
+    version: 1,
+    records: [],
+    speechTranscription: { ranges: [{ start: 0, end: 6 }] },
+  };
+  expect(
+    resolveQueuedEditPayload({
+      edit: edit([]),
+      draftContext: speech,
+      draftAttachments: [],
+      uploaded: [],
+    }).context,
+  ).toEqual(speech);
 });

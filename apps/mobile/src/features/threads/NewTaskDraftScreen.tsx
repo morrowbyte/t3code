@@ -99,6 +99,8 @@ import {
   captureComposerDraftInsertion,
   countComposerDraftAttachmentsAfterSelection,
   getComposerDraftSnapshot,
+  setComposerDraftText,
+  commitComposerDraftSpeechTranscription,
   composerDraftsAtom,
   mergeComposerDraftContent,
   restoreComposerDraftSnapshot,
@@ -506,6 +508,10 @@ export function NewTaskDraftScreen(props: {
     selection: composerMenu.selection,
     disabled: isIncomingShareTransferPending || isImportingShare || flow.submitting,
     onChangeDraftMessage: flow.setPrompt,
+    onCommitSpeechTranscription: (text, insertion, replacement) => {
+      if (flow.draftKey)
+        commitComposerDraftSpeechTranscription(flow.draftKey, text, insertion, replacement);
+    },
     onChangeSelection: composerMenu.onSelectionChange,
   });
   const voicePresentation = resolveVoiceComposerPresentation(
@@ -1101,7 +1107,7 @@ export function NewTaskDraftScreen(props: {
           text: paste.text,
         });
         const selection = { start: insertion.cursor, end: insertion.cursor };
-        flow.setPrompt(insertion.value);
+        setComposerDraftText(draftKey, insertion.value, { replacement: paste.selection });
         composerMenu.onSelectionChange(selection);
       };
       const capabilities = selectedEnvironmentServerConfig?.environment.capabilities;

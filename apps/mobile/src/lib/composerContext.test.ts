@@ -18,6 +18,8 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 import {
   composerContextEditorTokens,
+  trimmedComposerContext,
+  withComposerSpeechTranscription,
   composerContextSendBlockReason,
   composerMentionPath,
   createComposerContextHistory,
@@ -335,5 +337,54 @@ describe("threadComposerContext", () => {
     expect(
       threadComposerContext({ environmentId, threadId: ThreadId.make("abc-123") }, "t").contextId,
     ).toBe("thread_abc-123");
+  });
+});
+
+describe("speech transcription provenance", () => {
+  it("rebases UTF-16 offsets onto the trimmed send text and preserves metadata through upload", () => {
+    const previous = "  🦦 spoken  ";
+    const context: OrchestrationMessageContext = {
+      version: 1,
+      records: [],
+      speechTranscription: { ranges: [{ start: 5, end: 11 }] },
+    };
+    const trimmed = trimmedComposerContext(previous, context);
+    expect(trimmed?.speechTranscription?.ranges).toEqual([{ start: 3, end: 9 }]);
+    expect(uploadedComposerContext(trimmed, [], [])).toEqual(trimmed);
+    expect(serializeComposerMessageForServer(previous.trim(), trimmed, true)).toEqual({
+      text: "🦦 spoken",
+      context: trimmed,
+    });
+  });
+
+  it("retains speech-only context after the final context chip is removed", () => {
+    const text = "spoken";
+    const context: OrchestrationMessageContext = {
+      version: 1,
+      records: [terminal],
+      speechTranscription: { ranges: [{ start: 0, end: 6 }] },
+    };
+    expect(referencedComposerContext(text, context)).toEqual({
+      version: 1,
+      records: [],
+      speechTranscription: { ranges: [{ start: 0, end: 6 }] },
+    });
+  });
+
+  it("bounds fragmented metadata without accepting invalid or whitespace-only spans", () => {
+    const text = "a ".repeat(220);
+    const ranges = Array.from({ length: 220 }, (_, index) => ({
+      start: index * 2,
+      end: index * 2 + 1,
+    }));
+    const context = withComposerSpeechTranscription(text, undefined, [
+      ...ranges,
+      { start: -1, end: 1 },
+      { start: 1, end: 2 },
+      { start: 0.5, end: 1 },
+      { start: 1000, end: 1001 },
+    ]);
+    expect(context?.speechTranscription?.ranges).toHaveLength(200);
+    expect(context?.speechTranscription?.ranges[0]).toEqual({ start: 40, end: 41 });
   });
 });

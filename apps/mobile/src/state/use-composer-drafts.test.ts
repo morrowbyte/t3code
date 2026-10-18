@@ -184,6 +184,7 @@ import {
   restoreCloudComposerDrafts,
   retargetNewTaskDraft,
   setComposerDraftText,
+  commitComposerDraftSpeechTranscription,
   insertComposerDraftContext,
   insertComposerDraftText,
   rememberComposerDraftSelection,
@@ -2724,5 +2725,175 @@ describe("mobile composer drafts", () => {
       },
     });
     expect(composerAttachmentCleanupMocks.remove).not.toHaveBeenCalled();
+  });
+});
+
+describe("speech transcription provenance", () => {
+  it("marks only a successful real controller commit and ignores a cancelled late transcript", async () => {
+    const { VoiceInputSession, createVoiceInputTarget } =
+      await import("../features/voice-input/voiceInputSession");
+    const key = "environment-1:speech-controller";
+    const selection = { start: 3, end: 6 };
+    const createSession = (transcribe: () => Promise<string>) =>
+      new VoiceInputSession({
+        recorder: {
+          uri: "file:///synthetic.m4a",
+          prepareToRecordAsync: async () => {},
+          record: () => {},
+          stop: async () => {},
+        },
+        getTranscriber: () => ({ prepare: async () => ({ locale: "en-US", transcribe }) }),
+        requestPermission: async () => ({ granted: true, canAskAgain: true }),
+        configureRecording: async () => {},
+        releaseRecording: async () => {},
+        deleteRecording: () => {},
+        onStateChange: () => {},
+      });
+    const target = () =>
+      createVoiceInputTarget(
+        key,
+        () => getComposerDraftSnapshot(key).text,
+        (text, cursor) =>
+          commitComposerDraftSpeechTranscription(
+            key,
+            text,
+            { start: selection.start, end: cursor.start },
+            selection,
+          ),
+        selection,
+        (changed) => appAtomRegistry.subscribe(composerDraftsAtom, changed),
+      );
+    setComposerDraftText(key, "🦦 old text");
+    expect(getComposerDraftSnapshot(key).context).toBeUndefined();
+    const session = createSession(async () => "Plain37");
+    await session.start(target());
+    expect(getComposerDraftSnapshot(key).context).toBeUndefined();
+    await session.controller.stop();
+    expect(getComposerDraftSnapshot(key).text).toBe("🦦 Plain37 text");
+    expect(getComposerDraftSnapshot(key).context?.speechTranscription?.ranges).toEqual([
+      { start: 3, end: 10 },
+    ]);
+    clearComposerDraftContent(key);
+    setComposerDraftText(key, "🦦 old text");
+    const entered = Promise.withResolvers<void>();
+    const late = Promise.withResolvers<string>();
+    const cancelled = createSession(() => {
+      entered.resolve();
+      return late.promise;
+    });
+    await cancelled.start(target());
+    const stopping = cancelled.controller.stop();
+    await entered.promise;
+    cancelled.controller.cancel();
+    late.resolve("late words");
+    await stopping;
+    expect(getComposerDraftSnapshot(key).text).toBe("🦦 old text");
+    expect(getComposerDraftSnapshot(key).context).toBeUndefined();
+  });
+
+  it("keeps only surviving speech spans through editor history context updates", () => {
+    const key = "environment-1:speech-edit";
+    setComposerDraftText(key, "typed ");
+    commitComposerDraftSpeechTranscription(
+      key,
+      "typed spoken",
+      { start: 6, end: 12 },
+      { start: 6, end: 6 },
+    );
+    const history = createComposerDraftContextHistory();
+    const next = "typed spXken";
+    const restored = history.restore(next, getComposerDraftSnapshot(key));
+    setComposerDraftText(key, next);
+    setComposerDraftContext(key, restored.context);
+    expect(getComposerDraftSnapshot(key).context?.speechTranscription?.ranges).toEqual([
+      { start: 6, end: 8 },
+      { start: 9, end: 12 },
+    ]);
+    setComposerDraftText(key, "typed spoken");
+    expect(getComposerDraftSnapshot(key).context?.speechTranscription?.ranges).toEqual([
+      { start: 6, end: 8 },
+      { start: 9, end: 12 },
+    ]);
+    history.dispose();
+  });
+
+  it("clears provenance on explicit full paste, replace and clear even when words match", () => {
+    const key = "environment-1:speech-replace";
+    commitComposerDraftSpeechTranscription(
+      key,
+      "spoken",
+      { start: 0, end: 6 },
+      { start: 0, end: 0 },
+    );
+    setComposerDraftText(key, "spoken", { replacement: { start: 0, end: 6 } });
+    expect(getComposerDraftSnapshot(key).context?.speechTranscription).toBeUndefined();
+    commitComposerDraftSpeechTranscription(
+      key,
+      "spoken",
+      { start: 0, end: 6 },
+      { start: 0, end: 6 },
+    );
+    setComposerDraftText(key, "spoken", { replace: true });
+    expect(getComposerDraftSnapshot(key).context?.speechTranscription).toBeUndefined();
+    commitComposerDraftSpeechTranscription(
+      key,
+      "spoken",
+      { start: 0, end: 6 },
+      { start: 0, end: 6 },
+    );
+    clearComposerDraftContent(key);
+    expect(getComposerDraftSnapshot(key).context?.speechTranscription).toBeUndefined();
+  });
+
+  it("keeps draft text when optional stored provenance is malformed or out of bounds", () => {
+    const loaded = decodePersistedComposerState({
+      schemaVersion: 1,
+      drafts: {
+        malformed: {
+          text: "keep my words",
+          attachments: [],
+          context: {
+            version: 1,
+            records: [],
+            speechTranscription: { ranges: [{ start: -1, end: 7 }] },
+          },
+        },
+        beyond: {
+          text: "keep my words",
+          attachments: [],
+          context: {
+            version: 1,
+            records: [],
+            speechTranscription: { ranges: [{ start: 40, end: 70 }] },
+          },
+        },
+      },
+    });
+    expect(loaded.drafts.malformed?.text).toBe("keep my words");
+    expect(loaded.drafts.malformed?.context?.speechTranscription).toBeUndefined();
+    expect(loaded.drafts.beyond?.text).toBe("keep my words");
+    expect(loaded.drafts.beyond?.context?.speechTranscription).toBeUndefined();
+  });
+
+  it("persists explicit speech-only context and shifts it once during recovery merge", () => {
+    const speech: ComposerDraft = {
+      text: "spoken",
+      attachments: [],
+      context: { version: 1, records: [], speechTranscription: { ranges: [{ start: 0, end: 6 }] } },
+    };
+    const loaded = decodePersistedComposerState({ schemaVersion: 1, drafts: { task: speech } })
+      .drafts.task;
+    expect(loaded?.context).toEqual(speech.context);
+    const initial = { task: { text: "typed", attachments: [] } satisfies ComposerDraft };
+    const merged = mergeComposerDraftContentState(initial, "task", speech);
+    expect(merged.task?.text).toBe("typed\n\nspoken");
+    expect(merged.task?.context?.speechTranscription?.ranges).toEqual([{ start: 7, end: 13 }]);
+    expect(
+      mergeComposerDraftContentState(merged, "task", speech).task?.context?.speechTranscription
+        ?.ranges,
+    ).toEqual([{ start: 7, end: 13 }]);
+    expect(
+      undoComposerDraftMergeState(merged, "task", initial.task, merged.task!).task?.context,
+    ).toBeUndefined();
   });
 });

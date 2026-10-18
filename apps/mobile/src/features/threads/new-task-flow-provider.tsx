@@ -1,3 +1,4 @@
+import { trimmedComposerContext } from "../../lib/composerContext";
 import * as Dialog from "../../components/ui/Dialog";
 import { resolveFilesystemReadAccess } from "@t3tools/client-runtime/state/filesystem";
 import { useEnvironmentPresentation } from "../../state/presentation";
@@ -1088,7 +1089,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
         commandId: CommandId.make(metadata.commandId),
         text,
         attachments: draft.attachments,
-        context: draft.context,
+        context: trimmedComposerContext(draft.text, draft.context),
         modelSelection: draftModelSelection,
         runtimeMode: draft.runtimeMode ?? defaultRuntimeMode,
         interactionMode: resolvePendingTaskInteractionMode({
