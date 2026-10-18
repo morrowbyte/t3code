@@ -159,8 +159,16 @@ jobs:
                       assert member.filename == pathlib.PurePosixPath(member.filename).name and not member.is_dir()
                       assert not stat.S_ISLNK(member.external_attr >> 16)
                       destination = target / member.filename
-                      assert not destination.exists(), 'Duplicate artifact member.'
-                      with archive.open(member) as incoming, destination.open('wb') as outgoing:
+                      if member.filename == 'builder-debug.yml':
+                          assert target == assets and name in {'weasel-release-linux', 'weasel-release-windows'}, 'Unexpected builder diagnostics producer.'
+                          destination = target / f'{name}-{member.filename}'
+                      if destination.exists():
+                          assert member.filename == 'builder-debug.yml', f'Unexpected duplicate artifact member: {destination.name}'
+                          with archive.open(member) as incoming:
+                              incoming_sha256 = hashlib.file_digest(incoming, 'sha256').hexdigest()
+                          assert incoming_sha256 == digest(destination), f'Conflicting artifact member bytes: {destination.name}'
+                          continue
+                      with archive.open(member) as incoming, destination.open('xb') as outgoing:
                           shutil.copyfileobj(incoming, outgoing)
               records.append({key: artifact[key] for key in ['id', 'name', 'digest', 'size_in_bytes', 'expires_at']})
               archive_path.unlink()
