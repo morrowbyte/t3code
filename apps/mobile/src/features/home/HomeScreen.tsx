@@ -671,6 +671,7 @@ export function HomeScreen(props: HomeScreenProps) {
       ),
       disclosure: familyDisclosure,
       workingShelfEnabled,
+      searching: hasSearchQuery,
     });
     const sections = ["pinned", "active", "working", "snoozed", "settled"] as const;
     const items = [];

@@ -342,6 +342,7 @@ export interface ThreadListV2FamilyRow {
 export function buildThreadListV2FamilyRows(input: {
   readonly items: readonly ThreadListV2Item[];
   readonly visibleKeys: ReadonlySet<string>;
+  readonly searching?: boolean;
   readonly disclosure: ThreadListV2FamilyDisclosure;
   readonly workingShelfEnabled?: boolean;
 }): ThreadListV2FamilyRow[] {
@@ -410,6 +411,7 @@ export function buildThreadListV2FamilyRows(input: {
   }
   const relevant = new Set<string>();
   for (const key of [
+    ...(input.searching ? input.visibleKeys : []),
     ...workingKeys,
     ...(input.disclosure.routeKey === null ? [] : [input.disclosure.routeKey]),
   ]) {

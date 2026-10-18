@@ -203,6 +203,48 @@ describe("native thread families", () => {
     }
   });
 
+  it("keeps an inactive matching grandchild and ancestors only while searching", () => {
+    const inactive = makeThread({ ...working, runtime: null });
+    const previous = makeThread({
+      ...child,
+      id: ThreadId.make("previous-search"),
+      title: "Historical sibling",
+    });
+    const threads = [parent, child, inactive, previous];
+    const items = itemsFor(threads);
+    const visible = buildThreadListV2Items({
+      threads,
+      environmentId: null,
+      searchQuery: "Grandchild",
+      now: NOW,
+      includeSubagents: true,
+      workingShelfEnabled: true,
+      workingShelfExpanded: true,
+      settledShelfExpanded: true,
+    });
+    const input = {
+      items,
+      visibleKeys: new Set(visible.items.map((item) => keyOf(item.thread))),
+      disclosure: { ...disclosure, routeKey: parentKey },
+      workingShelfEnabled: true,
+      searching: true,
+    };
+    expect(buildThreadListV2FamilyRows(input).map((row) => row.key)).toEqual([
+      parentKey,
+      childKey,
+      grandchildKey,
+    ]);
+    expect(
+      buildThreadListV2FamilyRows({ ...input, searching: false }).map((row) => row.key),
+    ).toEqual([parentKey]);
+    expect(
+      buildThreadListV2FamilyRows({
+        ...input,
+        disclosure: { ...input.disclosure, closedKeys: new Set([parentKey]) },
+      }).map((row) => row.key),
+    ).toEqual([parentKey]);
+  });
+
   it("shows only active work and the required intermediate parents on root expansion", () => {
     const previous = makeThread({
       ...child,
