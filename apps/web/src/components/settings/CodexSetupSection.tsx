@@ -46,6 +46,7 @@ import { SettingsRow } from "./settingsLayout";
 import { AddCodexAccountDialog } from "./AddCodexAccountDialog";
 import { getOnboardingProviderState } from "../../onboarding/providerReadiness.logic";
 import { getProviderSummary } from "./providerStatus";
+import { ProviderAuthenticationSection } from "./ProviderAuthenticationSection";
 
 const noop = () => undefined;
 
@@ -72,7 +73,9 @@ export function CodexSetupSection(props: CodexSetupSectionProps) {
   const existingChecking = existingState === "checking";
   const existingSummary = getProviderSummary(props.provider);
   const content =
-    props.mode === "existing" && props.presentation === "onboarding" ? (
+    props.mode === "existing" && props.provider?.setup?.canAuthenticate ? (
+      <NativeCodexSetup {...props} provider={props.provider} />
+    ) : props.mode === "existing" && props.presentation === "onboarding" ? (
       <CodexWelcomeCard
         title={props.displayName || props.provider?.displayName || "Codex"}
         description={
@@ -162,6 +165,92 @@ export function CodexSetupSection(props: CodexSetupSectionProps) {
       />
     );
   return content;
+}
+
+function NativeCodexSetup(props: CodexSetupSectionProps & { readonly provider: ServerProvider }) {
+  const target = { environmentId: props.environmentId, input: { instanceId: props.instanceId } };
+  const installation = useEnvironmentQuery(serverEnvironment.providerInstallState(target));
+  const start = useAtomCommand(serverEnvironment.startProviderInstall, {
+    reportFailure: false,
+    reportDefect: false,
+  });
+  const refresh = useAtomCommand(serverEnvironment.refreshProviders, {
+    reportFailure: false,
+    reportDefect: false,
+  });
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const pendingRef = useRef(false);
+  const refreshed = useRef<string | null>(null);
+  const state = installation.data;
+  const active = state && ["downloading", "extracting", "verifying"].includes(state.phase);
+  const installed =
+    props.provider.installed ||
+    (props.provider.setup?.canInstall === true && state?.installedVersion != null);
+  useEffect(() => {
+    if (state?.phase !== "succeeded" || !state.installedVersion) return;
+    const key = `${props.environmentId}:${props.instanceId}:${state.installedVersion}`;
+    if (refreshed.current === key) return;
+    refreshed.current = key;
+    void refresh({ environmentId: props.environmentId, input: { instanceId: props.instanceId } });
+  }, [state?.phase, state?.installedVersion, props.environmentId, props.instanceId, refresh]);
+  const install = async () => {
+    if (pendingRef.current || props.readOnly) return;
+    pendingRef.current = true;
+    setPending(true);
+    setError(null);
+    try {
+      const result = await start(target);
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result))
+        setError("Codex installation could not finish. Try again.");
+    } catch {
+      setError("Codex installation could not finish. Try again.");
+    } finally {
+      pendingRef.current = false;
+      setPending(false);
+    }
+  };
+  return (
+    <section className="space-y-3" aria-label="Codex setup">
+      <SettingsRow
+        title="Codex runtime"
+        description={
+          active
+            ? "Installing Codex…"
+            : installed
+              ? "Installed."
+              : props.provider.setup?.canInstall
+                ? "Install Codex to sign in."
+                : "Check the configured Codex binary path."
+        }
+      >
+        {!installed && props.provider.setup?.canInstall ? (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={props.readOnly || pending || Boolean(active) || installation.error !== null}
+            onClick={() => void install()}
+          >
+            {active || pending ? "Installing…" : "Install Codex"}
+          </Button>
+        ) : null}
+      </SettingsRow>
+      {error || state?.phase === "failed" || installation.error ? (
+        <p role="alert" className="text-sm text-destructive">
+          {error ?? "Codex is unavailable. Retry installation or check its configured binary path."}
+        </p>
+      ) : null}
+      {installed ? (
+        <ProviderAuthenticationSection
+          environmentId={props.environmentId}
+          environmentLabel={props.displayName || "this device"}
+          instanceId={props.instanceId}
+          provider={props.provider}
+          readOnly={props.readOnly === true || !props.enabled}
+        />
+      ) : null}
+    </section>
+  );
 }
 
 export function AddManagedCodexAccountDialog({
@@ -924,6 +1013,16 @@ function ManagedCodexSetup({
                 >
                   Disconnect
                 </Button>
+                {allowExistingCli ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={readOnly || busy}
+                    onClick={() => onModeChange("existing")}
+                  >
+                    Use Codex sign-in for Live voice
+                  </Button>
+                ) : null}
               </>
             ) : (
               <>

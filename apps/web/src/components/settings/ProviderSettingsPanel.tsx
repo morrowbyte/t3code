@@ -1351,7 +1351,7 @@ function ProviderInstanceRow({
             readOnly={readOnly}
             onEnable={() => actions.enableInstance(instanceId, { ...instance, enabled: true })}
           />
-        ) : mode === "editor" && codexSetupMode === "managed" ? (
+        ) : mode === "editor" && driver === "codex" && codexSetupMode !== null ? (
           <CodexSetupSection
             environmentId={environmentId}
             instanceId={instanceId}

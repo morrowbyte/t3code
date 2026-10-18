@@ -24,6 +24,7 @@ const setup = vi.hoisted(() => ({
   startInstall: vi.fn(),
   cancelInstall: vi.fn(),
   removeInstall: vi.fn(),
+  refreshProviders: vi.fn(),
   confirm: vi.fn(),
 }));
 
@@ -43,6 +44,7 @@ vi.mock(import("../../state/server"), async (original) => {
       startProviderInstall: setup.startInstall as never,
       cancelProviderInstall: setup.cancelInstall as never,
       removeProviderInstallation: setup.removeInstall as never,
+      refreshProviders: setup.refreshProviders as never,
     },
   };
 });
@@ -81,6 +83,7 @@ vi.mock(import("../../localApi"), async (original) => ({
 }));
 
 import { ProviderSetupSection } from "./ProviderSetupSection";
+import { CodexSetupSection } from "./CodexSetupSection";
 
 const environmentId = EnvironmentId.make("remote-google");
 const instanceId = ProviderInstanceId.make("antigravity_work");
@@ -377,4 +380,118 @@ describe("Antigravity setup", () => {
       expect(setup.startAuth).not.toHaveBeenCalled();
     },
   );
+
+  it("installs native Codex before offering explicit sign-in to the same instance", async () => {
+    setup.auth = authState({ phase: "idle", flowId: null, authorizationUrl: null });
+    setup.refreshProviders.mockResolvedValue({ _tag: "Success", value: undefined });
+    const nativeProvider: ServerProvider = {
+      ...provider,
+      driver: ProviderDriverKind.make("codex"),
+      installed: false,
+      auth: { status: "unauthenticated" },
+    };
+    await act(async () =>
+      root.render(
+        <CodexSetupSection
+          environmentId={environmentId}
+          instanceId={instanceId}
+          provider={nativeProvider}
+          mode="existing"
+          enabled
+          onModeChange={vi.fn()}
+        />,
+      ),
+    );
+    expect(button("Install Codex")).not.toBeNull();
+    expect(button("Sign in")).toBeNull();
+    expect(setup.startInstall).not.toHaveBeenCalled();
+    expect(setup.startAuth).not.toHaveBeenCalled();
+    await click("Install Codex");
+    expect(setup.startInstall).toHaveBeenCalledExactlyOnceWith({
+      environmentId,
+      input: { instanceId },
+    });
+    expect(setup.startAuth).not.toHaveBeenCalled();
+    setup.installation = {
+      ...setup.installation!,
+      phase: "succeeded",
+      installedVersion: "0.156.1",
+      source: "managed",
+    };
+    await publish();
+    expect(button("Sign in")).not.toBeNull();
+    expect(button("Sign in")?.disabled).toBe(true);
+    expect(setup.startAuth).not.toHaveBeenCalled();
+    await act(async () =>
+      root.render(
+        <CodexSetupSection
+          environmentId={environmentId}
+          instanceId={instanceId}
+          provider={{ ...nativeProvider, installed: true }}
+          mode="existing"
+          enabled
+          onModeChange={vi.fn()}
+        />,
+      ),
+    );
+    await click("Sign in");
+    expect(setup.startAuth).toHaveBeenCalledExactlyOnceWith({
+      environmentId,
+      input: { instanceId },
+    });
+  });
+
+  it("does not qualify an unavailable custom Codex binary from another installed runtime", async () => {
+    setup.installation = { ...setup.installation!, installedVersion: "0.156.1" };
+    await act(async () =>
+      root.render(
+        <CodexSetupSection
+          environmentId={environmentId}
+          instanceId={instanceId}
+          provider={{
+            ...provider,
+            driver: ProviderDriverKind.make("codex"),
+            installed: false,
+            setup: { canAuthenticate: true, canInstall: false },
+          }}
+          mode="existing"
+          enabled
+          onModeChange={vi.fn()}
+        />,
+      ),
+    );
+    expect(container.textContent).toContain("Check the configured Codex binary path.");
+    expect(button("Sign in")).toBeNull();
+    expect(button("Install Codex")).toBeNull();
+    expect(setup.startAuth).not.toHaveBeenCalled();
+    expect(setup.startInstall).not.toHaveBeenCalled();
+  });
+
+  it("offers an explicit native sign-in choice without disconnecting a managed account", async () => {
+    setup.auth = authState({ phase: "idle", flowId: null, authorizationUrl: null });
+    setup.installation = { ...setup.installation!, installedVersion: "0.156.1" };
+    const changeMode = vi.fn();
+    await act(async () =>
+      root.render(
+        <CodexSetupSection
+          environmentId={environmentId}
+          instanceId={instanceId}
+          provider={{
+            ...provider,
+            driver: ProviderDriverKind.make("codex"),
+            auth: { status: "authenticated", type: "chatgpt", subscriptionSharing: true },
+          }}
+          mode="managed"
+          enabled
+          onModeChange={changeMode}
+        />,
+      ),
+    );
+    expect(setup.logoutAuth).not.toHaveBeenCalled();
+    expect(setup.startAuth).not.toHaveBeenCalled();
+    await click("Use Codex sign-in for Live voice");
+    expect(changeMode).toHaveBeenCalledExactlyOnceWith("existing");
+    expect(setup.logoutAuth).not.toHaveBeenCalled();
+    expect(setup.startAuth).not.toHaveBeenCalled();
+  });
 });

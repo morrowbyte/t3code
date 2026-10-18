@@ -133,7 +133,7 @@ describe("provider installation routing", () => {
 
   it.effect("rejects another driver and unknown instances before installation", () =>
     Effect.gen(function* () {
-      const harness = yield* makeHarness({ instance: instance(ProviderDriverKind.make("codex")) });
+      const harness = yield* makeHarness({ instance: instance(ProviderDriverKind.make("grok")) });
       const wrongDriver = yield* Effect.flip(harness.router.start({ instanceId }));
       const missing = yield* Effect.flip(
         harness.router.start({ instanceId: ProviderInstanceId.make("missing") }),
@@ -189,7 +189,7 @@ describe("provider installation routing", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("keeps native Codex installation outside managed setup", () =>
+  it.effect("installs Codex for native sign-in without changing the account setup mode", () =>
     Effect.gen(function* () {
       const codexId = ProviderInstanceId.make("codex");
       const harness = yield* makeHarness({
@@ -203,9 +203,28 @@ describe("provider installation routing", () => {
           },
         },
       });
+      assert.equal((yield* harness.router.start({ instanceId: codexId })).driver, "codex");
+      assert.deepEqual(harness.calls, ["codex-start"]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("does not replace a native Codex custom executable", () =>
+    Effect.gen(function* () {
+      const codexId = ProviderInstanceId.make("codex");
+      const harness = yield* makeHarness({
+        instance: instance(ProviderDriverKind.make("codex"), codexId),
+        settings: {
+          providerInstances: {
+            [codexId]: {
+              driver: ProviderDriverKind.make("codex"),
+              config: { setupMode: "existing", binaryPath: "C:\\custom\\codex.exe" },
+            },
+          },
+        },
+      });
       assert.include(
         (yield* Effect.flip(harness.router.start({ instanceId: codexId }))).detail,
-        "Choose managed setup",
+        "custom executable",
       );
       assert.deepEqual(harness.calls, []);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),

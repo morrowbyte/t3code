@@ -911,7 +911,7 @@ function OnboardingCodexSetup({
       },
     });
   };
-  return existingChosen ? (
+  return existingChosen && !provider?.setup?.canAuthenticate ? (
     <AgentCard
       driver="codex"
       provider={provider}
