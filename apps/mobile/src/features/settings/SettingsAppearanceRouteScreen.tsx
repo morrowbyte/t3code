@@ -7,8 +7,14 @@ import { TerminalAppearanceSection } from "./appearance/sections/TerminalAppeara
 import { TextAppearanceSection } from "./appearance/sections/TextAppearanceSection";
 import { ThemeAppearanceSection } from "./appearance/sections/ThemeAppearanceSection";
 
+import { View } from "react-native";
+import { SegmentedControl } from "../../components/ui/SegmentedControl";
+import { SettingsSection } from "./components/SettingsSection";
+import { useAgentIdentityTheme } from "../agent-identity/useAgentIdentityTheme";
+
 export function SettingsAppearanceRouteScreen() {
   const insets = useSafeAreaInsets();
+  const identity = useAgentIdentityTheme();
 
   return (
     <SettingsScreen title="Appearance">
@@ -22,6 +28,22 @@ export function SettingsAppearanceRouteScreen() {
         }}
       >
         <ThemeAppearanceSection />
+        <SettingsSection title="Agent identity">
+          <View className="p-3">
+            <SegmentedControl
+              options={
+                [
+                  { value: "neutral", label: "Neutral" },
+                  { value: "weasel", label: "Helferwiesel" },
+                ] as const
+              }
+              selected={identity.theme}
+              onSelect={(value) => {
+                if (identity.ready) identity.setTheme(value);
+              }}
+            />
+          </View>
+        </SettingsSection>
         <TextAppearanceSection />
         <TerminalAppearanceSection />
         <CodeAppearanceSection />

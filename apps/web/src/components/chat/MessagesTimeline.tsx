@@ -187,6 +187,7 @@ import {
 } from "./timelineScrollAnchoring";
 import { MessageCopyButton } from "./MessageCopyButton";
 import { AgentMessageRow } from "./AgentMessageRow";
+import { AgentIdentityLabel } from "../agent-identity/AgentIdentityLabel";
 import { readAgentSend } from "./agentMessagePresentation";
 import { useTurnItemDetail } from "../../state/queries";
 import { promptLinkFor } from "../promptLinks/copyPromptLink";
@@ -2682,8 +2683,14 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
     <>
       <div className="relative min-w-0 px-1 py-0.5">
         <h3 className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground select-none">
-          <BotIcon className="size-3.5" aria-hidden />
-          Hauptagent
+          {ctx.threadRef ? (
+            <AgentIdentityLabel threadRef={ctx.threadRef} />
+          ) : (
+            <>
+              <BotIcon className="size-3.5" aria-hidden />
+              Hauptagent
+            </>
+          )}
         </h3>
         <div data-thread-find-text="true">
           <AssistantCitationSource

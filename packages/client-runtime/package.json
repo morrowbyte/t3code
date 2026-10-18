@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./state/agent-identity": {
+      "types": "./src/state/agentIdentity.ts",
+      "default": "./src/state/agentIdentity.ts"
+    },
     "./observatory": {
       "types": "./src/observatory/index.ts",
       "default": "./src/observatory/index.ts"

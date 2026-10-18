@@ -1,3 +1,4 @@
+import { AgentIdentityLabel } from "../agent-identity/AgentIdentityLabel";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
 import { useVisibleSecondClock } from "./use-visible-second-clock";
@@ -587,6 +588,13 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     onSetThreadAutoSettle,
     onMoveThread,
   } = props;
+  const identityLabel = (
+    <AgentIdentityLabel
+      threadRef={{ environmentId: thread.environmentId, threadId: thread.id }}
+      lineage={thread.lineage}
+      featureTitle={thread.title}
+    />
+  );
   const snoozedRow = props.snoozed === true;
   const pinnedRow = props.pinned === true;
   const dormant = useSwipeRowDormant(props.activationKey);
@@ -1068,6 +1076,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       >
         {thread.title}
       </Text>
+      {identityLabel}
       {props.searchMatch ? (
         <View className="mt-1">
           <ThreadSearchMatchExcerpt
@@ -1253,6 +1262,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
               />
             ) : null}
           </View>
+          {identityLabel}
           <View className="flex-row items-center gap-1.5">
             <SymbolView
               name={statusLabel?.icon ?? (snoozedRow ? "clock" : "checkmark.circle")}
@@ -1392,6 +1402,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
             >
               {thread.title}
             </Text>
+            {identityLabel}
             {props.searchMatch ? (
               <ThreadSearchMatchExcerpt
                 sidebar={sidebarPane}

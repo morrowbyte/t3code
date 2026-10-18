@@ -1,3 +1,4 @@
+import { AgentIdentityLabel } from "../agent-identity/AgentIdentityLabel";
 import * as Dialog from "../../components/ui/Dialog";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { ThreadMarkdownVideo, ThreadMediaVisibleContext } from "./ThreadMarkdownVideo";
@@ -1402,6 +1403,13 @@ function renderFeedEntry(
         )}
         {...(enterAnimated ? { entering: FadeIn.duration(220) } : {})}
       >
+        <AgentIdentityLabel
+          threadRef={{
+            environmentId: props.environmentId,
+            threadId: message.projectedItem?.sourceThreadId ?? props.threadId,
+          }}
+          details
+        />
         {renderedText.trim().length > 0 ? (
           <MarkdownImageAvailableWidthContext value={props.markdownContentWidth}>
             <AssistantMarkdownContent

@@ -36,6 +36,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { TYPOGRAPHY_ADVANCED_STORAGE_KEY } from "../../appearanceFonts";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
+import { AgentIdentitySettings } from "../agent-identity/AgentIdentitySettings";
 import { hasCloudPublicConfig } from "../../cloud/publicConfig";
 import { PRIVACY_POLICY_URL } from "../../legalLinks";
 import { useT3ConnectAuthPrompt } from "../clerk/useT3ConnectAuthPrompt";
@@ -275,6 +276,14 @@ export function WelcomeWizard({
               onDone={finish}
             />
           )}
+          <details className="mt-5 border-t border-border pt-4">
+            <summary className="cursor-pointer text-xs text-muted-foreground">
+              Optional: agent identity
+            </summary>
+            <div className="pt-3">
+              <AgentIdentitySettings />
+            </div>
+          </details>
         </WizardPanel>
       </WizardPopup>
       <ChatGptWelcomeCoordinator />
