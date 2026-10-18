@@ -1,5 +1,5 @@
 import { expect, it } from "@effect/vitest";
-import { ThreadId } from "@t3tools/contracts";
+import { ProjectId, ThreadId } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -70,14 +70,19 @@ it.effect("keeps hosts independent when serials collide and another host fails",
     const writeStarted = yield* Deferred.make<void>();
     const finishWrite = yield* Deferred.make<void>();
     const order: string[] = [];
-    const service = yield* DeviceService.makeWithHosts(hosts, undefined, () =>
-      Effect.gen(function* () {
-        order.push("write started");
-        yield* Deferred.succeed(writeStarted, undefined);
-        yield* Deferred.await(finishWrite);
-        order.push("write finished");
-        return "/host-config.json";
-      }),
+    const service = yield* DeviceService.makeWithHosts(
+      hosts,
+      undefined,
+      () =>
+        Effect.gen(function* () {
+          order.push("write started");
+          yield* Deferred.succeed(writeStarted, undefined);
+          yield* Deferred.await(finishWrite);
+          order.push("write finished");
+          return "/host-config.json";
+        }),
+      undefined,
+      () => Effect.succeed(ProjectId.make("test-project")),
     ).pipe(Effect.provide(NodeCrypto.layer), Effect.provideService(HttpClient.HttpClient, http));
     expect(yield* service.agentReadinessIfSupported("b")).not.toBeNull();
     const listed = yield* service.list;

@@ -21,8 +21,10 @@ import {
   type SshDeviceHostConfig,
   type DeviceHostSummary,
   LOCAL_DEVICE_HOST_ID,
+  type ProjectId,
   type ThreadId,
 } from "@t3tools/contracts";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as FileSystem from "effect/FileSystem";
 import { resolveNodeExecutable, nodeRuntimeUnavailableMessage } from "@t3tools/shared/nodeRuntime";
 import * as Path from "effect/Path";
@@ -39,6 +41,7 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -48,6 +51,8 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 import * as ServerSettings from "../serverSettings.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { isLocalSshDeviceHost, remoteSshDeviceHosts } from "./localSshDeviceHost.ts";
 
 import { readDeviceDetail, runDeviceAction } from "./DeviceActions.ts";
@@ -164,21 +169,34 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       }),
     ),
   installTool?: (tool: "hub" | "agent") => Effect.Effect<unknown, DeviceError>,
+  projectForThread?: (threadId: ThreadId) => Effect.Effect<ProjectId | null>,
 ) {
   const settings = yield* ServerSettings.ServerSettingsService;
   const crypto = yield* Crypto.Crypto;
   const lifecycleLock = yield* Semaphore.make(1);
-  const readDeviceSettings = settings.getSettings.pipe(
-    Effect.map((value) => ({
-      enabled: value.enableDeviceSupport,
-      agentAccessEnabled: value.enableAgentDeviceAccess,
-      onboardingCompleted: value.deviceOnboardingCompleted,
-    })),
+  const readSettings = settings.getSettings.pipe(
     Effect.mapError(
       (cause) =>
         new DeviceOperationError({ operation: "settings", reason: "settings_failed", cause }),
     ),
   );
+  const readDeviceSettings = readSettings.pipe(
+    Effect.map((value) => ({
+      enabled: value.enableDeviceSupport,
+      agentAccessEnabled: value.enableAgentDeviceAccess,
+      onboardingCompleted: value.deviceOnboardingCompleted,
+    })),
+  );
+  const agentAccessFor = Effect.fn("DeviceService.agentAccessFor")(function* (threadId?: ThreadId) {
+    const current = yield* readSettings;
+    if (!current.enableDeviceSupport) return false;
+    if (threadId === undefined) return current.enableAgentDeviceAccess;
+    const projectId = projectForThread === undefined ? null : yield* projectForThread(threadId);
+    return (
+      projectId !== null &&
+      resolveProjectSettings(current, projectId).settings.enableAgentDeviceAccess
+    );
+  });
   const initialSettings = yield* readDeviceSettings;
 
   const httpClient = (yield* HttpClient.HttpClient).pipe(HttpClient.withScope);
@@ -291,45 +309,49 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     return yield* readiness(host.id);
   });
 
-  const agentReadinessIfSupported: DeviceService["Service"]["agentReadinessIfSupported"] =
-    Effect.fn("DeviceService.agentReadinessIfSupported")(function* (hostId) {
-      const deviceSettings = yield* readDeviceSettings;
-      if (!deviceSettings.enabled || !deviceSettings.agentAccessEnabled) return null;
-      const host = yield* resolveHost(hostId);
-      const summary = yield* host.summary;
-      if (summary.kind === "local" && !summary.platforms.some((platform) => platform.available))
-        return null;
-      const ready = yield* host
-        .ensureAgentReady((phase, detail) =>
-          setHostStatus(host.id, { status: phase, detail }).pipe(Effect.asVoid),
-        )
-        .pipe(
-          Effect.tapError((error) =>
-            setHostStatus(host.id, { status: "failed", detail: error.message }),
-          ),
-          Effect.mapError(
-            (error) =>
-              new DeviceHostUnavailableError({
-                hostId: host.id,
-                reason:
-                  error._tag === "NodeRuntimeUnavailableError"
-                    ? nodeRuntimeUnavailableMessage("Local device support")
-                    : error._tag === "DeviceHostTimeoutError"
-                      ? `Agent tools did not start within ${error.timeoutMs} ms.`
-                      : error._tag === "AgentDeviceStartError"
-                        ? error.message
-                        : error.step === "probe"
-                          ? "Could not connect to this host over SSH."
-                          : `Device support failed during ${error.step}.`,
-                cause: error,
-              }),
-          ),
-        );
-      const hostSummaries = yield* Effect.forEach(hosts.values(), (candidate) => candidate.summary);
-      yield* publish((state) => ({ ...state, hosts: hostSummaries }));
-      yield* setHostStatus(host.id, { status: "ready" });
-      return { hostId: host.id, ...ready };
-    }, lifecycleLock.withPermit);
+  const agentReadiness = Effect.fn("DeviceService.agentReadiness")(function* (
+    hostId?: DeviceHostId,
+    threadId?: ThreadId,
+  ) {
+    if (!(yield* agentAccessFor(threadId))) return null;
+    const host = yield* resolveHost(hostId);
+    const summary = yield* host.summary;
+    if (summary.kind === "local" && !summary.platforms.some((platform) => platform.available))
+      return null;
+    const ready = yield* host
+      .ensureAgentReady((phase, detail) =>
+        setHostStatus(host.id, { status: phase, detail }).pipe(Effect.asVoid),
+      )
+      .pipe(
+        Effect.tapError((error) =>
+          setHostStatus(host.id, { status: "failed", detail: error.message }),
+        ),
+        Effect.mapError(
+          (error) =>
+            new DeviceHostUnavailableError({
+              hostId: host.id,
+              reason:
+                error._tag === "NodeRuntimeUnavailableError"
+                  ? nodeRuntimeUnavailableMessage("Local device support")
+                  : error._tag === "DeviceHostTimeoutError"
+                    ? `Agent tools did not start within ${error.timeoutMs} ms.`
+                    : error._tag === "AgentDeviceStartError"
+                      ? error.message
+                      : error.step === "probe"
+                        ? "Could not connect to this host over SSH."
+                        : `Device support failed during ${error.step}.`,
+              cause: error,
+            }),
+        ),
+      );
+    const hostSummaries = yield* Effect.forEach(hosts.values(), (candidate) => candidate.summary);
+    yield* publish((state) => ({ ...state, hosts: hostSummaries }));
+    yield* setHostStatus(host.id, { status: "ready" });
+    return { hostId: host.id, ...ready };
+  }, lifecycleLock.withPermit);
+  const agentReadinessIfSupported: DeviceService["Service"]["agentReadinessIfSupported"] = (
+    hostId,
+  ) => agentReadiness(hostId);
 
   const currentReadiness: DeviceService["Service"]["currentReadiness"] = (hostId) =>
     resolveHost(hostId).pipe(
@@ -905,7 +927,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       agentTarget: (input) =>
         Effect.gen(function* () {
           const host = yield* resolveHost(input.hostId);
-          const ready = yield* agentReadinessIfSupported(input.hostId);
+          const ready = yield* agentReadiness(input.hostId, input.threadId);
           if (!ready)
             return yield* new DeviceHostUnavailableError({
               hostId: input.hostId,
@@ -914,6 +936,11 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
             });
           const configPath = yield* lifecycleLock.withPermit(
             Effect.gen(function* () {
+              if (!(yield* agentAccessFor(input.threadId)))
+                return yield* new DeviceHostUnavailableError({
+                  hostId: input.hostId,
+                  reason: "Agent device access is not enabled for the calling project.",
+                });
               if (hosts.get(host.id) !== host)
                 return yield* new DeviceHostUnavailableError({
                   hostId: host.id,
@@ -974,6 +1001,8 @@ export const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const runner = yield* ProcessRunner.ProcessRunner;
   const settings = yield* ServerSettings.ServerSettingsService;
+  const projections = yield* Effect.serviceOption(ProjectionStore.ProjectionStoreV2);
+  const projects = yield* Effect.serviceOption(ProjectStore.ProjectStoreV2);
   const scope = yield* Scope.Scope;
   const hosts = new Map<DeviceHostId, DeviceHost.DeviceHost["Service"]>([
     [localHost.id, localHost],
@@ -1037,6 +1066,14 @@ export const make = Effect.gen(function* () {
             }),
         ),
       ),
+    (threadId) =>
+      Effect.gen(function* () {
+        if (Option.isNone(projections) || Option.isNone(projects)) return null;
+        const thread = yield* projections.value.getThreadShell(threadId);
+        if (thread === null) return null;
+        const project = yield* projects.value.get(thread.projectId);
+        return Option.isSome(project) ? project.value.projectId : null;
+      }).pipe(Effect.orElseSucceed(() => null)),
   );
   const hostContext =
     yield* Effect.context<Effect.Services<ReturnType<typeof SshDeviceHost.make>>>();

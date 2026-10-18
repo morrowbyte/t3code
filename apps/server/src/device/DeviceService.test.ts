@@ -4,6 +4,7 @@ import {
   DeviceId,
   DeviceOperationError,
   LOCAL_DEVICE_HOST_ID,
+  ProjectId,
   ThreadId,
   type DeviceServiceState,
   type ServerSettings as Settings,
@@ -83,6 +84,7 @@ const fixture = Effect.fn("fixture")(function* (
     | DeviceHost.AgentDeviceStartError,
   inspectError = false,
   installTool?: Parameters<typeof DeviceService.makeWithHosts>[3],
+  projectForThread?: Parameters<typeof DeviceService.makeWithHosts>[4],
 ) {
   const settings = yield* Ref.make(DEFAULT_SERVER_SETTINGS);
   const starts: string[] = [];
@@ -148,8 +150,9 @@ const fixture = Effect.fn("fixture")(function* (
   const service = yield* DeviceService.makeWithHosts(
     new Map([[host.id, host]]),
     undefined,
-    undefined,
+    projectForThread === undefined ? undefined : () => Effect.succeed("/test-agent-config.json"),
     installTool,
+    projectForThread,
   ).pipe(
     Effect.provide(NodeCrypto.layer),
     Effect.provideService(DeviceHost.DeviceHost, host),
@@ -232,6 +235,72 @@ const fixture = Effect.fn("fixture")(function* (
 });
 
 describe("device setup consent", () => {
+  it.effect(
+    "honors the calling project's current device access without granting other projects",
+    () =>
+      Effect.gen(function* () {
+        const allowed = ThreadId.make("mobile-thread");
+        const denied = ThreadId.make("other-thread");
+        const project = ProjectId.make("mobile-project");
+        const otherProject = ProjectId.make("other-project");
+        const { service, settings, agentStarts } = yield* fixture(
+          Effect.void,
+          undefined,
+          false,
+          undefined,
+          false,
+          undefined,
+          (threadId) =>
+            Effect.succeed(
+              threadId === allowed ? project : threadId === denied ? otherProject : null,
+            ),
+        );
+        yield* Ref.update(settings, (current) => ({
+          ...current,
+          enableDeviceSupport: true,
+          enableAgentDeviceAccess: false,
+          projectSettingsOverrides: {
+            [project]: { enableAgentDeviceAccess: true },
+            [otherProject]: { enableAgentDeviceAccess: false },
+          },
+        }));
+        const target = (threadId: ThreadId) =>
+          service.agentTarget({
+            threadId,
+            hostId: LOCAL_DEVICE_HOST_ID,
+            deviceId: DeviceId.make("emulator-5554"),
+          });
+        expect(yield* service.agentReadinessIfSupported()).toBeNull();
+        expect(yield* target(allowed)).toEqual([
+          "--config",
+          "/test-agent-config.json",
+          "--session",
+          expect.any(String),
+        ]);
+        expect(agentStarts).toHaveLength(1);
+        for (const thread of [denied, ThreadId.make("unknown-thread")]) {
+          expect(yield* target(thread).pipe(Effect.result)).toMatchObject({ _tag: "Failure" });
+        }
+        expect(agentStarts).toHaveLength(1);
+        yield* Ref.update(settings, (current) => ({
+          ...current,
+          enableAgentDeviceAccess: true,
+          projectSettingsOverrides: { [project]: { enableAgentDeviceAccess: false } },
+        }));
+        expect(yield* target(allowed).pipe(Effect.result)).toMatchObject({ _tag: "Failure" });
+        expect(
+          yield* target(ThreadId.make("deleted-project-thread")).pipe(Effect.result),
+        ).toMatchObject({ _tag: "Failure" });
+        yield* Ref.update(settings, (current) => ({
+          ...current,
+          enableDeviceSupport: false,
+          projectSettingsOverrides: { [project]: { enableAgentDeviceAccess: true } },
+        }));
+        expect(yield* target(allowed).pipe(Effect.result)).toMatchObject({ _tag: "Failure" });
+        expect(agentStarts).toHaveLength(1);
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("exposes daemon startup diagnostics through agent readiness and host status", () =>
     Effect.gen(function* () {
       const startupError = new DeviceHost.AgentDeviceStartError({
