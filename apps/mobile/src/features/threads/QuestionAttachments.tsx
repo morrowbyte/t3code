@@ -3,7 +3,11 @@ import { TextInputWrapper } from "expo-paste-input";
 import { AppTextInput as TextInput } from "../../components/ui/AppText";
 import { useNativePaste } from "../../lib/useNativePaste";
 import { convertPastedImagesToAttachments } from "../../lib/composerImages";
-import { PROVIDER_SEND_TURN_MAX_ATTACHMENTS, type UserInputQuestion } from "@t3tools/contracts";
+import {
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  type ScopedThreadRef,
+  type UserInputQuestion,
+} from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { View } from "react-native";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
@@ -29,6 +33,7 @@ import {
 } from "../../state/question-attachments";
 
 export function QuestionAttachments(props: {
+  origin?: ScopedThreadRef | undefined;
   requestId: string;
   question: UserInputQuestion;
   questions: ReadonlyArray<UserInputQuestion>;
@@ -38,14 +43,19 @@ export function QuestionAttachments(props: {
   onInputFocusChange?: ((focused: boolean) => void) | undefined;
 }) {
   const { selectedThread } = useThreadSelection();
+  const origin =
+    props.origin ??
+    (selectedThread
+      ? { environmentId: selectedThread.environmentId, threadId: selectedThread.id }
+      : null);
   const navigation = useNavigation();
   const [previewFile, setPreviewFile] = useState<FilePreviewSource | null>(null);
   const [previewVideo, setPreviewVideo] = useState<VideoPreviewSource | null>(null);
   const configs = useServerConfigs();
   const drafts = useAtomValue(composerDraftsAtom);
   const scopeKey = JSON.stringify([
-    selectedThread?.environmentId,
-    selectedThread?.id,
+    origin?.environmentId,
+    origin?.threadId,
     props.requestId,
     props.question.id,
   ]);
@@ -69,12 +79,12 @@ export function QuestionAttachments(props: {
     key: string,
     attachments: Parameters<typeof appendComposerDraftAttachments>[1],
   ) => {
-    if (!selectedThread) return 0;
+    if (!origin) return 0;
     const current = appAtomRegistry.get(composerDraftsAtom);
     const otherCount = props.questions.reduce((count, question) => {
       const target = questionAttachmentDraftKey(
-        selectedThread.environmentId,
-        selectedThread.id,
+        origin.environmentId,
+        origin.threadId,
         props.requestId,
         question.id,
       );
@@ -87,14 +97,14 @@ export function QuestionAttachments(props: {
   const paste = useNativePaste((uris) => {
     const scope = pickerScope.current;
     if (
-      !selectedThread ||
+      !origin ||
       props.disabled ||
-      !configs.get(selectedThread.environmentId)?.environment.capabilities.questionAttachments
+      !configs.get(origin.environmentId)?.environment.capabilities.questionAttachments
     )
       return;
     const key = questionAttachmentDraftKey(
-      selectedThread.environmentId,
-      selectedThread.id,
+      origin.environmentId,
+      origin.threadId,
       props.requestId,
       props.question.id,
     );
@@ -120,8 +130,8 @@ export function QuestionAttachments(props: {
       )
       .finally(() => changeQuestionAttachmentPreparation(key, -1));
   });
-  if (!selectedThread || props.question.allowCustomAnswer === false) return null;
-  const { environmentId, id: threadId } = selectedThread;
+  if (!origin || props.question.allowCustomAnswer === false) return null;
+  const { environmentId, threadId } = origin;
   const capabilities = configs.get(environmentId)?.environment.capabilities;
   const canAttach = capabilities?.questionAttachments === true;
   const key = questionAttachmentDraftKey(
