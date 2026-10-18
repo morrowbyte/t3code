@@ -1127,8 +1127,25 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
         requestId,
         answers: { color: "  Blue  " },
       };
-      const accepted = yield* orchestrator.dispatch(command);
-      const repeated = yield* orchestrator.dispatch(command);
+      const competingCommands = [
+        command,
+        { ...command, commandId: CommandId.make("runtime-async-question-answer-child") },
+      ];
+      const responses = yield* Effect.all(
+        competingCommands.map((candidate) =>
+          orchestrator.dispatch(candidate).pipe(
+            Effect.result,
+            Effect.map((result) => ({ command: candidate, result })),
+          ),
+        ),
+        { concurrency: 2 },
+      );
+      assert.equal(responses.filter(({ result }) => result._tag === "Success").length, 1);
+      assert.equal(responses.filter(({ result }) => result._tag === "Failure").length, 1);
+      const winner = responses.find(({ result }) => result._tag === "Success");
+      if (winner?.result._tag !== "Success") return assert.fail("Expected one accepted answer.");
+      const accepted = winner.result.success;
+      const repeated = yield* orchestrator.dispatch(winner.command);
       assert.equal(repeated.sequence, accepted.sequence);
       const answered = yield* orchestrator.getThreadProjection(threadId);
       assert.equal(answered.runtimeRequests[0]?.status, "resolved");
