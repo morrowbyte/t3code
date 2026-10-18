@@ -526,7 +526,6 @@ export function filterSidebarV2VisibleThreads<
   return threads.filter(
     (thread) =>
       thread.archivedAt === null &&
-      !isSidebarSubagentThread(thread) &&
       (scopedProjectKeys === null ||
         scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
   );

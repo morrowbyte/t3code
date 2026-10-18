@@ -398,7 +398,7 @@ describe("resolveSidebarStageBadgeLabel", () => {
 });
 
 describe("sidebar thread lineage helpers", () => {
-  it("keeps only top-level, unarchived threads in the Sidebar V2 project scope", () => {
+  it("keeps feature children alongside parents and forks while respecting archive and project scope", () => {
     const parentId = ThreadId.make("thread-parent");
     const projectId = ProjectId.make("project-visible");
     const environmentId = EnvironmentId.make("environment-visible");
@@ -444,10 +444,10 @@ describe("sidebar thread lineage helpers", () => {
         [root, subagent, fork, archived, otherProject],
         new Set([`${environmentId}:${projectId}`]),
       ).map((thread) => thread.id),
-    ).toEqual([parentId, fork.id]);
+    ).toEqual([parentId, subagent.id, fork.id]);
   });
 
-  it("identifies subagent threads so the sidebar can hide them", () => {
+  it("identifies subagent lineage without changing its parent relationship", () => {
     const parentId = ThreadId.make("thread-parent");
     const subagent = makeThreadFixture({
       lineage: {
@@ -1873,7 +1873,7 @@ describe("sortLogicalProjectsForSidebar", () => {
 });
 
 describe("sortSidebarV2ProjectGroups", () => {
-  it("does not let a hidden subagent thread reorder projects", () => {
+  it("includes visible child activity when ordering projects", () => {
     const olderProjectId = ProjectId.make("project-older");
     const newerProjectId = ProjectId.make("project-newer");
     const olderRootThreadId = ThreadId.make("thread-older-root");
@@ -1901,7 +1901,7 @@ describe("sortSidebarV2ProjectGroups", () => {
         updatedAt: "2026-03-09T10:05:00.000Z",
       }),
       makeThread({
-        id: ThreadId.make("thread-hidden-subagent"),
+        id: ThreadId.make("thread-feature-child"),
         projectId: olderProjectId,
         updatedAt: "2026-03-09T10:10:00.000Z",
         lineage: {
@@ -1916,7 +1916,7 @@ describe("sortSidebarV2ProjectGroups", () => {
       sortSidebarV2ProjectGroups(projects, threads, "updated_at").map(
         (project) => project.projectKey,
       ),
-    ).toEqual(["logical-newer", "logical-older"]);
+    ).toEqual(["logical-older", "logical-newer"]);
   });
 });
 
