@@ -591,11 +591,7 @@ export function revealSidebarRouteAncestors(
 }
 
 export function buildSidebarHierarchy(input: {
-  readonly threads: readonly (SidebarHierarchyThread &
-    Pick<
-      SidebarThreadSummary,
-      "runtime" | "hasPendingApprovals" | "hasPendingUserInput" | "pendingSubagentRequest"
-    >)[];
+  readonly threads: readonly (SidebarHierarchyThread & SidebarThreadStatusInput)[];
   readonly sectionByKey: ReadonlyMap<string, SidebarSection>;
   readonly visibleKeys: ReadonlySet<string>;
   readonly workingKeys: ReadonlySet<string>;
@@ -618,6 +614,7 @@ export function buildSidebarHierarchy(input: {
           thread.hasPendingApprovals ||
           thread.hasPendingUserInput ||
           thread.pendingSubagentRequest != null ||
+          backgroundWorkHoldsCompletion(thread.source?.pendingBackgroundTasks ?? []) ||
           (thread.runtime?.status === "idle" && thread.runtime.activeRunId !== null))
       );
     }),

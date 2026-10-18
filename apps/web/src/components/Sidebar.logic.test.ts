@@ -506,6 +506,73 @@ describe("sidebar thread lineage helpers", () => {
     expect(previous.lineage.parentThreadId).toBe(root.id);
   });
 
+  it.each(["monitor", "subagent", "background_task"] as const)(
+    "keeps a completed descendant with pending %s work and its necessary ancestors visible",
+    (kind) => {
+      const root = makeThreadFixture({ id: ThreadId.make("root"), settledOverride: "settled" });
+      const intermediate = makeThreadFixture({
+        id: ThreadId.make("intermediate"),
+        lineage: {
+          rootThreadId: root.id,
+          parentThreadId: root.id,
+          relationshipToParent: "subagent",
+        },
+      });
+      const descendant = presentThreadShell(root.environmentId, {
+        ...makeThreadFixture({
+          id: ThreadId.make("background-descendant"),
+          lineage: { ...intermediate.lineage, parentThreadId: intermediate.id },
+        }).source,
+        latestRunId: RunId.make("completed-run"),
+        status: "completed",
+        pendingBackgroundTasks: [{ taskId: "pending-work", kind }],
+      });
+      const historical = { ...intermediate, id: ThreadId.make("historical"), source: undefined };
+      const command = presentThreadShell(root.environmentId, {
+        ...intermediate.source,
+        id: ThreadId.make("background-command"),
+        latestRunId: RunId.make("completed-command-run"),
+        status: "completed",
+        pendingBackgroundTasks: [{ taskId: "command", kind: "command" }],
+      });
+      const threads = [root, intermediate, descendant, historical, command];
+      const key = (thread: { environmentId: string; id: string }) =>
+        `${thread.environmentId}:${thread.id}`;
+      const input = {
+        threads,
+        sectionByKey: new Map(threads.map((thread) => [key(thread), "settled" as const])),
+        visibleKeys: new Set<string>(),
+        workingKeys: new Set(threads.filter(isSidebarThreadWorking).map(key)),
+        expandedKeys: new Set([key(root)]),
+        activeKey: null,
+        workingShelfEnabled: true,
+      };
+      expect(descendant.latestRun?.status).toBe("completed");
+      expect(descendant.runtime).toMatchObject({ status: "idle", activeRunId: null });
+      expect(input.workingKeys.has(key(descendant))).toBe(true);
+      const rows = buildSidebarHierarchy(input);
+      expect(rows.map((row) => [row.key, row.depth, row.displaySection])).toEqual([
+        [key(root), 0, "working"],
+        [key(intermediate), 1, "working"],
+        [key(descendant), 2, "working"],
+      ]);
+      expect(rows[0]).toMatchObject({ descendantCount: 2, activeDescendantCount: 1 });
+      expect(buildSidebarHierarchy({ ...input, closedKeys: new Set([key(root)]) })).toMatchObject([
+        { key: key(root), expanded: false, activeDescendantCount: 1 },
+      ]);
+      expect(
+        buildSidebarHierarchy({
+          ...input,
+          threads: threads.map((thread) =>
+            thread === descendant
+              ? { ...thread, source: { ...thread.source, pendingBackgroundTasks: [] } }
+              : thread,
+          ),
+        }),
+      ).toEqual([]);
+    },
+  );
+
   it("keeps explicit collapse through selected routes and activity, with descendant counts on the parent", () => {
     const parent = makeThreadFixture({ id: ThreadId.make("parent") });
     const child = (id: string, parentId: string) =>
