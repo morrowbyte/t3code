@@ -57,6 +57,7 @@ import {
 } from "../../lib/attachmentUploadState";
 import { prepareImageForAttachment } from "../../lib/imageCompression";
 import { useEnvironment } from "../../state/environments";
+import { randomUUID } from "../../lib/utils";
 import { useProject, useThreadShell } from "../../state/entities";
 import ChatMarkdown from "../ChatMarkdown";
 import {
@@ -823,7 +824,7 @@ function QuestionAttachmentPicker({
           if (!prepared.ok) throw new Error(`'${file.name}' could not be prepared as an image.`);
           attachment = {
             type: "image",
-            id: crypto.randomUUID(),
+            id: randomUUID(),
             name: prepared.file.name || "image",
             mimeType: prepared.file.type,
             sizeBytes: prepared.file.size,
@@ -844,7 +845,7 @@ function QuestionAttachmentPicker({
               : new File([file], file.name, { type: mimeType, lastModified: file.lastModified });
           attachment = {
             type: "file",
-            id: crypto.randomUUID(),
+            id: randomUUID(),
             name: normalized.name || "file",
             mimeType,
             sizeBytes: normalized.size,
