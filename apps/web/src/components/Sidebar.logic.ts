@@ -546,7 +546,7 @@ export interface SidebarHierarchyRow {
 type SidebarHierarchyThread = Pick<
   SidebarThreadSummary,
   "id" | "environmentId" | "projectId" | "lineage"
-> & { readonly presentation?: "default" | "top_level" };
+> & { readonly presentation?: "default" | "top_level" | undefined };
 
 export interface SidebarFamilyDisclosure {
   readonly routeKey: string | null;
