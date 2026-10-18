@@ -11,6 +11,7 @@ import type {
   KnownComposerContextRecord,
   MessageId,
   OrchestrationMessageContext,
+  SpeechTranscription,
   PreviewAnnotationContextRecord,
   PreviewAnnotationPayload,
   ReviewCommentContextRecord,
@@ -307,6 +308,7 @@ export function attachmentContextRecord(
 }
 
 export function buildMessageContext(input: {
+  speechTranscription?: SpeechTranscription | undefined;
   terminalContexts: ReadonlyArray<TerminalContextDraft>;
   reviewComments: ReadonlyArray<ReviewCommentContext>;
   previewAnnotations: ReadonlyArray<PreviewAnnotationPayload>;
@@ -329,7 +331,15 @@ export function buildMessageContext(input: {
     ),
     ...(input.attachments ?? []).map(attachmentContextRecord),
   ];
-  return records.length === 0 ? undefined : { version: 1, records };
+  return records.length === 0 && !input.speechTranscription?.ranges.length
+    ? undefined
+    : {
+        version: 1,
+        records,
+        ...(input.speechTranscription?.ranges.length
+          ? { speechTranscription: input.speechTranscription }
+          : {}),
+      };
 }
 
 export function asKnownContextRecord(

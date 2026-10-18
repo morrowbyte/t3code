@@ -1,3 +1,4 @@
+import { speechTranscriptionPrompt } from "@t3tools/shared/speechTranscription";
 import {
   AbsolutePath,
   Agent,
@@ -3259,7 +3260,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         .prompt({
           sessionID,
           id,
-          text: promptText(turnInput),
+          text: speechTranscriptionPrompt(turnInput.message, promptText(turnInput)),
           ...(skills.length === 0
             ? {}
             : { skills: skills.map((id) => ({ id: Skill.ID.make(id) })) }),
@@ -3585,7 +3586,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
               sessionID: Session.ID.make(sessionId),
               id: inboxID,
               text: providerMessageTextWithAttachmentPaths({
-                text: steerInput.message.text,
+                text: speechTranscriptionPrompt(steerInput.message, steerInput.message.text),
                 attachments: steerInput.message.attachments,
                 resolveAttachmentPath: host.resolveAttachmentPath,
               }).trim(),

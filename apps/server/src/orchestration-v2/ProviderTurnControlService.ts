@@ -1,4 +1,5 @@
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
+import { hasSpeechTranscription } from "@t3tools/shared/speechTranscription";
 import {
   MessageId,
   type NodeId,
@@ -357,6 +358,12 @@ export const layer: Layer.Layer<
               providerTurnId: loaded.providerTurn.id,
               message: {
                 messageId: message.id,
+                ...(hasSpeechTranscription(
+                  message.text,
+                  message.context?.speechTranscription?.ranges,
+                )
+                  ? { containsSpeechTranscription: true as const }
+                  : {}),
                 text: projectComposerContextForProvider({
                   text: message.text,
                   records: message.context?.records ?? [],

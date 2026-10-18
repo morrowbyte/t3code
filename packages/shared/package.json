@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./speechTranscription": {
+      "types": "./src/speechTranscription.ts",
+      "import": "./src/speechTranscription.ts"
+    },
     "./updateHistory": {
       "types": "./src/updateHistory.ts",
       "import": "./src/updateHistory.ts"

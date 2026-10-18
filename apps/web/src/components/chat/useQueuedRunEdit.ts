@@ -4,6 +4,7 @@ import {
   type EnvironmentId,
   type MessageId,
   type OrchestrationMessageContext,
+  type SpeechTranscription,
   type OrchestrationV2ThreadProjection,
   type PreviewAnnotationPayload,
   type RunId,
@@ -14,6 +15,10 @@ import {
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { ATTACHMENT_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerContextReferences";
 import { useEffect, useRef, useState, type RefObject } from "react";
+import {
+  editSpeechTranscriptionRanges,
+  hasSpeechTranscription,
+} from "@t3tools/shared/speechTranscription";
 import { useAssetUrls } from "../../assets/assetUrls";
 import {
   DraftId,
@@ -55,6 +60,7 @@ interface EditingQueuedRun {
 /** What the composer holds when the user saves a queued-message edit. */
 export interface QueuedRunEditContent {
   readonly prompt: string;
+  readonly speechTranscription?: SpeechTranscription | undefined;
   readonly images: ReadonlyArray<ComposerImageAttachment>;
   readonly files: ReadonlyArray<ComposerFileAttachment>;
   readonly terminalContexts: ReadonlyArray<TerminalContextDraft>;
@@ -137,6 +143,17 @@ async function submitQueuedRunEdit(input: {
           attachments: uploads,
           context: {
             version: 1,
+            ...(hasSpeechTranscription(content.prompt, content.speechTranscription?.ranges)
+              ? {
+                  speechTranscription: {
+                    ranges: editSpeechTranscriptionRanges(
+                      content.prompt,
+                      editText,
+                      content.speechTranscription?.ranges,
+                    ),
+                  },
+                }
+              : {}),
             records: [
               ...new Map(
                 [...keptRecords, ...newRecords].map(
@@ -223,7 +240,11 @@ export function useQueuedRunEdit(input: {
     const target = queuedEditDraftTarget(routeThreadRef, request.runId);
     const store = useComposerDraftStore.getState();
     store.clearComposerContent(target);
-    store.setPrompt(target, request.text);
+    store.setPrompt(target, request.text, {
+      speechTranscription: serverProjection?.messages.find(
+        (message) => message.id === request.messageId,
+      )?.context?.speechTranscription,
+    });
     setEditing({
       threadId: activeThreadId,
       runId: request.runId,

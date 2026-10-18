@@ -584,6 +584,61 @@ describe("CodexAdapterV2 assistant message streaming", () => {
 });
 
 describe("CodexAdapterV2 runtime policy", () => {
+  it.effect(
+    "delivers speech transcription provenance only for the marked user message without replacing developer context",
+    () =>
+      Effect.gen(function* () {
+        const message = {
+          messageId: MessageId.make("speech-message"),
+          text: "Plain37",
+          attachments: [],
+          createdBy: "user" as const,
+          creationSource: "web" as const,
+        };
+        const base = {
+          nativeThreadId: "native-speech",
+          codexInput: [{ type: "text" as const, text: message.text }],
+          runtimePolicy: {
+            runtimeMode: "full-access" as const,
+            interactionMode: "default" as const,
+            cwd: null,
+          },
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" },
+          hasT3Mcp: true,
+        };
+        const before = JSON.stringify(message);
+        const typed = yield* CodexAdapterV2.buildCodexTurnStartParams({ ...base, message });
+        const dictated = yield* CodexAdapterV2.buildCodexTurnStartParams({
+          ...base,
+          message: { ...message, containsSpeechTranscription: true },
+        });
+        assert.equal(dictated.additionalContext?.t3_code_speech_transcription?.kind, "application");
+        assert.include(
+          dictated.additionalContext?.t3_code_speech_transcription?.value ?? "",
+          'only for user message "speech-message"',
+        );
+        assert.isUndefined(typed.additionalContext?.t3_code_speech_transcription);
+        assert.deepEqual(
+          dictated.additionalContext?.t3_code_runtime,
+          typed.additionalContext?.t3_code_runtime,
+        );
+        assert.deepEqual(
+          dictated.additionalContext?.t3_code_orchestration,
+          typed.additionalContext?.t3_code_orchestration,
+        );
+        assert.deepEqual(dictated.input, typed.input);
+        assert.equal(JSON.stringify(message), before);
+        const handoff = yield* CodexAdapterV2.buildCodexTurnStartParams({
+          ...base,
+          message: {
+            ...message,
+            containsSpeechTranscription: true,
+            senderThreadId: ThreadId.make("other-thread"),
+          },
+        });
+        assert.isUndefined(handoff.additionalContext?.t3_code_speech_transcription);
+      }),
+  );
   it.effect("derives concrete Codex turn policies from every T3 runtime mode", () =>
     Effect.gen(function* () {
       const build = (

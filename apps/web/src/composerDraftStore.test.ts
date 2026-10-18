@@ -65,6 +65,7 @@ import {
   COMPOSER_DRAFT_STORAGE_KEY,
   clearComposerDraftsEnvironment,
   composerDraftHasUserContent,
+  composerTargetKey,
   beginBackgroundDraftSubmissionByRef,
   clearBackgroundDraftSubmissionByRef,
   finalizePromotedDraftThreadByRef,
@@ -78,6 +79,11 @@ import {
   DraftId,
 } from "./composerDraftStore";
 import { removeLocalStorageItem, setLocalStorageItem } from "./hooks/useLocalStorage";
+import { buildMessageContext } from "./lib/composerContextRecords";
+import {
+  hasSpeechTranscription,
+  speechTranscriptionContext,
+} from "@t3tools/shared/speechTranscription";
 import { insertInlineContextReference } from "./lib/composerContextReferences";
 import { terminalContextReference, threadContextRecord } from "./lib/composerContextRecords";
 import {
@@ -195,6 +201,109 @@ function draftFor(threadId: ThreadId, environmentId: EnvironmentId = LEGACY_TEST
 function draftByKey(key: string) {
   return useComposerDraftStore.getState().draftsByThreadKey[key] ?? undefined;
 }
+
+describe("speech transcription provenance", () => {
+  beforeEach(resetComposerDraftStore);
+  afterEach(resetComposerDraftStore);
+
+  it("marks only successful inserted speech and retains only its remaining ranges in a mixed draft", () => {
+    const target = DraftId.make("speech-provenance");
+    const store = useComposerDraftStore.getState();
+    store.setPrompt(target, "Bitte prüfe");
+    expect(store.getComposerDraft(target)?.speechTranscription).toBeUndefined();
+    expect(store.appendSpeechTranscript(target, "Plain37")).toBe("Bitte prüfe\nPlain37");
+    const original = store.getComposerDraft(target)!;
+    expect(original.speechTranscription?.ranges).toEqual([{ start: 12, end: 19 }]);
+    store.setPrompt(target, original.prompt + " morgen", { edit: true });
+    expect(
+      hasSpeechTranscription(
+        store.getComposerDraft(target)!.prompt,
+        store.getComposerDraft(target)?.speechTranscription?.ranges,
+      ),
+    ).toBe(true);
+    store.setPrompt(target, "Bitte prüfe\n morgen", {
+      edit: true,
+      replacement: { start: 12, end: 19 },
+    });
+    expect(store.getComposerDraft(target)?.speechTranscription).toBeUndefined();
+  });
+
+  it("clears provenance on replacement, clear and history recall, including identical pasted replacement", () => {
+    const target = DraftId.make("speech-reset");
+    const store = useComposerDraftStore.getState();
+    store.appendSpeechTranscript(target, "Blain37");
+    store.setPrompt(target, "Blain37", { edit: true, replacement: { start: 0, end: 7 } });
+    expect(store.getComposerDraft(target)?.speechTranscription).toBeUndefined();
+    store.appendSpeechTranscript(target, "nochmal");
+    store.setPrompt(target, "Dies ist eine Transkription: Blain37");
+    expect(store.getComposerDraft(target)?.speechTranscription).toBeUndefined();
+    store.appendSpeechTranscript(target, "Aufnahme");
+    store.clearComposerContent(target);
+    expect(store.getComposerDraft(target)?.speechTranscription).toBeUndefined();
+    expect(store.appendSpeechTranscript(target, "   ")).toBeNull();
+    expect(store.getComposerDraft(target)?.speechTranscription).toBeUndefined();
+  });
+
+  it("carries explicit draft metadata through persistence and message context without changing source text", () => {
+    const target = DraftId.make("speech-wire");
+    const store = useComposerDraftStore.getState();
+    store.appendSpeechTranscript(target, "Plain37 ist mein Arbeits-PC");
+    const draft = store.getComposerDraft(target)!;
+    const persisted = partializeComposerDraftStoreState(useComposerDraftStore.getState());
+    expect(JSON.stringify(persisted)).toContain('"speechTranscription"');
+    const hydrated = useComposerDraftStore.persist.getOptions().merge!(
+      persisted,
+      useComposerDraftStore.getInitialState(),
+    );
+    expect(hydrated.draftsByThreadKey[composerTargetKey(target)]?.speechTranscription).toEqual(
+      draft.speechTranscription,
+    );
+    const context = buildMessageContext({
+      terminalContexts: [],
+      reviewComments: [],
+      previewAnnotations: [],
+      speechTranscription: draft.speechTranscription,
+    });
+    expect(context?.speechTranscription).toEqual(draft.speechTranscription);
+    const before = draft.prompt;
+    expect(
+      speechTranscriptionContext({
+        messageId: "speech-wire",
+        createdBy: "user",
+        containsSpeechTranscription: true,
+      }),
+    ).toContain("only for user message");
+    expect(store.getComposerDraft(target)?.prompt).toBe(before);
+  });
+
+  it("moves provenance with an unsent edit and clears the source draft", () => {
+    const source = DraftId.make("speech-move-source");
+    const destination = DraftId.make("speech-move-destination");
+    const store = useComposerDraftStore.getState();
+    store.appendSpeechTranscript(source, "Plain37");
+    store.moveComposerPromptAndImages(source, destination);
+    expect(store.getComposerDraft(destination)?.prompt).toBe("Plain37");
+    expect(store.getComposerDraft(destination)?.speechTranscription?.ranges).toEqual([
+      { start: 0, end: 7 },
+    ]);
+    expect(store.getComposerDraft(source)?.speechTranscription).toBeUndefined();
+    store.setPrompt(destination, "Getippter Ersatz");
+    expect(store.getComposerDraft(destination)?.speechTranscription).toBeUndefined();
+  });
+
+  it("keeps offsets on the remaining dictated text when an attached context reference is removed", () => {
+    const target = DraftId.make("speech-context-removal");
+    const store = useComposerDraftStore.getState();
+    const terminal = makeTerminalContext({ id: "speech-terminal" });
+    store.addTerminalContext(target, terminal);
+    store.appendSpeechTranscript(target, "Plain37");
+    store.removeTerminalContext(target, terminal.id);
+    const draft = store.getComposerDraft(target)!;
+    const range = draft.speechTranscription?.ranges[0];
+    expect(range).toBeDefined();
+    expect(draft.prompt.slice(range!.start, range!.end)).toBe("Plain37");
+  });
+});
 
 describe("composerDraftStore assistant citations", () => {
   beforeEach(resetComposerDraftStore);

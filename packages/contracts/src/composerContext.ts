@@ -258,9 +258,22 @@ export type ComposerContextRecord = typeof ComposerContextRecord.Type;
 export const COMPOSER_CONTEXT_MAX_RECORDS = 200;
 const COMPOSER_CONTEXT_MAX_SERIALIZED_CHARS = 16_000_000;
 
+export const SpeechTranscriptionRange = Schema.Struct({
+  start: NonNegativeInt,
+  end: PositiveInt,
+}).check(Schema.makeFilter((range) => range.end > range.start));
+export type SpeechTranscriptionRange = typeof SpeechTranscriptionRange.Type;
+
+/** UTF-16 offsets into the unchanged message text, recorded only by transcription insertion. */
+export const SpeechTranscription = Schema.Struct({
+  ranges: Schema.Array(SpeechTranscriptionRange).check(Schema.isMaxLength(200)),
+});
+export type SpeechTranscription = typeof SpeechTranscription.Type;
+
 /** Structured context riding on a user message. Undecodable records are dropped, not fatal. */
 export const OrchestrationMessageContext = Schema.Struct({
   version: Schema.Literal(1),
+  speechTranscription: Schema.optional(SpeechTranscription),
   records: Schema.Array(Schema.Unknown)
     .check(
       Schema.isMaxLength(COMPOSER_CONTEXT_MAX_RECORDS),

@@ -1,5 +1,6 @@
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
+import { hasSpeechTranscription } from "@t3tools/shared/speechTranscription";
 import {
   CommandId,
   latestProviderTurnForAttempt,
@@ -1237,6 +1238,9 @@ export const layer: Layer.Layer<
         hasUnpairedRunInterruptRequest: runControls.hasUnpairedRunInterruptRequest,
         message: {
           messageId: message.id,
+          ...(hasSpeechTranscription(message.text, message.context?.speechTranscription?.ranges)
+            ? { containsSpeechTranscription: true as const }
+            : {}),
           text: userText,
           attachments: message.attachments,
           createdBy: message.createdBy,

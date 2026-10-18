@@ -301,6 +301,8 @@ import { useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import * as Option from "effect/Option";
 import { transcribeVoiceRecording } from "../../voice/transcriptionClient";
+import { hasSpeechTranscription } from "@t3tools/shared/speechTranscription";
+import type { SpeechTranscription, SpeechTranscriptionRange } from "@t3tools/contracts";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
@@ -1481,6 +1483,7 @@ export interface ChatComposerHandle {
   getSendContext: () => {
     answeringPendingUserInput: boolean;
     prompt: string;
+    speechTranscription: SpeechTranscription | undefined;
     images: ComposerImageAttachment[];
     files: ComposerFileAttachment[];
     terminalContexts: TerminalContextDraft[];
@@ -3115,7 +3118,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       return;
     }
     promptRef.current = nextPrompt;
-    setComposerDraftPrompt(composerDraftTarget, nextPrompt);
+    setComposerDraftPrompt(composerDraftTarget, nextPrompt, { edit: true });
     const nextCursor = collapseExpandedComposerCursor(nextPrompt, nextPrompt.length);
     setComposerCursor(nextCursor);
     setComposerTrigger(detectComposerTrigger(nextPrompt, nextPrompt.length));
@@ -3197,17 +3200,23 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const showMobilePendingAnswerActions =
     isMobileViewport && !isComposerCollapsedMobile && pendingPrimaryAction !== null;
 
+  const speechReplacementRef = useRef<SpeechTranscriptionRange | undefined>(undefined);
   const setPrompt = (nextPrompt: string) => {
-    setComposerDraftPrompt(composerDraftTarget, nextPrompt);
+    setComposerDraftPrompt(composerDraftTarget, nextPrompt, {
+      edit: true,
+      replacement: speechReplacementRef.current,
+    });
+    speechReplacementRef.current = undefined;
   };
 
   const insertVoiceTranscript = (transcript: string, targetKey: string) => {
-    if (voiceDraftTargetKeyRef.current !== targetKey) return false;
-    const currentPrompt = promptRef.current;
-    const separator = currentPrompt.length === 0 || /\s$/.test(currentPrompt) ? "" : "\n";
-    const nextPrompt = `${currentPrompt}${separator}${transcript}`;
+    if (voiceDraftTargetKeyRef.current !== targetKey || !transcript.trim()) return false;
+    const nextPrompt = useComposerDraftStore
+      .getState()
+      .appendSpeechTranscript(composerDraftTarget, transcript);
+    if (nextPrompt === null) return false;
+    speechReplacementRef.current = undefined;
     promptRef.current = nextPrompt;
-    setPrompt(nextPrompt);
     setComposerCursor(collapseExpandedComposerCursor(nextPrompt, nextPrompt.length));
     setComposerTrigger(null);
     scheduleComposerFocus();
@@ -4616,7 +4625,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     let promptChanged = nextPrompt !== currentPrompt;
     if (promptChanged) {
       promptRef.current = nextPrompt;
-      setComposerDraftPrompt(composerDraftTarget, nextPrompt);
+      setComposerDraftPrompt(composerDraftTarget, nextPrompt, { edit: true });
       setComposerCursor(collapseExpandedComposerCursor(nextPrompt, nextPrompt.length));
       setComposerTrigger(null);
     }
@@ -5954,6 +5963,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   };
 
   const onComposerPaste = (event: React.ClipboardEvent<HTMLElement>) => {
+    const replacement = composerEditorRef.current?.readSelectionRange();
+    speechReplacementRef.current =
+      replacement && replacement.start < replacement.end ? replacement : undefined;
     const files = Array.from(event.clipboardData.files);
     const plainText = event.clipboardData.getData("text/plain");
     const bypassAutoAttachment = consumePasteAsTextShortcut(pasteAsTextShortcutUntilRef);
@@ -6494,6 +6506,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       getSendContext: () => ({
         answeringPendingUserInput: activePendingProgress !== null,
         prompt: promptRef.current,
+        speechTranscription: (() => {
+          const draft = getComposerDraft(composerDraftTarget);
+          return draft?.prompt === promptRef.current &&
+            hasSpeechTranscription(draft.prompt, draft.speechTranscription?.ranges)
+            ? draft.speechTranscription
+            : undefined;
+        })(),
         images: composerImagesRef.current,
         files: composerFilesRef.current,
         terminalContexts: composerTerminalContextsRef.current,
@@ -7373,6 +7392,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
               <div
                 className={cn("relative", isComposerResting && "flex min-w-0 items-center gap-1")}
+                onBeforeInputCapture={() => {
+                  const range = composerEditorRef.current?.readSelectionRange();
+                  speechReplacementRef.current =
+                    range && range.start < range.end ? range : undefined;
+                }}
                 style={
                   isComposerResting && restingActionsWidth !== null
                     ? { paddingRight: `calc(${restingActionsWidth}px + 1rem)` }

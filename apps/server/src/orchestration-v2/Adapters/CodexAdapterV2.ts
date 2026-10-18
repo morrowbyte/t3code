@@ -1,5 +1,9 @@
 import { AgentObservatoryIntent, AgentObservatoryInvocationResult } from "@t3tools/contracts";
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
+import {
+  speechTranscriptionContext,
+  speechTranscriptionPrompt,
+} from "@t3tools/shared/speechTranscription";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import {
@@ -812,6 +816,7 @@ function codexRuntimeModeTurnDefaults(runtimeMode: RuntimeMode): {
 
 export function buildCodexTurnStartParams(input: {
   readonly nativeThreadId: string;
+  readonly message?: ProviderAdapter.ProviderAdapterV2TurnMessage;
   readonly codexInput: ReadonlyArray<CodexSchema.V2TurnStartParams__UserInput>;
   readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
   readonly modelSelection: ModelSelection;
@@ -878,6 +883,7 @@ export function buildCodexTurnStartParams(input: {
       t3Context === undefined && Object.keys(appContext).length === 0
         ? undefined
         : { ...t3Context, ...appContext };
+    const speechOrigin = speechTranscriptionContext(input.message);
     const collaborationMode: CodexSchema.ClientRequest__CollaborationMode | undefined =
       input.runtimePolicy.interactionMode !== "plan" && developerInstructions === undefined
         ? undefined
@@ -896,6 +902,14 @@ export function buildCodexTurnStartParams(input: {
       threadId: input.nativeThreadId,
       input: input.codexInput,
       ...(additionalContext ? { additionalContext } : {}),
+      ...(speechOrigin
+        ? {
+            additionalContext: {
+              ...additionalContext,
+              t3_code_speech_transcription: { kind: "application" as const, value: speechOrigin },
+            },
+          }
+        : {}),
       cwd: input.runtimePolicy.cwd,
       model: input.modelSelection.model,
       // Model catalogues can default summaries to "none". Request them on every
@@ -6327,6 +6341,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const mcpSession = yield* mcpSessions.read(turnInput.threadId);
             const turnStartParams = yield* buildCodexTurnStartParams({
               nativeThreadId: threadId,
+              message: turnInput.message,
               codexInput,
               runtimePolicy: turnInput.runtimePolicy,
               modelSelection: turnInput.modelSelection,
@@ -6982,7 +6997,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 );
               }
 
-              const codexInput = yield* toCodexInput(turnInput);
+              const codexInput = yield* toCodexInput({
+                ...turnInput,
+                message: {
+                  ...turnInput.message,
+                  text: speechTranscriptionPrompt(turnInput.message, turnInput.message.text),
+                },
+              });
               yield* client.request("turn/steer", {
                 expectedTurnId: activeTurn.nativeTurnId,
                 input: codexInput,
