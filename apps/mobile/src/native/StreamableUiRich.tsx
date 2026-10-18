@@ -774,6 +774,56 @@ function spacedIndices(length: number, maximum: number) {
   );
 }
 
+function scatterHitRegions(
+  points: Array<{ index: number; x: number; y: number }>,
+  width: number,
+  height: number,
+) {
+  // Split the plot at perpendicular bisectors, so repeated X values stay tappable.
+  return points.map((point) => {
+    let polygon = [
+      { x: 0, y: 0 },
+      { x: width, y: 0 },
+      { x: width, y: height },
+      { x: 0, y: height },
+    ];
+    for (const other of points) {
+      const dx = other.x - point.x;
+      const dy = other.y - point.y;
+      if ((dx === 0 && dy === 0) || polygon.length === 0) continue;
+      const middleX = (point.x + other.x) / 2;
+      const middleY = (point.y + other.y) / 2;
+      const distance = (vertex: { x: number; y: number }) =>
+        (vertex.x - middleX) * dx + (vertex.y - middleY) * dy;
+      const clipped: typeof polygon = [];
+      for (let index = 0; index < polygon.length; index++) {
+        const from = polygon[index]!;
+        const to = polygon[(index + 1) % polygon.length]!;
+        const fromDistance = distance(from);
+        const toDistance = distance(to);
+        if (fromDistance <= 0) clipped.push(from);
+        if (fromDistance <= 0 !== toDistance <= 0) {
+          const fraction = fromDistance / (fromDistance - toDistance);
+          clipped.push({
+            x: from.x + (to.x - from.x) * fraction,
+            y: from.y + (to.y - from.y) * fraction,
+          });
+        }
+      }
+      polygon = clipped;
+    }
+    return {
+      index: point.index,
+      path:
+        polygon.length === 0
+          ? ""
+          : polygon
+              .map((vertex, index) => `${index === 0 ? "M" : "L"}${vertex.x} ${vertex.y}`)
+              .join(" ") + "Z",
+    };
+  });
+}
+
 function CartesianChart({
   chart,
   isStreaming,
@@ -880,6 +930,19 @@ function CartesianChart({
   const hitOrder = model.categories
     .map((_, index) => index)
     .sort((a, b) => categorical(a) - categorical(b));
+  const scatterRegions = scatter
+    ? scatterHitRegions(
+        layers.flatMap((layer) =>
+          layer.samples.flatMap((sample) =>
+            sample.value === null
+              ? []
+              : [{ index: sample.index, x: pointX(sample), y: pointY(sample) }],
+          ),
+        ),
+        plotWidth,
+        height,
+      )
+    : [];
   return (
     <View>
       <View style={{ height, marginLeft: axisWidth }}>
@@ -992,31 +1055,42 @@ function CartesianChart({
               />
             ) : null}
           </G>
-          {hitOrder.map((index, position) => {
-            const previous = hitOrder[position - 1];
-            const next = hitOrder[position + 1];
-            const start =
-              previous === undefined ? 0 : (categorical(previous) + categorical(index)) / 2;
-            const end =
-              next === undefined
-                ? horizontal
-                  ? height
-                  : plotWidth
-                : (categorical(index) + categorical(next)) / 2;
-            return (
-              <Rect
-                key={index}
-                accessible
-                accessibilityLabel={`${categoryDescription(chart, model, index)}. Show chart tooltip${selected === index ? ", selected" : ""}`}
-                x={horizontal ? 0 : start}
-                y={horizontal ? start : 0}
-                width={horizontal ? plotWidth : end - start}
-                height={horizontal ? end - start : height}
-                fill="transparent"
-                onPress={() => onSelect(selected === index ? null : index)}
-              />
-            );
-          })}
+          {scatter
+            ? scatterRegions.map((region, position) => (
+                <Path
+                  key={position}
+                  accessible
+                  accessibilityLabel={`${categoryDescription(chart, model, region.index)}. Show chart tooltip${selected === region.index ? ", selected" : ""}`}
+                  d={region.path}
+                  fill="transparent"
+                  onPress={() => onSelect(selected === region.index ? null : region.index)}
+                />
+              ))
+            : hitOrder.map((index, position) => {
+                const previous = hitOrder[position - 1];
+                const next = hitOrder[position + 1];
+                const start =
+                  previous === undefined ? 0 : (categorical(previous) + categorical(index)) / 2;
+                const end =
+                  next === undefined
+                    ? horizontal
+                      ? height
+                      : plotWidth
+                    : (categorical(index) + categorical(next)) / 2;
+                return (
+                  <Rect
+                    key={index}
+                    accessible
+                    accessibilityLabel={`${categoryDescription(chart, model, index)}. Show chart tooltip${selected === index ? ", selected" : ""}`}
+                    x={horizontal ? 0 : start}
+                    y={horizontal ? start : 0}
+                    width={horizontal ? plotWidth : end - start}
+                    height={horizontal ? end - start : height}
+                    fill="transparent"
+                    onPress={() => onSelect(selected === index ? null : index)}
+                  />
+                );
+              })}
         </Svg>
       </View>
       {horizontal

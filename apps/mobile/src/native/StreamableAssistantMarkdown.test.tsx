@@ -100,9 +100,52 @@ vi.mock("react-native-svg", () => ({
   G: ({ children }: { children?: ReactNode }) => <g>{children}</g>,
   Text: ({ children }: { children?: ReactNode }) => <text>{children}</text>,
   Circle: ({ cx, cy }: { cx: number; cy: number }) => <circle cx={cx} cy={cy} />,
-  Path: () => <path />,
+  Path: ({
+    d,
+    accessible,
+    accessibilityLabel,
+    onPress,
+  }: {
+    d?: string;
+    accessible?: boolean;
+    accessibilityLabel?: string;
+    onPress?: () => void;
+  }) => (
+    <path
+      d={d}
+      role={accessible ? "button" : undefined}
+      aria-label={accessibilityLabel}
+      onClick={onPress}
+    />
+  ),
   Polyline: ({ points }: { points: string }) => <polyline points={points} />,
-  Rect: () => <rect />,
+  Rect: ({
+    x = 0,
+    y = 0,
+    width,
+    height,
+    accessible,
+    accessibilityLabel,
+    onPress,
+  }: {
+    x?: number;
+    y?: number;
+    width?: number;
+    height?: number;
+    accessible?: boolean;
+    accessibilityLabel?: string;
+    onPress?: () => void;
+  }) => (
+    <rect
+      x={x}
+      y={y}
+      width={width}
+      height={height}
+      role={accessible ? "button" : undefined}
+      aria-label={accessibilityLabel}
+      onClick={onPress}
+    />
+  ),
   ClipPath: ({ children }: { children?: ReactNode }) => <clipPath>{children}</clipPath>,
   Defs: ({ children }: { children?: ReactNode }) => <defs>{children}</defs>,
   Marker: ({ children }: { children?: ReactNode }) => <marker>{children}</marker>,
@@ -312,16 +355,91 @@ describe("native assistant streaming visuals", () => {
     expect(hide).not.toBeNull();
     act(() => hide!.click());
     expect(host.querySelectorAll("circle")).toHaveLength(2);
-    const category = [...host.querySelectorAll("button")].find((button) =>
+    const category = [...host.querySelectorAll('[role="button"]')].find((button) =>
       button.getAttribute("aria-label")?.startsWith("Sample: A."),
     );
     expect(category).toBeDefined();
-    act(() => category!.click());
+    act(() => category!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     const close = host.querySelector<HTMLButtonElement>('[aria-label="Close chart tooltip"]');
     expect(close).not.toBeNull();
     expect(close!.parentElement?.textContent).toContain("Fast2 jobsSlow5 jobs");
     act(() => close!.click());
     expect(host.querySelector('[aria-label="Close chart tooltip"]')).toBeNull();
+  });
+
+  it("selects each implicit scatter sample at its actual plotted position when X is repeated", () => {
+    const records = [
+      {
+        type: "chart",
+        id: "same-x",
+        kind: "scatter",
+        title: "Repeated X",
+        xLabel: "X",
+        yLabel: "Y",
+      },
+      { type: "point", id: "same-x", label: "Low", x: 5, value: -10 },
+      { type: "point", id: "same-x", label: "Middle", x: 5, value: 0 },
+      { type: "point", id: "same-x", label: "High", x: 5, value: 20 },
+      { type: "point", id: "same-x", label: "Other", x: 8, value: 4 },
+    ]
+      .map((record) => JSON.stringify(record))
+      .join("\n");
+    render(`\`\`\`t3-ui\n${records}\n\`\`\``, false);
+    const dots = [...host.querySelectorAll("circle")];
+    expect(dots).toHaveLength(4);
+    expect(new Set(dots.slice(0, 3).map((dot) => dot.getAttribute("cx"))).size).toBe(1);
+    const contains = (region: Element, x: number, y: number) => {
+      if (region.tagName === "rect") {
+        const left = Number(region.getAttribute("x"));
+        const top = Number(region.getAttribute("y"));
+        return (
+          x >= left &&
+          x <= left + Number(region.getAttribute("width")) &&
+          y >= top &&
+          y <= top + Number(region.getAttribute("height"))
+        );
+      }
+      const coordinates = region
+        .getAttribute("d")!
+        .match(/-?\d+(?:\.\d+)?(?:e[+-]?\d+)?/gi)!
+        .map(Number);
+      const vertices = Array.from(
+        { length: coordinates.length / 2 },
+        (_, index) => [coordinates[index * 2]!, coordinates[index * 2 + 1]!] as const,
+      );
+      let inside = false;
+      for (
+        let current = 0, previous = vertices.length - 1;
+        current < vertices.length;
+        previous = current++
+      ) {
+        const a = vertices[current]!;
+        const b = vertices[previous]!;
+        if (a[1] > y !== b[1] > y && x < ((b[0] - a[0]) * (y - a[1])) / (b[1] - a[1]) + a[0])
+          inside = !inside;
+      }
+      return inside;
+    };
+    for (const [index, label, value] of [
+      [1, "Middle", 0],
+      [0, "Low", -10],
+      [2, "High", 20],
+      [3, "Other", 4],
+    ] as const) {
+      const dot = dots[index]!;
+      const x = Number(dot.getAttribute("cx"));
+      const y = Number(dot.getAttribute("cy"));
+      const hits = [...host.querySelectorAll('svg [role="button"]')].filter((region) =>
+        contains(region, x, y),
+      );
+      expect(hits.length).toBeGreaterThan(0);
+      act(() => hits.at(-1)!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+      const close = host.querySelector('[aria-label="Close chart tooltip"]');
+      expect(close).not.toBeNull();
+      expect(close!.parentElement?.textContent).toContain(label);
+      expect(close!.parentElement?.textContent).toContain(`Value${value} Y`);
+      act(() => close!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    }
   });
 
   it("passes ordinary Markdown and code unchanged through the existing native renderer", () => {
