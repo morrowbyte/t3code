@@ -633,6 +633,32 @@ export const layer: Layer.Layer<
               ) {
                 return yield* liveError("dispatch_conflict");
               }
+              if (previousLease.status === "preparing") {
+                // A failed binding never reached the planner. Wait for that prepare's
+                // request lock before reconciling it, so an in-flight prepare stays owned.
+                yield* leaseLocks.withLock(
+                  `request:${session.sessionId}:${previousLease.client_request_id}`,
+                  Effect.gen(function* () {
+                    const pending = yield* getLease(
+                      previousLease.lease_id,
+                      previousLease.generation,
+                    );
+                    if (
+                      pending?.status === "preparing" &&
+                      pending.principal_session_id === session.sessionId &&
+                      pending.principal_subject === session.subject &&
+                      pending.provider_session_id === null &&
+                      pending.planner_native_thread_id === null &&
+                      pending.start_client_request_id === null &&
+                      pending.native_started === 0 &&
+                      pending.native_sdp_received === 0 &&
+                      !active.has(leaseKey(pending.lease_id, pending.generation))
+                    ) {
+                      yield* updateStatus(pending, "unknown");
+                    }
+                  }),
+                );
+              }
               const retired = yield* stopLease(
                 session,
                 {
@@ -679,12 +705,27 @@ export const layer: Layer.Layer<
             const providerSession = projection.providerSessions.find(
               (candidate) => candidate.providerInstanceId === projection.thread.providerInstanceId,
             );
+            const reservedProviderSession =
+              providerSession === undefined
+                ? undefined
+                : yield* sql<{ lease_id: string }>`
+                  SELECT lease_id FROM codex_live_voice_leases
+                  WHERE provider_session_id = ${providerSession.id}
+                    AND status IN ('preparing', 'prepared', 'starting', 'active', 'stopping', 'unknown')
+                  LIMIT 1
+                `.pipe(Effect.map((rows) => rows[0]));
+            // Forked app threads can share a text runtime whose voice lease belongs
+            // to another thread. Keep that lease intact and open a separate runtime.
             const providerSessionId =
-              providerSession?.id ??
-              ProviderSessionId.make(`provider-session-live-${yield* crypto.randomUUIDv4()}`);
-            const runtimeOption = yield* providerSessions
-              .get(providerSessionId)
-              .pipe(Effect.mapError(() => liveError("runtime_unavailable")));
+              providerSession !== undefined && reservedProviderSession === undefined
+                ? providerSession.id
+                : ProviderSessionId.make(`provider-session-live-${yield* crypto.randomUUIDv4()}`);
+            const runtimeOption = yield* providerSessions.get(providerSessionId).pipe(
+              Effect.mapError(() => liveError("runtime_unavailable")),
+              Effect.catch((error) =>
+                markUnknown(leaseId, generation).pipe(Effect.andThen(Effect.fail(error))),
+              ),
+            );
             const runtime = Option.isSome(runtimeOption)
               ? runtimeOption.value
               : yield* providerSessions
@@ -710,7 +751,11 @@ export const layer: Layer.Layer<
           UPDATE codex_live_voice_leases SET provider_session_id = ${providerSessionId},
             updated_at = ${DateTime.formatIso(yield* DateTime.now)}
           WHERE lease_id = ${leaseId} AND generation = ${generation}
-        `;
+        `.pipe(
+              Effect.catch((error) =>
+                markUnknown(leaseId, generation).pipe(Effect.andThen(Effect.fail(error))),
+              ),
+            );
             if (
               runtime.instanceId !== projection.thread.providerInstanceId ||
               runtime.providerSessionId !== providerSessionId ||

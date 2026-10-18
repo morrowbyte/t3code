@@ -8,7 +8,7 @@ import {
   type OrchestrationV2StoredEvent,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
-import type { LiveVoiceEvent } from "@t3tools/contracts";
+import type { LiveVoiceEvent, LiveVoiceSession } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -215,6 +215,18 @@ it.effect.each([false, true])(
         },
       } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime;
       const sessionId = AuthSessionId.make("live-test-principal");
+      const runtimes = new Map([
+        [runtime.providerSessionId, runtime],
+        [secondRuntime.providerSessionId, secondRuntime],
+      ]);
+      const runtimeEvents = new Map([
+        [runtime.providerSessionId, nativeEvents],
+        [secondRuntime.providerSessionId, secondNativeEvents],
+      ]);
+      const openedRuntimes: Array<
+        Parameters<ProviderSessionManager.ProviderSessionManagerV2Shape["open"]>[0]
+      > = [];
+      let failNextLookup = false;
       const session = {
         sessionId,
         subject: "principal-subject",
@@ -291,13 +303,30 @@ it.effect.each([false, true])(
         }),
         Layer.succeed(ProviderSessionManager.ProviderSessionManagerV2, {
           get: (providerSessionId: ProviderSessionId) =>
-            Effect.succeed(
-              Option.some(
-                !reuseRuntime && providerSessionId === secondProviderSessionId
-                  ? secondRuntime
-                  : runtime,
-              ),
-            ),
+            Effect.suspend(() => {
+              if (failNextLookup) {
+                failNextLookup = false;
+                return Effect.fail(new Error("Runtime lookup failed before binding."));
+              }
+              const existing = runtimes.get(providerSessionId);
+              return Effect.succeed(existing === undefined ? Option.none() : Option.some(existing));
+            }),
+          open: (
+            input: Parameters<ProviderSessionManager.ProviderSessionManagerV2Shape["open"]>[0],
+          ) =>
+            Effect.gen(function* () {
+              const events =
+                yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2LiveVoiceEvent>();
+              const opened = {
+                ...secondRuntime,
+                providerSessionId: input.providerSessionId,
+                liveVoice: { ...secondRuntime.liveVoice!, events: Stream.fromQueue(events) },
+              };
+              runtimes.set(input.providerSessionId, opened);
+              runtimeEvents.set(input.providerSessionId, events);
+              openedRuntimes.push(input);
+              return opened;
+            }),
         } as unknown as ProviderSessionManager.ProviderSessionManagerV2Shape),
         Layer.succeed(ThreadManagementService.ThreadManagementService, {
           getThreadProjection: () => Effect.succeed(durableProjection),
@@ -1372,6 +1401,112 @@ it.effect.each([false, true])(
         );
         yield* sql`UPDATE codex_live_voice_leases SET status = 'prepared',
           planner_native_thread_id = ${retry.plannerNativeThreadId} WHERE lease_id = ${retry.leaseId}`;
+
+        const endPrepared = (lease: LiveVoiceSession) =>
+          Effect.gen(function* () {
+            yield* service.stop(session, {
+              leaseId: lease.leaseId,
+              generation: lease.generation,
+              clientRequestId: `end-${lease.leaseId}`,
+            });
+            yield* Queue.offer(runtimeEvents.get(lease.providerSessionId!)!, {
+              type: "closed",
+              plannerNativeThreadId: lease.plannerNativeThreadId!,
+            });
+            yield* service.subscribe(session, lease).pipe(
+              Stream.filter(
+                (event) => event.type === "status" && event.session.status === "closed",
+              ),
+              Stream.runHead,
+            );
+          });
+        yield* endPrepared(retry);
+        const sharedTextSessionId = retry.providerSessionId;
+
+        yield* sql`
+          INSERT INTO codex_live_voice_leases (
+            lease_id, generation, environment_id, thread_id, provider_instance_id,
+            model_selection_json, runtime_policy_json, provider_session_id,
+            planner_native_thread_id, principal_session_id, principal_subject,
+            client_request_id, status, updated_at
+          ) SELECT
+            'foreign-shared-runtime', generation, environment_id, 'another-forked-thread',
+            provider_instance_id, model_selection_json, runtime_policy_json, provider_session_id,
+            'foreign-unknown-planner', 'another-principal', 'another-subject',
+            'foreign-prepare', 'unknown', updated_at
+          FROM codex_live_voice_leases WHERE lease_id = ${retry.leaseId}
+        `;
+        const stopsBeforeShared = stops;
+        const shared = yield* service.prepare(session, {
+          threadId,
+          clientRequestId: "prepare-with-shared-text-runtime",
+        });
+        assert.equal(shared.status, "prepared");
+        assert.notEqual(shared.providerSessionId, sharedTextSessionId);
+        assert.lengthOf(openedRuntimes, 1);
+        assert.equal(openedRuntimes[0]!.resumeFromSession?.id, sharedTextSessionId);
+        assert.equal(stops, stopsBeforeShared, "a foreign voice lease is never stopped");
+        const foreign = yield* sql<{ status: string; provider_session_id: string }>`
+          SELECT status, provider_session_id FROM codex_live_voice_leases
+          WHERE lease_id = 'foreign-shared-runtime'
+        `;
+        assert.equal(foreign[0]!.status, "unknown");
+        assert.equal(foreign[0]!.provider_session_id, sharedTextSessionId);
+        yield* endPrepared(shared);
+        yield* sql`UPDATE codex_live_voice_leases SET status = 'closed'
+          WHERE lease_id = 'foreign-shared-runtime'`;
+
+        failNextLookup = true;
+        const lookupFailure = yield* Effect.flip(
+          service.prepare(session, { threadId, clientRequestId: "prepare-lookup-failure" }),
+        );
+        assert.equal(lookupFailure.code, "runtime_unavailable");
+        const lookupOrphan = yield* sql<{ status: string }>`
+          SELECT status FROM codex_live_voice_leases
+          WHERE client_request_id = 'prepare-lookup-failure'
+        `;
+        assert.equal(lookupOrphan[0]!.status, "unknown");
+        const afterLookup = yield* service.prepare(session, {
+          threadId,
+          clientRequestId: "prepare-after-lookup-failure",
+        });
+        assert.equal(afterLookup.providerSessionId, sharedTextSessionId);
+        yield* endPrepared(afterLookup);
+
+        yield* sql.unsafe(`CREATE TEMP TRIGGER reject_voice_binding
+          BEFORE UPDATE OF provider_session_id ON codex_live_voice_leases
+          WHEN NEW.provider_session_id IS NOT NULL
+          BEGIN SELECT RAISE(ABORT, 'binding failed before planner'); END`);
+        const attemptsBeforeBinding = plannerAttempts;
+        const bindingFailure = yield* Effect.flip(
+          service.prepare(session, { threadId, clientRequestId: "prepare-binding-failure" }),
+        );
+        assert.equal(bindingFailure.code, "runtime_unavailable");
+        assert.equal(plannerAttempts, attemptsBeforeBinding);
+        const bindingOrphan = yield* sql<{ status: string; provider_session_id: string | null }>`
+          SELECT status, provider_session_id FROM codex_live_voice_leases
+          WHERE client_request_id = 'prepare-binding-failure'
+        `;
+        assert.equal(bindingOrphan[0]!.status, "unknown");
+        assert.isNull(bindingOrphan[0]!.provider_session_id);
+        yield* sql.unsafe("DROP TRIGGER reject_voice_binding");
+
+        // This is the persisted .57 failure: binding failed before cleanup existed.
+        yield* sql`UPDATE codex_live_voice_leases SET status = 'preparing'
+          WHERE client_request_id = 'prepare-binding-failure'`;
+        const stopsBeforeLegacy = stops;
+        const recovered = yield* service.prepare(session, {
+          threadId,
+          clientRequestId: "prepare-after-historical-binding-failure",
+        });
+        assert.equal(recovered.status, "prepared");
+        assert.equal(stops, stopsBeforeLegacy);
+        const retiredBinding = yield* sql<{ status: string }>`
+          SELECT status FROM codex_live_voice_leases
+          WHERE client_request_id = 'prepare-binding-failure'
+        `;
+        assert.equal(retiredBinding[0]!.status, "failed");
+        yield* endPrepared(recovered);
       });
       yield* program.pipe(
         Effect.provide(Layer.provideMerge(CodexLiveSessionService.layer, dependencies)),
