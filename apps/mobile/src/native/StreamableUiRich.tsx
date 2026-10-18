@@ -1,6 +1,6 @@
 import type { PreparedConnection } from "@t3tools/client-runtime/connection";
 /* oxlint-disable react/no-array-index-key -- Point records append; indices preserve duplicate labels and existing native elements. */
-import { memo, useEffect, useId, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useId, useMemo, useRef, useState, type ComponentRef } from "react";
 import {
   Pressable,
   ScrollView,
@@ -438,9 +438,23 @@ export function RichVisualBody({
 
 const NativeWorkflow = memo(
   function NativeWorkflow({ workflow }: { workflow: VisualWorkflow }) {
-    const { fontScale } = useWindowDimensions();
-    const scale = Math.max(1, fontScale);
+    const { fontScale, height: screenHeight } = useWindowDimensions();
     const graph = useMemo(() => workflowLayout(workflow), [workflow]);
+    const graphWidth = Math.max(300, graph.width);
+    const graphHeight = Math.max(180, graph.height);
+    const textScale = Math.max(1, fontScale);
+    const maxFrameHeight = Math.max(120, Math.min(360, screenHeight * 0.65));
+    const [viewportWidth, setViewportWidth] = useState(300);
+    const [zoom, setZoom] = useState<number | "fit">(1);
+    const fitZoom = Math.min(
+      1,
+      viewportWidth / (graphWidth * textScale),
+      maxFrameHeight / (graphHeight * textScale),
+    );
+    const scale = (zoom === "fit" ? fitZoom : zoom) * textScale;
+    const frameHeight = Math.min(maxFrameHeight, graphHeight * scale);
+    const horizontalScroll = useRef<ComponentRef<typeof ScrollView>>(null);
+    const verticalScroll = useRef<ComponentRef<typeof ScrollView>>(null);
     const [selected, setSelected] = useState<string>();
     const id = useId().replace(/:/g, "");
     const { color: primary } = useResolveClassNames("text-primary");
@@ -452,23 +466,62 @@ const NativeWorkflow = memo(
     const selectedNode = workflow.nodes.find((node) => node.key === selected);
     return (
       <View className="gap-3">
+        <View className="flex-row flex-wrap gap-2">
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Zoom out workflow"
+            onPress={() =>
+              setZoom((current) =>
+                Math.max(Math.min(0.25, fitZoom), (current === "fit" ? fitZoom : current) / 1.25),
+              )
+            }
+            className="min-h-11 min-w-11 items-center justify-center rounded-md border border-border px-3"
+          >
+            <Text>−</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Zoom in workflow"
+            onPress={() =>
+              setZoom((current) => Math.min(3, (current === "fit" ? fitZoom : current) * 1.25))
+            }
+            className="min-h-11 min-w-11 items-center justify-center rounded-md border border-border px-3"
+          >
+            <Text>+</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Fit workflow"
+            onPress={() => {
+              setZoom("fit");
+              horizontalScroll.current?.scrollTo({ x: 0, animated: false });
+              verticalScroll.current?.scrollTo({ y: 0, animated: false });
+            }}
+            className="min-h-11 min-w-11 items-center justify-center rounded-md border border-border px-3"
+          >
+            <Text>Fit</Text>
+          </Pressable>
+        </View>
         <ScrollView
+          ref={horizontalScroll}
           horizontal
           nestedScrollEnabled
           accessibilityLabel={workflow.title}
-          style={{ maxHeight: 360 }}
+          onLayout={(event) => setViewportWidth(Math.max(1, event.nativeEvent.layout.width))}
+          style={{ height: frameHeight }}
         >
           <ScrollView
+            ref={verticalScroll}
             nestedScrollEnabled
             style={{
-              width: Math.max(300, graph.width) * scale,
-              height: Math.min(360, Math.max(180, graph.height) * scale),
+              width: graphWidth * scale,
+              height: frameHeight,
             }}
           >
             <Svg
-              width={Math.max(300, graph.width) * scale}
-              height={Math.max(180, graph.height) * scale}
-              viewBox={`0 0 ${Math.max(300, graph.width)} ${Math.max(180, graph.height)}`}
+              width={graphWidth * scale}
+              height={graphHeight * scale}
+              viewBox={`0 0 ${graphWidth} ${graphHeight}`}
             >
               <Defs>
                 <Marker
