@@ -187,23 +187,55 @@ export function buildNewThreadLink(input: {
 const APP_SCHEME = /^t3code(?:-[a-z]+)?:$/;
 const THREAD_PATH = /^\/([^/]+)\/([^/]+)\/?$/;
 
+export type PromptLinkTarget =
+  | { readonly kind: "new"; readonly appPath: string; readonly search: string }
+  | {
+      readonly kind: "thread";
+      readonly appPath: string;
+      readonly search: string;
+      readonly environmentId: string;
+      readonly threadId: string;
+    };
+
+export function promptLinkTarget(
+  value: string,
+  hostedAppUrl: string = DEFAULT_HOSTED_APP_URL,
+): PromptLinkTarget | null {
+  if (!URL.canParse(value)) return null;
+  const url = new URL(value);
+  let thread: RegExpExecArray | null;
+  if (APP_SCHEME.test(url.protocol)) {
+    if (url.host === "new" && (url.pathname === "" || url.pathname === "/")) {
+      return { kind: "new", appPath: `/new${url.search}`, search: url.search };
+    }
+    thread = url.host === "threads" ? THREAD_PATH.exec(url.pathname) : null;
+  } else {
+    if (!URL.canParse(hostedAppUrl) || url.origin !== new URL(hostedAppUrl).origin) return null;
+    if (url.pathname === "/new") {
+      return { kind: "new", appPath: `/new${url.search}`, search: url.search };
+    }
+    thread = url.searchParams.has("prompt") ? THREAD_PATH.exec(url.pathname) : null;
+  }
+  if (!thread) return null;
+  try {
+    // Thread IDs can themselves contain percent escapes. Only the outer URL encoding belongs here.
+    return {
+      kind: "thread",
+      appPath: `/${thread[1]}/${thread[2]}${url.search}`,
+      search: url.search,
+      environmentId: decodeURIComponent(thread[1]!),
+      threadId: decodeURIComponent(thread[2]!),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function promptLinkAppPath(
   value: string,
   hostedAppUrl: string = DEFAULT_HOSTED_APP_URL,
 ): string | null {
-  if (!URL.canParse(value)) return null;
-  const url = new URL(value);
-  if (APP_SCHEME.test(url.protocol)) {
-    if (url.host === "new" && (url.pathname === "" || url.pathname === "/")) {
-      return `/new${url.search}`;
-    }
-    const thread = url.host === "threads" ? THREAD_PATH.exec(url.pathname) : null;
-    return thread ? `/${thread[1]}/${thread[2]}${url.search}` : null;
-  }
-  if (!URL.canParse(hostedAppUrl) || url.origin !== new URL(hostedAppUrl).origin) return null;
-  if (url.pathname === "/new") return `/new${url.search}`;
-  const thread = url.searchParams.has("prompt") ? THREAD_PATH.exec(url.pathname) : null;
-  return thread ? `/${thread[1]}/${thread[2]}${url.search}` : null;
+  return promptLinkTarget(value, hostedAppUrl)?.appPath ?? null;
 }
 
 export function promptLinkDeepLink(appPath: string, scheme = "t3code"): string {

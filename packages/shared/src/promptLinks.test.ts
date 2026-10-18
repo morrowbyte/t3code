@@ -6,6 +6,7 @@ import {
   parseThreadLinkPrompt,
   promptLinkAppPath,
   promptLinkDeepLink,
+  promptLinkTarget,
   sanitizeLinkedPrompt,
   withoutPromptLinkParams,
 } from "./promptLinks.ts";
@@ -91,6 +92,25 @@ describe("thread links", () => {
 });
 
 describe("link round trips", () => {
+  it("decodes only the outer encoding of an existing delegated thread ID", () => {
+    const environmentId = "24efa85c-862c-4de4-9b5e-aaaa041e28a4";
+    const threadId =
+      "thread:delegated-task:command%3Amcp%3A474c7d68-6293-4de4-9859-011aec7f079b%3Adelegate-task%3At3-iui-rich-components-e2e-20261018-bootstrap-v1";
+    const path = `/${environmentId}/${encodeURIComponent(threadId)}`;
+    const link = promptLinkDeepLink(path);
+    expect(link).toContain("command%253Amcp%253A");
+    expect(promptLinkTarget(link)).toEqual({
+      kind: "thread",
+      environmentId,
+      threadId,
+      appPath: path,
+      search: "",
+    });
+    expect(promptLinkAppPath(link)).toBe(path);
+    expect(promptLinkTarget("t3code://threads/env/%invalid")).toBeNull();
+    expect(promptLinkTarget("t3code://threads/env/thread/extra")).toBeNull();
+  });
+
   it("builds a link that parses back to the same prompt", () => {
     const link = buildNewThreadLink({
       prompt: "Swear count & rating?",

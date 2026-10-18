@@ -445,3 +445,46 @@ it.effect("hands web and app links to the renderer and leaves other links alone"
     );
   }).pipe(Effect.scoped),
 );
+
+it.effect.each(["startup", "second-instance", "open-url"] as const)(
+  "forwards an existing encoded child thread unchanged through %s",
+  (entry) =>
+    Effect.gen(function* () {
+      storageMock.mockReturnValue(storageAdapter);
+      createClerkBridgeMock.mockReturnValue({ cleanup: vi.fn(), isPrimaryInstance: true });
+      const link =
+        "t3code://threads/24efa85c-862c-4de4-9b5e-aaaa041e28a4/thread%3Adelegated-task%3Acommand%253Amcp%253A474c7d68-6293-4de4-9859-011aec7f079b%253Adelegate-task%253At3-iui-rich-components-e2e-20261018-bootstrap-v1";
+      const received = Promise.withResolvers<string>();
+      const listeners = new Map<string, (...args: unknown[]) => void>();
+      const electronApp = {
+        on: (name: string, listener: (...args: unknown[]) => void) =>
+          Effect.sync(() => void listeners.set(name, listener)),
+      } as unknown as ElectronApp.ElectronApp["Service"];
+      yield* Effect.gen(function* () {
+        const clerk = yield* DesktopClerk.DesktopClerk;
+        yield* clerk.configure;
+        if (entry === "second-instance") listeners.get(entry)!({}, ["t3", link]);
+        if (entry === "open-url") {
+          const event = { preventDefault: vi.fn() };
+          listeners.get(entry)!(event, link);
+          assert.strictEqual(event.preventDefault.mock.calls.length, 1);
+        }
+        assert.strictEqual(yield* Effect.promise(() => received.promise), link);
+      }).pipe(
+        Effect.provide(layerDesktopClerk(false, [], "linux")),
+        Effect.provideService(HostProcess.Arguments, entry === "startup" ? ["t3", link] : ["t3"]),
+        Effect.provideService(ElectronApp.ElectronApp, electronApp),
+        Effect.provideService(
+          ElectronWindow.ElectronWindow,
+          {} as ElectronWindow.ElectronWindow["Service"],
+        ),
+        Effect.provideService(
+          DesktopWebLinks.DesktopWebLinks,
+          DesktopWebLinks.DesktopWebLinks.of({
+            receive: (url) => Effect.sync(() => received.resolve(url)),
+            setRendererReady: () => Effect.void,
+          }),
+        ),
+      );
+    }).pipe(Effect.scoped),
+);

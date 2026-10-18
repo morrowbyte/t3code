@@ -1,7 +1,11 @@
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
-import { promptLinkAppPath } from "@t3tools/shared/promptLinks";
+import { EnvironmentId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
+import {
+  parseThreadLinkPrompt,
+  promptLinkTarget,
+  withoutPromptLinkParams,
+} from "@t3tools/shared/promptLinks";
 import { useRouter } from "@tanstack/react-router";
 import { useEffect, useEffectEvent, useRef } from "react";
 
@@ -13,11 +17,16 @@ import { useScratchProject } from "../../hooks/useScratchProject";
 import { selectActiveRightPanelSurface, useRightPanelStore } from "../../rightPanelStore";
 import { resolveThreadRouteTarget } from "../../threadRoutes";
 import { assetEnvironment } from "../../state/assets";
-import { useEnvironmentHttpBaseUrl, usePrimaryEnvironment } from "../../state/environments";
+import {
+  useConnectedEnvironmentIds,
+  useEnvironmentHttpBaseUrl,
+  usePrimaryEnvironment,
+} from "../../state/environments";
 import { previewEnvironment } from "../../state/preview";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
 import { stackedThreadToast, toastManager } from "../ui/toast";
+import { placeLinkedPrompt } from "../promptLinks/linkedPrompt";
 
 /**
  * HTML files are served by this machine's environment, so only its threads can
@@ -44,9 +53,16 @@ function threadShowingBrowser(
   return surface?.kind === "preview" ? threadRef : null;
 }
 
+function reportFailure(url: string, description = url) {
+  toastManager.add(
+    stackedThreadToast({ type: "error", title: "Could not open the link", description }),
+  );
+}
+
 export function DesktopWebLinkCoordinator() {
   const router = useRouter();
   const primaryEnvironment = usePrimaryEnvironment();
+  const connectedEnvironmentIds = useConnectedEnvironmentIds();
   const { scratchEnvironmentId, openScratchProject } = useScratchProject();
   const openThread = useNewThreadHandler();
   const openPreview = useAtomCommand(previewEnvironment.open, { reportFailure: false });
@@ -61,11 +77,6 @@ export function DesktopWebLinkCoordinator() {
     webLinks !== undefined &&
     primaryEnvironment?.connection.phase === "connected" &&
     primaryEnvironment.serverConfig !== null;
-
-  const reportFailure = (url: string, description = url) =>
-    toastManager.add(
-      stackedThreadToast({ type: "error", title: "Could not open the link", description }),
-    );
 
   const startThread = async (url: string): Promise<ScopedThreadRef | null> => {
     const environmentId = scratchEnvironmentId(primaryEnvironment?.environmentId ?? null);
@@ -86,9 +97,42 @@ export function DesktopWebLinkCoordinator() {
   };
 
   const openLink = useEffectEvent(async (url: string) => {
-    const appPath = promptLinkAppPath(url);
-    if (appPath !== null) {
-      await router.navigate({ href: appPath });
+    const target = promptLinkTarget(url);
+    if (target !== null) {
+      if (target.kind === "thread") {
+        const environmentId = EnvironmentId.make(target.environmentId);
+        if (!connectedEnvironmentIds.includes(environmentId)) {
+          reportFailure(url, "Connect to the link's environment, then open the link again.");
+          return;
+        }
+        // Consume linked prompts before the router's JSON query codec can change their text.
+        const hasPrompt = new URLSearchParams(target.search).has("prompt");
+        const prompt = parseThreadLinkPrompt(target.search);
+        await router.navigate({
+          to: "/$environmentId/$threadId",
+          params: { environmentId, threadId: ThreadId.make(target.threadId) },
+          search: () =>
+            router.options.parseSearch(
+              hasPrompt ? withoutPromptLinkParams(target.search) : target.search,
+            ),
+        });
+        const params: Record<string, string | undefined> =
+          router.state.matches.at(-1)?.params ?? {};
+        if (params?.environmentId !== environmentId || params.threadId !== target.threadId) return;
+        if (!prompt.ok) reportFailure(url, prompt.error);
+        else if (prompt.value !== null) {
+          placeLinkedPrompt(
+            scopeThreadRef(environmentId, ThreadId.make(target.threadId)),
+            prompt.value,
+          );
+        }
+      } else {
+        await router.navigate({ href: target.appPath });
+      }
+      return;
+    }
+    if (!URL.canParse(url) || !["http:", "https:", "file:"].includes(new URL(url).protocol)) {
+      reportFailure(url, "This link is not a supported T3 Code or web link.");
       return;
     }
     const isFile = url.startsWith("file:");
@@ -125,7 +169,7 @@ export function DesktopWebLinkCoordinator() {
     if (!ready || webLinks === undefined) return;
     let subscribed = true;
     const unsubscribe = webLinks.onOpen((url) => {
-      queueRef.current = queueRef.current.then(() => openLink(url)).catch(() => undefined);
+      queueRef.current = queueRef.current.then(() => openLink(url)).catch(() => reportFailure(url));
     });
     queueMicrotask(() => {
       if (subscribed) void webLinks.setReady(true).catch(() => undefined);
