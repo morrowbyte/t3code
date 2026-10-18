@@ -26,6 +26,7 @@ import {
 } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as FileSystem from "effect/FileSystem";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveNodeExecutable, nodeRuntimeUnavailableMessage } from "@t3tools/shared/nodeRuntime";
 import * as Path from "effect/Path";
 import { ensureAgentDevice, ensureDeviceHub } from "./DeviceToolchain.ts";
@@ -56,6 +57,7 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { isLocalSshDeviceHost, remoteSshDeviceHosts } from "./localSshDeviceHost.ts";
 
 import { readDeviceDetail, runDeviceAction } from "./DeviceActions.ts";
+import { ensureAgentDeviceShim } from "./AgentDeviceShim.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as DeviceHost from "./DeviceHost.ts";
 import * as SshDeviceHost from "./SshDeviceHost.ts";
@@ -1000,6 +1002,9 @@ export const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const runner = yield* ProcessRunner.ProcessRunner;
+  const platform = yield* HostProcess.Platform;
+  const shimContext =
+    yield* Effect.context<Effect.Services<ReturnType<typeof ensureAgentDeviceShim>>>();
   const settings = yield* ServerSettings.ServerSettingsService;
   const projections = yield* Effect.serviceOption(ProjectionStore.ProjectionStoreV2);
   const projects = yield* Effect.serviceOption(ProjectStore.ProjectStoreV2);
@@ -1162,28 +1167,70 @@ export const make = Effect.gen(function* () {
       concurrency: 4,
     }),
   );
+  const agentCli = resolveNodeExecutable("Device automation").pipe(
+    Effect.andThen(ensureAgentDevice(config.baseDir)),
+    Effect.provideService(FileSystem.FileSystem, fs),
+    Effect.provideService(Path.Path, path),
+    Effect.provideService(ProcessRunner.ProcessRunner, runner),
+    Effect.map((tool) => tool.entryPath),
+    Effect.mapError((error) =>
+      error._tag === "NodeRuntimeUnavailableError"
+        ? new DeviceHostUnavailableError({
+            hostId: LOCAL_DEVICE_HOST_ID,
+            reason: nodeRuntimeUnavailableMessage("Device automation"),
+            cause: error,
+          })
+        : new DeviceOperationError({
+            operation: "install agent CLI",
+            reason: "command_failed",
+            cause: error,
+          }),
+    ),
+  );
   return {
     ...service,
-    agentCli: resolveNodeExecutable("Device automation").pipe(
-      Effect.andThen(ensureAgentDevice(config.baseDir)),
-      Effect.provideService(FileSystem.FileSystem, fs),
-      Effect.provideService(Path.Path, path),
-      Effect.provideService(ProcessRunner.ProcessRunner, runner),
-      Effect.map((tool) => tool.entryPath),
-      Effect.mapError((error) =>
-        error._tag === "NodeRuntimeUnavailableError"
-          ? new DeviceHostUnavailableError({
-              hostId: LOCAL_DEVICE_HOST_ID,
-              reason: nodeRuntimeUnavailableMessage("Device automation"),
-              cause: error,
-            })
-          : new DeviceOperationError({
-              operation: "install agent CLI",
-              reason: "command_failed",
-              cause: error,
-            }),
-      ),
-    ),
+    agentCli,
+    open: (input: DeviceOpenInput): Effect.Effect<DeviceSession, DeviceError> =>
+      input.includeAgentTarget
+        ? Effect.gen(function* () {
+            const args = yield* service.agentTarget({
+              threadId: input.threadId,
+              hostId: input.hostId ?? LOCAL_DEVICE_HOST_ID,
+              deviceId: input.deviceId,
+            });
+            const shimDir = yield* ensureAgentDeviceShim({
+              entryPath: yield* agentCli,
+              stateDir: config.stateDir,
+            }).pipe(
+              Effect.provide(shimContext),
+              Effect.mapError(
+                (cause) =>
+                  new DeviceOperationError({
+                    operation: "prepare agent launcher",
+                    reason: "command_failed",
+                    cause,
+                  }),
+              ),
+            );
+            const session = yield* service.open(input);
+            return {
+              ...session,
+              agentDevice: {
+                command: path.join(
+                  shimDir,
+                  platform === "win32" ? "agent-device.cmd" : "agent-device",
+                ),
+                targetArgs: [
+                  "--platform",
+                  session.platform,
+                  session.platform === "ios" ? "--udid" : "--serial",
+                  session.deviceId,
+                  ...args,
+                ],
+              },
+            };
+          })
+        : service.open(input),
   };
 });
 
