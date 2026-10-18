@@ -203,6 +203,74 @@ describe("native thread families", () => {
     }
   });
 
+  it("shows only active work and the required intermediate parents on root expansion", () => {
+    const previous = makeThread({
+      ...child,
+      id: ThreadId.make("previous"),
+      title: "Previous agent",
+      runtime: { ...working.runtime!, status: "idle", activeRunId: null },
+    });
+    const items = itemsFor([parent, child, working, previous]);
+    const rows = buildThreadListV2FamilyRows({
+      items,
+      visibleKeys: new Set(items.map((item) => keyOf(item.thread))),
+      disclosure: { ...disclosure, routeKey: parentKey },
+    });
+    expect(rows.map((row) => [row.key, row.depth, row.hasChildren])).toEqual([
+      [parentKey, 0, true],
+      [childKey, 1, false],
+      [grandchildKey, 2, false],
+    ]);
+    expect(rows[0]).toMatchObject({ descendantCount: 2, activeDescendantCount: 1 });
+    expect(resolveThreadListV2Status(previous)).toBe("ready");
+  });
+
+  it.each(["monitor", "subagent", "background_task", "command"] as const)(
+    "keeps only completion-holding %s background work in the active lineage",
+    (kind) => {
+      const pending = makeThread({
+        ...child,
+        runtime: { ...working.runtime!, status: "idle", activeRunId: null },
+        pendingBackgroundTasks: [{ taskId: "family-background", kind }],
+      });
+      const items = itemsFor([parent, pending]);
+      const rows = buildThreadListV2FamilyRows({
+        items,
+        visibleKeys: new Set([parentKey]),
+        disclosure: { ...disclosure, routeKey: parentKey },
+      });
+      expect(rows.map((row) => row.key)).toEqual(
+        kind === "command" ? [parentKey] : [parentKey, childKey],
+      );
+      expect(rows[0]?.activeDescendantCount).toBe(kind === "command" ? 0 : 1);
+      expect(resolveThreadListV2Status(pending)).toBe(kind === "command" ? "ready" : "waiting");
+    },
+  );
+
+  it.each(["approval", "user_input", "active_run", "route"] as const)(
+    "retains a %s descendant while omitting inactive historical siblings",
+    (reason) => {
+      const selected = makeThread({
+        ...grandchild,
+        pendingSubagentRequest: reason === "approval" || reason === "user_input" ? reason : null,
+        runtime: {
+          ...working.runtime!,
+          status: "idle",
+          activeRunId: reason === "active_run" ? RunId.make("still-active") : null,
+        },
+      });
+      const previous = makeThread({ ...child, id: ThreadId.make("previous"), title: "Previous" });
+      const items = itemsFor([parent, child, selected, previous]);
+      const rows = buildThreadListV2FamilyRows({
+        items,
+        visibleKeys: new Set([parentKey]),
+        disclosure: { ...disclosure, routeKey: reason === "route" ? grandchildKey : parentKey },
+      });
+      expect(rows.map((row) => row.key)).toEqual([parentKey, childKey, grandchildKey]);
+      expect(rows[0]?.activeDescendantCount).toBe(reason === "route" ? 0 : 1);
+    },
+  );
+
   it("keeps a selected active descendant hidden through status changes and repeated manual toggles", () => {
     let current = toggleThreadListV2Family(disclosure, parentKey);
     for (const descendant of [working, grandchild, working]) {
@@ -282,12 +350,19 @@ describe("native thread families", () => {
     for (const threads of snapshots) {
       const items = itemsFor(threads);
       const lineage = threads.map((thread) => ({ ...thread.lineage }));
-      const rows = buildThreadListV2FamilyRows({
-        items,
-        visibleKeys: new Set(items.map((item) => keyOf(item.thread))),
-        disclosure: { ...disclosure, expandedKeys: new Set(threads.map(keyOf)) },
-      });
-      expect(rows.map((row) => row.key).sort()).toEqual(threads.map(keyOf).sort());
+      for (const selected of threads) {
+        const rows = buildThreadListV2FamilyRows({
+          items,
+          visibleKeys: new Set(items.map((item) => keyOf(item.thread))),
+          disclosure: {
+            ...disclosure,
+            routeKey: keyOf(selected),
+            expandedKeys: new Set(threads.map(keyOf)),
+          },
+        });
+        expect(rows.map((row) => row.key)).toContain(keyOf(selected));
+        expect(new Set(rows.map((row) => row.key)).size).toBe(rows.length);
+      }
       expect(threads.map((thread) => thread.lineage)).toEqual(lineage);
     }
   });

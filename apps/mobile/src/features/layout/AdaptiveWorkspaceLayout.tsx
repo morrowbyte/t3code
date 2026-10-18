@@ -83,6 +83,7 @@ interface AdaptiveWorkspaceContextValue {
   readonly panes: WorkspacePaneLayout;
   readonly fileInspector: FileInspectorPaneLayout;
   readonly primarySidebarSearchQuery: string;
+  readonly lastSelectedThreadKey: string | null;
   readonly selectThread: (thread: EnvironmentThreadShell) => void;
   readonly activateAuxiliaryPaneRole: (role: WorkspaceAuxiliaryPaneRole) => () => void;
   readonly registerWorkspaceInspector: (render: () => ReactNode) => () => void;
@@ -109,6 +110,7 @@ const AdaptiveWorkspaceContext = createContext<AdaptiveWorkspaceContextValue>({
   panes: compactPanes,
   fileInspector: compactFileInspector,
   primarySidebarSearchQuery: "",
+  lastSelectedThreadKey: null,
   selectThread: () => undefined,
   activateAuxiliaryPaneRole: () => () => undefined,
   registerWorkspaceInspector: () => () => undefined,
@@ -337,6 +339,10 @@ function AdaptiveWorkspaceLayoutContent(
       return null;
     }
   }, [environmentId, threadId]);
+  const [lastSelectedThreadKey, setLastSelectedThreadKey] = useState(selectedThreadKey);
+  if (selectedThreadKey !== null && selectedThreadKey !== lastSelectedThreadKey) {
+    setLastSelectedThreadKey(selectedThreadKey);
+  }
   const [workspaceInspector, setWorkspaceInspector] = useState<{
     readonly render: () => ReactNode;
     readonly active: boolean;
@@ -672,6 +678,7 @@ function AdaptiveWorkspaceLayoutContent(
       panes,
       fileInspector,
       primarySidebarSearchQuery,
+      lastSelectedThreadKey,
       selectThread: handleSelectThread,
       activateAuxiliaryPaneRole,
       registerWorkspaceInspector,
@@ -688,6 +695,7 @@ function AdaptiveWorkspaceLayoutContent(
       layout,
       panes,
       primarySidebarSearchQuery,
+      lastSelectedThreadKey,
       registerWorkspaceInspector,
       showAuxiliaryPane,
       setPrimarySidebarSearchQuery,

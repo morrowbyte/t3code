@@ -1,3 +1,6 @@
+import { formatDuration } from "@t3tools/shared/orchestrationTiming";
+import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
+import { useVisibleSecondClock } from "./use-visible-second-clock";
 import * as Dialog from "../../components/ui/Dialog";
 import type { ThreadRowProviderInstance } from "./thread-provider-instance";
 import {
@@ -480,6 +483,33 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
   );
 });
 
+function ThreadFamilyRuntime(props: {
+  readonly thread: EnvironmentThreadShell;
+  readonly status: ThreadListV2Status;
+  readonly className: string;
+}) {
+  const ticking = props.status === "working" || props.status === "waiting";
+  const now = useVisibleSecondClock(ticking);
+  const run = props.thread.latestRun;
+  const start =
+    props.status === "waiting"
+      ? run?.completedAt
+      : ticking
+        ? resolveThreadWorkingStartedAt(props.thread)
+        : run?.startedAt;
+  const end = ticking ? now : Date.parse(run?.completedAt ?? "");
+  const elapsed = end - Date.parse(start ?? "");
+  if (!Number.isFinite(elapsed) || elapsed < 0) return null;
+  return (
+    <Text
+      className={cn("text-xs tabular-nums", props.className)}
+      accessibilityLabel={`${props.status === "waiting" ? "Waiting" : "Run"} duration ${formatDuration(elapsed)}`}
+    >
+      {formatDuration(elapsed)}
+    </Text>
+  );
+}
+
 export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly family?: ThreadListV2FamilyRow;
   readonly onToggleFamily?: (key: string) => void;
@@ -598,7 +628,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     (status === "working" && workingLabel !== undefined && thread.goal?.status === "active"
       ? { ...workingLabel, label: "Goal" }
       : workingLabel) ?? (isUnread ? DONE_STATUS_LABEL : undefined);
-  const recede = shouldRecedeThreadRow({ status, selected });
+  const recede = !props.family?.hasChildren && shouldRecedeThreadRow({ status, selected });
   const timeLabel = props.timeLabel;
   const childRow = (props.family?.depth ?? 0) > 0;
   const familySummary =
@@ -614,7 +644,10 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     const family = props.family;
     if (!family || (!family.hasChildren && family.depth === 0)) return content;
     return (
-      <View className="flex-row" style={{ marginLeft: Math.min(family.depth, 4) * 12 }}>
+      <View
+        className="flex-row"
+        style={{ marginLeft: family.depth > 0 ? 44 + Math.min(family.depth, 4) * 12 : 0 }}
+      >
         {family.hasChildren ? (
           <Pressable
             accessibilityRole="button"
@@ -622,7 +655,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
             accessibilityLabel={`${family.expanded ? "Collapse" : "Expand"} ${thread.title}, ${family.descendantCount} child threads, ${family.activeDescendantCount} active`}
             onPress={() => props.onToggleFamily?.(family.key)}
             hitSlop={{ top: 2, bottom: 2 }}
-            className="min-h-12 w-12 items-center justify-center"
+            className="min-h-12 w-11 items-center justify-center"
           >
             <SymbolView
               name={family.expanded ? "chevron.down" : "chevron.right"}
@@ -630,9 +663,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
               tintColorClassName={rowAppearance.mutedIconTintClassName}
             />
           </Pressable>
-        ) : (
-          <View className="w-12" />
-        )}
+        ) : null}
         <View className="min-w-0 flex-1">{content}</View>
       </View>
     );
@@ -1200,7 +1231,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         }}
         style={rowAppearance.style}
       >
-        <View className="min-h-12 justify-center gap-1 px-3 py-2">
+        <View className="min-h-12 justify-center gap-1 px-5 py-2">
           <View className="flex-row items-center gap-2">
             <Text
               className={cn(
@@ -1222,22 +1253,53 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
               />
             ) : null}
           </View>
-          <Text
-            className={cn(
-              "text-xs",
-              selected
-                ? selectedThreadRowColors.mutedForegroundClassName
-                : (statusLabel?.className ?? rowAppearance.mutedForegroundClassName),
-            )}
-          >
-            {statusLabel?.label ??
-              (snoozedRow
-                ? (props.snoozeWakeLabelText ?? "Snoozed")
-                : variant === "slim"
-                  ? "Settled"
-                  : "Ready")}
-            {timeLabel ? ` · ${timeLabel}` : ""}
-          </Text>
+          <View className="flex-row items-center gap-1.5">
+            <SymbolView
+              name={statusLabel?.icon ?? (snoozedRow ? "clock" : "checkmark.circle")}
+              size={12}
+              tintColorClassName={
+                selected
+                  ? selectedThreadRowColors.mutedIconTintClassName
+                  : (statusLabel?.iconTintClassName ?? rowAppearance.mutedIconTintClassName)
+              }
+            />
+            <Text
+              className={cn(
+                "text-xs",
+                selected
+                  ? selectedThreadRowColors.mutedForegroundClassName
+                  : (statusLabel?.className ?? rowAppearance.mutedForegroundClassName),
+              )}
+            >
+              {statusLabel?.label ??
+                (snoozedRow
+                  ? (props.snoozeWakeLabelText ?? "Snoozed")
+                  : variant === "slim"
+                    ? "Settled"
+                    : "Ready")}
+            </Text>
+            <ThreadFamilyRuntime
+              thread={thread}
+              status={status}
+              className={
+                selected
+                  ? selectedThreadRowColors.mutedForegroundClassName
+                  : rowAppearance.mutedForegroundClassName
+              }
+            />
+            <View className="flex-1" />
+            {providerInstance ? (
+              <ProviderInstanceIcon
+                iconUrl={providerIconUrl}
+                provider={providerInstance.driverKind}
+                size={12}
+                displayName={providerInstance.displayName}
+                accentColor={providerInstance.accentColor}
+                showBadge={providerInstance.showBadge}
+                surfaceColor={rowAppearance.providerIconSurfaceColor}
+              />
+            ) : null}
+          </View>
           {props.searchMatch ? (
             <ThreadSearchMatchExcerpt
               sidebar={sidebarPane}
