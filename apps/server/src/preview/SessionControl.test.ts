@@ -1,8 +1,53 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import { BrowserControlInterrupted, SessionControl } from "./SessionControl.ts";
 
 describe("SessionControl", () => {
+  it("keeps a challenge paused through viewer disconnect until an explicit controlling release", async () => {
+    const control = new SessionControl("agent");
+    control.requireHuman();
+    expect(control.requiresHuman).toBe(true);
+    expect(control.agentCanActNow("agent")).toBe(false);
+    await expect(control.agent("agent", async () => "clicked")).rejects.toMatchObject({
+      reason: "humanControl",
+    });
+    await expect(control.observe(async () => "snapshot")).resolves.toBe("snapshot");
+    await control.take("viewer");
+    await expect(control.human("viewer", async () => "human input")).resolves.toBe("human input");
+    await control.disconnect("viewer");
+    expect(control.requiresHuman).toBe(true);
+    await expect(control.agent("agent", async () => "clicked")).rejects.toThrow(
+      BrowserControlInterrupted,
+    );
+    await expect(control.release("viewer")).rejects.toThrow("Only the controlling viewer");
+    await control.take("reconnected-viewer");
+    await control.release("reconnected-viewer");
+    expect(control.requiresHuman).toBe(false);
+    await expect(control.agent("agent", async () => "resumed")).resolves.toBe("resumed");
+  });
+
+  it("invalidates queued agent actions when a challenge arrives during navigation", async () => {
+    const control = new SessionControl("agent");
+    const started = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    const running = control.agent("agent", async () => {
+      started.resolve();
+      await finish.promise;
+    });
+    await started.promise;
+    const action = vi.fn(async () => {});
+    const queued = expect(control.agent("agent", action)).rejects.toThrow(
+      BrowserControlInterrupted,
+    );
+    control.requireHuman();
+    const generation = control.generation;
+    control.requireHuman();
+    expect(control.generation).toBe(generation);
+    finish.resolve();
+    await Promise.all([running, queued]);
+    expect(action).not.toHaveBeenCalled();
+  });
+
   it("returns an action result before tracked navigation but drains it before already queued actions", async () => {
     const control = new SessionControl("agent");
     const committed = Promise.withResolvers<void>();
