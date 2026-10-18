@@ -9,6 +9,7 @@ import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import { tryCopyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { useThreadShell } from "../../state/entities";
+import { AgentIdentityLabel } from "../agent-identity/AgentIdentityLabel";
 import { agentMessageParts, parseAgentMessage } from "./agent-message-presentation";
 
 export const AgentMessage = memo(function AgentMessage(props: {
@@ -59,7 +60,11 @@ export const AgentMessage = memo(function AgentMessage(props: {
       </Text>
       {props.senderThreadId ? (
         <View className="shrink-0">
-          <SymbolView name="arrow.up.right" size={14} tintColorClassName="accent-foreground-muted" />
+          <SymbolView
+            name="arrow.up.right"
+            size={14}
+            tintColorClassName="accent-foreground-muted"
+          />
         </View>
       ) : null}
     </View>
@@ -87,6 +92,13 @@ export const AgentMessage = memo(function AgentMessage(props: {
         )}
         <Text className="text-xs tabular-nums text-foreground-muted">{props.timestampLabel}</Text>
       </View>
+      {props.senderThreadId ? (
+        <AgentIdentityLabel
+          threadRef={{ environmentId: props.environmentId, threadId: props.senderThreadId }}
+          featureTitle={sender?.title}
+          details
+        />
+      ) : null}
       {structured.status ? (
         <Text
           accessibilityLabel={`Nachrichtenstatus: ${structured.status}`}

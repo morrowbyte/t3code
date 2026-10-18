@@ -232,6 +232,32 @@ describe("mobile connection storage", () => {
     expect(fallback.updatedAt).toEqual(expect.any(Number));
   });
 
+  it("persists the local agent identity theme without replacing other preferences", async () => {
+    await savePreferencesPatch({ baseFontSize: 17, agentIdentityTheme: "weasel" });
+    await expect(loadPreferences()).resolves.toEqual({
+      baseFontSize: 17,
+      agentIdentityTheme: "weasel",
+    });
+    await savePreferencesPatch({ agentIdentityTheme: "neutral" });
+    await expect(loadPreferences()).resolves.toEqual({
+      baseFontSize: 17,
+      agentIdentityTheme: "neutral",
+    });
+    expect(JSON.parse(mocks.getPreferencesJson() ?? "")).toEqual({
+      baseFontSize: 17,
+      agentIdentityTheme: "neutral",
+    });
+  });
+
+  it("falls back to the default identity theme for absent or invalid stored values", async () => {
+    await expect(loadPreferences()).resolves.toEqual({});
+    mocks.setPreferencesJson(
+      JSON.stringify({ baseFontSize: 17, agentIdentityTheme: "unknown" }),
+      10,
+    );
+    await expect(loadPreferences()).resolves.toEqual({ baseFontSize: 17 });
+  });
+
   it("persists thread list shelf preferences", async () => {
     await expect(
       savePreferencesPatch({
