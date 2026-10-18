@@ -119,6 +119,7 @@ if (
 const iosBundleIdentifier = isIosPersonalTeamBuild
   ? personalTeamBundleIdentifier!
   : variant.iosBundleIdentifier;
+const microphonePermission = "Allow Morrowbyte to use your microphone for voice input.";
 
 const dmSansFonts = {
   regular: "@expo-google-fonts/dm-sans/400Regular/DMSans_400Regular.ttf",
@@ -389,7 +390,7 @@ const config: ExpoConfig = {
     [
       "expo-audio",
       {
-        microphonePermission: "Allow Morrowbyte to use your microphone for voice input.",
+        microphonePermission,
         recordAudioAndroid: true,
         enableBackgroundPlayback: false,
         enableBackgroundRecording: false,
@@ -399,12 +400,13 @@ const config: ExpoConfig = {
       "expo-camera",
       {
         cameraPermission: "Allow T3 Code to access your camera so you can scan pairing QR codes.",
-        microphonePermission: false,
+        microphonePermission,
         barcodeScannerEnabled: true,
         recordAudioAndroid: false,
       },
     ],
-    ["expo-image-picker", { photosPermission: false, microphonePermission: false }],
+    // Image picker treats false as an app-wide RECORD_AUDIO block, including voice.
+    ["expo-image-picker", { photosPermission: false, microphonePermission }],
     [
       "expo-splash-screen",
       {

@@ -425,6 +425,8 @@ const layerPreview = Layer.empty.pipe(
 
 const layerDevice = DeviceService.layer.pipe(
   Layer.provide(layerServerSettings),
+  Layer.provide(ProjectionStoreV2.layer),
+  Layer.provide(ProjectStore.layer),
   Layer.provide(ProcessRunner.layer),
   Layer.provide(NetService.layer),
 );
