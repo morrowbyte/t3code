@@ -74,7 +74,13 @@ vi.mock(import("../../state/session"), async (original) => ({
 }));
 vi.mock(import("../../hooks/useSettings"), async (original) => {
   const { DEFAULT_UNIFIED_SETTINGS } = await import("@t3tools/contracts/settings");
-  return { ...(await original()), useEnvironmentSettings: () => DEFAULT_UNIFIED_SETTINGS };
+  return {
+    ...(await original()),
+    useEnvironmentSettings: <T = typeof DEFAULT_UNIFIED_SETTINGS,>(
+      _environmentId: EnvironmentId,
+      selector?: (settings: typeof DEFAULT_UNIFIED_SETTINGS) => T,
+    ): T => (selector ? selector(DEFAULT_UNIFIED_SETTINGS) : (DEFAULT_UNIFIED_SETTINGS as T)),
+  };
 });
 vi.mock(import("../../state/use-atom-command"), async (original) => ({
   ...(await original()),

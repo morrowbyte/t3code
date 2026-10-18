@@ -116,6 +116,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
           instanceId,
           displayName: undefined,
           enabled: false,
+          environment: [],
           config: { ...CodexDriver.defaultConfig(), setupMode: "existing", homePath },
         }).pipe(
           Effect.provideService(CodexInstallation.CodexInstallation, {
@@ -174,6 +175,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
         instanceId: ProviderInstanceId.make("codex-native-first-run"),
         displayName: undefined,
         enabled: false,
+        environment: [],
         config: { ...CodexDriver.defaultConfig(), setupMode: "existing", homePath },
       });
       expect((yield* instance.snapshot.getSnapshot).setup).toEqual({
