@@ -155,28 +155,30 @@ const fixture = Effect.fn("fixture")(function* (
       starts.push("stop");
     }),
   };
-  const factory =
-    composedBaseDir === undefined
-      ? DeviceService.makeWithHosts(
-          new Map([[host.id, host]]),
-          undefined,
-          projectForThread === undefined
-            ? undefined
-            : () => Effect.succeed("/test-agent-config.json"),
-          installTool,
-          projectForThread,
-        )
-      : DeviceService.make.pipe(
-          Effect.provideService(ProcessRunner.ProcessRunner, {
-            run: () => Effect.die("The composed open must use the installed fixture CLI"),
-          }),
-          Effect.provide(
-            Layer.mergeAll(
-              ServerConfig.layerTest(composedBaseDir, composedBaseDir),
-              NetService.layer,
-            ).pipe(Layer.provideMerge(NodeServices.layer)),
-          ),
-        );
+  const factory = Effect.gen(function* () {
+    if (composedBaseDir === undefined) {
+      return yield* DeviceService.makeWithHosts(
+        new Map([[host.id, host]]),
+        undefined,
+        projectForThread === undefined
+          ? undefined
+          : () => Effect.succeed("/test-agent-config.json"),
+        installTool,
+        projectForThread,
+      );
+    }
+    return yield* DeviceService.make.pipe(
+      Effect.provideService(ProcessRunner.ProcessRunner, {
+        run: () => Effect.die("The composed open must use the installed fixture CLI"),
+      }),
+      Effect.provide(
+        Layer.mergeAll(
+          ServerConfig.layerTest(composedBaseDir, composedBaseDir),
+          NetService.layer,
+        ).pipe(Layer.provideMerge(NodeServices.layer)),
+      ),
+    );
+  });
   const service = yield* factory.pipe(
     Effect.provide(NodeCrypto.layer),
     Effect.provideService(DeviceHost.DeviceHost, host),
