@@ -238,16 +238,20 @@ const make = Effect.gen(function* () {
     const issue = yield* requestIssue(binding.issueId);
     if (issue.team.id !== binding.teamId || (issue.project?.id ?? null) !== binding.linearProjectId)
       return yield* updateDelivery(delivery.id, { outcome: "unbound" });
+    // Reserve the accepted instruction before assigning the remaining budget to issue context.
+    const instruction = delivery.text.slice(0, 8000);
+    const header = `Linear ${issue.identifier}: ${issue.title}\n${issue.url}`.slice(0, 4000);
+    const description = (issue.description ?? "").slice(
+      0,
+      24000 - header.length - instruction.length - 4,
+    );
     const sent = yield* threads
       .sendToThread({
         projectId: binding.projectId,
         threadId: binding.threadId,
         commandId,
         messageId: MessageId.make(`linear-message:${delivery.id}`),
-        text: `Linear ${issue.identifier}: ${issue.title}\n${issue.url}\n\n${issue.description ?? ""}\n\n${delivery.text}`.slice(
-          0,
-          24000,
-        ),
+        text: `${header}\n\n${instruction}\n\n${description}`,
         attachments: [],
         mode: "steer",
         createdBy: "user",

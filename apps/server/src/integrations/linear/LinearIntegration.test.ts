@@ -39,6 +39,7 @@ function fixture(configured = true) {
   const upstream = {
     reason: null as "offline" | "revoked" | null,
     updatedAt: "2026-10-19T00:00:00Z",
+    description: "Synthetic issue text",
   };
   const target = {
     status: "running",
@@ -51,7 +52,7 @@ function fixture(configured = true) {
     id: "issue-one",
     identifier: "WEA-14",
     title: "Synthetic issue",
-    description: "Synthetic issue text",
+    description: upstream.description,
     url: "https://linear.app/example/issue/WEA-14",
     updatedAt: upstream.updatedAt,
     team: { id: "team-one" },
@@ -274,6 +275,29 @@ it.effect(
     }).pipe(Effect.provide(f.layer), Effect.scoped);
   },
 );
+
+it.effect("a long issue description cannot displace the triggering comment", () => {
+  const f = fixture();
+  f.upstream.description = "Description context ".repeat(3000);
+  const comment = "Keep the existing thread and apply this exact instruction. ".repeat(130);
+  return Effect.gen(function* () {
+    const service = yield* LinearIntegration.LinearIntegration;
+    yield* connect;
+    yield* service.receive(
+      yield* event("human-actor", {
+        data: { id: "comment-one", issueId: "issue-one", body: comment },
+      }),
+    );
+    yield* service.drain;
+    assert.equal(f.sends.length, 1);
+    const text = f.sends[0]!.text;
+    assert.include(text, comment);
+    assert.include(text, "Linear WEA-14: Synthetic issue");
+    assert.include(text, "https://linear.app/example/issue/WEA-14");
+    assert.include(text, "Description context");
+    assert.isAtMost(text.length, 24000);
+  }).pipe(Effect.provide(f.layer), Effect.scoped);
+});
 
 it.effect(
   "own replies, unbound events and invalid signatures never request or steer an issue",
