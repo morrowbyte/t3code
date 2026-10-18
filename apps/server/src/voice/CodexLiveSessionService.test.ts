@@ -15,6 +15,8 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
+import * as Tracer from "effect/Tracer";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -142,6 +144,12 @@ it.effect.each([false, true])(
       let plannerCalls = 0;
       let plannerAttempts = 0;
       let plannerFailure: "managed_account_required" | "planner_restriction_failed" | undefined;
+      let plannerGate:
+        | { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> }
+        | undefined;
+      let lookupGate:
+        | { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> }
+        | undefined;
       const runtime = {
         instanceId: ProviderInstanceId.make("codex-test"),
         providerSessionId: ProviderSessionId.make("provider-session-test"),
@@ -159,10 +167,16 @@ it.effect.each([false, true])(
             }) => Effect.Effect<string>;
             onWorkControl: NonNullable<typeof controlWork>;
           }) =>
-            Effect.suspend(() => {
+            Effect.gen(function* () {
               plannerAttempts += 1;
-              if (plannerFailure !== undefined) {
-                return Effect.fail(
+              const gate = plannerGate;
+              plannerGate = undefined;
+              if (gate !== undefined) {
+                yield* Deferred.succeed(gate.started, undefined);
+                yield* Deferred.await(gate.release);
+              }
+              if (gate !== undefined || plannerFailure !== undefined) {
+                return yield* Effect.fail(
                   new ProviderAdapter.ProviderAdapterProtocolError({
                     driver: ProviderDriverKind.make("codex"),
                     detail:
@@ -172,7 +186,7 @@ it.effect.each([false, true])(
                   }),
                 );
               }
-              return Effect.sync(() => {
+              return yield* Effect.sync(() => {
                 plannerCalls += 1;
                 submitWork = input.onSubmitWork;
                 controlWork = input.onWorkControl;
@@ -303,17 +317,23 @@ it.effect.each([false, true])(
         }),
         Layer.succeed(ProviderSessionManager.ProviderSessionManagerV2, {
           get: (providerSessionId: ProviderSessionId) =>
-            Effect.suspend(() => {
+            Effect.gen(function* () {
+              const gate = lookupGate;
+              lookupGate = undefined;
+              if (gate !== undefined) {
+                yield* Deferred.succeed(gate.started, undefined);
+                yield* Deferred.await(gate.release);
+              }
               if (failNextLookup) {
                 failNextLookup = false;
-                return Effect.fail(
+                return yield* Effect.fail(
                   new ProviderSessionManager.ProviderSessionLookupError({
                     providerSessionId,
                   }),
                 );
               }
               const existing = runtimes.get(providerSessionId);
-              return Effect.succeed(existing === undefined ? Option.none() : Option.some(existing));
+              return existing === undefined ? Option.none() : Option.some(existing);
             }),
           open: (
             input: Parameters<ProviderSessionManager.ProviderSessionManagerV2Shape["open"]>[0],
@@ -333,7 +353,12 @@ it.effect.each([false, true])(
             }),
         } as unknown as ProviderSessionManager.ProviderSessionManagerV2Shape),
         Layer.succeed(ThreadManagementService.ThreadManagementService, {
-          getThreadProjection: () => Effect.succeed(durableProjection),
+          getThreadProjection: (id: typeof threadId) =>
+            Effect.succeed(
+              String(id).startsWith("fork-prepare-")
+                ? { ...durableProjection, thread: { ...durableProjection.thread, id } }
+                : durableProjection,
+            ),
           getProjectThread: () =>
             Effect.sync(() => {
               const resolve = gateReadResolvers.shift();
@@ -1511,6 +1536,95 @@ it.effect.each([false, true])(
         `;
         assert.equal(retiredBinding[0]!.status, "failed");
         yield* endPrepared(recovered);
+
+        if (!reuseRuntime) {
+          const gate = {
+            started: yield* Deferred.make<void>(),
+            release: yield* Deferred.make<void>(),
+          };
+          lookupGate = gate;
+          const firstFiber = yield* service
+            .prepare(session, {
+              threadId: "fork-prepare-a" as never,
+              clientRequestId: "simultaneous-shared-a",
+            })
+            .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
+          yield* Deferred.await(gate.started);
+          const second = yield* Effect.exit(
+            service.prepare(session, {
+              threadId: "fork-prepare-b" as never,
+              clientRequestId: "simultaneous-shared-b",
+            }),
+          );
+          yield* Deferred.succeed(gate.release, undefined);
+          const first = yield* Fiber.join(firstFiber);
+          if (Exit.isFailure(first) || Exit.isFailure(second)) {
+            assert.fail(
+              "Concurrent fork prepares must claim different voice runtimes before lookup.",
+            );
+          }
+          assert.notEqual(first.value.providerSessionId, second.value.providerSessionId);
+          assert.equal(first.value.status, "prepared");
+          assert.equal(second.value.status, "prepared");
+          yield* endPrepared(first.value);
+          yield* endPrepared(second.value);
+        } else {
+          const gate = {
+            started: yield* Deferred.make<void>(),
+            release: yield* Deferred.make<void>(),
+          };
+          plannerGate = gate;
+          const failing = yield* service
+            .prepare(session, {
+              threadId,
+              clientRequestId: "planner-will-fail-under-request-lock",
+            })
+            .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
+          yield* Deferred.await(gate.started);
+          let markPreviousRead!: () => void;
+          const previousRead = new Promise<void>((resolve) => {
+            markPreviousRead = resolve;
+          });
+          const tracer = Tracer.make({
+            span: (options) => {
+              const span = new Tracer.NativeSpan(options);
+              const end = span.end.bind(span);
+              span.end = (time, exit) => {
+                end(time, exit);
+                if (
+                  String(span.attributes.get("db.query.text")).includes(
+                    "ORDER BY updated_at DESC LIMIT 1",
+                  )
+                ) {
+                  markPreviousRead();
+                }
+              };
+              return span;
+            },
+          });
+          const next = yield* service
+            .prepare(session, {
+              threadId,
+              clientRequestId: "prepare-after-in-flight-planner-failure",
+            })
+            .pipe(
+              Effect.withTracer(tracer),
+              Effect.exit,
+              Effect.forkChild({ startImmediately: true }),
+            );
+          yield* Effect.promise(() => previousRead);
+          yield* Deferred.succeed(gate.release, undefined);
+          const failed = yield* Fiber.join(failing);
+          assert.isTrue(Exit.isFailure(failed));
+          const result = yield* Fiber.join(next);
+          if (Exit.isFailure(result)) {
+            assert.fail(
+              "A prepare waiting on the prior request must re-read its terminal failure.",
+            );
+          }
+          assert.equal(result.value.status, "prepared");
+          yield* endPrepared(result.value);
+        }
       });
       yield* program.pipe(
         Effect.provide(Layer.provideMerge(CodexLiveSessionService.layer, dependencies)),
