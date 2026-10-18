@@ -561,7 +561,13 @@ jobs:
           assert config['version'] == os.environ['T3CODE_MOBILE_VERSION']
           assert config['android']['versionCode'] == int(os.environ['MORROWBYTE_ANDROID_VERSION_CODE'])
           assert config['updates']['enabled'] is False and not config['updates'].get('url')
-          assert not config.get('owner') and not config.get('extra', {}).get('eas')
+          assert not config.get('owner'), 'Standalone Android must not have an EAS owner.'
+          # Sharing/widgets add local iOS extension metadata without binding an EAS project.
+          eas_metadata = config.get('extra', {}).get('eas', {})
+          for key in ('build', 'experimental', 'ios', 'appExtensions'):
+              assert isinstance(eas_metadata, dict) and set(eas_metadata) <= {key}, 'Unexpected EAS account/project configuration.'
+              eas_metadata = eas_metadata.get(key, [] if key == 'appExtensions' else {})
+          assert isinstance(eas_metadata, list), 'Unexpected EAS extension metadata.'
           PYCONFIG
 
       - name: Generate Android release project
