@@ -86,7 +86,7 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
                       { value: "keep until deleted" },
                     ]);
                     yield* sql`COMMIT`;
-                  }).pipe(Effect.provide(openLegacy));
+                  }).pipe(Effect.provide(openLegacy), Effect.orDie);
                   if (refuseUnlink) {
                     // Windows refuses unlink if another process reopens the
                     // database after maintenance closes its own connection.
