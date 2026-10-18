@@ -1,3 +1,4 @@
+import { satisfiesSemverRange } from "@t3tools/shared/semver";
 import * as Dialog from "../../components/ui/Dialog";
 import {
   isAtomCommandInterrupted,
@@ -106,6 +107,11 @@ function ProviderAccount({
   const signedIn =
     provider.auth.status === "authenticated" ||
     (provider.auth.status === "unknown" && state?.phase === "succeeded");
+  const codexRuntimeUnsupported =
+    provider.driver === "codex" &&
+    (typeof provider.version !== "string" ||
+      !/^\d+\.\d+\.\d+$/u.test(provider.version) ||
+      !satisfiesSemverRange(provider.version, ">=0.163.0"));
   const isDiscovering =
     provider.driver === "acpRegistry" &&
     provider.installed &&
@@ -117,6 +123,7 @@ function ProviderAccount({
     !active &&
     !signedIn &&
     (!provider.installed ||
+      codexRuntimeUnsupported ||
       provider.setup?.canAuthenticate === false ||
       (provider.driver === "acpRegistry" && state?.methods?.length === 0));
   const url =
@@ -171,6 +178,7 @@ function ProviderAccount({
     );
   }
   function chooseMethod() {
+    if (codexRuntimeUnsupported) return;
     const methods = state?.methods ?? [];
     if (methods.length <= 1) {
       void run(() => start(target));
@@ -187,14 +195,16 @@ function ProviderAccount({
         <Text accessibilityLiveRegion="polite" className="text-sm text-foreground-muted">
           {active || state?.phase === "failed" || state?.phase === "cancelled"
             ? state.message
-            : signedIn
+            : signedIn && !codexRuntimeUnsupported
               ? "Signed in."
               : isDiscovering
                 ? "Discovering sign-in methods…"
-                : needsExternalSetup
+                : needsExternalSetup || codexRuntimeUnsupported
                   ? !provider.installed
                     ? "Set up this provider in web or desktop Settings before signing in here."
-                    : "No in-app sign-in advertised. Follow the provider's docs to finish setup."
+                    : codexRuntimeUnsupported
+                      ? "Update Codex to 0.163.0 or later in web or desktop Settings before signing in here."
+                      : "No in-app sign-in advertised. Follow the provider's docs to finish setup."
                   : "Connect this provider."}
         </Text>
         {signedIn && !active && provider.auth.email?.trim() ? (
@@ -269,7 +279,7 @@ function ProviderAccount({
           </Text>
         ) : null}
       </View>
-      {choosingMethod && !active ? (
+      {choosingMethod && !active && !codexRuntimeUnsupported ? (
         <View>
           {state?.methods?.map((method) => (
             <SettingsActionRow
@@ -325,7 +335,10 @@ function ProviderAccount({
             void run(() => cancel({ environmentId, input: { instanceId, flowId: state.flowId! } }));
           }}
         />
-      ) : !active && !needsExternalSetup && provider.setup?.canAuthenticate !== false ? (
+      ) : !active &&
+        !needsExternalSetup &&
+        !codexRuntimeUnsupported &&
+        provider.setup?.canAuthenticate !== false ? (
         <SettingsActionRow
           icon="person.crop.circle"
           label={signedIn ? "Change account" : "Sign in"}
