@@ -12,6 +12,10 @@ on:
         description: Exact source commit (fork main for publishing, dispatched branch for artifacts only)
         required: true
         type: string
+      recover_desktop_run_id:
+        description: One-off .48 recovery only (39093205395); reuse desktop bytes and build only Android
+        type: string
+        default: ""
 
 concurrency:
   group: weasel-desktop-nightly
@@ -27,11 +31,19 @@ jobs:
     runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 15
     outputs:
-      source_sha: ${{ steps.release.outputs.source_sha }}
-      version: ${{ steps.release.outputs.version }}
-      android_version_code: ${{ steps.release.outputs.android_version_code }}
-      tag: ${{ steps.release.outputs.tag }}
-      observatory_route_sha256: ${{ steps.route.outputs.observatory_route_sha256 }}
+      source_sha: ${{ steps.recovery.outputs.source_sha || steps.release.outputs.source_sha }}
+      version: ${{ steps.recovery.outputs.version || steps.release.outputs.version }}
+      android_version_code: ${{ steps.recovery.outputs.android_version_code || steps.release.outputs.android_version_code }}
+      tag: ${{ steps.recovery.outputs.tag || steps.release.outputs.tag }}
+      observatory_route_sha256: ${{ steps.recovery.outputs.observatory_route_sha256 || steps.route.outputs.observatory_route_sha256 }}
+      desktop_run_id: ${{ steps.recovery.outputs.desktop_run_id || github.run_id }}
+      desktop_run_attempt: ${{ steps.recovery.outputs.desktop_run_attempt || github.run_attempt }}
+      desktop_context_sha: ${{ steps.recovery.outputs.desktop_context_sha || github.sha }}
+      desktop_workflow_sha: ${{ steps.recovery.outputs.desktop_workflow_sha || github.workflow_sha }}
+      desktop_workflow_ref: ${{ steps.recovery.outputs.desktop_workflow_ref || github.workflow_ref }}
+      recovery_artifact_attempt: ${{ steps.recovery.outputs.recovery_artifact_attempt }}
+      recovery_receipt_sha256: ${{ steps.recovery.outputs.recovery_receipt_sha256 }}
+      recovery_workflow_sha256: ${{ steps.recovery.outputs.recovery_workflow_sha256 }}
     steps:
       - name: Checkout promoted source
         uses: actions/checkout@v4
@@ -39,7 +51,175 @@ jobs:
           ref: ${{ inputs.source_sha }}
           fetch-depth: 0
 
+      - id: recovery
+        name: Recover only the pinned .48 desktop bytes and original proofs
+        if: inputs.recover_desktop_run_id != ''
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RECOVERY_RUN_ID: ${{ inputs.recover_desktop_run_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PYRECOVERY'
+          import hashlib, json, os, pathlib, shutil, stat, subprocess, zipfile
+          source = 'ce275176a119b1a2c599c23e6acd7d537cc4c336'
+          origin_run = '39093205395'
+          workflow = '.github/workflows/weasel-release.yml'
+          workflow_ref = 'morrowbyte/t3code/' + workflow + '@refs/heads/main'
+          expected_route = '4a398647bcd2507fd8aabab1ea0119b5bb635ccb880f4c73f0570f533650480e'
+          repo = os.environ['GITHUB_REPOSITORY']
+          digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+          git = lambda *args: subprocess.check_output(['git', *args], text=True).strip()
+          api = lambda suffix: json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/' + suffix]))
+          assert repo == 'morrowbyte/t3code'
+          assert os.environ['RECOVERY_RUN_ID'] == origin_run and os.environ['SOURCE_SHA'] == source
+          assert os.environ['GITHUB_REF'] == 'refs/heads/main'
+          assert os.environ['GITHUB_WORKFLOW_REF'] == workflow_ref
+          assert os.environ['GITHUB_WORKFLOW_SHA'] == os.environ['GITHUB_SHA']
+          assert git('rev-parse', 'HEAD') == source
+          subprocess.run(['git', 'fetch', '--no-tags', 'origin', 'main'], check=True)
+          control = git('rev-parse', 'FETCH_HEAD')
+          assert control == os.environ['GITHUB_SHA'], 'Recovery control must still be current main.'
+          subprocess.run(['git', 'merge-base', '--is-ancestor', source, control], check=True)
+          assert git('diff', '--name-only', source, control).splitlines() == [workflow], 'Recovery may change only this workflow, never product source/locks.'
+          origin_workflow = subprocess.check_output(['git', 'show', source + ':' + workflow])
+          assert hashlib.sha256(origin_workflow).hexdigest() == 'e32a45bed015294f69c01fb44309468f389e2093f3c3e323cfdb314492c843ef'
+          control_workflow_sha256 = hashlib.sha256(subprocess.check_output(['git', 'show', control + ':' + workflow])).hexdigest()
+          run = api(f'actions/runs/{origin_run}')
+          assert run['id'] == int(origin_run) and run['run_number'] == 48 and run['run_attempt'] == 1
+          assert run['repository']['full_name'] == run['head_repository']['full_name'] == repo
+          assert run['head_sha'] == source and run['head_branch'] == 'main'
+          assert run['event'] == 'workflow_dispatch' and run['path'] == workflow
+          assert run['status'] == 'completed' and run['conclusion'] == 'failure'
+          expected_jobs = {'preflight': 'success', 'build_bundle': 'success', 'build_linux': 'success', 'build_nixos': 'success', 'build_windows': 'success', 'Build Morrowbyte Android APK': 'failure', 'publish': 'skipped'}
+          jobs = api(f'actions/runs/{origin_run}/attempts/1/jobs?per_page=100')
+          assert jobs['total_count'] == len(expected_jobs)
+          assert {j['name']: j['conclusion'] for j in jobs['jobs']} == expected_jobs
+          assert all(j['head_sha'] == source and j['status'] == 'completed' for j in jobs['jobs'])
+          android = next(j for j in jobs['jobs'] if j['name'] == 'Build Morrowbyte Android APK')
+          assert [s['name'] for s in android['steps'] if s['conclusion'] == 'failure'] == ['Bind source and verify standalone fork configuration']
+          pins = {
+              "12124275441": [
+                  "weasel-release-cli-windows",
+                  "sha256:8bf29216a2b8a93b5cf4270bdd31e8e19213b95f0306d221f02e6bbb9b28840d"
+              ],
+              "12123931607": [
+                  "weasel-release-windows",
+                  "sha256:9ab9b193bb513c27d24cec85aabf48bd843d3e3bd9fcdc91c10d073e3c1fd8c3"
+              ],
+              "12123712026": [
+                  "weasel-release-linux",
+                  "sha256:86c2bcc648416611330e0bb1d3d625cc456fc1b512bf4d53d661a0763bbed686"
+              ],
+              "12123662231": [
+                  "weasel-release-cli-linux",
+                  "sha256:abcc203b8420e3f50d17bdf0a14047b677c28fd53380df3253e83e809c41f363"
+              ],
+              "12123547205": [
+                  "weasel-observatory-preflight-ce275176a119b1a2c599c23e6acd7d537cc4c336-1",
+                  "sha256:7ba5df1996ca0092df64256e05fb4484994cced72e7067d322be69f25336415d"
+              ],
+              "12123542753": [
+                  "weasel-release-nixos",
+                  "sha256:1ba38e4340acc30081b803aee1664ae2ba2753fcf2c0a20c7d747fa8349bba00"
+              ],
+              "12123229340": [
+                  "weasel-observatory-build-ce275176a119b1a2c599c23e6acd7d537cc4c336-1",
+                  "sha256:9dae9b78dcfc61c6895be13b95f2f5a74ee3166ebea6c69519aab375bad4b37b"
+              ]
+          }
+          metadata = api(f'actions/runs/{origin_run}/artifacts?per_page=100')
+          assert metadata['total_count'] == len(metadata['artifacts'])
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          assets = root / 'recovered-desktop'
+          assets.mkdir()
+          archives = root / 'desktop-origin-archives'
+          archives.mkdir()
+          records = []
+          for artifact_id, (name, expected_digest) in pins.items():
+              found = [a for a in metadata['artifacts'] if str(a['id']) == artifact_id]
+              assert len(found) == 1
+              artifact = found[0]
+              assert artifact['name'] == name and artifact['digest'] == expected_digest and not artifact['expired']
+              assert artifact['workflow_run']['id'] == int(origin_run) and artifact['workflow_run']['head_sha'] == source
+              assert artifact['workflow_run']['repository_id'] == artifact['workflow_run']['head_repository_id'] == run['repository']['id']
+              archive_path = archives / (artifact_id + '.zip')
+              with archive_path.open('wb') as output:
+                  subprocess.run(['gh', 'api', f'repos/{repo}/actions/artifacts/{artifact_id}/zip'], stdout=output, check=True)
+              assert archive_path.stat().st_size == artifact['size_in_bytes']
+              assert 'sha256:' + digest(archive_path) == expected_digest, 'Origin artifact ZIP digest mismatch.'
+              target = assets
+              if name.startswith('weasel-observatory-preflight-'):
+                  target = root / 'observatory-route-generation'
+              elif name.startswith('weasel-observatory-build-'):
+                  target = root / 'observatory-release-build'
+              target.mkdir(exist_ok=True)
+              with zipfile.ZipFile(archive_path) as archive:
+                  for member in archive.infolist():
+                      assert member.filename == pathlib.PurePosixPath(member.filename).name and not member.is_dir()
+                      assert not stat.S_ISLNK(member.external_attr >> 16)
+                      destination = target / member.filename
+                      assert not destination.exists(), 'Duplicate artifact member.'
+                      with archive.open(member) as incoming, destination.open('wb') as outgoing:
+                          shutil.copyfileobj(incoming, outgoing)
+              records.append({key: artifact[key] for key in ['id', 'name', 'digest', 'size_in_bytes', 'expires_at']})
+              archive_path.unlink()
+          preflight = root / 'observatory-route-generation'
+          build = root / 'observatory-release-build'
+          pre = json.loads((preflight / 'receipt.json').read_bytes())
+          built = json.loads((build / 'receipt.json').read_bytes())
+          for receipt in [pre, built]:
+              assert receipt['source'] == receipt['trustedContextSha'] == receipt['trustedWorkflowSha'] == source
+              assert receipt['run'] == origin_run and receipt['attempt'] == '1'
+              assert receipt['trustedWorkflowRef'] == workflow_ref
+              assert receipt['lockSha256'] == digest(pathlib.Path('pnpm-lock.yaml'))
+          assert pre['status'] == 'generated-unreviewed' and pre['effectiveSourceSha'] == source
+          assert pre['checkScriptSha256'] == digest(pathlib.Path('scripts/weasel/check.sh'))
+          assert pre['beforeSha256'] == hashlib.sha256(subprocess.check_output(['git', 'show', source + ':apps/web/src/routeTree.gen.ts'])).hexdigest()
+          assert pre['generatorVersion'] == '1.167.12' and pre['config'] == {'autoCodeSplitting': True}
+          assert pre['afterSha256'] == built['generatedRouteSha256'] == expected_route
+          assert digest(preflight / 'routeTree.gen.ts') == digest(build / 'routeTree.gen.ts') == expected_route
+          assert built['preflightReceiptSha256'] == digest(preflight / 'receipt.json')
+          assert (preflight / 'routeTree.diff').is_file()
+          receipt = {'schemaVersion': 1, 'source': source, 'version': '0.1.2-nightly.20261018.48', 'originRun': origin_run, 'originAttempt': '1',
+                     'originWorkflowSha': source, 'originWorkflowRef': workflow_ref, 'originWorkflowSha256': hashlib.sha256(origin_workflow).hexdigest(),
+                     'promotionRun': os.environ['GITHUB_RUN_ID'], 'promotionAttempt': os.environ['GITHUB_RUN_ATTEMPT'],
+                     'promotionContextSha': control, 'promotionWorkflowSha': os.environ['GITHUB_WORKFLOW_SHA'],
+                     'promotionWorkflowRef': os.environ['GITHUB_WORKFLOW_REF'], 'promotionWorkflowSha256': control_workflow_sha256,
+                     'changedPaths': [workflow], 'originArtifacts': records,
+                     'files': [{'name': p.name, 'sha256': digest(p)} for p in sorted(assets.iterdir())]}
+          receipt_path = assets / 'DESKTOP-RECOVERY.json'
+          receipt_path.write_text(json.dumps(receipt, indent=2) + '\n')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              for key, value in {'source_sha': source, 'version': receipt['version'], 'android_version_code': '48', 'tag': 'v' + receipt['version'],
+                                 'observatory_route_sha256': expected_route, 'desktop_run_id': origin_run, 'desktop_run_attempt': '1',
+                                 'desktop_context_sha': source, 'desktop_workflow_sha': source, 'desktop_workflow_ref': workflow_ref,
+                                 'recovery_artifact_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+                                 'recovery_receipt_sha256': digest(receipt_path), 'recovery_workflow_sha256': control_workflow_sha256}.items():
+                  output.write(f'{key}={value}\n')
+          PYRECOVERY
+
+      - name: Preserve recovered desktop bytes without rebuilding
+        if: inputs.recover_desktop_run_id != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: weasel-release-recovered-desktop
+          path: ${{ runner.temp }}/recovered-desktop/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Preserve original Observatory build proof without rewriting it
+        if: inputs.recover_desktop_run_id != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: weasel-observatory-build-${{ inputs.source_sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/observatory-release-build/*
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Verify published or artifact-only source
+        if: inputs.recover_desktop_run_id == ''
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
           PUBLISH_RELEASE: ${{ inputs.publish }}
@@ -49,17 +229,21 @@ jobs:
           bash scripts/weasel/verify-desktop-source.sh "$SOURCE_SHA" "$PUBLISH_RELEASE" "$DISPATCHED_REF" "$DISPATCHED_SHA"
 
       - name: Setup Vite+
+        if: inputs.recover_desktop_run_id == ''
         uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version-file: package.json
           cache: true
           run-install: false
       - name: Install dependencies
+        if: inputs.recover_desktop_run_id == ''
         run: vp install --frozen-lockfile
       - name: Prepare pinned Electron runtime before desktop imports
+        if: inputs.recover_desktop_run_id == ''
         run: node apps/desktop/scripts/ensure-electron-runtime.mjs
 
       - name: Check source before release
+        if: inputs.recover_desktop_run_id == ''
         env:
           EFFECTIVE_SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
@@ -70,6 +254,7 @@ jobs:
 
       - id: route
         name: Verify reviewed Observatory preflight route
+        if: inputs.recover_desktop_run_id == ''
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
@@ -104,7 +289,7 @@ jobs:
           PYROUTE
 
       - name: Preserve release Observatory preflight route evidence
-        if: always() && hashFiles('apps/web/src/routes/observatory.tsx') != ''
+        if: always() && hashFiles('apps/web/src/routes/observatory.tsx') != '' && (inputs.recover_desktop_run_id == '' || steps.recovery.outcome == 'success')
         uses: actions/upload-artifact@v4
         with:
           name: weasel-observatory-preflight-${{ inputs.source_sha }}-${{ github.run_attempt }}
@@ -117,6 +302,7 @@ jobs:
 
       - id: release
         name: Resolve distinct fork version
+        if: inputs.recover_desktop_run_id == ''
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
           RELEASE_RUN: ${{ github.run_number }}
@@ -150,6 +336,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
   build_bundle:
+    if: inputs.recover_desktop_run_id == ''
     needs: [preflight]
     runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 30
@@ -243,6 +430,7 @@ jobs:
           retention-days: 1
 
   build_linux:
+    if: inputs.recover_desktop_run_id == ''
     needs: [preflight, build_bundle]
     runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 80
@@ -355,6 +543,7 @@ jobs:
           retention-days: 1
 
   build_nixos:
+    if: inputs.recover_desktop_run_id == ''
     needs: [preflight, build_linux]
     runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 40
@@ -383,6 +572,7 @@ jobs:
           retention-days: 1
 
   build_windows:
+    if: inputs.recover_desktop_run_id == ''
     needs: [preflight, build_bundle, build_linux]
     runs-on: ${{ vars.WEASEL_WINDOWS_RUNNER || 'blacksmith-8vcpu-windows-2025' }}
     timeout-minutes: 50
@@ -561,7 +751,13 @@ jobs:
           assert config['version'] == os.environ['T3CODE_MOBILE_VERSION']
           assert config['android']['versionCode'] == int(os.environ['MORROWBYTE_ANDROID_VERSION_CODE'])
           assert config['updates']['enabled'] is False and not config['updates'].get('url')
-          assert not config.get('owner') and not config.get('extra', {}).get('eas')
+          assert not config.get('owner'), 'Standalone Android must not have an EAS owner.'
+          # Sharing/widgets add local iOS extension metadata without binding an EAS project.
+          eas_metadata = config.get('extra', {}).get('eas', {})
+          for key in ('build', 'experimental', 'ios', 'appExtensions'):
+              assert isinstance(eas_metadata, dict) and set(eas_metadata) <= {key}, 'Unexpected EAS account/project configuration.'
+              eas_metadata = eas_metadata.get(key, [] if key == 'appExtensions' else {})
+          assert isinstance(eas_metadata, list), 'Unexpected EAS extension metadata.'
           PYCONFIG
 
       - name: Generate Android release project
@@ -709,8 +905,11 @@ jobs:
         run: rm -rf -- "$RUNNER_TEMP/morrowbyte-signing"
 
   publish:
-    if: inputs.publish
-    needs: [preflight, build_linux, build_nixos, build_windows, build_android_apk]
+    if: >-
+      ${{ !cancelled() && inputs.publish && needs.preflight.result == 'success' && needs.build_android_apk.result == 'success' &&
+          ((inputs.recover_desktop_run_id == '' && needs.build_bundle.result == 'success' && needs.build_linux.result == 'success' && needs.build_nixos.result == 'success' && needs.build_windows.result == 'success') ||
+           (inputs.recover_desktop_run_id == '39093205395' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'skipped' && needs.build_nixos.result == 'skipped' && needs.build_windows.result == 'skipped')) }}
+    needs: [preflight, build_bundle, build_linux, build_nixos, build_windows, build_android_apk]
     runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 15
     permissions:
@@ -733,20 +932,25 @@ jobs:
         if: needs.preflight.outputs.observatory_route_sha256 != ''
         uses: actions/download-artifact@v4
         with:
-          name: weasel-observatory-preflight-${{ needs.preflight.outputs.source_sha }}-${{ github.run_attempt }}
+          name: weasel-observatory-preflight-${{ needs.preflight.outputs.source_sha }}-${{ needs.preflight.outputs.recovery_artifact_attempt || github.run_attempt }}
           path: ${{ runner.temp }}/observatory-publish-preflight
 
       - name: Download Observatory build proof for publication
         if: needs.preflight.outputs.observatory_route_sha256 != ''
         uses: actions/download-artifact@v4
         with:
-          name: weasel-observatory-build-${{ needs.preflight.outputs.source_sha }}-${{ github.run_attempt }}
+          name: weasel-observatory-build-${{ needs.preflight.outputs.source_sha }}-${{ needs.preflight.outputs.recovery_artifact_attempt || github.run_attempt }}
           path: ${{ runner.temp }}/observatory-publish-build
 
       - name: Require matching Observatory route proofs before publication
         env:
           SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
           PREFLIGHT_ROUTE_SHA: ${{ needs.preflight.outputs.observatory_route_sha256 }}
+          DESKTOP_RUN_ID: ${{ needs.preflight.outputs.desktop_run_id }}
+          DESKTOP_RUN_ATTEMPT: ${{ needs.preflight.outputs.desktop_run_attempt }}
+          DESKTOP_CONTEXT_SHA: ${{ needs.preflight.outputs.desktop_context_sha }}
+          DESKTOP_WORKFLOW_SHA: ${{ needs.preflight.outputs.desktop_workflow_sha }}
+          DESKTOP_WORKFLOW_REF: ${{ needs.preflight.outputs.desktop_workflow_ref }}
         run: |
           set -euo pipefail
           if [[ ! -f apps/web/src/routes/observatory.tsx ]]; then
@@ -767,11 +971,11 @@ jobs:
           built = json.loads((build / 'receipt.json').read_bytes())
           for receipt in [pre, built]:
               assert receipt['source'] == source
-              assert receipt['run'] == os.environ['GITHUB_RUN_ID'] and receipt['attempt'] == os.environ['GITHUB_RUN_ATTEMPT']
+              assert receipt['run'] == os.environ['DESKTOP_RUN_ID'] and receipt['attempt'] == os.environ['DESKTOP_RUN_ATTEMPT']
               assert receipt['lockSha256'] == digest(pathlib.Path('pnpm-lock.yaml'))
-              assert receipt['trustedContextSha'] == os.environ['GITHUB_SHA']
-              assert receipt['trustedWorkflowSha'] == os.environ['GITHUB_WORKFLOW_SHA']
-              assert receipt['trustedWorkflowRef'] == os.environ['GITHUB_WORKFLOW_REF']
+              assert receipt['trustedContextSha'] == os.environ['DESKTOP_CONTEXT_SHA']
+              assert receipt['trustedWorkflowSha'] == os.environ['DESKTOP_WORKFLOW_SHA']
+              assert receipt['trustedWorkflowRef'] == os.environ['DESKTOP_WORKFLOW_REF']
           assert pre['effectiveSourceSha'] == source and pre['status'] == 'generated-unreviewed'
           assert pre['afterSha256'] == built['generatedRouteSha256'] == expected
           assert digest(preflight / 'routeTree.gen.ts') == digest(build / 'routeTree.gen.ts') == expected
@@ -827,6 +1031,24 @@ jobs:
           assert all(receipt.get(key) == value for key, value in expected.items())
           PYPUBLISHAPK
 
+      - name: Verify the recovered desktop provenance from this preflight
+        if: inputs.recover_desktop_run_id != ''
+        env:
+          RECOVERY_RECEIPT_SHA256: ${{ needs.preflight.outputs.recovery_receipt_sha256 }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PYDESKTOP'
+          import hashlib, json, os
+          from pathlib import Path
+          digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+          assets = Path('release-assets')
+          receipt = assets / 'DESKTOP-RECOVERY.json'
+          assert digest(receipt) == os.environ['RECOVERY_RECEIPT_SHA256']
+          for item in json.loads(receipt.read_text())['files']:
+              assert Path(item['name']).name == item['name']
+              assert digest(assets / item['name']) == item['sha256'], 'Recovered desktop file bytes changed.'
+          PYDESKTOP
+
       - name: Verify isolated release payload
         run: |
           set -euo pipefail
@@ -847,6 +1069,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ vars.WEASEL_RELEASE_REPOSITORY || 'EvilWeasel/t3code' }}
           OBSERVATORY_ROUTE_SHA: ${{ needs.preflight.outputs.observatory_route_sha256 }}
+          DESKTOP_RUN_ID: ${{ needs.preflight.outputs.desktop_run_id }}
+          DESKTOP_RUN_ATTEMPT: ${{ needs.preflight.outputs.desktop_run_attempt }}
+          DESKTOP_CONTEXT_SHA: ${{ needs.preflight.outputs.desktop_context_sha }}
+          DESKTOP_WORKFLOW_SHA: ${{ needs.preflight.outputs.desktop_workflow_sha }}
+          DESKTOP_WORKFLOW_REF: ${{ needs.preflight.outputs.desktop_workflow_ref }}
+          RECOVERY_WORKFLOW_SHA256: ${{ needs.preflight.outputs.recovery_workflow_sha256 }}
         run: |
           set -euo pipefail
           tag="${{ needs.preflight.outputs.tag }}"
@@ -898,8 +1126,13 @@ jobs:
             if [[ -f apps/web/src/routes/observatory.tsx ]]; then
               test "$OBSERVATORY_ROUTE_SHA" = 4a398647bcd2507fd8aabab1ea0119b5bb635ccb880f4c73f0570f533650480e
               printf 'generated_route_sha256=%s\ngenerated_route_source_sha=%s\ngenerated_route_run_id=%s\ngenerated_route_run_attempt=%s\n' \
-                "$OBSERVATORY_ROUTE_SHA" "$source_sha" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+                "$OBSERVATORY_ROUTE_SHA" "$source_sha" "$DESKTOP_RUN_ID" "$DESKTOP_RUN_ATTEMPT"
             fi
+            printf 'desktop_origin_run_id=%s\ndesktop_origin_run_attempt=%s\ndesktop_origin_context_sha=%s\ndesktop_origin_workflow_sha=%s\ndesktop_origin_workflow_ref=%s\n' \
+              "$DESKTOP_RUN_ID" "$DESKTOP_RUN_ATTEMPT" "$DESKTOP_CONTEXT_SHA" "$DESKTOP_WORKFLOW_SHA" "$DESKTOP_WORKFLOW_REF"
+            printf 'publication_run_id=%s\npublication_run_attempt=%s\npublication_context_sha=%s\npublication_workflow_sha=%s\npublication_workflow_ref=%s\npublication_workflow_sha256=%s\n' \
+              "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" "$GITHUB_WORKFLOW_SHA" "$GITHUB_WORKFLOW_REF" \
+              "${RECOVERY_WORKFLOW_SHA256:-$(sha256sum .github/workflows/weasel-release.yml | cut -d ' ' -f 1)}"
             printf 'github_asset_digests=%s\n' "$(jq -c '[.[] | {name, digest}]' <<<"$assets_json")"
             printf 'artifact_sha256:\n'
             cat release-assets/SHA256SUMS
