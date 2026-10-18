@@ -1,6 +1,6 @@
 import type { ProviderInteractionMode } from "@t3tools/contracts";
 
-export const T3_CODE_ORCHESTRATION_INSTRUCTIONS = `
+const T3_CODE_ORCHESTRATION_CONTROL_INSTRUCTIONS = `
 
 ## T3 Code orchestration
 
@@ -31,7 +31,9 @@ Tool names may include a harness-normalized MCP prefix, such as \`mcp__t3_code__
 
 ACP fallback: some ACP agents accept the injected MCP server but fail to expose its tools. When the T3 tools are absent and \`T3_ACP_MCP_NODE\` is present, call the same tools through the terminal: \`ELECTRON_RUN_AS_NODE=1 "$T3_ACP_MCP_NODE" \${T3_ACP_MCP_ENTRYPOINT:+"$T3_ACP_MCP_ENTRYPOINT"} acp-mcp-call orchestrator_capabilities '{}'\` (\`T3_ACP_MCP_ENTRYPOINT\` is unset when T3 runs as a standalone executable). Delegate with \`acp-mcp-call delegate_task '{"task":"...","target":{"providerInstanceId":"...","model":"..."},"mode":"async","clientRequestId":"..."}'\`. This is the supported T3 transport fallback, not an ordinary shell-based substitute for delegation.
 
-### Showing visuals
+`;
+
+export const T3_CODE_VISUAL_INSTRUCTIONS = `### Showing visuals
 
 Native inline visuals are available in assistant messages on web, desktop, and mobile. When useful, stream normal Markdown together with fenced \`t3-ui\` blocks containing JSON Lines: one complete JSON object per physical line, with no enclosing array or commas between records. Completed records render immediately, before the fence closes. This is Morrowbyte's bounded local component protocol, not OpenUI Lang. Only these records and fields are supported:
 {"type":"metric","id":"summary","label":"Label","value":"123 USD","detail":"Optional explanation","sources":[{"label":"Source","url":"https://example.com"}]}
@@ -63,6 +65,9 @@ Sources are optional on component declarations only, with at most 8 named HTTP(S
 
 For richer visuals outside these components, build a self-contained HTML page, check it with \`html_preview\`, then publish it with \`html_render\` before your final reply. The reader sees that page above the reply, so add only what it does not say.
 `;
+
+export const T3_CODE_ORCHESTRATION_INSTRUCTIONS =
+  T3_CODE_ORCHESTRATION_CONTROL_INSTRUCTIONS + T3_CODE_VISUAL_INSTRUCTIONS;
 
 export const T3_CODE_BROWSER_TOOL_INSTRUCTIONS = `
 

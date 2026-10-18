@@ -204,7 +204,14 @@ export function buildCodexAdditionalContext(
   const tools = toolInstructions(toolsAvailable);
   const instructions = [
     { key: "t3_code_orchestration", value: T3_CODE_ORCHESTRATION_INSTRUCTIONS },
-    { key: "t3_code_runtime", value: buildRuntimeInstructions({ harness: "Codex", ...runtime }) },
+    {
+      key: "t3_code_runtime",
+      value: buildRuntimeInstructions({
+        harness: "Codex",
+        ...runtime,
+        visualProtocolAttached: true,
+      }),
+    },
     ...(tools ? [{ key: "t3_code_tools", value: tools }] : []),
   ];
   return Object.fromEntries(

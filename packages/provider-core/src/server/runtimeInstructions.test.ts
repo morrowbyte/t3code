@@ -1,7 +1,39 @@
 import { describe, expect, it } from "vite-plus/test";
 import { buildRuntimeInstructions } from "./runtimeInstructions.ts";
+import { T3_CODE_VISUAL_INSTRUCTIONS } from "./orchestrationInstructions.ts";
+import { parseStreamableUi } from "@t3tools/shared/streamableUi";
 
 describe("buildRuntimeInstructions", () => {
+  it.each(["Cursor", "Muse", "Grok", "OpenCode", "Claude Code"])(
+    "provides %s the exact valid protocol even without T3 MCP context",
+    (harness) => {
+      const instructions = buildRuntimeInstructions({ harness });
+      expect(instructions).toContain(T3_CODE_VISUAL_INSTRUCTIONS);
+      const examples = instructions.split("\n").filter((line) => line.startsWith('{"type":'));
+      const parsed = parseStreamableUi(examples.join("\n"), false);
+      expect(parsed.error).toBeUndefined();
+      expect(parsed.components.map((component) => component.type)).toEqual([
+        "metric",
+        "table",
+        "chart",
+        "chart",
+        "cards",
+        "timeline",
+        "workflow",
+        "report",
+        "uml",
+      ]);
+    },
+  );
+
+  it("omits a duplicate protocol only when the caller already attached it", () => {
+    const instructions = buildRuntimeInstructions({
+      harness: "Codex",
+      visualProtocolAttached: true,
+    });
+    expect(instructions).toContain("use relevant native t3-ui visuals by default");
+    expect(instructions).not.toContain(T3_CODE_VISUAL_INSTRUCTIONS);
+  });
   it("defaults useful human explanations to visuals without requiring a visual prompt", () => {
     for (const harness of ["Codex", "Claude Code", "Cursor"]) {
       const instructions = buildRuntimeInstructions({ harness });
