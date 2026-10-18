@@ -11,6 +11,7 @@ import {
   buildBulkTitleRegenerationContextMenuItem,
   buildBulkUnpinContextMenuItem,
   buildMultiSelectThreadContextMenuItems,
+  buildSidebarHierarchy,
   createThreadJumpHintVisibilityController,
   deleteSelectedThreadEntries,
   filterSidebarProjectScopeItems,
@@ -398,6 +399,59 @@ describe("resolveSidebarStageBadgeLabel", () => {
 });
 
 describe("sidebar thread lineage helpers", () => {
+  it("keeps working and selected descendants under a parked parent when collapsed, with completed siblings reachable on expansion", () => {
+    const parent = makeThreadFixture({ id: ThreadId.make("parent") });
+    const child = (id: string, parentId: string) =>
+      makeThreadFixture({
+        id: ThreadId.make(id),
+        lineage: {
+          rootThreadId: parent.id,
+          parentThreadId: ThreadId.make(parentId),
+          relationshipToParent: "subagent",
+        },
+      });
+    const running = child("running", "parent");
+    const selected = child("selected", "running");
+    const completed = child("completed", "parent");
+    const unrelated = child("other-project", "parent");
+    unrelated.projectId = ProjectId.make("other-project");
+    const threads = [running, unrelated, parent, completed, selected];
+    const key = (thread: typeof parent) => `${thread.environmentId}:${thread.id}`;
+    const sectionByKey = new Map<string, SidebarSection>([
+      [key(parent), "snoozed"],
+      [key(running), "working"],
+      [key(selected), "settled"],
+      [key(completed), "settled"],
+      [key(unrelated), "active"],
+    ]);
+    const input = {
+      threads,
+      sectionByKey,
+      visibleKeys: new Set([key(unrelated)]),
+      workingKeys: new Set([key(running)]),
+      activeKey: key(selected),
+      expandedKeys: new Set<string>(),
+      workingShelfEnabled: true,
+    };
+    const collapsed = buildSidebarHierarchy(input);
+    expect(
+      collapsed.map(({ key: rowKey, depth, displaySection }) => [rowKey, depth, displaySection]),
+    ).toEqual([
+      [key(parent), 0, "working"],
+      [key(running), 1, "working"],
+      [key(selected), 2, "working"],
+      [key(unrelated), 0, "active"],
+    ]);
+    expect(collapsed[0]?.contextOnly).toBe(true);
+    expect(
+      buildSidebarHierarchy({ ...input, expandedKeys: new Set([key(parent)]) }).map(
+        (row) => row.key,
+      ),
+    ).toEqual([key(parent), key(running), key(selected), key(completed), key(unrelated)]);
+    expect(parent.lineage.relationshipToParent).toBeNull();
+    expect(selected.lineage.parentThreadId).toBe(running.id);
+  });
+
   it("keeps feature children alongside parents and forks while respecting archive and project scope", () => {
     const parentId = ThreadId.make("thread-parent");
     const projectId = ProjectId.make("project-visible");

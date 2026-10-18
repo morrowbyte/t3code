@@ -71,6 +71,8 @@ import {
   AlarmClockOffIcon,
   ArrowRightLeftIcon,
   CheckIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
   CircleAlertIcon,
   CircleCheckIcon,
   CircleDashedIcon,
@@ -190,6 +192,7 @@ import {
   animateSidebarLayoutChanges,
   applySidebarThreadDrop,
   filterSidebarV2VisibleThreads,
+  buildSidebarHierarchy,
   buildBulkTitleRegenerationContextMenuItem,
   buildBulkUnpinContextMenuItem,
   deleteSelectedThreadEntries,
@@ -451,6 +454,7 @@ function useSidebarThreads(input: {
   const { projectScopeKey, scopedProjectKeys, serverConfigs, optimisticDrop, routeThreadKey } =
     input;
   const threads = useThreadShells();
+  const [expandedFamilies, setExpandedFamilies] = useState<ReadonlySet<string>>(() => new Set());
   const workingShelfEnabled = useClientSettings((s) => s.sidebarWorkingShelfEnabled);
   const nowMinute = useNowMinute();
   // Snooze wake times are second-precise, so classifying with the quantized
@@ -537,6 +541,32 @@ function useSidebarThreads(input: {
   ] as const) {
     for (const thread of list) sectionByThreadKey.set(threadShellKey(thread), section);
   }
+  const allThreads = [
+    ...pinnedThreads,
+    ...activeThreads,
+    ...workingThreads,
+    ...snoozedThreads,
+    ...settledThreads,
+  ];
+  const workingKeys = new Set(
+    allThreads
+      .filter(
+        (thread) =>
+          isSidebarThreadWorking(thread) ||
+          thread.hasPendingApprovals ||
+          thread.hasPendingUserInput,
+      )
+      .map(threadShellKey),
+  );
+  const hierarchyRows = buildSidebarHierarchy({
+    threads: allThreads,
+    sectionByKey: sectionByThreadKey,
+    visibleKeys: new Set(orderedThreads.map(threadShellKey)),
+    workingKeys,
+    expandedKeys: expandedFamilies,
+    activeKey: routeThreadKey,
+    workingShelfEnabled,
+  });
   return {
     ...partition,
     threads,
@@ -564,8 +594,18 @@ function useSidebarThreads(input: {
     renderedSettledThreads,
     visibleSnoozedThreads,
     visibleWorkingThreads,
-    orderedThreadKeys: orderedThreads.map(threadShellKey),
-    threadByKey: new Map(orderedThreads.map((thread) => [threadShellKey(thread), thread] as const)),
+    hierarchyRows,
+    hierarchyByKey: new Map(hierarchyRows.map((row) => [row.key, row])),
+    workingAgentCount: workingKeys.size,
+    toggleFamily: (key: string) =>
+      setExpandedFamilies((previous) => {
+        const next = new Set(previous);
+        if (next.has(key)) next.delete(key);
+        else next.add(key);
+        return next;
+      }),
+    orderedThreadKeys: hierarchyRows.map((row) => row.key),
+    threadByKey: new Map(allThreads.map((thread) => [threadShellKey(thread), thread] as const)),
     settledThreadKeys: new Set(settledThreads.map(threadShellKey)),
     snoozedThreadKeys: new Set(snoozedThreads.map(threadShellKey)),
     sectionByThreadKey,
@@ -1525,6 +1565,7 @@ const dropVerbBadge: Record<SidebarDropVerb, ReactNode> = {
 
 type SidebarThreadRowProps = {
   thread: SidebarThreadSummary;
+  familyRow?: boolean;
   variant: "card" | "slim";
   variantAction: SidebarSweepAction;
   settlementSupported: boolean;
@@ -1710,7 +1751,15 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                         icon: "done" as const,
                         className: "text-success",
                       }
-                    : null;
+                    : props.familyRow && thread.latestRun?.status === "completed"
+                      ? { label: "Done", icon: "done" as const, className: "text-success" }
+                      : props.familyRow && thread.latestRun?.status === "cancelled"
+                        ? {
+                            label: "Cancelled",
+                            icon: "done" as const,
+                            className: "text-muted-foreground",
+                          }
+                        : null;
   const isWokeStatus = topStatus?.icon === "woke";
 
   const branchMismatch = resolveLocalCheckoutBranchMismatch({
@@ -2169,6 +2218,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                       />
                       <TooltipPopup side="top">Dismiss Woke notification</TooltipPopup>
                     </Tooltip>
+                  ) : topStatus ? (
+                    <span role="status" className={cn("text-xs", topStatus.className)}>
+                      {topStatus.label}
+                    </span>
                   ) : (
                     <span className="text-xs">
                       <RelativeTimeLabel
@@ -2964,6 +3017,10 @@ export default function Sidebar() {
 
   const {
     threads,
+    hierarchyRows,
+    hierarchyByKey,
+    workingAgentCount,
+    toggleFamily,
     workingShelfEnabled,
     pinnedThreads,
     draggableThreadKeys,
@@ -2984,8 +3041,6 @@ export default function Sidebar() {
     workingShelfExpanded,
     toggleWorkingShelf,
     renderedSettledThreads,
-    visibleSnoozedThreads,
-    visibleWorkingThreads,
     orderedThreadKeys,
     threadByKey,
     settledThreadKeys,
@@ -3522,14 +3577,10 @@ export default function Sidebar() {
     });
   };
   const sidebarListItemsFresh = ((): readonly SidebarListItem[] => {
-    const rowsOf = (
-      list: readonly EnvironmentThreadShell[],
-      section: SidebarSection,
-    ): SidebarListItem[] =>
-      list.map((thread) => {
-        const key = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
-        return { kind: "thread", key, section };
-      });
+    const rowsOf = (section: SidebarSection): SidebarListItem[] =>
+      hierarchyRows
+        .filter((row) => row.displaySection === section)
+        .map((row) => ({ kind: "thread", key: row.key, section: row.section }));
     if (
       pinnedThreads.length +
         activeThreads.length +
@@ -3541,22 +3592,22 @@ export default function Sidebar() {
       return [];
     }
     const items: SidebarListItem[] = [{ kind: "marker", marker: "pinned-header" }];
-    const pinnedRows = rowsOf(pinnedThreads, "pinned");
+    const pinnedRows = rowsOf("pinned");
     items.push(...pinnedRows);
     items.push({ kind: "marker", marker: "pinned-divider" });
-    const activeRows = rowsOf(activeThreads, "active");
+    const activeRows = rowsOf("active");
     items.push({ kind: "marker", marker: "active-placeholder" });
     items.push(...activeRows);
-    if (workingThreads.length > 0) {
+    if (hierarchyRows.some((row) => row.displaySection === "working")) {
       items.push({ kind: "marker", marker: "working-header" });
-      items.push(...rowsOf(visibleWorkingThreads, "working"));
+      items.push(...rowsOf("working"));
     }
     if (snoozedThreads.length > 0) {
       items.push({ kind: "marker", marker: "snoozed-header" });
-      items.push(...rowsOf(visibleSnoozedThreads, "snoozed"));
+      items.push(...rowsOf("snoozed"));
     }
     items.push({ kind: "marker", marker: "settled-header" });
-    const settledRows = rowsOf(renderedSettledThreads, "settled");
+    const settledRows = rowsOf("settled");
     items.push({ kind: "marker", marker: "settled-placeholder" });
     items.push(...settledRows);
     return items;
@@ -4790,105 +4841,152 @@ export default function Sidebar() {
                         const threadKey = scopedThreadKey(
                           scopeThreadRef(thread.environmentId, thread.id),
                         );
+                        const family = hierarchyByKey.get(threadKey);
                         const isCard =
-                          section === "active" || section === "pinned" || section === "working";
+                          !family?.contextOnly &&
+                          (section === "active" || section === "pinned" || section === "working");
                         const rowVariant = isCard ? "card" : "slim";
                         return (
-                          <SortableThreadRow
+                          <div
                             key={threadKey}
-                            sortableId={threadKey}
-                            contextDrag={isContextDrag}
-                            sortableDisabled={
-                              renamingThreadKey === threadKey ||
-                              !draggableThreadKeys.has(threadKey) ||
-                              optimisticDrop !== null
-                            }
-                            thread={thread}
-                            variant={rowVariant}
-                            variantAction={
-                              section === "snoozed"
-                                ? "unsnooze"
-                                : section === "settled"
-                                  ? "unsettle"
-                                  : "settle"
-                            }
-                            settlementSupported={
-                              serverConfigs.get(thread.environmentId)?.environment.capabilities
-                                .threadSettlement === true
-                            }
-                            snoozeSupported={
-                              serverConfigs.get(thread.environmentId)?.environment.capabilities
-                                .threadSnooze === true
-                            }
-                            pinningSupported={
-                              serverConfigs.get(thread.environmentId)?.environment.capabilities
-                                .threadPinning === true
-                            }
-                            isPinned={thread.pinnedAt != null}
-                            dropVerb={
-                              dragState?.activeKey === threadKey
-                                ? resolveSidebarDropVerb(dragState.activeSection, dragTargetSection)
-                                : null
-                            }
-                            dragOverPinned={
-                              dragState?.activeKey === threadKey && dragTargetSection === "pinned"
-                            }
-                            sweepAction={
-                              actionSweep?.keys.has(threadKey) ? actionSweep.action : null
-                            }
-                            snoozeWakeLabelText={
-                              section === "snoozed" && thread.snoozedUntil != null
-                                ? snoozeWakeLabel(thread.snoozedUntil, {
-                                    now: new Date().toISOString(),
-                                  })
-                                : null
-                            }
-                            wokeAt={threadWokeAt(thread, { now: snoozeNow })}
-                            isActive={routeThreadKey === threadKey}
-                            openPullRequestsInRightPanel={routeThreadRef !== null}
-                            jumpLabel={
-                              showJumpHints ? (jumpLabelByKey.get(threadKey) ?? null) : null
-                            }
-                            currentEnvironmentId={primaryEnvironmentId}
-                            environmentLabel={
-                              environmentLabelById.get(thread.environmentId) ?? null
-                            }
-                            environmentMachine={
-                              environmentMachineById.get(thread.environmentId) ?? "server"
-                            }
-                            scratchMachineLabel={scratchMachineLabelFor(thread)}
-                            project={
-                              projectByKey.get(`${thread.environmentId}:${thread.projectId}`) ??
-                              null
-                            }
-                            projectDisplayName={
-                              projectDisplayNameByKey.get(
-                                `${thread.environmentId}:${thread.projectId}`,
-                              ) ?? null
-                            }
-                            providerEntryByInstanceId={
-                              providerEntriesByEnvironment.get(thread.environmentId) ??
-                              EMPTY_PROVIDER_ENTRIES
-                            }
-                            timestampFormat={timestampFormat}
-                            onThreadClick={handleThreadClick}
-                            onThreadActivate={navigateToThread}
-                            onStartRename={startThreadRename}
-                            onRenameTitleChange={setRenamingTitle}
-                            onCommitRename={commitThreadRename}
-                            onCancelRename={cancelThreadRename}
-                            isRenaming={renamingThreadKey === threadKey}
-                            renamingTitle={renamingThreadKey === threadKey ? renamingTitle : ""}
-                            onContextMenu={handleThreadContextMenu}
-                            onSettle={attemptSettle}
-                            onActionSweepStart={startActionSweep}
-                            onUnsettle={attemptUnsettle}
-                            onSnooze={attemptSnooze}
-                            onUnsnooze={attemptUnsnooze}
-                            onUnpin={attemptUnpin}
-                            onAcknowledgeWoke={acknowledgeWoke}
-                            onFileDropThreads={handleThreadFileDrop}
-                          />
+                            role="presentation"
+                            data-sidebar-family-row={threadKey}
+                            data-family-depth={family?.depth ?? 0}
+                            className="relative min-w-0"
+                            style={{
+                              marginInlineStart: Math.min(family?.depth ?? 0, 8) * 12,
+                              borderInlineStart: family?.depth
+                                ? "1px solid var(--border)"
+                                : undefined,
+                              paddingInlineStart: family?.depth || family?.hasChildren ? 18 : 0,
+                            }}
+                          >
+                            {family?.depth ? (
+                              <span
+                                aria-hidden
+                                className="absolute left-0 top-5 w-3 border-t border-border"
+                              />
+                            ) : null}
+                            {family?.hasChildren ? (
+                              <button
+                                type="button"
+                                data-thread-selection-safe
+                                aria-label={`${family.expanded ? "Collapse" : "Expand"} ${thread.title} agents`}
+                                aria-expanded={family.expanded}
+                                onClick={() => toggleFamily(threadKey)}
+                                className="absolute left-0 top-3 z-10 flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring"
+                              >
+                                {family.expanded ? (
+                                  <ChevronDownIcon aria-hidden className="size-3.5" />
+                                ) : (
+                                  <ChevronRightIcon aria-hidden className="size-3.5" />
+                                )}
+                              </button>
+                            ) : null}
+                            <SortableThreadRow
+                              key={threadKey}
+                              sortableId={threadKey}
+                              contextDrag={isContextDrag}
+                              sortableDisabled={
+                                (family !== undefined &&
+                                  (family.depth > 0 || family.hasChildren)) ||
+                                renamingThreadKey === threadKey ||
+                                !draggableThreadKeys.has(threadKey) ||
+                                optimisticDrop !== null
+                              }
+                              thread={thread}
+                              familyRow={
+                                family !== undefined && (family.depth > 0 || family.hasChildren)
+                              }
+                              variant={rowVariant}
+                              variantAction={
+                                section === "snoozed"
+                                  ? "unsnooze"
+                                  : section === "settled"
+                                    ? "unsettle"
+                                    : "settle"
+                              }
+                              settlementSupported={
+                                serverConfigs.get(thread.environmentId)?.environment.capabilities
+                                  .threadSettlement === true
+                              }
+                              snoozeSupported={
+                                serverConfigs.get(thread.environmentId)?.environment.capabilities
+                                  .threadSnooze === true
+                              }
+                              pinningSupported={
+                                serverConfigs.get(thread.environmentId)?.environment.capabilities
+                                  .threadPinning === true
+                              }
+                              isPinned={thread.pinnedAt != null}
+                              dropVerb={
+                                dragState?.activeKey === threadKey
+                                  ? resolveSidebarDropVerb(
+                                      dragState.activeSection,
+                                      dragTargetSection,
+                                    )
+                                  : null
+                              }
+                              dragOverPinned={
+                                dragState?.activeKey === threadKey && dragTargetSection === "pinned"
+                              }
+                              sweepAction={
+                                actionSweep?.keys.has(threadKey) ? actionSweep.action : null
+                              }
+                              snoozeWakeLabelText={
+                                section === "snoozed" && thread.snoozedUntil != null
+                                  ? snoozeWakeLabel(thread.snoozedUntil, {
+                                      now: new Date().toISOString(),
+                                    })
+                                  : null
+                              }
+                              wokeAt={threadWokeAt(thread, { now: snoozeNow })}
+                              isActive={routeThreadKey === threadKey}
+                              openPullRequestsInRightPanel={routeThreadRef !== null}
+                              jumpLabel={
+                                showJumpHints ? (jumpLabelByKey.get(threadKey) ?? null) : null
+                              }
+                              currentEnvironmentId={primaryEnvironmentId}
+                              environmentLabel={
+                                environmentLabelById.get(thread.environmentId) ?? null
+                              }
+                              environmentMachine={
+                                environmentMachineById.get(thread.environmentId) ?? "server"
+                              }
+                              scratchMachineLabel={scratchMachineLabelFor(thread)}
+                              project={
+                                projectByKey.get(`${thread.environmentId}:${thread.projectId}`) ??
+                                null
+                              }
+                              projectDisplayName={
+                                projectDisplayNameByKey.get(
+                                  `${thread.environmentId}:${thread.projectId}`,
+                                ) ?? null
+                              }
+                              providerEntryByInstanceId={
+                                providerEntriesByEnvironment.get(thread.environmentId) ??
+                                EMPTY_PROVIDER_ENTRIES
+                              }
+                              timestampFormat={timestampFormat}
+                              onThreadClick={handleThreadClick}
+                              onThreadActivate={navigateToThread}
+                              onStartRename={startThreadRename}
+                              onRenameTitleChange={setRenamingTitle}
+                              onCommitRename={commitThreadRename}
+                              onCancelRename={cancelThreadRename}
+                              isRenaming={renamingThreadKey === threadKey}
+                              renamingTitle={renamingThreadKey === threadKey ? renamingTitle : ""}
+                              onContextMenu={handleThreadContextMenu}
+                              onSettle={attemptSettle}
+                              onActionSweepStart={startActionSweep}
+                              onUnsettle={attemptUnsettle}
+                              onSnooze={attemptSnooze}
+                              onUnsnooze={attemptUnsnooze}
+                              onUnpin={attemptUnpin}
+                              onAcknowledgeWoke={acknowledgeWoke}
+                              onFileDropThreads={handleThreadFileDrop}
+                            />
+                          </div>
                         );
                       };
                       const from = isContextDrag ? null : (dragState?.activeSection ?? null);
@@ -4958,7 +5056,7 @@ export default function Sidebar() {
                                 label={
                                   workingShelfExpanded
                                     ? "Working"
-                                    : `Working (${workingThreads.length})`
+                                    : `Working (${workingAgentCount})`
                                 }
                                 toggle={{
                                   expanded: workingShelfExpanded,
