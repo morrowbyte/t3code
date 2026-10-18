@@ -17,7 +17,11 @@ import { page } from "vite-plus/test/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import "../../index.css";
 
-const fixture = vi.hoisted(() => ({ request: vi.fn(), singleEnvironment: true }));
+const fixture = vi.hoisted(() => ({
+  request: vi.fn(),
+  singleEnvironment: true,
+  scopes: [] as string[],
+}));
 vi.mock(import("../../linear/linearClient"), async (original) => ({
   ...(await original()),
   linearRequest: fixture.request,
@@ -35,7 +39,7 @@ vi.mock(import("./SettingsScopeContext"), async (original) => ({
 }));
 vi.mock(import("../../state/session"), async (original) => ({
   ...(await original()),
-  readEnvironmentScope: () => true,
+  readEnvironmentScope: (_environmentId: unknown, scope: string) => fixture.scopes.includes(scope),
 }));
 vi.mock(import("../../state/entities"), async (original) => ({
   ...(await original()),
@@ -61,6 +65,7 @@ let settings: LinearSettings;
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   fixture.singleEnvironment = true;
+  fixture.scopes = ["orchestration:read", "settings:write", "orchestration:operate"];
   settings = {
     enabled: false,
     environmentId: EnvironmentId.make("fixture-env"),
@@ -174,36 +179,49 @@ describe("optional Linear settings", () => {
       1,
     );
   });
-  it("binds an issue to an existing thread and displays held delivery without claiming completion", async () => {
-    settings = {
-      ...settings,
-      enabled: true,
-      oauthConfigured: true,
-      connection: "connected",
-      workspace: { id: "workspace", name: "Fixture workspace", actorId: "app" },
-    };
-    await openPanel();
-    await page.getByRole("textbox", { name: "Linear issue", exact: true }).fill("WEA-14");
-    await page.getByRole("combobox", { name: "T3 project" }).click();
-    await page.getByRole("option", { name: "Fixture project" }).click();
-    await page.getByRole("combobox", { name: "Existing thread" }).click();
-    await page.getByRole("option", { name: "Existing owner thread" }).click();
-    await page.getByRole("button", { name: "Bind issue" }).click();
-    await vi.waitFor(() =>
-      expect(fixture.request).toHaveBeenCalledWith("fixture-env", {
-        type: "bind",
-        issueId: "WEA-14",
-        projectId: ProjectId.make("fixture-project"),
-        threadId: ThreadId.make("fixture-thread"),
-      }),
-    );
-    await page.getByRole("button", { name: "Fetch issue" }).click();
-    await vi.waitFor(() => expect(container.textContent).toContain("Waiting for an active thread"));
-    expect(container.textContent).not.toContain("Completed");
-    await page.getByRole("switch", { name: "Enable Linear" }).click();
-    await vi.waitFor(() =>
-      expect(container.querySelector("[aria-label='Linear issue']")).toBeNull(),
-    );
-    expect(fixture.request.mock.calls.filter((call) => call[1]?.type === "sync")).toHaveLength(1);
-  });
+  it.each([false, true])(
+    "gates binding on operate and displays held delivery (operate=%s)",
+    async (canOperate) => {
+      if (!canOperate) fixture.scopes = ["orchestration:read", "settings:write"];
+      settings = {
+        ...settings,
+        enabled: true,
+        oauthConfigured: true,
+        connection: "connected",
+        workspace: { id: "workspace", name: "Fixture workspace", actorId: "app" },
+      };
+      await openPanel();
+      await page.getByRole("textbox", { name: "Linear issue", exact: true }).fill("WEA-14");
+      await page.getByRole("combobox", { name: "T3 project" }).click();
+      await page.getByRole("option", { name: "Fixture project" }).click();
+      await page.getByRole("combobox", { name: "Existing thread" }).click();
+      await page.getByRole("option", { name: "Existing owner thread" }).click();
+      if (!canOperate) {
+        await expect.element(page.getByRole("button", { name: "Bind issue" })).toBeDisabled();
+        await expect.element(page.getByRole("button", { name: "Disconnect" })).toBeEnabled();
+        expect(fixture.request.mock.calls.some((call) => call[1]?.type === "bind")).toBe(false);
+        return;
+      }
+      await expect.element(page.getByRole("button", { name: "Bind issue" })).toBeEnabled();
+      await page.getByRole("button", { name: "Bind issue" }).click();
+      await vi.waitFor(() =>
+        expect(fixture.request).toHaveBeenCalledWith("fixture-env", {
+          type: "bind",
+          issueId: "WEA-14",
+          projectId: ProjectId.make("fixture-project"),
+          threadId: ThreadId.make("fixture-thread"),
+        }),
+      );
+      await page.getByRole("button", { name: "Fetch issue" }).click();
+      await vi.waitFor(() =>
+        expect(container.textContent).toContain("Waiting for an active thread"),
+      );
+      expect(container.textContent).not.toContain("Completed");
+      await page.getByRole("switch", { name: "Enable Linear" }).click();
+      await vi.waitFor(() =>
+        expect(container.querySelector("[aria-label='Linear issue']")).toBeNull(),
+      );
+      expect(fixture.request.mock.calls.filter((call) => call[1]?.type === "sync")).toHaveLength(1);
+    },
+  );
 });

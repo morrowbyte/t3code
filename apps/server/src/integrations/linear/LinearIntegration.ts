@@ -345,9 +345,12 @@ const make = Effect.gen(function* () {
           yield* connectedToken;
           yield* writeSecret(WEBHOOK_SECRET, input.secret);
         } else if (input.type === "bind") {
-          if (state.bindings.length >= 10)
-            return yield* new LinearIntegrationError({ reason: "invalid" });
           const issue = yield* requestIssue(input.issueId);
+          if (
+            state.bindings.length >= 10 &&
+            !state.bindings.some((binding) => binding.id === issue.id)
+          )
+            return yield* new LinearIntegrationError({ reason: "invalid" });
           const target = yield* boundThread(input);
           if (target.thread.archivedAt !== null || target.thread.deletedAt !== null)
             return yield* new LinearIntegrationError({ reason: "target_unavailable" });

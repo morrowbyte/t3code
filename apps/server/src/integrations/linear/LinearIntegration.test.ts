@@ -40,6 +40,8 @@ function fixture(configured = true) {
     reason: null as "offline" | "revoked" | null,
     updatedAt: "2026-10-19T00:00:00Z",
     description: "Synthetic issue text",
+    issueId: "issue-one",
+    title: "Synthetic issue",
   };
   const target = {
     status: "running",
@@ -49,9 +51,9 @@ function fixture(configured = true) {
     failAfterCommit: false,
   };
   const issue = () => ({
-    id: "issue-one",
+    id: upstream.issueId,
     identifier: "WEA-14",
-    title: "Synthetic issue",
+    title: upstream.title,
     description: upstream.description,
     url: "https://linear.app/example/issue/WEA-14",
     updatedAt: upstream.updatedAt,
@@ -272,6 +274,49 @@ it.effect(
       assert.equal(status.bindings[0]?.workspaceId, "workspace-one");
       assert.equal(status.bindings[0]?.teamId, "team-one");
       assert.equal(status.bindings[0]?.linearProjectId, "linear-project-one");
+    }).pipe(Effect.provide(f.layer), Effect.scoped);
+  },
+);
+
+it.effect(
+  "ten bindings allow an existing resolved issue replacement but reject an eleventh issue",
+  () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      const service = yield* LinearIntegration.LinearIntegration;
+      yield* connect;
+      for (let index = 2; index <= 10; index++) {
+        f.upstream.issueId = `issue-${index}`;
+        yield* service.action({ type: "bind", issueId: `WEA-${index}`, projectId, threadId });
+      }
+      assert.equal((yield* service.settings).bindings.length, 10);
+      f.upstream.issueId = "issue-one";
+      f.upstream.title = "Resolved replacement issue";
+      const callsBeforeReplacement = f.calls.length;
+      const replaced = yield* service.action({
+        type: "bind",
+        issueId: "WEA-14",
+        projectId,
+        threadId,
+      });
+      assert.equal(f.calls.length, callsBeforeReplacement + 1);
+      assert.equal(replaced.settings.bindings.length, 10);
+      assert.equal(
+        replaced.settings.bindings.filter((binding) => binding.id === "issue-one").length,
+        1,
+      );
+      assert.equal(
+        replaced.settings.bindings.find((binding) => binding.id === "issue-one")?.title,
+        "Resolved replacement issue",
+      );
+      f.upstream.issueId = "issue-eleven";
+      const rejected = yield* service
+        .action({ type: "bind", issueId: "WEA-11", projectId, threadId })
+        .pipe(Effect.flip);
+      assert.equal(rejected.reason, "invalid");
+      assert.equal(f.calls.length, callsBeforeReplacement + 2);
+      assert.deepEqual((yield* service.settings).bindings, replaced.settings.bindings);
+      assert.equal(f.sends.length, 0);
     }).pipe(Effect.provide(f.layer), Effect.scoped);
   },
 );

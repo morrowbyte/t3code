@@ -225,7 +225,9 @@ export function LinearSettingsPanel() {
                   </Select>
                   <Button
                     size="sm"
-                    disabled={!editable || busy || !issueId.trim() || !projectId || !threadId}
+                    disabled={
+                      !editable || !canDeliver || busy || !issueId.trim() || !projectId || !threadId
+                    }
                     onClick={() =>
                       void run({
                         type: "bind",
