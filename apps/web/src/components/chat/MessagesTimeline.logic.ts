@@ -579,6 +579,12 @@ type MessagesTimelineRowContent =
       assistantCopyStreaming: boolean;
     }
   | {
+      kind: "agent-send";
+      id: string;
+      createdAt: string;
+      projectedItem: OrchestrationV2ProjectedTurnItem;
+    }
+  | {
       kind: "event";
       id: string;
       createdAt: string;
@@ -772,6 +778,7 @@ function deriveSupersededAttemptFolds(
       (entry.kind === "message" && entry.message.role === "user") ||
       entry.kind === "html-render" ||
       entry.kind === "mcp-app" ||
+      entry.kind === "agent-send" ||
       timelineEntryIsPersistentResourceCard(entry) ||
       liveSubagentEntryIds.has(entry.id) ||
       (entry.kind === "work" && entry.entry.itemType === "system_notice")
@@ -1719,6 +1726,16 @@ export function deriveMessagesTimelineRows(input: {
       continue;
     }
 
+    if (timelineEntry.kind === "agent-send") {
+      nextRows.push({
+        kind: "agent-send",
+        id: timelineEntry.id,
+        createdAt: timelineEntry.createdAt,
+        projectedItem: timelineEntry.projectedItem,
+      });
+      continue;
+    }
+
     if (timelineEntry.kind === "proposed-plan") {
       nextRows.push({
         kind: "proposed-plan",
@@ -2180,6 +2197,12 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         mcpAppReferencesEqual(a.mcpApp, bm.mcpApp)
       );
     }
+
+    case "agent-send":
+      return (
+        a.createdAt === (b as typeof a).createdAt &&
+        a.projectedItem === (b as typeof a).projectedItem
+      );
 
     case "event":
       return (

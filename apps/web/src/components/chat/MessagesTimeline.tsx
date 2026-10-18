@@ -49,6 +49,7 @@ import {
 } from "@t3tools/client-runtime/work-log/presentation";
 import { resolveWorkGroupScrollAnchor } from "@t3tools/client-runtime/work-log/scroll-anchor";
 import {
+  turnItemDetailRevision,
   turnItemHasDetail,
   turnItemNeedsDetailFetch,
 } from "@t3tools/client-runtime/work-log/item-detail";
@@ -186,6 +187,8 @@ import {
 } from "./timelineScrollAnchoring";
 import { MessageCopyButton } from "./MessageCopyButton";
 import { AgentMessageRow } from "./AgentMessageRow";
+import { readAgentSend } from "./agentMessagePresentation";
+import { useTurnItemDetail } from "../../state/queries";
 import { promptLinkFor } from "../promptLinks/copyPromptLink";
 import { PierreEntryIcon } from "./PierreEntryIcon";
 import { WorkspaceEntryIcon, WorkspaceEntryTooltip } from "./WorkspaceEntryIcon";
@@ -1942,6 +1945,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "attempt-fold" ? <AttemptFoldTimelineRow row={row} /> : null}
       {row.kind === "context-compaction" ? <ContextCompactionTimelineRow row={row} /> : null}
       {row.kind === "message" && row.message.role === "user" ? <UserTimelineRow row={row} /> : null}
+      {row.kind === "agent-send" ? <OutgoingAgentTimelineRow row={row} /> : null}
       {row.kind === "message" && row.message.role === "assistant" ? (
         <AssistantTimelineRow row={row} />
       ) : null}
@@ -2058,8 +2062,64 @@ function UserVideoAttachment({ file }: { readonly file: ChatFileAttachment }) {
 
 const MESSAGE_HEADING_LEVEL = 3;
 
-function MessageAuthorHeading({ children }: { children: string }) {
-  return <h3 className="sr-only select-none">{children}</h3>;
+function OutgoingAgentTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "agent-send" }> }) {
+  const ctx = use(TimelineRowCtx);
+  const [requested, setRequested] = useState(false);
+  const wireItem = row.projectedItem.item;
+  const detail = useTurnItemDetail(
+    requested && turnItemNeedsDetailFetch(wireItem)
+      ? {
+          environmentId: ctx.activeThreadEnvironmentId,
+          threadId: row.projectedItem.sourceThreadId,
+          itemId: row.projectedItem.sourceItemId,
+          revision: turnItemDetailRevision(wireItem),
+        }
+      : null,
+  );
+  const fetchedItem = detail.data?.item;
+  const item =
+    fetchedItem?.type === wireItem.type && fetchedItem.id === wireItem.id ? fetchedItem : wireItem;
+  const send = item.type === "dynamic_tool" ? readAgentSend(item) : null;
+  const targetThreadId = send?.targetThreadId ? ThreadId.make(send.targetThreadId) : undefined;
+  const target = useThreadShell(
+    targetThreadId ? scopeThreadRef(ctx.activeThreadEnvironmentId, targetThreadId) : null,
+  );
+  const live = ["idle", "pending", "running", "waiting"].includes(item.status);
+  const receipt = send?.failed
+    ? "Aufruf fehlgeschlagen"
+    : send?.accepted
+      ? send.delivery === "queued"
+        ? "In Warteschlange"
+        : "Sendung angenommen"
+      : live
+        ? "Wird gesendet…"
+        : "Annahme nicht bestätigt";
+
+  return (
+    <AgentMessageRow
+      messageId={row.id}
+      text={send?.text ?? null}
+      peerThreadId={targetThreadId}
+      peerTitle={target?.title ?? null}
+      attribution="agent"
+      direction="outgoing"
+      environmentId={ctx.activeThreadEnvironmentId}
+      createdAt={row.createdAt}
+      timestamp={formatDayAwareTimestamp(row.createdAt, ctx.timestampFormat)}
+      timestampTitle={formatChatTimestampTooltip(row.createdAt, ctx.timestampFormat)}
+      streaming={false}
+      delivery={<span className={send?.failed ? "text-destructive" : undefined}>{receipt}</span>}
+      loading={requested && send?.text === null && detail.isPending}
+      error={
+        requested && item === wireItem && turnItemNeedsDetailFetch(wireItem)
+          ? (detail.error ?? (detail.data?.item === null ? "Original nicht mehr verfügbar." : null))
+          : null
+      }
+      onRequestText={() => setRequested(true)}
+    >
+      {(text) => <UserMessageBody text={text} skills={ctx.skills} markdownCwd={ctx.markdownCwd} />}
+    </AgentMessageRow>
+  );
 }
 
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
@@ -2303,14 +2363,15 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
       <AgentMessageRow
         messageId={row.message.id}
         text={row.message.text}
-        senderThreadId={senderThreadId}
-        senderTitle={sender?.title ?? null}
+        peerThreadId={senderThreadId}
+        peerTitle={sender?.title ?? null}
         attribution={unknownMcpSender ? "unknown" : "agent"}
         environmentId={ctx.activeThreadEnvironmentId}
         createdAt={row.message.createdAt}
         timestamp={formatDayAwareTimestamp(row.message.createdAt, ctx.timestampFormat)}
         timestampTitle={formatChatTimestampTooltip(row.message.createdAt, ctx.timestampFormat)}
         streaming={row.message.streaming}
+        attachments={messageAttachments}
         delivery={
           <>
             {row.message.inputIntent && row.message.inputIntent !== "turn_start" ? (
@@ -2329,7 +2390,6 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
       >
         {(bodyText) => (
           <>
-            {messageAttachments}
             <div onCopyCapture={onBodyCopyCapture}>
               <UserMessageBody
                 text={bodyText}
@@ -2378,7 +2438,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
         <UserMessageIntentMarker intent={row.message.inputIntent} />
       ) : null}
       <div className="relative max-w-[80%] rounded-2xl bg-message p-3 text-message-foreground">
-        <MessageAuthorHeading>You</MessageAuthorHeading>
+        <h3 className="mb-1 text-xs font-medium text-muted-foreground select-none">Du</h3>
         {messageAttachments}
         <div onCopyCapture={onBodyCopyCapture}>
           <CollapsibleUserMessageBody
@@ -2621,7 +2681,10 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
   return (
     <>
       <div className="relative min-w-0 px-1 py-0.5">
-        <MessageAuthorHeading>T3 Code</MessageAuthorHeading>
+        <h3 className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground select-none">
+          <BotIcon className="size-3.5" aria-hidden />
+          Hauptagent
+        </h3>
         <div data-thread-find-text="true">
           <AssistantCitationSource
             messageId={row.message.id}

@@ -26,6 +26,7 @@ import type { HtmlRenderReference } from "@t3tools/shared/htmlRender";
 import { turnItemDetailRevision } from "@t3tools/client-runtime/work-log/item-detail";
 import type { McpAppReference } from "@t3tools/shared/mcpApp";
 import { htmlRenderFromToolItem, mcpAppFromToolItem } from "@t3tools/shared/toolOutput";
+import { resolveT3McpToolId } from "@t3tools/shared/t3McpToolPresentation";
 import {
   contextCompactionLabel,
   workEntryIndicatesToolFailure,
@@ -158,6 +159,12 @@ export type TimelineEntry = (
       readonly kind: "work";
       readonly createdAt: string;
       readonly entry: WorkLogEntry;
+    }
+  | {
+      readonly id: string;
+      readonly kind: "agent-send";
+      readonly createdAt: string;
+      readonly projectedItem: OrchestrationV2ProjectedTurnItem;
     }
   | {
       readonly id: string;
@@ -731,6 +738,17 @@ export function deriveTimelineEntriesFromVisibleTurnItems(
         itemId: row.sourceItemId,
         revision: turnItemDetailRevision(item),
         mcpApp,
+        ...attemptMetadata,
+      });
+      continue;
+    }
+
+    if (item.type === "dynamic_tool" && resolveT3McpToolId(item.toolName) === "t3_thread_send") {
+      entries.push({
+        id: item.id,
+        kind: "agent-send",
+        createdAt,
+        projectedItem: row,
         ...attemptMetadata,
       });
       continue;

@@ -1244,7 +1244,7 @@ describe("HTML renders in the timeline", () => {
     type: "command_execution",
     input: "vp test run",
   });
-  const turn = (render: OrchestrationV2TurnItem) => {
+  const turn = (render: OrchestrationV2TurnItem, afterReply = false) => {
     const items: OrchestrationV2TurnItem[] = [
       {
         ...base("prompt", 0),
@@ -1257,7 +1257,7 @@ describe("HTML renders in the timeline", () => {
         attachments: [],
       },
       command("before", 1),
-      render,
+      ...(afterReply ? [] : [render]),
       command("after", 3),
       {
         ...base("reply", 4),
@@ -1266,6 +1266,7 @@ describe("HTML renders in the timeline", () => {
         text: "Here it is.",
         streaming: false,
       },
+      ...(afterReply ? [render] : []),
     ];
     return deriveTimelineEntriesFromVisibleTurnItems({
       visibleTurnItems: items.map(visible),
@@ -1357,6 +1358,132 @@ describe("HTML renders in the timeline", () => {
     const entries = turn(renderCall(status, output));
     expect(entries.some((entry) => entry.kind === "html-render")).toBe(false);
     expect(entries.find((entry) => entry.id === "render")?.kind).toBe("work");
+  });
+
+  describe("outgoing agent messages", () => {
+    const original =
+      " \r\nKurz: Aufnahme und Upload geprüft. 🦦\r\n\r\nOffen:\r\n- Transkription bleibt am Konto blockiert.\r\n ";
+    const sendCall = (
+      status: OrchestrationV2TurnItem["status"] = "completed",
+      second = 2,
+      output: unknown = {
+        threadId: "android-thread",
+        messageId: "message-outgoing",
+        delivery: "steered",
+        status: "running",
+      },
+    ): OrchestrationV2TurnItem => ({
+      ...base("send", second),
+      type: "dynamic_tool",
+      toolName: "t3-code.t3_thread_send",
+      input: { threadId: "android-thread", message: original },
+      output,
+      status,
+    });
+
+    it("projects a recorded send separately from generic work with the original input intact", () => {
+      const call = sendCall();
+      const entries = turn(call);
+      expect(entries.find((entry) => entry.id === "send")).toEqual({
+        id: "send",
+        kind: "agent-send",
+        createdAt: DateTime.formatIso(at(2)),
+        projectedItem: visible(call),
+      });
+      const send = entries.find((entry) => entry.kind === "agent-send");
+      expect(send?.projectedItem.item).toMatchObject({
+        input: { threadId: "android-thread", message: original },
+      });
+      expect(entries.some((entry) => entry.kind === "work" && entry.id === "send")).toBe(false);
+    });
+
+    it.each([false, true])(
+      "keeps outgoing communication visible through the collapsed turn, afterReply=%s",
+      (afterReply) => {
+        const entries = turn(sendCall("completed", afterReply ? 5 : 2), afterReply);
+        expect(rowsFor(entries, false)).toEqual(
+          afterReply
+            ? ["message", "turn-fold", "message", "agent-send"]
+            : ["message", "turn-fold", "agent-send", "message"],
+        );
+      },
+    );
+
+    it("keeps the work groups on either side of a send separate", () => {
+      expect(rowsFor(turn(sendCall()), true)).toEqual([
+        "message",
+        "turn-fold",
+        "work",
+        "agent-send",
+        "work",
+        "message",
+      ]);
+    });
+
+    it("retains the communication when its executing attempt is superseded", () => {
+      const attempt: OrchestrationV2RunAttempt = {
+        id: RunAttemptId.make("attempt-outgoing-superseded"),
+        runId,
+        attemptOrdinal: 1,
+        rootNodeId: NodeId.make("node-outgoing-superseded"),
+        providerInstanceId: ProviderInstanceId.make("codex-default"),
+        providerThreadId: ProviderThreadId.make("provider-thread"),
+        providerTurnId: null,
+        reason: "initial",
+        status: "superseded",
+        startedAt: at(0),
+        completedAt: at(4),
+      };
+      const entries = turn(sendCall()).map((entry) =>
+        entry.kind === "message" && entry.message.role === "user" ? entry : { ...entry, attempt },
+      );
+      for (const expanded of [false, true]) {
+        const kinds = rowsFor(entries, expanded);
+        expect(kinds.filter((kind) => kind === "agent-send")).toHaveLength(1);
+      }
+      expect(rowsFor(entries, true)).toContain("attempt-fold");
+    });
+
+    it.each([
+      ["failed", "failed", { error: "Destination unavailable" }],
+      ["returned MCP failure", "completed", { isError: true }],
+    ] as const)("keeps a %s send as its own visible communication", (_label, status, output) => {
+      const entries = turn(sendCall(status, 2, output));
+      expect(entries.find((entry) => entry.id === "send")?.kind).toBe("agent-send");
+      expect(rowsFor(entries, false)).toContain("agent-send");
+    });
+
+    it("does not hide an in-progress send in the live work group", () => {
+      const entries = turn(sendCall("running", 2, null));
+      const rows = deriveMessagesTimelineRows({
+        timelineEntries: entries,
+        runningRunId: runId,
+        latestRun: {
+          runId,
+          status: "running",
+          startedAt: DateTime.formatIso(at(0)),
+          completedAt: null,
+        },
+        isWorking: true,
+        turnDiffSummaries: [],
+        supportsConversationRollback: false,
+      });
+      expect(rows.find((row) => row.id === "send")?.kind).toBe("agent-send");
+      for (const row of rows) {
+        if (row.kind === "work" || row.kind === "work-live") {
+          expect(row.groupedEntries.some((entry) => entry.id === "send")).toBe(false);
+        }
+      }
+    });
+
+    it("leaves an unrelated tool with send-shaped arguments in generic work", () => {
+      const call = sendCall();
+      const entries = turn(
+        call.type === "dynamic_tool" ? { ...call, toolName: "weather.get_weather" } : call,
+      );
+      expect(entries.find((entry) => entry.id === "send")?.kind).toBe("work");
+      expect(entries.some((entry) => entry.kind === "agent-send")).toBe(false);
+    });
   });
 });
 
