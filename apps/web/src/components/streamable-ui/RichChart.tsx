@@ -199,6 +199,7 @@ export const RichChart = memo(
     const reduceMotion = useVisualReducedMotion();
     const textScale = useVisualTextScale();
     const [keyboardFocused, setKeyboardFocused] = useState(false);
+    const [keyboardIndex, setKeyboardIndex] = useState(0);
     const [plotWidth, setPlotWidth] = useState(300);
     const model = chartDataModel(chart);
     const circular = ["pie", "donut", "radial"].includes(chart.kind);
@@ -218,7 +219,7 @@ export const RichChart = memo(
         filterNull={false}
         trigger={touchTooltip ? "click" : "hover"}
         isAnimationActive={false}
-        {...(keyboardFocused ? { defaultIndex: 0 } : {})}
+        {...(keyboardFocused ? { active: false } : {})}
         cursor={{ stroke: "var(--muted-foreground)", strokeDasharray: "3 3" }}
         content={<CategoryTooltip chart={chart} model={model} />}
         wrapperStyle={{ maxWidth: "min(20rem, 85vw)", outline: "none" }}
@@ -485,19 +486,62 @@ export const RichChart = memo(
         ) : null}
         <div
           data-iui-chart=""
-          onPointerDown={(event) => setTouchTooltip(event.pointerType === "touch")}
-          onKeyDownCapture={() => setTouchTooltip(false)}
-          className="min-w-0"
+          onPointerDown={(event) => {
+            setTouchTooltip(event.pointerType === "touch");
+            setKeyboardFocused(false);
+          }}
+          onKeyDownCapture={(event) => {
+            setTouchTooltip(false);
+            if (
+              !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key) ||
+              model.categories.length === 0
+            )
+              return;
+            event.preventDefault();
+            event.stopPropagation();
+            setKeyboardFocused(true);
+            setKeyboardIndex((index) =>
+              event.key === "Home"
+                ? 0
+                : event.key === "End"
+                  ? model.categories.length - 1
+                  : Math.max(
+                      0,
+                      Math.min(
+                        model.categories.length - 1,
+                        index + (event.key === "ArrowRight" ? 1 : -1),
+                      ),
+                    ),
+            );
+          }}
+          className="relative min-w-0"
           style={{
             overflowY: chart.horizontal ? "auto" : undefined,
             height: chart.horizontal || circular || chart.kind === "radar" ? 320 : 256,
           }}
-          onFocusCapture={() => setKeyboardFocused(true)}
+          onFocusCapture={(event) =>
+            setKeyboardFocused(
+              event.target instanceof Element && event.target.matches(":focus-visible"),
+            )
+          }
           onBlurCapture={() => setKeyboardFocused(false)}
           role="group"
           tabIndex={chart.horizontal ? 0 : undefined}
           aria-label={`${chart.title}. ${chart.xLabel ?? "Category"} versus ${chart.yLabel ?? "Value"}`}
         >
+          {keyboardFocused && model.categories.length > 0 ? (
+            <div
+              className="pointer-events-none absolute right-2 top-2 z-10"
+              style={{ maxWidth: "min(20rem, calc(100% - 1rem))" }}
+              aria-live="polite"
+            >
+              <CategoryValues
+                chart={chart}
+                model={model}
+                index={Math.min(keyboardIndex, model.categories.length - 1)}
+              />
+            </div>
+          ) : null}
           {chart.points.length === 0 ? (
             <p
               role="status"
