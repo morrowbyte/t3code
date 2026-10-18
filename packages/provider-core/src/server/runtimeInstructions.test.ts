@@ -4,6 +4,18 @@ import { T3_CODE_VISUAL_INSTRUCTIONS } from "./orchestrationInstructions.ts";
 import { parseStreamableUi } from "@t3tools/shared/streamableUi";
 
 describe("buildRuntimeInstructions", () => {
+  it("asks senders for structured handoffs without rewriting originals or adding model calls", () => {
+    const instructions = buildRuntimeInstructions({ harness: "Codex" });
+    expect(instructions.match(/<agent_messages>/g)).toHaveLength(1);
+    expect(instructions).toContain('Start with "Kurz: "');
+    expect(instructions).toContain('"Ergebnis:", "Offen:", "Nächster Schritt:"');
+    expect(instructions).toContain("The tool supplies sender/target metadata");
+    expect(instructions).toContain("Do not add a second model call");
+    expect(instructions).toContain("rewrite stored history");
+    expect(instructions).toContain("<tool_output_selection>");
+    expect(instructions).toContain("<response_audience>");
+  });
+
   it.each(["Cursor", "Muse", "Grok", "OpenCode", "Claude Code"])(
     "provides %s the exact valid protocol even without T3 MCP context",
     (harness) => {
