@@ -564,6 +564,42 @@ describe("DesktopWindow", () => {
       }),
   );
 
+  it.effect("reuses the single development main across distinct authenticated result threads", () =>
+    Effect.gen(function* () {
+      const main = makeFakeBrowserWindow();
+      const scenario = yield* makeSplashScenario([main.window]);
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.createMain;
+        const nextLocator = {
+          ...nativeResultLocator,
+          threadId: ThreadId.make("another-native-thread"),
+          origin: {
+            ...nativeResultLocator.origin,
+            threadId: ThreadId.make("another-native-thread"),
+          },
+        };
+        for (const locator of [nativeResultLocator, nextLocator]) {
+          assert.strictEqual(
+            yield* desktopWindow.openThreadWindow(locator, () => true, { reuseMainWindow: true }),
+            main.window,
+          );
+        }
+        assert.equal(yield* Ref.get(scenario.createCalls), 1);
+        assert.strictEqual(Option.getOrThrow(yield* Ref.get(scenario.mainWindow)), main.window);
+        assert.equal(main.showInactive.mock.calls.length, 2);
+        assert.deepEqual(
+          main.loadURL.mock.calls.map(([url]) => url),
+          [
+            "t3code-dev://app/",
+            "t3code-dev://app/#/environment-1/child%2Fthread%20%3F%231",
+            "t3code-dev://app/#/environment-1/another-native-thread",
+          ],
+        );
+      }).pipe(Effect.provide(scenario.layer));
+    }),
+  );
+
   it.effect("does not treat a standalone result window as the main on reopen", () =>
     Effect.gen(function* () {
       const result = makeFakeBrowserWindow();

@@ -57,6 +57,12 @@ const { logWarning } = makeComponentLogger("desktop-app-activation");
 export const make = Effect.gen(function* () {
   const desktopEnvironment = yield* DesktopEnvironment.DesktopEnvironment;
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
+  const resultPresentation = {
+    reuseMainWindow:
+      desktopEnvironment.isDevelopment &&
+      !desktopEnvironment.isPackaged &&
+      process.env.T3CODE_SINGLE_ORIGIN_DEV === "1",
+  };
   const electronWindow = yield* ElectronWindow.ElectronWindow;
   const path = yield* Path.Path;
   const userId = yield* HostProcess.UserId;
@@ -143,6 +149,7 @@ export const make = Effect.gen(function* () {
                         origin: state.locator,
                       },
                       alive,
+                      resultPresentation,
                     )
                     .pipe(
                       Effect.mapError(
@@ -181,7 +188,11 @@ export const make = Effect.gen(function* () {
                       message: "The result window request was disconnected.",
                     };
                   }
-                  const window = yield* desktopWindow.openThreadWindow(request, alive);
+                  const window = yield* desktopWindow.openThreadWindow(
+                    request,
+                    alive,
+                    resultPresentation,
+                  );
                   return {
                     version: 1 as const,
                     requestId: request.requestId,

@@ -115,6 +115,7 @@ export class DesktopWindow extends Context.Service<
     readonly openThreadWindow: (
       locator: DesktopResultConversationLocator,
       isCallerAlive?: () => boolean,
+      options?: { readonly reuseMainWindow?: boolean },
     ) => Effect.Effect<Electron.BrowserWindow, DesktopWindowError | Schema.SchemaError>;
     readonly ensureMain: Effect.Effect<Electron.BrowserWindow, DesktopWindowError>;
     readonly revealOrCreateMain: Effect.Effect<Electron.BrowserWindow, DesktopWindowError>;
@@ -907,11 +908,31 @@ export const make = Effect.gen(function* () {
   }).pipe(Effect.withSpan("desktop.window.createMain"));
 
   const openThreadWindow = Effect.fn("desktop.window.openThreadWindow")(
-    (input: DesktopResultConversationLocator, isCallerAlive?: () => boolean) =>
+    (
+      input: DesktopResultConversationLocator,
+      isCallerAlive?: () => boolean,
+      options?: { readonly reuseMainWindow?: boolean },
+    ) =>
       resultWindowLane.withPermits(1)(
         Effect.gen(function* () {
           const locator = yield* decodeResultConversationLocator(input);
           if (isCallerAlive?.() === false) return yield* Effect.interrupt;
+          // The explicitly isolated single-origin development client keeps its
+          // one existing window while native voice turns retain distinct sources.
+          // Packaged clients and ordinary result-window callers keep their policy.
+          if (environment.isDevelopment && options?.reuseMainWindow === true) {
+            const main = yield* electronWindow.main;
+            if (Option.isSome(main) && !main.value.isDestroyed()) {
+              const window = main.value;
+              const url = resultConversationUrl(environment.isDevelopment, locator);
+              if (window.webContents.getURL() !== url) {
+                void window.loadURL(url).catch(() => undefined);
+              }
+              if (window.isMinimized()) window.restore();
+              window.showInactive();
+              return window;
+            }
+          }
           const key = resultConversationKey(locator);
           const existing = resultWindows.get(key);
           if (
