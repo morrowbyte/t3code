@@ -193,6 +193,7 @@ import {
   applySidebarThreadDrop,
   filterSidebarV2VisibleThreads,
   buildSidebarHierarchy,
+  revealSidebarRouteAncestors,
   buildBulkTitleRegenerationContextMenuItem,
   buildBulkUnpinContextMenuItem,
   deleteSelectedThreadEntries,
@@ -454,7 +455,11 @@ function useSidebarThreads(input: {
   const { projectScopeKey, scopedProjectKeys, serverConfigs, optimisticDrop, routeThreadKey } =
     input;
   const threads = useThreadShells();
-  const [expandedFamilies, setExpandedFamilies] = useState<ReadonlySet<string>>(() => new Set());
+  const [familyDisclosure, setFamilyDisclosure] = useState(() => ({
+    routeKey: null as string | null,
+    expandedKeys: new Set<string>() as ReadonlySet<string>,
+    closedKeys: new Set<string>() as ReadonlySet<string>,
+  }));
   const workingShelfEnabled = useClientSettings((s) => s.sidebarWorkingShelfEnabled);
   const nowMinute = useNowMinute();
   // Snooze wake times are second-precise, so classifying with the quantized
@@ -558,12 +563,15 @@ function useSidebarThreads(input: {
       )
       .map(threadShellKey),
   );
+  const disclosure = revealSidebarRouteAncestors(familyDisclosure, allThreads, routeThreadKey);
+  if (disclosure !== familyDisclosure) setFamilyDisclosure(disclosure);
   const hierarchyRows = buildSidebarHierarchy({
     threads: allThreads,
     sectionByKey: sectionByThreadKey,
     visibleKeys: new Set(orderedThreads.map(threadShellKey)),
     workingKeys,
-    expandedKeys: expandedFamilies,
+    expandedKeys: disclosure.expandedKeys,
+    closedKeys: disclosure.closedKeys,
     activeKey: routeThreadKey,
     workingShelfEnabled,
   });
@@ -598,11 +606,17 @@ function useSidebarThreads(input: {
     hierarchyByKey: new Map(hierarchyRows.map((row) => [row.key, row])),
     workingAgentCount: workingKeys.size,
     toggleFamily: (key: string) =>
-      setExpandedFamilies((previous) => {
-        const next = new Set(previous);
-        if (next.has(key)) next.delete(key);
-        else next.add(key);
-        return next;
+      setFamilyDisclosure((previous) => {
+        const expandedKeys = new Set(previous.expandedKeys);
+        const closedKeys = new Set(previous.closedKeys);
+        if (expandedKeys.has(key) && !closedKeys.has(key)) {
+          expandedKeys.delete(key);
+          closedKeys.add(key);
+        } else {
+          expandedKeys.add(key);
+          closedKeys.delete(key);
+        }
+        return { ...previous, expandedKeys, closedKeys };
       }),
     orderedThreadKeys: hierarchyRows.map((row) => row.key),
     threadByKey: new Map(allThreads.map((thread) => [threadShellKey(thread), thread] as const)),
@@ -1566,6 +1580,8 @@ const dropVerbBadge: Record<SidebarDropVerb, ReactNode> = {
 type SidebarThreadRowProps = {
   thread: SidebarThreadSummary;
   familyRow?: boolean;
+  compact?: boolean;
+  familySummary?: string | null;
   variant: "card" | "slim";
   variantAction: SidebarSweepAction;
   settlementSupported: boolean;
@@ -1695,13 +1711,15 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     wokeAtDate !== null &&
     (lastVisitedDate === null || lastVisitedDate < wokeAtDate) &&
     thread.settledOverride !== "settled";
-  const shouldRecede = shouldRecedeSidebarThread({
-    status,
-    isUnread,
-    isWoke,
-    isActive: props.isActive,
-    isSelected,
-  });
+  const shouldRecede =
+    !props.compact &&
+    shouldRecedeSidebarThread({
+      status,
+      isUnread,
+      isWoke,
+      isActive: props.isActive,
+      isSelected,
+    });
   const topStatus =
     status === "working"
       ? {
@@ -1751,9 +1769,13 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                         icon: "done" as const,
                         className: "text-success",
                       }
-                    : props.familyRow && thread.latestRun?.status === "completed"
+                    : props.familyRow &&
+                        (thread.latestRun?.status === "completed" ||
+                          thread.runtime?.status === "completed")
                       ? { label: "Done", icon: "done" as const, className: "text-success" }
-                      : props.familyRow && thread.latestRun?.status === "cancelled"
+                      : props.familyRow &&
+                          (thread.latestRun?.status === "cancelled" ||
+                            thread.runtime?.status === "cancelled")
                         ? {
                             label: "Cancelled",
                             icon: "done" as const,
@@ -1947,7 +1969,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
 
   const rowSurfaceClassName = cn(
     "group/sidebar-row relative w-full cursor-pointer overflow-hidden rounded-md text-left outline-none select-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-    variantAction === "unsettle" && "[&:not(:hover):not(:focus-within)_*]:text-secondary-label/70",
+    !props.compact &&
+      variantAction === "unsettle" &&
+      "[&:not(:hover):not(:focus-within)_*]:text-secondary-label/70",
     props.isActive
       ? "bg-sidebar-row-active text-sidebar-foreground"
       : isSelected || props.sweepAction !== null
@@ -2024,28 +2048,30 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         className={cn(
           "min-w-0 flex-1 text-sm transition-opacity motion-reduce:transition-none",
           shouldRecede ? "font-normal" : "font-medium",
-          variant === "card"
-            ? cn(
-                "truncate",
-                shouldRecede
-                  ? "text-secondary-label"
-                  : isUnread || isWoke || status === "input"
-                    ? "text-foreground"
-                    : status === "failed"
-                      ? "text-foreground/95"
-                      : "text-foreground/90",
-              )
-            : cn(
-                "truncate group-focus-within/sidebar-row:text-foreground group-hover/sidebar-row:text-foreground",
-                shouldRecede
-                  ? "text-secondary-label/70"
-                  : props.isActive || isWoke || status === "input"
-                    ? "text-foreground"
-                    : isUnread
-                      ? "text-muted-foreground"
-                      : "text-secondary-label/70",
-              ),
-          isRegeneratingTitle && "opacity-55",
+          props.compact
+            ? "line-clamp-2 text-sidebar-foreground"
+            : variant === "card"
+              ? cn(
+                  "truncate",
+                  shouldRecede
+                    ? "text-secondary-label"
+                    : isUnread || isWoke || status === "input"
+                      ? "text-foreground"
+                      : status === "failed"
+                        ? "text-foreground/95"
+                        : "text-foreground/90",
+                )
+              : cn(
+                  "truncate group-focus-within/sidebar-row:text-foreground group-hover/sidebar-row:text-foreground",
+                  shouldRecede
+                    ? "text-secondary-label/70"
+                    : props.isActive || isWoke || status === "input"
+                      ? "text-foreground"
+                      : isUnread
+                        ? "text-muted-foreground"
+                        : "text-secondary-label/70",
+                ),
+          isRegeneratingTitle && !props.compact && "opacity-55",
         )}
       >
         {thread.title}
@@ -2154,7 +2180,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 aria-current={accessibility.current}
                 data-testid="sidebar-row-slim"
                 aria-busy={isRegeneratingTitle || undefined}
-                className={cn(rowSurfaceClassName, "flex h-9 items-center gap-2.5 px-2.5")}
+                className={cn(
+                  rowSurfaceClassName,
+                  "flex items-center gap-2.5 px-2.5",
+                  props.compact ? "min-h-9 py-1.5" : "h-9",
+                )}
                 onClick={handleClick}
                 onDoubleClick={handleDoubleClick}
                 onKeyDown={handleKeyDown}
@@ -2163,17 +2193,28 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             }
           >
             {accessibleTitle}
-            <span
-              className={cn(
-                "flex shrink-0 items-center transition-opacity",
-                (!props.isActive || variantAction === "unsettle") &&
-                  "opacity-40 grayscale group-focus-within/sidebar-row:opacity-100 group-focus-within/sidebar-row:grayscale-0 group-hover/sidebar-row:opacity-100 group-hover/sidebar-row:grayscale-0",
-              )}
-            >
-              {props.project ? <ProjectFavicon project={props.project} className="size-4" /> : null}
-            </span>
+            {!props.compact ? (
+              <span
+                className={cn(
+                  "flex shrink-0 items-center transition-opacity",
+                  (!props.isActive || variantAction === "unsettle") &&
+                    "opacity-40 grayscale group-focus-within/sidebar-row:opacity-100 group-focus-within/sidebar-row:grayscale-0 group-hover/sidebar-row:opacity-100 group-hover/sidebar-row:grayscale-0",
+                )}
+              >
+                {props.project ? (
+                  <ProjectFavicon project={props.project} className="size-4" />
+                ) : null}
+              </span>
+            ) : null}
             {draftIndicator}
-            {title}
+            <div className="flex min-w-0 flex-1 flex-col">
+              {title}
+              {props.familySummary ? (
+                <span className="truncate text-2xs text-muted-foreground">
+                  {props.familySummary}
+                </span>
+              ) : null}
+            </div>
             {pinIndicator}
             {terminalStatusIcon}
             {isRegeneratingTitle ? (
@@ -2494,7 +2535,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               ) : null}
             </div>
             <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-secondary-label text-xs">
-              {thread.branch ? (
+              {props.familySummary ? (
+                <span className="min-w-0 flex-1 truncate text-2xs text-muted-foreground">
+                  {props.familySummary}
+                </span>
+              ) : thread.branch ? (
                 <>
                   <ThreadWorktreeIndicator thread={thread} />
                   <span className="flex min-w-0 flex-1 text-muted-foreground/40">
@@ -4844,6 +4889,7 @@ export default function Sidebar() {
                         const family = hierarchyByKey.get(threadKey);
                         const isCard =
                           !family?.contextOnly &&
+                          (family?.depth ?? 0) === 0 &&
                           (section === "active" || section === "pinned" || section === "working");
                         const rowVariant = isCard ? "card" : "slim";
                         return (
@@ -4855,18 +4901,9 @@ export default function Sidebar() {
                             className="relative min-w-0"
                             style={{
                               marginInlineStart: Math.min(family?.depth ?? 0, 8) * 12,
-                              borderInlineStart: family?.depth
-                                ? "1px solid var(--border)"
-                                : undefined,
                               paddingInlineStart: family?.depth || family?.hasChildren ? 18 : 0,
                             }}
                           >
-                            {family?.depth ? (
-                              <span
-                                aria-hidden
-                                className="absolute left-0 top-5 w-3 border-t border-border"
-                              />
-                            ) : null}
                             {family?.hasChildren ? (
                               <button
                                 type="button"
@@ -4874,7 +4911,10 @@ export default function Sidebar() {
                                 aria-label={`${family.expanded ? "Collapse" : "Expand"} ${thread.title} agents`}
                                 aria-expanded={family.expanded}
                                 onClick={() => toggleFamily(threadKey)}
-                                className="absolute left-0 top-3 z-10 flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring"
+                                className={cn(
+                                  "absolute left-0 z-10 flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring",
+                                  isCard ? "top-7" : "top-2",
+                                )}
                               >
                                 {family.expanded ? (
                                   <ChevronDownIcon aria-hidden className="size-3.5" />
@@ -4897,6 +4937,12 @@ export default function Sidebar() {
                               thread={thread}
                               familyRow={
                                 family !== undefined && (family.depth > 0 || family.hasChildren)
+                              }
+                              compact={(family?.depth ?? 0) > 0}
+                              familySummary={
+                                family?.hasChildren && !family.expanded
+                                  ? `${family.descendantCount} ${family.descendantCount === 1 ? "agent" : "agents"}${family.activeDescendantCount > 0 ? ` · ${family.activeDescendantCount} active` : ""}`
+                                  : null
                               }
                               variant={rowVariant}
                               variantAction={
