@@ -1,5 +1,7 @@
 import { useFocusEffect } from "@react-navigation/native";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Platform } from "react-native";
+import type { EnvironmentId } from "@t3tools/contracts";
 import {
   voiceInputBlocksSubmission,
   type VoiceInputState,
@@ -8,11 +10,13 @@ import {
 import type { ComposerEditorSelection } from "../../components/ComposerEditor";
 import { useGlobalVoiceInput } from "./VoiceInputProvider";
 import { createVoiceInputTarget } from "./voiceInputSession";
+import { environmentVoiceTranscriber } from "./environmentVoiceTranscriber";
 
 const IDLE_STATE: VoiceInputState = { phase: "idle", error: null, errorAction: null };
 
 export function useVoiceInputController(input: {
   readonly ownerKey: string | null;
+  readonly environmentId: EnvironmentId | null;
   readonly label: string;
   readonly readDraftMessage: () => string | null;
   readonly subscribeToDraftChanges: (onChange: () => void) => () => void;
@@ -22,6 +26,9 @@ export function useVoiceInputController(input: {
   readonly onChangeSelection: (selection: ComposerEditorSelection) => void;
 }) {
   const global = useGlobalVoiceInput();
+  const [remoteError, setRemoteError] = useState<{ ownerKey: string; message: string } | null>(
+    null,
+  );
   const { setOwnerFocused, session } = global;
   const latestInput = useRef(input);
   latestInput.current = input;
@@ -45,6 +52,8 @@ export function useVoiceInputController(input: {
   const start = useCallback(() => {
     const captured = latestInput.current;
     if (!captured.ownerKey || captured.disabled) return;
+    const ownerKey = captured.ownerKey;
+    setRemoteError(null);
     void session.start({
       ...createVoiceInputTarget(
         captured.ownerKey,
@@ -59,12 +68,35 @@ export function useVoiceInputController(input: {
         captured.subscribeToDraftChanges,
       ),
       label: captured.label,
+      ...(Platform.OS === "android"
+        ? {
+            transcriber: captured.environmentId
+              ? environmentVoiceTranscriber(captured.environmentId, (message) => {
+                  if (
+                    mounted.current &&
+                    latestInput.current.ownerKey === ownerKey &&
+                    latestInput.current.environmentId === captured.environmentId
+                  ) {
+                    setRemoteError({ ownerKey, message });
+                  }
+                })
+              : null,
+          }
+        : {}),
     });
   }, [session]);
-  const state = global.ownerKey === input.ownerKey ? global.state : IDLE_STATE;
+  const baseState = global.ownerKey === input.ownerKey ? global.state : IDLE_STATE;
+  const state =
+    baseState.phase === "error" && remoteError?.ownerKey === input.ownerKey
+      ? { ...baseState, error: remoteError.message }
+      : baseState;
   const isBusy = voiceInputBlocksSubmission(state);
   return {
-    isAvailable: global.isAvailable && (!global.isBusy || global.ownerKey === input.ownerKey),
+    isAvailable:
+      global.isAvailable &&
+      !input.disabled &&
+      (Platform.OS !== "android" || input.environmentId !== null) &&
+      (!global.isBusy || global.ownerKey === input.ownerKey),
     state,
     audioLevels: global.audioLevels,
     elapsedSeconds: global.elapsedSeconds,

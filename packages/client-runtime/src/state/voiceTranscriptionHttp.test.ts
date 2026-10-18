@@ -133,7 +133,7 @@ describe("requestEnvironmentVoiceSettings", () => {
         yield* requestEnvironmentVoiceSettings({
           prepared: PREPARED,
           signer: Option.none(),
-        remoteAuthorization: Option.none(),
+          remoteAuthorization: Option.none(),
           update,
         }).pipe(Effect.provide(RpcHttp.layerRemoteHttpClient(fetchFn)));
       }
@@ -162,7 +162,7 @@ describe("requestEnvironmentVoiceSettings", () => {
         const failure = yield* requestEnvironmentVoiceSettings({
           prepared: PREPARED,
           signer: Option.none(),
-        remoteAuthorization: Option.none(),
+          remoteAuthorization: Option.none(),
           update: { provider: "openai-api", instanceId: null, model: "gpt-transcribe" },
         }).pipe(Effect.provide(RpcHttp.layerRemoteHttpClient(fetchFn)), Effect.flip);
         expect(failure._tag).toBe("EnvironmentScopeRequiredError");
@@ -173,6 +173,54 @@ describe("requestEnvironmentVoiceSettings", () => {
 });
 
 describe("transcribeEnvironmentVoiceRecording", () => {
+  it.effect(
+    "sends exactly one React Native file part through the selected authenticated transport",
+    () =>
+      Effect.gen(function* () {
+        const originalFormData = globalThis.FormData;
+        const nativeFile = {
+          uri: "file:///cache/voice.m4a",
+          name: "voice-message.m4a",
+          type: "audio/mp4",
+        };
+        const parts: Array<ReadonlyArray<unknown>> = [];
+        // RN keeps the file descriptor rather than coercing it into a web Blob/string.
+        class NativeFormData {
+          append(...part: unknown[]) {
+            parts.push(part);
+          }
+        }
+        globalThis.FormData = NativeFormData as unknown as typeof FormData;
+        try {
+          const abort = new AbortController();
+          const fetchFn = ((url, init) => {
+            expect(String(url)).toBe(
+              "https://remote-environment.example.test/api/voice/transcription",
+            );
+            expect(new Headers(init?.headers).get("authorization")).toBe(
+              "Bearer environment-session-token",
+            );
+            expect(init?.body).toBeInstanceOf(NativeFormData);
+            expect(init?.signal?.aborted).toBe(false);
+            expect(parts).toEqual([["audio", nativeFile]]);
+            abort.abort();
+            expect(init?.signal?.aborted).toBe(true);
+            return Promise.reject(new DOMException("Cancelled", "AbortError"));
+          }) satisfies typeof fetch;
+          yield* transcribeEnvironmentVoiceRecording({
+            prepared: PREPARED,
+            nativeAudioFile: nativeFile,
+            filename: nativeFile.name,
+            signal: abort.signal,
+            signer: Option.none(),
+            remoteAuthorization: Option.none(),
+          }).pipe(Effect.provide(RpcHttp.layerRemoteHttpClient(fetchFn)), Effect.flip);
+          expect(parts).toHaveLength(1);
+        } finally {
+          globalThis.FormData = originalFormData;
+        }
+      }),
+  );
   it.effect(
     "uploads the reviewed blob to the selected environment with no page-origin request",
     () =>

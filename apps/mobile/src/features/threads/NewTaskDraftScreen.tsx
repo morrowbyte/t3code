@@ -499,6 +499,7 @@ export function NewTaskDraftScreen(props: {
   });
   const voiceInput = useVoiceInputController({
     ownerKey: flow.draftKey,
+    environmentId: selectedProject?.environmentId ?? null,
     label: selectedProjectLabel ? `New task in ${selectedProjectLabel}` : "New task",
     readDraftMessage: () => (flow.draftKey ? getComposerDraftSnapshot(flow.draftKey).text : null),
     subscribeToDraftChanges: (onChange) => appAtomRegistry.subscribe(composerDraftsAtom, onChange),

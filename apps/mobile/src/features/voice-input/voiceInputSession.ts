@@ -3,6 +3,7 @@ import {
   voiceInputBlocksSubmission,
   type VoiceDraftSnapshot,
   type VoiceInputControllerDependencies,
+  type VoiceTranscriber,
 } from "@t3tools/client-runtime/voice-input";
 
 export type VoiceInputTarget = {
@@ -11,6 +12,7 @@ export type VoiceInputTarget = {
   readonly readDraft: () => VoiceDraftSnapshot | null;
   readonly commitDraft: VoiceInputControllerDependencies["commitDraft"];
   readonly subscribe: () => () => void;
+  readonly transcriber?: VoiceTranscriber | null;
 };
 
 export function createVoiceInputTarget(
@@ -50,6 +52,10 @@ export class VoiceInputSession {
   constructor(dependencies: Omit<VoiceInputControllerDependencies, "readDraft" | "commitDraft">) {
     this.controller = new VoiceInputController({
       ...dependencies,
+      getTranscriber: () =>
+        this.target?.transcriber === undefined
+          ? dependencies.getTranscriber()
+          : this.target.transcriber,
       onStateChange: (state) => {
         if (!voiceInputBlocksSubmission(state)) {
           this.unsubscribe?.();

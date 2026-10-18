@@ -118,6 +118,7 @@ import {
 } from "../voice-input/ComposerDictationControl";
 import { useVoiceInputController } from "../voice-input/useVoiceInputController";
 import { resolveVoiceComposerPresentation } from "../voice-input/voiceInputPresentation";
+import { NativeLiveVoiceControl } from "../live-voice/NativeLiveVoiceControl";
 import {
   rememberModelOptions,
   withRememberedModelOptions,
@@ -462,8 +463,11 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     onUsageLimits:
       usageLimitsOffered && props.draftAttachments.length === 0 ? openUsageLimits : undefined,
   });
+  const [liveVoiceBusy, setLiveVoiceBusy] = useState(false);
   const voiceInput = useVoiceInputController({
     ownerKey: composerDraftKey,
+    environmentId: props.environmentId,
+    disabled: liveVoiceBusy || !props.canOperateThread || props.connectionState !== "connected",
     label: props.selectedThread.title || "Untitled thread",
     readDraftMessage: () => getComposerDraftSnapshot(composerDraftKey).text,
     subscribeToDraftChanges: (onChange) => appAtomRegistry.subscribe(composerDraftsAtom, onChange),
@@ -736,6 +740,18 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         className="relative w-full self-center"
         style={{ maxWidth: props.contentMaxWidth }}
       >
+        <NativeLiveVoiceControl
+          environmentId={props.environmentId}
+          threadId={props.selectedThread.id}
+          providerInstanceId={currentModelSelection.instanceId}
+          eligible={
+            props.canOperateThread &&
+            props.connectionState === "connected" &&
+            selectedProviderStatus?.driver === "codex" &&
+            !modelUnavailable
+          }
+          onBusyChange={setLiveVoiceBusy}
+        />
         {!voiceInput.isBusy &&
         composerMenu.trigger &&
         (composerMenu.items.length > 0 || composerMenu.trigger.kind === "pull-request") ? (

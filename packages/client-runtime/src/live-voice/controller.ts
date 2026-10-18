@@ -60,6 +60,10 @@ export type LiveVoiceDataChannel = Pick<RTCDataChannel, "readyState" | "close"> 
 };
 
 export type LiveVoiceMediaStream = Pick<MediaStream, "getAudioTracks" | "getTracks">;
+export type LiveVoiceAudioSink = Pick<
+  HTMLAudioElement,
+  "srcObject" | "autoplay" | "muted" | "play" | "pause"
+>;
 export type LiveVoiceAudioTrack = Pick<MediaStreamTrack, "enabled" | "stop">;
 export type LiveVoiceTranscript = {
   readonly speaker: "user" | "assistant";
@@ -93,7 +97,7 @@ export type LiveVoiceControllerDependencies = {
   readonly getUserMedia: () => Promise<LiveVoiceMediaStream>;
   readonly createPeer: () => LiveVoicePeer;
   readonly createRemoteStream: (track: MediaStreamTrack) => MediaStream;
-  readonly createAudioSink: () => HTMLAudioElement;
+  readonly createAudioSink: () => LiveVoiceAudioSink;
   readonly createRequestId: () => string;
   readonly startTimeoutMs?: number;
   readonly scheduleTimeout: (callback: () => void, delayMs: number) => () => void;
@@ -189,7 +193,7 @@ export class LiveVoiceController {
   private stream: LiveVoiceMediaStream | null = null;
   private peer: LiveVoicePeer | null = null;
   private channel: LiveVoiceDataChannel | null = null;
-  private audio: HTMLAudioElement | null = null;
+  private audio: LiveVoiceAudioSink | null = null;
   private remoteMediaReady = false;
   private remoteDescriptionReady = false;
   private playbackBlocked = false;

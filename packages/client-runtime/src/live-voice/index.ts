@@ -2,6 +2,7 @@ export {
   isLiveVoiceSupported,
   LiveVoiceController,
   type LiveVoiceAudioTrack,
+  type LiveVoiceAudioSink,
   type LiveVoiceControllerDependencies,
   type LiveVoiceDataChannel,
   type LiveVoiceIdentity,

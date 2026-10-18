@@ -71,26 +71,26 @@ const RELEASE_ASSETS = {
 
 const VARIANT_CONFIG = {
   development: {
-    appName: "T3 Code Dev",
-    scheme: "t3code-dev",
+    appName: "Morrowbyte Dev",
+    scheme: "morrowbyte-dev",
     iosBundleIdentifier: "com.t3tools.t3code.dev",
-    androidPackage: "com.t3tools.t3code.dev",
+    androidPackage: "com.morrowbyte.t3code.dev",
     relyingParty: "clerk.t3.codes",
     assets: DEVELOPMENT_ASSETS,
   },
   preview: {
-    appName: "T3 Code Preview",
-    scheme: "t3code-preview",
+    appName: "Morrowbyte Preview",
+    scheme: "morrowbyte-preview",
     iosBundleIdentifier: "com.t3tools.t3code.preview",
-    androidPackage: "com.t3tools.t3code.preview",
+    androidPackage: "com.morrowbyte.t3code.preview",
     relyingParty: "clerk.t3.codes",
     assets: PREVIEW_ASSETS,
   },
   production: {
-    appName: "T3 Code",
-    scheme: "t3code",
+    appName: "Morrowbyte",
+    scheme: "morrowbyte",
     iosBundleIdentifier: "com.t3tools.t3code",
-    androidPackage: "com.t3tools.t3code",
+    androidPackage: "com.morrowbyte.t3code",
     relyingParty: "clerk.t3.codes",
     assets: RELEASE_ASSETS,
   },
@@ -108,6 +108,14 @@ function resolveAppVariant(value: string | undefined): AppVariant {
 }
 
 const variant = VARIANT_CONFIG[APP_VARIANT];
+const androidVersionCode = Number(repoEnv.MORROWBYTE_ANDROID_VERSION_CODE ?? "1");
+if (
+  !Number.isInteger(androidVersionCode) ||
+  androidVersionCode < 1 ||
+  androidVersionCode > 2_100_000_000
+) {
+  throw new Error("MORROWBYTE_ANDROID_VERSION_CODE must be a positive Android version code.");
+}
 const iosBundleIdentifier = isIosPersonalTeamBuild
   ? personalTeamBundleIdentifier!
   : variant.iosBundleIdentifier;
@@ -223,7 +231,7 @@ const sharingPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
 
 const config: ExpoConfig = {
   name: variant.appName,
-  slug: "t3-code",
+  slug: "morrowbyte",
   platforms: ["ios", "android"],
   scheme: variant.scheme,
   version: repoEnv.T3CODE_MOBILE_VERSION ?? "2.0.0",
@@ -237,10 +245,7 @@ const config: ExpoConfig = {
   icon: variant.assets.appIcon,
   userInterfaceStyle: "automatic",
   updates: {
-    enabled: repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0",
-    url: "https://u.expo.dev/d763fcb8-d37c-41ea-a773-b54a0ab4a454",
-    checkAutomatically: "ON_LOAD",
-    fallbackToCacheTimeout: 0,
+    enabled: false,
   },
   ios: {
     icon: variant.assets.iosIcon,
@@ -294,6 +299,13 @@ const config: ExpoConfig = {
   android: {
     icon: variant.assets.appIcon,
     package: variant.androidPackage,
+    versionCode: androidVersionCode,
+    permissions: [
+      "android.permission.RECORD_AUDIO",
+      "android.permission.MODIFY_AUDIO_SETTINGS",
+      "android.permission.ACCESS_NETWORK_STATE",
+      "android.permission.CHANGE_NETWORK_STATE",
+    ],
     ...(repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE
       ? { googleServicesFile: repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE }
       : {}),
@@ -377,8 +389,8 @@ const config: ExpoConfig = {
     [
       "expo-audio",
       {
-        microphonePermission: "Allow T3 Code to use your microphone for voice input.",
-        recordAudioAndroid: false,
+        microphonePermission: "Allow Morrowbyte to use your microphone for voice input.",
+        recordAudioAndroid: true,
         enableBackgroundPlayback: false,
         enableBackgroundRecording: false,
       },
@@ -429,6 +441,7 @@ const config: ExpoConfig = {
           extraProguardRules: [
             "-dontwarn kotlin.MustUseReturnValues",
             "-keep class * extends androidx.work.InputMerger { <init>(); }",
+            "-keep class org.webrtc.** { *; }",
           ].join("\n"),
         },
         ios: {
@@ -453,6 +466,7 @@ const config: ExpoConfig = {
     ...(!isIosPersonalTeamBuild ? ["./plugins/withWidgetLogoAsset.cjs", widgetsPlugin] : []),
     "./plugins/withAndroidCleartextTraffic.cjs",
     "./plugins/withAndroidGradleHeap.cjs",
+    "./plugins/withAndroidReleaseSigning.cjs",
     "./plugins/withAndroidInputBackground.cjs",
     "./plugins/withAndroidModernPopupMenu.cjs",
     "./plugins/withAndroidModernAlertDialog.cjs",
@@ -484,11 +498,7 @@ const config: ExpoConfig = {
       tracesDataset: repoEnv.EXPO_PUBLIC_OTLP_TRACES_DATASET ?? null,
       tracesToken: repoEnv.EXPO_PUBLIC_OTLP_TRACES_TOKEN ?? null,
     },
-    eas: {
-      projectId: "d763fcb8-d37c-41ea-a773-b54a0ab4a454",
-    },
   },
-  owner: "pingdotgg",
 };
 
 export default config;

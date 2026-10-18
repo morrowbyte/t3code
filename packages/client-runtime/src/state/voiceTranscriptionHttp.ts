@@ -84,18 +84,35 @@ export const voiceTranscriptionFailureMessage = (
 };
 
 /** Upload a reviewed recording to the selected environment with its normal HTTP authorization. */
-export const transcribeEnvironmentVoiceRecording = (input: {
-  readonly prepared: PreparedConnection;
-  readonly audio: Blob;
-  readonly filename: string;
-  readonly signal: AbortSignal;
-  readonly signer: Option.Option<ManagedRelay.ManagedRelayDpopSigner["Service"]>;
-  readonly remoteAuthorization: Option.Option<
-    RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization["Service"]
-  >;
-}) => {
+export const transcribeEnvironmentVoiceRecording = (
+  input: {
+    readonly prepared: PreparedConnection;
+    readonly filename: string;
+    readonly signal: AbortSignal;
+    readonly signer: Option.Option<ManagedRelay.ManagedRelayDpopSigner["Service"]>;
+    readonly remoteAuthorization: Option.Option<
+      RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization["Service"]
+    >;
+  } & (
+    | { readonly audio: Blob; readonly nativeAudioFile?: never }
+    | {
+        readonly audio?: never;
+        readonly nativeAudioFile: {
+          readonly uri: string;
+          readonly name: string;
+          readonly type: string;
+        };
+      }
+  ),
+) => {
   const form = new FormData();
-  form.append("audio", input.audio, input.filename);
+  // React Native's FormData uploads a file URI; the web implementation takes a Blob.
+  // Keep one part and the same authenticated request pipeline for both platforms.
+  if (input.nativeAudioFile) {
+    form.append("audio", input.nativeAudioFile as unknown as Blob);
+  } else {
+    form.append("audio", input.audio, input.filename);
+  }
   return executeAuthenticatedEnvironmentHttpRequest({
     prepared: input.prepared,
     signer: input.signer,
