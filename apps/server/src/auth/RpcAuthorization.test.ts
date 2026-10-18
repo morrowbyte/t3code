@@ -7,6 +7,7 @@ import {
   AuthSettingsWriteScope,
   DEFAULT_SERVER_SETTINGS,
   ProviderInstanceId,
+  ProjectId,
   ThreadId,
   AuthOrchestrationOperateScope,
   ORCHESTRATION_V2_WS_METHODS,
@@ -36,6 +37,15 @@ import * as RpcAuthorization from "./RpcAuthorization.ts";
 describe("RPC authorization scopes", () => {
   it("declares exactly one scope for every RPC in the server group", () => {
     expect(new Set(Object.keys(RPC_REQUIRED_SCOPES))).toEqual(new Set(WsRpcGroup.requests.keys()));
+  });
+
+  it("separates reading update history from deleting host receipts", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.serverGetUpdateHistory)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.serverDeleteUpdateHistory)).toBe(
+      AuthEnvironmentMaintainScope,
+    );
   });
 
   it("requires operate access to stop a workflow", () => {
@@ -586,4 +596,48 @@ it.effect(
       for (const method of methods)
         expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
     }).pipe(Effect.scoped),
+);
+
+it.effect("requires the destination read grant before delegating feature timing", () =>
+  Effect.gen(function* () {
+    const group = WsRpcGroup.omit(
+      ...[...WsRpcGroup.requests.keys()].filter(
+        (
+          tag,
+        ): tag is Exclude<
+          keyof typeof RPC_REQUIRED_SCOPES,
+          typeof WS_METHODS.projectsFeatureTiming
+        > => tag !== WS_METHODS.projectsFeatureTiming,
+      ),
+    );
+    for (const scopes of [[], [AuthOrchestrationOperateScope], [AuthOrchestrationReadScope]]) {
+      let calls = 0;
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            group.toLayerHandler(WS_METHODS.projectsFeatureTiming, ({ projectId }) =>
+              Effect.sync(() => {
+                calls++;
+                return {
+                  projectId,
+                  asOf: "2026-10-17T00:00:00.000Z",
+                  coverage: "no_feature_history" as const,
+                  features: [],
+                };
+              }),
+            ),
+            RpcAuthorization.layer(scopes),
+          ),
+        ),
+      );
+      const outcome = yield* client[WS_METHODS.projectsFeatureTiming]({
+        projectId: ProjectId.make("project:timing"),
+      }).pipe(Effect.result);
+      if (scopes.some((scope) => scope === AuthOrchestrationReadScope)) expect(calls).toBe(1);
+      else {
+        expect(outcome).toMatchObject({ _tag: "Failure" });
+        expect(calls).toBe(0);
+      }
+    }
+  }).pipe(Effect.scoped),
 );

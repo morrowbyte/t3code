@@ -3,6 +3,14 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./updateHistory": {
+      "types": "./src/updateHistory.ts",
+      "import": "./src/updateHistory.ts"
+    },
+    "./featureTiming": {
+      "types": "./src/featureTiming.ts",
+      "import": "./src/featureTiming.ts"
+    },
     "./githubMarkdownLinks": {
       "types": "./src/githubMarkdownLinks.ts",
       "import": "./src/githubMarkdownLinks.ts"
@@ -490,6 +498,10 @@
     "./PtyAdapter": {
       "types": "./src/PtyAdapter.ts",
       "import": "./src/PtyAdapter.ts"
+    },
+    "./streamableUi": {
+      "types": "./src/streamableUi.ts",
+      "import": "./src/streamableUi.ts"
     }
   },
   "scripts": {

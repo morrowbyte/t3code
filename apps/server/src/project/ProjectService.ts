@@ -1,4 +1,5 @@
 import {
+  type ProjectFeatureTiming,
   CommandId,
   type OrchestrationProjectShell,
   ProjectId,
@@ -33,6 +34,7 @@ import { planThreadDeletion } from "../orchestration-v2/ThreadDeletion.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ProjectEnrichmentService from "./ProjectEnrichmentService.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
+import { makeFeatureTiming } from "./featureTiming.ts";
 
 export interface ProjectCreateInput extends ProjectCreatePayload {
   readonly commandId: CommandId;
@@ -113,6 +115,7 @@ export type ProjectServiceError =
 export class ProjectService extends Context.Service<
   ProjectService,
   {
+    readonly featureTiming: (projectId: ProjectId) => Effect.Effect<ProjectFeatureTiming>;
     readonly create: (input: ProjectCreateInput) => Effect.Effect<Project, ProjectServiceError>;
     readonly bootstrap: (
       input: ProjectBootstrapInput,
@@ -141,6 +144,7 @@ export class ProjectService extends Context.Service<
 >()("t3/project/ProjectService") {}
 
 export const make = Effect.gen(function* () {
+  const timing = yield* makeFeatureTiming;
   const projects = yield* ProjectStore.ProjectStoreV2;
   const projectEnrichment = yield* ProjectEnrichmentService.ProjectEnrichmentService;
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
@@ -226,6 +230,11 @@ export const make = Effect.gen(function* () {
                 .pipe(Effect.mapError(dispatchError)),
             );
       const now = yield* DateTime.now;
+      if (command.type === "project.meta.update" && command.featureTiming !== undefined) {
+        yield* timing
+          .validate(projectId, command.commandId, command.featureTiming)
+          .pipe(Effect.mapError(dispatchError));
+      }
       const eventId = yield* idAllocator.allocate
         .event({ commandId: command.commandId })
         .pipe(Effect.mapError(dispatchError));
@@ -363,6 +372,7 @@ export const make = Effect.gen(function* () {
         type: "project.meta.update",
         commandId: input.commandId,
         projectId: input.projectId,
+        ...(input.featureTiming === undefined ? {} : { featureTiming: input.featureTiming }),
         ...(input.title === undefined ? {} : { title: input.title }),
         ...(workspaceRoot === previousRoot ? {} : { workspaceRoot }),
         ...(input.defaultModelSelection === undefined
@@ -563,6 +573,7 @@ export const make = Effect.gen(function* () {
   });
 
   return ProjectService.of({
+    featureTiming: timing.read,
     create,
     bootstrap,
     update,

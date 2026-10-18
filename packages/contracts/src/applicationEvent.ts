@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import { FeatureTimingFact } from "./featureTiming.ts";
 
 import {
   ApprovalRequestId,
@@ -49,6 +50,7 @@ export const ApplicationProjectCreatedPayload = Schema.Struct({
 export type ApplicationProjectCreatedPayload = typeof ApplicationProjectCreatedPayload.Type;
 
 export const ApplicationProjectMetaUpdatedPayload = Schema.Struct({
+  featureTiming: Schema.optional(FeatureTimingFact),
   projectId: ProjectId,
   title: Schema.optional(TrimmedNonEmptyString),
   workspaceRoot: Schema.optional(TrimmedNonEmptyString),

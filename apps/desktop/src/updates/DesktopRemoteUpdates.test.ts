@@ -4,6 +4,7 @@ import type {
   DesktopTelemetryCommitDesktopUpdate,
   DesktopTelemetryCancelDesktopUpdate,
   DesktopUpdateStatusReport,
+  DesktopTelemetryUpdateHistoryRequest,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -84,6 +85,78 @@ function terminalReports(reports: DesktopUpdateStatusReport[]): DesktopUpdateSta
 }
 
 describe("DesktopRemoteUpdates", () => {
+  it.effect("reads and explicitly deletes host history without starting an update", () => {
+    const now = "2026-10-17T00:00:00.000Z";
+    const harness = makeHarness({
+      historyFile: JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            id: "saved",
+            component: "desktop",
+            fromVersion: "1.2.2",
+            targetVersion: "1.2.3",
+            observedVersion: "1.2.3",
+            startedAt: now,
+            updatedAt: now,
+            completedAt: now,
+            status: "succeeded",
+            error: null,
+          },
+        ],
+      }),
+    });
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const requests = yield* Queue.unbounded<DesktopTelemetryUpdateHistoryRequest>();
+        const readReply = yield* Deferred.make<DesktopUpdateStatusReport>();
+        const deleteReply = yield* Deferred.make<DesktopUpdateStatusReport>();
+        const publisher = DesktopTelemetryPublisher.DesktopTelemetryPublisher.of({
+          latest: Effect.succeedNone,
+          changes: Stream.empty,
+          encoded: Stream.empty,
+          handleControlForSource: () => Effect.void,
+          removeControlSource: () => Effect.void,
+          updateRequests: Stream.empty,
+          updateCommits: Stream.empty,
+          updateCancellations: Stream.empty,
+          historyRequests: Stream.fromQueue(requests),
+          publishUpdateReport: (report) =>
+            report.requestId === "read"
+              ? Deferred.succeed(readReply, report).pipe(Effect.asVoid)
+              : report.requestId === "delete"
+                ? Deferred.succeed(deleteReply, report).pipe(Effect.asVoid)
+                : Effect.void,
+        });
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+        yield* DesktopRemoteUpdates.listen.pipe(
+          Effect.provideService(DesktopTelemetryPublisher.DesktopTelemetryPublisher, publisher),
+        );
+        yield* Queue.offer(requests, {
+          version: 1,
+          type: "desktopUpdateHistoryRequest",
+          requestId: "read",
+        });
+        const read = yield* Deferred.await(readReply);
+        assert.equal(read.history?.[0]?.id, "saved");
+        assert.isUndefined(read.historyError);
+        yield* Queue.offer(requests, {
+          version: 1,
+          type: "desktopUpdateHistoryRequest",
+          requestId: "delete",
+          deleteId: "saved",
+        });
+        const removed = yield* Deferred.await(deleteReply);
+        assert.deepEqual(removed.history, []);
+        assert.isUndefined(removed.historyError);
+        assert.equal(harness.checkCount(), 0);
+        assert.equal(harness.downloadCount(), 0);
+        assert.equal(harness.quitAndInstalls(), 0);
+      }),
+    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
+
   it.effect("drives check, download, and install with no local confirmation", () => {
     const harness = makeHarness();
 

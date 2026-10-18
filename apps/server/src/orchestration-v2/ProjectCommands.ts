@@ -1,4 +1,5 @@
 import {
+  type FeatureTimingFact,
   type CommandId,
   type EventId,
   MAX_SCRIPT_ID_LENGTH,
@@ -26,6 +27,7 @@ export interface ProjectCreateCommand {
 }
 
 export interface ProjectMetaUpdateCommand {
+  readonly featureTiming?: FeatureTimingFact;
   readonly type: "project.meta.update";
   readonly commandId: CommandId;
   readonly projectId: ProjectId;
@@ -200,6 +202,7 @@ export function planProjectCommand(input: {
         type: "project.meta-updated",
         payload: {
           projectId: command.projectId,
+          ...(command.featureTiming === undefined ? {} : { featureTiming: command.featureTiming }),
           ...(command.title === undefined ? {} : { title: command.title }),
           ...(command.workspaceRoot === undefined ? {} : { workspaceRoot: command.workspaceRoot }),
           ...(command.defaultModelSelection === undefined

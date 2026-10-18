@@ -67,6 +67,7 @@ import { MENU_ACTION_CHANNEL, PREVIEW_PICTURE_IN_PICTURE_FRAME_CHANNEL } from ".
 import * as DesktopBrowserHost from "./DesktopBrowserHost.ts";
 import * as PreviewPasskeys from "./Passkeys.ts";
 import * as BrowserSession from "./BrowserSession.ts";
+import { AutofillUnavailable, validOrigin, type AutofillTarget } from "./ProtonPassAutofill.ts";
 import {
   ANNOTATION_CAPTURED_CHANNEL,
   ANNOTATION_SEND_ENABLED_CHANNEL,
@@ -530,6 +531,93 @@ const isPreviewInputSignal = (value: unknown): value is PreviewInputSignal => {
   );
 };
 
+// Dedicated isolated world: 1001 is favicon capture, 1002 is context-menu images.
+export const PROTON_PASS_AUTOFILL_WORLD_ID = 1003;
+const autofillLivePair = `() => {
+  const fields = globalThis.__morrowbyteProtonFields;
+  const { username, password } = fields ?? {};
+  const form = username?.form;
+  return username instanceof HTMLInputElement && password instanceof HTMLInputElement &&
+    username !== password && username.isConnected && password.isConnected &&
+    username.ownerDocument === document && password.ownerDocument === document &&
+    form && form.isConnected && form.ownerDocument === document && password.form === form &&
+    form.contains(username) && form.contains(password);
+}`;
+const autofillWritablePair = `() => {
+  if (!(${autofillLivePair})() || !document.hasFocus() || document.visibilityState !== 'visible') return false;
+  const { username, password } = globalThis.__morrowbyteProtonFields;
+  return !username.disabled && !username.readOnly && !password.disabled && !password.readOnly &&
+    ['text', 'email'].includes(username.type) && password.type === 'password' &&
+    password.autocomplete !== 'new-password' && username.getClientRects().length > 0 && password.getClientRects().length > 0;
+}`;
+export const protonPassAutofillScripts = {
+  prepare: `(() => {
+    if (!document.hasFocus() || document.visibilityState !== 'visible') return false;
+    const active = document.activeElement;
+    if (!(active instanceof HTMLInputElement) || !active.form) return false;
+    const form = active.form;
+    const passwords = [...form.querySelectorAll('input[type="password"]')].filter(input => !input.disabled && input.autocomplete !== 'new-password' && input.getClientRects().length);
+    let users = [...form.querySelectorAll('input[autocomplete="username"],input[autocomplete="email"],input[type="email"]')].filter(input => !input.disabled && input.getClientRects().length);
+    if (!users.length) users = [...form.querySelectorAll('input[type="text"],input:not([type])')].filter(input => !input.disabled && input.getClientRects().length);
+    if (passwords.length !== 1 || users.length !== 1 || ![passwords[0], users[0]].includes(active)) return false;
+    const previous = globalThis.__morrowbyteProtonFields;
+    if (previous && (previous.username !== users[0] || previous.password !== passwords[0])) {
+      if (!previous.cleared || !previous.username.isConnected || !previous.password.isConnected ||
+        previous.username.ownerDocument !== document || previous.password.ownerDocument !== document ||
+        previous.username.value !== '' || previous.password.value !== '') return false;
+    }
+    globalThis.__morrowbyteProtonFields = { username: users[0], password: passwords[0], cleared: false };
+    return (${autofillWritablePair})();
+  })()`,
+  focusUsername: `(() => { if (!(${autofillWritablePair})()) return false; const field = globalThis.__morrowbyteProtonFields.username; field.focus(); field.select(); return (${autofillWritablePair})() && document.activeElement === field; })()`,
+  focusPassword: `(() => { if (!(${autofillWritablePair})()) return false; const field = globalThis.__morrowbyteProtonFields.password; field.focus(); field.select(); return (${autofillWritablePair})() && document.activeElement === field; })()`,
+  ready: `(() => {
+    if (!(${autofillWritablePair})()) return false;
+    const { username, password } = globalThis.__morrowbyteProtonFields;
+    return document.activeElement === username || document.activeElement === password;
+  })()`,
+  // This result stays in the native private continuation, never in a relay, log or artifact.
+  readFilled: `(() => {
+    if (!(${autofillWritablePair})()) return false;
+    const { username, password } = globalThis.__morrowbyteProtonFields;
+    if (document.activeElement !== password) return false;
+    return [username.value, password.value];
+  })()`,
+  clear: `(() => {
+    const fields = globalThis.__morrowbyteProtonFields;
+    if (fields) {
+      fields.cleared = false;
+      const livePair = ${autofillLivePair};
+      if (!livePair()) return false;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      for (const field of [fields.username, fields.password]) {
+        if (!livePair()) return false;
+        setter.call(field, '');
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+        field.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      if (!livePair() || fields.username.value !== '' || fields.password.value !== '') return false;
+    }
+    return true;
+  })()`,
+  verifyClear: `(() => {
+    const fields = globalThis.__morrowbyteProtonFields;
+    if (!fields) return true;
+    const { username, password } = fields;
+    const form = username?.form;
+    fields.cleared = false;
+    if (!(username instanceof HTMLInputElement) || !(password instanceof HTMLInputElement) ||
+      username === password || !username.isConnected || !password.isConnected ||
+      username.ownerDocument !== document || password.ownerDocument !== document ||
+      !form || !form.isConnected || form.ownerDocument !== document || password.form !== form ||
+      !form.contains(username) || !form.contains(password) ||
+      username.value !== '' || password.value !== '') return false;
+    // Keep references even across the native continuation. Only the next prepare may replace them.
+    fields.cleared = true;
+    return true;
+  })()`,
+};
+
 const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function* (
   artifactDirectory: string,
   pictureInPicturePreloadPath: string,
@@ -541,9 +629,52 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const crypto = yield* Crypto.Crypto;
   const parentScope = yield* Scope.Scope;
   const browserHost = yield* DesktopBrowserHost.DesktopBrowserHost;
+  const sensitiveOperations = new Map<Electron.WebContents, number>();
+  const privateAdmission = <A, E, R>(wc: Electron.WebContents, operation: Effect.Effect<A, E, R>) =>
+    Effect.acquireUseRelease(
+      Effect.try({
+        try: () => {
+          if (browserHost.isPrivateEntry(wc)) throw new Error("Private credential entry");
+          sensitiveOperations.set(wc, (sensitiveOperations.get(wc) ?? 0) + 1);
+        },
+        catch: () =>
+          new PreviewOperationError({
+            operation: "privateCredentialEntry",
+            webContentsId: wc.id,
+            cause: "Private credential entry",
+          }),
+      }),
+      () => operation,
+      () =>
+        Effect.sync(() => {
+          const count = (sensitiveOperations.get(wc) ?? 1) - 1;
+          if (count) sensitiveOperations.set(wc, count);
+          else sensitiveOperations.delete(wc);
+        }),
+    );
+  const protectedTabOperation = <A, E, R>(tabId: string, operation: Effect.Effect<A, E, R>) =>
+    Effect.gen(function* () {
+      const wc = yield* requireWebContents(tabId);
+      return yield* privateAdmission(wc, operation);
+    });
+  const privateReservations = new WeakMap<
+    Electron.WebContents,
+    {
+      lease: DesktopBrowserHost.NativePrivateEntryLease;
+      resume?: DesktopBrowserHost.NativePrivateEntryResume;
+      documentEpoch: number;
+      origin: string;
+      partition: string;
+    }
+  >();
+  const autofillDocuments = new WeakMap<
+    Electron.WebContents,
+    { epoch: number; generation: number; pending: number; clearing: boolean }
+  >();
   const passkeys = yield* PreviewPasskeys.PreviewPasskeys;
   const context = yield* Effect.context<never>();
   const runFork = Effect.runForkWith(context);
+  const runPromise = Effect.runPromiseWith(context);
   const resolvedArtifactDirectory = path.resolve(artifactDirectory);
 
   let forwardedShortcuts: ReadonlyArray<PreviewForwardedShortcut> = [];
@@ -1032,7 +1163,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     }
   });
 
-  const ensureControlSession = Effect.fn("PreviewManager.ensureControlSession")(function* (
+  const ensureControlSessionImpl = Effect.fn("PreviewManager.ensureControlSession")(function* (
     wc: Electron.WebContents,
   ) {
     return yield* SynchronizedRef.modifyEffect(
@@ -1185,6 +1316,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       },
     );
   });
+  const ensureControlSession = (wc: Electron.WebContents) =>
+    privateAdmission(wc, ensureControlSessionImpl(wc));
 
   const cancelPickElement = Effect.fn("PreviewManager.cancelPickElement")(function* (
     tabId: string,
@@ -2197,41 +2330,50 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             args[2] === "send" && annotationSendEnabled.get(tabId) === true ? "send" : "attach";
           const devicePixelRatio = typeof args[3] === "number" ? args[3] : 1;
           runFork(
-            capturePageWithRetry(
-              { operation: "captureAnnotationScreenshot", tabId, webContentsId: wc.id },
-              tabId,
+            // The full-page capture with retries is what the screenshot button
+            // uses. A single cropped `capturePage(rect)` with a fixed timeout
+            // dropped the crop on pages where that capture was merely slow.
+            privateAdmission(
               wc,
-            ).pipe(
-              Effect.map((image) => cropAnnotationScreenshot(image, cropRect, devicePixelRatio)),
-              Effect.tapError((error) =>
-                Effect.logWarning("preview annotation screenshot failed").pipe(
-                  Effect.annotateLogs({ tabId, webContentsId: wc.id, error: error.message }),
+              capturePageWithRetry(
+                { operation: "captureAnnotationScreenshot", tabId, webContentsId: wc.id },
+                tabId,
+                wc,
+              ).pipe(
+                Effect.map((image) => cropAnnotationScreenshot(image, cropRect, devicePixelRatio)),
+                Effect.tapError((error) =>
+                  Effect.logWarning("preview annotation screenshot failed").pipe(
+                    Effect.annotateLogs({ tabId, webContentsId: wc.id, error: error.message }),
+                  ),
                 ),
-              ),
-              Effect.withSpan("PreviewManager.captureAnnotationScreenshot"),
-              Effect.match({
-                onFailure: (): PreviewAnnotationSubmissionResult => ({
-                  annotation: payload,
-                  submission,
-                  screenshotFailed: true,
+                Effect.withSpan("PreviewManager.captureAnnotationScreenshot"),
+                // The renderer cannot tell a dropped crop from a comment-only
+                // pick by the null alone, so a failed or timed-out capture is
+                // flagged on the result.
+                Effect.match({
+                  onFailure: (): PreviewAnnotationSubmissionResult => ({
+                    annotation: payload,
+                    submission,
+                    screenshotFailed: true,
+                  }),
+                  onSuccess: (screenshot): PreviewAnnotationSubmissionResult =>
+                    screenshot === null
+                      ? { annotation: payload, submission, screenshotFailed: true }
+                      : { annotation: { ...payload, screenshot }, submission },
                 }),
-                onSuccess: (screenshot): PreviewAnnotationSubmissionResult =>
-                  screenshot === null
-                    ? { annotation: payload, submission, screenshotFailed: true }
-                    : { annotation: { ...payload, screenshot }, submission },
-              }),
-              Effect.flatMap((result) => {
-                // A capture that outlives its session must not touch the
-                // overlay: the preload tears down on the captured signal, and
-                // by now it may be running a newer pick.
-                if (!claimSettle()) return Effect.void;
-                return attempt(
-                  { operation: "pickElement.captureComplete", tabId, webContentsId: wc.id },
-                  () => {
-                    if (!wc.isDestroyed()) wc.send(ANNOTATION_CAPTURED_CHANNEL);
-                  },
-                ).pipe(Effect.ignore, Effect.andThen(finishPick(result)));
-              }),
+                Effect.flatMap((result) => {
+                  // A capture that outlives its session must not touch the
+                  // overlay: the preload tears down on the captured signal, and
+                  // by now it may be running a newer pick.
+                  if (!claimSettle()) return Effect.void;
+                  return attempt(
+                    { operation: "pickElement.captureComplete", tabId, webContentsId: wc.id },
+                    () => {
+                      if (!wc.isDestroyed()) wc.send(ANNOTATION_CAPTURED_CHANNEL);
+                    },
+                  ).pipe(Effect.ignore, Effect.andThen(finishPick(result)));
+                }),
+              ),
             ),
           );
         };
@@ -3310,9 +3452,202 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
 
   yield* Effect.addFinalizer(() => destroy().pipe(Effect.ignore));
 
+  const getAutofillTarget = Effect.fn("PreviewManager.getAutofillTarget")(function* (
+    wc: Electron.WebContents,
+    frame: Electron.WebFrameMain | null,
+  ) {
+    const tab = [...(yield* SynchronizedRef.get(tabsRef)).values()].find(
+      (entry) => entry.webContentsId === wc.id,
+    );
+    if (!tab || wc.isDestroyed() || !frame || frame !== wc.mainFrame) return undefined;
+    const capture = (yield* SynchronizedRef.get(frameCaptureSessionsRef)).get(tab.tabId);
+    const partition = wc.session.getStoragePath();
+    if (
+      !tab ||
+      !frame ||
+      frame !== wc.mainFrame ||
+      !partition ||
+      wc.isDestroyed() ||
+      wc.isDevToolsOpened() ||
+      tab.controller === "agent" ||
+      capture ||
+      ((!tab.serverTab || !browserHost.canRequestPrivateEntry(wc)) &&
+        !browserHost.isPrivateEntry(wc)) ||
+      (!validOrigin(frame.origin) && !browserHost.isPrivateEntry(wc))
+    )
+      return undefined;
+    let document = autofillDocuments.get(wc);
+    if (!document) {
+      document = { epoch: 0, generation: 0, pending: 0, clearing: false };
+      autofillDocuments.set(wc, document);
+      const tracked = document;
+      wc.on("did-start-navigation", () => {
+        tracked.epoch += 1;
+        tracked.generation += 1;
+      });
+    }
+    const trackedDocument = document;
+    const epoch = trackedDocument.epoch;
+    const generation = trackedDocument.generation;
+    const origin = frame.origin;
+    const documentCurrent = () =>
+      !wc.isDestroyed() &&
+      !frame.isDestroyed() &&
+      trackedDocument.epoch === epoch &&
+      wc.mainFrame === frame &&
+      frame.origin === origin &&
+      wc.session.getStoragePath() === partition &&
+      wc.isFocused() &&
+      !wc.isDevToolsOpened();
+    const current = () => documentCurrent() && trackedDocument.generation === generation;
+    const assertCurrent = () => {
+      if (!current()) throw new AutofillUnavailable();
+    };
+    const assertPrivate = () => {
+      assertCurrent();
+      const reservation = privateReservations.get(wc);
+      if (
+        !browserHost.isPrivateEntry(wc) ||
+        trackedDocument.clearing ||
+        !reservation?.lease.current() ||
+        reservation.documentEpoch !== epoch ||
+        reservation.origin !== origin ||
+        reservation.partition !== partition
+      )
+        throw new AutofillUnavailable();
+    };
+    const execute = (code: string) =>
+      wc.executeJavaScriptInIsolatedWorld(PROTON_PASS_AUTOFILL_WORLD_ID, [{ code }]);
+    const target: AutofillTarget = {
+      origin,
+      partition: `persist:${partition}`,
+      privateEntry: browserHost.isPrivateEntry(wc),
+      current,
+      async assertPrivate() {
+        assertPrivate();
+        if ((await execute(protonPassAutofillScripts.ready)) !== true)
+          throw new AutofillUnavailable();
+        assertPrivate();
+      },
+      async enterPrivate() {
+        assertCurrent();
+        const latest = await runPromise(SynchronizedRef.get(tabsRef));
+        const activeCapture = await runPromise(SynchronizedRef.get(frameCaptureSessionsRef));
+        if (
+          latest.get(tab.tabId)?.webContentsId !== wc.id ||
+          latest.get(tab.tabId)?.controller === "agent" ||
+          activeCapture.has(tab.tabId) ||
+          (sensitiveOperations.get(wc) ?? 0) !== 0
+        )
+          throw new AutofillUnavailable();
+        assertCurrent();
+        if (trackedDocument.clearing || trackedDocument.pending !== 0)
+          throw new AutofillUnavailable();
+        trackedDocument.pending += 1;
+        try {
+          let reservation = privateReservations.get(wc);
+          if (!reservation) {
+            const lease = await browserHost.acquirePrivateEntry(wc);
+            reservation = { lease, documentEpoch: epoch, origin, partition };
+            privateReservations.set(wc, reservation);
+            // Take/drain completes before privacy blocks the old agent's relay replies.
+            browserHost.setPrivateEntry(wc, true);
+          }
+          assertPrivate();
+          const afterGrantCaptures = await runPromise(SynchronizedRef.get(frameCaptureSessionsRef));
+          assertPrivate();
+          if (afterGrantCaptures.has(tab.tabId) || (sensitiveOperations.get(wc) ?? 0) !== 0)
+            throw new AutofillUnavailable();
+          if ((await execute(protonPassAutofillScripts.prepare)) !== true)
+            throw new AutofillUnavailable();
+          assertPrivate();
+        } finally {
+          trackedDocument.pending -= 1;
+        }
+      },
+      holdPrivate() {
+        assertPrivate();
+        trackedDocument.pending += 1;
+        let released = false;
+        return () => {
+          if (released) return;
+          released = true;
+          trackedDocument.pending -= 1;
+        };
+      },
+      async fill(username, password) {
+        assertPrivate();
+        trackedDocument.pending += 1;
+        try {
+          for (const [code, value] of [
+            [protonPassAutofillScripts.focusUsername, username],
+            [protonPassAutofillScripts.focusPassword, password],
+          ] as const) {
+            assertPrivate();
+            const focused = await execute(code);
+            assertPrivate();
+            if (focused !== true) throw new AutofillUnavailable();
+            // Native input keeps credentials out of scripts and CDP messages.
+            await wc.insertText(value);
+            assertPrivate();
+          }
+          const filled: unknown = await execute(protonPassAutofillScripts.readFilled);
+          assertPrivate();
+          if (!Array.isArray(filled) || filled[0] !== username || filled[1] !== password)
+            throw new AutofillUnavailable();
+        } finally {
+          trackedDocument.pending -= 1;
+        }
+      },
+      async clearAndResume() {
+        assertCurrent();
+        if (!browserHost.isPrivateEntry(wc) || trackedDocument.clearing)
+          throw new AutofillUnavailable();
+        // Refusal drains by keeping sharing closed until the caller retries.
+        if (trackedDocument.pending !== 0) throw new AutofillUnavailable();
+        trackedDocument.clearing = true;
+        trackedDocument.generation += 1;
+        const clearingGeneration = trackedDocument.generation;
+        try {
+          if ((await execute(protonPassAutofillScripts.clear)) !== true)
+            throw new AutofillUnavailable();
+          if (
+            !documentCurrent() ||
+            trackedDocument.generation !== clearingGeneration ||
+            !browserHost.isPrivateEntry(wc)
+          )
+            throw new AutofillUnavailable();
+          const reservation = privateReservations.get(wc);
+          if (!reservation) throw new AutofillUnavailable();
+          // Fields are verified empty before asking the authority to release its reservation.
+          // A refused post-ACK verification may be explicitly retried on this same released connection.
+          reservation.resume ??= await reservation.lease.release();
+          const resume = reservation.resume;
+          if (!resume.current()) throw new AutofillUnavailable();
+          if ((await execute(protonPassAutofillScripts.verifyClear)) !== true)
+            throw new AutofillUnavailable();
+          if (
+            !documentCurrent() ||
+            trackedDocument.generation !== clearingGeneration ||
+            privateReservations.get(wc) !== reservation ||
+            !resume.current() ||
+            !browserHost.isPrivateEntry(wc)
+          )
+            throw new AutofillUnavailable();
+          privateReservations.delete(wc);
+          browserHost.setPrivateEntry(wc, false);
+        } finally {
+          trackedDocument.clearing = false;
+        }
+      },
+    };
+    return target;
+  });
+
   return {
     cancelPickElement,
-    captureScreenshot,
+    getAutofillTarget,
+    captureScreenshot: (tabId: string) => protectedTabOperation(tabId, captureScreenshot(tabId)),
     closeTab,
     copyArtifactToClipboard,
     createTab,
@@ -3320,9 +3655,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     goForward,
     hardReload,
     navigate,
-    openPictureInPicture,
+    openPictureInPicture: (tabId: string) =>
+      protectedTabOperation(tabId, openPictureInPicture(tabId)),
     openDevTools,
-    pickElement,
+    pickElement: (tabId: string) => protectedTabOperation(tabId, pickElement(tabId)),
     prepareWebview,
     reapplyZoom,
     refresh,
@@ -3341,7 +3677,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       Effect.sync(() => {
         forwardedShortcuts = shortcuts;
       }),
-    startRecording,
+    startRecording: (tabId: string, options?: RecordingInputOptions) =>
+      protectedTabOperation(tabId, startRecording(tabId, options)),
     closePictureInPicture,
     stopRecording,
     subscribePointerEvents: (listener: PointerEventListener) =>
@@ -3501,6 +3838,10 @@ export type PreviewManagerError = typeof PreviewManagerError.Type;
 export class PreviewManager extends Context.Service<
   PreviewManager,
   {
+    readonly getAutofillTarget: (
+      wc: Electron.WebContents,
+      frame: Electron.WebFrameMain | null,
+    ) => Effect.Effect<AutofillTarget | undefined>;
     readonly setMainWindow: (window: BrowserWindow) => Effect.Effect<void, PreviewManagerError>;
     readonly setForwardedShortcuts: (
       shortcuts: ReadonlyArray<PreviewForwardedShortcut>,
@@ -3652,6 +3993,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
   );
 
   return PreviewManager.of({
+    getAutofillTarget: operations.getAutofillTarget,
     setMainWindow: operations.setMainWindow,
     setForwardedShortcuts: operations.setForwardedShortcuts,
     getBrowserSession: Effect.fn("PreviewManager.getBrowserSession")(

@@ -43,6 +43,8 @@ export interface UpdatesHarnessOptions {
   readonly backendSnapshot?: DesktopBackendPool.DesktopBackendInstance["snapshot"];
   /** Contents of the install record a previous run left behind. */
   readonly installRecord?: string | undefined;
+  readonly historyFile?: string | undefined;
+  readonly appVersion?: string;
 }
 
 export function makeHarness(options: UpdatesHarnessOptions = {}) {
@@ -180,7 +182,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
     homeDirectory: `/tmp/t3-desktop-updates-home-${process.pid}`,
     platform: options.platform ?? "darwin",
     processArch: "x64",
-    appVersion: "1.2.3",
+    appVersion: options.appVersion ?? "1.2.3",
     appPath: "/repo",
     isPackaged: true,
     resourcesPath: "/missing/resources",
@@ -241,11 +243,19 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
   const updateRestartMarkers = new Set<string>();
   // Contents of the install record, by path once an install writes one.
   const installRecords = new Map<string, string>();
+  const historyFiles = new Map<string, string>();
   let previousInstallRecord = options.installRecord;
   const isInstallRecord = (path: string) =>
     path.endsWith(DesktopUpdates.DESKTOP_UPDATE_INSTALL_RECORD_FILE);
   const layerFileSystem = FileSystem.layerNoop({
     readFileString: (path) => {
+      if (
+        path.endsWith(DesktopUpdates.DESKTOP_UPDATE_HISTORY_FILE) &&
+        !historyFiles.has(path) &&
+        options.historyFile !== undefined
+      )
+        return Effect.succeed(options.historyFile);
+      if (historyFiles.has(path)) return Effect.succeed(historyFiles.get(path)!);
       const installRecord = isInstallRecord(path)
         ? (installRecords.get(path) ?? previousInstallRecord)
         : undefined;
@@ -267,8 +277,14 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
     makeDirectory: () => Effect.void,
     writeFileString: (path, data) =>
       Effect.sync(() => {
-        if (isInstallRecord(path)) installRecords.set(path, data);
+        if (path.includes(DesktopUpdates.DESKTOP_UPDATE_HISTORY_FILE)) historyFiles.set(path, data);
+        else if (isInstallRecord(path)) installRecords.set(path, data);
         else updateRestartMarkers.add(path);
+      }),
+    rename: (from, to) =>
+      Effect.sync(() => {
+        historyFiles.set(to, historyFiles.get(from)!);
+        historyFiles.delete(from);
       }),
     remove: (path) =>
       Effect.sync(() => {
@@ -313,6 +329,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
     installSteps,
     updateRestartMarkers,
     installRecords,
+    historyFiles,
     /** The record the test started with, until the app removes it. */
     previousInstallRecord: () => previousInstallRecord,
     downloadCount: () => downloadCount,

@@ -27,6 +27,7 @@ import {
 import { useEnvironments, usePrimaryEnvironmentId } from "../../state/environments";
 import { useThreadShells, waitForProjectRemoval } from "../../state/entities";
 import { projectEnvironment } from "../../state/projects";
+import { ProjectFeatureTiming } from "./ProjectFeatureTiming";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { Alert, AlertDescription } from "../ui/alert";
 import { Button } from "../ui/button";
@@ -593,6 +594,9 @@ function ProjectDetail({
             }
           />
         </SettingsSection>
+        {group.memberProjects.map((member) => (
+          <ProjectFeatureTiming key={member.physicalProjectKey} member={member} />
+        ))}
         <ProjectDefaultsSettings category="project" />
         <ProjectActionsSettings />
         {hasMultipleCheckouts ? checkoutChoices : null}

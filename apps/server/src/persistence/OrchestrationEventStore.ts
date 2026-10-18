@@ -5,6 +5,7 @@ import {
   CommandId,
   EventId,
   IsoDateTime,
+  MessageId,
   isKnownOrchestrationV2EventType,
   NonNegativeInt,
   OrchestrationV2DomainEventJson,
@@ -61,6 +62,8 @@ export class OrchestrationEventStore extends Context.Service<
       readonly threadId?: ThreadId;
       readonly commandId?: CommandId;
       readonly eventType?: OrchestrationV2DomainEvent["type"];
+      readonly eventTypes?: ReadonlyArray<OrchestrationV2DomainEvent["type"]>;
+      readonly messageIds?: ReadonlyArray<MessageId>;
       readonly limit?: number;
       readonly skipUnknownEventTypes?: boolean;
     }) => Stream.Stream<OrchestrationV2StoredEvent, OrchestrationEventStoreError>;
@@ -95,6 +98,12 @@ export class OrchestrationEventStore extends Context.Service<
     ) => Effect.Effect<number, OrchestrationEventStoreError>;
 
     readonly latestApplicationSequence: Effect.Effect<number, OrchestrationEventStoreError>;
+
+    readonly readProjectEvents: (input: {
+      readonly projectId: ProjectId;
+      readonly throughSequence: number;
+      readonly limit: number;
+    }) => Stream.Stream<ApplicationProjectEvent, OrchestrationEventStoreError>;
 
     /**
      * A row whose `event_type` this build does not know fails the read unless
@@ -391,11 +400,14 @@ const makeEventStore = Effect.gen(function* () {
     );
 
   const readApplicationRows = (input: {
+    readonly projectId?: ProjectId;
     readonly afterSequence: number;
     readonly throughSequence?: number;
     readonly threadId?: ThreadId;
     readonly commandId?: CommandId;
     readonly eventType?: OrchestrationV2DomainEvent["type"];
+    readonly eventTypes?: ReadonlyArray<OrchestrationV2DomainEvent["type"]>;
+    readonly messageIds?: ReadonlyArray<MessageId>;
     readonly onlyAgentEvents?: boolean;
     readonly limit: number;
   }) =>
@@ -419,7 +431,7 @@ const makeEventStore = Effect.gen(function* () {
         // V2 event, which blocks the server for seconds on large histories.
         input.commandId !== undefined
           ? sql`INDEXED BY idx_orch_events_command_id`
-          : input.onlyAgentEvents === true
+          : input.onlyAgentEvents === true || input.projectId !== undefined
             ? sql``
             : sql`INDEXED BY idx_orchestration_events_application_high_water`
       }
@@ -434,9 +446,18 @@ const makeEventStore = Effect.gen(function* () {
           }
         )
         AND ${sql.and([
+          ...(input.projectId === undefined
+            ? []
+            : [sql`aggregate_kind = 'project' AND stream_id = ${input.projectId}`]),
           ...(input.threadId === undefined ? [] : [sql`stream_id = ${input.threadId}`]),
           ...(input.commandId === undefined ? [] : [sql`command_id = ${input.commandId}`]),
           ...(input.eventType === undefined ? [] : [sql`event_type = ${input.eventType}`]),
+          ...(input.eventTypes === undefined ? [] : [sql.in("event_type", input.eventTypes)]),
+          ...(input.messageIds === undefined
+            ? []
+            : [
+                sql`(event_type != 'message.updated' OR json_extract(payload_json, '$.id') IN ${sql.in(input.messageIds)})`,
+              ]),
         ])}
       ORDER BY sequence ASC
       LIMIT ${input.limit}
@@ -563,6 +584,8 @@ const makeEventStore = Effect.gen(function* () {
           ...(input?.threadId === undefined ? {} : { threadId: input.threadId }),
           ...(input?.commandId === undefined ? {} : { commandId: input.commandId }),
           ...(input?.eventType === undefined ? {} : { eventType: input.eventType }),
+          ...(input?.eventTypes === undefined ? {} : { eventTypes: input.eventTypes }),
+          ...(input?.messageIds === undefined ? {} : { messageIds: input.messageIds }),
           onlyAgentEvents: true,
           limit: pageLimit,
         }).pipe(
@@ -746,6 +769,26 @@ const makeEventStore = Effect.gen(function* () {
     getReplayStats,
     latestAgentSequence,
     latestApplicationSequence,
+    readProjectEvents: (input) =>
+      Stream.fromEffect(
+        readApplicationRows({ ...input, afterSequence: 0 }).pipe(
+          Effect.mapError(toPersistenceSqlError("OrchestrationEventStore.readProjectEvents:query")),
+          Effect.flatMap((rows) =>
+            Effect.forEach(rows, (row) =>
+              rowToProjectEvent(row).pipe(
+                Effect.mapError(
+                  toPersistenceDecodeError("OrchestrationEventStore.readProjectEvents:decode"),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ).pipe(
+        Stream.flatMap((rows) => Stream.fromIterable(rows)),
+        Stream.filter(
+          (event): event is ApplicationProjectEvent => event.aggregateKind === "project",
+        ),
+      ),
     readApplicationEvents: catchUpApplicationEvents,
     publishCommitted: (events) => PubSub.publishAll(committedEvents, events).pipe(Effect.asVoid),
     streamApplicationEvents,

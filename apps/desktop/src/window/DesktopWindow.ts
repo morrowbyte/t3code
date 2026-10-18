@@ -5,10 +5,16 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 
 import * as Electron from "electron";
 
-import { type DesktopSnapShotEvent, DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts";
+import {
+  type DesktopSnapShotEvent,
+  DEFAULT_CLIENT_SETTINGS,
+  DesktopResultConversationLocator,
+} from "@t3tools/contracts";
 
 import * as DesktopAssets from "../app/DesktopAssets.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
@@ -34,6 +40,9 @@ import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as DesktopRendererHistory from "../telemetry/DesktopRendererHistory.ts";
 import { makeQuitShortcutHandler } from "./QuitHold.ts";
 import { copyContextMenuImage } from "./ContextMenuImage.ts";
+import { makeProtonPassProvider } from "../preview/ProtonPassCli.ts";
+import { makeAutofill, makeBindingStore } from "../preview/ProtonPassAutofill.ts";
+import { makeAutofillMenu, makeNativeAutofillUi } from "../preview/ProtonPassAutofillMenu.ts";
 
 const TITLEBAR_HEIGHT = 40;
 // Matches --workspace-topbar-height in apps/web/src/index.css. Native macOS
@@ -61,6 +70,18 @@ const RENDERER_RECOVERY_RELOAD_DELAY_MS = 500;
 const RENDERER_RECOVERY_MAX_ATTEMPTS = 3;
 const RENDERER_RECOVERY_WINDOW_MS = 60_000;
 const DEVELOPMENT_RETRYABLE_LOAD_ERROR_CODES = new Set([-2, -7, -9, -102, -105, -106, -118]);
+const decodeResultConversationLocator = Schema.decodeEffect(DesktopResultConversationLocator);
+
+function resultConversationKey(locator: DesktopResultConversationLocator): string {
+  return `${locator.environmentId.length}:${locator.environmentId}${locator.threadId}`;
+}
+
+function resultConversationUrl(
+  isDevelopment: boolean,
+  locator: DesktopResultConversationLocator,
+): string {
+  return `${getDesktopUrl(isDevelopment)}#/${encodeURIComponent(locator.environmentId)}/${encodeURIComponent(locator.threadId)}`;
+}
 
 type WindowTitleBarOptions = Pick<
   Electron.BrowserWindowConstructorOptions,
@@ -91,6 +112,11 @@ export class DesktopWindow extends Context.Service<
   DesktopWindow,
   {
     readonly createMain: Effect.Effect<Electron.BrowserWindow, DesktopWindowError>;
+    readonly openThreadWindow: (
+      locator: DesktopResultConversationLocator,
+      isCallerAlive?: () => boolean,
+      options?: { readonly reuseMainWindow?: boolean },
+    ) => Effect.Effect<Electron.BrowserWindow, DesktopWindowError | Schema.SchemaError>;
     readonly ensureMain: Effect.Effect<Electron.BrowserWindow, DesktopWindowError>;
     readonly revealOrCreateMain: Effect.Effect<Electron.BrowserWindow, DesktopWindowError>;
     readonly activate: Effect.Effect<void, DesktopWindowError>;
@@ -300,6 +326,9 @@ export const make = Effect.gen(function* () {
   const rendererHistory = yield* DesktopRendererHistory.DesktopRendererHistory;
   const backendReadyRef = yield* Ref.make(false);
   const splashWindowRef = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+  const resultWindows = new Map<string, Electron.BrowserWindow>();
+  const liveResultWindows = new Set<Electron.BrowserWindow>();
+  const resultWindowLane = yield* Semaphore.make(1);
   const context = yield* Effect.context<DesktopWindowRuntimeServices>();
   const runFork = Effect.runForkWith(context);
   const runPromise = Effect.runPromiseWith(context);
@@ -326,20 +355,31 @@ export const make = Effect.gen(function* () {
       ),
     );
 
-  const currentMainWindow = electronWindow.currentMainOrFirst.pipe(Effect.flatMap(withoutSplash));
+  const currentMainWindow = electronWindow.currentMainOrFirst.pipe(
+    Effect.flatMap(withoutSplash),
+    Effect.map((window) =>
+      Option.isSome(window) && liveResultWindows.has(window.value)
+        ? Option.none<Electron.BrowserWindow>()
+        : window,
+    ),
+  );
   const focusedMainWindow = electronWindow.focusedMainOrFirst.pipe(Effect.flatMap(withoutSplash));
 
-  const createWindow = Effect.fn("desktop.window.createWindow")(function* (): Effect.fn.Return<
-    Electron.BrowserWindow,
-    DesktopWindowError
-  > {
+  const createWindow = Effect.fn("desktop.window.createWindow")(function* (
+    result?: DesktopResultConversationLocator,
+    isCallerAlive?: () => boolean,
+  ): Effect.fn.Return<Electron.BrowserWindow, DesktopWindowError> {
     yield* previewManager.getBrowserSession();
-    const applicationUrl = getDesktopUrl(environment.isDevelopment);
+    const isMainWindow = result === undefined;
+    const applicationUrl =
+      result === undefined
+        ? getDesktopUrl(environment.isDevelopment)
+        : resultConversationUrl(environment.isDevelopment, result);
     const iconPaths = yield* assets.iconPaths;
     const iconOption = getIconOption(iconPaths, environment.platform);
     const shouldUseDarkColors = yield* electronTheme.shouldUseDarkColors;
     const persistedSettings = yield* desktopSettings.get;
-    const persistedBounds = persistedSettings.mainWindowBounds;
+    const persistedBounds = isMainWindow ? persistedSettings.mainWindowBounds : null;
     const displayBoundsResult = yield* Effect.sync(() => {
       try {
         return {
@@ -361,6 +401,9 @@ export const make = Effect.gen(function* () {
     if (persistedBounds !== null && initialBounds === DesktopAppSettings.DEFAULT_MAIN_WINDOW_SIZE) {
       yield* logWindowWarning("saved main window bounds could not be restored; using defaults");
     }
+    // Native window admission commits the operation. A normal response closes
+    // the caller's socket before ready-to-show, so reveal must remain independent.
+    if (isCallerAlive?.() === false) return yield* Effect.interrupt;
     const window = yield* electronWindow.create({
       ...initialBounds,
       minWidth: 840,
@@ -390,13 +433,16 @@ export const make = Effect.gen(function* () {
       },
     });
 
-    yield* rendererHistory.register(window.webContents, { surface: "main" });
+    yield* rendererHistory.register(window.webContents, {
+      surface: isMainWindow ? "main" : "result",
+    });
     if (environment.platform === "darwin") {
       window.setAutoHideCursor(false);
     }
     let boundsPersistFiber: Fiber.Fiber<void, never> | undefined;
     let pendingBoundsPersistFiber: Fiber.Fiber<void, never> | undefined;
-    let boundsPersistenceEnabled = persistedBounds === null || restoredPersistedBounds;
+    let boundsPersistenceEnabled =
+      isMainWindow && (persistedBounds === null || restoredPersistedBounds);
     const readPersistableBounds = (): DesktopAppSettings.DesktopWindowBounds | null => {
       if (window.isDestroyed()) {
         return null;
@@ -435,6 +481,7 @@ export const make = Effect.gen(function* () {
       return pendingBoundsPersistFiber;
     };
     const scheduleBoundsPersist = () => {
+      if (!isMainWindow) return;
       if (!boundsPersistenceEnabled) {
         const currentBounds = readPersistableBounds();
         if (
@@ -479,9 +526,9 @@ export const make = Effect.gen(function* () {
         fiber === undefined ? Effect.void : Fiber.join(fiber).pipe(Effect.asVoid),
       ),
     );
-    flushMainWindowBounds = flushBoundsPersist;
+    if (isMainWindow) flushMainWindowBounds = flushBoundsPersist;
 
-    yield* previewManager.setMainWindow(window);
+    if (isMainWindow) yield* previewManager.setMainWindow(window);
     window.webContents.on("will-attach-webview", (event, webPreferences, params) => {
       if (
         typeof params.partition !== "string" ||
@@ -504,6 +551,7 @@ export const make = Effect.gen(function* () {
     });
 
     const contextMenuContents = new WeakSet<Electron.WebContents>();
+    let protonAutofill: ReturnType<typeof makeAutofill> | undefined;
     const installContextMenu = (
       ownerWindow: Electron.BrowserWindow,
       contents: Electron.WebContents,
@@ -568,11 +616,38 @@ export const make = Effect.gen(function* () {
         );
 
         void runPromise(
-          electronMenu.popupTemplate({
-            window: ownerWindow,
-            template: menuTemplate,
-            ...(params.frame ? { frame: params.frame } : {}),
-          }),
+          Effect.gen(function* () {
+            const target =
+              isMainWindow && ownerWindow === window
+                ? yield* previewManager.getAutofillTarget(contents, params.frame ?? null)
+                : undefined;
+            if (target && (params.isEditable || target.privateEntry)) {
+              protonAutofill ??= makeAutofill(
+                makeProtonPassProvider(),
+                makeBindingStore(
+                  environment.path.join(
+                    Electron.app.getPath("userData"),
+                    "proton-pass-autofill.json",
+                  ),
+                ),
+              );
+              const items = yield* Effect.tryPromise(() =>
+                makeAutofillMenu(
+                  target,
+                  protonAutofill!,
+                  makeNativeAutofillUi(ownerWindow, contents, Electron),
+                ),
+              ).pipe(
+                Effect.orElseSucceed(() => [{ label: "Proton Pass unavailable", enabled: false }]),
+              );
+              menuTemplate.unshift(...items, { type: "separator" });
+            }
+            yield* electronMenu.popupTemplate({
+              window: ownerWindow,
+              template: menuTemplate,
+              ...(params.frame ? { frame: params.frame } : {}),
+            });
+          }).pipe(Effect.ignore),
         );
       });
       contents.on("did-create-window", (popup) => {
@@ -650,13 +725,15 @@ export const make = Effect.gen(function* () {
       event.preventDefault();
       window.setTitle(environment.displayName);
     });
-    window.on("resize", scheduleBoundsPersist);
-    window.on("move", scheduleBoundsPersist);
-    window.on("maximize", scheduleBoundsPersist);
-    window.on("unmaximize", scheduleBoundsPersist);
-    window.on("close", () => {
-      runFork(flushBoundsPersist);
-    });
+    if (isMainWindow) {
+      window.on("resize", scheduleBoundsPersist);
+      window.on("move", scheduleBoundsPersist);
+      window.on("maximize", scheduleBoundsPersist);
+      window.on("unmaximize", scheduleBoundsPersist);
+      window.on("close", () => {
+        runFork(flushBoundsPersist);
+      });
+    }
 
     if (environment.platform === "darwin") {
       window.on("enter-full-screen", () => {
@@ -794,21 +871,30 @@ export const make = Effect.gen(function* () {
       if (!window.isDestroyed()) {
         window.webContents.setBackgroundThrottling(true);
       }
-      if (persistedSettings.mainWindowMaximized) {
+      if (isMainWindow && persistedSettings.mainWindowMaximized) {
         window.maximize();
       }
-      void runPromise(Effect.andThen(electronWindow.reveal(window), dismissConnectingSplash));
+      if (isMainWindow) {
+        void runPromise(Effect.andThen(electronWindow.reveal(window), dismissConnectingSplash));
+      } else if (!window.isDestroyed()) {
+        window.showInactive();
+      }
     });
 
     loadApplication();
-    if (environment.isDevelopment) {
+    if (environment.isDevelopment && isMainWindow && process.env.T3CODE_DESKTOP_DEVTOOLS !== "0") {
       window.webContents.openDevTools({ mode: "detach" });
     }
 
     window.on("closed", () => {
       clearDevelopmentLoadRetry();
       clearBoundsPersist();
-      void runPromise(electronWindow.clearMain(Option.some(window)));
+      if (isMainWindow) void runPromise(electronWindow.clearMain(Option.some(window)));
+      if (result !== undefined) {
+        const key = resultConversationKey(result);
+        if (resultWindows.get(key) === window) resultWindows.delete(key);
+        liveResultWindows.delete(window);
+      }
     });
 
     return window;
@@ -820,6 +906,53 @@ export const make = Effect.gen(function* () {
     yield* logWindowInfo("main window created");
     return window;
   }).pipe(Effect.withSpan("desktop.window.createMain"));
+
+  const openThreadWindow = Effect.fn("desktop.window.openThreadWindow")(
+    (
+      input: DesktopResultConversationLocator,
+      isCallerAlive?: () => boolean,
+      options?: { readonly reuseMainWindow?: boolean },
+    ) =>
+      resultWindowLane.withPermits(1)(
+        Effect.gen(function* () {
+          const locator = yield* decodeResultConversationLocator(input);
+          if (isCallerAlive?.() === false) return yield* Effect.interrupt;
+          // The explicitly isolated single-origin development client keeps its
+          // one existing window while native voice turns retain distinct sources.
+          // Packaged clients and ordinary result-window callers keep their policy.
+          if (environment.isDevelopment && options?.reuseMainWindow === true) {
+            const main = yield* electronWindow.main;
+            if (Option.isSome(main) && !main.value.isDestroyed()) {
+              const window = main.value;
+              const url = resultConversationUrl(environment.isDevelopment, locator);
+              if (window.webContents.getURL() !== url) {
+                void window.loadURL(url).catch(() => undefined);
+              }
+              if (window.isMinimized()) window.restore();
+              window.showInactive();
+              return window;
+            }
+          }
+          const key = resultConversationKey(locator);
+          const existing = resultWindows.get(key);
+          if (
+            existing !== undefined &&
+            !existing.isDestroyed() &&
+            (existing.webContents.getURL() ===
+              resultConversationUrl(environment.isDevelopment, locator) ||
+              (existing.webContents.getURL() === "" && existing.webContents.isLoadingMainFrame()))
+          ) {
+            if (existing.isMinimized()) existing.restore();
+            existing.showInactive();
+            return existing;
+          }
+          const window = yield* createWindow(locator, isCallerAlive);
+          resultWindows.set(key, window);
+          liveResultWindows.add(window);
+          return window;
+        }),
+      ),
+  );
 
   const ensureMain = Effect.gen(function* () {
     const existingWindow = yield* currentMainWindow;
@@ -918,6 +1051,7 @@ export const make = Effect.gen(function* () {
 
   return DesktopWindow.of({
     createMain,
+    openThreadWindow,
     ensureMain,
     revealOrCreateMain,
     prepareCaptureReveal: Effect.gen(function* () {

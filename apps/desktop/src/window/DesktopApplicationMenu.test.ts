@@ -74,6 +74,7 @@ const layerDesktopUpdates = Layer.succeed(DesktopUpdates.DesktopUpdates, {
 const layerDesktopWindow = (selectedAction: Deferred.Deferred<string>) =>
   Layer.succeed(DesktopWindow.DesktopWindow, {
     createMain: Effect.die("unexpected createMain"),
+    openThreadWindow: () => Effect.die("unexpected result window"),
     ensureMain: Effect.die("unexpected ensureMain"),
     revealOrCreateMain: Effect.die("unexpected revealOrCreateMain"),
     activate: Effect.void,

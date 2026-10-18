@@ -30,6 +30,7 @@ import {
   rememberMicrophones,
 } from "../../lib/microphonePriority";
 import { getLocalVoiceTranscriber } from "../../native/voiceTranscription";
+import { acquireMicrophoneOwnership } from "@t3tools/client-runtime/live-voice";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import { getNativeShowcaseScene } from "../showcase/nativeShowcaseScene";
 import {
@@ -122,6 +123,7 @@ function useVoiceInputRuntime() {
   const audioLevels = useSharedValue(audioLevelsRef.current);
   const sessionRef = useRef<VoiceInputSession | null>(null);
   const recorderRef = useRef<LazyVoiceRecorder<RecorderState> | null>(null);
+  const releaseMicrophoneRef = useRef<(() => void) | null>(null);
 
   if (!sessionRef.current || !recorderRef.current) {
     const recorder = createLazyVoiceRecorder({
@@ -158,8 +160,26 @@ function useVoiceInputRuntime() {
         const permission = await requestRecordingPermissionsAsync();
         return { granted: permission.granted, canAskAgain: permission.canAskAgain };
       },
-      configureRecording: configureVoiceRecordingAudio,
-      releaseRecording: releaseVoiceRecordingAudio,
+      configureRecording: async () => {
+        const release = acquireMicrophoneOwnership();
+        if (!release) throw new Error("The microphone is already in use.");
+        releaseMicrophoneRef.current = release;
+        try {
+          await configureVoiceRecordingAudio();
+        } catch (error) {
+          release();
+          releaseMicrophoneRef.current = null;
+          throw error;
+        }
+      },
+      releaseRecording: async () => {
+        try {
+          await releaseVoiceRecordingAudio();
+        } finally {
+          releaseMicrophoneRef.current?.();
+          releaseMicrophoneRef.current = null;
+        }
+      },
       deleteRecording: (uri) => new File(uri).delete(),
       onStateChange: (nextState) =>
         setState({
@@ -249,7 +269,10 @@ function useVoiceInputRuntime() {
   const cancel = useCallback(() => controller.cancel(), [controller]);
 
   return {
-    isAvailable: getLocalVoiceTranscriber() !== null || getNativeShowcaseScene() !== null,
+    isAvailable:
+      Platform.OS === "android" ||
+      getLocalVoiceTranscriber() !== null ||
+      getNativeShowcaseScene() !== null,
     state,
     audioLevels,
     elapsedSeconds,

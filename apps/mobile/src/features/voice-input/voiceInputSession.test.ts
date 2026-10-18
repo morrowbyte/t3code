@@ -44,6 +44,41 @@ function createSession() {
 describe("global voice input", () => {
   beforeEach(() => resetVoiceInputGlobalsForTests());
 
+  it("keeps the starting environment transcriber when another destination is selected", async () => {
+    const { session, prepare } = createSession();
+    const oldTranscript = Promise.withResolvers<string>();
+    const entered = Promise.withResolvers<void>();
+    const firstTranscriber = {
+      prepare: vi.fn(async () => ({
+        locale: "de-DE",
+        transcribe: () => {
+          entered.resolve();
+          return oldTranscript.promise;
+        },
+      })),
+    };
+    const secondTranscriber = { prepare: vi.fn() };
+    const firstCommit = vi.fn();
+    const secondCommit = vi.fn();
+    await session.start({
+      ...createTarget("environment-a/thread", () => "", firstCommit, { start: 0, end: 0 }),
+      transcriber: firstTranscriber,
+    });
+    const stopping = session.controller.stop();
+    await entered.promise;
+    await session.start({
+      ...createTarget("environment-b/thread", () => "", secondCommit, { start: 0, end: 0 }),
+      transcriber: secondTranscriber,
+    });
+    oldTranscript.resolve("Hallo");
+    await stopping;
+    expect(firstTranscriber.prepare).toHaveBeenCalledTimes(1);
+    expect(prepare).not.toHaveBeenCalled();
+    expect(secondTranscriber.prepare).not.toHaveBeenCalled();
+    expect(firstCommit).toHaveBeenCalledWith("Hallo", { start: 5, end: 5 });
+    expect(secondCommit).not.toHaveBeenCalled();
+  });
+
   it.each([
     { selection: { start: 6, end: 11 }, expected: "hello spoken text", cursor: 17 },
     { selection: { start: 6, end: 6 }, expected: "hello spoken text world", cursor: 18 },

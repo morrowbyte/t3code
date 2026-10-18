@@ -1,3 +1,4 @@
+import { UpdateHistoryPanel } from "./UpdateHistoryPanel";
 import { SettingsGroup } from "./SettingsGroup";
 import { settingsScopeEnvironmentLabels } from "./settingsScopeAxis";
 import { useScopedSettingsWriteAllowed } from "./useScopedSettings";
@@ -2213,6 +2214,7 @@ export function GeneralSettingsPanel() {
 
   return (
     <SettingsPageContainer>
+      <UpdateHistoryPanel />
       <ProjectDefaultsSettings category="general" />
       <SettingsSection id="organization" title="Organization">
         <SettingsRow

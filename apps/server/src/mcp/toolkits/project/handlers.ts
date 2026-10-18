@@ -248,6 +248,12 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
         .pipe(Effect.mapError(projectFailure));
     }),
   ),
+  t3_project_timing: McpToolAccess.reads((input) =>
+    Effect.gen(function* () {
+      const projects = yield* Project.ProjectService;
+      return yield* projects.featureTiming(input.projectId);
+    }),
+  ),
   t3_project_update: McpToolAccess.writesEnvironment((input) =>
     Effect.gen(function* () {
       const projects = yield* Project.ProjectService;

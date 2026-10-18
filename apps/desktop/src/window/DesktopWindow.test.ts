@@ -1,8 +1,16 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
-import { DesktopSnapShotId } from "@t3tools/contracts";
+import {
+  DesktopSnapShotId,
+  DesktopResultConversationLocator,
+  EnvironmentId,
+  ProjectId,
+  RunId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
@@ -17,8 +25,7 @@ import * as Electron from "electron";
 import * as NodeEvents from "node:events";
 import { vi } from "vite-plus/test";
 
-vi.mock("electron", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("electron")>()),
+vi.mock("electron", () => ({
   session: {
     fromPartition: vi.fn(() => ({
       getUserAgent: vi.fn(() => "Mozilla/5.0 Electron/41.5.0 t3code/1.2.3"),
@@ -74,11 +81,12 @@ function makeFakeBrowserWindow() {
   const windowListeners = new Map<string, (...args: readonly unknown[]) => void>();
   const webContentsListeners = new Map<string, (...args: readonly unknown[]) => void>();
   let zoomLevel = 0;
+  let currentUrl = "t3code-dev://app/";
   const webContents = {
     copyImageAt: vi.fn(),
     focus: vi.fn(),
     isDestroyed: vi.fn(() => false),
-    getURL: vi.fn(() => "t3code-dev://app/"),
+    getURL: vi.fn(() => currentUrl),
     getZoomLevel: vi.fn(() => zoomLevel),
     getZoomFactor: vi.fn(() => 1.2 ** zoomLevel),
     setZoomLevel: vi.fn((level: number) => {
@@ -109,7 +117,10 @@ function makeFakeBrowserWindow() {
     isMaximized: vi.fn(() => false),
     isMinimized: vi.fn(() => false),
     isVisible: vi.fn(() => true),
-    loadURL: vi.fn(() => Promise.resolve()),
+    loadURL: vi.fn((url: string) => {
+      currentUrl = url;
+      return Promise.resolve();
+    }),
     maximize: vi.fn(),
     on: vi.fn((eventName: string, listener: (...args: readonly unknown[]) => void) => {
       windowListeners.set(eventName, listener);
@@ -126,6 +137,7 @@ function makeFakeBrowserWindow() {
     setTitleBarOverlay: vi.fn(),
     setWindowButtonPosition: vi.fn(),
     show: vi.fn(),
+    showInactive: vi.fn(),
     webContents,
   };
 
@@ -150,6 +162,7 @@ function makeFakeBrowserWindow() {
     setAutoHideCursor: window.setAutoHideCursor,
     setFullScreen: window.setFullScreen,
     setOpacity: window.setOpacity,
+    showInactive: window.showInactive,
     webContentsListeners,
     webContentsOnce: webContents.once,
     windowListeners,
@@ -332,6 +345,7 @@ function layerTest(input: {
           attachGuest: () => () => {},
         }),
         Layer.mock(PreviewManager.PreviewManager)({
+          getAutofillTarget: () => Effect.succeed(undefined),
           getBrowserSession: () => Effect.succeed({} as Electron.Session),
           setMainWindow: () => Effect.void,
           prepareWebview: () => Effect.void,
@@ -347,12 +361,17 @@ function layerTest(input: {
   );
 }
 
-const makeSplashScenario = (createOutcomes: readonly (Electron.BrowserWindow | null)[]) =>
+const makeSplashScenario = (
+  createOutcomes: readonly (Electron.BrowserWindow | null)[],
+  beforeBrowserSession: Effect.Effect<void> = Effect.void,
+) =>
   Effect.gen(function* () {
     const createdWindows = yield* Ref.make<Electron.BrowserWindow[]>([]);
     const createCalls = yield* Ref.make(0);
     const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
     const revealedWindows = yield* Ref.make<Electron.BrowserWindow[]>([]);
+    const createdWindowOptions: Electron.BrowserWindowConstructorOptions[] = [];
+    const previewMainWindows: Electron.BrowserWindow[] = [];
     const fallbackWindow = createOutcomes.find(
       (window): window is Electron.BrowserWindow => window !== null,
     );
@@ -367,8 +386,9 @@ const makeSplashScenario = (createOutcomes: readonly (Electron.BrowserWindow | n
     });
 
     const electronWindowShape = {
-      create: () =>
+      create: (options) =>
         Effect.gen(function* () {
+          createdWindowOptions.push(options);
           const index = yield* Ref.getAndUpdate(createCalls, (count) => count + 1);
           const outcome = createOutcomes[index] ?? null;
           if (outcome === null) {
@@ -404,7 +424,12 @@ const makeSplashScenario = (createOutcomes: readonly (Electron.BrowserWindow | n
       currentMainOrFirst,
       focusedMainOrFirst: currentMainOrFirst,
       setMain: (window) => Ref.set(mainWindow, Option.some(window)),
-      clearMain: () => Ref.set(mainWindow, Option.none()),
+      clearMain: (window) =>
+        Ref.update(mainWindow, (current) =>
+          Option.isSome(window) && Option.isSome(current) && window.value !== current.value
+            ? current
+            : Option.none(),
+        ),
       prepareReveal: () => Effect.succeed(false),
       reveal: (window) => Ref.update(revealedWindows, (windows) => [...windows, window]),
       sendAll: () => Effect.void,
@@ -440,8 +465,12 @@ const makeSplashScenario = (createOutcomes: readonly (Electron.BrowserWindow | n
             attachGuest: () => () => {},
           }),
           Layer.mock(PreviewManager.PreviewManager)({
-            getBrowserSession: () => Effect.succeed({} as Electron.Session),
-            setMainWindow: () => Effect.void,
+            getAutofillTarget: () => Effect.succeed(undefined),
+            getBrowserSession: () => beforeBrowserSession.pipe(Effect.as({} as Electron.Session)),
+            setMainWindow: (window) =>
+              Effect.sync(() => {
+                previewMainWindows.push(window);
+              }),
             isBrowserPartition: (partition) => partition.startsWith("persist:t3code-preview-"),
             getBrowserPartition: () => Effect.succeed("persist:t3code-preview-test"),
           }),
@@ -449,13 +478,255 @@ const makeSplashScenario = (createOutcomes: readonly (Electron.BrowserWindow | n
       ),
     );
 
-    return { layer, createCalls, mainWindow, revealedWindows } as const;
+    return {
+      layer,
+      createCalls,
+      mainWindow,
+      revealedWindows,
+      createdWindowOptions,
+      previewMainWindows,
+    } as const;
   });
 
 const captureOne = DesktopSnapShotId.make("11111111-1111-4111-8111-111111111111");
 const captureTwo = DesktopSnapShotId.make("22222222-2222-4222-8222-222222222222");
 
 describe("DesktopWindow", () => {
+  const resultLocator: DesktopResultConversationLocator = {
+    environmentId: EnvironmentId.make("environment-1"),
+    threadId: ThreadId.make("child/thread ?#1"),
+    origin: {
+      environmentId: "environment-1",
+      projectId: "project-1",
+      parentThreadId: "parent-thread-1",
+      parentRunId: "parent-run-1",
+      parentRootNodeId: "parent-root-1",
+      taskId: "task-1",
+      childThreadId: "child/thread ?#1",
+      childRunId: "child-run-1",
+      childRootNodeId: "child-root-1",
+    },
+  };
+  const nativeResultLocator: DesktopResultConversationLocator = {
+    environmentId: resultLocator.environmentId,
+    threadId: resultLocator.threadId,
+    origin: {
+      kind: "native-author-root",
+      source: {
+        engineSessionId: "native-session-1",
+        conversationId: "native-conversation-1",
+        turnId: "native-turn-1",
+      },
+      environmentId: resultLocator.environmentId,
+      projectId: ProjectId.make("scratch-project-1"),
+      threadId: resultLocator.threadId,
+      runId: RunId.make("native-run-1"),
+      rootNodeId: null,
+    },
+  };
+
+  it.effect.each([resultLocator, nativeResultLocator])(
+    "opens and reuses an authenticated result window without replacing the main (%#)",
+    (locator) =>
+      Effect.gen(function* () {
+        const main = makeFakeBrowserWindow();
+        const result = makeFakeBrowserWindow();
+        const reopened = makeFakeBrowserWindow();
+        const scenario = yield* makeSplashScenario([main.window, result.window, reopened.window]);
+        yield* Effect.gen(function* () {
+          const desktopWindow = yield* DesktopWindow.DesktopWindow;
+          yield* desktopWindow.createMain;
+          const windows = yield* Effect.all(
+            [desktopWindow.openThreadWindow(locator), desktopWindow.openThreadWindow(locator)],
+            { concurrency: "unbounded" },
+          );
+          assert.deepEqual(windows, [result.window, result.window]);
+          assert.strictEqual(Option.getOrThrow(yield* Ref.get(scenario.mainWindow)), main.window);
+          assert.deepEqual(scenario.previewMainWindows, [main.window]);
+          assert.deepEqual(result.loadURL.mock.calls, [
+            ["t3code-dev://app/#/environment-1/child%2Fthread%20%3F%231"],
+          ]);
+          const preferences = scenario.createdWindowOptions[1]?.webPreferences;
+          assert.isTrue(preferences?.contextIsolation);
+          assert.isTrue(preferences?.sandbox);
+          assert.isFalse(preferences?.nodeIntegration);
+          assert.isUndefined(preferences?.partition);
+          assert.isUndefined(preferences?.session);
+          result.windowListeners.get("ready-to-show")?.();
+          assert.equal(result.showInactive.mock.calls.length, 2);
+          assert.equal(result.openDevTools.mock.calls.length, 0);
+          result.isDestroyed.mockReturnValue(true);
+          result.windowListeners.get("closed")?.();
+          assert.strictEqual(Option.getOrThrow(yield* Ref.get(scenario.mainWindow)), main.window);
+          assert.strictEqual(yield* desktopWindow.openThreadWindow(locator), reopened.window);
+          assert.equal(yield* Ref.get(scenario.createCalls), 3);
+        }).pipe(Effect.provide(scenario.layer));
+      }),
+  );
+
+  it.effect("reuses the single development main across distinct authenticated result threads", () =>
+    Effect.gen(function* () {
+      const main = makeFakeBrowserWindow();
+      const scenario = yield* makeSplashScenario([main.window]);
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.createMain;
+        const nextLocator = {
+          ...nativeResultLocator,
+          threadId: ThreadId.make("another-native-thread"),
+          origin: {
+            ...nativeResultLocator.origin,
+            threadId: ThreadId.make("another-native-thread"),
+          },
+        };
+        for (const locator of [nativeResultLocator, nextLocator]) {
+          assert.strictEqual(
+            yield* desktopWindow.openThreadWindow(locator, () => true, { reuseMainWindow: true }),
+            main.window,
+          );
+        }
+        assert.equal(yield* Ref.get(scenario.createCalls), 1);
+        assert.strictEqual(Option.getOrThrow(yield* Ref.get(scenario.mainWindow)), main.window);
+        assert.equal(main.showInactive.mock.calls.length, 2);
+        assert.deepEqual(
+          main.loadURL.mock.calls.map(([url]) => url),
+          [
+            "t3code-dev://app/",
+            "t3code-dev://app/#/environment-1/child%2Fthread%20%3F%231",
+            "t3code-dev://app/#/environment-1/another-native-thread",
+          ],
+        );
+      }).pipe(Effect.provide(scenario.layer));
+    }),
+  );
+
+  it.effect("does not treat a standalone result window as the main on reopen", () =>
+    Effect.gen(function* () {
+      const result = makeFakeBrowserWindow();
+      const main = makeFakeBrowserWindow();
+      const scenario = yield* makeSplashScenario([result.window, main.window]);
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.openThreadWindow(resultLocator);
+        assert.isTrue(Option.isNone(yield* Ref.get(scenario.mainWindow)));
+        assert.strictEqual(yield* desktopWindow.ensureMain, main.window);
+        assert.strictEqual(Option.getOrThrow(yield* Ref.get(scenario.mainWindow)), main.window);
+        assert.deepEqual(main.loadURL.mock.calls, [["t3code-dev://app/"]]);
+      }).pipe(Effect.provide(scenario.layer));
+    }),
+  );
+
+  it.effect("drops a disconnected queued caller without affecting an admitted result window", () =>
+    Effect.gen(function* () {
+      const result = makeFakeBrowserWindow();
+      const preparationStarted = yield* Deferred.make<void>();
+      const allowPreparation = yield* Deferred.make<void>();
+      const scenario = yield* makeSplashScenario(
+        [result.window],
+        Deferred.succeed(preparationStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(allowPreparation)),
+          Effect.asVoid,
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        let admittedCallerAlive = true;
+        let queuedCallerAlive = true;
+        const first = yield* desktopWindow
+          .openThreadWindow(resultLocator, () => admittedCallerAlive)
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(preparationStarted);
+        const queued = yield* desktopWindow
+          .openThreadWindow(resultLocator, () => queuedCallerAlive)
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        queuedCallerAlive = false;
+        yield* Deferred.succeed(allowPreparation, undefined);
+        assert.strictEqual(yield* Fiber.join(first), result.window);
+        assert.isTrue(Exit.hasInterrupts(yield* Fiber.await(queued)));
+        assert.equal(yield* Ref.get(scenario.createCalls), 1);
+        assert.equal(result.showInactive.mock.calls.length, 0);
+        // Successful acknowledgement normally disconnects before first paint.
+        admittedCallerAlive = false;
+        result.windowListeners.get("ready-to-show")?.();
+        assert.equal(result.showInactive.mock.calls.length, 1);
+        assert.isFalse(result.isDestroyed());
+        assert.strictEqual(yield* desktopWindow.openThreadWindow(resultLocator), result.window);
+        assert.equal(yield* Ref.get(scenario.createCalls), 1);
+      }).pipe(Effect.provide(scenario.layer));
+    }),
+  );
+
+  it.effect(
+    "drops a caller disconnected during asynchronous preparation before native creation",
+    () =>
+      Effect.gen(function* () {
+        const preparationStarted = yield* Deferred.make<void>();
+        const allowPreparation = yield* Deferred.make<void>();
+        const scenario = yield* makeSplashScenario(
+          [makeFakeBrowserWindow().window],
+          Deferred.succeed(preparationStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(allowPreparation)),
+            Effect.asVoid,
+          ),
+        );
+        yield* Effect.gen(function* () {
+          const desktopWindow = yield* DesktopWindow.DesktopWindow;
+          let callerAlive = true;
+          const opening = yield* desktopWindow
+            .openThreadWindow(resultLocator, () => callerAlive)
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          yield* Deferred.await(preparationStarted);
+          callerAlive = false;
+          yield* Deferred.succeed(allowPreparation, undefined);
+          assert.isTrue(Exit.hasInterrupts(yield* Fiber.await(opening)));
+          assert.equal(yield* Ref.get(scenario.createCalls), 0);
+          assert.isTrue(Option.isNone(yield* Ref.get(scenario.mainWindow)));
+        }).pipe(Effect.provide(scenario.layer));
+      }),
+  );
+
+  it.effect("preserves a result window the user navigated away from", () =>
+    Effect.gen(function* () {
+      const first = makeFakeBrowserWindow();
+      const fresh = makeFakeBrowserWindow();
+      const scenario = yield* makeSplashScenario([first.window, fresh.window]);
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.openThreadWindow(resultLocator);
+        yield* Effect.promise(() => first.window.loadURL("t3code-dev://app/#/other/thread"));
+        assert.strictEqual(yield* desktopWindow.openThreadWindow(resultLocator), fresh.window);
+        assert.equal(first.loadURL.mock.calls.length, 2);
+        first.isDestroyed.mockReturnValue(true);
+        first.windowListeners.get("closed")?.();
+        assert.strictEqual(yield* desktopWindow.openThreadWindow(resultLocator), fresh.window);
+        assert.equal(yield* Ref.get(scenario.createCalls), 2);
+      }).pipe(Effect.provide(scenario.layer));
+    }),
+  );
+
+  it.effect("rejects mismatched or absent canonical result bindings before opening", () =>
+    Effect.gen(function* () {
+      const scenario = yield* makeSplashScenario([makeFakeBrowserWindow().window]);
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        for (const locator of [
+          { ...resultLocator, threadId: ThreadId.make("unrelated-thread") },
+          { ...resultLocator, environmentId: EnvironmentId.make("unrelated-environment") },
+          { ...resultLocator, origin: { ...resultLocator.origin, childRunId: "" } },
+          { ...nativeResultLocator, threadId: ThreadId.make("unrelated-thread") },
+          { ...nativeResultLocator, environmentId: EnvironmentId.make("unrelated-environment") },
+        ]) {
+          assert.isTrue(
+            Option.isSome(
+              yield* desktopWindow.openThreadWindow(locator).pipe(Effect.flip, Effect.option),
+            ),
+          );
+        }
+        assert.equal(yield* Ref.get(scenario.createCalls), 0);
+      }).pipe(Effect.provide(scenario.layer));
+    }),
+  );
+
   it.effect("shows native context menus for browser guests and sign-in popups", () =>
     Effect.gen(function* () {
       const host = makeFakeBrowserWindow();

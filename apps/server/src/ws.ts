@@ -1,6 +1,10 @@
+import { HostUpdateHistoryError } from "@t3tools/contracts";
 import type {
   MainRendererDiagnosticsReadInput,
   MainRendererDiagnosticsReadResult,
+  NativeAuthorRequest,
+  NativeAuthorState,
+  NativeAuthorError,
 } from "@t3tools/contracts";
 import * as MainRendererDiagnosticsLocalClient from "./diagnostics/MainRendererDiagnosticsLocalClient.ts";
 import {
@@ -123,6 +127,10 @@ import {
   HttpServerResponse,
 } from "effect/http";
 import { RpcSerialization, RpcServer } from "effect/rpc";
+import type * as Rpc from "effect/rpc/Rpc";
+import type * as RpcGroup from "effect/rpc/RpcGroup";
+import type * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
+import type * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as ServerConfig from "./config.ts";
@@ -134,6 +142,7 @@ import * as CommandOutputHub from "./orchestration-v2/CommandOutputHub.ts";
 import * as McpAppRequests from "./mcpApps/McpAppRequests.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts";
+import * as NativeAuthorService from "./orchestration-v2/NativeAuthorService.ts";
 import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts";
 import * as CodexLiveSessionService from "./voice/CodexLiveSessionService.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -577,6 +586,38 @@ const PROVIDER_STATUS_DEBOUNCE_MS = 200;
 
 // Middleware added later wraps middleware added earlier, so instrumentation wraps authorization.
 const ServerWsRpcGroup = WsRpcGroup.middleware(RpcInstrumentation);
+
+// Materialize the signatures once so deriving handler services does not repeatedly
+// expand the complete RPC schema union.
+type WsRpcHandlerServices =
+  | NativeAuthorService.NativeAuthorService
+  | ProjectEnrichmentService.ProjectEnrichmentService
+  | OrchestrationEventStore.OrchestrationEventStore
+  | ProjectService.ProjectService
+  | ProjectStore.ProjectStoreV2
+  | SqlClient.SqlClient
+  | ThreadManagementService.ThreadManagementService
+  | Crypto.Crypto
+  | FileSystem.FileSystem
+  | Path.Path
+  | TraceDiagnostics.TraceDiagnostics
+  | ServerConfig.ServerConfig
+  | ServerSecretStore.ServerSecretStore
+  | Orchestrator.OrchestratorV2
+  | ProjectFaviconResolver.ProjectFaviconResolver
+  | WorkspacePaths.WorkspacePaths;
+type WsRpcHandlerSignatures = {
+  readonly [Current in RpcGroup.Rpcs<typeof ServerWsRpcGroup> as Current["_tag"]]: Rpc.ToHandlerFn<
+    Current,
+    WsRpcHandlerServices
+  >;
+};
+interface WsRpcHandlers extends WsRpcHandlerSignatures {}
+
+const nativeAuthorRpcHandler = (
+  request: NativeAuthorRequest,
+): Effect.Effect<NativeAuthorState, NativeAuthorError, NativeAuthorService.NativeAuthorService> =>
+  Effect.flatMap(NativeAuthorService.NativeAuthorService, (service) => service.execute(request));
 // Replaying each intervening event costs a shell refetch; past this gap a
 // single O(active-threads) snapshot is cheaper and bounded.
 const SHELL_RESUME_MAX_GAP = 1_000;
@@ -1827,7 +1868,9 @@ const layerWsRpc = (
         return result;
       });
 
-      const handlers = ServerWsRpcGroup.of({
+      const handlers = ServerWsRpcGroup.of<WsRpcHandlers>({
+        [WS_METHODS.nativeAuthorRead]: nativeAuthorRpcHandler,
+        [WS_METHODS.nativeAuthorWrite]: nativeAuthorRpcHandler,
         ...agentObservatoryReadHandlers(observatoryService),
         [WS_METHODS.liveVoicePrepare]: (input) => liveVoiceService.prepare(currentSession, input),
         [WS_METHODS.liveVoiceStart]: (input) => liveVoiceService.start(currentSession, input),
@@ -2378,6 +2421,16 @@ const layerWsRpc = (
         [WS_METHODS.providerInstallCancel]: (input) => providerInstallation.cancel(input),
         [WS_METHODS.providerInstallSubscribe]: (input) => providerInstallation.subscribe(input),
         [WS_METHODS.providerInstallRemove]: (input) => providerInstallation.remove(input),
+        [WS_METHODS.serverGetUpdateHistory]: () =>
+          serverSelfUpdate.history?.list ??
+          Effect.fail(
+            new HostUpdateHistoryError({ reason: "Update history is unavailable on this server." }),
+          ),
+        [WS_METHODS.serverDeleteUpdateHistory]: (input) =>
+          serverSelfUpdate.history?.remove(input) ??
+          Effect.fail(
+            new HostUpdateHistoryError({ reason: "Update history is unavailable on this server." }),
+          ),
         [WS_METHODS.serverUpdateServer]: (input) => serverSelfUpdate.update(input),
         [WS_METHODS.serverUpdateServerWithProgress]: (input) =>
           Stream.callback<ServerSelfUpdateProgressEvent, ServerSelfUpdateError>((queue) =>
@@ -2700,6 +2753,8 @@ const layerWsRpc = (
                 }),
             ),
           ),
+        [WS_METHODS.projectsFeatureTiming]: (input) =>
+          projectService.featureTiming(input.projectId),
         [WS_METHODS.projectsListEntries]: (input) =>
           workspaceEntries.list(input).pipe(
             Effect.mapError(

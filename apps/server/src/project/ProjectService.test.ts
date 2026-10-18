@@ -1,7 +1,23 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { CommandId, type Project, ProjectId, ProviderInstanceId } from "@t3tools/contracts";
+import {
+  CommandId,
+  EventId,
+  MessageId,
+  RunId,
+  ThreadId,
+  RuntimeRequestId,
+  NodeId,
+  type OrchestrationV2DomainEvent,
+  type Project,
+  ProjectId,
+  ProjectFeatureTiming,
+  ProviderInstanceId,
+} from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
+import * as DateTime from "effect/DateTime";
+import * as Schema from "effect/Schema";
+import * as ApplicationEvents from "../persistence/OrchestrationEventStore.ts";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -24,7 +40,12 @@ import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as ProjectEnrichmentService from "./ProjectEnrichmentService.ts";
 import * as ProjectFaviconResolver from "./ProjectFaviconResolver.ts";
 import * as ProjectService from "./ProjectService.ts";
+import { projectMutationOperation } from "./ProjectMutation.ts";
 import * as RepositoryIdentityResolver from "./RepositoryIdentityResolver.ts";
+
+const timingJson = Schema.fromJsonString(ProjectFeatureTiming);
+const encodeTiming = Schema.encodeEffect(timingJson);
+const decodeTiming = Schema.decodeUnknownEffect(timingJson);
 
 const layerWorkspacePaths = Layer.succeed(WorkspacePaths.WorkspacePaths, {
   normalizeWorkspaceRoot: (workspaceRoot) => Effect.succeed(workspaceRoot.replace(/\/$/, "")),
@@ -57,6 +78,7 @@ const layerTestFor = (
   >,
 ) =>
   RuntimeLayer.layerProjectService.pipe(
+    Layer.provideMerge(ApplicationEvents.layer),
     Layer.provideMerge(ProjectEnrichmentService.layer),
     Layer.provideMerge(layerWorkspacePaths),
     Layer.provideMerge(projectMetadataLayer),
@@ -69,6 +91,7 @@ const layerTestFor = (
 const layerTest = layerTestFor(layerMetadata);
 
 const layerProjectServiceDependencies = Layer.mergeAll(
+  ApplicationEvents.layer,
   RuntimeLayer.layerEventSink,
   ProjectStore.layer,
   ProjectionStore.layer,
@@ -99,6 +122,279 @@ const waitForProject = Effect.fn("ProjectServiceTest.waitForProject")(function* 
 });
 
 it.layer(layerTest)("ProjectService", (it) => {
+  it.effect(
+    "produces durable feature facts from project updates and canonical run/request/user evidence",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* ProjectService.ProjectService;
+        const events = yield* ApplicationEvents.OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const projectId = ProjectId.make("project:timing");
+        const threadId = ThreadId.make("thread:timing");
+        const modelSelection = {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-6.1-sol",
+        };
+        const at = (hour: number) =>
+          DateTime.makeUnsafe(`2026-10-17T${String(hour).padStart(2, "0")}:00:00.000Z`);
+        const clock = (hour: number) => TestClock.setTime(DateTime.toEpochMillis(at(hour)));
+        let ordinal = 0;
+        const append = (event: OrchestrationV2DomainEvent) =>
+          events.appendAgentEvents({ events: [event] });
+        yield* clock(0);
+        yield* service.create({
+          commandId: CommandId.make("timing:create"),
+          projectId,
+          title: "Timing",
+          workspaceRoot: "/work/timing",
+        });
+        yield* append({
+          id: EventId.make("timing:thread"),
+          threadId,
+          type: "thread.created",
+          occurredAt: at(0),
+          payload: {
+            id: threadId,
+            projectId,
+            title: "Feature",
+            providerInstanceId: modelSelection.instanceId,
+            modelSelection,
+            createdBy: "user",
+            creationSource: "web",
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            activeProviderThreadId: null,
+            lineage: { rootThreadId: threadId, parentThreadId: null, relationshipToParent: null },
+            forkedFrom: null,
+            createdAt: at(0),
+            updatedAt: at(0),
+            archivedAt: null,
+            deletedAt: null,
+            settledOverride: null,
+            settledAt: null,
+            lastVisitedAt: null,
+          },
+        });
+        const message = (
+          hour: number,
+          id: string,
+          text: string,
+          createdBy: "user" | "agent" = "user",
+        ) =>
+          append({
+            id: EventId.make(`event:${id}`),
+            threadId,
+            type: "message.updated",
+            occurredAt: at(hour),
+            payload: {
+              id: MessageId.make(id),
+              threadId,
+              runId: null,
+              nodeId: null,
+              role: "user",
+              text,
+              attachments: [],
+              streaming: false,
+              createdBy,
+              creationSource: createdBy === "user" ? "web" : "mcp",
+              createdAt: at(hour),
+              updatedAt: at(hour),
+            },
+          });
+        yield* message(0, "timing:intake", "Please implement a useful feature");
+        yield* clock(1);
+        const registration = {
+          commandId: CommandId.make("timing:registration"),
+          projectId,
+          featureTiming: {
+            type: "registered" as const,
+            featureId: "useful-feature",
+            title: "Useful feature",
+            threadIds: [threadId],
+            intake: { threadId, messageId: MessageId.make("timing:intake") },
+            targets: [{ id: "laptop", label: "Laptop" }],
+            originalEstimate: {
+              minimumMs: 3_600_000,
+              maximumMs: 10_800_000,
+              confidence: "low" as const,
+            },
+          },
+        };
+        yield* projectMutationOperation(service, { type: "project.update", ...registration });
+        yield* service.update(registration);
+        yield* append({
+          id: EventId.make("timing:run"),
+          threadId,
+          type: "run.created",
+          occurredAt: at(3),
+          payload: {
+            id: RunId.make("timing:run"),
+            threadId,
+            ordinal: 1,
+            providerInstanceId: modelSelection.instanceId,
+            modelSelection,
+            providerThreadId: null,
+            userMessageId: MessageId.make("timing:intake"),
+            rootNodeId: null,
+            activeAttemptId: null,
+            status: "completed",
+            requestedAt: at(1),
+            startedAt: at(2),
+            completedAt: at(3),
+            checkpointId: null,
+            contextHandoffId: null,
+          },
+        });
+        for (const id of ["one", "two"])
+          yield* append({
+            id: EventId.make(`timing:request:${id}`),
+            threadId,
+            type: "runtime-request.updated",
+            occurredAt: at(3),
+            payload: {
+              id: RuntimeRequestId.make(`timing:request:${id}`),
+              nodeId: NodeId.make("timing:root"),
+              providerTurnId: null,
+              nativeRequestRef: null,
+              kind: "user_input",
+              status: "resolved",
+              responseCapability: { type: "message" },
+              createdAt: at(2),
+              resolvedAt: at(3),
+            },
+          });
+        yield* clock(4);
+        const pending = (yield* service.featureTiming(projectId)).features[0]!;
+        assert.equal(pending.state, "in_development");
+        assert.equal(pending.workStartedAt, DateTime.toEpochMillis(at(2)));
+        assert.equal(pending.elapsedFromIntakeMs, 4 * 3_600_000);
+        assert.equal(pending.waitMs, 3_600_000);
+        const update = (
+          featureTiming:
+            | typeof registration.featureTiming
+            | import("@t3tools/contracts").FeatureTimingFact,
+        ) =>
+          service.update({
+            projectId,
+            commandId: CommandId.make(`timing:fact:${++ordinal}`),
+            featureTiming,
+          });
+        yield* message(
+          5,
+          "timing:accept",
+          "Accept feature useful-feature on laptop at version .42",
+        );
+        yield* clock(6);
+        yield* update({
+          type: "target_accepted",
+          featureId: "useful-feature",
+          targetId: "laptop",
+          version: ".42",
+          evidence: { threadId, messageId: MessageId.make("timing:accept") },
+        });
+        yield* clock(7);
+        yield* update({
+          type: "target_reopened",
+          featureId: "useful-feature",
+          targetId: "laptop",
+          reason: "Button unavailable",
+        });
+        const stale = yield* update({
+          type: "target_accepted",
+          featureId: "useful-feature",
+          targetId: "laptop",
+          version: ".42",
+          evidence: { threadId, messageId: MessageId.make("timing:accept") },
+        }).pipe(Effect.flip);
+        assert.equal(stale._tag, "ProjectOperationError");
+        yield* message(
+          8,
+          "timing:agent",
+          "Accept feature useful-feature on laptop at version .43",
+          "agent",
+        );
+        yield* clock(9);
+        const forged = yield* update({
+          type: "target_accepted",
+          featureId: "useful-feature",
+          targetId: "laptop",
+          version: ".43",
+          evidence: { threadId, messageId: MessageId.make("timing:agent") },
+        }).pipe(Effect.flip);
+        assert.equal(forged._tag, "ProjectOperationError");
+        yield* message(
+          10,
+          "timing:reaccept",
+          "Accept feature useful-feature on laptop at version .43",
+        );
+        yield* clock(11);
+        yield* update({
+          type: "target_accepted",
+          featureId: "useful-feature",
+          targetId: "laptop",
+          version: ".43",
+          evidence: { threadId, messageId: MessageId.make("timing:reaccept") },
+        });
+        const summary = yield* service.featureTiming(projectId);
+        const wire = yield* encodeTiming(summary);
+        const result = (yield* decodeTiming(wire)).features[0]!;
+        assert.equal(result.targets[0]?.acceptedBy, "user");
+        assert.notInclude(wire, "Please implement a useful feature");
+        assert.equal(result.state, "accepted");
+        assert.equal(result.reopenCount, 1);
+        assert.equal(result.elapsedFromIntakeMs, 10 * 3_600_000);
+        assert.equal(result.firstAcceptedAt, DateTime.toEpochMillis(at(5)));
+        assert.equal(result.targets[0]?.acceptedVersion, ".43");
+        assert.deepEqual(result.originalEstimate, registration.featureTiming.originalEstimate);
+        yield* update({
+          type: "registered",
+          featureId: "missing-history",
+          title: "Real feature without historical thread coverage",
+          threadIds: [],
+          intake: null,
+          targets: [{ id: "laptop", label: "Laptop" }],
+          originalEstimate: null,
+        });
+        const unlinked = (yield* decodeTiming(
+          yield* encodeTiming(yield* service.featureTiming(projectId)),
+        )).features.find((feature) => feature.featureId === "missing-history")!;
+        assert.equal(unlinked.registeredAt, DateTime.formatIso(at(11)));
+        assert.isNull(unlinked.intakeAt);
+        assert.isNull(unlinked.workStartedAt);
+        assert.isNull(unlinked.elapsedFromIntakeMs);
+        assert.isNull(unlinked.elapsedFromWorkMs);
+        assert.isNull(unlinked.originalEstimate);
+        assert.isNull(unlinked.targets[0]?.acceptedVersion);
+        assert.equal(unlinked.runCount, 0);
+        assert.deepEqual(unlinked.phases, []);
+        yield* update({ type: "thread_linked", featureId: "missing-history", threadId });
+        const linked = (yield* service.featureTiming(projectId)).features.find(
+          (feature) => feature.featureId === "missing-history",
+        )!;
+        assert.equal(linked.runCount, 1);
+        assert.equal(linked.workStartedAt, DateTime.toEpochMillis(at(2)));
+        assert.equal(linked.registeredAt, unlinked.registeredAt);
+        assert.isNull(linked.intakeAt);
+        assert.isNull(linked.originalEstimate);
+        assert.isNull(linked.targets[0]?.acceptedVersion);
+        const receipts = yield* sql<{
+          readonly count: number;
+        }>`SELECT count(*) AS count FROM orchestration_events WHERE command_id = ${registration.commandId}`;
+        assert.equal(receipts[0]?.count, 1);
+        assert.equal(
+          (yield* service.featureTiming(ProjectId.make("project:other"))).features.length,
+          0,
+        );
+        yield* service.delete({
+          projectId,
+          commandId: CommandId.make("timing:cleanup"),
+          force: true,
+        });
+      }),
+  );
+
   it.effect("creates, updates, resolves, snapshots, and soft-deletes projects", () =>
     Effect.gen(function* () {
       const service = yield* ProjectService.ProjectService;

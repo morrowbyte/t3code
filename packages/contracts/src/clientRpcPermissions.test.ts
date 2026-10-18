@@ -1,7 +1,21 @@
 import { describe, expect, it } from "vite-plus/test";
-import { AuthOrchestrationReadScope, AuthSettingsWriteScope } from "./auth.ts";
+import {
+  AuthEnvironmentMaintainScope,
+  AuthOrchestrationReadScope,
+  AuthOrchestrationOperateScope,
+  AuthSettingsWriteScope,
+} from "./auth.ts";
 import { CLIENT_GUARDED_RPC_SCOPES, clientRpcRequiredScopes } from "./clientRpcPermissions.ts";
 import { WS_METHODS } from "./rpc.ts";
+
+it("uses existing read and operate scopes for native author reconciliation and mutations", () => {
+  expect(clientRpcRequiredScopes(WS_METHODS.nativeAuthorRead, {})).toEqual([
+    AuthOrchestrationReadScope,
+  ]);
+  expect(clientRpcRequiredScopes(WS_METHODS.nativeAuthorWrite, {})).toEqual([
+    AuthOrchestrationOperateScope,
+  ]);
+});
 
 describe("observatory read destination permissions", () => {
   it("uses the exact read grant for all selected destinations without introducing publish authority", () => {
@@ -33,4 +47,21 @@ describe("baseline guarded RPC compatibility", () => {
       AuthSettingsWriteScope,
     );
   });
+});
+
+describe("update history permissions", () => {
+  it("requires host maintenance authority for deleting a receipt", () => {
+    expect(
+      clientRpcRequiredScopes(WS_METHODS.serverDeleteUpdateHistory, {
+        component: "desktop",
+        id: "receipt",
+      }),
+    ).toEqual([AuthEnvironmentMaintainScope]);
+  });
+});
+
+it("requires read permission for timing on the selected project destination", () => {
+  expect(
+    clientRpcRequiredScopes(WS_METHODS.projectsFeatureTiming, { projectId: "project:timing" }),
+  ).toEqual([AuthOrchestrationReadScope]);
 });

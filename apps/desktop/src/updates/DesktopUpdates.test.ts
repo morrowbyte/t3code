@@ -967,10 +967,117 @@ describe("DesktopUpdates", () => {
         yield* flushCallbacks;
 
         assert.isTrue((yield* updates.install).accepted);
-        assert.deepEqual(
-          recordsAtStop.map((record) => JSON.parse(record)),
-          [{ fromVersion: "1.2.3", targetVersion: "1.2.4" }],
-        );
+        const record = JSON.parse(recordsAtStop[0]!);
+        assert.equal(record.fromVersion, "1.2.3");
+        assert.equal(record.targetVersion, "1.2.4");
+        assert.isString(record.id);
+        const receipt = (yield* updates.getHistory!).find((entry) => entry.id === record.id);
+        assert.equal(receipt?.status, "awaiting-restart");
+        assert.isNull(receipt?.completedAt);
+      }),
+    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
+
+  it.effect(
+    "retains the correlated result across restart and deletes only an explicit terminal receipt",
+    () =>
+      Effect.gen(function* () {
+        const first = makeHarness();
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const updates = yield* DesktopUpdates.DesktopUpdates;
+            yield* updates.configure;
+            first.emit("update-downloaded", { version: "1.2.4" });
+            yield* flushCallbacks;
+            yield* updates.install;
+          }),
+        ).pipe(Effect.provide(Layer.merge(TestClock.layer(), first.layer)));
+        const installRecord = [...first.installRecords.values()][0]!;
+        const historyFile = [...first.historyFiles.entries()].find(([path]) =>
+          path.endsWith(DesktopUpdates.DESKTOP_UPDATE_HISTORY_FILE),
+        )![1];
+        const second = makeHarness({ appVersion: "1.2.4", installRecord, historyFile });
+        let saved = "";
+        let id = "";
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const updates = yield* DesktopUpdates.DesktopUpdates;
+            yield* updates.configure;
+            const entry = (yield* updates.getHistory!)[0]!;
+            assert.equal(entry.status, "succeeded");
+            assert.equal(entry.observedVersion, "1.2.4");
+            assert.equal(entry.targetVersion, "1.2.4");
+            assert.isNotNull(entry.completedAt);
+            id = entry.id;
+            saved = [...second.historyFiles.values()][0]!;
+          }),
+        ).pipe(Effect.provide(Layer.merge(TestClock.layer(), second.layer)));
+        const third = makeHarness({ appVersion: "1.2.4", historyFile: saved });
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const updates = yield* DesktopUpdates.DesktopUpdates;
+            yield* updates.configure;
+            assert.equal((yield* updates.getHistory!)[0]!.id, id);
+            yield* updates.deleteHistory!(id);
+            assert.deepEqual(yield* updates.getHistory!, []);
+          }),
+        ).pipe(Effect.provide(Layer.merge(TestClock.layer(), third.layer)));
+      }),
+  );
+
+  it.effect("marks a mismatched restart interrupted and preserves the observed version", () => {
+    const now = "2026-10-17T00:00:00.000Z";
+    const harness = makeHarness({
+      historyFile: JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            id: "attempt",
+            component: "desktop",
+            fromVersion: "1.2.2",
+            targetVersion: "1.2.4",
+            observedVersion: null,
+            startedAt: now,
+            updatedAt: now,
+            completedAt: null,
+            status: "awaiting-restart",
+            error: null,
+          },
+        ],
+      }),
+      installRecord: JSON.stringify({
+        id: "other-attempt",
+        fromVersion: "1.2.2",
+        targetVersion: "1.2.4",
+      }),
+    });
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+        const entries = yield* updates.getHistory!;
+        const entry = entries.find((entry) => entry.id === "attempt")!;
+        assert.equal(entry.status, "interrupted");
+        assert.isFalse(entries.some((entry) => entry.status === "succeeded"));
+        assert.equal(entry.observedVersion, "1.2.3");
+        assert.include(entry.error!, "without a matching");
+      }),
+    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
+
+  it.effect("refuses installation when durable update history cannot be saved", () => {
+    const harness = makeHarness({ historyFile: "damaged history" });
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+        harness.emit("update-downloaded", { version: "1.2.4" });
+        yield* flushCallbacks;
+        yield* updates.install;
+        assert.equal(harness.quitAndInstalls(), 0);
+        assert.equal(harness.stopCount(), 0);
+        assert.equal(harness.historyFiles.size, 0);
+        assert.isDefined((yield* updates.getState).updateHistoryError);
       }),
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
@@ -1008,6 +1115,10 @@ describe("DesktopUpdates", () => {
         yield* updates.configure;
         assert.isUndefined((yield* updates.getState).notAppliedVersion);
         assert.isUndefined(harness.previousInstallRecord());
+        const entry = (yield* updates.getHistory!)[0]!;
+        assert.equal(entry.status, "succeeded");
+        assert.isNull(entry.startedAt);
+        assert.equal(entry.observedVersion, "1.2.3");
       }),
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });

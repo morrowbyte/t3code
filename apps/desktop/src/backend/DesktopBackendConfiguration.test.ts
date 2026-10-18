@@ -126,6 +126,7 @@ const withHarness = <A, E, R>(
     | DesktopBackendConfiguration.DesktopBackendConfiguration
   >,
   prepared = true,
+  environmentOptions?: Parameters<typeof layerEnvironment>[1],
 ) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
@@ -140,7 +141,7 @@ const withHarness = <A, E, R>(
           Layer.provideMerge(DesktopAppSettings.layerTest()),
           Layer.provideMerge(DesktopWslEnvironment.layerTest()),
           Layer.provideMerge(DesktopWslServerTree.layerTest()),
-          Layer.provideMerge(layerEnvironment(baseDir)),
+          Layer.provideMerge(layerEnvironment(baseDir, environmentOptions)),
         ),
       ),
     );
@@ -241,6 +242,41 @@ const withPackagedWslHarness = <A, E, R>(
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
 
 describe("DesktopBackendConfiguration", () => {
+  it.effect("shares web dev sessions only for an explicitly opted-in unpackaged primary", () =>
+    Effect.gen(function* () {
+      const previous = process.env.T3CODE_SINGLE_ORIGIN_DEV;
+      try {
+        for (const [isPackaged, devServerUrl, flag, shared] of [
+          [false, "http://localhost:7058/", "1", true],
+          [true, "http://localhost:7058/", "1", false],
+          [false, undefined, "1", false],
+          [false, "http://localhost:7058/", undefined, false],
+        ] as const) {
+          if (flag === undefined) delete process.env.T3CODE_SINGLE_ORIGIN_DEV;
+          else process.env.T3CODE_SINGLE_ORIGIN_DEV = flag;
+          yield* withHarness(
+            Effect.gen(function* () {
+              const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+              const config = yield* configuration.resolvePrimary;
+              assert.equal(config.args.includes("--mode"), shared);
+              if (shared) assert.deepEqual(config.args.slice(-2), ["--mode", "web"]);
+              assert.equal(config.bootstrap.mode, "desktop");
+              assert.equal(config.bootstrapDelivery, "fd3");
+              assert.equal(config.bootstrap.desktopBrowserFd, 6);
+              assert.equal(config.bootstrap.desktopBrowserControlFd, 7);
+              assert.isTrue(Boolean(config.bootstrap.desktopBootstrapSecret));
+            }),
+            true,
+            { isPackaged, ...(devServerUrl ? { devServerUrl } : {}) },
+          );
+        }
+      } finally {
+        if (previous === undefined) delete process.env.T3CODE_SINGLE_ORIGIN_DEV;
+        else process.env.T3CODE_SINGLE_ORIGIN_DEV = previous;
+      }
+    }),
+  );
+
   it.effect("resolvePrimary produces a stable scoped bootstrap token", () =>
     withHarness(
       Effect.gen(function* () {

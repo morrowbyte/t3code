@@ -125,6 +125,29 @@ export const listen: Effect.Effect<
     }),
   ).pipe(Effect.forkScoped);
 
+  const getHistory = updates.getHistory;
+  const deleteHistory = updates.deleteHistory;
+  if (publisher.historyRequests && getHistory && deleteHistory) {
+    yield* Stream.runForEach(publisher.historyRequests, (request) =>
+      Effect.gen(function* () {
+        const result = yield* (
+          request.deleteId === undefined ? Effect.void : deleteHistory(request.deleteId)
+        ).pipe(
+          Effect.andThen(getHistory),
+          Effect.map((history) => ({ history })),
+          Effect.catch((error) => Effect.succeed({ historyError: error.message })),
+        );
+        yield* publisher.publishUpdateReport({
+          version: 1,
+          type: "desktopUpdateStatus",
+          requestId: request.requestId,
+          ...result,
+          state: yield* updates.getState,
+        });
+      }),
+    ).pipe(Effect.forkScoped);
+  }
+
   const handleRequest = (request: DesktopTelemetryRequestDesktopUpdate): Effect.Effect<void> =>
     Effect.scoped(
       Effect.gen(function* () {

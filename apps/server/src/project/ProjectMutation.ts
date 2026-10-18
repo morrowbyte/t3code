@@ -29,6 +29,7 @@ export const projectMutationOperation = Effect.fn("projectMutationOperation")(fu
       return yield* projects.update({
         commandId: mutation.commandId,
         projectId: mutation.projectId,
+        ...(mutation.featureTiming === undefined ? {} : { featureTiming: mutation.featureTiming }),
         ...(mutation.title === undefined ? {} : { title: mutation.title }),
         ...(mutation.workspaceRoot === undefined ? {} : { workspaceRoot: mutation.workspaceRoot }),
         ...(mutation.defaultModelSelection === undefined

@@ -1,5 +1,8 @@
 import {
   DESKTOP_UPDATE_RESTART_MARKER_FILE,
+  HostUpdateHistoryError,
+  isHostUpdateTerminal,
+  type HostUpdateRecord,
   DesktopUpdateChannelSchema,
   type DesktopRuntimeInfo,
   type DesktopUpdateActionResult,
@@ -11,6 +14,7 @@ import {
 } from "@t3tools/contracts";
 import { errorTag } from "@t3tools/shared/observability";
 import { compareSemverVersions } from "@t3tools/shared/semver";
+import { makeUpdateHistory } from "@t3tools/shared/updateHistory";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -80,8 +84,13 @@ const DownloadProgressInfo = Schema.Struct({
 });
 /** Saved in the runtime folder before an install quits the app, read on the next start. */
 export const DESKTOP_UPDATE_INSTALL_RECORD_FILE = "desktop-update-install.json";
+export const DESKTOP_UPDATE_HISTORY_FILE = "desktop-update-history.json";
 const DesktopUpdateInstallRecord = Schema.fromJsonString(
-  Schema.Struct({ fromVersion: Schema.String, targetVersion: Schema.String }),
+  Schema.Struct({
+    fromVersion: Schema.String,
+    targetVersion: Schema.String,
+    id: Schema.optionalKey(Schema.String),
+  }),
 );
 const decodeInstallRecord = Schema.decodeUnknownEffect(DesktopUpdateInstallRecord);
 const encodeInstallRecord = Schema.encodeEffect(DesktopUpdateInstallRecord);
@@ -183,6 +192,8 @@ export type DesktopUpdateSetChannelError = typeof DesktopUpdateSetChannelError.T
 export class DesktopUpdates extends Context.Service<
   DesktopUpdates,
   {
+    readonly getHistory?: Effect.Effect<ReadonlyArray<HostUpdateRecord>, HostUpdateHistoryError>;
+    readonly deleteHistory?: (id: string) => Effect.Effect<void, HostUpdateHistoryError>;
     readonly getState: Effect.Effect<DesktopUpdateState>;
     readonly isActionActive: Effect.Effect<boolean>;
     readonly isInstallActive: Effect.Effect<boolean>;
@@ -363,6 +374,22 @@ export const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
   const qualification = yield* Effect.serviceOption(DesktopUpdateInstallQualification);
+  const history = yield* makeUpdateHistory(
+    environment.path.join(environment.baseDir, "runtime", DESKTOP_UPDATE_HISTORY_FILE),
+  );
+  const historyAttempt = yield* Ref.make<string | null>(null);
+  const interruptHistory = Ref.get(historyAttempt).pipe(
+    Effect.flatMap((id) =>
+      id === null
+        ? Effect.void
+        : history.patch(id, "interrupted", {
+            error:
+              "The update was interrupted before a restart was observed. Check the running version before retrying.",
+          }),
+    ),
+    Effect.andThen(Ref.set(historyAttempt, null)),
+    Effect.ignore,
+  );
 
   const appUpdateYmlConfigRef = yield* Ref.make<Option.Option<AppUpdateYmlConfig>>(Option.none());
   const activeUpdateActionRef = yield* Ref.make<Option.Option<UpdateAction>>(Option.none());
@@ -396,7 +423,58 @@ export const make = Effect.gen(function* () {
   const setState = (state: DesktopUpdateState): Effect.Effect<void> =>
     stateMutex
       .withPermits(1)(
-        Ref.set(updateStateRef, state).pipe(Effect.andThen(PubSub.publish(stateChanges, state))),
+        Effect.gen(function* () {
+          const previous = yield* Ref.get(updateStateRef);
+          const enriched = yield* Effect.gen(function* () {
+            let id = yield* Ref.get(historyAttempt);
+            const downloading = state.status === "downloading" && previous.status !== "downloading";
+            const downloaded = state.status === "downloaded" && previous.status !== "downloaded";
+            const failed =
+              state.errorContext !== null &&
+              state.message !== null &&
+              (state.message !== previous.message || state.errorContext !== previous.errorContext);
+            if (id !== null && (downloading || downloaded)) {
+              const targetVersion = state.downloadedVersion ?? state.availableVersion;
+              const active = (yield* history.list).find((entry) => entry.id === id);
+              if (active?.targetVersion !== targetVersion) {
+                yield* history.patch(id, "interrupted", {
+                  error: "A different update replaced this prepared version before installation.",
+                });
+                id = null;
+              }
+            }
+            if ((downloading || downloaded || failed) && id === null) {
+              id = yield* history.start(
+                "desktop",
+                environment.appVersion,
+                state.downloadedVersion ?? state.availableVersion,
+              );
+              yield* Ref.set(historyAttempt, id);
+            }
+            if (id !== null && failed) {
+              yield* history.patch(id, "failed", {
+                error: `${state.message} ${
+                  state.errorContext === "install"
+                    ? "Check the installer or rollback logs before retrying."
+                    : "Check this host's network connection and free disk space, then retry the update."
+                }`,
+                observedVersion: environment.appVersion,
+              });
+              yield* Ref.set(historyAttempt, null);
+            } else if (id !== null && downloaded) {
+              yield* history.patch(id, "ready", { targetVersion: state.downloadedVersion });
+            }
+            const next = { ...state };
+            if (downloading || downloaded || failed) delete next.updateHistoryError;
+            return next;
+          }).pipe(
+            Effect.catch((error) =>
+              Effect.succeed({ ...state, updateHistoryError: error.message }),
+            ),
+          );
+          yield* Ref.set(updateStateRef, enriched);
+          yield* PubSub.publish(stateChanges, enriched);
+        }),
       )
       .pipe(Effect.andThen(emitState));
 
@@ -597,7 +675,10 @@ export const make = Effect.gen(function* () {
         ),
       }),
       Effect.onInterrupt(() =>
-        updateState((current) => (current.status === "downloading" ? state : current)).pipe(
+        interruptHistory.pipe(
+          Effect.andThen(
+            updateState((current) => (current.status === "downloading" ? state : current)),
+          ),
           Effect.asVoid,
         ),
       ),
@@ -642,20 +723,27 @@ export const make = Effect.gen(function* () {
     .remove(updateRestartMarkerPath, { force: true })
     .pipe(Effect.ignore);
 
-  // Records the version an install hands to the OS installer, so the next
-  // start can tell whether it applied. Best effort, like the restart marker.
+  // The correlated receipt and journal must be durable before stopping backends.
   const installRecordPath = environment.path.join(
     updateRestartMarkerDir,
     DESKTOP_UPDATE_INSTALL_RECORD_FILE,
   );
-  const writeInstallRecord = (targetVersion: string) =>
-    fileSystem.makeDirectory(updateRestartMarkerDir, { recursive: true }).pipe(
-      Effect.andThen(encodeInstallRecord({ fromVersion: environment.appVersion, targetVersion })),
-      Effect.flatMap((text) => fileSystem.writeFileString(installRecordPath, text)),
-      Effect.catch((error) =>
-        logUpdaterWarning("Could not record the update install.", { errorTag: error._tag }),
-      ),
-    );
+  const writeInstallRecord = Effect.fn("desktop.updates.writeInstallRecord")(function* (
+    targetVersion: string,
+  ) {
+    const id =
+      (yield* Ref.get(historyAttempt)) ??
+      (yield* history.start("desktop", environment.appVersion, targetVersion));
+    yield* Ref.set(historyAttempt, id);
+    yield* fileSystem.makeDirectory(updateRestartMarkerDir, { recursive: true });
+    const text = yield* encodeInstallRecord({
+      fromVersion: environment.appVersion,
+      targetVersion,
+      id,
+    });
+    yield* fileSystem.writeFileString(installRecordPath, text);
+    yield* history.patch(id, "awaiting-restart", { targetVersion });
+  });
   const removeInstallRecord = fileSystem
     .remove(installRecordPath, { force: true })
     .pipe(Effect.ignore);
@@ -677,6 +765,65 @@ export const make = Effect.gen(function* () {
     ),
   );
 
+  const recoverHistory = Effect.gen(function* () {
+    const record = yield* fileSystem
+      .readFileString(installRecordPath)
+      .pipe(Effect.flatMap(decodeInstallRecord), Effect.option);
+    const saved = yield* history.list;
+    for (const entry of saved) {
+      if (isHostUpdateTerminal(entry.status)) continue;
+      const matches =
+        entry.status === "awaiting-restart" &&
+        Option.isSome(record) &&
+        record.value.id === entry.id &&
+        record.value.fromVersion === entry.fromVersion &&
+        record.value.targetVersion === entry.targetVersion;
+      const applied = matches && environment.appVersion === entry.targetVersion;
+      const notApplied = matches && environment.appVersion === entry.fromVersion;
+      yield* history.patch(
+        entry.id,
+        applied ? "succeeded" : notApplied ? "failed" : "interrupted",
+        {
+          observedVersion: environment.appVersion,
+          error: applied
+            ? null
+            : notApplied
+              ? "The desktop restarted on its previous version. Check the installer or rollback logs before retrying."
+              : "The desktop restarted without a matching installed-version receipt. Check the running version before retrying.",
+        },
+      );
+    }
+    // The update that first installs history support leaves the older receipt format.
+    if (Option.isSome(record) && !saved.some((entry) => entry.id === record.value.id)) {
+      const { fromVersion, targetVersion } = record.value;
+      if (
+        fromVersion.trim() !== "" &&
+        targetVersion.trim() !== "" &&
+        fromVersion !== targetVersion
+      ) {
+        const now = DateTime.formatIso(yield* DateTime.now);
+        const applied = environment.appVersion === targetVersion;
+        const notApplied = environment.appVersion === fromVersion;
+        yield* history.add({
+          id: record.value.id ?? `legacy:${fromVersion}:${targetVersion}`,
+          component: "desktop",
+          fromVersion,
+          targetVersion,
+          observedVersion: environment.appVersion,
+          startedAt: null,
+          updatedAt: now,
+          completedAt: now,
+          status: applied ? "succeeded" : notApplied ? "failed" : "interrupted",
+          error: applied
+            ? null
+            : notApplied
+              ? "The desktop restarted on its previous version. Check the installer or rollback logs before retrying."
+              : "The running desktop version does not match this older install receipt. Check the installed version before retrying.",
+        });
+      }
+    }
+  });
+
   const baseUpdateState = (channel: DesktopUpdateChannel, enabled: boolean) =>
     Ref.get(notAppliedVersionRef).pipe(
       Effect.map((notAppliedVersion) => ({
@@ -695,9 +842,10 @@ export const make = Effect.gen(function* () {
       Ref.set(clientOnlyInstallRef, false),
       removeUpdateRestartMarker,
       removeInstallRecord,
+      interruptHistory,
     ],
     { discard: true },
-  );
+  ).pipe(Effect.andThen(Ref.get(updateStateRef).pipe(Effect.flatMap(setState))));
 
   const recoverFailedInstall = Effect.fn("desktop.updates.recoverFailedInstall")(function* (
     message: string,
@@ -794,7 +942,8 @@ export const make = Effect.gen(function* () {
         return yield* Effect.gen(function* () {
           if (!clientOnly) yield* writeUpdateRestartMarker;
           const { downloadedVersion } = yield* Ref.get(updateStateRef);
-          if (downloadedVersion !== null) yield* writeInstallRecord(downloadedVersion);
+          if (downloadedVersion !== null)
+            yield* writeInstallRecord(downloadedVersion).pipe(Effect.orDie);
           // Stop every backend in the pool, not just the primary. With
           // parallel WSL + Windows backends, leaving the WSL instance up
           // means quitAndInstall's app.quit() exits before the pool's
@@ -1199,6 +1348,19 @@ export const make = Effect.gen(function* () {
   });
 
   return DesktopUpdates.of({
+    getHistory: history.list,
+    deleteHistory: (id) =>
+      history.remove(id).pipe(
+        Effect.tap(() =>
+          Ref.get(updateStateRef).pipe(
+            Effect.flatMap((state) => {
+              const next = { ...state };
+              delete next.updateHistoryError;
+              return setState(next);
+            }),
+          ),
+        ),
+      ),
     acknowledgeReadiness: (senderId, readiness) =>
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
@@ -1248,6 +1410,7 @@ export const make = Effect.gen(function* () {
       const appUpdateYmlConfig = yield* readAppUpdateYml;
       yield* Ref.set(appUpdateYmlConfigRef, appUpdateYmlConfig);
 
+      yield* recoverHistory.pipe(Effect.catch((error) => logUpdaterWarning(error.message)));
       const notAppliedVersion = yield* readNotAppliedInstallVersion;
       yield* Ref.set(notAppliedVersionRef, notAppliedVersion);
       if (Option.isSome(notAppliedVersion)) {

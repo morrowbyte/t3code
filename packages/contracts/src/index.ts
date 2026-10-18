@@ -11,6 +11,8 @@ export * from "./relayClient.ts";
 export * from "./desktopBootstrap.ts";
 export * from "./desktopBrowser.ts";
 export * from "./desktopAppActivation.ts";
+export * from "./desktopResultConversation.ts";
+export * from "./nativeAuthor.ts";
 export * from "./remoteAccess.ts";
 export * from "./ipc.ts";
 export * from "./terminal.ts";
@@ -69,3 +71,6 @@ export * from "./clientRpcPermissions.ts";
 export * from "./jarvis.ts";
 
 export * from "./agentObservatory.ts";
+
+export * from "./updateHistory.ts";
+export * from "./featureTiming.ts";

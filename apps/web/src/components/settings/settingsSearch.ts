@@ -512,6 +512,16 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["generated thread titles source control content default provider"],
   },
   {
+    id: "update-history",
+    title: "Update history",
+    to: "/settings/general",
+    targetId: "update-history",
+    searchTerms: [
+      "current last previous update result results host server desktop restart failure rollback",
+      "Updatehistorie Aktualisierungen Verlauf letztes Update Ergebnis Ergebnisse Fehler Neustart",
+    ],
+  },
+  {
     id: "app-version",
     title: "Version",
     to: "/settings/general",

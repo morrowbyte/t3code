@@ -194,3 +194,27 @@ On mobile, use **Settings → Source control** to change selected environment de
 T3 Code only pulls when it can fast-forward and the checkout has no changed files, untracked files,
 or local commits. It skips checkouts on another branch or without an upstream. If a checkout has
 local work, resolve it yourself before automatic pulls can resume.
+
+## Feature time overview
+
+Choose a project in **Settings → Projects** to see its recorded features, separately for each
+checkout and environment. Ask your agent to register a concrete feature, its linked work threads
+and acceptance targets when work starts. The read-only overview shows the original estimate when
+it was recorded before work, calendar time, observed waiting and phases, reopenings, and the last
+explicitly accepted version on each target. Use **Refresh** to read the current observations.
+
+Unrecorded intake, estimates, phases and effort stay unavailable. Existing threads are not
+classified as features automatically. Waiting remains part of calendar time; overlapping waits
+count once in the total. Phase and reason breakdowns describe recorded coverage only.
+
+A feature can be registered before its work threads are available and linked to real threads
+later. **Recorded since** marks when tracking began; it does not reconstruct the original request
+or work start. Missing historical dates remain unavailable.
+
+To record explicit version acceptance, send a message in the feature's project with the whole text
+`Accept feature <featureId> on <targetId> at version <version>`, using the IDs from its registration,
+and ask your agent to link that message as evidence. Agent messages and completed runs cannot
+accept a feature. Reopening retains the original estimate, start and acceptance history; accepting
+again requires a new user message after the reopening. Older free-form acceptance is not inferred.
+Release history currently has no feature mapping, so publication and installation cannot establish
+a feature's delivery or acceptance in this view.

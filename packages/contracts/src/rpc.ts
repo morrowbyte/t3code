@@ -1,4 +1,9 @@
 import {
+  HostUpdateHistory,
+  HostUpdateHistoryError,
+  DeleteHostUpdateInput,
+} from "./updateHistory.ts";
+import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -22,6 +27,15 @@ import {
   ChatGptHandoffState,
 } from "./providerSetup.ts";
 import * as Schema from "effect/Schema";
+import {
+  NativeAuthorSubmit,
+  NativeAuthorRead,
+  NativeAuthorSteer,
+  NativeAuthorCancel,
+  NativeAuthorOpenResults,
+  NativeAuthorState,
+  NativeAuthorError,
+} from "./nativeAuthor.ts";
 import * as Effect from "effect/Effect";
 import * as SchemaGetter from "effect/SchemaGetter";
 import * as Rpc from "effect/rpc/Rpc";
@@ -373,6 +387,7 @@ import {
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
+import { ProjectFeatureTimingInput, ProjectFeatureTiming } from "./featureTiming.ts";
 import {
   LiveVoiceError,
   LiveVoiceEvent,
@@ -392,6 +407,7 @@ import {
 } from "./agentObservatory.ts";
 
 export const WS_METHODS = {
+  projectsFeatureTiming: "projects.featureTiming",
   projectsList: "projects.list",
   projectsAdd: "projects.add",
   projectsRemove: "projects.remove",
@@ -448,6 +464,8 @@ export const WS_METHODS = {
   liveVoiceStop: "liveVoice.stop",
   liveVoiceStatus: "liveVoice.status",
   liveVoiceSubscribe: "liveVoice.subscribe",
+  nativeAuthorRead: "nativeAuthor.read",
+  nativeAuthorWrite: "nativeAuthor.write",
 
   // VCS methods
   vcsPull: "vcs.pull",
@@ -496,6 +514,8 @@ export const WS_METHODS = {
   deviceAction: "device.action",
 
   serverProbe: "server.probe",
+  serverGetUpdateHistory: "server.getUpdateHistory",
+  serverDeleteUpdateHistory: "server.deleteUpdateHistory",
   serverGetConfig: "server.getConfig",
   serverRefreshProviders: "server.refreshProviders",
   serverUpdateProvider: "server.updateProvider",
@@ -739,6 +759,17 @@ const WsProviderInstallRemoveRpc = Rpc.make(WS_METHODS.providerInstallRemove, {
   payload: ProviderSetupInput,
   success: ProviderInstallState,
   error: ProviderSetupRpcError,
+});
+
+const WsServerGetUpdateHistoryRpc = Rpc.make(WS_METHODS.serverGetUpdateHistory, {
+  payload: Schema.Struct({}),
+  success: HostUpdateHistory,
+  error: Schema.Union([HostUpdateHistoryError, EnvironmentAuthorizationError]),
+});
+const WsServerDeleteUpdateHistoryRpc = Rpc.make(WS_METHODS.serverDeleteUpdateHistory, {
+  payload: DeleteHostUpdateInput,
+  success: Schema.Void,
+  error: Schema.Union([HostUpdateHistoryError, EnvironmentAuthorizationError]),
 });
 
 const WsServerUpdateServerRpc = Rpc.make(WS_METHODS.serverUpdateServer, {
@@ -1267,6 +1298,12 @@ const WsProjectsWriteFileRpc = Rpc.make(WS_METHODS.projectsWriteFile, {
   error: Schema.Union([ProjectWriteFileError, EnvironmentAuthorizationError]),
 });
 
+const WsProjectsFeatureTimingRpc = Rpc.make(WS_METHODS.projectsFeatureTiming, {
+  payload: ProjectFeatureTimingInput,
+  success: ProjectFeatureTiming,
+  error: EnvironmentAuthorizationError,
+});
+
 const WsProjectsMutateRpc = Rpc.make(WS_METHODS.projectsMutate, {
   payload: ProjectMutation,
   success: Project,
@@ -1644,6 +1681,17 @@ const WsOrchestrationV2DispatchCommandRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS
   error: Schema.Union([OrchestrationV2DispatchCommandError, EnvironmentAuthorizationError]),
 });
 
+const WsNativeAuthorReadRpc = Rpc.make(WS_METHODS.nativeAuthorRead, {
+  payload: Schema.Union([NativeAuthorRead, NativeAuthorOpenResults]),
+  success: NativeAuthorState,
+  error: Schema.Union([NativeAuthorError, EnvironmentAuthorizationError]),
+});
+const WsNativeAuthorWriteRpc = Rpc.make(WS_METHODS.nativeAuthorWrite, {
+  payload: Schema.Union([NativeAuthorSubmit, NativeAuthorSteer, NativeAuthorCancel]),
+  success: NativeAuthorState,
+  error: Schema.Union([NativeAuthorError, EnvironmentAuthorizationError]),
+});
+
 const WsOrchestrationV2GetTurnDiffRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.getTurnDiff, {
   payload: OrchestrationV2RpcSchemas.getTurnDiff.input,
   success: OrchestrationV2RpcSchemas.getTurnDiff.output,
@@ -2019,6 +2067,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderInstallCancelRpc,
   WsProviderInstallSubscribeRpc,
   WsProviderInstallRemoveRpc,
+  WsServerGetUpdateHistoryRpc,
+  WsServerDeleteUpdateHistoryRpc,
   WsServerUpdateServerRpc,
   WsServerUpdateServerWithProgressRpc,
   WsServerCommitDesktopUpdateRpc,
@@ -2110,8 +2160,11 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsSearchContentsRpc,
   WsProjectsSearchEntriesRpc,
   WsProjectsEnsureScratchRpc,
+  WsNativeAuthorReadRpc,
+  WsNativeAuthorWriteRpc,
   WsProjectsCreateNewRpc,
   WsProjectsWriteFileRpc,
+  WsProjectsFeatureTimingRpc,
   WsProjectsMutateRpc,
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
