@@ -13,6 +13,7 @@ import type {
   ServerProvider,
 } from "@t3tools/contracts";
 import { codexAuthHandoffUrl } from "@t3tools/shared/codexAuthHandoff";
+import { compareSemverVersions } from "@t3tools/shared/semver";
 import { providerAuthReturnUrl } from "@t3tools/shared/providerAuthReturnUrl";
 import { isLoopbackHost } from "@t3tools/shared/preview";
 import { CheckIcon, ChevronRightIcon, ExternalLinkIcon } from "lucide-react";
@@ -184,9 +185,22 @@ function NativeCodexSetup(props: CodexSetupSectionProps & { readonly provider: S
   const refreshed = useRef<string | null>(null);
   const state = installation.data;
   const active = state && ["downloading", "extracting", "verifying"].includes(state.phase);
-  const installed =
+  const runtimeInstalled =
     props.provider.installed ||
     (props.provider.setup?.canInstall === true && state?.installedVersion != null);
+  const installedVersion =
+    props.provider.setup?.canInstall === true
+      ? (state?.installedVersion ?? props.provider.version)
+      : props.provider.version;
+  const olderRuntime =
+    runtimeInstalled &&
+    typeof installedVersion === "string" &&
+    /^\d+\.\d+\.\d+$/u.test(installedVersion) &&
+    typeof state?.version === "string" &&
+    /^\d+\.\d+\.\d+$/u.test(state.version) &&
+    compareSemverVersions(installedVersion, state.version) < 0;
+  const updateAvailable = olderRuntime && props.provider.setup?.canInstall === true;
+  const installed = runtimeInstalled && !olderRuntime;
   useEffect(() => {
     if (state?.phase !== "succeeded" || !state.installedVersion) return;
     const key = `${props.environmentId}:${props.instanceId}:${state.installedVersion}`;
@@ -217,21 +231,25 @@ function NativeCodexSetup(props: CodexSetupSectionProps & { readonly provider: S
         description={
           active
             ? "Installing Codex…"
-            : installed
-              ? "Installed."
-              : props.provider.setup?.canInstall
-                ? "Install Codex to sign in."
-                : "Check the configured Codex binary path."
+            : updateAvailable
+              ? "Update Codex to sign in."
+              : installed
+                ? "Installed."
+                : props.provider.setup?.canInstall
+                  ? "Install Codex to sign in."
+                  : olderRuntime
+                    ? "Update the configured Codex executable to sign in."
+                    : "Check the configured Codex binary path."
         }
       >
-        {!installed && props.provider.setup?.canInstall ? (
+        {(!installed || updateAvailable) && props.provider.setup?.canInstall ? (
           <Button
             size="sm"
             variant="outline"
             disabled={props.readOnly || pending || Boolean(active) || installation.error !== null}
             onClick={() => void install()}
           >
-            {active || pending ? "Installing…" : "Install Codex"}
+            {active || pending ? "Installing…" : updateAvailable ? "Update Codex" : "Install Codex"}
           </Button>
         ) : null}
       </SettingsRow>

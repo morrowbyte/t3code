@@ -5,6 +5,8 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import { ChildProcess } from "effect/process";
+import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
@@ -195,9 +197,47 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
               }),
         ),
       );
+      const runtimeUpgradeError = () =>
+        new ProviderSetupError({
+          instanceId,
+          operation: "runtime",
+          detail: usesDefaultExecutable
+            ? "Native ChatGPT sign-in requires Codex 0.163.0 or newer. Install or update Codex in provider settings, then retry."
+            : "Native ChatGPT sign-in requires Codex 0.163.0 or newer. Update the configured Codex executable, then retry.",
+        });
+      const checkNativeAuthRuntime = Effect.gen(function* () {
+        const version = usesDefaultExecutable
+          ? (yield* installation.resolve()).version
+          : yield* Effect.gen(function* () {
+              const command = yield* resolveSpawnCommand(
+                effectiveConfig.binaryPath,
+                ["--version"],
+                { env: processEnv },
+              );
+              const child = yield* spawner.spawn(
+                ChildProcess.make(command.command, command.args, {
+                  env: processEnv,
+                  shell: command.shell,
+                }),
+              );
+              const [output, , exitCode] = yield* Effect.all(
+                [
+                  child.stdout.pipe(Stream.decodeText(), Stream.mkString),
+                  child.stderr.pipe(Stream.runDrain),
+                  child.exitCode,
+                ],
+                { concurrency: "unbounded" },
+              );
+              if (exitCode !== 0) return yield* runtimeUpgradeError();
+              return /^codex-cli (\d+\.\d+\.\d+)$/u.exec(output.trim())?.[1] ?? "";
+            }).pipe(Effect.scoped, Effect.timeout("5 seconds"));
+        if (!CodexInstallation.supportsCodexDeviceAuth(version))
+          return yield* runtimeUpgradeError();
+      }).pipe(Effect.mapError(() => runtimeUpgradeError()));
       const auth = yield* makeCodexNativeAuth({
         instanceId,
         homePath: homeLayout.effectiveHomePath ?? homeLayout.sharedHomePath,
+        checkRuntime: checkNativeAuthRuntime,
         connect: resolveRuntime.pipe(
           Effect.flatMap((runtime) =>
             withCodexAppServerClient({
@@ -208,16 +248,24 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
               environment: runtime.environment,
             }),
           ),
+          Effect.flatMap((connection) =>
+            CodexInstallation.supportsCodexDeviceAuth(
+              connection.initialize.userAgent.match(/\/([^\s]+)/u)?.[1] ?? "",
+            )
+              ? Effect.succeed(connection)
+              : Effect.fail(runtimeUpgradeError()),
+          ),
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, pathService),
-          Effect.mapError(
-            () =>
-              new ProviderSetupError({
-                instanceId,
-                operation: "start",
-                detail: "Could not start Codex sign-in. Check the configured runtime.",
-              }),
+          Effect.mapError((cause) =>
+            isProviderSetupError(cause)
+              ? cause
+              : new ProviderSetupError({
+                  instanceId,
+                  operation: "start",
+                  detail: "Could not start Codex sign-in. Check the configured runtime.",
+                }),
           ),
         ),
       });
@@ -384,12 +432,13 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
         resetCreditCoordinator
           .redeem(accountKey, (idempotencyKey) =>
             Effect.gen(function* () {
+              const runtime = yield* resolveRuntime;
               const { client } = yield* withCodexAppServerClient({
-                binaryPath: effectiveConfig.binaryPath,
-                homePath: effectiveConfig.homePath,
-                launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
+                binaryPath: runtime.config.binaryPath,
+                homePath: runtime.config.homePath,
+                launchArgs: resolveCodexLaunchArgs(runtime.config.launchArgs, runtime.environment),
                 cwd: process.cwd(),
-                environment: processEnv,
+                environment: runtime.environment,
               });
               const response = yield* client.request("account/rateLimitResetCredit/consume", {
                 idempotencyKey,

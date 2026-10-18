@@ -167,6 +167,110 @@ it.layer(layerTest)("CodexDriver", (it) => {
       ),
   );
 
+  it.effect(
+    "reset credit uses the acquired native executable and instance environment without PATH",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const home = yield* fs.makeTempDirectoryScoped({ prefix: "native-reset-runtime-" });
+        const binary = NodePath.join(home, "codex-downloaded");
+        yield* fs.writeFileString(binary, "synthetic", { mode: 0o755 });
+        const installation = yield* CodexInstallation.CodexInstallation;
+        let released = false;
+        const commands: Array<{
+          command: string;
+          env: Readonly<Record<string, string | undefined>>;
+        }> = [];
+        const spawner = ChildProcessSpawner.make((command) => {
+          if (!ChildProcess.isStandardCommand(command))
+            return Effect.die("Expected a standard native command");
+          commands.push({ command: command.command, env: command.options.env ?? {} });
+          return Effect.fail(
+            PlatformError.systemError({
+              _tag: "NotFound",
+              module: "ChildProcessSpawner",
+              method: "spawn",
+              pathOrDescriptor: "synthetic-no-process",
+            }),
+          );
+        });
+        const instance = yield* CodexDriver.create({
+          instanceId: ProviderInstanceId.make("native-reset-no-path"),
+          displayName: undefined,
+          enabled: false,
+          environment: [
+            { name: "WEA28_RESET_MARKER", value: "selected-instance", sensitive: false },
+          ],
+          config: { ...CodexDriver.defaultConfig(), setupMode: "existing", homePath: home },
+        }).pipe(
+          Effect.provideService(HostProcess.Environment, { PATH: "" }),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.provideService(CodexInstallation.CodexInstallation, {
+            ...installation,
+            resolve: () =>
+              Effect.succeed({
+                executablePath: binary,
+                version: "0.163.0",
+                source: "managed",
+                managedVersionDirectory: home,
+              }),
+            acquire: () =>
+              Effect.addFinalizer(() =>
+                Effect.sync(() => {
+                  released = true;
+                }),
+              ).pipe(
+                Effect.as({
+                  executablePath: binary,
+                  version: "0.163.0",
+                  source: "managed",
+                  managedVersionDirectory: home,
+                }),
+              ),
+          }),
+        );
+        if (!instance.consumeResetCredit) throw new Error("Missing native reset credit operation");
+        yield* instance.consumeResetCredit().pipe(Effect.exit);
+        expect(commands).toHaveLength(1);
+        expect(commands[0]?.command).toBe(binary);
+        expect(commands[0]?.env.WEA28_RESET_MARKER).toBe("selected-instance");
+        expect(commands[0]?.env.CODEX_HOME).toBe(home);
+        expect(released).toBe(true);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("older default runtime withholds sign-in and names the normal install action", () =>
+    Effect.gen(function* () {
+      const installation = yield* CodexInstallation.CodexInstallation;
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({ prefix: "native-old-auth-" });
+      const instance = yield* CodexDriver.create({
+        instanceId: ProviderInstanceId.make("native-old-auth"),
+        displayName: undefined,
+        enabled: false,
+        config: { ...CodexDriver.defaultConfig(), setupMode: "existing", homePath: home },
+      }).pipe(
+        Effect.provideService(CodexInstallation.CodexInstallation, {
+          ...installation,
+          resolve: () =>
+            Effect.succeed({
+              executablePath: "old-local-codex",
+              version: "0.156.1",
+              source: "local",
+              managedVersionDirectory: null,
+            }),
+        }),
+      );
+      if (!instance.auth) throw new Error("Missing native auth controller");
+      yield* instance.auth.refreshMethods;
+      const state = yield* instance.auth.subscribe("owner").pipe(Stream.runHead);
+      if (Option.isNone(state)) throw new Error("Missing native auth state");
+      expect(state.value.methods).toEqual([]);
+      expect(state.value.message).toContain("Install or update Codex in provider settings");
+      expect(yield* fs.exists(NodePath.join(home, "auth.json"))).toBe(false);
+    }).pipe(Effect.scoped, Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn)),
+  );
+
   it.effect("advertises explicit native setup without logging in or starting work", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

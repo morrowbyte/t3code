@@ -544,3 +544,67 @@ it.effect("does not retry a failed runtime rename outside Windows", () =>
     expect((yield* terminalState(h.installation)).phase).toBe("failed");
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
+
+it.effect.each([
+  ["linux", "x64"],
+  ["linux", "arm64"],
+  ["win32", "arm64"],
+] as const)(
+  "offers device-auth runtime on %s %s without trusting an unverified download",
+  ([platform, arch]) =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness({ platform, arch, useReleaseCatalog: true });
+      expect(yield* h.installation.start).toMatchObject({
+        version: "0.163.0",
+        phase: "downloading",
+      });
+      expect((yield* terminalState(h.installation)).phase).toBe("failed");
+      expect(h.downloadUrls).toEqual([
+        CodexInstallation.resolveCodexReleaseAsset(platform, arch)?.url,
+      ]);
+      expect(yield* h.fs.exists(`${h.installation.managedDirectory}/active.json`)).toBe(false);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+it.effect("upgrades past an older local CLI and prefers the verified device-auth runtime", () =>
+  Effect.gen(function* () {
+    const h = yield* makeHarness({
+      local: { version: "0.156.1" },
+      platform: "linux",
+      arch: "x64",
+      useReleaseCatalog: true,
+    });
+    expect((yield* h.installation.resolve()).source).toBe("local");
+    expect(yield* h.installation.start).toMatchObject({ phase: "downloading", version: "0.163.0" });
+    expect((yield* terminalState(h.installation)).phase).toBe("failed");
+    expect(h.downloads()).toBe(1);
+    const release = CodexInstallation.resolveCodexReleaseAsset("linux", "x64");
+    if (!release) throw new Error("Missing Linux release fixture");
+    const directory = `${h.installation.managedDirectory}/0.163.0`;
+    for (const name of ["bin/codex", "bin/codex-code-mode-host", "codex-path/rg"]) {
+      yield* h.fs.makeDirectory(`${directory}/${name.split("/")[0]}`, { recursive: true });
+      yield* h.fs.writeFileString(`${directory}/${name}`, "synthetic-runtime", { mode: 0o755 });
+    }
+    yield* h.fs.writeFileString(
+      `${directory}/codex-package.json`,
+      JSON.stringify({
+        layoutVersion: 1,
+        version: release.version,
+        target: release.target,
+        entrypoint: "bin/codex",
+      }),
+    );
+    yield* h.fs.writeFileString(
+      `${directory}/.install-complete.json`,
+      JSON.stringify({ version: release.version, target: release.target, sha256: release.sha256 }),
+    );
+    yield* h.fs.writeFileString(
+      `${h.installation.managedDirectory}/active.json`,
+      JSON.stringify({ version: release.version }),
+    );
+    expect(yield* h.installation.resolve()).toMatchObject({
+      version: "0.163.0",
+      source: "managed",
+    });
+    expect(yield* h.fs.exists(h.localBinaryPath)).toBe(true);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);

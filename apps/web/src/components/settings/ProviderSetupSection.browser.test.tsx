@@ -483,6 +483,70 @@ describe("Antigravity setup", () => {
     });
   });
 
+  it("updates an older native runtime only on request and refreshes the same instance", async () => {
+    setup.auth = authState({ phase: "idle", flowId: null, authorizationUrl: null });
+    setup.installation = {
+      ...setup.installation!,
+      driver: ProviderDriverKind.make("codex"),
+      version: "0.163.0",
+      installedVersion: "0.156.1",
+      source: "local",
+    };
+    setup.refreshProviders.mockResolvedValue({ _tag: "Success", value: undefined });
+    const nativeProvider: ServerProvider = {
+      ...provider,
+      driver: ProviderDriverKind.make("codex"),
+      version: "0.156.1",
+      auth: { status: "unauthenticated" },
+    };
+    const renderNative = (value: ServerProvider) =>
+      act(async () =>
+        root.render(
+          <CodexSetupSection
+            environmentId={environmentId}
+            instanceId={instanceId}
+            provider={value}
+            mode="existing"
+            enabled
+            onModeChange={vi.fn()}
+          />,
+        ),
+      );
+    await renderNative(nativeProvider);
+    expect(button("Update Codex")).not.toBeNull();
+    expect(button("Sign in")).toBeNull();
+    expect(setup.startInstall).not.toHaveBeenCalled();
+    expect(setup.startAuth).not.toHaveBeenCalled();
+    await click("Update Codex");
+    expect(setup.startInstall).toHaveBeenCalledExactlyOnceWith({
+      environmentId,
+      input: { instanceId },
+    });
+    expect(setup.startAuth).not.toHaveBeenCalled();
+    setup.installation = {
+      ...setup.installation!,
+      phase: "succeeded",
+      installedVersion: "0.163.0",
+      source: "managed",
+    };
+    await publish();
+    expect(button("Update Codex")).toBeNull();
+    expect(setup.refreshProviders).toHaveBeenCalledExactlyOnceWith({
+      environmentId,
+      input: { instanceId },
+    });
+    expect(setup.startAuth).not.toHaveBeenCalled();
+    setup.installation = { ...setup.installation!, phase: "idle", installedVersion: null };
+    await renderNative({ ...nativeProvider, version: "unknown" });
+    expect(button("Update Codex")).toBeNull();
+    setup.installation = { ...setup.installation!, installedVersion: "0.156.1" };
+    await renderNative({ ...nativeProvider, setup: { canAuthenticate: true, canInstall: false } });
+    expect(button("Update Codex")).toBeNull();
+    expect(button("Sign in")).toBeNull();
+    expect(container.textContent).toContain("Update the configured Codex executable to sign in.");
+    expect(setup.startInstall).toHaveBeenCalledTimes(1);
+  });
+
   it("does not qualify an unavailable custom Codex binary from another installed runtime", async () => {
     setup.installation = { ...setup.installation!, installedVersion: "0.156.1" };
     await act(async () =>

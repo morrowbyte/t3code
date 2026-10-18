@@ -1,9 +1,10 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { ProviderInstanceId } from "@t3tools/contracts";
+import { ProviderSetupError, ProviderInstanceId } from "@t3tools/contracts";
 import * as CodexClient from "effect-codex-app-server/client";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
@@ -101,6 +102,7 @@ it.effect.each([
     const auth = yield* makeCodexNativeAuth({
       instanceId: ProviderInstanceId.make("codex"),
       homePath: "isolated-native-home",
+      checkRuntime: Effect.void,
       connect: Effect.succeed({ client }),
     });
     yield* auth.start("owner", Effect.void, "chatgpt");
@@ -224,6 +226,7 @@ it.effect("keeps simultaneous account logins isolated even when native login IDs
         const auth = yield* makeCodexNativeAuth({
           instanceId: ProviderInstanceId.make(instance),
           homePath: `isolated/${instance}`,
+          checkRuntime: Effect.void,
           connect: Effect.succeed({ client }),
         });
         return {
@@ -262,5 +265,46 @@ it.effect("keeps simultaneous account logins isolated even when native login IDs
     );
     assert.deepEqual(second.reads, ["work"]);
     assert.deepEqual(first.reads, ["personal"]);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("withholds device sign-in for an older runtime and rechecks before login", () =>
+  Effect.gen(function* () {
+    let supported = false;
+    const auth = yield* makeCodexNativeAuth({
+      instanceId: ProviderInstanceId.make("old-native-runtime"),
+      homePath: "isolated-old-runtime",
+      checkRuntime: Effect.suspend(() =>
+        supported
+          ? Effect.void
+          : Effect.fail(
+              new ProviderSetupError({
+                instanceId: ProviderInstanceId.make("old-native-runtime"),
+                operation: "runtime",
+                detail: "Install or update Codex to 0.163.0 in provider settings.",
+              }),
+            ),
+      ),
+      connect: Effect.die("Unsupported runtime must not connect or start account login"),
+    });
+    yield* auth.refreshMethods;
+    const blocked = yield* auth.subscribe("owner").pipe(Stream.runHead);
+    assert.isTrue(Option.isSome(blocked));
+    if (Option.isSome(blocked)) {
+      assert.deepEqual(blocked.value.methods, []);
+      assert.include(blocked.value.message ?? "", "Install or update");
+    }
+    supported = true;
+    yield* auth.refreshMethods;
+    const ready = yield* auth.subscribe("owner").pipe(Stream.runHead);
+    if (Option.isSome(ready)) assert.equal(ready.value.methods?.[0]?.id, "chatgpt");
+    else assert.fail("Missing ready auth state");
+    supported = false;
+    yield* auth.start("owner", Effect.void, "chatgpt");
+    yield* auth.subscribe("owner").pipe(
+      Stream.filter((state) => state.phase === "failed"),
+      Stream.take(1),
+      Stream.runDrain,
+    );
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

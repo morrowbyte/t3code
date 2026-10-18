@@ -27,6 +27,7 @@ const decodeDeviceLogin = Schema.decodeUnknownEffect(
 export const makeCodexNativeAuth = Effect.fn("makeCodexNativeAuth")(function* (options: {
   readonly instanceId: ProviderInstanceId;
   readonly homePath: string;
+  readonly checkRuntime: Effect.Effect<void, ProviderSetupError>;
   readonly connect: Effect.Effect<
     { readonly client: CodexClient.CodexAppServerClient["Service"] },
     ProviderSetupError,
@@ -43,11 +44,14 @@ export const makeCodexNativeAuth = Effect.fn("makeCodexNativeAuth")(function* (o
     instanceId: options.instanceId,
     credentialBinding: { owner: "provider", key: options.homePath },
     defaultMethodId: "chatgpt",
-    methods: Effect.succeed([
-      { id: "chatgpt", name: "ChatGPT (Codex device sign-in)", type: "agent", description: null },
-    ]),
+    methods: options.checkRuntime.pipe(
+      Effect.as([
+        { id: "chatgpt", name: "ChatGPT (Codex device sign-in)", type: "agent", description: null },
+      ]),
+    ),
     authenticate: (_method, context) =>
       Effect.gen(function* () {
+        yield* options.checkRuntime;
         const { client } = yield* options.connect;
         const completed = yield* Deferred.make<CodexSchema.V2AccountLoginCompletedNotification>();
         let loginId: string | undefined;
