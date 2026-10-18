@@ -442,6 +442,8 @@ const config: ExpoConfig = {
             "-dontwarn kotlin.MustUseReturnValues",
             "-keep class * extends androidx.work.InputMerger { <init>(); }",
             "-keep class org.webrtc.** { *; }",
+            // Jitsi 155 retains an unused Dav1d JNI wrapper but omits its AV1 decoder interface.
+            "-dontwarn org.webrtc.Dav1dDecoder$Natives",
           ].join("\n"),
         },
         ios: {
