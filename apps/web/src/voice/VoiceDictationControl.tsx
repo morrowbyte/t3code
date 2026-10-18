@@ -16,7 +16,6 @@ import {
 import { Button } from "~/components/ui/button";
 import { Popover, PopoverPopup, PopoverTrigger, PopoverTitle } from "~/components/ui/popover";
 import { useEffect, useRef } from "react";
-import { useCallback } from "react";
 
 export function VoiceDictationControl(props: {
   readonly environmentId?: EnvironmentId;
@@ -27,36 +26,34 @@ export function VoiceDictationControl(props: {
   readonly onSend?: (targetKey: string, transcript: string) => Promise<boolean>;
   readonly hasTranscript?: (transcript: string) => boolean;
 }) {
+  const { currentTargetKey } = props;
   const recordedTargetKey = useRef(props.targetKey);
   const recordingTranscriber = useRef<VoiceDictationTranscriber | null>(props.transcribe);
-  const transcribeCapturedRecording = useCallback<VoiceDictationTranscriber>(
-    (audio, options) => {
-      if (recordedTargetKey.current !== props.currentTargetKey()) {
-        return Promise.reject(
-          new VoiceDictationServiceError(
-            "The selected draft changed. Return to the original draft to retry this recording.",
-          ),
-        );
-      }
-      const transcribe = recordingTranscriber.current;
-      return transcribe
-        ? transcribe(audio, options)
-        : Promise.reject(new Error("Transcription is unavailable for this environment."));
-    },
-    [props.currentTargetKey],
-  );
+  const transcribeCapturedRecording: VoiceDictationTranscriber = (audio, options) => {
+    if (recordedTargetKey.current !== currentTargetKey()) {
+      return Promise.reject(
+        new VoiceDictationServiceError(
+          "The selected draft changed. Return to the original draft to retry this recording.",
+        ),
+      );
+    }
+    const transcribe = recordingTranscriber.current;
+    return transcribe
+      ? transcribe(audio, options)
+      : Promise.reject(new Error("Transcription is unavailable for this environment."));
+  };
   const dictation = useVoiceDictation({
     targetKey: props.targetKey,
     transcribe: transcribeCapturedRecording,
     ...(props.hasTranscript ? { hasTranscript: props.hasTranscript } : {}),
     onSend: async (transcript) => {
       const targetKey = recordedTargetKey.current;
-      if (props.currentTargetKey() !== targetKey) return false;
+      if (currentTargetKey() !== targetKey) return false;
       return (await props.onSend?.(targetKey, transcript)) ?? false;
     },
     onTranscript: (text) => {
       const targetKey = recordedTargetKey.current;
-      if (props.currentTargetKey() !== targetKey) {
+      if (currentTargetKey() !== targetKey) {
         throw new VoiceDictationServiceError(
           "The selected draft changed. Return to the original draft to retry this recording.",
         );
@@ -185,7 +182,7 @@ export function VoiceDictationControl(props: {
       busy ||
       !props.transcribe ||
       recordedTargetKey.current !== props.targetKey ||
-      props.currentTargetKey() !== props.targetKey
+      currentTargetKey() !== props.targetKey
     )
       return;
     // Rebind only on an explicit retry, never while a recording/request is active.
@@ -269,7 +266,7 @@ function VoiceRecordingError({ message }: { readonly message: string }) {
         Voice action failed. Review the details and try again.
       </p>
       <details className="min-w-0 text-muted-foreground">
-        <summary className="cursor-pointer rounded-sm py-1 outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <summary className="cursor-pointer rounded-sm py-1 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
           Error details
         </summary>
         <p className="max-h-28 overflow-y-auto whitespace-pre-wrap wrap-anywhere pt-1">{message}</p>

@@ -26,12 +26,16 @@ export function VoiceTranscriptionSettingsPanel() {
   const [error, setError] = useState("");
   const generationRef = useRef(0);
   const editable = environmentId && readEnvironmentScope(environmentId, AuthSettingsWriteScope);
-  useEffect(() => {
-    const generation = ++generationRef.current;
+  const [settingsEnvironment, setSettingsEnvironment] = useState(environmentId);
+  if (settingsEnvironment !== environmentId) {
+    setSettingsEnvironment(environmentId);
     setSettings(null);
     setApiKey("");
     setError("");
     setBusy(false);
+  }
+  useEffect(() => {
+    const generation = ++generationRef.current;
     if (environmentId)
       void voiceSettingsRequest(environmentId)
         .then((value) => {
@@ -64,26 +68,28 @@ export function VoiceTranscriptionSettingsPanel() {
     const generation = generationRef.current;
     setBusy(true);
     setError("");
-    try {
-      const value = await voiceSettingsRequest(environmentId, {
-        provider,
-        instanceId: instanceId || null,
-        model,
-        ...(clearKey
-          ? { apiKey: null }
-          : provider === "openai-api" && apiKey.trim()
-            ? { apiKey }
-            : {}),
+    await voiceSettingsRequest(environmentId, {
+      provider,
+      instanceId: instanceId || null,
+      model,
+      ...(clearKey
+        ? { apiKey: null }
+        : provider === "openai-api" && apiKey.trim()
+          ? { apiKey }
+          : {}),
+    })
+      .then((value) => {
+        if (generationRef.current !== generation) return;
+        setApiKey("");
+        setSettings(value);
+      })
+      .catch((error: unknown) => {
+        if (generationRef.current !== generation) return;
+        setError(voiceSettingsErrorMessage(error));
+      })
+      .finally(() => {
+        if (generationRef.current === generation) setBusy(false);
       });
-      if (generationRef.current !== generation) return;
-      setApiKey("");
-      setSettings(value);
-    } catch (error: unknown) {
-      if (generationRef.current !== generation) return;
-      setError(voiceSettingsErrorMessage(error));
-    } finally {
-      if (generationRef.current === generation) setBusy(false);
-    }
   };
   if (scope.kind !== "environment") {
     return (

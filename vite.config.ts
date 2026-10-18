@@ -58,6 +58,8 @@ export default defineConfig({
       "**/.repos/**",
       "**/.t3/**",
       "**/node_modules/**",
+      // This node:test suite is run explicitly by scripts/weasel/check.sh.
+      "**/weasel/nightly-after-ci.test.cjs",
       "**/dist/**",
       "**/dist-electron/**",
       "**/.{idea,git,cache,output,temp}/**",

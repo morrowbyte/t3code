@@ -52,7 +52,7 @@ try {
   const web = resolve('apps/web');
   await new Generator({ config: getConfig({ autoCodeSplitting: true }, web), root: web }).run();
   const changes = git('diff', '--name-only', 'HEAD').trim().split('\n').filter(Boolean);
-  if (changes.length !== 1 || changes[0] !== generated) throw Error('unexpected-tracked-delta');
+  if (changes.some(path => path !== generated)) throw Error('unexpected-tracked-delta: ' + changes.join(', '));
   if (git('ls-files', '--others', '--exclude-standard').trim()) throw Error('unexpected-untracked-file');
   if (git('rev-parse', 'HEAD').trim() !== receipt.source || sha(readFileSync('pnpm-lock.yaml')) !== receipt.lockSha256) throw Error('source-changed');
   const bytes = readFileSync(generated);

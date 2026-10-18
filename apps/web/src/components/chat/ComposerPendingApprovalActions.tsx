@@ -3,7 +3,7 @@ import {
   type ProviderApprovalOption,
   type RuntimeRequestId,
 } from "@t3tools/contracts";
-import { memo, useRef, useState } from "react";
+import { memo, useLayoutEffect, useRef, useState } from "react";
 import { EllipsisIcon, TriangleAlertIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
@@ -45,9 +45,24 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
     options,
     onRespondToApproval,
   });
-  latest.current = { requestId, disabled, isResponding, canRespond, options, onRespondToApproval };
+  useLayoutEffect(() => {
+    latest.current = {
+      requestId,
+      disabled,
+      isResponding,
+      canRespond,
+      options,
+      onRespondToApproval,
+    };
+  });
   const inFlight = useRef(new Map<RuntimeRequestId, Set<typeof onRespondToApproval>>());
-  const [, refreshResponses] = useState(0);
+  const [inFlightSnapshot, setInFlightSnapshot] = useState<
+    ReadonlyMap<RuntimeRequestId, ReadonlySet<typeof onRespondToApproval>>
+  >(new Map());
+  const refreshResponses = () =>
+    setInFlightSnapshot(
+      new Map([...inFlight.current].map(([id, responders]) => [id, new Set(responders)])),
+    );
   const [failedRequest, setFailedRequest] = useState<{
     requestId: RuntimeRequestId;
     responder: typeof onRespondToApproval;
@@ -56,7 +71,7 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
     disabled ||
     isResponding ||
     !canRespond ||
-    inFlight.current.get(requestId)?.has(onRespondToApproval) === true;
+    inFlightSnapshot.get(requestId)?.has(onRespondToApproval) === true;
   const respond = async (decision: ProviderApprovalDecision) => {
     const current = latest.current;
     if (
@@ -72,22 +87,24 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
     let requests = inFlight.current.get(requestId);
     if (!requests) inFlight.current.set(requestId, (requests = new Set()));
     requests.add(onRespondToApproval);
-    refreshResponses((value) => value + 1);
+    refreshResponses();
     setFailedRequest(null);
-    try {
+    await (async () => {
       await onRespondToApproval(requestId, decision);
-    } catch {
-      if (
-        latest.current.requestId === requestId &&
-        latest.current.onRespondToApproval === onRespondToApproval
-      )
-        setFailedRequest({ requestId, responder: onRespondToApproval });
-    } finally {
-      const requests = inFlight.current.get(requestId);
-      requests?.delete(onRespondToApproval);
-      if (requests?.size === 0) inFlight.current.delete(requestId);
-      refreshResponses((value) => value + 1);
-    }
+    })()
+      .catch(() => {
+        if (
+          latest.current.requestId === requestId &&
+          latest.current.onRespondToApproval === onRespondToApproval
+        )
+          setFailedRequest({ requestId, responder: onRespondToApproval });
+      })
+      .finally(() => {
+        const requests = inFlight.current.get(requestId);
+        requests?.delete(onRespondToApproval);
+        if (requests?.size === 0) inFlight.current.delete(requestId);
+        refreshResponses();
+      });
   };
   const primaryOptions = options.filter(
     (option) => option.decision === "decline" || option.decision === "accept",

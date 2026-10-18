@@ -20,7 +20,7 @@ import {
   VolumeXIcon,
 } from "lucide-react";
 import { useAtomValue } from "@effect/atom-react";
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type {
   EnvironmentId,
   ProjectId,
@@ -588,20 +588,79 @@ function LiveVoiceEventFeed(props: {
   readonly lease: LiveVoiceLease;
   readonly bridge: VoiceEventBridge;
 }) {
-  const leaseKeyValue = useMemo(
-    () => ({ leaseId: props.lease.leaseId, generation: props.lease.generation }),
-    [props.lease.generation, props.lease.leaseId],
-  );
-  const target = useMemo(
-    () => ({ environmentId: props.environmentId, input: leaseKeyValue }),
-    [leaseKeyValue, props.environmentId],
-  );
+  const leaseKeyValue = { leaseId: props.lease.leaseId, generation: props.lease.generation };
+  const target = { environmentId: props.environmentId, input: leaseKeyValue };
   const result = useAtomValue(liveVoiceEnvironment.events(target));
   useEffect(() => {
     if (AsyncResult.isSuccess(result)) props.bridge.publish(leaseKeyValue, result.value);
     else if (AsyncResult.isFailure(result)) props.bridge.publishUnavailable(leaseKeyValue);
   }, [leaseKeyValue, props.bridge, result]);
   return null;
+}
+
+class LiveVoiceStateObserver {
+  active = true;
+  private errorNotified = false;
+
+  setActive(active: boolean) {
+    this.active = active;
+  }
+
+  resetError() {
+    this.errorNotified = false;
+  }
+
+  takeErrorNotification() {
+    if (this.errorNotified) return false;
+    this.errorNotified = true;
+    return true;
+  }
+}
+
+function createLiveVoiceBinding(
+  signaling: LiveVoiceSignalingAdapter,
+  beforePrepare: LiveVoiceControllerDependencies["beforePrepare"] | undefined,
+  onPhaseChange: ((phase: LiveVoiceState["phase"]) => void) | undefined,
+  setState: (state: LiveVoiceState) => void,
+) {
+  const stateObserver = new LiveVoiceStateObserver();
+  const dependencies: LiveVoiceControllerDependencies = {
+    signaling,
+    ...(beforePrepare ? { beforePrepare: beforePrepare } : {}),
+    getUserMedia: () => navigator.mediaDevices.getUserMedia({ audio: true }),
+    createPeer: () => new RTCPeerConnection() as unknown as LiveVoicePeer,
+    createRemoteStream: (track) => new MediaStream([track]),
+    createAudioSink: () => {
+      const audio = document.createElement("audio");
+      audio.autoplay = true;
+      return audio;
+    },
+    createRequestId: randomUUID,
+    scheduleTimeout: (callback, delayMs) => {
+      const handle = window.setTimeout(callback, delayMs);
+      return () => window.clearTimeout(handle);
+    },
+    onStateChange: (next) => {
+      if (!stateObserver.active) return;
+      setState(next);
+      onPhaseChange?.(next.phase);
+      if (next.phase !== "error") stateObserver.resetError();
+      else if (stateObserver.takeErrorNotification()) {
+        toastManager.add({
+          type: "error",
+          title: "Live voice couldn't continue",
+          description:
+            next.error === liveVoicePublicErrorMessage("dispatch_conflict")
+              ? "Another voice request is still being handled. Wait a moment, then start the call again. Your draft is still here."
+              : `${next.error ?? "Could not connect to Live voice."} Try starting the call again. Your draft is still here.`,
+        });
+      }
+    },
+  };
+  return {
+    stateObserver,
+    controller: new LiveVoiceController(dependencies),
+  };
 }
 
 export function LiveVoiceControl(props: {
@@ -613,6 +672,7 @@ export function LiveVoiceControl(props: {
   readonly beforePrepare?: LiveVoiceControllerDependencies["beforePrepare"];
   readonly onPhaseChange?: (phase: LiveVoiceState["phase"]) => void;
 }) {
+  const { beforePrepare, onPhaseChange } = props;
   const hintId = useId();
   const prepare = useAtomCommand(liveVoiceEnvironment.prepare, {
     reportFailure: false,
@@ -687,7 +747,7 @@ export function LiveVoiceControl(props: {
       if (diagnosticProducer.current === producer) diagnosticProducer.current = null;
     };
   }, [diagnosticBridge]);
-  const target = useMemo<LiveVoiceTarget | null>(() => {
+  const target: LiveVoiceTarget | null = (() => {
     if (!props.threadId || !props.providerInstanceId || !targetPresent) return null;
     return {
       environmentId: props.environmentId,
@@ -695,78 +755,59 @@ export function LiveVoiceControl(props: {
       provider: "codex",
       providerInstanceId: props.providerInstanceId,
     };
-  }, [targetPresent, props.environmentId, props.providerInstanceId, props.threadId]);
-  const bridge = useMemo(() => createVoiceEventBridge(), []);
-  const signaling = useMemo<LiveVoiceSignalingAdapter>(
-    () => ({
-      subscribe: bridge.subscribe,
-      prepare: async (input, signal) => {
-        try {
-          return unwrapLiveVoiceCommand(
-            await prepare({ environmentId: props.environmentId, input }),
-          );
-        } catch (error) {
-          if (!signal.aborted)
-            setPrepareFailure({
-              environmentId: props.environmentId,
-              threadId: input.threadId,
-              providerInstanceId: props.providerInstanceId,
-              code: classifyLiveVoicePrepareFailure(error),
-            });
-          throw error;
-        }
-      },
-      start: async (input) =>
-        unwrapLiveVoiceCommand(await startRpc({ environmentId: props.environmentId, input })),
-      stop: async (input) =>
-        unwrapLiveVoiceCommand(await stopRpc({ environmentId: props.environmentId, input })),
-      status: async (input) =>
-        unwrapLiveVoiceCommand(await statusRpc({ environmentId: props.environmentId, input })),
-    }),
-    [bridge, prepare, props.environmentId, props.providerInstanceId, startRpc, statusRpc, stopRpc],
-  );
-  const stateObserver = useMemo(
-    () => ({ active: true, errorNotified: false }),
-    [signaling, props.beforePrepare, props.onPhaseChange],
-  );
-  const dependencies = useMemo<LiveVoiceControllerDependencies>(
-    () => ({
-      signaling,
-      ...(props.beforePrepare ? { beforePrepare: props.beforePrepare } : {}),
-      getUserMedia: () => navigator.mediaDevices.getUserMedia({ audio: true }),
-      createPeer: () => new RTCPeerConnection() as unknown as LiveVoicePeer,
-      createRemoteStream: (track) => new MediaStream([track]),
-      createAudioSink: () => {
-        const audio = document.createElement("audio");
-        audio.autoplay = true;
-        return audio;
-      },
-      createRequestId: randomUUID,
-      scheduleTimeout: (callback, delayMs) => {
-        const handle = window.setTimeout(callback, delayMs);
-        return () => window.clearTimeout(handle);
-      },
-      onStateChange: (next) => {
-        if (!stateObserver.active) return;
-        setState(next);
-        props.onPhaseChange?.(next.phase);
-        if (next.phase !== "error") stateObserver.errorNotified = false;
-        else if (!stateObserver.errorNotified) {
-          stateObserver.errorNotified = true;
-          toastManager.add({
-            type: "error",
-            title: "Live voice couldn't continue",
-            description:
-              next.error === liveVoicePublicErrorMessage("dispatch_conflict")
-                ? "Another voice request is still being handled. Wait a moment, then start the call again. Your draft is still here."
-                : `${next.error ?? "Could not connect to Live voice."} Try starting the call again. Your draft is still here.`,
+  })();
+  const [bridge] = useState(createVoiceEventBridge);
+  const signaling: LiveVoiceSignalingAdapter = {
+    subscribe: bridge.subscribe,
+    prepare: async (input, signal) => {
+      try {
+        return unwrapLiveVoiceCommand(await prepare({ environmentId: props.environmentId, input }));
+      } catch (error) {
+        if (!signal.aborted)
+          setPrepareFailure({
+            environmentId: props.environmentId,
+            threadId: input.threadId,
+            providerInstanceId: props.providerInstanceId,
+            code: classifyLiveVoicePrepareFailure(error),
           });
-        }
-      },
-    }),
-    [signaling, props.beforePrepare, props.onPhaseChange, stateObserver],
-  );
-  const controller = useMemo(() => new LiveVoiceController(dependencies), [dependencies]);
+        throw error;
+      }
+    },
+    start: async (input) =>
+      unwrapLiveVoiceCommand(await startRpc({ environmentId: props.environmentId, input })),
+    stop: async (input) =>
+      unwrapLiveVoiceCommand(await stopRpc({ environmentId: props.environmentId, input })),
+    status: async (input) =>
+      unwrapLiveVoiceCommand(await statusRpc({ environmentId: props.environmentId, input })),
+  };
+  // A controller owns a session until its signaling destination or owner callbacks change.
+  const bindingKey = [
+    bridge,
+    prepare,
+    props.environmentId,
+    props.providerInstanceId,
+    startRpc,
+    statusRpc,
+    stopRpc,
+    beforePrepare,
+    onPhaseChange,
+  ];
+  const [binding, setBinding] = useState(() => ({
+    key: bindingKey,
+    ...createLiveVoiceBinding(signaling, beforePrepare, onPhaseChange, setState),
+  }));
+  if (binding.key.some((value, index) => value !== bindingKey[index])) {
+    setBinding({
+      key: bindingKey,
+      ...createLiveVoiceBinding(signaling, beforePrepare, onPhaseChange, setState),
+    });
+  }
+  const { controller, stateObserver } = binding;
+  const [stateController, setStateController] = useState(controller);
+  if (stateController !== controller) {
+    setStateController(controller);
+    setState(controller.currentState);
+  }
 
   const transcriptLease = state.lease;
   const transcriptMatchesTarget =
@@ -779,17 +820,25 @@ export function LiveVoiceControl(props: {
     : [];
 
   useLayoutEffect(() => {
-    stateObserver.active = true;
-    setState(controller.currentState);
-    props.onPhaseChange?.(controller.currentState.phase);
+    stateObserver.setActive(true);
+    onPhaseChange?.(controller.currentState.phase);
     return () => {
       // Cleanup must not report "stopping" to an owner that just collapsed this footer.
-      stateObserver.active = false;
+      stateObserver.setActive(false);
       void controller.end();
     };
-  }, [controller, stateObserver, props.onPhaseChange]);
-  useEffect(() => {
+  }, [controller, stateObserver, onPhaseChange]);
+  const prepareContextKey = JSON.stringify([
+    props.environmentId,
+    props.threadId,
+    props.providerInstanceId,
+  ]);
+  const [prepareContext, setPrepareContext] = useState(prepareContextKey);
+  if (prepareContext !== prepareContextKey) {
+    setPrepareContext(prepareContextKey);
     setPrepareFailure(null);
+  }
+  useEffect(() => {
     void controller.contextChanged(target);
   }, [controller, target]);
 
@@ -808,21 +857,15 @@ export function LiveVoiceControl(props: {
                 ? "Ending Live…"
                 : null;
 
-  const toggleMicrophone = useCallback(
-    () => void controller.setLocalMuted(!state.localMuted),
-    [controller, state.localMuted],
-  );
-  const toggleOutput = useCallback(
-    () => void controller.setOutputMuted(!state.outputMuted),
-    [controller, state.outputMuted],
-  );
-  const onStart = useCallback(() => {
+  const toggleMicrophone = () => void controller.setLocalMuted(!state.localMuted);
+  const toggleOutput = () => void controller.setOutputMuted(!state.outputMuted);
+  const onStart = () => {
     if (canStart && target) {
       setPrepareFailure(null);
-      stateObserver.errorNotified = false;
+      stateObserver.resetError();
       void controller.start(target);
     }
-  }, [canStart, controller, stateObserver, target]);
+  };
 
   return (
     <div
