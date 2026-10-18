@@ -250,7 +250,12 @@ jobs:
         run: ./apps/desktop/resources/test-morrowbyte-installer-guard.ps1
 
   upstream_tests:
-    if: github.event_name == 'workflow_dispatch' && inputs.qualifyUpstream && github.repository == (vars.WEASEL_RELEASE_REPOSITORY || 'EvilWeasel/t3code')
+    if: >-
+      github.repository == (vars.WEASEL_RELEASE_REPOSITORY || 'EvilWeasel/t3code') &&
+      ((github.event_name == 'workflow_dispatch' && inputs.qualifyUpstream) ||
+      (github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.head_ref, 't3/upstream-main-')))
     runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 25
     strategy:
@@ -285,8 +290,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential libsecret-1-dev pkg-config
-      - name: Install pinned Chromium for server integration tests
-        if: startsWith(matrix.suite, 'server-')
+      - name: Install pinned Chromium for browser tests
+        if: matrix.suite == 'web' || startsWith(matrix.suite, 'server-')
         run: node apps/server/node_modules/playwright-core/cli.js install --with-deps --only-shell chromium
       - name: Run complete upstream test suite
         env:
