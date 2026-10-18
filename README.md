@@ -1,98 +1,32 @@
-# T3 Code
+# Morrowbyte
 
-T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app ([iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824), [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code)), [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).
+Morrowbyte is an independent fork of [T3 Code](https://github.com/pingdotgg/t3code) for working with coding agents on your own computer. It provides a desktop app and a web client for your local server. The upstream license and copyright notices remain in [LICENSE](./LICENSE).
 
-Works with your subscriptions on Claude Code, Codex, Cursor, Grok Build, OpenCode, and Google Antigravity. If they're set up on your computer, T3 Code can control them.
-
-## "Wait, what are you selling me?"
-
-Nothing. We built T3 Code because we wanted the best possible development experience with agents. We were inspired by existing solutions like the Codex desktop app, Conductor, Claude Desktop and Cursor Glass, but none met our bar.
-
-We wanted something performant, remote-ready, and truly open. If we ever go the wrong direction, we want you to have everything you need to fork and build the editor that you want.
+Use your own provider account and local projects. A maintainer's accounts, devices, network or preferences are not prerequisites.
 
 ## Installation
 
-> [!WARNING]
-> T3 Code currently supports Codex, Claude, Cursor, Grok Build, OpenCode, and Antigravity. Install and authenticate at least one provider before use:
->
-> - Codex: install [Codex CLI](https://developers.openai.com/codex/cli) and run `codex login`
-> - Claude: install [Claude Code](https://claude.com/product/claude-code) and run `claude auth login`
-> - Cursor: install [Cursor CLI](https://cursor.com/cli) and run `agent login`
-> - Grok Build: install [Grok Build CLI](https://x.ai/cli) and run `grok login`
-> - OpenCode: install [OpenCode](https://opencode.ai) and run `opencode auth login`
-> - Antigravity: enable it in Settings, then use **Install Antigravity** and **Sign in with Google**. No CLI is required.
+### Download
 
-### Command line
+Install the Morrowbyte Windows x64 installer or Linux x64 AppImage supplied with your Morrowbyte release. If you have repository access, use [Morrowbyte releases](https://github.com/morrowbyte/t3code/releases). Other users need the release files from their distributor, not access to the maintainer's repository or machines. Upstream T3 Code installers, package registries and `npx t3@latest` install upstream T3 Code.
 
-```bash
-curl -fsSL https://t3.codes/install.sh | sh
-```
+Release files may still be named `T3-Code-…`; the installed product is Morrowbyte. Existing installations retain their profiles and update path.
 
-On Windows, in PowerShell:
+### First run on your computer
 
-```powershell
-irm https://t3.codes/install.ps1 | iex
-```
+1. Open Morrowbyte and use the local environment. A remote server is optional.
+2. In provider setup, choose your provider and add or sign in to **your own account**. Follow the available installation and sign-in steps. Provider availability and model access depend on that provider and your account; Morrowbyte does not include a subscription or guarantee entitlement.
+3. Add a local project folder, choose an available provider/model and start a thread.
 
-Then run `t3` to start the server and open the local web app. `t3 service install` keeps it running in the background, `t3 update` moves to a newer release, and `t3 --help` has the full reference.
+The app supports Codex, Claude Code, Cursor, Grok Build, OpenCode and Antigravity. Setup differs by provider; the [provider guides](./docs/user/install.md) describe the available paths. You do not need to sign in to a maintainer's account or copy their authentication files.
 
-To try it once without installing, run `npx t3@latest` instead.
+### Optional remote access
 
-### Desktop app
-
-Install the latest version of the desktop app from [GitHub Releases](https://github.com/pingdotgg/t3code/releases), or from your favorite package registry:
-
-#### Windows (`winget`)
-
-```bash
-winget install T3Tools.T3Code
-```
-
-#### Windows (`scoop`)
-
-```bash
-scoop install extras/t3code
-```
-
-#### macOS (Homebrew)
-
-```bash
-brew install --cask t3-code
-```
-
-#### Debian, Ubuntu (`.deb`)
-
-Download the `.deb` from [GitHub Releases](https://github.com/pingdotgg/t3code/releases), then:
-
-```bash
-sudo apt install ./T3-Code-*.deb
-```
-
-#### Arch Linux (AUR)
-
-Stable:
-
-```bash
-yay -S t3code-bin
-```
-
-Nightly:
-
-```bash
-yay -S t3code-nightly-bin
-```
-
-The AUR packaging is maintained in this repository under [`packaging/aur`](./packaging/aur).
-
-## Some notes
-
-We are very very early in this project. Expect bugs.
-
-We are (mostly) not accepting contributions yet. Small fixes may be considered. Big features will not be.
+Use your own server and devices over a LAN or your own NetBird, Tailscale or Headscale network. Pair the client with that server using its normal pairing flow; see [remote access](./docs/user/remote-access.md). A Morrowbyte cloud account or Morrowbyte-operated T3 Connect service is not required for local use or direct access to your own server.
 
 ## Documentation
 
-Full docs live in [docs/](./docs). There's no docs site yet.
+Docs live in [docs/](./docs). Some guides still use upstream T3 Code names and distribution links; use the Morrowbyte download instructions above for this fork.
 
 - [Install and first run](./docs/user/install.md)
 - [Permission modes](./docs/user/permission-modes.md)

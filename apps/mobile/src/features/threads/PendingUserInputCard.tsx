@@ -1,6 +1,6 @@
 import { RequestActionButton } from "./RequestActionButton";
 import { QuestionAttachments } from "./QuestionAttachments";
-import type { RuntimeRequestId } from "@t3tools/contracts";
+import type { RuntimeRequestId, ScopedThreadRef } from "@t3tools/contracts";
 import type { ThreadUserInputQuestion } from "@t3tools/client-runtime/state/thread-requests";
 import { useCallback, useRef } from "react";
 import { Platform, Pressable, ScrollView, View, type LayoutChangeEvent } from "react-native";
@@ -22,6 +22,7 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { ControlPill } from "../../components/ui/ControlPill";
 import { cn } from "../../lib/cn";
 import { SelectableMarkdownText } from "../../native/SelectableMarkdownText";
+import { useThreadShell } from "../../state/entities";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { useMarkdownPreviewStyles } from "../files/FileMarkdownPreview";
 import {
@@ -31,6 +32,7 @@ import {
 } from "../../lib/threadActivity";
 
 export interface PendingUserInputCardProps {
+  readonly origin?: ScopedThreadRef | undefined;
   readonly canOperateThread: boolean;
   readonly pendingUserInput: PendingUserInput;
   readonly maxHeight: number;
@@ -66,9 +68,14 @@ const EXPANDED_CARD_IS_OVERLAY = Platform.OS === "ios";
 
 const CARD_LAYOUT_TRANSITION = LinearTransition.duration(200);
 
-function QuestionText(props: { readonly markdown: string }) {
+function QuestionText(props: { readonly markdown: string; readonly origin?: ScopedThreadRef }) {
   const styles = useMarkdownPreviewStyles();
-  const openLink = useOpenPullRequest();
+  const thread = useThreadShell(props.origin ?? null);
+  const openLink = useOpenPullRequest(
+    thread
+      ? { context: { environmentId: thread.environmentId, projectId: thread.projectId } }
+      : undefined,
+  );
   return (
     <SelectableMarkdownText
       markdown={props.markdown}
@@ -243,7 +250,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
               <Text className="font-t3-bold text-xs uppercase tracking-[1px] text-foreground-muted">
                 {question.header}
               </Text>
-              <QuestionText markdown={question.question} />
+              <QuestionText origin={props.origin} markdown={question.question} />
               <View className="gap-2">
                 {question.options.map((option) => {
                   const optionValue = option.value ?? option.label.trim();
@@ -289,6 +296,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
               </View>
               {question.allowCustomAnswer !== false ? (
                 <QuestionAttachments
+                  origin={props.origin}
                   requestId={props.pendingUserInput.requestId}
                   question={question}
                   questions={props.pendingUserInput.questions}
@@ -315,7 +323,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
         <Pressable
           accessibilityRole="button"
           className="items-center justify-center rounded-2xl px-4 py-2.5 active:opacity-70"
-          disabled={isResponding}
+          disabled={isResponding || !props.canOperateThread}
           onPress={() => void props.onDismiss()}
         >
           <Text className="font-t3-bold text-sm text-foreground-muted">

@@ -96,7 +96,7 @@ export const make = Effect.gen(function* () {
     // without rewriting preview sessions (which breaks Turnstile, #7110).
     yield* electronApp.setName(
       Option.getOrUndefined(environment.profileId ?? Option.none()) === "weasel"
-        ? "T3 Code Weasel Nightly"
+        ? "Morrowbyte"
         : `${environment.branding.baseName} ${environment.branding.stageLabel}`,
     );
     yield* electronApp.setAboutPanelOptions({
