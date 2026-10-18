@@ -66,4 +66,52 @@ Markdown **after** the closed block.`;
       display: false,
     });
   });
+
+  it("keeps multiline TeX in one Markdown paragraph instead of lists and setext headings", () => {
+    const expressions = [
+      String.raw`0{,}020 \times 0{,}125
++ 0{,}080 \times 0{,}010
++ 0{,}010 \times 0{,}50
+= 0{,}00830\ \text{USD}.`,
+      String.raw`\text{Kosten pro korrekt erledigter Aufgabe}
+=
+\frac{\text{Kosten aller Versuche, Fallbacks, Tools und Laufzeit}}
+{\text{Anzahl korrekt abgeschlossener Aufgaben}}.`,
+    ];
+    for (const expression of expressions) {
+      const source = `$$\n${expression}\n$$`;
+      for (const streaming of [true, false]) {
+        const result = prepareNativeMathMarkdown(source, streaming);
+        expect(parseMarkdownDocument(result.markdown).children.map((node) => node.type)).toEqual([
+          "paragraph",
+        ]);
+        expect(result).toMatchObject({ display: true, pending: null });
+      }
+    }
+  });
+
+  it("keeps TeX row breaks and escaped percents while joining comments without adding text spaces", () => {
+    const body = String.raw`\begin{aligned}
+\text{foo% comment
+bar} &= 25\% \\
+&= x + y
+\end{aligned}`;
+    const result = prepareNativeMathMarkdown(`$$\n${body}\n$$`, false);
+    expect(result.markdown).toBe(String.raw`$$
+\begin{aligned} \text{foobar} &= 25\% \\ &= x + y \end{aligned}
+$$`);
+  });
+
+  it("preserves list markers and setext lines literally in stopped or failed math", () => {
+    const body = "x\n+ y\n- z\n=";
+    for (const [source, failures] of [
+      [`$$\n${body}`, new Set<string>()],
+      [`$$\n${body}\n$$`, new Set([nativeMathFailureKey(body, true)])],
+    ] as const) {
+      const result = prepareNativeMathMarkdown(source, false, failures);
+      const document = parseMarkdownDocument(result.markdown);
+      expect(document.children.map((node) => node.type)).toEqual(["paragraph"]);
+      expect(document.children[0]).toMatchObject({ children: [{ type: "text", value: source }] });
+    }
+  });
 });

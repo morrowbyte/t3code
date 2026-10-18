@@ -1,8 +1,11 @@
+import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { useAndroidControlSizing } from "../../components/ui/useAndroidControlSizing";
 import type { ThreadMoveDestination } from "../threads/threadOrder";
 import { computeThreadMoveAvailability } from "../threads/threadOrder";
-import { LegendList, type LegendListRef } from "@legendapp/list/react-native";
+import type { LegendListRef } from "@legendapp/list/react-native";
+import { AnimatedLegendList as LegendList } from "@legendapp/list/reanimated";
+import { LinearTransition, ReduceMotion } from "react-native-reanimated";
 import {
   type EnvironmentProject,
   type EnvironmentThreadShell,
@@ -154,6 +157,9 @@ interface HomeScreenProps {
   readonly onNewThreadInProject: (project: EnvironmentProject) => void;
 }
 
+const THREAD_FAMILY_LAYOUT_TRANSITION = LinearTransition.duration(180).reduceMotion(
+  ReduceMotion.System,
+);
 const ESTIMATED_THREAD_LIST_V2_ROW_HEIGHT = 72;
 // Rows away from the viewport are cheap dormant frames (see
 // swipe-row-activation), so render further ahead: a fast fling then reaches
@@ -278,13 +284,14 @@ export function HomeScreen(props: HomeScreenProps) {
     Platform.OS === "android" ? "bg-header" : contentBackground,
   );
   const columnMetrics = useNativeColumnLayoutMetrics();
-  const selectedThreadKey = primaryColumn?.selectedThreadKey ?? null;
+  const { lastSelectedThreadKey } = useAdaptiveWorkspaceLayout();
+  const selectedThreadKey = primaryColumn?.selectedThreadKey ?? lastSelectedThreadKey;
   const [familyDisclosure, setFamilyDisclosure] = useState<ThreadListV2FamilyDisclosure>(() => ({
     routeKey: null,
     expandedKeys: new Set(),
     closedKeys: new Set(),
   }));
-  if (primaryColumn !== null && familyDisclosure.routeKey !== selectedThreadKey) {
+  if (familyDisclosure.routeKey !== selectedThreadKey) {
     const revealed = revealThreadListV2RouteAncestors(
       familyDisclosure,
       props.threads,
@@ -664,6 +671,7 @@ export function HomeScreen(props: HomeScreenProps) {
       ),
       disclosure: familyDisclosure,
       workingShelfEnabled,
+      searching: hasSearchQuery,
     });
     const sections = ["pinned", "active", "working", "snoozed", "settled"] as const;
     const items = [];
@@ -1146,6 +1154,7 @@ export function HomeScreen(props: HomeScreenProps) {
               onTouchCancel={(event) => trackListTouches(event, false)}
               renderScrollComponent={Platform.OS === "ios" ? renderHomeScrollView : undefined}
               data={threadListV2Items}
+              itemLayoutAnimation={THREAD_FAMILY_LAYOUT_TRANSITION}
               renderItem={renderV2Item}
               keyExtractor={v2KeyExtractor}
               getItemType={(item) => item.type}

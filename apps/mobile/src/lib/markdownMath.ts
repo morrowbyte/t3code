@@ -1,9 +1,35 @@
 import { parseMarkdownDocument, type MarkdownNode } from "./markdownDocument";
 
-export const nativeMathFailureKey = (source: string, display: boolean) =>
-  `${display ? "display" : "inline"}:${source.trim()}`;
+// md4c recognizes math spans after block syntax. Newlines inside TeX must not
+// turn arithmetic signs into lists or an equality into a setext heading.
+const nativeDisplayMathSource = (source: string) => {
+  let result = "";
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index]!;
+    if (char === "\\") {
+      result += char;
+      if (source[index + 1] === "\r" && source[index + 2] === "\n") {
+        result += " ";
+        index += 2;
+      } else if (index + 1 < source.length) {
+        result += source[++index] === "\n" ? " " : source[index];
+      }
+    } else if (char === "%") {
+      // A TeX comment consumes its newline, including inside \text{foo%\nbar}.
+      while (index < source.length && !/[\r\n]/.test(source[index]!)) index += 1;
+      if (source[index] === "\r" && source[index + 1] === "\n") index += 1;
+    } else if (char === "\r" || char === "\n") {
+      result += " ";
+      if (char === "\r" && source[index + 1] === "\n") index += 1;
+    } else result += char;
+  }
+  return result;
+};
 
-const literalMarkdown = (source: string) => source.replace(/[\\`*_[\]{}()<>#$|]/g, "\\$&");
+export const nativeMathFailureKey = (source: string, display: boolean) =>
+  `${display ? "display" : "inline"}:${(display ? nativeDisplayMathSource(source) : source).trim()}`;
+
+const literalMarkdown = (source: string) => source.replace(/[\\`*_[\]{}()<>#$|+.=~-]/g, "\\$&");
 
 /** Only the native display copy changes; the message and selection/copy source stay original. */
 export function prepareNativeMathMarkdown(
@@ -63,9 +89,11 @@ export function prepareNativeMathMarkdown(
       const end = contentStart + closing.index + closing[0].length;
       const body = source.slice(contentStart, contentStart + closing.index);
       const original = source.slice(index, end);
+      const finalBreak = /\r?\n$/.exec(body)?.[0] ?? "";
+      const nativeBody = nativeDisplayMathSource(body.slice(0, body.length - finalBreak.length));
       markdown += failures.has(nativeMathFailureKey(body, true))
         ? literalMarkdown(original)
-        : original;
+        : `${opening}${nativeBody}${finalBreak}${closing[0]}`;
       hasDisplay ||= !failures.has(nativeMathFailureKey(body, true));
       index = end;
       continue;

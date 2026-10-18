@@ -1,3 +1,4 @@
+import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
 import {
   canSnooze,
@@ -9,7 +10,10 @@ import {
 } from "@t3tools/client-runtime/state/thread-settled";
 import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import { resolveThreadProviderStack } from "@t3tools/client-runtime/state/models";
+import {
+  threadRuntimeIsActive,
+  resolveThreadProviderStack,
+} from "@t3tools/client-runtime/state/models";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import {
   createInboxReturnTracker,
@@ -155,7 +159,8 @@ export function resolveThreadListV2Status(
   thread: Pick<
     EnvironmentThreadShell,
     "hasPendingApprovals" | "hasPendingUserInput" | "pendingSubagentRequest" | "runtime"
-  >,
+  > &
+    Partial<Pick<EnvironmentThreadShell, "pendingBackgroundTasks">>,
 ): ThreadListV2Status {
   if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {
     return "approval";
@@ -170,7 +175,10 @@ export function resolveThreadListV2Status(
     return "working";
   }
   if (thread.runtime?.status === "idle") {
-    return "waiting";
+    return thread.runtime.activeRunId !== null ||
+      backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])
+      ? "waiting"
+      : "ready";
   }
   if (thread.runtime?.status === "failed") {
     return thread.runtime.lastErrorClass === "usage_limit" ? "limited" : "failed";
@@ -334,6 +342,7 @@ export interface ThreadListV2FamilyRow {
 export function buildThreadListV2FamilyRows(input: {
   readonly items: readonly ThreadListV2Item[];
   readonly visibleKeys: ReadonlySet<string>;
+  readonly searching?: boolean;
   readonly disclosure: ThreadListV2FamilyDisclosure;
   readonly workingShelfEnabled?: boolean;
 }): ThreadListV2FamilyRow[] {
@@ -342,7 +351,17 @@ export function buildThreadListV2FamilyRows(input: {
   const rank = new Map(input.items.map((item, index) => [keyOf(item), index]));
   const parents = new Map<string, string>();
   const workingKeys = new Set(
-    input.items.filter((item) => isThreadWorking(item.thread)).map(keyOf),
+    input.items
+      .filter(
+        ({ thread }) =>
+          threadRuntimeIsActive(thread.runtime) ||
+          thread.hasPendingApprovals ||
+          thread.hasPendingUserInput ||
+          thread.pendingSubagentRequest != null ||
+          backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []) ||
+          (thread.runtime?.status === "idle" && thread.runtime.activeRunId !== null),
+      )
+      .map(keyOf),
   );
   for (const [key, { thread }] of byKey) {
     if (
@@ -389,7 +408,21 @@ export function buildThreadListV2FamilyRows(input: {
       siblings.push(key);
       children.set(parentKey, siblings);
     }
-    let parent = parentKey;
+  }
+  const relevant = new Set<string>();
+  for (const key of [
+    ...(input.searching ? input.visibleKeys : []),
+    ...workingKeys,
+    ...(input.disclosure.routeKey === null ? [] : [input.disclosure.routeKey]),
+  ]) {
+    let current: string | undefined = key;
+    while (current !== undefined && byKey.has(current) && !relevant.has(current)) {
+      relevant.add(current);
+      current = parents.get(current);
+    }
+  }
+  for (const key of relevant) {
+    let parent = parents.get(key);
     while (parent !== undefined) {
       const count = counts.get(parent) ?? { total: 0, active: 0 };
       count.total++;
@@ -428,7 +461,7 @@ export function buildThreadListV2FamilyRows(input: {
     while (stack.length > 0) {
       const { key, depth } = stack.pop()!;
       const item = byKey.get(key)!;
-      const descendants = children.get(key) ?? [];
+      const descendants = (children.get(key) ?? []).filter((child) => relevant.has(child));
       const section = sectionOf(item);
       rows.push({
         key,
