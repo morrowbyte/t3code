@@ -306,7 +306,11 @@ it.effect.each([false, true])(
             Effect.suspend(() => {
               if (failNextLookup) {
                 failNextLookup = false;
-                return Effect.fail(new Error("Runtime lookup failed before binding."));
+                return Effect.fail(
+                  new ProviderSessionManager.ProviderSessionLookupError({
+                    providerSessionId,
+                  }),
+                );
               }
               const existing = runtimes.get(providerSessionId);
               return Effect.succeed(existing === undefined ? Option.none() : Option.some(existing));
