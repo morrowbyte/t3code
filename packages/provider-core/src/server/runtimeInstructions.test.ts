@@ -2,6 +2,21 @@ import { describe, expect, it } from "vite-plus/test";
 import { buildRuntimeInstructions } from "./runtimeInstructions.ts";
 
 describe("buildRuntimeInstructions", () => {
+  it("includes the bounded output policy independently of model metadata", () => {
+    const instructions = buildRuntimeInstructions({ harness: "Codex" });
+    const policy =
+      instructions.match(/<tool_output_selection>[\s\S]*?<\/tool_output_selection>/)?.[0] ?? "";
+
+    expect(policy).not.toBe("");
+    expect(policy).toContain("Select before text()/notify()");
+    expect(policy).toContain("Use small, already bounded tools directly");
+    expect(policy).toContain("A read must use the same run's capture");
+    expect(policy).toContain("task-local files have no guaranteed retention after cleanup");
+    expect(buildRuntimeInstructions({ harness: "Claude Code", model: "default" })).toContain(
+      policy,
+    );
+  });
+
   it("requires explicit registration of every PR and stack layer", () => {
     const instructions = buildRuntimeInstructions({ harness: "Codex" });
     expect(instructions).toContain("When the t3-code MCP server exposes link_pull_request");
