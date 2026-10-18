@@ -17,6 +17,11 @@ on:
         type: string
         default: ""
 
+      android_source_sha:
+        description: Exact separately reviewed APK source for .48 recovery; empty uses desktop source
+        type: string
+        default: ""
+
 concurrency:
   group: weasel-desktop-nightly
   cancel-in-progress: false
@@ -44,6 +49,8 @@ jobs:
       recovery_artifact_attempt: ${{ steps.recovery.outputs.recovery_artifact_attempt }}
       recovery_receipt_sha256: ${{ steps.recovery.outputs.recovery_receipt_sha256 }}
       recovery_workflow_sha256: ${{ steps.recovery.outputs.recovery_workflow_sha256 }}
+      android_source_sha: ${{ steps.recovery.outputs.android_source_sha }}
+      android_lock_sha256: ${{ steps.recovery.outputs.android_lock_sha256 }}
     steps:
       - name: Checkout promoted source
         uses: actions/checkout@v4
@@ -57,11 +64,12 @@ jobs:
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
           RECOVERY_RUN_ID: ${{ inputs.recover_desktop_run_id }}
+          ANDROID_SOURCE_SHA: ${{ inputs.android_source_sha }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           python3 - <<'PYRECOVERY'
-          import hashlib, json, os, pathlib, shutil, stat, subprocess, zipfile
+          import hashlib, json, os, pathlib, re, shutil, stat, subprocess, zipfile
           source = 'ce275176a119b1a2c599c23e6acd7d537cc4c336'
           origin_run = '39093205395'
           workflow = '.github/workflows/weasel-release.yml'
@@ -81,7 +89,28 @@ jobs:
           control = git('rev-parse', 'FETCH_HEAD')
           assert control == os.environ['GITHUB_SHA'], 'Recovery control must still be current main.'
           subprocess.run(['git', 'merge-base', '--is-ancestor', source, control], check=True)
-          assert git('diff', '--name-only', source, control).splitlines() == [workflow], 'Recovery may change only this workflow, never product source/locks.'
+          control_paths = git('diff', '--name-only', source, control).splitlines()
+          android_source = os.environ['ANDROID_SOURCE_SHA'] or source
+          android_lock_sha256 = digest(pathlib.Path('pnpm-lock.yaml'))
+          android_paths = []
+          if android_source == source:
+              assert control_paths == [workflow], 'Recovery may change only this workflow, never product source/locks.'
+          else:
+              assert re.fullmatch('[0-9a-f]{40}', android_source), 'APK source must be an exact commit.'
+              subprocess.run(['git', 'merge-base', '--is-ancestor', source, android_source], check=True)
+              subprocess.run(['git', 'merge-base', '--is-ancestor', android_source, control], check=True)
+              expected_files = {
+                  'patches/expo-widgets@58.0.18.patch': 'f9b031e1d1f4f98313930ca01eb0939d4193566d6da03d0f3da31019e0a3f5fc',
+                  'pnpm-lock.yaml': '9d6aa0a8991480b891126e69a364fff7061a7f3452d3a368d0b35761b74ddb9b',
+              }
+              android_paths = git('diff', '--name-only', source, android_source).splitlines()
+              assert set(android_paths) - {workflow} == set(expected_files), 'Unexpected APK product delta.'
+              assert set(control_paths) == {workflow, *expected_files}, 'Unexpected recovery control delta.'
+              assert set(git('diff', '--name-only', android_source, control).splitlines()) <= {workflow}, 'APK source must match current main product bytes.'
+              for path, expected in expected_files.items():
+                  actual = subprocess.check_output(['git', 'show', android_source + ':' + path])
+                  assert hashlib.sha256(actual).hexdigest() == expected, 'APK fix bytes differ from reviewed patch/lock.'
+              android_lock_sha256 = expected_files['pnpm-lock.yaml']
           origin_workflow = subprocess.check_output(['git', 'show', source + ':' + workflow])
           assert hashlib.sha256(origin_workflow).hexdigest() == 'e32a45bed015294f69c01fb44309468f389e2093f3c3e323cfdb314492c843ef'
           control_workflow_sha256 = hashlib.sha256(subprocess.check_output(['git', 'show', control + ':' + workflow])).hexdigest()
@@ -194,7 +223,8 @@ jobs:
                      'promotionRun': os.environ['GITHUB_RUN_ID'], 'promotionAttempt': os.environ['GITHUB_RUN_ATTEMPT'],
                      'promotionContextSha': control, 'promotionWorkflowSha': os.environ['GITHUB_WORKFLOW_SHA'],
                      'promotionWorkflowRef': os.environ['GITHUB_WORKFLOW_REF'], 'promotionWorkflowSha256': control_workflow_sha256,
-                     'changedPaths': [workflow], 'originArtifacts': records,
+                     'changedPaths': control_paths, 'androidSource': android_source, 'androidLockSha256': android_lock_sha256,
+                     'androidSourceChangedPaths': android_paths, 'originArtifacts': records,
                      'files': [{'name': p.name, 'sha256': digest(p)} for p in sorted(assets.iterdir())]}
           receipt_path = assets / 'DESKTOP-RECOVERY.json'
           receipt_path.write_text(json.dumps(receipt, indent=2) + '\n')
@@ -203,7 +233,8 @@ jobs:
                                  'observatory_route_sha256': expected_route, 'desktop_run_id': origin_run, 'desktop_run_attempt': '1',
                                  'desktop_context_sha': source, 'desktop_workflow_sha': source, 'desktop_workflow_ref': workflow_ref,
                                  'recovery_artifact_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
-                                 'recovery_receipt_sha256': digest(receipt_path), 'recovery_workflow_sha256': control_workflow_sha256}.items():
+                                 'recovery_receipt_sha256': digest(receipt_path), 'recovery_workflow_sha256': control_workflow_sha256,
+                                 'android_source_sha': android_source, 'android_lock_sha256': android_lock_sha256}.items():
                   output.write(f'{key}={value}\n')
           PYRECOVERY
 
@@ -230,10 +261,12 @@ jobs:
         if: inputs.recover_desktop_run_id == ''
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
+          ANDROID_SOURCE_SHA: ${{ inputs.android_source_sha }}
           PUBLISH_RELEASE: ${{ inputs.publish }}
           DISPATCHED_REF: ${{ github.ref }}
           DISPATCHED_SHA: ${{ github.sha }}
         run: |
+          test -z "$ANDROID_SOURCE_SHA"
           bash scripts/weasel/verify-desktop-source.sh "$SOURCE_SHA" "$PUBLISH_RELEASE" "$DISPATCHED_REF" "$DISPATCHED_SHA"
 
       - name: Setup Vite+
@@ -700,6 +733,7 @@ jobs:
       receipt_sha256: ${{ steps.apk.outputs.receipt_sha256 }}
       build_attempt: ${{ steps.apk.outputs.build_attempt }}
     env:
+      DESKTOP_SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
       APP_VARIANT: production
       T3CODE_MOBILE_VERSION: ${{ needs.preflight.outputs.version }}
       MORROWBYTE_ANDROID_VERSION_CODE: ${{ needs.preflight.outputs.android_version_code }}
@@ -712,7 +746,7 @@ jobs:
       - name: Checkout exact promoted source
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.preflight.outputs.source_sha }}
+          ref: ${{ needs.preflight.outputs.android_source_sha || needs.preflight.outputs.source_sha }}
           fetch-depth: 1
 
       - name: Setup Vite+
@@ -743,7 +777,7 @@ jobs:
       - name: Bind source and verify standalone fork configuration
         working-directory: apps/mobile
         env:
-          SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+          SOURCE_SHA: ${{ needs.preflight.outputs.android_source_sha || needs.preflight.outputs.source_sha }}
           NODE_ENV: production
         run: |
           set -euo pipefail
@@ -811,7 +845,7 @@ jobs:
       - id: apk
         name: Verify APK signature, embedded bundle, identity and 16KB native alignment
         env:
-          SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+          SOURCE_SHA: ${{ needs.preflight.outputs.android_source_sha || needs.preflight.outputs.source_sha }}
         run: |
           set -euo pipefail
           python3 - <<'PYAPK'
@@ -874,7 +908,8 @@ jobs:
           apk_sha = digest(target)
           (output / (name + '.sha256')).write_text(f'{apk_sha}  {name}\n')
           receipt = {
-              'schemaVersion': 1, 'source': source, 'lockSha256': digest(Path('pnpm-lock.yaml')),
+              'schemaVersion': 1, 'source': source, 'desktopSource': os.environ['DESKTOP_SOURCE_SHA'],
+              'lockSha256': digest(Path('pnpm-lock.yaml')),
               'run': os.environ['GITHUB_RUN_ID'], 'attempt': os.environ['GITHUB_RUN_ATTEMPT'],
               'trustedContextSha': os.environ['GITHUB_SHA'], 'trustedWorkflowSha': os.environ['GITHUB_WORKFLOW_SHA'],
               'trustedWorkflowRef': os.environ['GITHUB_WORKFLOW_REF'],
@@ -903,7 +938,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: weasel-android-build-evidence-${{ needs.preflight.outputs.source_sha }}-${{ github.run_attempt }}
+          name: weasel-android-build-evidence-${{ needs.preflight.outputs.android_source_sha || needs.preflight.outputs.source_sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/morrowbyte-android-dependencies.txt
           if-no-files-found: ignore
           retention-days: 7
@@ -1001,7 +1036,9 @@ jobs:
 
       - name: Verify Android bytes from this build before publication
         env:
-          SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+          SOURCE_SHA: ${{ needs.preflight.outputs.android_source_sha || needs.preflight.outputs.source_sha }}
+          DESKTOP_SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+          ANDROID_LOCK_SHA256: ${{ needs.preflight.outputs.android_lock_sha256 }}
           ANDROID_VERSION: ${{ needs.preflight.outputs.version }}
           ANDROID_VERSION_CODE: ${{ needs.preflight.outputs.android_version_code }}
           APK_SHA256: ${{ needs.build_android_apk.outputs.apk_sha256 }}
@@ -1026,7 +1063,8 @@ jobs:
           receipt = json.loads(receipt_path.read_text())
           expected = {
               'schemaVersion': 1, 'source': os.environ['SOURCE_SHA'], 'version': version,
-              'lockSha256': digest(Path('pnpm-lock.yaml')),
+              'desktopSource': os.environ['DESKTOP_SOURCE_SHA'],
+              'lockSha256': os.environ['ANDROID_LOCK_SHA256'] or digest(Path('pnpm-lock.yaml')),
               'versionCode': int(os.environ['ANDROID_VERSION_CODE']),
               'run': os.environ['GITHUB_RUN_ID'], 'attempt': os.environ['APK_BUILD_ATTEMPT'],
               'trustedContextSha': os.environ['GITHUB_SHA'], 'trustedWorkflowSha': os.environ['GITHUB_WORKFLOW_SHA'],
@@ -1083,6 +1121,8 @@ jobs:
           DESKTOP_WORKFLOW_SHA: ${{ needs.preflight.outputs.desktop_workflow_sha }}
           DESKTOP_WORKFLOW_REF: ${{ needs.preflight.outputs.desktop_workflow_ref }}
           RECOVERY_WORKFLOW_SHA256: ${{ needs.preflight.outputs.recovery_workflow_sha256 }}
+          ANDROID_SOURCE_SHA: ${{ needs.preflight.outputs.android_source_sha || needs.preflight.outputs.source_sha }}
+          ANDROID_LOCK_SHA256: ${{ needs.preflight.outputs.android_lock_sha256 }}
         run: |
           set -euo pipefail
           tag="${{ needs.preflight.outputs.tag }}"
@@ -1116,7 +1156,7 @@ jobs:
               --title "Weasel Nightly ${{ needs.preflight.outputs.version }}" \
               --prerelease \
               --draft \
-              --notes "Fork channel build from $source_sha. Linux AppImage installs include a user-local installer. NixOS installs use the dedicated package and updater launcher when available at https://github.com/$GH_REPO/tree/main/packaging/nixos. Linux auto-updates stay disabled for Nix store installs. This build has no configured T3 Connect relay backend."
+              --notes "Fork channel desktop source $source_sha; Android source $ANDROID_SOURCE_SHA. Linux AppImage installs include a user-local installer. NixOS installs use the dedicated package and updater launcher when available at https://github.com/$GH_REPO/tree/main/packaging/nixos. Linux auto-updates stay disabled for Nix store installs. This build has no configured T3 Connect relay backend."
           fi
           # Asset replacement is permitted only while the release is still a
           # draft. Recheck immediately before each clobber in case a maintainer
@@ -1141,6 +1181,8 @@ jobs:
             printf 'publication_run_id=%s\npublication_run_attempt=%s\npublication_context_sha=%s\npublication_workflow_sha=%s\npublication_workflow_ref=%s\npublication_workflow_sha256=%s\n' \
               "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" "$GITHUB_WORKFLOW_SHA" "$GITHUB_WORKFLOW_REF" \
               "${RECOVERY_WORKFLOW_SHA256:-$(sha256sum .github/workflows/weasel-release.yml | cut -d ' ' -f 1)}"
+            printf 'android_source_sha=%s\nandroid_pnpm_lock_sha256=%s\n' \
+              "$ANDROID_SOURCE_SHA" "${ANDROID_LOCK_SHA256:-$lock_sha}"
             printf 'github_asset_digests=%s\n' "$(jq -c '[.[] | {name, digest}]' <<<"$assets_json")"
             printf 'artifact_sha256:\n'
             cat release-assets/SHA256SUMS
