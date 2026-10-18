@@ -10,7 +10,7 @@ import {
 const configFile = NodePath.resolve("third-party-licenses.config.json");
 
 if (process.argv.includes("--check")) {
-  const manifest = await generateThirdPartyLicenseManifest({
+  await generateThirdPartyLicenseManifest({
     configFile,
     bundleName: "web",
     packageManifests: [
@@ -19,7 +19,6 @@ if (process.argv.includes("--check")) {
       { bundle: "desktop", path: NodePath.resolve("apps/desktop/package.json") },
     ],
   });
-  console.log(`Validated ${manifest.entries.length} third-party license notices.`);
 } else {
   await syncThirdPartyLicenseNotices(configFile);
 }
