@@ -14,7 +14,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import { makeThreadFixture } from "../../test-fixtures";
 import { AttentionInboxView } from "./AttentionInboxView";
-import { deriveAttentionInbox } from "./attentionInbox";
+import { deriveAttentionInbox } from "./attentionInbox.logic";
 
 const now = DateTime.makeUnsafe("2026-10-17T09:30:00.000Z");
 const environmentId = EnvironmentId.make("nixy");

@@ -9,7 +9,7 @@ import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
 import { makeThreadFixture } from "../../test-fixtures";
-import { attentionCoverageLabel, deriveAttentionInbox } from "./attentionInbox";
+import { attentionCoverageLabel, deriveAttentionInbox } from "./attentionInbox.logic";
 
 const environmentId = EnvironmentId.make("nixy");
 const now = DateTime.makeUnsafe("2026-10-17T09:30:00.000Z");
