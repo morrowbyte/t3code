@@ -39,12 +39,21 @@ const make = Effect.gen(function* () {
   const execute = Effect.fn("desktop.nativeAuthor.execute")(function* (
     request: NativeAuthorRequest,
   ) {
+    const stage = (phase: string) =>
+      process.env.T3CODE_NATIVE_AUTHOR_DIAGNOSTICS === "1"
+        ? Effect.logInfo("Native author transport").pipe(
+            Effect.annotateLogs({ phase, operation: request.operation }),
+          )
+        : Effect.void;
+    yield* stage("begin");
     const primary = yield* pool.primary;
     const config = yield* primary.currentConfig;
     if (Option.isNone(config)) return yield* new NativeAuthorError({ code: "backend-unavailable" });
+    yield* stage("primary-ready");
     const bearerToken = yield* auth.getBearerToken.pipe(
       Effect.mapError(() => new NativeAuthorError({ code: "backend-unavailable" })),
     );
+    yield* stage("bearer-ready");
     const httpBaseUrl = config.value.httpBaseUrl.href;
     const ws = new URL(httpBaseUrl);
     ws.protocol = ws.protocol === "https:" ? "wss:" : "ws:";
@@ -57,6 +66,7 @@ const make = Effect.gen(function* () {
       }).pipe(Effect.mapError(() => new NativeAuthorError({ code: "backend-unavailable" }))),
     );
     socketUrl.searchParams.set("orchestrationProtocol", String(ORCHESTRATION_PROTOCOL_VERSION));
+    yield* stage("ticket-ready");
 
     // The ticket, bearer and backend URL stay inside this app-owned scope. A lost
     // response never replays a mutation; the caller must reconcile with read.
@@ -80,6 +90,7 @@ const make = Effect.gen(function* () {
             ),
           ),
         );
+        yield* stage("rpc-ready");
         return yield* request.operation === "read" || request.operation === "open-results"
           ? client[WS_METHODS.nativeAuthorRead](request)
           : client[WS_METHODS.nativeAuthorWrite](request);

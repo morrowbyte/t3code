@@ -881,7 +881,7 @@ export const make = Effect.gen(function* () {
     });
 
     loadApplication();
-    if (environment.isDevelopment && isMainWindow) {
+    if (environment.isDevelopment && isMainWindow && process.env.T3CODE_DESKTOP_DEVTOOLS !== "0") {
       window.webContents.openDevTools({ mode: "detach" });
     }
 
