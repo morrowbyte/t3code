@@ -957,6 +957,19 @@ export function LiveVoiceControl(props: {
           </Button>
         </>
       )}
+      {!active && !busy && gate.prepareFailure === "managed_account_required" ? (
+        <Button
+          variant="outline"
+          size="sm"
+          render={
+            <a
+              href={`/settings/providers?machine=${encodeURIComponent(props.environmentId)}&instanceId=${encodeURIComponent(props.providerInstanceId ?? "")}`}
+            />
+          }
+        >
+          Set up Codex sign-in
+        </Button>
+      ) : null}
       <LiveVoiceTranscript
         key={
           transcriptMatchesTarget && transcriptLease

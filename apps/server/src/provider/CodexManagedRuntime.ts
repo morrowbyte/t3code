@@ -13,6 +13,8 @@ export interface CodexEffectiveRuntime {
   readonly config: CodexSettings;
   readonly environment: NodeJS.ProcessEnv;
   readonly revision: string;
+  /** A transport restriction, not an account entitlement signal. */
+  readonly nativeSubagents?: false;
 }
 const decodeSettings = Schema.decodeSync(CodexSettings);
 const managedCodexLaunchArgs = [
@@ -107,6 +109,7 @@ export const makeCodexManagedRuntime = Effect.fn("makeCodexManagedRuntime")(func
       }),
       environment,
       revision: credentials.accessToken,
+      nativeSubagents: false,
     } satisfies CodexEffectiveRuntime;
   });
   return { auth, resolve, installation, homePath, homeLayout };

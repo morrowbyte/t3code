@@ -17,6 +17,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
 import { Dialog } from "../ui/dialog";
 import { Input } from "../ui/input";
+import { Radio, RadioGroup } from "../ui/radio-group";
 import { WizardFooter, WizardHeader, WizardPanel, WizardPopup } from "../ui/wizard";
 import { SettingsRow } from "./settingsLayout";
 
@@ -29,9 +30,13 @@ export function AddCodexAccountDialog({
   readonly environmentId: EnvironmentId;
   readonly onClose: () => void;
   readonly onAccountCreated?:
-    | ((instanceId: ProviderInstanceId, displayName: string) => void)
+    | ((instanceId: ProviderInstanceId, displayName: string, mode: "existing" | "managed") => void)
     | undefined;
-  readonly renderSetup: (instanceId: ProviderInstanceId, provider: ServerProvider) => ReactNode;
+  readonly renderSetup: (
+    instanceId: ProviderInstanceId,
+    provider: ServerProvider,
+    mode: "existing" | "managed",
+  ) => ReactNode;
 }) {
   const canManageProviders = useEnvironmentScope(environmentId, AuthProvidersManageScope);
   const settings = useEnvironmentSettings(environmentId);
@@ -41,8 +46,15 @@ export function AddCodexAccountDialog({
   const displayName = `ChatGPT - ${name.trim()}`;
   const [instanceId, setInstanceId] = useState<ProviderInstanceId | null>(null);
   const [pending, setPending] = useState(false);
+  const [mode, setMode] = useState<"existing" | "managed">("existing");
   const provider = providers?.find((candidate) => candidate.instanceId === instanceId);
-  const connected = usesChatGptSharing(provider);
+  const connected =
+    mode === "managed"
+      ? usesChatGptSharing(provider)
+      : provider?.driver === "codex" &&
+        provider.auth.status === "authenticated" &&
+        provider.auth.type === "chatgpt" &&
+        provider.auth.subscriptionSharing !== true;
   const closeAfterConnection = useEffectEvent(onClose);
   useEffect(() => {
     if (connected) closeAfterConnection();
@@ -64,7 +76,11 @@ export function AddCodexAccountDialog({
               driver: ProviderDriverKind.make("codex"),
               displayName,
               enabled: true,
-              config: { enabled: true, setupMode: "managed" },
+              config: {
+                enabled: true,
+                setupMode: mode,
+                ...(mode === "existing" ? { homePath: `~/.codex-t3/${id}` } : {}),
+              },
             },
           },
         },
@@ -72,7 +88,7 @@ export function AddCodexAccountDialog({
     });
     if (result._tag === "Success") {
       if (onAccountCreated) {
-        onAccountCreated(id, displayName);
+        onAccountCreated(id, displayName, mode);
         onClose();
       } else {
         setInstanceId(id);
@@ -89,16 +105,13 @@ export function AddCodexAccountDialog({
       }}
     >
       <WizardPopup size="wide">
-        <WizardHeader
-          title={instanceId ? displayName : "Add ChatGPT account"}
-          description="Each account has its own Codex instance and sign-in. Choose the other account on the sign-in page."
-        />
+        <WizardHeader title={instanceId ? displayName : "Add ChatGPT account"} />
         <WizardPanel>
           {instanceId ? (
             provider?.setup ? (
-              renderSetup(instanceId, provider)
+              renderSetup(instanceId, provider, mode)
             ) : (
-              <SettingsRow title="Codex runtime" description="Preparing managed setup." />
+              <SettingsRow title="Codex runtime" description="Preparing account setup." />
             )
           ) : (
             <form
@@ -108,6 +121,28 @@ export function AddCodexAccountDialog({
                 void createAccount();
               }}
             >
+              <SettingsRow
+                title="Sign-in route"
+                control={
+                  <RadioGroup
+                    aria-label="Sign-in route"
+                    value={mode}
+                    disabled={pending}
+                    onValueChange={(value) => {
+                      if (value === "existing" || value === "managed") setMode(value);
+                    }}
+                  >
+                    <label className="flex items-center gap-2">
+                      <Radio value="existing" />
+                      Codex ChatGPT login (recommended)
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <Radio value="managed" />
+                      Token sharing (limited text and tools)
+                    </label>
+                  </RadioGroup>
+                }
+              />
               <SettingsRow
                 title="Account name"
                 description="Shown in the provider list and model picker."

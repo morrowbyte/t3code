@@ -39,6 +39,8 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
     baseDir?: string;
     local?: { version: string; appServerFails?: boolean; versionFails?: boolean };
     platform?: NodeJS.Platform;
+    arch?: string;
+    useReleaseCatalog?: boolean;
     spawner?: ChildProcessSpawner.ChildProcessSpawner["Service"];
     runtimeRenameFailures?: number;
   } = {},
@@ -58,6 +60,7 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
     );
   }
   let downloads = 0;
+  const downloadUrls: Array<string> = [];
   const crypto = yield* Crypto.Crypto;
   const sha256 = Hex.encode(yield* crypto.digest("SHA-256", archive).pipe(Effect.orDie));
   let runtimeRenameFailures = input.runtimeRenameFailures ?? 0;
@@ -86,7 +89,7 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
   const spawner = input.spawner ?? (yield* ChildProcessSpawner.ChildProcessSpawner);
   const installation = yield* CodexInstallation.makeCodexInstallation({
     baseDir,
-    releaseAsset: { ...asset, sha256 },
+    ...(input.useReleaseCatalog ? {} : { releaseAsset: { ...asset, sha256 } }),
     validate: () => Effect.void,
     ...input.options,
   }).pipe(
@@ -97,7 +100,7 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
       refreshInBackground: Effect.void,
     }),
     Effect.provideService(HostProcess.Platform, input.platform ?? "darwin"),
-    Effect.provideService(HostProcess.Architecture, "arm64"),
+    Effect.provideService(HostProcess.Architecture, input.arch ?? "arm64"),
     Effect.provideService(HostProcess.Environment, {
       PATH: input.local ? localDirectory : "",
       SystemRoot: "C:\\Windows",
@@ -109,6 +112,7 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
       HttpClient.make((request) =>
         Effect.sync(() => {
           downloads++;
+          downloadUrls.push(request.url);
           return Object.defineProperty(
             HttpClientResponse.fromWeb(request, new Response(null)),
             "stream",
@@ -128,6 +132,7 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
     probeLog,
     failedRenames,
     downloads: () => downloads,
+    downloadUrls,
   };
 });
 const terminalState = (installation: CodexInstallation.CodexInstallation["Service"]) =>
@@ -405,6 +410,32 @@ it("publishes complete packages for all supported platforms", () => {
       );
   expect(CodexInstallation.resolveCodexReleaseAsset("linux", "riscv64")).toBeNull();
 });
+it.effect(
+  "fresh Windows x64 selects the device-auth release and rejects an unverified package",
+  () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness({
+        platform: "win32",
+        arch: "x64",
+        useReleaseCatalog: true,
+      });
+      expect(yield* h.installation.start).toMatchObject({
+        phase: "downloading",
+        version: "0.163.0",
+        totalBytes: 162230206,
+      });
+      expect(yield* terminalState(h.installation)).toMatchObject({ phase: "failed" });
+      expect(h.downloadUrls).toEqual([
+        "https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-package-x86_64-pc-windows-msvc.tar.gz",
+      ]);
+      expect(CodexInstallation.resolveCodexReleaseAsset("win32", "x64")).toMatchObject({
+        target: "x86_64-pc-windows-msvc",
+        sha256: "901028b285614a9974f431f9d9f6534b3e5ed8d62eba4ba64f4762c00f040522",
+      });
+      expect(yield* h.fs.exists(`${h.installation.managedDirectory}/active.json`)).toBe(false);
+      expect(yield* h.fs.exists(`${h.installation.managedDirectory}/0.163.0`)).toBe(false);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
 // Live clock: staleness compares real filesystem mtimes.
 it.live("startup removes only stale staging directories", () =>
   Effect.gen(function* () {
@@ -511,5 +542,69 @@ it.effect("does not retry a failed runtime rename outside Windows", () =>
     const h = yield* makeHarness({ runtimeRenameFailures: 1 });
     yield* h.installation.start;
     expect((yield* terminalState(h.installation)).phase).toBe("failed");
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect.each([
+  ["linux", "x64"],
+  ["linux", "arm64"],
+  ["win32", "arm64"],
+] as const)(
+  "offers device-auth runtime on %s %s without trusting an unverified download",
+  ([platform, arch]) =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness({ platform, arch, useReleaseCatalog: true });
+      expect(yield* h.installation.start).toMatchObject({
+        version: "0.163.0",
+        phase: "downloading",
+      });
+      expect((yield* terminalState(h.installation)).phase).toBe("failed");
+      expect(h.downloadUrls).toEqual([
+        CodexInstallation.resolveCodexReleaseAsset(platform, arch)?.url,
+      ]);
+      expect(yield* h.fs.exists(`${h.installation.managedDirectory}/active.json`)).toBe(false);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+it.effect("upgrades past an older local CLI and prefers the verified device-auth runtime", () =>
+  Effect.gen(function* () {
+    const h = yield* makeHarness({
+      local: { version: "0.156.1" },
+      platform: "linux",
+      arch: "x64",
+      useReleaseCatalog: true,
+    });
+    expect((yield* h.installation.resolve()).source).toBe("local");
+    expect(yield* h.installation.start).toMatchObject({ phase: "downloading", version: "0.163.0" });
+    expect((yield* terminalState(h.installation)).phase).toBe("failed");
+    expect(h.downloads()).toBe(1);
+    const release = CodexInstallation.resolveCodexReleaseAsset("linux", "x64");
+    if (!release) throw new Error("Missing Linux release fixture");
+    const directory = `${h.installation.managedDirectory}/0.163.0`;
+    for (const name of ["bin/codex", "bin/codex-code-mode-host", "codex-path/rg"]) {
+      yield* h.fs.makeDirectory(`${directory}/${name.split("/")[0]}`, { recursive: true });
+      yield* h.fs.writeFileString(`${directory}/${name}`, "synthetic-runtime", { mode: 0o755 });
+    }
+    yield* h.fs.writeFileString(
+      `${directory}/codex-package.json`,
+      JSON.stringify({
+        layoutVersion: 1,
+        version: release.version,
+        target: release.target,
+        entrypoint: "bin/codex",
+      }),
+    );
+    yield* h.fs.writeFileString(
+      `${directory}/.install-complete.json`,
+      JSON.stringify({ version: release.version, target: release.target, sha256: release.sha256 }),
+    );
+    yield* h.fs.writeFileString(
+      `${h.installation.managedDirectory}/active.json`,
+      JSON.stringify({ version: release.version }),
+    );
+    expect(yield* h.installation.resolve()).toMatchObject({
+      version: "0.163.0",
+      source: "managed",
+    });
+    expect(yield* h.fs.exists(h.localBinaryPath)).toBe(true);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

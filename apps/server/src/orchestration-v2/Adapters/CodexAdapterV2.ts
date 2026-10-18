@@ -1419,6 +1419,7 @@ const CODEX_T3_MCP_TOOL_TIMEOUT_SEC = 65 * 60;
 
 export function codexThreadRuntimeParams(input: {
   readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
+  readonly nativeSubagents?: false;
   readonly modelSelection?: { readonly model: string };
   readonly runtimePolicy?: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
 }): {
@@ -1432,6 +1433,10 @@ export function codexThreadRuntimeParams(input: {
     ...(input.modelSelection === undefined ? {} : { model: input.modelSelection.model }),
     config: {
       ...CODEX_THREAD_CONFIG,
+      // Saved threads must receive the transport restriction again on resume.
+      ...(input.nativeSubagents === false
+        ? { "features.multi_agent": false, "features.multi_agent_v2": false }
+        : {}),
       ...(mcpSession === undefined
         ? {}
         : {
@@ -3128,6 +3133,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                           .request("thread/resume", {
                             threadId: input.nativeThreadId,
                             excludeTurns: true,
+                            ...(resolvedRuntime?.nativeSubagents === false
+                              ? codexThreadRuntimeParams({
+                                  mcpSession: undefined,
+                                  nativeSubagents: false,
+                                })
+                              : {}),
                           })
                           .pipe(Effect.flatMap(decodeCodexChildModel))
                       : Effect.succeed(response),
@@ -6351,7 +6362,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 turnInput.onObservatoryInvocation !== undefined,
               browserToolsAvailable: mcpSession?.browserToolsAvailable ?? true,
               deviceToolsAvailable: mcpSession?.capabilities?.has("device") ?? false,
-              omitServiceTier: adapterOptions.resolveRuntime !== undefined,
+              omitServiceTier: resolvedRuntime?.config.setupMode === "managed",
               ...(turnInput.appContext === undefined ? {} : { appContext: turnInput.appContext }),
             });
             yield* Ref.update(pendingRootTurns, (current) => {
@@ -6780,6 +6791,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               Effect.flatMap((mcpSession) =>
                 Effect.gen(function* () {
                   const params = codexThreadRuntimeParams({
+                    ...(resolvedRuntime?.nativeSubagents === false
+                      ? { nativeSubagents: false }
+                      : {}),
                     mcpSession,
                     modelSelection: threadInput.modelSelection,
                     runtimePolicy: threadInput.runtimePolicy,
@@ -6839,6 +6853,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 threadId: nativeThreadId,
                 excludeTurns: true,
                 ...codexThreadRuntimeParams({
+                  ...(resolvedRuntime?.nativeSubagents === false ? { nativeSubagents: false } : {}),
                   mcpSession: yield* readMcpSession(
                     threadInput.threadId ?? threadInput.providerThread.appThreadId,
                   ),
@@ -7773,6 +7788,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   threadId,
                   excludeTurns: true,
                   ...codexThreadRuntimeParams({
+                    ...(resolvedRuntime?.nativeSubagents === false
+                      ? { nativeSubagents: false }
+                      : {}),
                     mcpSession: yield* readMcpSession(threadInput.providerThread.appThreadId),
                     modelSelection: input.modelSelection,
                     runtimePolicy: input.runtimePolicy,
@@ -7822,6 +7840,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       ? {}
                       : { lastTurnId: boundary.lastTurnId }),
                     ...codexThreadRuntimeParams({
+                      ...(resolvedRuntime?.nativeSubagents === false
+                        ? { nativeSubagents: false }
+                        : {}),
                       mcpSession: yield* mcpSessions.read(threadInput.targetThreadId),
                       ...(threadInput.modelSelection === undefined
                         ? {}

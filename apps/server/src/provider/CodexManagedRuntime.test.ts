@@ -129,6 +129,7 @@ it.effect.each(
         yield* Effect.gen(function* () {
           const effective = yield* runtime.resolve;
           assert.strictEqual(leases, 1);
+          assert.strictEqual(effective.nativeSubagents, false);
           assert.strictEqual(effective.config.binaryPath, executable.executablePath);
           assert.notStrictEqual(effective.config.homePath, ambient.CODEX_HOME);
           assert.equal(runtime.homeLayout.sharedHomePath, sharedHome);

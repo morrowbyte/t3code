@@ -96,6 +96,288 @@ const noSpawn = ChildProcessSpawner.make(() =>
 const encodeCredentials = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 it.layer(layerTest)("CodexDriver", (it) => {
+  it.effect(
+    "uses the downloaded executable without turning native sessions into token sharing",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const parentHome = yield* fs.makeTempDirectoryScoped({ prefix: "native-codex-launch-" });
+        const homePath = NodePath.join(parentHome, "new-account-home");
+        yield* fs.writeFileString(
+          NodePath.join(parentHome, "auth.json"),
+          "untouched-native-parent",
+        );
+        const installation = yield* CodexInstallation.CodexInstallation;
+        const launches: Array<
+          Parameters<CodexAdapterV2.CodexAppServerClientFactoryShape["open"]>[0]
+        > = [];
+        const instanceId = ProviderInstanceId.make("codex-native-download");
+        const instance = yield* CodexDriver.create({
+          instanceId,
+          displayName: undefined,
+          enabled: false,
+          environment: [],
+          config: { ...CodexDriver.defaultConfig(), setupMode: "existing", homePath },
+        }).pipe(
+          Effect.provideService(CodexInstallation.CodexInstallation, {
+            ...installation,
+            acquire: () =>
+              Effect.succeed({
+                executablePath: "C:\\T3\\tools\\codex.exe",
+                source: "managed",
+                version: "0.156.1",
+                managedVersionDirectory: "C:\\T3\\tools",
+              }),
+          }),
+          Effect.provideService(CodexAdapterV2.CodexAppServerClientFactory, {
+            open: (launch) =>
+              Effect.sync(() => launches.push(launch)).pipe(
+                Effect.andThen(Effect.die("Synthetic launch recorded; no native process started")),
+              ),
+          }),
+          Effect.provideService(HostProcess.Environment, { PATH: "synthetic-only" }),
+        );
+        expect(yield* fs.exists(homePath)).toBe(false);
+        yield* instance.orchestrationAdapter
+          .openSession({
+            threadId: ThreadId.make("native-launch-thread"),
+            providerSessionId: ProviderSessionId.make("native-launch-session"),
+            modelSelection: { instanceId, model: "gpt-6.1-sol" },
+            runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              cwd: homePath,
+            }),
+          })
+          .pipe(Effect.scoped, Effect.exit);
+        expect(yield* fs.exists(homePath)).toBe(true);
+        expect(launches).toHaveLength(1);
+        expect(launches[0]?.settings.homePath).toBe(homePath);
+        expect(yield* fs.exists(NodePath.join(homePath, "auth.json"))).toBe(false);
+        expect(yield* fs.readFileString(NodePath.join(parentHome, "auth.json"))).toBe(
+          "untouched-native-parent",
+        );
+        expect(launches[0]?.settings.binaryPath).toBe("C:\\T3\\tools\\codex.exe");
+        expect(launches[0]?.settings.setupMode).toBe("existing");
+        expect(launches[0]?.settings.launchArgs).not.toContain("openai_token_sharing");
+        expect(launches[0]?.environment?.ACCESS_TOKEN).toBeUndefined();
+      }).pipe(
+        Effect.scoped,
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn),
+      ),
+  );
+
+  it.effect(
+    "reset credit uses the acquired native executable and instance environment without PATH",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const home = yield* fs.makeTempDirectoryScoped({ prefix: "native-reset-runtime-" });
+        const binary = NodePath.join(home, "codex-downloaded");
+        yield* fs.writeFileString(binary, "synthetic", { mode: 0o755 });
+        const installation = yield* CodexInstallation.CodexInstallation;
+        let released = false;
+        const commands: Array<{
+          command: string;
+          env: Readonly<Record<string, string | undefined>>;
+        }> = [];
+        const spawner = ChildProcessSpawner.make((command) => {
+          if (!ChildProcess.isStandardCommand(command))
+            return Effect.die("Expected a standard native command");
+          commands.push({ command: command.command, env: command.options.env ?? {} });
+          return Effect.fail(
+            PlatformError.systemError({
+              _tag: "NotFound",
+              module: "ChildProcessSpawner",
+              method: "spawn",
+              pathOrDescriptor: "synthetic-no-process",
+            }),
+          );
+        });
+        const instance = yield* CodexDriver.create({
+          instanceId: ProviderInstanceId.make("native-reset-no-path"),
+          displayName: undefined,
+          enabled: false,
+          environment: [
+            { name: "WEA28_RESET_MARKER", value: "selected-instance", sensitive: false },
+          ],
+          config: { ...CodexDriver.defaultConfig(), setupMode: "existing", homePath: home },
+        }).pipe(
+          Effect.provideService(HostProcess.Environment, { PATH: "" }),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.provideService(CodexInstallation.CodexInstallation, {
+            ...installation,
+            resolve: () =>
+              Effect.succeed({
+                executablePath: binary,
+                version: "0.163.0",
+                source: "managed",
+                managedVersionDirectory: home,
+              }),
+            acquire: () =>
+              Effect.addFinalizer(() =>
+                Effect.sync(() => {
+                  released = true;
+                }),
+              ).pipe(
+                Effect.as({
+                  executablePath: binary,
+                  version: "0.163.0",
+                  source: "managed",
+                  managedVersionDirectory: home,
+                }),
+              ),
+          }),
+        );
+        if (!instance.consumeResetCredit) throw new Error("Missing native reset credit operation");
+        yield* instance.consumeResetCredit().pipe(Effect.exit);
+        expect(commands).toHaveLength(1);
+        expect(commands[0]?.command).toBe(binary);
+        expect(commands[0]?.env.WEA28_RESET_MARKER).toBe("selected-instance");
+        expect(commands[0]?.env.CODEX_HOME).toBe(home);
+        expect(released).toBe(true);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("older default runtime withholds sign-in and names the normal install action", () =>
+    Effect.gen(function* () {
+      const installation = yield* CodexInstallation.CodexInstallation;
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({ prefix: "native-old-auth-" });
+      const instance = yield* CodexDriver.create({
+        instanceId: ProviderInstanceId.make("native-old-auth"),
+        displayName: undefined,
+        enabled: false,
+        environment: [],
+        config: { ...CodexDriver.defaultConfig(), setupMode: "existing", homePath: home },
+      }).pipe(
+        Effect.provideService(CodexInstallation.CodexInstallation, {
+          ...installation,
+          resolve: () =>
+            Effect.succeed({
+              executablePath: "old-local-codex",
+              version: "0.156.1",
+              source: "local",
+              managedVersionDirectory: null,
+            }),
+        }),
+      );
+      if (!instance.auth) throw new Error("Missing native auth controller");
+      const refreshMethods = instance.auth.refreshMethods;
+      if (refreshMethods === undefined) throw new Error("Missing native auth method refresh");
+      yield* refreshMethods;
+      const state = yield* instance.auth.subscribe("owner").pipe(Stream.runHead);
+      if (Option.isNone(state)) throw new Error("Missing native auth state");
+      expect(state.value.methods).toEqual([]);
+      expect(state.value.message).toContain("Install or update Codex in provider settings");
+      expect(yield* fs.exists(NodePath.join(home, "auth.json"))).toBe(false);
+    }).pipe(Effect.scoped, Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn)),
+  );
+
+  it.effect(
+    "default Codex respects the instance PATH without acquiring the global installation",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "native-instance-path-" });
+        const binary = NodePath.join(directory, "codex");
+        yield* fs.writeFileString(binary, "synthetic-codex", { mode: 0o755 });
+        const home = NodePath.join(directory, "account-home");
+        const installation = yield* CodexInstallation.CodexInstallation;
+        const launches: Array<
+          Parameters<CodexAdapterV2.CodexAppServerClientFactoryShape["open"]>[0]
+        > = [];
+        let globalAcquires = 0;
+        const globalExecutable = {
+          executablePath: "/synthetic-global/codex",
+          source: "managed" as const,
+          version: "0.163.0",
+          managedVersionDirectory: "/synthetic-global",
+        };
+        const versionSpawner = ChildProcessSpawner.make(() =>
+          Effect.succeed(
+            ChildProcessSpawner.makeHandle({
+              pid: ChildProcessSpawner.ProcessId(1),
+              exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+              isRunning: Effect.succeed(false),
+              kill: () => Effect.void,
+              unref: Effect.succeed(Effect.void),
+              stdin: Sink.drain,
+              stdout: Stream.encodeText(Stream.make("codex-cli 0.163.0\n")),
+              stderr: Stream.empty,
+              all: Stream.empty,
+              getInputFd: () => Sink.drain,
+              getOutputFd: () => Stream.empty,
+            }),
+          ),
+        );
+        const instanceId = ProviderInstanceId.make("native-instance-path");
+        const instance = yield* CodexDriver.create({
+          instanceId,
+          displayName: undefined,
+          enabled: false,
+          environment: [{ name: "PATH", value: directory, sensitive: false }],
+          config: { ...CodexDriver.defaultConfig(), setupMode: "existing", homePath: home },
+        }).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, versionSpawner),
+          Effect.provideService(CodexInstallation.CodexInstallation, {
+            ...installation,
+            resolve: () => Effect.succeed(globalExecutable),
+            acquire: () =>
+              Effect.sync(() => {
+                globalAcquires++;
+                return globalExecutable;
+              }),
+          }),
+          Effect.provideService(CodexAdapterV2.CodexAppServerClientFactory, {
+            open: (launch) =>
+              Effect.sync(() => launches.push(launch)).pipe(
+                Effect.andThen(Effect.die("Synthetic launch only")),
+              ),
+          }),
+        );
+        yield* instance.orchestrationAdapter
+          .openSession({
+            threadId: ThreadId.make("instance-path-thread"),
+            providerSessionId: ProviderSessionId.make("instance-path-session"),
+            modelSelection: { instanceId, model: "gpt-6.1-sol" },
+            runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              cwd: home,
+            }),
+          })
+          .pipe(Effect.scoped, Effect.exit);
+        expect(globalAcquires).toBe(0);
+        expect(launches).toHaveLength(1);
+        expect(launches[0]?.settings.binaryPath).toBe(binary);
+        expect(launches[0]?.environment?.PATH).toBe(directory);
+        expect(launches[0]?.settings.setupMode).toBe("existing");
+        expect((yield* instance.snapshot.getSnapshot).setup?.canInstall).toBe(false);
+        expect(process.env.PATH).not.toBe(directory);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("advertises explicit native setup without logging in or starting work", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const homePath = yield* fs.makeTempDirectoryScoped({ prefix: "native-codex-setup-" });
+      const instance = yield* CodexDriver.create({
+        instanceId: ProviderInstanceId.make("codex-native-first-run"),
+        displayName: undefined,
+        enabled: false,
+        environment: [],
+        config: { ...CodexDriver.defaultConfig(), setupMode: "existing", homePath },
+      });
+      expect((yield* instance.snapshot.getSnapshot).setup).toEqual({
+        canAuthenticate: true,
+        canInstall: true,
+      });
+      expect(instance.auth?.credentialBinding).toEqual({ owner: "provider", key: homePath });
+      expect(yield* fs.exists(NodePath.join(homePath, "auth.json"))).toBe(false);
+    }).pipe(Effect.scoped, Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn)),
+  );
+
   it.effect("disconnect refreshes a restored managed account while its auth flow is idle", () =>
     Effect.gen(function* () {
       const instanceId = ProviderInstanceId.make("restored-managed-account");

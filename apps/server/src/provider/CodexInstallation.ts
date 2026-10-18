@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - Effect has no incremental digest.
 import { ProviderDriverKind, type ProviderInstallState } from "@t3tools/contracts";
+import { satisfiesSemverRange } from "@t3tools/shared/semver";
 import { cliArchiveTarCommand } from "@t3tools/shared/cliRelease";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveCommandPath, resolveSpawnCommand } from "@t3tools/shared/shell";
@@ -52,6 +53,9 @@ export interface CodexReleaseAsset {
   readonly sha256: string;
   readonly archiveBytes: number;
 }
+export const supportsCodexDeviceAuth = (version: string) =>
+  /^\d+\.\d+\.\d+$/u.test(version) && satisfiesSemverRange(version, ">=0.163.0");
+
 const RELEASES: Readonly<Record<string, CodexReleaseAsset>> = {
   "darwin-arm64": {
     version: "0.156.1",
@@ -68,32 +72,32 @@ const RELEASES: Readonly<Record<string, CodexReleaseAsset>> = {
     archiveBytes: 138670455,
   },
   "linux-arm64": {
-    version: "0.156.1",
+    version: "0.163.0",
     target: "aarch64-unknown-linux-musl",
-    url: "https://github.com/openai/codex/releases/download/rust-v0.156.1/codex-package-aarch64-unknown-linux-musl.tar.gz",
-    sha256: "fdd47ed6aade0360796fd3f6f95a45096f327c15e19e8c7339f9dc5633041786",
-    archiveBytes: 136933361,
+    url: "https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-package-aarch64-unknown-linux-musl.tar.gz",
+    sha256: "9d8ecf2d19d3e184877983902d6c85de48b3888dcb72c382a8a0c975845927fb",
+    archiveBytes: 149800043,
   },
   "linux-x64": {
-    version: "0.156.1",
+    version: "0.163.0",
     target: "x86_64-unknown-linux-musl",
-    url: "https://github.com/openai/codex/releases/download/rust-v0.156.1/codex-package-x86_64-unknown-linux-musl.tar.gz",
-    sha256: "8b711520beddf385467b8da4d2c93736637c6ba1e46811cf0d8606b7c490b6f6",
-    archiveBytes: 145976992,
+    url: "https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-package-x86_64-unknown-linux-musl.tar.gz",
+    sha256: "582646c6bf0561eb0de540f7fc85b9121b0091a826bc6e96830b7f1722122182",
+    archiveBytes: 159424486,
   },
   "win32-arm64": {
-    version: "0.156.1",
+    version: "0.163.0",
     target: "aarch64-pc-windows-msvc",
-    url: "https://github.com/openai/codex/releases/download/rust-v0.156.1/codex-package-aarch64-pc-windows-msvc.tar.gz",
-    sha256: "85994caecdc7609c49fd585c1cdb5677fa9d0acbf789650cff23a13afc9505db",
-    archiveBytes: 142037952,
+    url: "https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-package-aarch64-pc-windows-msvc.tar.gz",
+    sha256: "6bbada389cd1ce26783e837fd9ba4711fb4542f432044f7955139e27e27acfde",
+    archiveBytes: 150223371,
   },
   "win32-x64": {
-    version: "0.156.1",
+    version: "0.163.0",
     target: "x86_64-pc-windows-msvc",
-    url: "https://github.com/openai/codex/releases/download/rust-v0.156.1/codex-package-x86_64-pc-windows-msvc.tar.gz",
-    sha256: "a2e017db9807e6a2269a26fea0e1d9546469cef4d472a33016bc9f3ad7d3b733",
-    archiveBytes: 153839991,
+    url: "https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-package-x86_64-pc-windows-msvc.tar.gz",
+    sha256: "901028b285614a9974f431f9d9f6534b3e5ed8d62eba4ba64f4762c00f040522",
+    archiveBytes: 162230206,
   },
 };
 export const resolveCodexReleaseAsset = (platform: NodeJS.Platform, arch: string) =>
@@ -377,11 +381,20 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
   );
   const resolve = Effect.fn("CodexInstallation.resolve")(function* () {
     const local = yield* resolveLocal();
+    if (local && !supportsCodexDeviceAuth(local.version)) {
+      const managed = yield* resolveManaged().pipe(Effect.option);
+      if (Option.isSome(managed) && supportsCodexDeviceAuth(managed.value.version))
+        return managed.value;
+    }
     return local ?? (yield* resolveManaged());
   });
   const reuseLocal = Effect.fn("CodexInstallation.reuseLocal")(function* () {
     const local = yield* resolveLocal();
-    if (!local) return false;
+    if (
+      !local ||
+      (asset && supportsCodexDeviceAuth(asset.version) && !supportsCodexDeviceAuth(local.version))
+    )
+      return false;
     yield* SubscriptionRef.update(
       state,
       (current) =>

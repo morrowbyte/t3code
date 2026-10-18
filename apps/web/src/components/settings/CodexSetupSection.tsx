@@ -13,6 +13,7 @@ import type {
   ServerProvider,
 } from "@t3tools/contracts";
 import { codexAuthHandoffUrl } from "@t3tools/shared/codexAuthHandoff";
+import { compareSemverVersions } from "@t3tools/shared/semver";
 import { providerAuthReturnUrl } from "@t3tools/shared/providerAuthReturnUrl";
 import { isLoopbackHost } from "@t3tools/shared/preview";
 import { CheckIcon, ChevronRightIcon, ExternalLinkIcon } from "lucide-react";
@@ -46,6 +47,7 @@ import { SettingsRow } from "./settingsLayout";
 import { AddCodexAccountDialog } from "./AddCodexAccountDialog";
 import { getOnboardingProviderState } from "../../onboarding/providerReadiness.logic";
 import { getProviderSummary } from "./providerStatus";
+import { ProviderAuthenticationSection } from "./ProviderAuthenticationSection";
 
 const noop = () => undefined;
 
@@ -72,7 +74,9 @@ export function CodexSetupSection(props: CodexSetupSectionProps) {
   const existingChecking = existingState === "checking";
   const existingSummary = getProviderSummary(props.provider);
   const content =
-    props.mode === "existing" && props.presentation === "onboarding" ? (
+    props.mode === "existing" && props.provider?.setup?.canAuthenticate ? (
+      <NativeCodexSetup {...props} provider={props.provider} />
+    ) : props.mode === "existing" && props.presentation === "onboarding" ? (
       <CodexWelcomeCard
         title={props.displayName || props.provider?.displayName || "Codex"}
         description={
@@ -164,6 +168,109 @@ export function CodexSetupSection(props: CodexSetupSectionProps) {
   return content;
 }
 
+function NativeCodexSetup(props: CodexSetupSectionProps & { readonly provider: ServerProvider }) {
+  const target = { environmentId: props.environmentId, input: { instanceId: props.instanceId } };
+  const installation = useEnvironmentQuery(serverEnvironment.providerInstallState(target));
+  const start = useAtomCommand(serverEnvironment.startProviderInstall, {
+    reportFailure: false,
+    reportDefect: false,
+  });
+  const refresh = useAtomCommand(serverEnvironment.refreshProviders, {
+    reportFailure: false,
+    reportDefect: false,
+  });
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const pendingRef = useRef(false);
+  const refreshed = useRef<string | null>(null);
+  const state = installation.data;
+  const active = state && ["downloading", "extracting", "verifying"].includes(state.phase);
+  const runtimeInstalled =
+    props.provider.installed ||
+    (props.provider.setup?.canInstall === true && state?.installedVersion != null);
+  const installedVersion =
+    props.provider.setup?.canInstall === true
+      ? (state?.installedVersion ?? props.provider.version)
+      : props.provider.version;
+  const olderRuntime =
+    runtimeInstalled &&
+    typeof installedVersion === "string" &&
+    /^\d+\.\d+\.\d+$/u.test(installedVersion) &&
+    typeof state?.version === "string" &&
+    /^\d+\.\d+\.\d+$/u.test(state.version) &&
+    compareSemverVersions(installedVersion, state.version) < 0;
+  const updateAvailable = olderRuntime && props.provider.setup?.canInstall === true;
+  const installed = runtimeInstalled && !olderRuntime;
+  useEffect(() => {
+    if (state?.phase !== "succeeded" || !state.installedVersion) return;
+    const key = `${props.environmentId}:${props.instanceId}:${state.installedVersion}`;
+    if (refreshed.current === key) return;
+    refreshed.current = key;
+    void refresh({ environmentId: props.environmentId, input: { instanceId: props.instanceId } });
+  }, [state?.phase, state?.installedVersion, props.environmentId, props.instanceId, refresh]);
+  const install = async () => {
+    if (pendingRef.current || props.readOnly) return;
+    pendingRef.current = true;
+    setPending(true);
+    setError(null);
+    try {
+      const result = await start(target);
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result))
+        setError("Codex installation could not finish. Try again.");
+    } catch {
+      setError("Codex installation could not finish. Try again.");
+    } finally {
+      pendingRef.current = false;
+      setPending(false);
+    }
+  };
+  return (
+    <section className="space-y-3" aria-label="Codex setup">
+      <SettingsRow
+        title="Codex runtime"
+        description={
+          active
+            ? "Installing Codex…"
+            : updateAvailable
+              ? "Update Codex to sign in."
+              : installed
+                ? "Installed."
+                : props.provider.setup?.canInstall
+                  ? "Install Codex to sign in."
+                  : olderRuntime
+                    ? "Update the configured Codex executable to sign in."
+                    : "Check the configured Codex binary path."
+        }
+      >
+        {(!installed || updateAvailable) && props.provider.setup?.canInstall ? (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={props.readOnly || pending || Boolean(active) || installation.error !== null}
+            onClick={() => void install()}
+          >
+            {active || pending ? "Installing…" : updateAvailable ? "Update Codex" : "Install Codex"}
+          </Button>
+        ) : null}
+      </SettingsRow>
+      {error || state?.phase === "failed" || installation.error ? (
+        <p role="alert" className="text-sm text-destructive">
+          {error ?? "Codex is unavailable. Retry installation or check its configured binary path."}
+        </p>
+      ) : null}
+      {installed ? (
+        <ProviderAuthenticationSection
+          environmentId={props.environmentId}
+          environmentLabel={props.displayName || "this device"}
+          instanceId={props.instanceId}
+          provider={props.provider}
+          readOnly={props.readOnly === true || !props.enabled}
+        />
+      ) : null}
+    </section>
+  );
+}
+
 export function AddManagedCodexAccountDialog({
   environmentId,
   onClose,
@@ -172,7 +279,7 @@ export function AddManagedCodexAccountDialog({
   readonly environmentId: EnvironmentId;
   readonly onClose: () => void;
   readonly onAccountCreated?:
-    | ((instanceId: ProviderInstanceId, displayName: string) => void)
+    | ((instanceId: ProviderInstanceId, displayName: string, mode: "existing" | "managed") => void)
     | undefined;
 }) {
   const canManageProviders = useEnvironmentScope(environmentId, AuthProvidersManageScope);
@@ -181,22 +288,35 @@ export function AddManagedCodexAccountDialog({
       environmentId={environmentId}
       onClose={onClose}
       onAccountCreated={onAccountCreated}
-      renderSetup={(instanceId, provider) => (
-        <ManagedCodexSetup
-          key={instanceId}
-          environmentId={environmentId}
-          instanceId={instanceId}
-          provider={provider}
-          mode="managed"
-          enabled
-          readOnly={!canManageProviders}
-          autoStart
-          onAutoStartConsumed={noop}
-          onModeChange={noop}
-          onSignInCancelled={onClose}
-          allowExistingCli={false}
-        />
-      )}
+      renderSetup={(instanceId, provider, mode) =>
+        mode === "existing" ? (
+          <CodexSetupSection
+            key={instanceId}
+            environmentId={environmentId}
+            instanceId={instanceId}
+            provider={provider}
+            mode="existing"
+            enabled={provider.enabled}
+            readOnly={!canManageProviders}
+            onModeChange={noop}
+          />
+        ) : (
+          <ManagedCodexSetup
+            key={instanceId}
+            environmentId={environmentId}
+            instanceId={instanceId}
+            provider={provider}
+            mode="managed"
+            enabled
+            readOnly={!canManageProviders}
+            autoStart
+            onAutoStartConsumed={noop}
+            onModeChange={noop}
+            onSignInCancelled={onClose}
+            allowExistingCli={false}
+          />
+        )
+      }
     />
   );
 }
@@ -845,7 +965,7 @@ function ManagedCodexSetup({
                 disabled={readOnly || busy}
                 onClick={() => onModeChange("existing")}
               >
-                Use existing CLI
+                Use Codex sign-in for Live voice
               </Button>
             ) : null
           }
@@ -865,8 +985,10 @@ function ManagedCodexSetup({
     <section aria-label="Codex setup" className="divide-y divide-border/50">
       {accountPicker}
       <SettingsRow
-        title="ChatGPT account"
-        description={accountDescription}
+        title="ChatGPT token sharing"
+        description={
+          <>Native subagents unavailable. Use Codex sign-in for Live voice. {accountDescription}</>
+        }
         control={
           <div className="flex flex-wrap items-center justify-end gap-2">
             {authActive ? (
@@ -924,6 +1046,16 @@ function ManagedCodexSetup({
                 >
                   Disconnect
                 </Button>
+                {allowExistingCli ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={readOnly || busy}
+                    onClick={() => onModeChange("existing")}
+                  >
+                    Use Codex sign-in for Live voice
+                  </Button>
+                ) : null}
               </>
             ) : (
               <>

@@ -78,13 +78,6 @@ export const makeProviderInstallation = Effect.fn("makeProviderInstallation")(fu
       : yield* decodeAntigravitySettings(entries[instanceId]?.config ?? {}).pipe(
           Effect.mapError(invalidConfig),
         );
-    if (isCodex && (!("setupMode" in config) || config.setupMode !== "managed")) {
-      return yield* new ProviderSetupError({
-        instanceId,
-        operation,
-        detail: "Choose managed setup to install Codex in T3 Code.",
-      });
-    }
     if (managedOnly && config.binaryPath && (!isCodex || config.binaryPath !== "codex")) {
       return yield* new ProviderSetupError({
         instanceId,

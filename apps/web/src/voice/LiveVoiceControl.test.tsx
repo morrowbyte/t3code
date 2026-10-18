@@ -908,6 +908,13 @@ describe("LiveVoiceControl passive availability", () => {
       expect(commands.start).not.toHaveBeenCalled();
       expect(getUserMedia).not.toHaveBeenCalled();
       expect(peer).not.toHaveBeenCalled();
+      const setup = container.querySelector<HTMLAnchorElement>('a[href^="/settings/providers"]');
+      if (code === "managed_account_required") {
+        expect(setup?.textContent).toBe("Set up Codex sign-in");
+        expect(setup?.getAttribute("href")).toBe(
+          `/settings/providers?machine=${environmentA}&instanceId=codex`,
+        );
+      } else expect(setup).toBeNull();
       const model = advanceLiveVoiceDiagnosticModel(null, gateFor(loaded, "error", classified));
       expect(model.gate.prepareFailure).toBe(code);
     },
@@ -1105,7 +1112,9 @@ describe("LiveVoiceControl passive availability", () => {
     },
     { patch: { instanceConfigured: false }, reason: "has no saved settings" },
     {
-      patch: { threadPreparationReason: "Prepare this thread's worktree before starting Live voice." },
+      patch: {
+        threadPreparationReason: "Prepare this thread's worktree before starting Live voice.",
+      },
       reason: "Prepare this thread's worktree",
     },
     { patch: { config: null }, reason: "setup mode is missing" },

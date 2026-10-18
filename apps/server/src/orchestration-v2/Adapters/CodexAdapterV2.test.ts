@@ -67,6 +67,7 @@ import * as ProviderReplayHarness from "../testkit/ProviderReplayHarness.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
+import type { CodexEffectiveRuntime } from "../../provider/CodexManagedRuntime.ts";
 import { makeReplayServerConfig, withCodexReplayChildMetadata } from "./CodexAdapterV2.testkit.ts";
 import * as CodexAdapterV2Testkit from "./CodexAdapterV2.testkit.ts";
 
@@ -1851,6 +1852,10 @@ function makeCodexReplayTurn(input: {
   };
 }
 
+const decodeTurnServiceTier = Schema.decodeUnknownEffect(
+  Schema.Struct({ serviceTier: Schema.optionalKey(Schema.String) }),
+);
+
 function codexReplayPreamble(input: {
   readonly nativeThreadId: string;
   readonly nativeTurnId: string;
@@ -2485,6 +2490,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     onRequest: (method: string, params: unknown) => Effect.Effect<void> = () => Effect.void,
     readChildMetadata?: Parameters<typeof withCodexReplayChildMetadata>[2],
     observatoryAvailable?: boolean,
+    effectiveRuntime?: CodexEffectiveRuntime,
   ) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -2543,6 +2549,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         fileSystem,
         idAllocator,
         serverConfig,
+        ...(effectiveRuntime === undefined
+          ? {}
+          : { resolveRuntime: Effect.succeed(effectiveRuntime) }),
         continuationRequests: {
           offer: (request) =>
             Effect.sync(() => {
@@ -3617,6 +3626,82 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
+  it.effect.each(["existing", "managed"] as const)(
+    "resolved %s runtime preserves native priority but omits it for token sharing",
+    (setupMode) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const nativeThreadId = `priority-${setupMode}-thread`;
+          const transcript = makeCodexReplayTranscript({
+            scenario: `resolved-priority-${setupMode}`,
+            entries: codexReplayPreamble({
+              nativeThreadId,
+              nativeTurnId: "priority-turn",
+              prompt: "priority probe",
+            }).map((entry) => {
+              if (
+                setupMode !== "existing" ||
+                entry.type !== "expect_outbound" ||
+                entry.label !== "turn/start"
+              )
+                return entry;
+              if (!Predicate.isObject(entry.frame) || !Predicate.isObject(entry.frame.params))
+                throw new Error("Missing expected native turn/start frame");
+              return {
+                ...entry,
+                frame: {
+                  ...entry.frame,
+                  params: { ...entry.frame.params, serviceTier: "priority" },
+                },
+              };
+            }),
+          });
+          const wireTier = yield* Deferred.make<string | undefined>();
+          const harness = yield* makeCodexReplayHarness(
+            transcript,
+            undefined,
+            (method, params) =>
+              method === "turn/start"
+                ? decodeTurnServiceTier(params).pipe(
+                    Effect.flatMap((value) => Deferred.succeed(wireTier, value.serviceTier)),
+                    Effect.asVoid,
+                    Effect.orDie,
+                  )
+                : Effect.void,
+            undefined,
+            undefined,
+            {
+              config: { ...DEFAULT_CODEX_SETTINGS, setupMode },
+              environment: {},
+              revision: `priority-${setupMode}`,
+            },
+          );
+          const turn = makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make(`priority-${setupMode}`),
+            text: "priority probe",
+          });
+          yield* harness.runtime.startTurn({
+            ...turn,
+            modelSelection: {
+              ...turn.modelSelection,
+              options: [{ id: "serviceTier", value: "priority" }],
+            },
+          });
+          assert.equal(
+            yield* Deferred.await(wireTier),
+            setupMode === "existing" ? "priority" : undefined,
+          );
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
+  );
+
   it.effect("compacts Codex with the native RPC and completes the compaction turn", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -3695,6 +3780,86 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         ),
       ),
     ),
+  );
+
+  it.effect.each(["managed", "native"] as const)(
+    "keeps %s transport policy on new and repeatedly resumed cached native threads",
+    (route) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const nativeThreadId = `policy-${route}`;
+          const policy =
+            route === "managed"
+              ? { "features.multi_agent": false, "features.multi_agent_v2": false }
+              : {};
+          const config = { ...CodexAdapterV2.CODEX_THREAD_CONFIG, ...policy };
+          const preamble = codexReplayPreamble({
+            nativeThreadId,
+            nativeTurnId: "unused",
+            prompt: "unused",
+          })
+            .slice(0, 5)
+            .map((entry) =>
+              entry.type === "expect_outbound" && entry.label === "thread/start"
+                ? { ...entry, frame: { id: 2, method: "thread/start", params: { config } } }
+                : entry,
+            );
+          const transcript = makeCodexReplayTranscript({
+            scenario: `cached-policy-${route}`,
+            entries: [
+              ...preamble,
+              ...[3, 4].flatMap((id): Array<CodexReplay.CodexAppServerReplayEntry> => [
+                {
+                  type: "expect_outbound",
+                  label: "resume-policy",
+                  frame: {
+                    id,
+                    method: "thread/resume",
+                    params: {
+                      threadId: nativeThreadId,
+                      excludeTurns: true,
+                      config,
+                    },
+                  },
+                },
+                {
+                  type: "emit_inbound",
+                  label: "resume-policy",
+                  frame: {
+                    id,
+                    result: { thread: { id: nativeThreadId, updatedAt: 1782622450 } },
+                  },
+                },
+              ]),
+            ],
+          });
+          const harness = yield* makeCodexReplayHarness(
+            transcript,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              config: {
+                ...DEFAULT_CODEX_SETTINGS,
+                setupMode: route === "managed" ? "managed" : "existing",
+              },
+              environment: {},
+              revision: `policy-${route}`,
+              ...(route === "managed" ? { nativeSubagents: false } : {}),
+            },
+          );
+          let thread = harness.providerThread;
+          for (const _ of [0, 1]) {
+            thread = yield* harness.runtime.resumeThread({ providerThread: thread });
+            assert.equal(thread.nativeThreadRef?.nativeId, nativeThreadId);
+          }
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
   );
 
   it.effect("resumes a provider thread without requesting or decoding its history", () =>
