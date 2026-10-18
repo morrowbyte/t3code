@@ -1642,6 +1642,9 @@ body {
   /* Reference the theme token (not a literal stack) so the Settings ->
      Appearance runtime override of --font-sans reaches all interface text. */
   font-family: var(--font-sans);
+  /* Prefer Unicode emoji presentation over outline glyphs in system text fonts;
+     explicit text (VS15) and emoji (VS16) selectors still take precedence. */
+  font-variant-emoji: unicode;
   margin: 0;
   padding: 0;
 }
