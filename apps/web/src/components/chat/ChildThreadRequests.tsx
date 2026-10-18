@@ -2,9 +2,12 @@ import { useAtomValue } from "@effect/atom-react";
 import { Link } from "@tanstack/react-router";
 import {
   AuthOrchestrationOperateScope,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   type ProviderApprovalDecision,
   type RuntimeRequestId,
   type ScopedThreadRef,
+  type UserInputAttachments,
 } from "@t3tools/contracts";
 import {
   createDescendantThreadRequestsAtom,
@@ -19,11 +22,52 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { ChevronDownIcon, MessageCircleQuestionIcon, ShieldQuestionIcon } from "lucide-react";
-import { useId, useRef, useState } from "react";
+import {
+  ChevronDownIcon,
+  MessageCircleQuestionIcon,
+  PaperclipIcon,
+  ShieldQuestionIcon,
+} from "lucide-react";
+import { useEffect, useId, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
+import { videoMimeType } from "@t3tools/shared/video";
+import { fileAttachmentTooLargeMessage } from "@t3tools/client-runtime/state/attachments";
+import {
+  useComposerDraftStore,
+  type ComposerFileAttachment,
+  type ComposerImageAttachment,
+} from "../../composerDraftStore";
+import {
+  changeQuestionAttachmentPreparation,
+  clearQuestionAttachmentDraft,
+  countQuestionAttachments,
+  questionAttachmentDraftId,
+  useQuestionAttachmentPreparation,
+} from "../../questionAttachments";
+import {
+  getUploadedAttachments,
+  releaseDraftAttachment,
+  retryAttachmentUpload,
+  startAttachmentUpload,
+  useAttachmentUploadStore,
+} from "../../lib/attachmentUploadQueue";
+import {
+  attachmentUploadBlockReason,
+  formatAttachmentUploadProgress,
+} from "../../lib/attachmentUploadState";
+import { prepareImageForAttachment } from "../../lib/imageCompression";
+import { useEnvironment } from "../../state/environments";
+import { useProject, useThreadShell } from "../../state/entities";
+import ChatMarkdown from "../ChatMarkdown";
+import {
+  classifyComposerAttachmentFile,
+  fileAttachmentStagingLimit,
+  normalizeComposerImageFileMimeType,
+} from "./composerAttachmentFiles";
 import {
   buildPendingUserInputAnswers,
   derivePendingUserInputProgress,
+  projectPendingUserInputAnswer,
   setPendingUserInputCustomAnswer,
   togglePendingUserInputOptionSelection,
   type PendingUserInputDraftAnswer,
@@ -54,7 +98,11 @@ type Reply = {
   readonly requestId: RuntimeRequestId;
 } & (
   | { readonly type: "approval"; readonly decision: ProviderApprovalDecision }
-  | { readonly type: "question"; readonly answers: Record<string, unknown> }
+  | {
+      readonly type: "question";
+      readonly answers: Record<string, unknown>;
+      readonly attachmentsByQuestionId?: UserInputAttachments;
+    }
   | { readonly type: "dismiss" }
 );
 
@@ -65,9 +113,27 @@ interface QuestionDraft {
   readonly index: number;
 }
 
+type AttachmentCapabilities = Parameters<typeof fileAttachmentStagingLimit>[0] & {
+  readonly supportsQuestionAttachments: boolean;
+};
+const NO_ATTACHMENTS: AttachmentCapabilities = {
+  attachmentUploadsCapabilityKnown: false,
+  supportsAttachmentUploads: false,
+  supportsQuestionAttachments: false,
+  maxFileAttachmentBytes: null,
+};
+
 /** All actions keep the destination of the original request, never the visible parent. */
 export function ChildThreadRequests({ parent }: { readonly parent: ScopedThreadRef }) {
   const groups = useAtomValue(requestsAtom(parent));
+  const config = useEnvironment(parent.environmentId)?.serverConfig ?? null;
+  const attachmentCapabilities: AttachmentCapabilities = {
+    attachmentUploadsCapabilityKnown: config !== null,
+    supportsAttachmentUploads: config?.environment.capabilities.attachmentUploads === true,
+    supportsQuestionAttachments: config?.environment.capabilities.questionAttachments === true,
+    maxFileAttachmentBytes:
+      config?.environment.capabilities.fileAttachments?.maxUploadBytes ?? null,
+  };
   const canOperate = useEnvironmentScope(parent.environmentId, AuthOrchestrationOperateScope);
   const approve = useOrchestrationCommand(threadEnvironment.respondToApproval, {
     reportFailure: false,
@@ -82,19 +148,19 @@ export function ChildThreadRequests({ parent }: { readonly parent: ScopedThreadR
   const respond: ReplyHandler = async (reply) => {
     const { origin, requestId } = reply;
     if (!readEnvironmentScope(origin.environmentId, AuthOrchestrationOperateScope))
-      return "Diese Verbindung darf keine Antworten senden.";
+      return "This connection cannot send responses.";
     if (appAtomRegistry.get(environmentThreadDetails.statusAtom(origin)) !== "live")
-      return "Die Anfrage wird noch synchronisiert.";
+      return "The request is synchronizing.";
     const pending = appAtomRegistry.get(environmentThreadDetails.pendingRequestsAtom(origin));
     const request =
       reply.type === "approval"
         ? pending?.approvals.find((entry) => entry.requestId === requestId)
         : pending?.userInputs.find((entry) => entry.requestId === requestId);
-    if (!request) return "Die Anfrage ist nicht mehr offen.";
+    if (!request) return "The request is no longer pending.";
     if (reply.type === "dismiss" && !("dismissible" in request && request.dismissible))
-      return "Diese Anfrage kann nicht verworfen werden.";
+      return "This request cannot be dismissed.";
     if (reply.type !== "dismiss" && request.responseCapability === "not_resumable")
-      return "Der ursprüngliche Agent kann diese Anfrage nicht mehr fortsetzen.";
+      return "The original agent can no longer resume this request.";
 
     const target = {
       environmentId: origin.environmentId,
@@ -104,11 +170,20 @@ export function ChildThreadRequests({ parent }: { readonly parent: ScopedThreadR
       reply.type === "approval"
         ? await approve({ ...target, input: { ...target.input, decision: reply.decision } })
         : reply.type === "question"
-          ? await answer({ ...target, input: { ...target.input, answers: reply.answers } })
+          ? await answer({
+              ...target,
+              input: {
+                ...target.input,
+                answers: reply.answers,
+                ...(reply.attachmentsByQuestionId
+                  ? { attachmentsByQuestionId: reply.attachmentsByQuestionId }
+                  : {}),
+              },
+            })
           : await dismiss(target);
     if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return null;
     const error = squashAtomCommandFailure(result);
-    return error instanceof Error ? error.message : "Die Antwort konnte nicht gesendet werden.";
+    return error instanceof Error ? error.message : "Failed to submit the response.";
   };
 
   return (
@@ -116,6 +191,7 @@ export function ChildThreadRequests({ parent }: { readonly parent: ScopedThreadR
       key={JSON.stringify(parent)}
       groups={groups}
       canOperate={canOperate}
+      attachmentCapabilities={attachmentCapabilities}
       onReply={respond}
     />
   );
@@ -130,13 +206,54 @@ export function ChildThreadRequestsView({
   groups,
   canOperate,
   onReply,
+  attachmentCapabilities = NO_ATTACHMENTS,
 }: {
   readonly groups: ReadonlyArray<DescendantThreadRequests>;
   readonly canOperate: boolean;
   readonly onReply: ReplyHandler;
+  readonly attachmentCapabilities?: AttachmentCapabilities;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, QuestionDraft>>({});
+  const previousQuestions = useRef(
+    new Map<string, { origin: ScopedThreadRef; request: ThreadPendingUserInput }>(),
+  );
+  useEffect(() => {
+    const waiting = new Map<string, { origin: ScopedThreadRef; request: ThreadPendingUserInput }>();
+    for (const group of groups) {
+      for (const request of group.requests?.userInputs ?? []) {
+        waiting.set(JSON.stringify([group.origin, request.requestId]), {
+          origin: group.origin,
+          request,
+        });
+      }
+    }
+    for (const [key, previous] of previousQuestions.current) {
+      if (waiting.has(key)) continue;
+      if (
+        groups.some(
+          (group) =>
+            group.origin.environmentId === previous.origin.environmentId &&
+            group.origin.threadId === previous.origin.threadId &&
+            group.requests === null,
+        )
+      ) {
+        waiting.set(key, previous);
+        continue;
+      }
+      for (const question of previous.request.questions) {
+        clearQuestionAttachmentDraft(
+          questionAttachmentDraftId(
+            previous.origin.environmentId,
+            previous.origin.threadId,
+            previous.request.requestId,
+            question.id,
+          ),
+        );
+      }
+    }
+    previousQuestions.current = waiting;
+  }, [groups]);
   const entries = groups.flatMap((group): PendingEntry[] => {
     const prefix = JSON.stringify([group.origin.environmentId, group.origin.threadId]);
     return [
@@ -164,7 +281,7 @@ export function ChildThreadRequestsView({
   return (
     <div
       className="mb-2 max-h-[45vh] min-w-0 overflow-y-auto"
-      aria-label="Anfragen aus Unterthreads"
+      aria-label="Requests from child threads"
       onKeyDownCapture={(event) => {
         // The parent composer's number shortcuts must not answer a different request.
         if (/^[1-9]$/.test(event.key)) event.stopPropagation();
@@ -183,7 +300,7 @@ export function ChildThreadRequestsView({
               </ComposerBanner.Icon>
               <ComposerBanner.Content>
                 <span className="truncate">{group.title}</span>
-                <span className="shrink-0 text-muted-foreground">Synchronisieren…</span>
+                <span className="shrink-0 text-muted-foreground">Synchronizing…</span>
               </ComposerBanner.Content>
             </ComposerBanner.Row>
           ))}
@@ -195,6 +312,7 @@ export function ChildThreadRequestsView({
             canOperate={canOperate && entry.group.status === "live"}
             onToggle={() => setSelected(active === entry.key ? "" : entry.key)}
             onReply={onReply}
+            attachmentCapabilities={attachmentCapabilities}
             draft={
               drafts[entry.key] ?? {
                 answers:
@@ -233,6 +351,7 @@ function ChildRequestCard({
   onReply,
   draft,
   onDraftChange,
+  attachmentCapabilities,
 }: {
   readonly entry: PendingEntry;
   readonly open: boolean;
@@ -241,6 +360,7 @@ function ChildRequestCard({
   readonly onReply: ReplyHandler;
   readonly draft: QuestionDraft;
   readonly onDraftChange: (update: (draft: QuestionDraft) => QuestionDraft) => void;
+  readonly attachmentCapabilities: AttachmentCapabilities;
 }) {
   const panelId = useId();
   const inFlight = useRef(false);
@@ -252,12 +372,12 @@ function ChildRequestCard({
     inFlight.current = true;
     setResponding(true);
     setError(null);
-    const result = await onReply(reply).catch(() => "Die Antwort konnte nicht gesendet werden.");
+    const result = await onReply(reply).catch(() => "Failed to submit the response.");
     inFlight.current = false;
     setResponding(false);
     setError(result);
   };
-  const label = entry.type === "approval" ? "Freigabe" : "Frage";
+  const label = entry.type === "approval" ? "Approval" : "Question";
   const brief =
     entry.type === "question" ? entry.request.questions[0]?.question : entry.request.detail;
 
@@ -281,7 +401,7 @@ function ChildRequestCard({
             to="/$environmentId/$threadId"
             params={{ environmentId: group.origin.environmentId, threadId: group.origin.threadId }}
             className="min-w-0 truncate rounded-sm font-medium hover:underline focus-visible:outline-2 focus-visible:outline-ring"
-            aria-label={`Ursprungsthread öffnen: ${group.title}`}
+            aria-label={`Open original thread: ${group.title}`}
           >
             {group.title}
           </Link>
@@ -290,7 +410,7 @@ function ChildRequestCard({
         <ComposerBanner.Actions>
           <CollapsibleTrigger
             render={<Button size="icon-xs" variant="ghost" />}
-            aria-label={`${open ? "Zuklappen" : "Öffnen"}: ${label} von ${group.title}`}
+            aria-label={`${open ? "Collapse" : "Expand"}: ${label} from ${group.title}`}
             aria-expanded={open}
             aria-controls={panelId}
           >
@@ -307,7 +427,7 @@ function ChildRequestCard({
                   {entry.request.detail}
                 </pre>
               ) : (
-                <p className="text-sm">{entry.request.appName ?? "Freigabe angefragt"}</p>
+                <p className="text-sm">{entry.request.appName ?? "Approval requested"}</p>
               )}
               <details>
                 <summary className="w-fit cursor-pointer rounded-sm text-xs text-muted-foreground focus-visible:outline-2 focus-visible:outline-ring">
@@ -335,18 +455,21 @@ function ChildRequestCard({
             </div>
           ) : (
             <ChildQuestionForm
+              group={group}
+              attachmentCapabilities={attachmentCapabilities}
               request={entry.request}
               draft={draft}
               onChange={onDraftChange}
               disabled={
                 !canOperate || responding || entry.request.responseCapability === "not_resumable"
               }
-              onSubmit={(answers) =>
+              onSubmit={(answers, attachmentsByQuestionId) =>
                 submit({
                   type: "question",
                   origin: group.origin,
                   requestId: request.requestId,
                   answers,
+                  ...(attachmentsByQuestionId ? { attachmentsByQuestionId } : {}),
                 })
               }
               onDismiss={() =>
@@ -355,9 +478,9 @@ function ChildRequestCard({
             />
           )}
           {!canOperate ? (
-            <p className="mt-2 text-xs text-muted-foreground">Nur ansehen</p>
+            <p className="mt-2 text-xs text-muted-foreground">Read only</p>
           ) : request.responseCapability === "not_resumable" ? (
-            <p className="mt-2 text-xs text-muted-foreground">Agent nicht mehr verbunden</p>
+            <p className="mt-2 text-xs text-muted-foreground">Agent disconnected</p>
           ) : null}
           {error ? (
             <p role="alert" className="mt-2 text-xs text-destructive">
@@ -376,6 +499,8 @@ function ChildRequestCard({
 }
 
 function ChildQuestionForm({
+  group,
+  attachmentCapabilities,
   request,
   draft,
   onChange,
@@ -383,14 +508,84 @@ function ChildQuestionForm({
   onSubmit,
   onDismiss,
 }: {
+  readonly group: DescendantThreadRequests;
+  readonly attachmentCapabilities: AttachmentCapabilities;
   readonly request: ThreadPendingUserInput;
   readonly draft: QuestionDraft;
   readonly onChange: (update: (draft: QuestionDraft) => QuestionDraft) => void;
   readonly disabled: boolean;
-  readonly onSubmit: (answers: Record<string, unknown>) => Promise<void>;
+  readonly onSubmit: (
+    answers: Record<string, unknown>,
+    attachments?: UserInputAttachments,
+  ) => Promise<void>;
   readonly onDismiss: () => Promise<void>;
 }) {
-  const { answers, index } = draft;
+  const { index } = draft;
+  const { origin } = group;
+  const shell = useThreadShell(origin);
+  const project = useProject(
+    shell ? { environmentId: origin.environmentId, projectId: shell.projectId } : null,
+  );
+  const keys = request.questions.map((question) =>
+    questionAttachmentDraftId(
+      origin.environmentId,
+      origin.threadId,
+      request.requestId,
+      question.id,
+    ),
+  );
+  const composerDrafts = useComposerDraftStore(
+    useShallow((state) =>
+      Object.fromEntries(keys.map((key) => [key, state.draftsByThreadKey[key]])),
+    ),
+  );
+  const uploads = useAttachmentUploadStore(
+    useShallow((state) =>
+      Object.fromEntries(
+        keys.flatMap((key) =>
+          [...(composerDrafts[key]?.images ?? []), ...(composerDrafts[key]?.files ?? [])].flatMap(
+            (file) => {
+              const upload = state.uploadsByImageId[file.id];
+              return upload ? [[file.id, upload] as const] : [];
+            },
+          ),
+        ),
+      ),
+    ),
+  );
+  const preparations = useQuestionAttachmentPreparation(
+    useShallow((state) => Object.fromEntries(keys.map((key) => [key, state.counts[key] ?? 0]))),
+  );
+  const supportsAttachments =
+    attachmentCapabilities.attachmentUploadsCapabilityKnown &&
+    attachmentCapabilities.supportsAttachmentUploads &&
+    attachmentCapabilities.supportsQuestionAttachments;
+  const fileLimit = fileAttachmentStagingLimit(attachmentCapabilities);
+  const answers = Object.fromEntries(
+    request.questions.map((question, questionIndex) => {
+      const target = keys[questionIndex]!;
+      const files = [
+        ...(composerDrafts[target]?.images ?? []),
+        ...(composerDrafts[target]?.files ?? []),
+      ];
+      return [
+        question.id,
+        {
+          ...draft.answers[question.id],
+          attachmentCount: files.length,
+          attachmentsBlocked:
+            (preparations[target] ?? 0) > 0 ||
+            files.some(
+              (file) =>
+                !supportsAttachments ||
+                (file.type === "file" && (fileLimit === null || file.sizeBytes > fileLimit)) ||
+                uploads[file.id]?.status !== "ready" ||
+                uploads[file.id]?.environmentId !== origin.environmentId,
+            ),
+        },
+      ];
+    }),
+  );
   const inputId = useId();
   const progress = derivePendingUserInputProgress(request.questions, answers, index);
   const question = progress.activeQuestion;
@@ -401,16 +596,45 @@ function ChildQuestionForm({
       onChange((previous) => ({ ...previous, index: progress.questionIndex + 1 }));
     else {
       const resolved = buildPendingUserInputAnswers(request.questions, answers);
-      if (resolved) void onSubmit(resolved);
+      if (!resolved) return;
+      const attachments = new Map<string, UserInputAttachments[string]>();
+      for (const question of request.questions) {
+        const key = questionAttachmentDraftId(
+          origin.environmentId,
+          origin.threadId,
+          request.requestId,
+          question.id,
+        );
+        if ((useQuestionAttachmentPreparation.getState().counts[key] ?? 0) > 0) return;
+        const stored = useComposerDraftStore.getState().getComposerDraft(key);
+        resolved[question.id] = projectPendingUserInputAnswer(
+          resolved[question.id],
+          stored?.threadContexts ?? [],
+        ) as string | string[];
+        const files = stored ? [...stored.images, ...stored.files] : [];
+        if (files.length === 0) continue;
+        const uploaded = getUploadedAttachments({
+          environmentId: origin.environmentId,
+          images: files,
+        });
+        if (!uploaded || !supportsAttachments) return;
+        attachments.set(question.id, uploaded as UserInputAttachments[string]);
+      }
+      void onSubmit(resolved, attachments.size ? Object.fromEntries(attachments) : undefined);
     }
   };
 
   return (
     <div className="space-y-3">
       <div className="flex items-start gap-3">
-        <p className="min-w-0 flex-1 text-sm leading-relaxed" id={`${inputId}-question`}>
-          {question.question}
-        </p>
+        <div className="min-w-0 flex-1 text-sm leading-relaxed" id={`${inputId}-question`}>
+          <ChatMarkdown
+            text={question.question}
+            cwd={group.worktreePath ?? project?.workspaceRoot}
+            threadRef={origin}
+            environmentId={origin.environmentId}
+          />
+        </div>
         {request.questions.length > 1 ? (
           <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
             {progress.questionIndex + 1}/{request.questions.length}
@@ -459,9 +683,25 @@ function ChildQuestionForm({
         </div>
       ) : null}
       {question.allowCustomAnswer !== false ? (
+        <QuestionAttachmentPicker
+          key={keys[progress.questionIndex]}
+          origin={origin}
+          draftTarget={keys[progress.questionIndex]!}
+          allDraftKeys={keys}
+          attachments={[
+            ...(composerDrafts[keys[progress.questionIndex]!]?.images ?? []),
+            ...(composerDrafts[keys[progress.questionIndex]!]?.files ?? []),
+          ]}
+          uploads={uploads}
+          disabled={disabled}
+          supportsAttachments={supportsAttachments}
+          fileLimit={fileLimit}
+        />
+      ) : null}
+      {question.allowCustomAnswer !== false ? (
         <div className="space-y-1">
           <label htmlFor={inputId} className="text-xs text-muted-foreground">
-            {question.options.length > 0 ? "Eigene Antwort" : "Antwort"}
+            {question.options.length > 0 ? "Custom answer" : "Answer"}
           </label>
           <Textarea
             id={inputId}
@@ -496,11 +736,11 @@ function ChildQuestionForm({
               onChange((previous) => ({ ...previous, index: progress.questionIndex - 1 }))
             }
           >
-            Zurück
+            Back
           </Button>
         ) : null}
         <Button size="xs" disabled={disabled || !progress.canAdvance} onClick={advance}>
-          {progress.isLastQuestion ? "Antwort senden" : "Weiter"}
+          {progress.isLastQuestion ? "Send answer" : "Next"}
         </Button>
         {request.dismissible ? (
           <Button
@@ -511,10 +751,212 @@ function ChildQuestionForm({
               void onDismiss();
             }}
           >
-            Verwerfen
+            Dismiss
           </Button>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+function QuestionAttachmentPicker({
+  origin,
+  draftTarget,
+  allDraftKeys,
+  attachments,
+  uploads,
+  disabled,
+  supportsAttachments,
+  fileLimit,
+}: {
+  readonly origin: ScopedThreadRef;
+  readonly draftTarget: ReturnType<typeof questionAttachmentDraftId>;
+  readonly allDraftKeys: ReadonlyArray<ReturnType<typeof questionAttachmentDraftId>>;
+  readonly attachments: ReadonlyArray<ComposerFileAttachment | ComposerImageAttachment>;
+  readonly uploads: ReturnType<typeof useAttachmentUploadStore.getState>["uploadsByImageId"];
+  readonly disabled: boolean;
+  readonly supportsAttachments: boolean;
+  readonly fileLimit: number | null;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  const mounted = useRef(true);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  useEffect(() => {
+    if (disabled || !supportsAttachments) return;
+    for (const image of attachments) {
+      if (image.type === "file" && (fileLimit === null || image.sizeBytes > fileLimit)) continue;
+      startAttachmentUpload({ environmentId: origin.environmentId, image, draftTarget });
+    }
+  }, [attachments, disabled, supportsAttachments, fileLimit, origin.environmentId, draftTarget]);
+  const add = async (files: File[]) => {
+    if (
+      disabled ||
+      !supportsAttachments ||
+      !readEnvironmentScope(origin.environmentId, AuthOrchestrationOperateScope)
+    )
+      return;
+    setError(null);
+    for (const file of files) {
+      if (countQuestionAttachments(allDraftKeys) >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
+        setError(
+          `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} files per question response.`,
+        );
+        break;
+      }
+      changeQuestionAttachmentPreparation(draftTarget, 1);
+      try {
+        const kind = classifyComposerAttachmentFile(file);
+        if (kind === "unsupported-image")
+          throw new Error(`'${file.name}' is not a supported image type.`);
+        let attachment: ComposerFileAttachment | ComposerImageAttachment;
+        if (kind === "image") {
+          const prepared = await prepareImageForAttachment(
+            normalizeComposerImageFileMimeType(file),
+            PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+          );
+          if (!prepared.ok) throw new Error(`'${file.name}' could not be prepared as an image.`);
+          attachment = {
+            type: "image",
+            id: crypto.randomUUID(),
+            name: prepared.file.name || "image",
+            mimeType: prepared.file.type,
+            sizeBytes: prepared.file.size,
+            previewUrl: URL.createObjectURL(prepared.file),
+            file: prepared.file,
+          };
+        } else {
+          if (fileLimit === null) throw new Error("This server does not support file attachments.");
+          if (file.size <= 0) throw new Error(`'${file.name}' is empty or could not be read.`);
+          if (file.size > fileLimit)
+            throw new Error(fileAttachmentTooLargeMessage(file.name, fileLimit));
+          const mimeType =
+            videoMimeType({ name: file.name, mimeType: file.type }) ??
+            (file.type || "application/octet-stream");
+          const normalized =
+            file.type === mimeType
+              ? file
+              : new File([file], file.name, { type: mimeType, lastModified: file.lastModified });
+          attachment = {
+            type: "file",
+            id: crypto.randomUUID(),
+            name: normalized.name || "file",
+            mimeType,
+            sizeBytes: normalized.size,
+            file: normalized,
+          };
+        }
+        if (
+          !mounted.current ||
+          !readEnvironmentScope(origin.environmentId, AuthOrchestrationOperateScope)
+        ) {
+          if (attachment.type === "image") URL.revokeObjectURL(attachment.previewUrl);
+          return;
+        }
+        const store = useComposerDraftStore.getState();
+        if (attachment.type === "image") store.addImages(draftTarget, [attachment]);
+        else store.addFiles(draftTarget, [attachment]);
+      } catch (cause) {
+        if (mounted.current)
+          setError(cause instanceof Error ? cause.message : "Could not attach the file.");
+      } finally {
+        changeQuestionAttachmentPreparation(draftTarget, -1);
+      }
+    }
+  };
+  const uploadError = attachmentUploadBlockReason({
+    imageIds: attachments.map((file) => file.id),
+    uploadsByImageId: uploads,
+    environmentId: origin.environmentId,
+  });
+  return (
+    <div className="space-y-2">
+      {supportsAttachments ? (
+        <>
+          <input
+            ref={input}
+            type="file"
+            multiple
+            hidden
+            aria-label="Question attachments"
+            disabled={disabled}
+            onChange={(event) => {
+              const files = Array.from(event.target.files ?? []);
+              event.target.value = "";
+              void add(files);
+            }}
+          />
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={disabled}
+            onClick={() => input.current?.click()}
+          >
+            <PaperclipIcon />
+            Attach files
+          </Button>
+        </>
+      ) : null}
+      {attachments.map((file) => {
+        const upload =
+          uploads[file.id]?.environmentId === origin.environmentId ? uploads[file.id] : undefined;
+        return (
+          <div key={file.id} className="flex min-w-0 flex-wrap items-center gap-2 text-xs">
+            <span className="min-w-0 flex-1 wrap-anywhere">{file.name}</span>
+            <span className="text-muted-foreground">
+              {upload?.status === "ready"
+                ? "Uploaded"
+                : upload?.status === "uploading"
+                  ? formatAttachmentUploadProgress(upload.progress)
+                  : upload?.status === "failed"
+                    ? upload.reason
+                    : "Waiting for upload"}
+            </span>
+            {upload?.status === "failed" ? (
+              <Button
+                size="xs"
+                variant="ghost"
+                disabled={disabled || !supportsAttachments}
+                onClick={() =>
+                  retryAttachmentUpload({
+                    environmentId: origin.environmentId,
+                    image: file,
+                    draftTarget,
+                  })
+                }
+              >
+                Retry
+              </Button>
+            ) : null}
+            <Button
+              size="icon-xs"
+              variant="ghost"
+              disabled={disabled}
+              aria-label={`Remove ${file.name}`}
+              onClick={() => {
+                releaseDraftAttachment(file);
+                const store = useComposerDraftStore.getState();
+                if (file.type === "image") {
+                  store.removeImage(draftTarget, file.id);
+                  if (file.previewUrl.startsWith("blob:")) URL.revokeObjectURL(file.previewUrl);
+                } else store.removeFile(draftTarget, file.id);
+              }}
+            >
+              ×
+            </Button>
+          </div>
+        );
+      })}
+      {error || uploadError ? (
+        <p role="status" className="text-xs text-muted-foreground">
+          {error ?? uploadError}
+        </p>
+      ) : null}
     </div>
   );
 }
