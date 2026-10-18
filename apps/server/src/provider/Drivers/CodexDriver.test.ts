@@ -274,6 +274,90 @@ it.layer(layerTest)("CodexDriver", (it) => {
     }).pipe(Effect.scoped, Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn)),
   );
 
+  it.effect(
+    "default Codex respects the instance PATH without acquiring the global installation",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "native-instance-path-" });
+        const binary = NodePath.join(directory, "codex");
+        yield* fs.writeFileString(binary, "synthetic-codex", { mode: 0o755 });
+        const home = NodePath.join(directory, "account-home");
+        const installation = yield* CodexInstallation.CodexInstallation;
+        const launches: Array<
+          Parameters<CodexAdapterV2.CodexAppServerClientFactoryShape["open"]>[0]
+        > = [];
+        let globalAcquires = 0;
+        const globalExecutable = {
+          executablePath: "/synthetic-global/codex",
+          source: "managed" as const,
+          version: "0.163.0",
+          managedVersionDirectory: "/synthetic-global",
+        };
+        const versionSpawner = ChildProcessSpawner.make(() =>
+          Effect.succeed(
+            ChildProcessSpawner.makeHandle({
+              pid: ChildProcessSpawner.ProcessId(1),
+              exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+              isRunning: Effect.succeed(false),
+              kill: () => Effect.void,
+              unref: Effect.succeed(Effect.void),
+              stdin: Sink.drain,
+              stdout: Stream.encodeText(Stream.make("codex-cli 0.163.0\n")),
+              stderr: Stream.empty,
+              all: Stream.empty,
+              getInputFd: () => Sink.drain,
+              getOutputFd: () => Stream.empty,
+            }),
+          ),
+        );
+        const instanceId = ProviderInstanceId.make("native-instance-path");
+        const instance = yield* CodexDriver.create({
+          instanceId,
+          displayName: undefined,
+          enabled: false,
+          environment: [{ name: "PATH", value: directory, sensitive: false }],
+          config: { ...CodexDriver.defaultConfig(), setupMode: "existing", homePath: home },
+        }).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, versionSpawner),
+          Effect.provideService(CodexInstallation.CodexInstallation, {
+            ...installation,
+            resolve: () => Effect.succeed(globalExecutable),
+            acquire: () =>
+              Effect.sync(() => {
+                globalAcquires++;
+                return globalExecutable;
+              }),
+          }),
+          Effect.provideService(CodexAdapterV2.CodexAppServerClientFactory, {
+            open: (launch) =>
+              Effect.sync(() => launches.push(launch)).pipe(
+                Effect.andThen(Effect.die("Synthetic launch only")),
+              ),
+          }),
+        );
+        yield* instance.orchestrationAdapter
+          .openSession({
+            threadId: ThreadId.make("instance-path-thread"),
+            providerSessionId: ProviderSessionId.make("instance-path-session"),
+            modelSelection: { instanceId, model: "gpt-6.1-sol" },
+            runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              cwd: home,
+            }),
+          })
+          .pipe(Effect.scoped, Effect.exit);
+        expect(globalAcquires).toBe(0);
+        expect(launches).toHaveLength(1);
+        expect(launches[0]?.settings.binaryPath).toBe(binary);
+        expect(launches[0]?.environment?.PATH).toBe(directory);
+        expect(launches[0]?.settings.setupMode).toBe("existing");
+        expect((yield* instance.snapshot.getSnapshot).setup?.canInstall).toBe(false);
+        expect(process.env.PATH).not.toBe(directory);
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("advertises explicit native setup without logging in or starting work", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

@@ -1852,6 +1852,10 @@ function makeCodexReplayTurn(input: {
   };
 }
 
+const decodeTurnServiceTier = Schema.decodeUnknownEffect(
+  Schema.Struct({ serviceTier: Schema.optionalKey(Schema.String) }),
+);
+
 function codexReplayPreamble(input: {
   readonly nativeThreadId: string;
   readonly nativeTurnId: string;
@@ -3620,6 +3624,82 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         ),
       ),
     ),
+  );
+
+  it.effect.each(["existing", "managed"] as const)(
+    "resolved %s runtime preserves native priority but omits it for token sharing",
+    (setupMode) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const nativeThreadId = `priority-${setupMode}-thread`;
+          const transcript = makeCodexReplayTranscript({
+            scenario: `resolved-priority-${setupMode}`,
+            entries: codexReplayPreamble({
+              nativeThreadId,
+              nativeTurnId: "priority-turn",
+              prompt: "priority probe",
+            }).map((entry) => {
+              if (
+                setupMode !== "existing" ||
+                entry.type !== "expect_outbound" ||
+                entry.label !== "turn/start"
+              )
+                return entry;
+              if (!Predicate.isObject(entry.frame) || !Predicate.isObject(entry.frame.params))
+                throw new Error("Missing expected native turn/start frame");
+              return {
+                ...entry,
+                frame: {
+                  ...entry.frame,
+                  params: { ...entry.frame.params, serviceTier: "priority" },
+                },
+              };
+            }),
+          });
+          const wireTier = yield* Deferred.make<string | undefined>();
+          const harness = yield* makeCodexReplayHarness(
+            transcript,
+            undefined,
+            (method, params) =>
+              method === "turn/start"
+                ? decodeTurnServiceTier(params).pipe(
+                    Effect.flatMap((value) => Deferred.succeed(wireTier, value.serviceTier)),
+                    Effect.asVoid,
+                    Effect.orDie,
+                  )
+                : Effect.void,
+            undefined,
+            undefined,
+            {
+              config: { ...DEFAULT_CODEX_SETTINGS, setupMode },
+              environment: {},
+              revision: `priority-${setupMode}`,
+            },
+          );
+          const turn = makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make(`priority-${setupMode}`),
+            text: "priority probe",
+          });
+          yield* harness.runtime.startTurn({
+            ...turn,
+            modelSelection: {
+              ...turn.modelSelection,
+              options: [{ id: "serviceTier", value: "priority" }],
+            },
+          });
+          assert.equal(
+            yield* Deferred.await(wireTier),
+            setupMode === "existing" ? "priority" : undefined,
+          );
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
   );
 
   it.effect("compacts Codex with the native RPC and completes the compaction turn", () =>

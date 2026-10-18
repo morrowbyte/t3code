@@ -6362,7 +6362,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 turnInput.onObservatoryInvocation !== undefined,
               browserToolsAvailable: mcpSession?.browserToolsAvailable ?? true,
               deviceToolsAvailable: mcpSession?.capabilities?.has("device") ?? false,
-              omitServiceTier: adapterOptions.resolveRuntime !== undefined,
+              omitServiceTier: resolvedRuntime?.config.setupMode === "managed",
               ...(turnInput.appContext === undefined ? {} : { appContext: turnInput.appContext }),
             });
             yield* Ref.update(pendingRootTurns, (current) => {

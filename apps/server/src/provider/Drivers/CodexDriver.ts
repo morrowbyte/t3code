@@ -6,7 +6,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess } from "effect/process";
-import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { resolveCommandPath, resolveSpawnCommand } from "@t3tools/shared/shell";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
@@ -130,7 +130,13 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
       const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
       const modelCatalog = yield* ModelCatalog.ModelCatalog;
       const currentCatalog = modelCatalog.current(DRIVER_KIND);
-      const processEnv = yield* mergeProviderInstanceEnvironment(environment);
+      const instancePath = environment?.findLast(
+        (variable) => variable.name.toUpperCase() === "PATH",
+      );
+      const mergedEnvironment = yield* mergeProviderInstanceEnvironment(environment);
+      const processEnv = instancePath
+        ? { ...mergedEnvironment, PATH: instancePath.value }
+        : mergedEnvironment;
       const homeLayout = yield* resolveCodexHomeLayout(config);
       const continuationIdentity = codexContinuationIdentity(homeLayout);
       const stampIdentity = withInstanceIdentity({
@@ -158,10 +164,27 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
         homePath: homeLayout.effectiveHomePath ?? "",
       } satisfies CodexSettings;
       const installation = yield* CodexInstallation.CodexInstallation;
-      const usesDefaultExecutable = !config.binaryPath.trim() || config.binaryPath === "codex";
+      const defaultCommand = !config.binaryPath.trim() || config.binaryPath === "codex";
+      const usesDefaultExecutable = defaultCommand && instancePath === undefined;
+      const resolveNativeBinaryPath = Effect.gen(function* () {
+        if (!defaultCommand || instancePath === undefined) return effectiveConfig.binaryPath;
+        const binaryPath = yield* resolveCommandPath("codex", { env: processEnv }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, pathService),
+        );
+        if (binaryPath === null)
+          return yield* new ProviderSetupError({
+            instanceId,
+            operation: "runtime",
+            detail:
+              "Codex was not found on this provider instance's PATH. Correct its PATH or configure a Codex executable.",
+          });
+        return binaryPath;
+      });
       const setup = { canAuthenticate: true, canInstall: usesDefaultExecutable };
       const resolveRuntime = Effect.gen(function* () {
         const executable = usesDefaultExecutable ? yield* installation.acquire() : undefined;
+        const binaryPath = executable?.executablePath ?? (yield* resolveNativeBinaryPath);
         yield* fileSystem
           .makeDirectory(homeLayout.effectiveHomePath ?? homeLayout.sharedHomePath, {
             recursive: true,
@@ -179,12 +202,10 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
         return {
           config: {
             ...effectiveConfig,
-            ...(executable ? { binaryPath: executable.executablePath } : {}),
+            binaryPath,
           },
           environment: processEnv,
-          revision: executable
-            ? `${executable.executablePath}:${executable.version}`
-            : effectiveConfig.binaryPath,
+          revision: executable ? `${executable.executablePath}:${executable.version}` : binaryPath,
         };
       }).pipe(
         Effect.mapError((cause) =>
@@ -210,7 +231,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
           ? (yield* installation.resolve()).version
           : yield* Effect.gen(function* () {
               const command = yield* resolveSpawnCommand(
-                effectiveConfig.binaryPath,
+                yield* resolveNativeBinaryPath,
                 ["--version"],
                 { env: processEnv },
               );
