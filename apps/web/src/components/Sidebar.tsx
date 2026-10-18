@@ -4,6 +4,7 @@ import { ThreadHoverCard, ThreadHoverCardPopup } from "./ThreadHoverCard";
 import { CollapsibleSectionHeader } from "./ui/collapsible-section-header";
 import { ThreadTerminalStatusButton } from "./ThreadStatusIndicators";
 import { ThreadContextDragGhost } from "./chat/ThreadContextDragGhost";
+import { AgentIdentityLabel } from "./agent-identity/AgentIdentityLabel";
 import {
   dropThreadContext,
   endThreadContextDrag,
@@ -2143,7 +2144,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           isRegeneratingTitle && !props.familyRow && "opacity-55",
         )}
       >
-        {thread.title}
+        <span className="block truncate">{thread.title}</span>
+        <span className="block text-2xs text-muted-foreground">
+          <AgentIdentityLabel threadRef={threadRef} featureTitle={thread.title} />
+        </span>
       </span>
     );
   const accessibleTitle = isRenaming ? null : <span className="sr-only">{thread.title}</span>;

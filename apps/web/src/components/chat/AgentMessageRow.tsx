@@ -9,6 +9,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { MessageCopyButton } from "./MessageCopyButton";
 import { findRevealRef } from "./markdownFindContext";
 import { parseAgentMessage } from "./agentMessagePresentation";
+import { AgentIdentityLabel } from "../agent-identity/AgentIdentityLabel";
 
 const STATUS = {
   info: { label: "Info", variant: "secondary" },
@@ -118,7 +119,10 @@ export function AgentMessageRow({
             className="min-w-0 truncate rounded-sm font-medium text-foreground/85 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring"
             aria-label={`${outgoing ? "Zielthread" : "Absenderthread"} öffnen: ${peerTitle ?? peerThreadId}`}
           >
-            {peerTitle ?? "Agententhread"}
+            <AgentIdentityLabel
+              threadRef={{ environmentId, threadId: peerThreadId }}
+              featureTitle={peerTitle}
+            />
           </Link>
         ) : (
           <span className="min-w-0 truncate">
