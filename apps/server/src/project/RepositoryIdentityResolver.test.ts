@@ -40,6 +40,52 @@ const layerRepositoryIdentityResolverTest = (options: {
   ).pipe(Layer.provide(ProcessRunner.layer));
 
 it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
+  it.effect(
+    "resolves filtered origin and upstream remotes without losing the fork identity",
+    () => {
+      const layerProcessRunner = Layer.succeed(ProcessRunner.ProcessRunner, {
+        run: (input) =>
+          Effect.succeed({
+            stdout: input.args.includes("rev-parse")
+              ? "/repo\n"
+              : [
+                  "origin\tgit@github.com:morrowbyte/t3code.git (fetch) [blob:none]",
+                  "origin\tgit@github.com:morrowbyte/push-only.git (push)",
+                  "upstream\thttps://github.com/t3tools/t3code.git (fetch) [blob:none]",
+                  "upstream\thttps://github.com/t3tools/push-only.git (push)",
+                ].join("\n"),
+            stderr: "",
+            code: ChildProcessSpawner.ExitCode(0),
+            timedOut: false,
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            stdoutInvalidUtf8: false,
+            stderrInvalidUtf8: false,
+          }),
+      });
+      const layerResolver = Layer.effect(
+        RepositoryIdentityResolver.RepositoryIdentityResolver,
+        RepositoryIdentityResolver.make(),
+      ).pipe(Layer.provide(layerProcessRunner));
+
+      return Effect.gen(function* () {
+        const resolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
+        const identity = yield* resolver.resolve("/repo");
+        expect(identity?.canonicalKey).toBe("github.com/t3tools/t3code");
+        expect(identity?.rootPath).toBe("/repo");
+        expect(identity?.locator).toEqual({
+          source: "git-remote",
+          remoteName: "upstream",
+          remoteUrl: "https://github.com/t3tools/t3code.git",
+        });
+        expect(identity?.origin).toEqual({
+          canonicalKey: "github.com/morrowbyte/t3code",
+          displayName: "morrowbyte/t3code",
+        });
+      }).pipe(Effect.provide(layerResolver));
+    },
+  );
+
   it.effect("refreshes the Git root only when requested", () => {
     const calls: Array<ReadonlyArray<string>> = [];
     let rootPath = "/repo";
