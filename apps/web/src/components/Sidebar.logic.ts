@@ -1,4 +1,7 @@
-import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
+import {
+  resolveThreadWorkingStartedAt,
+  threadRuntimeIsActive,
+} from "@t3tools/client-runtime/state/models";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
 import * as React from "react";
@@ -588,7 +591,11 @@ export function revealSidebarRouteAncestors(
 }
 
 export function buildSidebarHierarchy(input: {
-  readonly threads: readonly SidebarHierarchyThread[];
+  readonly threads: readonly (SidebarHierarchyThread &
+    Pick<
+      SidebarThreadSummary,
+      "runtime" | "hasPendingApprovals" | "hasPendingUserInput" | "pendingSubagentRequest"
+    >)[];
   readonly sectionByKey: ReadonlyMap<string, SidebarSection>;
   readonly visibleKeys: ReadonlySet<string>;
   readonly workingKeys: ReadonlySet<string>;
@@ -600,6 +607,21 @@ export function buildSidebarHierarchy(input: {
   const keyOf = (thread: (typeof input.threads)[number]) => `${thread.environmentId}:${thread.id}`;
   const byKey = new Map(input.threads.map((thread) => [keyOf(thread), thread]));
   const rank = new Map(input.threads.map((thread, index) => [keyOf(thread), index]));
+  // Imported provider references can be connected-idle for years without a
+  // run. Inbox candidates alone must not wake their parked sidebar rows.
+  const workingKeys = new Set(
+    [...input.workingKeys].filter((key) => {
+      const thread = byKey.get(key);
+      return (
+        thread !== undefined &&
+        (threadRuntimeIsActive(thread.runtime) ||
+          thread.hasPendingApprovals ||
+          thread.hasPendingUserInput ||
+          thread.pendingSubagentRequest != null ||
+          (thread.runtime?.status === "idle" && thread.runtime.activeRunId !== null))
+      );
+    }),
+  );
   const parents = new Map<string, string>();
   for (const thread of input.threads) {
     if (
@@ -640,11 +662,7 @@ export function buildSidebarHierarchy(input: {
     children.set(parent, siblings);
   }
   const relevant = new Set<string>();
-  for (const key of [
-    ...input.workingKeys,
-    ...(input.activeKey === null ? [] : [input.activeKey]),
-    ...[...input.visibleKeys].filter((key) => !input.visibleKeys.has(roots.get(key) ?? key)),
-  ]) {
+  for (const key of [...workingKeys, ...(input.activeKey === null ? [] : [input.activeKey])]) {
     let current: string | undefined = key;
     while (current !== undefined && byKey.has(current) && !relevant.has(current)) {
       relevant.add(current);
@@ -652,12 +670,12 @@ export function buildSidebarHierarchy(input: {
     }
   }
   const counts = new Map<string, { total: number; active: number }>();
-  for (const key of byKey.keys()) {
+  for (const key of relevant) {
     let parent = parents.get(key);
     while (parent !== undefined) {
       const count = counts.get(parent) ?? { total: 0, active: 0 };
       count.total++;
-      if (input.workingKeys.has(key)) count.active++;
+      if (workingKeys.has(key)) count.active++;
       counts.set(parent, count);
       parent = parents.get(parent);
     }
@@ -671,9 +689,14 @@ export function buildSidebarHierarchy(input: {
   }
   const groups: Array<{ root: string; section: SidebarSection; rank: number }> = [];
   for (const [root, family] of families) {
-    const visible = family.filter((key) => input.visibleKeys.has(key) || relevant.has(key));
+    const rootThread = byKey.get(root)!;
+    const rootVisible =
+      input.visibleKeys.has(root) &&
+      (rootThread.lineage.relationshipToParent !== "subagent" ||
+        rootThread.presentation === "top_level");
+    const visible = family.filter((key) => (key === root && rootVisible) || relevant.has(key));
     if (visible.length === 0) continue;
-    const working = family.some((key) => input.workingKeys.has(key));
+    const working = family.some((key) => workingKeys.has(key));
     const anchor = visible.find((key) => input.visibleKeys.has(key)) ?? root;
     groups.push({
       root,
@@ -692,7 +715,7 @@ export function buildSidebarHierarchy(input: {
     const stack = [{ key: group.root, depth: 0 }];
     while (stack.length > 0) {
       const { key, depth } = stack.pop()!;
-      const descendants = children.get(key) ?? [];
+      const descendants = (children.get(key) ?? []).filter((child) => relevant.has(child));
       const section = input.sectionByKey.get(key) ?? group.section;
       rows.push({
         key,
@@ -1083,7 +1106,9 @@ export function shouldRecedeSidebarThread(input: {
 type SidebarThreadStatusInput = Pick<
   SidebarThreadSummary,
   "hasPendingApprovals" | "hasPendingUserInput" | "pendingSubagentRequest" | "runtime"
->;
+> & {
+  readonly source?: Pick<SidebarThreadSummary["source"], "pendingBackgroundTasks"> | undefined;
+};
 
 export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): SidebarThreadStatus {
   if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {
@@ -1099,7 +1124,10 @@ export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): Si
     return "working";
   }
   if (thread.runtime?.status === "idle") {
-    return "waiting";
+    return thread.runtime.activeRunId !== null ||
+      backgroundWorkHoldsCompletion(thread.source?.pendingBackgroundTasks ?? [])
+      ? "waiting"
+      : "ready";
   }
   if (thread.runtime?.status === "failed") {
     return thread.runtime.lastErrorClass === "usage_limit" ? "limited" : "failed";
