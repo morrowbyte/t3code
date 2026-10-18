@@ -3265,6 +3265,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
   },
   pre: function MarkdownPre({ node, children, ...props }) {
     const {
+      environmentId,
       resolvedTheme,
       diffThemeName,
       expandMedia,
@@ -3282,6 +3283,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
     if (streamableUi && language === "t3-ui") {
       return (
         <StreamableUi
+          environmentId={environmentId}
           code={codeBlock.code.replace(/\n$/, "")}
           isStreaming={isStreaming && !isClosedCodeFence(node, text)}
         />

@@ -1,10 +1,13 @@
 /* oxlint-disable react/no-array-index-key -- Protocol lists only append; positional keys keep existing rows and points mounted, including duplicate values. */
-import { memo, useId, useMemo } from "react";
+import { memo } from "react";
+import type { EnvironmentId } from "@t3tools/contracts";
+import "./streamable-ui.css";
 
-import { chartGeometry } from "./chartGeometry";
+import { RichChart, RichVisualBody } from "./RichVisuals";
+import { RenderErrorBoundary } from "../RenderErrorBoundary";
 import {
   parseStreamableUi,
-  type VisualChart,
+  STREAMABLE_UI_LIMITS,
   type VisualSource,
   type VisualTable,
 } from "./protocol";
@@ -45,7 +48,7 @@ function DataTable({ title, columns, rows }: Pick<VisualTable, "title" | "column
         </thead>
         <tbody>
           {rows.map((row, rowIndex) => (
-            <tr key={rowIndex}>
+            <tr data-iui-entry="" key={rowIndex}>
               {row.map((cell, index) => (
                 <td key={index} className="border-b border-border/50 px-3 py-2">
                   {cell === null ? "—" : cell}
@@ -59,84 +62,16 @@ function DataTable({ title, columns, rows }: Pick<VisualTable, "title" | "column
   );
 }
 
-function LineChart({ chart }: { chart: VisualChart }) {
-  const id = useId();
-  const geometry = chartGeometry(chart.points);
-  if (!geometry) return <p className="text-xs text-muted-foreground">No data points yet.</p>;
-  return (
-    <>
-      <svg
-        viewBox="0 0 600 200"
-        role="img"
-        aria-labelledby={`${id}-title`}
-        aria-describedby={`${id}-description`}
-        className="block h-auto w-full text-primary"
-      >
-        <title id={`${id}-title`}>{chart.title}</title>
-        <desc id={`${id}-description`}>
-          {chart.points.length} points. {chart.xLabel ?? "Category"} versus{" "}
-          {chart.yLabel ?? "Value"}. Range {geometry.minimum} to {geometry.maximum}. Exact values
-          are available in View data.
-        </desc>
-        <path d="M52 24 V164 H548" fill="none" className="stroke-border" />
-        <polyline
-          points={geometry.coordinates.map((point) => `${point.x},${point.y}`).join(" ")}
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={2}
-          vectorEffect="non-scaling-stroke"
-        />
-        {geometry.coordinates.map((point, index) => (
-          <circle key={index} cx={point.x} cy={point.y} r={3} fill="currentColor">
-            <title>
-              {chart.points[index]!.label}: {chart.points[index]!.value}
-            </title>
-          </circle>
-        ))}
-        <g className="fill-muted-foreground text-xs">
-          <text x={52} y={16}>
-            {geometry.maximum}
-          </text>
-          <text x={52} y={156}>
-            {geometry.minimum}
-          </text>
-          <text x={52} y={188}>
-            {chart.points[0]!.label.slice(0, 24)}
-          </text>
-          {chart.points.length > 1 ? (
-            <text x={548} y={188} textAnchor="end">
-              {chart.points.at(-1)!.label.slice(0, 24)}
-            </text>
-          ) : null}
-        </g>
-      </svg>
-      {chart.xLabel || chart.yLabel ? (
-        <p className="text-xs text-muted-foreground">
-          {chart.xLabel ?? "Category"} · {chart.yLabel ?? "Value"}
-        </p>
-      ) : null}
-      <details>
-        <summary className="cursor-pointer text-xs underline">
-          View data ({chart.points.length} points)
-        </summary>
-        <DataTable
-          title={`${chart.title} data`}
-          columns={[chart.xLabel ?? "Category", chart.yLabel ?? "Value"]}
-          rows={chart.points.map((point) => [point.label, point.value])}
-        />
-      </details>
-    </>
-  );
-}
-
 export const StreamableUi = memo(function StreamableUi({
   code,
   isStreaming,
+  environmentId = null,
 }: {
   code: string;
   isStreaming: boolean;
+  environmentId?: EnvironmentId | null | undefined;
 }) {
-  const parsed = useMemo(() => parseStreamableUi(code, isStreaming), [code, isStreaming]);
+  const parsed = parseStreamableUi(code, isStreaming);
   return (
     <div
       className="my-3 grid min-w-0 gap-3"
@@ -145,9 +80,10 @@ export const StreamableUi = memo(function StreamableUi({
     >
       {parsed.components.map((component) => (
         <section
+          data-iui-entry=""
           key={component.id}
           aria-label={component.type === "metric" ? component.label : component.title}
-          className="grid min-w-0 gap-3 rounded-lg border border-border bg-card p-4 text-card-foreground"
+          className="grid min-w-0 gap-3 rounded-lg border border-border bg-card p-4 text-card-foreground [overflow-wrap:anywhere]"
         >
           {component.type === "metric" ? (
             <dl>
@@ -160,11 +96,25 @@ export const StreamableUi = memo(function StreamableUi({
           ) : (
             <>
               <p className="text-sm font-medium">{component.title}</p>
-              {component.type === "table" ? (
-                <DataTable {...component} />
-              ) : (
-                <LineChart chart={component} />
-              )}
+              <RenderErrorBoundary
+                resetKeys={[code, environmentId]}
+                fallback={
+                  <details className="text-xs text-muted-foreground">
+                    <summary className="cursor-pointer">Visual unavailable. View source</summary>
+                    <pre className="max-h-64 overflow-auto whitespace-pre-wrap">
+                      {code.slice(0, STREAMABLE_UI_LIMITS.characters)}
+                    </pre>
+                  </details>
+                }
+              >
+                {component.type === "table" ? (
+                  <DataTable {...component} />
+                ) : component.type === "chart" ? (
+                  <RichChart chart={component} />
+                ) : (
+                  <RichVisualBody component={component} environmentId={environmentId} />
+                )}
+              </RenderErrorBoundary>
             </>
           )}
           <Sources sources={component.sources} />
@@ -178,7 +128,9 @@ export const StreamableUi = memo(function StreamableUi({
       {parsed.error ? (
         <details className="text-xs text-muted-foreground">
           <summary className="cursor-pointer">{parsed.error} View source</summary>
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap">{code}</pre>
+          <pre className="max-h-64 overflow-auto whitespace-pre-wrap">
+            {code.slice(0, STREAMABLE_UI_LIMITS.characters)}
+          </pre>
         </details>
       ) : null}
     </div>
