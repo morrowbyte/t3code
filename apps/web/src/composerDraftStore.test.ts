@@ -76,6 +76,7 @@ import {
   composerFileNeedsReattach,
   partializeComposerDraftStoreState,
   useComposerDraftStore,
+  trimComposerPrompt,
   DraftId,
 } from "./composerDraftStore";
 import { removeLocalStorageItem, setLocalStorageItem } from "./hooks/useLocalStorage";
@@ -302,6 +303,56 @@ describe("speech transcription provenance", () => {
     const range = draft.speechTranscription?.ranges[0];
     expect(range).toBeDefined();
     expect(draft.prompt.slice(range!.start, range!.end)).toBe("Plain37");
+  });
+
+  it("shifts dictated spans after terminal insertion and clears them when only the reference remains", () => {
+    const target = scopeThreadRef(TEST_ENVIRONMENT_ID, ThreadId.make("speech-terminal-insertion"));
+    const store = useComposerDraftStore.getState();
+    store.appendSpeechTranscript(target, "Blain37");
+    const terminal = makeTerminalContext({ id: "speech-terminal" });
+    const insertion = insertInlineContextReference(
+      "Blain37",
+      0,
+      terminalContextReference(terminal),
+    );
+    expect(store.insertTerminalContext(target, insertion.prompt, terminal, 0)).toBe(true);
+    const start = insertion.prompt.indexOf("Blain37");
+    expect
+      .soft(store.getComposerDraft(target)?.speechTranscription?.ranges)
+      .toEqual([{ start, end: start + 7 }]);
+    store.setPrompt(target, insertion.prompt.slice(0, start), {
+      edit: true,
+      replacement: { start, end: start + 7 },
+    });
+    expect(store.getComposerDraft(target)?.prompt).toBe(insertion.prompt.slice(0, start));
+    expect(store.getComposerDraft(target)?.terminalContexts).toHaveLength(1);
+    expect(store.getComposerDraft(target)?.speechTranscription).toBeUndefined();
+  });
+
+  it.each(["  Blain37  ", "  Blain37", "Blain37  ", "Blain37", "\tBlain37\n"])(
+    "keeps dictated spans when preparing a trimmed send or queued edit: %j",
+    (prompt) => {
+      const start = prompt.indexOf("Blain37");
+      const prepared = trimComposerPrompt(prompt, { ranges: [{ start, end: start + 7 }] });
+      expect(prepared).toEqual({
+        prompt: "Blain37",
+        speechTranscription: { ranges: [{ start: 0, end: 7 }] },
+      });
+    },
+  );
+
+  it("keeps trim provenance scoped to dictated words without marking typed or empty sends", () => {
+    const prompt = "  Bitte Blain37 prüfen  ";
+    const prepared = trimComposerPrompt(prompt, { ranges: [{ start: 8, end: 15 }] });
+    expect(prepared).toEqual({
+      prompt: "Bitte Blain37 prüfen",
+      speechTranscription: { ranges: [{ start: 6, end: 13 }] },
+    });
+    expect(trimComposerPrompt(prompt).speechTranscription).toBeUndefined();
+    expect(trimComposerPrompt("   ", { ranges: [{ start: 0, end: 3 }] })).toEqual({
+      prompt: "",
+      speechTranscription: undefined,
+    });
   });
 });
 

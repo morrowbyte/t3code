@@ -785,6 +785,26 @@ function speechTranscriptionAfterDraftEdit(draft: ComposerThreadDraftState, prom
   return hasSpeechTranscription(prompt, ranges) ? { ranges } : undefined;
 }
 
+export function trimComposerPrompt(prompt: string, speechTranscription?: SpeechTranscription) {
+  const leftTrimmed = prompt.trimStart();
+  const trimmed = leftTrimmed.trimEnd();
+  // The unchanged middle must survive; a single diff would treat both edges as one replacement.
+  const leftRanges = editSpeechTranscriptionRanges(
+    prompt,
+    leftTrimmed,
+    speechTranscription?.ranges,
+    { start: 0, end: prompt.length - leftTrimmed.length },
+  );
+  const ranges = editSpeechTranscriptionRanges(leftTrimmed, trimmed, leftRanges, {
+    start: trimmed.length,
+    end: leftTrimmed.length,
+  });
+  return {
+    prompt: trimmed,
+    speechTranscription: hasSpeechTranscription(trimmed, ranges) ? { ranges } : undefined,
+  };
+}
+
 function createEmptyThreadDraft(): ComposerThreadDraftState {
   return {
     prompt: "",
@@ -3573,6 +3593,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             const nextDraft: ComposerThreadDraftState = {
               ...existing,
               prompt,
+              speechTranscription: speechTranscriptionAfterDraftEdit(existing, prompt),
               terminalContexts: [
                 ...existing.terminalContexts.slice(0, boundedIndex),
                 normalizedContext,

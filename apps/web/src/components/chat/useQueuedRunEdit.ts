@@ -15,14 +15,11 @@ import {
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { ATTACHMENT_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerContextReferences";
 import { useEffect, useRef, useState, type RefObject } from "react";
-import {
-  editSpeechTranscriptionRanges,
-  hasSpeechTranscription,
-} from "@t3tools/shared/speechTranscription";
 import { useAssetUrls } from "../../assets/assetUrls";
 import {
   DraftId,
   useComposerDraftStore,
+  trimComposerPrompt,
   type ComposerFileAttachment,
   type ComposerImageAttachment,
   type ComposerThreadTarget,
@@ -83,7 +80,8 @@ async function submitQueuedRunEdit(input: {
   readonly editQueuedRun: ReturnType<typeof useEditQueuedRunCommand>;
 }): Promise<string | null> {
   const { environmentId, draftTarget, editing, content } = input;
-  const editText = content.prompt.trim();
+  const trimmedMessage = trimComposerPrompt(content.prompt, content.speechTranscription);
+  const editText = trimmedMessage.prompt;
   const newAttachments = [...content.images, ...content.files];
   const uploadFiles = async (files: ReadonlyArray<ComposerFileAttachment>) => {
     const validateFiles = () => {
@@ -143,16 +141,8 @@ async function submitQueuedRunEdit(input: {
           attachments: uploads,
           context: {
             version: 1,
-            ...(hasSpeechTranscription(content.prompt, content.speechTranscription?.ranges)
-              ? {
-                  speechTranscription: {
-                    ranges: editSpeechTranscriptionRanges(
-                      content.prompt,
-                      editText,
-                      content.speechTranscription?.ranges,
-                    ),
-                  },
-                }
+            ...(trimmedMessage.speechTranscription
+              ? { speechTranscription: trimmedMessage.speechTranscription }
               : {}),
             records: [
               ...new Map(

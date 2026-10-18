@@ -332,6 +332,7 @@ import {
   type ComposerImageAttachment,
   type DraftThreadEnvMode,
   useComposerDraftStore,
+  trimComposerPrompt,
   DraftId,
 } from "../composerDraftStore";
 import {
@@ -6370,14 +6371,21 @@ export default function ChatView(props: ChatViewProps) {
     const composerPreviewAnnotationsSnapshot = [...composerPreviewAnnotations];
     const composerReviewCommentsSnapshot: ReviewCommentContext[] = [...composerReviewComments];
     const composerThreadContextsSnapshot = [...composerThreadContexts];
-    const messageTextForSend = composerTerminalContexts
+    const messagePromptForSend = composerTerminalContexts
       .filter((context) => !composerTerminalContextsSnapshot.includes(context))
       .reduce(
         (text, context) =>
           removeInlineContextReference(text, terminalContextReference(context).contextId).prompt,
         promptForSend,
-      )
-      .trim();
+      );
+    const trimmedMessage = trimComposerPrompt(messagePromptForSend, {
+      ranges: editSpeechTranscriptionRanges(
+        promptForSend,
+        messagePromptForSend,
+        speechTranscription?.ranges,
+      ),
+    });
+    const messageTextForSend = trimmedMessage.prompt;
     // Records bind attachments by the id each side knows: the local id for the optimistic
     // row, the upload id (or local id on the data-URL path) on the wire; the server
     // rebinds them to the persisted id.
@@ -6389,9 +6397,9 @@ export default function ChatView(props: ChatViewProps) {
       text: messageTextForSend || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
     });
     const speechRangesForSend = editSpeechTranscriptionRanges(
-      promptForSend,
+      messageTextForSend,
       outgoingMessageText,
-      speechTranscription?.ranges,
+      trimmedMessage.speechTranscription?.ranges,
     );
     const buildOutgoingMessageContext = (attachmentIds: ReadonlyArray<string>) =>
       buildMessageContext({
@@ -6758,13 +6766,7 @@ export default function ChatView(props: ChatViewProps) {
         setMultipleModelSelections(failedSelections);
         if (clearedDraft) {
           setComposerDraftPrompt(composerDraftTarget, messageTextForSend, {
-            speechTranscription: {
-              ranges: editSpeechTranscriptionRanges(
-                promptForSend,
-                messageTextForSend,
-                speechTranscription?.ranges,
-              ),
-            },
+            speechTranscription: trimmedMessage.speechTranscription,
           });
           addComposerDraftImages(
             composerDraftTarget,
@@ -7169,13 +7171,7 @@ export default function ChatView(props: ChatViewProps) {
         composerFilesRef.current = composerFilesSnapshot;
         composerTerminalContextsRef.current = composerTerminalContextsSnapshot;
         setComposerDraftPrompt(composerDraftTarget, messageTextForSend, {
-          speechTranscription: {
-            ranges: editSpeechTranscriptionRanges(
-              promptForSend,
-              messageTextForSend,
-              speechTranscription?.ranges,
-            ),
-          },
+          speechTranscription: trimmedMessage.speechTranscription,
         });
         addComposerDraftImages(composerDraftTarget, retryComposerImages);
         addComposerDraftFiles(composerDraftTarget, composerFilesSnapshot);
