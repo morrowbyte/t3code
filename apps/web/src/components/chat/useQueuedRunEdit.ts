@@ -4,6 +4,7 @@ import {
   type EnvironmentId,
   type MessageId,
   type OrchestrationMessageContext,
+  type SpeechTranscription,
   type OrchestrationV2ThreadProjection,
   type PreviewAnnotationPayload,
   type RunId,
@@ -18,6 +19,7 @@ import { useAssetUrls } from "../../assets/assetUrls";
 import {
   DraftId,
   useComposerDraftStore,
+  trimComposerPrompt,
   type ComposerFileAttachment,
   type ComposerImageAttachment,
   type ComposerThreadTarget,
@@ -55,6 +57,7 @@ interface EditingQueuedRun {
 /** What the composer holds when the user saves a queued-message edit. */
 export interface QueuedRunEditContent {
   readonly prompt: string;
+  readonly speechTranscription?: SpeechTranscription | undefined;
   readonly images: ReadonlyArray<ComposerImageAttachment>;
   readonly files: ReadonlyArray<ComposerFileAttachment>;
   readonly terminalContexts: ReadonlyArray<TerminalContextDraft>;
@@ -77,7 +80,8 @@ async function submitQueuedRunEdit(input: {
   readonly editQueuedRun: ReturnType<typeof useEditQueuedRunCommand>;
 }): Promise<string | null> {
   const { environmentId, draftTarget, editing, content } = input;
-  const editText = content.prompt.trim();
+  const trimmedMessage = trimComposerPrompt(content.prompt, content.speechTranscription);
+  const editText = trimmedMessage.prompt;
   const newAttachments = [...content.images, ...content.files];
   const uploadFiles = async (files: ReadonlyArray<ComposerFileAttachment>) => {
     const validateFiles = () => {
@@ -137,6 +141,9 @@ async function submitQueuedRunEdit(input: {
           attachments: uploads,
           context: {
             version: 1,
+            ...(trimmedMessage.speechTranscription
+              ? { speechTranscription: trimmedMessage.speechTranscription }
+              : {}),
             records: [
               ...new Map(
                 [...keptRecords, ...newRecords].map(
@@ -223,7 +230,11 @@ export function useQueuedRunEdit(input: {
     const target = queuedEditDraftTarget(routeThreadRef, request.runId);
     const store = useComposerDraftStore.getState();
     store.clearComposerContent(target);
-    store.setPrompt(target, request.text);
+    store.setPrompt(target, request.text, {
+      speechTranscription: serverProjection?.messages.find(
+        (message) => message.id === request.messageId,
+      )?.context?.speechTranscription,
+    });
     setEditing({
       threadId: activeThreadId,
       runId: request.runId,

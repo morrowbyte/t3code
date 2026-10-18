@@ -698,6 +698,37 @@ function makeLocalCommandHarness(input: {
   };
 }
 
+effectIt.effect.each(["dictated", "typed", "voice-source-only"] as const)(
+  "forwards speech transcription provenance from the current persisted message: %s",
+  (kind) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({ text: "Plain37", failReadsAfterRunning: true });
+      const projection = harness.projection();
+      harness.setProjection({
+        ...projection,
+        messages: projection.messages.map((message) => ({
+          ...message,
+          ...(kind === "dictated"
+            ? {
+                context: {
+                  version: 1 as const,
+                  records: [],
+                  speechTranscription: { ranges: [{ start: 0, end: 7 }] },
+                },
+              }
+            : {}),
+          ...(kind === "voice-source-only" ? { creationSource: "voice" as const } : {}),
+        })),
+      });
+      yield* harness.start;
+      expect(harness.startRootRun).toHaveBeenCalledOnce();
+      const delivered = harness.startRootRun.mock.calls[0]![0].message;
+      expect(delivered.containsSpeechTranscription).toBe(kind === "dictated" ? true : undefined);
+      expect(delivered.text).toBe("Plain37");
+      expect(harness.projection().messages.at(-1)?.text).toBe("Plain37");
+    }),
+);
+
 effectIt.effect.each(["cleanup-first", "startup-first"])(
   "coordinates provider startup with %s",
   (order) =>

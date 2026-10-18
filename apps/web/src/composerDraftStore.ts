@@ -24,7 +24,13 @@ import {
   type ScopedThreadRef,
   ThreadId,
   SnapShotSource,
+  SpeechTranscription,
+  type SpeechTranscriptionRange,
 } from "@t3tools/contracts";
+import {
+  editSpeechTranscriptionRanges,
+  hasSpeechTranscription,
+} from "@t3tools/shared/speechTranscription";
 import {
   parseScopedProjectKey,
   parseScopedThreadKey,
@@ -89,6 +95,7 @@ const isReviewCommentContext = Schema.is(ReviewCommentContextSchema);
 const isThreadContextRecord = Schema.is(ThreadContextRecord);
 const isSnapShotSource = Schema.is(SnapShotSource);
 const isPreviewAnnotationPayload = Schema.is(PreviewAnnotationPayloadSchema);
+const isSpeechTranscription = Schema.is(SpeechTranscription);
 
 export const COMPOSER_DRAFT_STORAGE_KEY = "t3code:composer-drafts:v1";
 const COMPOSER_DRAFT_STORAGE_VERSION = 9;
@@ -225,6 +232,7 @@ type PersistedTerminalContextDraft = typeof PersistedTerminalContextDraft.Type;
 
 const PersistedComposerThreadDraftState = Schema.Struct({
   prompt: Schema.String,
+  speechTranscription: Schema.optionalKey(SpeechTranscription),
   attachments: Schema.Array(PersistedComposerImageAttachment),
   files: Schema.optionalKey(Schema.Array(PersistedComposerDraftFileAttachment)),
   terminalContexts: Schema.optionalKey(Schema.Array(PersistedTerminalContextDraft)),
@@ -350,6 +358,7 @@ const contextInsertionHandlers = new Map<string, ComposerContextInsertionHandler
 
 export interface ComposerThreadDraftState {
   prompt: string;
+  speechTranscription?: SpeechTranscription | undefined;
   images: ComposerImageAttachment[];
   files: ComposerFileAttachment[];
   nonPersistedImageIds: string[];
@@ -488,7 +497,16 @@ interface ComposerDraftStoreState {
   finalizePromotedDraftThread: (threadRef: ComposerThreadTarget) => void;
   clearDraftThread: (threadRef: ComposerThreadTarget) => void;
   setStickyModelSelection: (modelSelection: ModelSelection | null | undefined) => void;
-  setPrompt: (threadRef: ComposerThreadTarget, prompt: string) => void;
+  setPrompt: (
+    threadRef: ComposerThreadTarget,
+    prompt: string,
+    options?: {
+      edit?: boolean;
+      replacement?: SpeechTranscriptionRange | undefined;
+      speechTranscription?: SpeechTranscription | undefined;
+    },
+  ) => void;
+  appendSpeechTranscript: (threadRef: ComposerThreadTarget, transcript: string) => string | null;
   setTerminalContexts: (threadRef: ComposerThreadTarget, contexts: TerminalContextDraft[]) => void;
   setModelSelection: (
     threadRef: ComposerThreadTarget,
@@ -757,6 +775,35 @@ const EMPTY_THREAD_DRAFT = Object.freeze<ComposerThreadDraftState>({
   runtimeMode: null,
   interactionMode: null,
 });
+
+function speechTranscriptionAfterDraftEdit(draft: ComposerThreadDraftState, prompt: string) {
+  const ranges = editSpeechTranscriptionRanges(
+    draft.prompt,
+    prompt,
+    draft.speechTranscription?.ranges,
+  );
+  return hasSpeechTranscription(prompt, ranges) ? { ranges } : undefined;
+}
+
+export function trimComposerPrompt(prompt: string, speechTranscription?: SpeechTranscription) {
+  const leftTrimmed = prompt.trimStart();
+  const trimmed = leftTrimmed.trimEnd();
+  // The unchanged middle must survive; a single diff would treat both edges as one replacement.
+  const leftRanges = editSpeechTranscriptionRanges(
+    prompt,
+    leftTrimmed,
+    speechTranscription?.ranges,
+    { start: 0, end: prompt.length - leftTrimmed.length },
+  );
+  const ranges = editSpeechTranscriptionRanges(leftTrimmed, trimmed, leftRanges, {
+    start: trimmed.length,
+    end: leftTrimmed.length,
+  });
+  return {
+    prompt: trimmed,
+    speechTranscription: hasSpeechTranscription(trimmed, ranges) ? { ranges } : undefined,
+  };
+}
 
 function createEmptyThreadDraft(): ComposerThreadDraftState {
   return {
@@ -1909,6 +1956,18 @@ function normalizePersistedDraftsByThreadId(
             })();
     nextDraftsByThreadKey[normalizedThreadKey] = {
       prompt,
+      ...(isSpeechTranscription(draftCandidate.speechTranscription) &&
+      hasSpeechTranscription(promptCandidate, draftCandidate.speechTranscription.ranges)
+        ? {
+            speechTranscription: {
+              ranges: editSpeechTranscriptionRanges(
+                promptCandidate,
+                prompt,
+                draftCandidate.speechTranscription.ranges,
+              ),
+            },
+          }
+        : {}),
       attachments,
       ...(files.length > 0 ? { files } : {}),
       ...(terminalContexts.length > 0 ? { terminalContexts } : {}),
@@ -2025,6 +2084,9 @@ export function partializeComposerDraftStoreState(
     }
     const persistedDraft: DeepMutable<PersistedComposerThreadDraftState> = {
       prompt: draft.prompt,
+      ...(hasSpeechTranscription(draft.prompt, draft.speechTranscription?.ranges)
+        ? { speechTranscription: { ranges: [...draft.speechTranscription!.ranges] } }
+        : {}),
       attachments: draft.persistedAttachments,
       ...(draft.files.length > 0
         ? {
@@ -2333,6 +2395,9 @@ function toHydratedThreadDraft(
       ...(persistedDraft.threadContexts ?? []).map(threadContextReference),
       ...files.map(fileContextReference),
     ]),
+    ...(hasSpeechTranscription(persistedDraft.prompt, persistedDraft.speechTranscription?.ranges)
+      ? { speechTranscription: persistedDraft.speechTranscription }
+      : {}),
     images: hydrateImagesFromPersisted(persistedDraft.attachments),
     files,
     nonPersistedImageIds: [],
@@ -2857,16 +2922,45 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             return { draftsByThreadKey: nextDraftsByThreadKey };
           });
         },
-        setPrompt: (threadRef, prompt) => {
+        appendSpeechTranscript: (threadRef, transcript) => {
+          if (!transcript.trim()) return null;
+          const draft = get().getComposerDraft(threadRef);
+          const prompt = draft?.prompt ?? "";
+          const separator = prompt.length === 0 || /\s$/.test(prompt) ? "" : "\n";
+          const next = `${prompt}${separator}${transcript}`;
+          get().setPrompt(threadRef, next, {
+            speechTranscription: {
+              ranges: [
+                ...(draft?.speechTranscription?.ranges ?? []),
+                { start: prompt.length + separator.length, end: next.length },
+              ].slice(0, 200),
+            },
+          });
+          return next;
+        },
+        setPrompt: (threadRef, prompt, options) => {
           const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
           if (threadKey.length === 0) {
             return;
           }
           set((state) => {
             const existing = state.draftsByThreadKey[threadKey] ?? createEmptyThreadDraft();
+            const ranges =
+              options?.speechTranscription?.ranges ??
+              (options?.edit
+                ? editSpeechTranscriptionRanges(
+                    existing.prompt,
+                    prompt,
+                    existing.speechTranscription?.ranges,
+                    options.replacement,
+                  )
+                : []);
             const nextDraft: ComposerThreadDraftState = {
               ...existing,
               prompt,
+              speechTranscription: hasSpeechTranscription(prompt, ranges)
+                ? { ranges: [...ranges].slice(0, 200) }
+                : undefined,
             };
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(nextDraft)) {
@@ -2903,6 +2997,10 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               ),
               terminalContexts: normalizedContexts,
             };
+            nextDraft.speechTranscription = speechTranscriptionAfterDraftEdit(
+              existing,
+              nextDraft.prompt,
+            );
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(nextDraft)) {
               delete nextDraftsByThreadKey[threadKey];
@@ -3271,6 +3369,10 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 (attachment) => attachment.id !== imageId,
               ),
             };
+            nextDraft.speechTranscription = speechTranscriptionAfterDraftEdit(
+              current,
+              nextDraft.prompt,
+            );
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(nextDraft)) {
               delete nextDraftsByThreadKey[threadKey];
@@ -3379,6 +3481,10 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               ).prompt,
               files: current.files.filter((file) => file.id !== fileId),
             } satisfies ComposerThreadDraftState;
+            nextDraft.speechTranscription = speechTranscriptionAfterDraftEdit(
+              current,
+              nextDraft.prompt,
+            );
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(nextDraft)) {
               delete nextDraftsByThreadKey[threadKey];
@@ -3487,6 +3593,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             const nextDraft: ComposerThreadDraftState = {
               ...existing,
               prompt,
+              speechTranscription: speechTranscriptionAfterDraftEdit(existing, prompt),
               terminalContexts: [
                 ...existing.terminalContexts.slice(0, boundedIndex),
                 normalizedContext,
@@ -3579,6 +3686,10 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 (context) => context.id !== contextId,
               ),
             };
+            nextDraft.speechTranscription = speechTranscriptionAfterDraftEdit(
+              current,
+              nextDraft.prompt,
+            );
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(nextDraft)) {
               delete nextDraftsByThreadKey[threadKey];
@@ -3608,6 +3719,10 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               ),
               terminalContexts: [],
             };
+            nextDraft.speechTranscription = speechTranscriptionAfterDraftEdit(
+              current,
+              nextDraft.prompt,
+            );
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(nextDraft)) {
               delete nextDraftsByThreadKey[threadKey];
@@ -3705,6 +3820,10 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 (imageId) => imageId !== annotationId,
               ),
             };
+            nextDraft.speechTranscription = speechTranscriptionAfterDraftEdit(
+              current,
+              nextDraft.prompt,
+            );
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(nextDraft)) delete nextDraftsByThreadKey[threadKey];
             else nextDraftsByThreadKey[threadKey] = nextDraft;
@@ -3869,6 +3988,10 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               ).prompt,
               reviewComments,
             };
+            nextDraft.speechTranscription = speechTranscriptionAfterDraftEdit(
+              current,
+              nextDraft.prompt,
+            );
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(nextDraft)) delete nextDraftsByThreadKey[threadKey];
             else nextDraftsByThreadKey[threadKey] = nextDraft;
@@ -3941,6 +4064,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             const nextDraft: ComposerThreadDraftState = {
               ...current,
               prompt: "",
+              speechTranscription: undefined,
               images: [],
               files: [],
               nonPersistedImageIds: [],
@@ -3974,6 +4098,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             }
             const nextDraft: ComposerThreadDraftState = {
               ...current,
+              speechTranscription: undefined,
               prompt: ensureInlineContextReferences("", [
                 ...current.terminalContexts.map(terminalContextReference),
                 ...current.reviewComments.map(reviewCommentContextReference),
@@ -4052,9 +4177,17 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               stripInlineContextReferences(source.prompt),
               destination.terminalContexts.map(terminalContextReference),
             );
+            const movedSpeechRanges = editSpeechTranscriptionRanges(
+              source.prompt,
+              movedPrompt,
+              source.speechTranscription?.ranges,
+            );
             const nextDestination: ComposerThreadDraftState = {
               ...destination,
               prompt: movedPrompt,
+              speechTranscription: hasSpeechTranscription(movedPrompt, movedSpeechRanges)
+                ? { ranges: movedSpeechRanges }
+                : undefined,
               images: [...destination.images, ...movedImages],
               files: [...destination.files, ...movedFiles],
               nonPersistedImageIds: [
@@ -4073,6 +4206,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             // are still referenced from the destination.
             const nextSource: ComposerThreadDraftState = {
               ...source,
+              speechTranscription: undefined,
               prompt: ensureInlineContextReferences(
                 "",
                 source.terminalContexts.map(terminalContextReference),

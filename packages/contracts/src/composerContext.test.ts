@@ -19,6 +19,24 @@ const decodeContext = Schema.decodeUnknownSync(OrchestrationMessageContext);
 const decodeMessage = Schema.decodeUnknownSync(OrchestrationV2ConversationMessageJson);
 const decodeCommand = Schema.decodeUnknownSync(OrchestrationV2Command);
 
+describe("speech transcription provenance", () => {
+  it("round-trips explicit offsets while keeping ordinary context unmarked", () => {
+    const context = {
+      version: 1,
+      records: [],
+      speechTranscription: { ranges: [{ start: 4, end: 11 }] },
+    };
+    expect(decodeContext(context)).toEqual(context);
+    expect(decodeContext({ version: 1, records: [] })).not.toHaveProperty("speechTranscription");
+    expect(() =>
+      decodeContext({ ...context, speechTranscription: { ranges: [{ start: 11, end: 4 }] } }),
+    ).toThrow();
+    expect(() =>
+      decodeContext({ ...context, speechTranscription: { ranges: [{ start: -1, end: 4 }] } }),
+    ).toThrow();
+  });
+});
+
 const base = { version: 1, contextId: "ctx_1" } as const;
 
 const knownRecords: Record<(typeof COMPOSER_CONTEXT_KINDS)[number], Record<string, unknown>> = {

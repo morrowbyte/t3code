@@ -60,6 +60,7 @@ import {
   getComposerDraftSnapshot,
   composerDraftsAtom,
   setComposerDraftText,
+  commitComposerDraftSpeechTranscription,
   composerContextImportsAtom,
   countComposerDraftAttachmentsAfterSelection,
 } from "../../state/use-composer-drafts";
@@ -473,6 +474,8 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     subscribeToDraftChanges: (onChange) => appAtomRegistry.subscribe(composerDraftsAtom, onChange),
     selection: composerMenu.selection,
     onChangeDraftMessage: (text) => setComposerDraftText(composerDraftKey, text),
+    onCommitSpeechTranscription: (text, insertion, replacement) =>
+      commitComposerDraftSpeechTranscription(composerDraftKey, text, insertion, replacement),
     onChangeSelection: composerMenu.onSelectionChange,
   });
   const voicePresentation = resolveVoiceComposerPresentation(
@@ -899,7 +902,9 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                       text: paste.text,
                     });
                     const selection = { start: insertion.cursor, end: insertion.cursor };
-                    props.onChangeDraftMessage(insertion.value);
+                    setComposerDraftText(composerDraftKey, insertion.value, {
+                      replacement: paste.selection,
+                    });
                     composerMenu.onSelectionChange(selection);
                   };
                   const capabilities = props.serverConfig?.environment.capabilities;

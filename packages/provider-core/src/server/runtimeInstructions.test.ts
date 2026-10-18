@@ -4,6 +4,18 @@ import { T3_CODE_VISUAL_INSTRUCTIONS } from "./orchestrationInstructions.ts";
 import { parseStreamableUi } from "@t3tools/shared/streamableUi";
 
 describe("buildRuntimeInstructions", () => {
+  it("asks senders for structured handoffs without rewriting originals or adding model calls", () => {
+    const instructions = buildRuntimeInstructions({ harness: "Codex" });
+    expect(instructions.match(/<agent_messages>/g)).toHaveLength(1);
+    expect(instructions).toContain('Start with "Kurz: "');
+    expect(instructions).toContain('"Ergebnis:", "Offen:", "Nächster Schritt:"');
+    expect(instructions).toContain("The tool supplies sender/target metadata");
+    expect(instructions).toContain("Do not add a second model call");
+    expect(instructions).toContain("rewrite stored history");
+    expect(instructions).toContain("<tool_output_selection>");
+    expect(instructions).toContain("<response_audience>");
+  });
+
   it.each(["Cursor", "Muse", "Grok", "OpenCode", "Claude Code"])(
     "provides %s the exact valid protocol even without T3 MCP context",
     (harness) => {
@@ -56,6 +68,25 @@ describe("buildRuntimeInstructions", () => {
     expect(instructions).toContain("compact facts, sources");
     expect(instructions).toContain("let that agent render the visuals once");
     expect(instructions).toContain("do not duplicate components");
+  });
+
+  it("explains quantities with honest scales and TeX without prohibiting reference tables", () => {
+    const instructions = buildRuntimeInstructions({ harness: "Codex" });
+    expect(instructions).toContain(
+      "Neither Markdown nor t3-ui tables should replace a useful chart by default",
+    );
+    expect(instructions).toContain(
+      "Keep different units on separate charts or clearly separate scales",
+    );
+    expect(instructions).toContain("never imply a shared numeric scale for unlike quantities");
+    expect(instructions).toContain("explicit table requests and tabular reference or lookup tasks");
+    expect(instructions).toContain(
+      "a request to explain or compare quantities is not by itself a lookup task",
+    );
+    expect(instructions).toContain("$...$ inline, or $$ on separate lines");
+    expect(instructions).toContain("Do not put equations in text code blocks");
+    expect(instructions).toContain("Email drafts, simple facts and tasks without a useful visual");
+    expect(instructions).toContain("Internal agent-to-agent handoffs and steering messages");
   });
 
   it("includes the bounded output policy independently of model metadata", () => {

@@ -1,3 +1,4 @@
+import { speechTranscriptionContext } from "@t3tools/shared/speechTranscription";
 import { MspError, type SendUserTurnOptions } from "@muse-code/sdk";
 import {
   MUSE_DEFAULT_MODEL,
@@ -1831,6 +1832,8 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           resolveAttachmentPath: providerHost.resolveAttachmentPath,
         });
         if (text) parts.push({ type: "text", text });
+        const speechOrigin = speechTranscriptionContext(message);
+        if (speechOrigin) parts.push({ type: "text", text: speechOrigin });
         for (const attachment of message.attachments)
           if (isProviderNativeImageAttachment(attachment)) {
             const path = providerHost.resolveAttachmentPath(attachment);

@@ -28,6 +28,7 @@ import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import { makeRawThreadShell, makeThreadShellFixture } from "../../test-fixtures";
 import { threadJumpTarget } from "../keyboard/threadKeyboardShortcuts";
 import {
+  buildThreadListV2FamilyRows,
   buildThreadListV2Items,
   buildThreadListV2ListItems,
   getThreadListV2OrderedSection,
@@ -36,10 +37,13 @@ import {
   resolveThreadListV2SnoozeGateExpiryMs,
   resolveThreadListV2Status,
   resolveThreadListV2SwipeActions,
+  revealThreadListV2RouteAncestors,
+  toggleThreadListV2Family,
   sortThreadsForListV2,
   threadListV2ListItemsAreEqual,
   threadHasUnseenCompletion,
   type ThreadListV2ListItem,
+  type ThreadListV2FamilyDisclosure,
 } from "./threadListV2";
 
 const environmentId = EnvironmentId.make("environment-1");
@@ -54,6 +58,240 @@ function makeThread(
 }
 
 const NOW = "2026-06-02T00:00:00.000Z";
+
+describe("native thread families", () => {
+  const parent = makeThread({ id: ThreadId.make("parent"), title: "Parent" });
+  const child = makeThread({
+    id: ThreadId.make("child"),
+    title: "Child",
+    lineage: {
+      parentThreadId: parent.id,
+      rootThreadId: parent.id,
+      relationshipToParent: "subagent",
+    },
+  });
+  const grandchild = makeThread({
+    id: ThreadId.make("grandchild"),
+    title: "Grandchild",
+    lineage: { ...child.lineage, parentThreadId: child.id },
+  });
+  const keyOf = (thread: EnvironmentThreadShell) => `${thread.environmentId}:${thread.id}`;
+  const parentKey = keyOf(parent);
+  const childKey = keyOf(child);
+  const grandchildKey = keyOf(grandchild);
+  const disclosure: ThreadListV2FamilyDisclosure = {
+    routeKey: grandchildKey,
+    expandedKeys: new Set([parentKey]),
+    closedKeys: new Set(),
+  };
+  const itemsFor = (threads: readonly EnvironmentThreadShell[]) =>
+    buildThreadListV2Items({
+      threads,
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+      includeSubagents: true,
+      workingShelfEnabled: true,
+      workingShelfExpanded: true,
+      snoozedShelfExpanded: true,
+      settledShelfExpanded: true,
+    }).items;
+  const working = makeThread({
+    ...grandchild,
+    runtime: {
+      status: "running",
+      activeRunId: null,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      providerName: "Codex",
+      lastError: null,
+      updatedAt: NOW,
+    },
+  });
+
+  it("opts ordinary subagents into scoped search and ordering without changing the old list", () => {
+    const threads = [parent, child, grandchild];
+    expect(
+      itemsFor(threads)
+        .map((item) => item.thread.id)
+        .sort(),
+    ).toEqual(threads.map((thread) => thread.id).sort());
+    const search = buildThreadListV2Items({
+      threads,
+      environmentId: null,
+      searchQuery: "Grandchild",
+      now: NOW,
+      includeSubagents: true,
+    });
+    expect(search.items.map((item) => item.thread.id)).toEqual([grandchild.id]);
+    expect(
+      getThreadListV2OrderedSection({
+        threads,
+        section: "active",
+        now: NOW,
+        includeSubagents: true,
+      })
+        .map((thread) => thread.id)
+        .sort(),
+    ).toEqual(threads.map((thread) => thread.id).sort());
+    expect(
+      buildThreadListV2Items({ threads, environmentId: null, searchQuery: "", now: NOW }).items.map(
+        (item) => item.thread.id,
+      ),
+    ).toEqual([parent.id]);
+  });
+
+  it.each(["settled", "snoozed"] as const)(
+    "keeps an active grandchild's %s ancestor as context with its own actions and status",
+    (state) => {
+      const ancestor = makeThread({
+        ...parent,
+        ...(state === "settled"
+          ? { settledOverride: "settled", settledAt: NOW }
+          : { snoozedAt: NOW, snoozedUntil: "2099-01-01T00:00:00.000Z" }),
+      });
+      const items = itemsFor([ancestor, child, working]);
+      const rows = buildThreadListV2FamilyRows({
+        items,
+        visibleKeys: new Set([grandchildKey]),
+        disclosure,
+        workingShelfEnabled: true,
+      });
+      expect(rows.filter((row) => row.hasChildren).map((row) => row.key)).toEqual([parentKey]);
+      expect(rows.map((row) => [row.key, row.depth, row.parentKey])).toEqual([
+        [parentKey, 0, null],
+        [childKey, 1, parentKey],
+        [grandchildKey, 2, childKey],
+      ]);
+      expect(rows[0]).toMatchObject({
+        section: state,
+        displaySection: "working",
+        contextOnly: true,
+        descendantCount: 2,
+        activeDescendantCount: 1,
+      });
+      expect(rows[0]!.item).toBe(items.find((item) => item.thread.id === parent.id));
+      expect(resolveThreadListV2Status(rows[0]!.item.thread)).toBe("ready");
+      expect(resolveThreadListV2Status(rows[2]!.item.thread)).toBe("working");
+    },
+  );
+
+  it("admits only search-matching families even when another family is working and routed", () => {
+    const match = makeThread({ id: ThreadId.make("match"), title: "Needle" });
+    const threads = [parent, child, working, match];
+    const items = itemsFor(threads);
+    for (const [searchQuery, expectedKeys] of [
+      ["Needle", [keyOf(match)]],
+      ["No results", []],
+      ["Grandchild", [parentKey, childKey, grandchildKey]],
+    ] as const) {
+      const visible = buildThreadListV2Items({
+        threads,
+        environmentId: null,
+        searchQuery,
+        now: NOW,
+        includeSubagents: true,
+        workingShelfEnabled: true,
+        workingShelfExpanded: true,
+      });
+      const rows = buildThreadListV2FamilyRows({
+        items,
+        visibleKeys: new Set(visible.items.map((item) => keyOf(item.thread))),
+        disclosure,
+        workingShelfEnabled: true,
+      });
+      expect(rows.map((row) => row.key)).toEqual(expectedKeys);
+    }
+  });
+
+  it("keeps a selected active descendant hidden through status changes and repeated manual toggles", () => {
+    let current = toggleThreadListV2Family(disclosure, parentKey);
+    for (const descendant of [working, grandchild, working]) {
+      const items = itemsFor([parent, child, descendant]);
+      current = revealThreadListV2RouteAncestors(
+        current,
+        items.map((item) => item.thread),
+        grandchildKey,
+      );
+      const rows = () =>
+        buildThreadListV2FamilyRows({
+          items,
+          visibleKeys: new Set([grandchildKey]),
+          disclosure: current,
+        });
+      expect(rows().map((row) => row.key)).toEqual([parentKey]);
+      current = {
+        ...toggleThreadListV2Family(current, parentKey),
+        closedKeys: new Set([childKey]),
+      };
+      expect(rows().map((row) => row.key)).toEqual([parentKey, childKey, grandchildKey]);
+      current = toggleThreadListV2Family(current, parentKey);
+    }
+    expect(disclosure.closedKeys.size).toBe(0);
+    expect(current.closedKeys.has(parentKey)).toBe(true);
+  });
+
+  it("makes a promoted child a root and reveals its original ancestors only on a new route", () => {
+    const promoted = { ...child, presentation: "top_level" as const };
+    const items = itemsFor([parent, promoted, grandchild]);
+    const rows = buildThreadListV2FamilyRows({
+      items,
+      visibleKeys: new Set(items.map((item) => keyOf(item.thread))),
+      disclosure: { ...disclosure, expandedKeys: new Set([childKey]) },
+    });
+    expect(rows.find((row) => row.key === childKey)).toMatchObject({
+      depth: 0,
+      parentKey: null,
+      rootKey: childKey,
+    });
+    expect(rows.find((row) => row.key === grandchildKey)).toMatchObject({
+      depth: 1,
+      rootKey: childKey,
+    });
+    expect(promoted.lineage).toBe(child.lineage);
+    const closed: ThreadListV2FamilyDisclosure = {
+      routeKey: childKey,
+      expandedKeys: new Set([parentKey]),
+      closedKeys: new Set([parentKey]),
+    };
+    const unpromoted = [parent, child, grandchild];
+    expect(revealThreadListV2RouteAncestors(closed, unpromoted, childKey)).toBe(closed);
+    expect(
+      buildThreadListV2FamilyRows({
+        items: itemsFor(unpromoted),
+        visibleKeys: new Set([childKey]),
+        disclosure: closed,
+      }).map((row) => row.key),
+    ).toEqual([parentKey]);
+    const navigated = revealThreadListV2RouteAncestors(closed, unpromoted, grandchildKey);
+    expect(navigated.closedKeys.size).toBe(0);
+    expect([...navigated.expandedKeys]).toEqual([parentKey]);
+  });
+
+  it("leaves foreign, missing and cyclic ancestry reachable without rewriting lineage", () => {
+    const foreign = makeThread({ ...parent, projectId: ProjectId.make("foreign") });
+    const cyclic = makeThread({
+      ...parent,
+      lineage: { ...child.lineage, parentThreadId: child.id },
+    });
+    const snapshots = [
+      [foreign, child],
+      [child],
+      [cyclic, child],
+      [makeThread({ ...parent, environmentId: EnvironmentId.make("other") }), child],
+    ];
+    for (const threads of snapshots) {
+      const items = itemsFor(threads);
+      const lineage = threads.map((thread) => ({ ...thread.lineage }));
+      const rows = buildThreadListV2FamilyRows({
+        items,
+        visibleKeys: new Set(items.map((item) => keyOf(item.thread))),
+        disclosure: { ...disclosure, expandedKeys: new Set(threads.map(keyOf)) },
+      });
+      expect(rows.map((row) => row.key).sort()).toEqual(threads.map(keyOf).sort());
+      expect(threads.map((thread) => thread.lineage)).toEqual(lineage);
+    }
+  });
+});
 
 const linkedPullRequest = {
   projectId: ProjectId.make("project-1"),

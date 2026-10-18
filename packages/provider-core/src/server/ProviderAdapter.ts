@@ -58,6 +58,7 @@ export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePoli
 
 export const ProviderAdapterV2TurnMessage = Schema.Struct({
   messageId: MessageId,
+  containsSpeechTranscription: Schema.optional(Schema.Literal(true)),
   text: Schema.String,
   attachments: Schema.Array(ChatAttachment),
   createdBy: OrchestrationV2ConversationMessage.fields.createdBy,

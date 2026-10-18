@@ -67,6 +67,9 @@ import { useOpenThreadPullRequests } from "../threads/use-open-thread-pull-reque
 import type { ThreadPrPresentation } from "../../state/thread-pr-presentation";
 import {
   buildThreadListV2Items,
+  buildThreadListV2FamilyRows,
+  revealThreadListV2RouteAncestors,
+  toggleThreadListV2Family,
   getThreadListV2OrderedSection,
   buildThreadListV2ListItems,
   threadListV2ListItemsAreEqual,
@@ -74,6 +77,8 @@ import {
   THREAD_LIST_V2_SETTLED_INITIAL_COUNT,
   THREAD_LIST_V2_SETTLED_PAGE_COUNT,
   type ThreadListV2ListItem,
+  type ThreadListV2FamilyDisclosure,
+  type ThreadListV2FamilyRow,
 } from "../threads/threadListV2";
 import { useThreadListV2ShelfPreferences } from "../threads/use-thread-list-v2-shelf-preferences";
 import type { HomeListFilterMenuEnvironment } from "./home-list-filter-menu";
@@ -87,6 +92,19 @@ import { SwipeableScrollGateProvider, useSwipeableScrollGate } from "./thread-sw
 import { useFabScroll } from "./FabScrollContext";
 import { useWorkspaceTabs } from "../workspace/WorkspaceTabsContext";
 import { ThreadListFilters } from "./ThreadListFilters";
+
+type HomeThreadListItem = ThreadListV2ListItem & { readonly family?: ThreadListV2FamilyRow };
+
+function homeThreadItemsAreEqual(previous: HomeThreadListItem, item: HomeThreadListItem) {
+  return (
+    threadListV2ListItemsAreEqual(previous, item) &&
+    previous.family?.depth === item.family?.depth &&
+    previous.family?.hasChildren === item.family?.hasChildren &&
+    previous.family?.expanded === item.family?.expanded &&
+    previous.family?.descendantCount === item.family?.descendantCount &&
+    previous.family?.activeDescendantCount === item.family?.activeDescendantCount
+  );
+}
 
 interface HomeScreenProps {
   readonly projects: ReadonlyArray<EnvironmentProject>;
@@ -261,6 +279,35 @@ export function HomeScreen(props: HomeScreenProps) {
   );
   const columnMetrics = useNativeColumnLayoutMetrics();
   const selectedThreadKey = primaryColumn?.selectedThreadKey ?? null;
+  const [familyDisclosure, setFamilyDisclosure] = useState<ThreadListV2FamilyDisclosure>(() => ({
+    routeKey: null,
+    expandedKeys: new Set(),
+    closedKeys: new Set(),
+  }));
+  if (primaryColumn !== null && familyDisclosure.routeKey !== selectedThreadKey) {
+    const revealed = revealThreadListV2RouteAncestors(
+      familyDisclosure,
+      props.threads,
+      selectedThreadKey,
+    );
+    if (revealed !== familyDisclosure) setFamilyDisclosure(revealed);
+  }
+  const toggleFamily = useCallback((key: string) => {
+    setFamilyDisclosure((previous) => toggleThreadListV2Family(previous, key));
+  }, []);
+  const selectFamilyThread = useCallback(
+    (thread: EnvironmentThreadShell) => {
+      setFamilyDisclosure((previous) =>
+        revealThreadListV2RouteAncestors(
+          previous,
+          props.threads,
+          scopedThreadKey(thread.environmentId, thread.id),
+        ),
+      );
+      props.onSelectThread(thread);
+    },
+    [props.onSelectThread, props.threads],
+  );
   const fullSwipeWidth = primaryColumn && columnMetrics ? columnMetrics.width - 20 : undefined;
   const queuedThreadKeys = useQueuedThreadKeys();
   const openSwipeableRef = useRef<SwipeableMethods | null>(null);
@@ -580,7 +627,7 @@ export function HomeScreen(props: HomeScreenProps) {
   ]);
   const threadListV2Layout = useMemo(() => {
     threadListInboxReturns.observe(workingShelfEnabled ? props.threads : null);
-    return buildThreadListV2Items({
+    const options = {
       pendingOrder,
       threads: props.threads.filter((thread) => thread.archivedAt === null),
       environmentId: props.selectedEnvironmentId,
@@ -598,8 +645,74 @@ export function HomeScreen(props: HomeScreenProps) {
       snoozedShelfExpanded,
       settledShelfExpanded,
       selectedThreadKey,
+      includeSubagents: true,
+    };
+    const visible = buildThreadListV2Items(options);
+    const all = buildThreadListV2Items({
+      ...options,
+      searchQuery: "",
+      matchedThreadKeys: undefined,
+      settledLimit: Infinity,
+      workingShelfExpanded: true,
+      snoozedShelfExpanded: true,
+      settledShelfExpanded: true,
     });
+    const families = buildThreadListV2FamilyRows({
+      items: all.items,
+      visibleKeys: new Set(
+        visible.items.map(({ thread }) => scopedThreadKey(thread.environmentId, thread.id)),
+      ),
+      disclosure: familyDisclosure,
+      workingShelfEnabled,
+    });
+    const sections = ["pinned", "active", "working", "snoozed", "settled"] as const;
+    const items = [];
+    const headers = { working: null, snoozed: null, settled: null } as Record<
+      "working" | "snoozed" | "settled",
+      number | null
+    >;
+    const counts = {
+      working: visible.workingCount,
+      snoozed: visible.snoozedCount,
+      settled: visible.settledCount,
+    };
+    for (const section of sections) {
+      const rows = families.filter((row) => row.displaySection === section);
+      if (section === "working" || section === "snoozed" || section === "settled") {
+        counts[section] = Math.max(
+          counts[section],
+          rows
+            .filter((row) => row.depth === 0)
+            .reduce((count, row) => count + 1 + row.descendantCount, 0),
+        );
+        if (counts[section] > 0) headers[section] = items.length;
+        const expanded =
+          section === "working"
+            ? workingShelfExpanded
+            : section === "snoozed"
+              ? snoozedShelfExpanded
+              : settledShelfExpanded;
+        if (!expanded) {
+          const selectedRoot = rows.find((row) => row.key === selectedThreadKey)?.rootKey;
+          items.push(...rows.filter((row) => row.rootKey === selectedRoot).map((row) => row.item));
+          continue;
+        }
+      }
+      items.push(...rows.map((row) => row.item));
+    }
+    return {
+      ...visible,
+      items,
+      familyByKey: new Map(families.map((row) => [row.key, row])),
+      workingCount: counts.working,
+      workingShelfHeaderIndex: headers.working,
+      snoozedCount: counts.snoozed,
+      snoozedShelfHeaderIndex: headers.snoozed,
+      settledCount: counts.settled,
+      settledShelfHeaderIndex: headers.settled,
+    };
   }, [
+    familyDisclosure,
     workingShelfEnabled,
     workingShelfExpanded,
     pendingOrder,
@@ -665,7 +778,16 @@ export function HomeScreen(props: HomeScreenProps) {
         queuedThreadKeys,
         moveAvailability: threadMoveAvailability,
         shelfPreferencesLoading: !shelfPreferencesLoaded,
-      }),
+      }).map((item): HomeThreadListItem =>
+        item.type === "v2-thread"
+          ? {
+              ...item,
+              family: threadListV2Layout.familyByKey.get(
+                scopedThreadKey(item.item.thread.environmentId, item.item.thread.id),
+              ),
+            }
+          : item,
+      ),
     [
       nowMinute,
       queuedThreadKeys,
@@ -680,13 +802,13 @@ export function HomeScreen(props: HomeScreenProps) {
     ],
   );
 
-  useThreadJumpShortcuts(threadListV2Items, props.onSelectThread);
+  useThreadJumpShortcuts(threadListV2Items, selectFamilyThread);
   useEffect(() => {
     if (swipeEnabled) activateVisibleRows(threadListV2Items);
   }, [activateVisibleRows, swipeEnabled, threadListV2Items]);
 
   const renderV2Item = useCallback(
-    ({ item }: { readonly item: ThreadListV2ListItem }) => {
+    ({ item }: { readonly item: HomeThreadListItem }) => {
       if (item.type === "v2-pending") {
         const pendingScopeKey = scopedProjectKey(
           item.pendingTask.environmentId,
@@ -778,7 +900,9 @@ export function HomeScreen(props: HomeScreenProps) {
             }),
           )}
           searchQuery={props.searchQuery}
-          onSelectThread={props.onSelectThread}
+          onSelectThread={selectFamilyThread}
+          family={item.family}
+          onToggleFamily={toggleFamily}
           onOpenThreadPullRequests={handleOpenThreadPullRequests}
           onDeleteThread={handleDeleteThread}
           onArchiveThread={props.onArchiveThread}
@@ -837,7 +961,8 @@ export function HomeScreen(props: HomeScreenProps) {
       props.onArchiveThread,
       props.onDeletePendingTask,
       props.onSelectPendingTask,
-      props.onSelectThread,
+      selectFamilyThread,
+      toggleFamily,
       primaryColumn,
       selectedThreadKey,
       fullSwipeWidth,
@@ -1024,7 +1149,7 @@ export function HomeScreen(props: HomeScreenProps) {
               renderItem={renderV2Item}
               keyExtractor={v2KeyExtractor}
               getItemType={(item) => item.type}
-              itemsAreEqual={threadListV2ListItemsAreEqual}
+              itemsAreEqual={homeThreadItemsAreEqual}
               estimatedItemSize={ESTIMATED_THREAD_LIST_V2_ROW_HEIGHT}
               drawDistance={THREAD_LIST_V2_DRAW_DISTANCE}
               recycleItems

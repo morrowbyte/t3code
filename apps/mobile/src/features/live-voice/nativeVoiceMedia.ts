@@ -1,4 +1,4 @@
-import { requestRecordingPermissionsAsync } from "expo-audio";
+import { getRecordingPermissionsAsync, requestRecordingPermissionsAsync } from "expo-audio";
 import {
   mediaDevices,
   MediaStream as NativeMediaStream,
@@ -13,7 +13,8 @@ import { createNativeAudioSink, releaseNativeStreamOnStop } from "./nativeVoiceA
 
 export const nativeVoiceMedia = {
   getUserMedia: async () => {
-    const permission = await requestRecordingPermissionsAsync();
+    const current = await getRecordingPermissionsAsync();
+    const permission = current.granted ? current : await requestRecordingPermissionsAsync();
     if (!permission.granted) throw new Error("Microphone permission is required.");
     const stream = await mediaDevices.getUserMedia({ audio: true, video: false });
     releaseNativeStreamOnStop(stream);

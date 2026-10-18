@@ -2,14 +2,24 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { createNativeAudioSink, releaseNativeStreamOnStop } from "./nativeVoiceAudio";
 
 describe("native voice audio boundary", () => {
-  it("releases every native track and its stream exactly once, including repeated Stop", () => {
-    const tracks = Array.from({ length: 2 }, () => ({
+  it("lets the stream detach tracks before disposal, including repeated Stop", () => {
+    const order: string[] = [];
+    const tracks = Array.from({ length: 2 }, (_, id) => ({
       enabled: true,
       stop: vi.fn(),
-      release: vi.fn(),
+      release: vi.fn(() => order.push(`release:${id}`)),
     }));
     const stops = tracks.map((track) => track.stop);
-    const stream = { getTracks: () => tracks, getAudioTracks: () => tracks, release: vi.fn() };
+    const stream = {
+      getTracks: () => tracks,
+      getAudioTracks: () => tracks,
+      release: vi.fn((releaseTracks = true) => {
+        tracks.forEach((track, id) => {
+          order.push(`detach:${id}`);
+          if (releaseTracks) track.release();
+        });
+      }),
+    };
     releaseNativeStreamOnStop(stream);
     tracks[0]!.stop();
     tracks[0]!.stop();
@@ -18,7 +28,8 @@ describe("native voice audio boundary", () => {
     tracks[1]!.stop();
     for (const stop of stops) expect(stop).toHaveBeenCalledTimes(1);
     for (const track of tracks) expect(track.release).toHaveBeenCalledTimes(1);
-    expect(stream.release).toHaveBeenCalledExactlyOnceWith(false);
+    expect(stream.release).toHaveBeenCalledExactlyOnceWith();
+    expect(order).toEqual(["detach:0", "release:0", "detach:1", "release:1"]);
   });
 
   it("mutes actual receiver tracks, survives track replacement, and silences on End", async () => {
@@ -42,7 +53,7 @@ describe("native voice audio boundary", () => {
     expect(sink.srcObject).toBeNull();
   });
 
-  it("continues cleanup when one native track is already gone", () => {
+  it("still releases the stream when disabling capture throws", () => {
     const track = {
       enabled: true,
       stop: () => {
@@ -50,10 +61,14 @@ describe("native voice audio boundary", () => {
       },
       release: vi.fn(),
     };
-    const stream = { getTracks: () => [track], getAudioTracks: () => [track], release: vi.fn() };
+    const stream = {
+      getTracks: () => [track],
+      getAudioTracks: () => [track],
+      release: vi.fn(() => track.release()),
+    };
     releaseNativeStreamOnStop(stream);
     expect(() => track.stop()).not.toThrow();
     expect(track.release).toHaveBeenCalledOnce();
-    expect(stream.release).toHaveBeenCalledExactlyOnceWith(false);
+    expect(stream.release).toHaveBeenCalledExactlyOnceWith();
   });
 });

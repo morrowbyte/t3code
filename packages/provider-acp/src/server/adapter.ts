@@ -1,3 +1,4 @@
+import { speechTranscriptionContext } from "@t3tools/shared/speechTranscription";
 // @effect-diagnostics nodeBuiltinImport:off
 
 import {
@@ -6372,6 +6373,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               model: turnInput.modelSelection.model,
             }),
           });
+          const speechOrigin = speechTranscriptionContext(turnInput.message);
+          if (speechOrigin) prompt.push({ type: "text", text: speechOrigin });
           return { prompt, instructionState: text === messageText ? undefined : instructionState };
         });
 

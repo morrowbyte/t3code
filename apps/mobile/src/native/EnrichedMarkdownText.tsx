@@ -5,8 +5,9 @@ import {
   formatComposerContextReference,
 } from "@t3tools/shared/composerContextReferences";
 import { markdownWithHtml, markdownWithTableBreaks } from "../lib/markdownDocument";
+import { nativeMathFailureKey, prepareNativeMathMarkdown } from "../lib/markdownMath";
 import { useCallback, useMemo, useState, type ReactNode } from "react";
-import { Platform, Share, StyleSheet, View } from "react-native";
+import { Platform, Share, StyleSheet, View, useWindowDimensions } from "react-native";
 import {
   EnrichedMarkdownText,
   type DocumentAssetsEvent,
@@ -28,6 +29,7 @@ import {
 function enrichedStyle(
   style: SelectableMarkdownTextProps["textStyle"],
   dark: boolean,
+  fontScale: number,
 ): MarkdownStyle {
   const monospace = Platform.OS === "ios" ? "Menlo" : "monospace";
   // Keep the radius modest: iOS clips square table-cell borders without stroking the corner arcs.
@@ -135,14 +137,40 @@ function enrichedStyle(
       borderColor: style.mutedColor,
       checkedStrikethrough: false,
     },
+    math: {
+      fontSize: style.fontSize * 1.15,
+      color: style.color,
+      backgroundColor: "transparent",
+      padding: 20 * fontScale,
+      marginTop: 8,
+      marginBottom: 8,
+      textAlign: "center",
+    },
+    inlineMath: { color: style.color },
   };
 }
 
 export function MobileEnrichedMarkdownText(props: SelectableMarkdownTextProps) {
   const { renderImage, resolveImageSource } = props;
-  const markdown = useMemo(
+  const normalizedMarkdown = useMemo(
     () => markdownWithTableBreaks(markdownWithHtml(props.markdown)),
     [props.markdown],
+  );
+  const [mathFailures, setMathFailures] = useState<ReadonlySet<string>>(() => new Set());
+  const math = useMemo(
+    () => prepareNativeMathMarkdown(normalizedMarkdown, props.isStreaming ?? false, mathFailures),
+    [normalizedMarkdown, props.isStreaming, mathFailures],
+  );
+  const markdown = math.markdown;
+  const { fontScale } = useWindowDimensions();
+  const onLatexError = useCallback(
+    ({ source, displayMode }: { source: string; displayMode: boolean }) => {
+      const key = nativeMathFailureKey(source, displayMode);
+      setMathFailures((previous) =>
+        previous.has(key) ? previous : new Set([...previous, key].slice(-64)),
+      );
+    },
+    [],
   );
   const { themeAppearance } = useAppearancePreferences();
   const [documentAssets, setDocumentAssets] = useState<DocumentAssetsEvent["assets"]>([]);
@@ -243,8 +271,11 @@ export function MobileEnrichedMarkdownText(props: SelectableMarkdownTextProps) {
     };
   }, [props.contextClipboardFragment, props.markdown]);
   const markdownStyle = useMemo(
-    () => ({ ...enrichedStyle(props.textStyle, themeAppearance === "dark"), linkVariants }),
-    [props.textStyle, themeAppearance, linkVariants],
+    () => ({
+      ...enrichedStyle(props.textStyle, themeAppearance === "dark", fontScale),
+      linkVariants,
+    }),
+    [props.textStyle, themeAppearance, linkVariants, fontScale],
   );
   const renderMedia = useCallback(
     (asset: MarkdownMediaAsset) =>
@@ -293,6 +324,7 @@ export function MobileEnrichedMarkdownText(props: SelectableMarkdownTextProps) {
           markdown={markdown}
           markdownStyle={markdownStyle}
           onDocumentAssets={onDocumentAssets}
+          onLatexError={onLatexError}
           renderMedia={renderImage ? renderMedia : undefined}
           resolveImageSource={resolveImageSource ? resolveNativeImageSource : undefined}
           onImagePress={
@@ -308,7 +340,7 @@ export function MobileEnrichedMarkdownText(props: SelectableMarkdownTextProps) {
           selectionColor={props.textStyle.selectionColor}
           selectionHandleColor={props.textStyle.selectionHandleColor}
           md4cFlags={{
-            latexMath: false,
+            latexMath: true,
             hardSoftBreaks: props.preserveSoftBreaks ?? false,
             admonitions: true,
           }}
@@ -320,6 +352,9 @@ export function MobileEnrichedMarkdownText(props: SelectableMarkdownTextProps) {
           linkContextMenuItems={linkContextMenuItems}
           linkPillContent={linkPillContent}
         />
+        {math.pending === "display" ? (
+          <View accessibilityLabel="Formula receiving" style={{ minHeight: 56 * fontScale }} />
+        ) : null}
       </View>
     );
   };

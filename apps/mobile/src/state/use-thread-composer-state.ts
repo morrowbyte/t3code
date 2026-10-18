@@ -36,7 +36,11 @@ import {
 } from "@t3tools/client-runtime/state/threads";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
 import { upgradeLegacyContextMessage } from "@t3tools/shared/composerContextLegacy";
-import { composerContextSendBlockReason, reidentifyComposerContext } from "../lib/composerContext";
+import {
+  composerContextSendBlockReason,
+  reidentifyComposerContext,
+  trimmedComposerContext,
+} from "../lib/composerContext";
 import { uuidv4 } from "../lib/uuid";
 
 import { makeQueuedMessageMetadata } from "../lib/commandMetadata";
@@ -511,7 +515,7 @@ export function useThreadComposerState() {
       if (prepared.status !== "ready") return;
       const payload = resolveQueuedEditPayload({
         edit,
-        draftContext: draft.context,
+        draftContext: trimmedComposerContext(draft.text, draft.context),
         draftAttachments: draft.attachments,
         uploaded: prepared.attachments,
       });
@@ -692,7 +696,7 @@ export function useThreadComposerState() {
         commandId: CommandId.make(metadata.commandId),
         text,
         attachments,
-        context: draft.context,
+        context: trimmedComposerContext(draft.text, draft.context),
         modelSelection,
         runtimeMode: draft.runtimeMode ?? thread.runtimeMode,
         interactionMode: resolveProviderInteractionMode(
@@ -712,7 +716,7 @@ export function useThreadComposerState() {
           // the user attached new ones while the write was in flight.
           void mergeComposerDraftContent(threadKey, {
             text,
-            context: draft.context,
+            context: trimmedComposerContext(draft.text, draft.context),
             attachments: [],
           });
           appendComposerDraftAttachments(threadKey, attachments, { allowOverflow: true });

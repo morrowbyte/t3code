@@ -1,4 +1,8 @@
 import { ThreadFind, ThreadFindCanvas, type ThreadFindControls } from "./chat/ThreadFindProvider";
+import {
+  editSpeechTranscriptionRanges,
+  hasSpeechTranscription,
+} from "@t3tools/shared/speechTranscription";
 import { THREAD_FIND_BAR_RESERVED_HEIGHT } from "./chat/ThreadFindBar";
 import { usageLimitRecoveryBannerItem } from "./chat/UsageLimitRecoveryBanner";
 import {
@@ -328,6 +332,7 @@ import {
   type ComposerImageAttachment,
   type DraftThreadEnvMode,
   useComposerDraftStore,
+  trimComposerPrompt,
   DraftId,
 } from "../composerDraftStore";
 import {
@@ -6108,6 +6113,7 @@ export default function ChatView(props: ChatViewProps) {
       previewAnnotations: sendContextPreviewAnnotations,
       reviewComments: composerReviewComments,
       threadContexts: composerThreadContexts,
+      speechTranscription,
       selectedProvider: ctxSelectedProvider,
       selectedModel: ctxSelectedModel,
       selectedProviderModels: ctxSelectedProviderModels,
@@ -6136,6 +6142,7 @@ export default function ChatView(props: ChatViewProps) {
       return await queuedRunEdit.saveEdit(
         {
           prompt: promptForSend,
+          speechTranscription,
           images: composerImages,
           files: composerFiles,
           terminalContexts: composerTerminalContexts,
@@ -6249,6 +6256,17 @@ export default function ChatView(props: ChatViewProps) {
       const followUpSent = await onSubmitPlanFollowUp({
         text: followUp.text,
         context: buildMessageContext({
+          ...(speechTranscription
+            ? {
+                speechTranscription: {
+                  ranges: editSpeechTranscriptionRanges(
+                    followUpPromptSnapshot,
+                    followUp.text,
+                    speechTranscription.ranges,
+                  ),
+                },
+              }
+            : {}),
           terminalContexts: sendableComposerTerminalContexts,
           reviewComments: composerReviewComments,
           previewAnnotations: composerPreviewAnnotations,
@@ -6267,7 +6285,8 @@ export default function ChatView(props: ChatViewProps) {
             previewAnnotations: followUpPreviewAnnotations,
             threadContexts: followUpThreadContexts,
           },
-          writePrompt: (prompt) => setComposerDraftPrompt(composerDraftTarget, prompt),
+          writePrompt: (prompt) =>
+            setComposerDraftPrompt(composerDraftTarget, prompt, { speechTranscription }),
           writeTerminalContexts: (contexts) =>
             setComposerDraftTerminalContexts(composerDraftTarget, [...contexts]),
           writeReviewComments: (comments) =>
@@ -6352,19 +6371,41 @@ export default function ChatView(props: ChatViewProps) {
     const composerPreviewAnnotationsSnapshot = [...composerPreviewAnnotations];
     const composerReviewCommentsSnapshot: ReviewCommentContext[] = [...composerReviewComments];
     const composerThreadContextsSnapshot = [...composerThreadContexts];
-    const messageTextForSend = composerTerminalContexts
+    const messagePromptForSend = composerTerminalContexts
       .filter((context) => !composerTerminalContextsSnapshot.includes(context))
       .reduce(
         (text, context) =>
           removeInlineContextReference(text, terminalContextReference(context).contextId).prompt,
         promptForSend,
-      )
-      .trim();
+      );
+    const trimmedMessage = trimComposerPrompt(messagePromptForSend, {
+      ranges: editSpeechTranscriptionRanges(
+        promptForSend,
+        messagePromptForSend,
+        speechTranscription?.ranges,
+      ),
+    });
+    const messageTextForSend = trimmedMessage.prompt;
     // Records bind attachments by the id each side knows: the local id for the optimistic
     // row, the upload id (or local id on the data-URL path) on the wire; the server
     // rebinds them to the persisted id.
+    const outgoingMessageText = formatOutgoingPrompt({
+      provider: ctxSelectedProvider,
+      model: ctxSelectedModel,
+      models: ctxSelectedProviderModels,
+      effort: ctxSelectedPromptEffort,
+      text: messageTextForSend || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
+    });
+    const speechRangesForSend = editSpeechTranscriptionRanges(
+      messageTextForSend,
+      outgoingMessageText,
+      trimmedMessage.speechTranscription?.ranges,
+    );
     const buildOutgoingMessageContext = (attachmentIds: ReadonlyArray<string>) =>
       buildMessageContext({
+        ...(hasSpeechTranscription(outgoingMessageText, speechRangesForSend)
+          ? { speechTranscription: { ranges: speechRangesForSend } }
+          : {}),
         terminalContexts: composerTerminalContextsSnapshot,
         reviewComments: composerReviewCommentsSnapshot,
         previewAnnotations: composerPreviewAnnotationsSnapshot,
@@ -6391,13 +6432,6 @@ export default function ChatView(props: ChatViewProps) {
       compactBeforeSend ||
       sendQueuesBehindSetup ||
       (phase === "running" && dispatchMode === "queue");
-    const outgoingMessageText = formatOutgoingPrompt({
-      provider: ctxSelectedProvider,
-      model: ctxSelectedModel,
-      models: ctxSelectedProviderModels,
-      effort: ctxSelectedPromptEffort,
-      text: messageTextForSend || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
-    });
     if (composerRef.current?.validateProviderInput(outgoingMessageText) === false) {
       return;
     }
@@ -6636,6 +6670,18 @@ export default function ChatView(props: ChatViewProps) {
                 const supportsInlineMessageContext =
                   appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment
                     .capabilities.inlineMessageContext === true;
+                const targetContext = context?.speechTranscription
+                  ? {
+                      ...context,
+                      speechTranscription: {
+                        ranges: editSpeechTranscriptionRanges(
+                          outgoingMessageText,
+                          target.text,
+                          context.speechTranscription.ranges,
+                        ),
+                      },
+                    }
+                  : context;
                 return startThreadTurn({
                   environmentId,
                   input: {
@@ -6644,14 +6690,16 @@ export default function ChatView(props: ChatViewProps) {
                       messageId: newMessageId(),
                       role: "user",
                       text:
-                        context && !supportsInlineMessageContext
+                        targetContext && !supportsInlineMessageContext
                           ? serializeLegacyContextMessage({
                               text: target.text,
-                              records: context.records,
+                              records: targetContext.records,
                             })
                           : target.text,
                       attachments,
-                      ...(context && supportsInlineMessageContext ? { context } : {}),
+                      ...(targetContext && supportsInlineMessageContext
+                        ? { context: targetContext }
+                        : {}),
                     },
                     modelSelection: target.selection,
                     titleSeed: title,
@@ -6717,7 +6765,9 @@ export default function ChatView(props: ChatViewProps) {
       const restoreFailedDraft = () => {
         setMultipleModelSelections(failedSelections);
         if (clearedDraft) {
-          setComposerDraftPrompt(composerDraftTarget, messageTextForSend);
+          setComposerDraftPrompt(composerDraftTarget, messageTextForSend, {
+            speechTranscription: trimmedMessage.speechTranscription,
+          });
           addComposerDraftImages(
             composerDraftTarget,
             composerImagesSnapshot.map(cloneComposerImageForRetry),
@@ -7120,7 +7170,9 @@ export default function ChatView(props: ChatViewProps) {
         composerImagesRef.current = retryComposerImages;
         composerFilesRef.current = composerFilesSnapshot;
         composerTerminalContextsRef.current = composerTerminalContextsSnapshot;
-        setComposerDraftPrompt(composerDraftTarget, messageTextForSend);
+        setComposerDraftPrompt(composerDraftTarget, messageTextForSend, {
+          speechTranscription: trimmedMessage.speechTranscription,
+        });
         addComposerDraftImages(composerDraftTarget, retryComposerImages);
         addComposerDraftFiles(composerDraftTarget, composerFilesSnapshot);
         setComposerDraftTerminalContexts(composerDraftTarget, composerTerminalContextsSnapshot);

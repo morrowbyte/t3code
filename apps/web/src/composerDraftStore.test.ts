@@ -65,6 +65,7 @@ import {
   COMPOSER_DRAFT_STORAGE_KEY,
   clearComposerDraftsEnvironment,
   composerDraftHasUserContent,
+  composerTargetKey,
   beginBackgroundDraftSubmissionByRef,
   clearBackgroundDraftSubmissionByRef,
   finalizePromotedDraftThreadByRef,
@@ -75,9 +76,15 @@ import {
   composerFileNeedsReattach,
   partializeComposerDraftStoreState,
   useComposerDraftStore,
+  trimComposerPrompt,
   DraftId,
 } from "./composerDraftStore";
 import { removeLocalStorageItem, setLocalStorageItem } from "./hooks/useLocalStorage";
+import { buildMessageContext } from "./lib/composerContextRecords";
+import {
+  hasSpeechTranscription,
+  speechTranscriptionContext,
+} from "@t3tools/shared/speechTranscription";
 import { insertInlineContextReference } from "./lib/composerContextReferences";
 import { terminalContextReference, threadContextRecord } from "./lib/composerContextRecords";
 import {
@@ -195,6 +202,159 @@ function draftFor(threadId: ThreadId, environmentId: EnvironmentId = LEGACY_TEST
 function draftByKey(key: string) {
   return useComposerDraftStore.getState().draftsByThreadKey[key] ?? undefined;
 }
+
+describe("speech transcription provenance", () => {
+  beforeEach(resetComposerDraftStore);
+  afterEach(resetComposerDraftStore);
+
+  it("marks only successful inserted speech and retains only its remaining ranges in a mixed draft", () => {
+    const target = DraftId.make("speech-provenance");
+    const store = useComposerDraftStore.getState();
+    store.setPrompt(target, "Bitte prüfe");
+    expect(store.getComposerDraft(target)?.speechTranscription).toBeUndefined();
+    expect(store.appendSpeechTranscript(target, "Plain37")).toBe("Bitte prüfe\nPlain37");
+    const original = store.getComposerDraft(target)!;
+    expect(original.speechTranscription?.ranges).toEqual([{ start: 12, end: 19 }]);
+    store.setPrompt(target, original.prompt + " morgen", { edit: true });
+    expect(
+      hasSpeechTranscription(
+        store.getComposerDraft(target)!.prompt,
+        store.getComposerDraft(target)?.speechTranscription?.ranges,
+      ),
+    ).toBe(true);
+    store.setPrompt(target, "Bitte prüfe\n morgen", {
+      edit: true,
+      replacement: { start: 12, end: 19 },
+    });
+    expect(store.getComposerDraft(target)?.speechTranscription).toBeUndefined();
+  });
+
+  it("clears provenance on replacement, clear and history recall, including identical pasted replacement", () => {
+    const target = DraftId.make("speech-reset");
+    const store = useComposerDraftStore.getState();
+    store.appendSpeechTranscript(target, "Blain37");
+    store.setPrompt(target, "Blain37", { edit: true, replacement: { start: 0, end: 7 } });
+    expect(store.getComposerDraft(target)?.speechTranscription).toBeUndefined();
+    store.appendSpeechTranscript(target, "nochmal");
+    store.setPrompt(target, "Dies ist eine Transkription: Blain37");
+    expect(store.getComposerDraft(target)?.speechTranscription).toBeUndefined();
+    store.appendSpeechTranscript(target, "Aufnahme");
+    store.clearComposerContent(target);
+    expect(store.getComposerDraft(target)?.speechTranscription).toBeUndefined();
+    expect(store.appendSpeechTranscript(target, "   ")).toBeNull();
+    expect(store.getComposerDraft(target)?.speechTranscription).toBeUndefined();
+  });
+
+  it("carries explicit draft metadata through persistence and message context without changing source text", () => {
+    const target = DraftId.make("speech-wire");
+    const store = useComposerDraftStore.getState();
+    store.appendSpeechTranscript(target, "Plain37 ist mein Arbeits-PC");
+    const draft = store.getComposerDraft(target)!;
+    const persisted = partializeComposerDraftStoreState(useComposerDraftStore.getState());
+    expect(JSON.stringify(persisted)).toContain('"speechTranscription"');
+    const hydrated = useComposerDraftStore.persist.getOptions().merge!(
+      persisted,
+      useComposerDraftStore.getInitialState(),
+    );
+    expect(hydrated.draftsByThreadKey[composerTargetKey(target)]?.speechTranscription).toEqual(
+      draft.speechTranscription,
+    );
+    const context = buildMessageContext({
+      terminalContexts: [],
+      reviewComments: [],
+      previewAnnotations: [],
+      speechTranscription: draft.speechTranscription,
+    });
+    expect(context?.speechTranscription).toEqual(draft.speechTranscription);
+    const before = draft.prompt;
+    expect(
+      speechTranscriptionContext({
+        messageId: "speech-wire",
+        createdBy: "user",
+        containsSpeechTranscription: true,
+      }),
+    ).toContain("only for user message");
+    expect(store.getComposerDraft(target)?.prompt).toBe(before);
+  });
+
+  it("moves provenance with an unsent edit and clears the source draft", () => {
+    const source = DraftId.make("speech-move-source");
+    const destination = DraftId.make("speech-move-destination");
+    const store = useComposerDraftStore.getState();
+    store.appendSpeechTranscript(source, "Plain37");
+    store.moveComposerPromptAndImages(source, destination);
+    expect(store.getComposerDraft(destination)?.prompt).toBe("Plain37");
+    expect(store.getComposerDraft(destination)?.speechTranscription?.ranges).toEqual([
+      { start: 0, end: 7 },
+    ]);
+    expect(store.getComposerDraft(source)?.speechTranscription).toBeUndefined();
+    store.setPrompt(destination, "Getippter Ersatz");
+    expect(store.getComposerDraft(destination)?.speechTranscription).toBeUndefined();
+  });
+
+  it("keeps offsets on the remaining dictated text when an attached context reference is removed", () => {
+    const target = DraftId.make("speech-context-removal");
+    const store = useComposerDraftStore.getState();
+    const terminal = makeTerminalContext({ id: "speech-terminal" });
+    store.addTerminalContext(target, terminal);
+    store.appendSpeechTranscript(target, "Plain37");
+    store.removeTerminalContext(target, terminal.id);
+    const draft = store.getComposerDraft(target)!;
+    const range = draft.speechTranscription?.ranges[0];
+    expect(range).toBeDefined();
+    expect(draft.prompt.slice(range!.start, range!.end)).toBe("Plain37");
+  });
+
+  it("shifts dictated spans after terminal insertion and clears them when only the reference remains", () => {
+    const target = scopeThreadRef(TEST_ENVIRONMENT_ID, ThreadId.make("speech-terminal-insertion"));
+    const store = useComposerDraftStore.getState();
+    store.appendSpeechTranscript(target, "Blain37");
+    const terminal = makeTerminalContext({ id: "speech-terminal" });
+    const insertion = insertInlineContextReference(
+      "Blain37",
+      0,
+      terminalContextReference(terminal),
+    );
+    expect(store.insertTerminalContext(target, insertion.prompt, terminal, 0)).toBe(true);
+    const start = insertion.prompt.indexOf("Blain37");
+    expect
+      .soft(store.getComposerDraft(target)?.speechTranscription?.ranges)
+      .toEqual([{ start, end: start + 7 }]);
+    store.setPrompt(target, insertion.prompt.slice(0, start), {
+      edit: true,
+      replacement: { start, end: start + 7 },
+    });
+    expect(store.getComposerDraft(target)?.prompt).toBe(insertion.prompt.slice(0, start));
+    expect(store.getComposerDraft(target)?.terminalContexts).toHaveLength(1);
+    expect(store.getComposerDraft(target)?.speechTranscription).toBeUndefined();
+  });
+
+  it.each(["  Blain37  ", "  Blain37", "Blain37  ", "Blain37", "\tBlain37\n"])(
+    "keeps dictated spans when preparing a trimmed send or queued edit: %j",
+    (prompt) => {
+      const start = prompt.indexOf("Blain37");
+      const prepared = trimComposerPrompt(prompt, { ranges: [{ start, end: start + 7 }] });
+      expect(prepared).toEqual({
+        prompt: "Blain37",
+        speechTranscription: { ranges: [{ start: 0, end: 7 }] },
+      });
+    },
+  );
+
+  it("keeps trim provenance scoped to dictated words without marking typed or empty sends", () => {
+    const prompt = "  Bitte Blain37 prüfen  ";
+    const prepared = trimComposerPrompt(prompt, { ranges: [{ start: 8, end: 15 }] });
+    expect(prepared).toEqual({
+      prompt: "Bitte Blain37 prüfen",
+      speechTranscription: { ranges: [{ start: 6, end: 13 }] },
+    });
+    expect(trimComposerPrompt(prompt).speechTranscription).toBeUndefined();
+    expect(trimComposerPrompt("   ", { ranges: [{ start: 0, end: 3 }] })).toEqual({
+      prompt: "",
+      speechTranscription: undefined,
+    });
+  });
+});
 
 describe("composerDraftStore assistant citations", () => {
   beforeEach(resetComposerDraftStore);

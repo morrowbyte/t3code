@@ -6,6 +6,7 @@ import {
   COMPOSER_CONTEXT_REVIEW_TEXT_MAX_CHARS,
   ComposerContextId,
   type ComposerContextRecord,
+  type SpeechTranscriptionRange,
   OrchestrationMessageContext,
   type PullRequestContextMetadata,
   type ReviewCommentContextRecord,
@@ -26,6 +27,77 @@ import {
   collectComposerInlineTokens,
   type ComposerInlineToken,
 } from "@t3tools/shared/composerInlineTokens";
+
+import { editSpeechTranscriptionRanges } from "@t3tools/shared/speechTranscription";
+
+export function withComposerSpeechTranscription(
+  text: string,
+  context: OrchestrationMessageContext | undefined,
+  ranges: ReadonlyArray<SpeechTranscriptionRange> = [],
+): OrchestrationMessageContext | undefined {
+  const retained: SpeechTranscriptionRange[] = [];
+  for (const range of ranges
+    .filter(
+      (range) =>
+        Number.isInteger(range.start) &&
+        Number.isInteger(range.end) &&
+        range.start >= 0 &&
+        range.start < range.end &&
+        range.end <= text.length &&
+        text.slice(range.start, range.end).trim().length > 0,
+    )
+    .sort((a, b) => a.start - b.start || a.end - b.end)) {
+    const last = retained.at(-1);
+    if (last && range.start <= last.end)
+      retained[retained.length - 1] = { start: last.start, end: Math.max(last.end, range.end) };
+    else retained.push({ start: range.start, end: range.end });
+  }
+  const records = context?.records ?? [];
+  if (records.length === 0 && retained.length === 0) return undefined;
+  return {
+    version: 1,
+    records,
+    ...(retained.length ? { speechTranscription: { ranges: retained.slice(-200) } } : {}),
+  };
+}
+
+export function editedComposerContext(
+  previous: string,
+  next: string,
+  context?: OrchestrationMessageContext,
+  replacement?: SpeechTranscriptionRange,
+): OrchestrationMessageContext | undefined {
+  return referencedComposerContext(
+    next,
+    withComposerSpeechTranscription(
+      next,
+      context,
+      editSpeechTranscriptionRanges(
+        previous,
+        next,
+        context?.speechTranscription?.ranges,
+        replacement,
+      ),
+    ),
+  );
+}
+
+export function trimmedComposerContext(
+  text: string,
+  context?: OrchestrationMessageContext,
+): OrchestrationMessageContext | undefined {
+  const leadingTrimmed = text.trimStart();
+  const trimmed = leadingTrimmed.trimEnd();
+  return editedComposerContext(
+    leadingTrimmed,
+    trimmed,
+    editedComposerContext(text, leadingTrimmed, context, {
+      start: 0,
+      end: text.length - leadingTrimmed.length,
+    }),
+    { start: trimmed.length, end: leadingTrimmed.length },
+  );
+}
 
 const isMessageContext = Schema.is(OrchestrationMessageContext);
 const decodeMessageContext = Schema.decodeUnknownOption(OrchestrationMessageContext);
@@ -175,8 +247,12 @@ export function referencedComposerContext(text: string, context?: OrchestrationM
     }
   }
   const records = context.records.filter((record) => ids.has(record.contextId));
-  if (records.length === context.records.length) return context;
-  return records.length ? { version: 1 as const, records } : undefined;
+  if (records.length === context.records.length && !context.speechTranscription) return context;
+  return withComposerSpeechTranscription(
+    text,
+    { ...context, records },
+    context.speechTranscription?.ranges,
+  );
 }
 
 /** Uploads change attachment ids; keep context bindings attached to the same ordered file. */
@@ -188,7 +264,7 @@ export function uploadedComposerContext(
   if (!context) return undefined;
   const ids = new Map(drafts.map((draft, index) => [draft.id, uploaded[index]?.id]));
   return {
-    version: 1,
+    ...context,
     records: context.records.map((record) =>
       "attachmentId" in record
         ? { ...record, attachmentId: ids.get(record.attachmentId) ?? record.attachmentId }

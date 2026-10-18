@@ -1,3 +1,4 @@
+import { speechTranscriptionContext } from "@t3tools/shared/speechTranscription";
 import type {
   Event as OpenCodeEvent,
   Message as OpenCodeMessage,
@@ -2822,7 +2823,12 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           if (text.length === 0 && files.length === 0) {
             throw protocolError("OpenCode turns require text or at least one valid attachment");
           }
-          return [...(text.length === 0 ? [] : [{ type: "text" as const, text }]), ...files];
+          const speechOrigin = speechTranscriptionContext(turnInput.message);
+          return [
+            ...(text.length === 0 ? [] : [{ type: "text" as const, text }]),
+            ...(speechOrigin ? [{ type: "text" as const, text: speechOrigin }] : []),
+            ...files,
+          ];
         };
 
         const readSnapshot = Effect.fnUntraced(function* (

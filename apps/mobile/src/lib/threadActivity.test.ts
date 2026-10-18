@@ -1492,7 +1492,7 @@ describe("buildThreadFeed", () => {
     );
   });
 
-  it("uses canonical T3 orchestration summaries in compact work groups", () => {
+  it("keeps outgoing messages visible outside compact work groups and settled run folds", () => {
     const rows = [
       projected(command("2026-06-20T00:00:01.000Z"), 0),
       ...["mcp__t3-code__t3_thread_send", "t3_code.t3_thread_send", "t3_thread_send"].map(
@@ -1524,14 +1524,22 @@ describe("buildThreadFeed", () => {
       new Set(),
     );
 
-    expect(presented).toMatchObject([
-      {
-        type: "work-toggle",
-        summary: "Ran 2 commands and sent messages to 3 threads",
-        hiddenCount: 5,
-        hasFailure: false,
-      },
+    expect(presented.filter((entry) => entry.type === "agent-send")).toHaveLength(3);
+    expect(presented.filter((entry) => entry.type === "work-toggle")).toMatchObject([
+      { hiddenCount: 1, hasFailure: false },
+      { hiddenCount: 1, hasFailure: false },
     ]);
+    const settled = deriveThreadFeedPresentation(
+      buildThreadFeed([
+        projected(userMessage(), 0),
+        ...rows,
+        projected(assistantMessage("2026-06-20T00:00:08.000Z"), 6),
+      ]),
+      { runId, status: "completed", startedAt: null, completedAt: null },
+      new Set(),
+    );
+    expect(settled.filter((entry) => entry.type === "agent-send")).toHaveLength(3);
+    expect(settled.filter((entry) => entry.type === "message")).toHaveLength(2);
   });
 
   it("presents project calls and summarizes successful clones through the mobile feed", () => {

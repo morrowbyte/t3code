@@ -203,12 +203,15 @@ export function getThreadListV2OrderedSection(input: {
   readonly settlementEnvironmentIds?: ReadonlySet<EnvironmentId>;
   readonly snoozeEnvironmentIds?: ReadonlySet<EnvironmentId>;
   readonly queuedThreadKeys?: ReadonlySet<string>;
+  readonly includeSubagents?: boolean;
 }): EnvironmentThreadShell[] {
   const queuedThreadKeys = input.queuedThreadKeys?.size ? input.queuedThreadKeys : undefined;
   const threads = input.threads.filter((thread) => {
     if (
       thread.archivedAt !== null ||
-      (thread.lineage.relationshipToParent === "subagent" && thread.presentation !== "top_level")
+      (!input.includeSubagents &&
+        thread.lineage.relationshipToParent === "subagent" &&
+        thread.presentation !== "top_level")
     )
       return false;
     if (
@@ -243,6 +246,211 @@ export interface ThreadListV2Item {
   readonly snoozed: boolean;
   readonly pinned: boolean;
   readonly isLast: boolean;
+}
+
+export interface ThreadListV2FamilyDisclosure {
+  readonly routeKey: string | null;
+  readonly expandedKeys: ReadonlySet<string>;
+  readonly closedKeys: ReadonlySet<string>;
+}
+
+type ThreadListV2FamilyThread = Pick<
+  EnvironmentThreadShell,
+  "id" | "environmentId" | "projectId" | "lineage" | "presentation"
+>;
+
+export function revealThreadListV2RouteAncestors(
+  previous: ThreadListV2FamilyDisclosure,
+  threads: readonly ThreadListV2FamilyThread[],
+  routeKey: string | null,
+): ThreadListV2FamilyDisclosure {
+  if (previous.routeKey === routeKey) return previous;
+  const byKey = new Map(threads.map((thread) => [`${thread.environmentId}:${thread.id}`, thread]));
+  if (routeKey !== null && !byKey.has(routeKey)) return previous;
+  const expandedKeys = new Set(previous.expandedKeys);
+  const closedKeys = new Set(previous.closedKeys);
+  const seen = new Set<string>();
+  let thread = routeKey === null ? undefined : byKey.get(routeKey);
+  let familyRoot: string | null = null;
+  while (
+    thread !== undefined &&
+    thread.presentation !== "top_level" &&
+    thread.lineage.relationshipToParent === "subagent" &&
+    thread.lineage.parentThreadId !== null
+  ) {
+    const key = `${thread.environmentId}:${thread.lineage.parentThreadId}`;
+    const parent = byKey.get(key);
+    if (parent === undefined || parent.projectId !== thread.projectId || seen.has(key)) break;
+    seen.add(key);
+    familyRoot = key;
+    thread = parent;
+  }
+  if (familyRoot !== null) {
+    expandedKeys.add(familyRoot);
+    closedKeys.delete(familyRoot);
+  }
+  return { routeKey, expandedKeys, closedKeys };
+}
+
+export function toggleThreadListV2Family(
+  previous: ThreadListV2FamilyDisclosure,
+  key: string,
+): ThreadListV2FamilyDisclosure {
+  const expandedKeys = new Set(previous.expandedKeys);
+  const closedKeys = new Set(previous.closedKeys);
+  if (expandedKeys.has(key) && !closedKeys.has(key)) {
+    expandedKeys.delete(key);
+    closedKeys.add(key);
+  } else {
+    expandedKeys.add(key);
+    closedKeys.delete(key);
+  }
+  return { ...previous, expandedKeys, closedKeys };
+}
+
+export type ThreadListV2FamilySection = "pinned" | "active" | "working" | "snoozed" | "settled";
+
+export interface ThreadListV2FamilyRow {
+  readonly key: string;
+  readonly item: ThreadListV2Item;
+  readonly parentKey: string | null;
+  readonly rootKey: string;
+  readonly depth: number;
+  readonly section: ThreadListV2FamilySection;
+  readonly displaySection: ThreadListV2FamilySection;
+  readonly hasChildren: boolean;
+  readonly expanded: boolean;
+  readonly contextOnly: boolean;
+  readonly descendantCount: number;
+  readonly activeDescendantCount: number;
+}
+
+/**
+ * Pass scoped items with includeSubagents and all shelves expanded; visibleKeys
+ * comes from the normally filtered/paged/collapsed layout. Activity and the
+ * current route must not bypass that eligibility. Context ancestors retain
+ * their own item flags so grouping cannot change their swipe actions or status.
+ */
+export function buildThreadListV2FamilyRows(input: {
+  readonly items: readonly ThreadListV2Item[];
+  readonly visibleKeys: ReadonlySet<string>;
+  readonly disclosure: ThreadListV2FamilyDisclosure;
+  readonly workingShelfEnabled?: boolean;
+}): ThreadListV2FamilyRow[] {
+  const keyOf = (item: ThreadListV2Item) => `${item.thread.environmentId}:${item.thread.id}`;
+  const byKey = new Map(input.items.map((item) => [keyOf(item), item]));
+  const rank = new Map(input.items.map((item, index) => [keyOf(item), index]));
+  const parents = new Map<string, string>();
+  const workingKeys = new Set(
+    input.items.filter((item) => isThreadWorking(item.thread)).map(keyOf),
+  );
+  for (const [key, { thread }] of byKey) {
+    if (
+      thread.presentation === "top_level" ||
+      thread.lineage.relationshipToParent !== "subagent" ||
+      thread.lineage.parentThreadId === null
+    )
+      continue;
+    const parentKey = `${thread.environmentId}:${thread.lineage.parentThreadId}`;
+    const parent = byKey.get(parentKey)?.thread;
+    if (parent && parent.projectId === thread.projectId && parentKey !== key)
+      parents.set(key, parentKey);
+  }
+  // Bad lineage must leave every thread reachable in the flat native list.
+  const roots = new Map<string, string>();
+  for (const key of byKey.keys()) {
+    const path: string[] = [];
+    const seen = new Set<string>();
+    let root = key;
+    while (parents.has(root) && !roots.has(root)) {
+      if (seen.has(root)) {
+        parents.delete(root);
+        break;
+      }
+      seen.add(root);
+      path.push(root);
+      root = parents.get(root)!;
+    }
+    root = roots.get(root) ?? root;
+    roots.set(key, root);
+    for (const member of path) roots.set(member, root);
+  }
+  const children = new Map<string, string[]>();
+  const families = new Map<string, string[]>();
+  const counts = new Map<string, { total: number; active: number }>();
+  for (const key of byKey.keys()) {
+    const root = roots.get(key)!;
+    const family = families.get(root) ?? [];
+    family.push(key);
+    families.set(root, family);
+    const parentKey = parents.get(key);
+    if (parentKey !== undefined) {
+      const siblings = children.get(parentKey) ?? [];
+      siblings.push(key);
+      children.set(parentKey, siblings);
+    }
+    let parent = parentKey;
+    while (parent !== undefined) {
+      const count = counts.get(parent) ?? { total: 0, active: 0 };
+      count.total++;
+      if (workingKeys.has(key)) count.active++;
+      counts.set(parent, count);
+      parent = parents.get(parent);
+    }
+  }
+  const sectionOf = (item: ThreadListV2Item): ThreadListV2FamilySection =>
+    item.snoozed
+      ? "snoozed"
+      : item.variant === "slim"
+        ? "settled"
+        : item.pinned
+          ? "pinned"
+          : input.workingShelfEnabled && workingKeys.has(keyOf(item))
+            ? "working"
+            : "active";
+  const groups = [...families].flatMap(([root, family]) => {
+    const visible = family.filter((key) => input.visibleKeys.has(key));
+    if (visible.length === 0) return [];
+    const anchor = visible[0]!;
+    const displaySection: ThreadListV2FamilySection = family.some((key) => workingKeys.has(key))
+      ? input.workingShelfEnabled
+        ? "working"
+        : "active"
+      : sectionOf(byKey.get(anchor)!);
+    return [{ root, displaySection, rank: Math.min(...visible.map((key) => rank.get(key)!)) }];
+  });
+  groups.sort((left, right) => left.rank - right.rank);
+  const rows: ThreadListV2FamilyRow[] = [];
+  for (const { root, displaySection } of groups) {
+    const expanded =
+      input.disclosure.expandedKeys.has(root) && !input.disclosure.closedKeys.has(root);
+    const stack = [{ key: root, depth: 0 }];
+    while (stack.length > 0) {
+      const { key, depth } = stack.pop()!;
+      const item = byKey.get(key)!;
+      const descendants = children.get(key) ?? [];
+      const section = sectionOf(item);
+      rows.push({
+        key,
+        item,
+        parentKey: parents.get(key) ?? null,
+        rootKey: root,
+        depth,
+        section,
+        displaySection,
+        hasChildren: depth === 0 && descendants.length > 0,
+        expanded: depth === 0 && expanded,
+        contextOnly: section !== displaySection || !input.visibleKeys.has(key),
+        descendantCount: counts.get(key)?.total ?? 0,
+        activeDescendantCount: counts.get(key)?.active ?? 0,
+      });
+      if (!expanded) continue;
+      for (let index = descendants.length - 1; index >= 0; index--) {
+        stack.push({ key: descendants[index]!, depth: depth + 1 });
+      }
+    }
+  }
+  return rows;
 }
 
 export interface ThreadListV2Layout {
@@ -566,6 +774,7 @@ export function buildThreadListV2Items(input: {
   readonly settledShelfExpanded?: boolean;
   readonly selectedThreadKey?: string | null;
   readonly queuedThreadKeys?: ReadonlySet<string>;
+  readonly includeSubagents?: boolean;
 }): ThreadListV2Layout {
   const now = input.now;
   const pending =
@@ -595,7 +804,9 @@ export function buildThreadListV2Items(input: {
   for (const thread of input.threads) {
     if (
       thread.archivedAt !== null ||
-      (thread.lineage.relationshipToParent === "subagent" && thread.presentation !== "top_level")
+      (!input.includeSubagents &&
+        thread.lineage.relationshipToParent === "subagent" &&
+        thread.presentation !== "top_level")
     )
       continue;
     if (input.environmentId !== null && thread.environmentId !== input.environmentId) continue;

@@ -1,4 +1,4 @@
-import { act } from "react";
+import { act, useLayoutEffect } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
@@ -8,6 +8,7 @@ import {
 } from "./useVoiceDictation";
 import { acquireMicrophoneOwnership } from "@t3tools/client-runtime/live-voice";
 import { readRecordingDraft } from "./recordingDraftStore";
+import { DraftId, useComposerDraftStore } from "../composerDraftStore";
 
 class FakeMediaRecorder {
   static instance: FakeMediaRecorder | null = null;
@@ -46,12 +47,15 @@ function Probe({
   transcribe: VoiceDictationTranscriber | null;
   targetKey?: string | undefined;
 }) {
-  latest = useVoiceDictation({
+  const value = useVoiceDictation({
     transcribe,
     onTranscript,
     onSend,
     hasTranscript,
     ...(targetKey ? { targetKey } : {}),
+  });
+  useLayoutEffect(() => {
+    latest = value;
   });
   return null;
 }
@@ -101,6 +105,56 @@ afterEach(() => {
 });
 
 describe("useVoiceDictation", () => {
+  it("adds speech transcription provenance only after the successful synthetic transcript insertion", async () => {
+    const target = DraftId.make("speech-synthetic-success");
+    const store = useComposerDraftStore.getState();
+    store.setPrompt(target, "Bitte prüfe");
+    onTranscript.mockImplementation((text) => {
+      store.appendSpeechTranscript(target, text);
+    });
+    render(
+      vi.fn(async () => "Plain37"),
+      "speech-synthetic-success",
+    );
+    await act(async () => latest?.start());
+    expect(store.getComposerDraft(target)?.speechTranscription).toBeUndefined();
+    await act(async () => latest?.stop());
+    expect(store.getComposerDraft(target)?.prompt).toBe("Bitte prüfe\nPlain37");
+    expect(store.getComposerDraft(target)?.speechTranscription?.ranges).toEqual([
+      { start: 12, end: 19 },
+    ]);
+    store.clearComposerContent(target);
+  });
+
+  it("does not add speech transcription provenance after cancellation or a late synthetic result", async () => {
+    const target = DraftId.make("speech-synthetic-cancel");
+    const store = useComposerDraftStore.getState();
+    store.setPrompt(target, "Getippter Text");
+    onTranscript.mockImplementation((text) => {
+      store.appendSpeechTranscript(target, text);
+    });
+    let resolveTranscript!: (text: string) => void;
+    render(
+      () =>
+        new Promise<string>((resolve) => {
+          resolveTranscript = resolve;
+        }),
+      "speech-synthetic-cancel",
+    );
+    await startAndStop();
+    let pending: Promise<void> | undefined;
+    act(() => {
+      pending = latest?.transcribe();
+    });
+    act(() => latest?.cancel());
+    await act(async () => {
+      resolveTranscript("Plain37");
+      await pending;
+    });
+    expect(store.getComposerDraft(target)?.prompt).toBe("Getippter Text");
+    expect(store.getComposerDraft(target)?.speechTranscription).toBeUndefined();
+    store.clearComposerContent(target);
+  });
   it("Stop transcribes directly into the prompt without sending", async () => {
     const transcribe = vi.fn(async () => "  stopped words  ");
     render(transcribe, "voice-stop:auto");

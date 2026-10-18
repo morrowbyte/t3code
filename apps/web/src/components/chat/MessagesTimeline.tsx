@@ -49,6 +49,7 @@ import {
 } from "@t3tools/client-runtime/work-log/presentation";
 import { resolveWorkGroupScrollAnchor } from "@t3tools/client-runtime/work-log/scroll-anchor";
 import {
+  turnItemDetailRevision,
   turnItemHasDetail,
   turnItemNeedsDetailFetch,
 } from "@t3tools/client-runtime/work-log/item-detail";
@@ -185,6 +186,9 @@ import {
   timelineContentOverflowsViewport,
 } from "./timelineScrollAnchoring";
 import { MessageCopyButton } from "./MessageCopyButton";
+import { AgentMessageRow } from "./AgentMessageRow";
+import { readAgentSend } from "./agentMessagePresentation";
+import { useTurnItemDetail } from "../../state/queries";
 import { promptLinkFor } from "../promptLinks/copyPromptLink";
 import { PierreEntryIcon } from "./PierreEntryIcon";
 import { WorkspaceEntryIcon, WorkspaceEntryTooltip } from "./WorkspaceEntryIcon";
@@ -1941,6 +1945,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "attempt-fold" ? <AttemptFoldTimelineRow row={row} /> : null}
       {row.kind === "context-compaction" ? <ContextCompactionTimelineRow row={row} /> : null}
       {row.kind === "message" && row.message.role === "user" ? <UserTimelineRow row={row} /> : null}
+      {row.kind === "agent-send" ? <OutgoingAgentTimelineRow row={row} /> : null}
       {row.kind === "message" && row.message.role === "assistant" ? (
         <AssistantTimelineRow row={row} />
       ) : null}
@@ -2057,14 +2062,73 @@ function UserVideoAttachment({ file }: { readonly file: ChatFileAttachment }) {
 
 const MESSAGE_HEADING_LEVEL = 3;
 
-function MessageAuthorHeading({ children }: { children: string }) {
-  return <h3 className="sr-only select-none">{children}</h3>;
+function OutgoingAgentTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "agent-send" }> }) {
+  const ctx = use(TimelineRowCtx);
+  const [requested, setRequested] = useState(false);
+  const wireItem = row.projectedItem.item;
+  const detail = useTurnItemDetail(
+    requested && turnItemNeedsDetailFetch(wireItem)
+      ? {
+          environmentId: ctx.activeThreadEnvironmentId,
+          threadId: row.projectedItem.sourceThreadId,
+          itemId: row.projectedItem.sourceItemId,
+          revision: turnItemDetailRevision(wireItem),
+        }
+      : null,
+  );
+  const fetchedItem = detail.data?.item;
+  const item =
+    fetchedItem?.type === wireItem.type && fetchedItem.id === wireItem.id ? fetchedItem : wireItem;
+  const send = item.type === "dynamic_tool" ? readAgentSend(item) : null;
+  const targetThreadId = send?.targetThreadId ? ThreadId.make(send.targetThreadId) : undefined;
+  const target = useThreadShell(
+    targetThreadId ? scopeThreadRef(ctx.activeThreadEnvironmentId, targetThreadId) : null,
+  );
+  const live = ["idle", "pending", "running", "waiting"].includes(item.status);
+  const receipt = send?.failed
+    ? "Aufruf fehlgeschlagen"
+    : send?.accepted
+      ? send.delivery === "queued"
+        ? "In Warteschlange"
+        : "Sendung angenommen"
+      : live
+        ? "Wird gesendet…"
+        : "Annahme nicht bestätigt";
+
+  return (
+    <AgentMessageRow
+      messageId={row.id}
+      text={send?.text ?? null}
+      peerThreadId={targetThreadId}
+      peerTitle={target?.title ?? null}
+      attribution="agent"
+      direction="outgoing"
+      environmentId={ctx.activeThreadEnvironmentId}
+      createdAt={row.createdAt}
+      timestamp={formatDayAwareTimestamp(row.createdAt, ctx.timestampFormat)}
+      timestampTitle={formatChatTimestampTooltip(row.createdAt, ctx.timestampFormat)}
+      streaming={false}
+      delivery={<span className={send?.failed ? "text-destructive" : undefined}>{receipt}</span>}
+      loading={requested && send?.text === null && detail.isPending}
+      error={
+        requested && item === wireItem && turnItemNeedsDetailFetch(wireItem)
+          ? (detail.error ?? (detail.data?.item === null ? "Original nicht mehr verfügbar." : null))
+          : null
+      }
+      onRequestText={() => setRequested(true)}
+    >
+      {(text) => <UserMessageBody text={text} skills={ctx.skills} markdownCwd={ctx.markdownCwd} />}
+    </AgentMessageRow>
+  );
 }
 
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const { onImageExpand, onFileOpen } = ctx;
   const senderThreadId = row.message.senderThreadId;
+  const sender = useThreadShell(
+    senderThreadId ? scopeThreadRef(ctx.activeThreadEnvironmentId, senderThreadId) : null,
+  );
   const resources = selectMessageImageResources(row.message.attachments);
   const previewUrls = useAssetUrls(ctx.activeThreadEnvironmentId, resources);
   const [projectPreviews] = useState(createMessageAttachmentPreviewProjector);
@@ -2188,6 +2252,158 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
     );
   };
 
+  const messageAttachments = (
+    <>
+      {(regularImages.length > 0 || userVideos.length > 0) && (
+        <div className="mb-2 grid max-w-[210px] grid-cols-2 gap-2">
+          {regularImages.map((image) => (
+            <div
+              key={image.id}
+              className={cn(
+                "bg-background/70",
+                image.source?.kind === "snap-shot" && image.previewUrl
+                  ? cn(SNAP_SHOT_ATTACHMENT_FRAME_CLASS, "col-span-2")
+                  : "aspect-[4/3] overflow-hidden rounded-lg border border-border/80",
+              )}
+            >
+              {image.previewUrl ? (
+                <button
+                  type="button"
+                  className="block h-full w-full cursor-zoom-in"
+                  aria-label={`Preview ${image.name}`}
+                  onClick={() => {
+                    const preview = buildExpandedImagePreview(regularImages, image.id);
+                    if (!preview) return;
+                    ctx.onImageExpand(preview);
+                  }}
+                >
+                  <img
+                    src={image.previewUrl}
+                    alt={image.name}
+                    className="block size-full object-cover"
+                  />
+                </button>
+              ) : (
+                <div className="flex min-h-[72px] items-center justify-center px-2 py-3 text-center text-2xs text-muted-foreground/70">
+                  {image.name}
+                </div>
+              )}
+              {image.previewUrl && image.source?.kind === "snap-shot" ? (
+                <SnapShotAttachmentDetails source={image.source} />
+              ) : null}
+            </div>
+          ))}
+          {userVideos.map((file) => (
+            <UserVideoAttachment key={file.id} file={file} />
+          ))}
+        </div>
+      )}
+      {unchippedFiles.length > 0 || unknownAttachments.length > 0 ? (
+        <div className="mb-2 flex flex-col gap-1">
+          {unchippedFiles.map((file) => {
+            const fileIdentity = (
+              <>
+                <PierreEntryIcon pathValue={file.name} kind="file" theme={ctx.resolvedTheme} />
+                <span className="min-w-0 flex-1 truncate">{file.name}</span>
+              </>
+            );
+            if (file.downloadable !== false) {
+              return (
+                <div key={file.id} className="flex min-w-0 items-center gap-1">
+                  <button
+                    type="button"
+                    aria-label={`Preview ${file.name}`}
+                    onClick={() => ctx.onFileOpen(file)}
+                    className="focus-visible:ring-ring/70 flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md py-1 text-left text-sm hover:underline focus-visible:ring-2 focus-visible:ring-inset focus-visible:outline-none"
+                  >
+                    {fileIdentity}
+                    <EyeIcon className="size-4 shrink-0" />
+                  </button>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <Button
+                          size="icon-xs"
+                          variant="ghost-muted"
+                          aria-label={`Download ${file.name}`}
+                          onClick={() => ctx.onFileDownload(file)}
+                        />
+                      }
+                    >
+                      <DownloadIcon />
+                    </TooltipTrigger>
+                    <TooltipPopup side="top">Download {file.name}</TooltipPopup>
+                  </Tooltip>
+                </div>
+              );
+            }
+
+            return (
+              <div key={file.id} className="flex min-w-0 items-center gap-2 py-1 text-sm">
+                {fileIdentity}
+              </div>
+            );
+          })}
+          {unknownAttachments.map((attachment) => (
+            <div key={attachment.id} className="flex min-w-0 items-center gap-2 py-1 text-sm">
+              <PierreEntryIcon pathValue={attachment.name} kind="file" theme={ctx.resolvedTheme} />
+              <span className="min-w-0 flex-1 truncate">{attachment.name}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </>
+  );
+
+  // Older MCP deliveries can be recorded as user input without sender metadata.
+  // Keep the tool origin neutral instead of guessing a human or agent sender.
+  const unknownMcpSender = userMessage.attribution === null && row.message.creationSource === "mcp";
+  if (userMessage.attribution === "agent" || unknownMcpSender) {
+    return (
+      <AgentMessageRow
+        messageId={row.message.id}
+        text={row.message.text}
+        peerThreadId={senderThreadId}
+        peerTitle={sender?.title ?? null}
+        attribution={unknownMcpSender ? "unknown" : "agent"}
+        environmentId={ctx.activeThreadEnvironmentId}
+        createdAt={row.message.createdAt}
+        timestamp={formatDayAwareTimestamp(row.message.createdAt, ctx.timestampFormat)}
+        timestampTitle={formatChatTimestampTooltip(row.message.createdAt, ctx.timestampFormat)}
+        streaming={row.message.streaming}
+        attachments={messageAttachments}
+        delivery={
+          <>
+            {row.message.inputIntent && row.message.inputIntent !== "turn_start" ? (
+              <UserMessageIntentMarker intent={row.message.inputIntent} />
+            ) : null}
+            {row.projectedItem &&
+            row.projectedItem.item.status !== "completed" &&
+            row.projectedItem.item.status !== "pending" &&
+            row.projectedItem.item.status !== "waiting" ? (
+              <span className="rounded-full border border-destructive/25 bg-destructive/8 px-1.5 py-0.5 text-3xs font-medium text-destructive">
+                {row.projectedItem.item.status}
+              </span>
+            ) : null}
+          </>
+        }
+      >
+        {(bodyText) => (
+          <>
+            <div onCopyCapture={onBodyCopyCapture}>
+              <UserMessageBody
+                text={bodyText}
+                renderContextReference={renderContextReference}
+                skills={ctx.skills}
+                markdownCwd={ctx.markdownCwd}
+              />
+            </div>
+          </>
+        )}
+      </AgentMessageRow>
+    );
+  }
+
   return (
     <div className="group flex flex-col items-end gap-1">
       {userMessage.attribution === "automation" ? (
@@ -2217,128 +2433,13 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
         >
           Sent by T3 Code
         </p>
-      ) : userMessage.attribution === "agent" ? (
-        <p className="me-1 text-2xs text-muted-foreground/70" data-user-message-attribution="agent">
-          {senderThreadId ? (
-            <InlineButton
-              onClick={() => ctx.onOpenThread(senderThreadId)}
-              tone="muted"
-              aria-label="Open sending thread"
-            >
-              Sent by another agent
-            </InlineButton>
-          ) : (
-            "Sent by another agent"
-          )}
-        </p>
       ) : null}
       {row.message.inputIntent && row.message.inputIntent !== "turn_start" ? (
         <UserMessageIntentMarker intent={row.message.inputIntent} />
       ) : null}
       <div className="relative max-w-[80%] rounded-2xl bg-message p-3 text-message-foreground">
-        <MessageAuthorHeading>You</MessageAuthorHeading>
-        {(regularImages.length > 0 || userVideos.length > 0) && (
-          <div className="mb-2 grid max-w-[210px] grid-cols-2 gap-2">
-            {regularImages.map((image) => (
-              <div
-                key={image.id}
-                className={cn(
-                  "bg-background/70",
-                  image.source?.kind === "snap-shot" && image.previewUrl
-                    ? cn(SNAP_SHOT_ATTACHMENT_FRAME_CLASS, "col-span-2")
-                    : "aspect-[4/3] overflow-hidden rounded-lg border border-border/80",
-                )}
-              >
-                {image.previewUrl ? (
-                  <button
-                    type="button"
-                    className="block h-full w-full cursor-zoom-in"
-                    aria-label={`Preview ${image.name}`}
-                    onClick={() => {
-                      const preview = buildExpandedImagePreview(regularImages, image.id);
-                      if (!preview) return;
-                      ctx.onImageExpand(preview);
-                    }}
-                  >
-                    <img
-                      src={image.previewUrl}
-                      alt={image.name}
-                      className="block size-full object-cover"
-                    />
-                  </button>
-                ) : (
-                  <div className="flex min-h-[72px] items-center justify-center px-2 py-3 text-center text-2xs text-muted-foreground/70">
-                    {image.name}
-                  </div>
-                )}
-                {image.previewUrl && image.source?.kind === "snap-shot" ? (
-                  <SnapShotAttachmentDetails source={image.source} />
-                ) : null}
-              </div>
-            ))}
-            {userVideos.map((file) => (
-              <UserVideoAttachment key={file.id} file={file} />
-            ))}
-          </div>
-        )}
-        {unchippedFiles.length > 0 || unknownAttachments.length > 0 ? (
-          <div className="mb-2 flex flex-col gap-1">
-            {unchippedFiles.map((file) => {
-              const fileIdentity = (
-                <>
-                  <PierreEntryIcon pathValue={file.name} kind="file" theme={ctx.resolvedTheme} />
-                  <span className="min-w-0 flex-1 truncate">{file.name}</span>
-                </>
-              );
-              if (file.downloadable !== false) {
-                return (
-                  <div key={file.id} className="flex min-w-0 items-center gap-1">
-                    <button
-                      type="button"
-                      aria-label={`Preview ${file.name}`}
-                      onClick={() => ctx.onFileOpen(file)}
-                      className="focus-visible:ring-ring/70 flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md py-1 text-left text-sm hover:underline focus-visible:ring-2 focus-visible:ring-inset focus-visible:outline-none"
-                    >
-                      {fileIdentity}
-                      <EyeIcon className="size-4 shrink-0" />
-                    </button>
-                    <Tooltip>
-                      <TooltipTrigger
-                        render={
-                          <Button
-                            size="icon-xs"
-                            variant="ghost-muted"
-                            aria-label={`Download ${file.name}`}
-                            onClick={() => ctx.onFileDownload(file)}
-                          />
-                        }
-                      >
-                        <DownloadIcon />
-                      </TooltipTrigger>
-                      <TooltipPopup side="top">Download {file.name}</TooltipPopup>
-                    </Tooltip>
-                  </div>
-                );
-              }
-
-              return (
-                <div key={file.id} className="flex min-w-0 items-center gap-2 py-1 text-sm">
-                  {fileIdentity}
-                </div>
-              );
-            })}
-            {unknownAttachments.map((attachment) => (
-              <div key={attachment.id} className="flex min-w-0 items-center gap-2 py-1 text-sm">
-                <PierreEntryIcon
-                  pathValue={attachment.name}
-                  kind="file"
-                  theme={ctx.resolvedTheme}
-                />
-                <span className="min-w-0 flex-1 truncate">{attachment.name}</span>
-              </div>
-            ))}
-          </div>
-        ) : null}
+        <h3 className="mb-1 text-xs font-medium text-muted-foreground select-none">Du</h3>
+        {messageAttachments}
         <div onCopyCapture={onBodyCopyCapture}>
           <CollapsibleUserMessageBody
             text={resolvedContext.text}
@@ -2580,7 +2681,10 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
   return (
     <>
       <div className="relative min-w-0 px-1 py-0.5">
-        <MessageAuthorHeading>T3 Code</MessageAuthorHeading>
+        <h3 className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground select-none">
+          <BotIcon className="size-3.5" aria-hidden />
+          Hauptagent
+        </h3>
         <div data-thread-find-text="true">
           <AssistantCitationSource
             messageId={row.message.id}
