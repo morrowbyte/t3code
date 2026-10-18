@@ -173,15 +173,18 @@ describe("DesktopAppIdentity", () => {
   );
 
   it.effect(
-    "shows Morrowbyte while preserving existing Weasel runtime and user-data identities",
+    "shows Morrowbyte while preserving existing Weasel app and user-data identities",
     () => {
       const calls: ElectronAppCalls = { setAboutPanelOptions: [], setDockIcon: [], setName: [] };
       return withIdentity(
         Effect.gen(function* () {
           const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
           yield* identity.configure;
-          assert.deepEqual(calls.setName, ["T3 Code Weasel Nightly"]);
+          assert.deepEqual(calls.setName, ["Morrowbyte"]);
           assert.equal(calls.setAboutPanelOptions[0]?.applicationName, "Morrowbyte");
+          const environment = yield* DesktopEnvironment.DesktopEnvironment;
+          assert.equal(environment.appUserModelId, "com.evilweasel.t3code");
+          assert.equal(environment.baseDir, "/Users/alice/.t3-weasel");
           assert.equal(
             yield* identity.resolveUserDataPath,
             "/Users/alice/Library/Application Support/t3code-weasel",

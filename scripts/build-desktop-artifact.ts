@@ -2679,6 +2679,7 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
 }
 
 export function resolveDesktopProductName(version: string): string {
+  if (process.env.T3CODE_DESKTOP_PROFILE?.trim() === "weasel") return "Morrowbyte";
   const override = process.env.T3CODE_DESKTOP_PRODUCT_NAME?.trim();
   if (override) return override;
   return resolveDesktopUpdateChannel(version) === "nightly"
@@ -2706,7 +2707,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   const profile = process.env.T3CODE_DESKTOP_PROFILE?.trim();
   const buildConfig: Record<string, unknown> = {
     appId,
-    productName: profile === "weasel" ? "Morrowbyte" : resolveDesktopProductName(version),
+    productName: resolveDesktopProductName(version),
     ...(profile ? { extraMetadata: { t3codeProfile: profile } } : {}),
     artifactName:
       profile === "weasel" && platform === "linux"
