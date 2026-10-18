@@ -39,6 +39,8 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
     baseDir?: string;
     local?: { version: string; appServerFails?: boolean; versionFails?: boolean };
     platform?: NodeJS.Platform;
+    arch?: string;
+    useReleaseCatalog?: boolean;
     spawner?: ChildProcessSpawner.ChildProcessSpawner["Service"];
     runtimeRenameFailures?: number;
   } = {},
@@ -58,6 +60,7 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
     );
   }
   let downloads = 0;
+  const downloadUrls: Array<string> = [];
   const crypto = yield* Crypto.Crypto;
   const sha256 = Hex.encode(yield* crypto.digest("SHA-256", archive).pipe(Effect.orDie));
   let runtimeRenameFailures = input.runtimeRenameFailures ?? 0;
@@ -86,7 +89,7 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
   const spawner = input.spawner ?? (yield* ChildProcessSpawner.ChildProcessSpawner);
   const installation = yield* CodexInstallation.makeCodexInstallation({
     baseDir,
-    releaseAsset: { ...asset, sha256 },
+    ...(input.useReleaseCatalog ? {} : { releaseAsset: { ...asset, sha256 } }),
     validate: () => Effect.void,
     ...input.options,
   }).pipe(
@@ -97,7 +100,7 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
       refreshInBackground: Effect.void,
     }),
     Effect.provideService(HostProcess.Platform, input.platform ?? "darwin"),
-    Effect.provideService(HostProcess.Architecture, "arm64"),
+    Effect.provideService(HostProcess.Architecture, input.arch ?? "arm64"),
     Effect.provideService(HostProcess.Environment, {
       PATH: input.local ? localDirectory : "",
       SystemRoot: "C:\\Windows",
@@ -109,6 +112,7 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
       HttpClient.make((request) =>
         Effect.sync(() => {
           downloads++;
+          downloadUrls.push(request.url);
           return Object.defineProperty(
             HttpClientResponse.fromWeb(request, new Response(null)),
             "stream",
@@ -128,6 +132,7 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
     probeLog,
     failedRenames,
     downloads: () => downloads,
+    downloadUrls,
   };
 });
 const terminalState = (installation: CodexInstallation.CodexInstallation["Service"]) =>
@@ -405,6 +410,32 @@ it("publishes complete packages for all supported platforms", () => {
       );
   expect(CodexInstallation.resolveCodexReleaseAsset("linux", "riscv64")).toBeNull();
 });
+it.effect(
+  "fresh Windows x64 selects the device-auth release and rejects an unverified package",
+  () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness({
+        platform: "win32",
+        arch: "x64",
+        useReleaseCatalog: true,
+      });
+      expect(yield* h.installation.start).toMatchObject({
+        phase: "downloading",
+        version: "0.163.0",
+        totalBytes: 162230206,
+      });
+      expect(yield* terminalState(h.installation)).toMatchObject({ phase: "failed" });
+      expect(h.downloadUrls).toEqual([
+        "https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-package-x86_64-pc-windows-msvc.tar.gz",
+      ]);
+      expect(CodexInstallation.resolveCodexReleaseAsset("win32", "x64")).toMatchObject({
+        target: "x86_64-pc-windows-msvc",
+        sha256: "901028b285614a9974f431f9d9f6534b3e5ed8d62eba4ba64f4762c00f040522",
+      });
+      expect(yield* h.fs.exists(`${h.installation.managedDirectory}/active.json`)).toBe(false);
+      expect(yield* h.fs.exists(`${h.installation.managedDirectory}/0.163.0`)).toBe(false);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
 // Live clock: staleness compares real filesystem mtimes.
 it.live("startup removes only stale staging directories", () =>
   Effect.gen(function* () {
