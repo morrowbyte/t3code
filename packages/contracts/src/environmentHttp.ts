@@ -9,6 +9,12 @@ import * as HttpApiSchema from "effect/http-api/HttpApiSchema";
 import * as HttpServerRespondable from "effect/http/HttpServerRespondable";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Multipart from "effect/http/Multipart";
+import {
+  LinearSettings,
+  LinearAction,
+  LinearActionResult,
+  LinearIntegrationError,
+} from "./linear.ts";
 
 import {
   AuthAccessTokenResult,
@@ -901,7 +907,49 @@ class EnvironmentWebhooksHttpApi extends HttpApiGroup.make("webhooks")
   .add(HttpApiEndpoint.patch("webhookPatch", WEBHOOK_PATH, webhookEndpoint))
   .add(HttpApiEndpoint.get("webhookGet", WEBHOOK_PATH, webhookEndpoint)) {}
 
+class EnvironmentLinearHttpApi extends HttpApiGroup.make("linear")
+  .add(
+    HttpApiEndpoint.get("linearSettings", "/api/integrations/linear", {
+      headers: OptionalBearerHeaders,
+      success: LinearSettings,
+      error: [
+        EnvironmentAuthInvalidError,
+        EnvironmentScopeRequiredError,
+        EnvironmentInternalError,
+        LinearIntegrationError,
+      ],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("linearAction", "/api/integrations/linear", {
+      headers: OptionalBearerHeaders,
+      payload: Schema.Struct({ action: LinearAction }),
+      success: LinearActionResult,
+      error: [
+        EnvironmentAuthInvalidError,
+        EnvironmentScopeRequiredError,
+        EnvironmentInternalError,
+        LinearIntegrationError,
+      ],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
+class EnvironmentLinearIngressHttpApi extends HttpApiGroup.make("linearIngress")
+  .add(
+    HttpApiEndpoint.get("linearCallback", "/api/integrations/linear/oauth/callback", {
+      query: Schema.Struct({ code: Schema.String, state: Schema.String }),
+      success: Schema.String,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("linearEvent", "/api/integrations/linear/events", {
+      success: Schema.String,
+    }),
+  ) {}
+
 export class EnvironmentHttpApi extends HttpApi.make("environment")
+  .add(EnvironmentLinearHttpApi)
+  .add(EnvironmentLinearIngressHttpApi)
   .add(EnvironmentMetadataHttpApi)
   .add(EnvironmentAuthHttpApi)
   .add(EnvironmentMcpOAuthHttpApi)

@@ -1,5 +1,6 @@
 import { DeviceHostUpdates } from "../device/DeviceHostUpdates";
 import { VoiceTranscriptionSettingsPanel } from "./VoiceTranscriptionSettings";
+import { LinearSettingsPanel } from "./LinearSettings";
 import { DeviceToolVersions } from "../device/DeviceToolVersions";
 import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
 import { ScopedSwitch } from "./ScopedSwitch";
@@ -1491,6 +1492,7 @@ export function IntegrationsSettingsPanel() {
     <SettingsPageContainer>
       <ProjectDefaultsSettings category="integrations" />
       <VoiceTranscriptionSettingsPanel />
+      <LinearSettingsPanel />
       <SettingsSection id="browser" title="Browser">
         {previewDefaultsDisabled ? (
           <SettingsUnavailableGroup message="Only available in the desktop app.">
