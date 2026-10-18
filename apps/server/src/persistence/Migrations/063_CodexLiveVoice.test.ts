@@ -6,28 +6,38 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { migrationManifest, runMigrations } from "../Migrations.ts";
 
-it.effect("upgrades deployed 61 through main 62 and Voice 63 with one submission slot per planner turn", () =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* runMigrations({ toMigrationInclusive: 61 });
-    assert.lengthOf(yield* failureIndex, 0);
-    assert.deepStrictEqual(yield* runMigrations(), [
-      [62, "ThreadFailureLookupIndex"],
-      [63, "CodexLiveVoice"],
-    ]);
-    assert.lengthOf(yield* failureIndex, 1);
-    assert.deepStrictEqual(yield* sql`
+it.effect(
+  "upgrades deployed 61 through main 62 and Voice 63 with one submission slot per planner turn",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 61 });
+      assert.lengthOf(yield* failureIndex, 0);
+      assert.deepStrictEqual(yield* runMigrations(), [
+        [62, "ThreadFailureLookupIndex"],
+        [63, "CodexLiveVoice"],
+        [64, "DropUnusedV1Projections"],
+      ]);
+      assert.lengthOf(yield* failureIndex, 1);
+      assert.deepStrictEqual(
+        yield* sql`
       SELECT migration_id, name FROM effect_sql_migrations
       WHERE migration_id >= 62 ORDER BY migration_id
-    `, [
-      { migration_id: 62, name: "ThreadFailureLookupIndex" },
-      { migration_id: 63, name: "CodexLiveVoice" },
-    ]);
-    assert.lengthOf(yield* sql`
+    `,
+        [
+          { migration_id: 62, name: "ThreadFailureLookupIndex" },
+          { migration_id: 63, name: "CodexLiveVoice" },
+          { migration_id: 64, name: "DropUnusedV1Projections" },
+        ],
+      );
+      assert.lengthOf(
+        yield* sql`
       SELECT name FROM sqlite_master WHERE type = 'table'
         AND name IN ('codex_live_voice_leases', 'codex_live_voice_intents')
-    `, 2);
-    yield* sql`
+    `,
+        2,
+      );
+      yield* sql`
       INSERT INTO codex_live_voice_leases (
         lease_id, generation, environment_id, thread_id, provider_instance_id,
         model_selection_json, runtime_policy_json, principal_session_id, principal_subject,
@@ -35,7 +45,7 @@ it.effect("upgrades deployed 61 through main 62 and Voice 63 with one submission
       ) VALUES ('lease-a', 1, 'env-a', 'thread-a', 'codex', '{}', '{}',
         'principal-a', 'subject-a', 'request-a', 'preparing', '2026-10-14T00:00:00.000Z')
     `;
-    const duplicateRequest = yield* Effect.exit(sql`
+      const duplicateRequest = yield* Effect.exit(sql`
       INSERT INTO codex_live_voice_leases (
         lease_id, generation, environment_id, thread_id, provider_instance_id,
         model_selection_json, runtime_policy_json, principal_session_id, principal_subject,
@@ -43,35 +53,35 @@ it.effect("upgrades deployed 61 through main 62 and Voice 63 with one submission
       ) VALUES ('lease-b', 1, 'env-a', 'thread-b', 'codex', '{}', '{}',
         'principal-a', 'subject-a', 'request-a', 'preparing', '2026-10-14T00:00:01.000Z')
     `);
-    assert.isTrue(Exit.isFailure(duplicateRequest));
+      assert.isTrue(Exit.isFailure(duplicateRequest));
 
-    yield* sql`
+      yield* sql`
       INSERT INTO codex_live_voice_intents (
         lease_id, generation, planner_native_thread_id, planner_turn_id, submit_slot,
         call_id, message, command_id, message_id, dispatch_state, updated_at
       ) VALUES ('lease-a', 1, 'planner-a', 'turn-a', 0, 'call-a', 'do the work',
         'command-a', 'message-a', 'reserved', '2026-10-14T00:00:00.000Z')
     `;
-    yield* sql`
+      yield* sql`
       INSERT OR IGNORE INTO codex_live_voice_intents (
         lease_id, generation, planner_native_thread_id, planner_turn_id, submit_slot,
         call_id, message, command_id, message_id, dispatch_state, updated_at
       ) VALUES ('lease-a', 1, 'planner-a', 'turn-a', 0, 'call-b', 'a different utterance',
         'command-b', 'message-b', 'reserved', '2026-10-14T00:00:02.000Z')
     `;
-    const intents = yield* sql<{
-      call_id: string;
-      message: string;
-      command_id: string;
-    }>`
+      const intents = yield* sql<{
+        call_id: string;
+        message: string;
+        command_id: string;
+      }>`
       SELECT call_id, message, command_id FROM codex_live_voice_intents
       WHERE lease_id = 'lease-a' AND generation = 1 AND planner_native_thread_id = 'planner-a'
         AND planner_turn_id = 'turn-a' AND submit_slot = 0
     `;
-    assert.deepStrictEqual(intents, [
-      { call_id: "call-a", message: "do the work", command_id: "command-a" },
-    ]);
-  }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+      assert.deepStrictEqual(intents, [
+        { call_id: "call-a", message: "do the work", command_id: "command-a" },
+      ]);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
 );
 
 // Frozen schema from qualified f1bf0f15 migration 62, independent of the new migration.
@@ -153,29 +163,40 @@ it.effect("adds Voice 63 to the current main 62 database without replacing main'
     const sql = yield* SqlClient.SqlClient;
     yield* runMigrations({ toMigrationInclusive: 62 });
     assert.lengthOf(yield* failureIndex, 1);
-    assert.lengthOf(yield* sql`
+    assert.lengthOf(
+      yield* sql`
       SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'codex_live_voice_leases'
-    `, 0);
-    assert.deepStrictEqual(yield* runMigrations(), [[63, "CodexLiveVoice"]]);
+    `,
+      0,
+    );
+    assert.deepStrictEqual(yield* runMigrations(), [
+      [63, "CodexLiveVoice"],
+      [64, "DropUnusedV1Projections"],
+    ]);
     assert.lengthOf(yield* failureIndex, 1);
     const ledger = yield* sql<{ migration_id: number; name: string }>`
       SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id
     `;
-    assert.deepStrictEqual(ledger.map((row) => [row.migration_id, row.name] as const), migrationManifest);
+    assert.deepStrictEqual(
+      ledger.map((row) => [row.migration_id, row.name] as const),
+      migrationManifest,
+    );
     assert.deepStrictEqual(yield* runMigrations(), []);
   }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
 );
 
-it.effect("upgrades the qualified Voice 62 ledger atomically while preserving leases, intents and history", () =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* runMigrations({ toMigrationInclusive: 61 });
-    yield* qualifiedVoice62Schema;
-    yield* sql`
+it.effect(
+  "upgrades the qualified Voice 62 ledger atomically while preserving leases, intents and history",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 61 });
+      yield* qualifiedVoice62Schema;
+      yield* sql`
       INSERT INTO effect_sql_migrations (migration_id, name, created_at)
       VALUES (62, 'CodexLiveVoice', '2026-10-14 01:52:17')
     `;
-    yield* sql`
+      yield* sql`
       INSERT INTO codex_live_voice_leases (
         lease_id, generation, environment_id, thread_id, provider_instance_id,
         model_selection_json, runtime_policy_json, principal_session_id, principal_subject,
@@ -183,7 +204,7 @@ it.effect("upgrades the qualified Voice 62 ledger atomically while preserving le
       ) VALUES ('retained-lease', 1, 'env-a', 'thread-a', 'codex', '{}', '{}',
         'principal-a', 'subject-a', 'request-a', 'closed', '2026-10-14T01:52:17.000Z')
     `;
-    yield* sql`
+      yield* sql`
       INSERT INTO codex_live_voice_intents (
         lease_id, generation, planner_native_thread_id, planner_turn_id, submit_slot,
         call_id, message, command_id, message_id, dispatch_state, receipt_json, updated_at
@@ -191,39 +212,50 @@ it.effect("upgrades the qualified Voice 62 ledger atomically while preserving le
         'command-a', 'message-a', 'admitted', '{"runId":"run-a","readback":{"state":"sent"}}',
         '2026-10-14T01:52:17.000Z')
     `;
-    const leases = yield* sql`SELECT * FROM codex_live_voice_leases`;
-    const intents = yield* sql`SELECT * FROM codex_live_voice_intents`;
-    assert.lengthOf(yield* failureIndex, 0);
-    assert.deepStrictEqual(yield* runMigrations(), [
-      [62, "ThreadFailureLookupIndex"],
-      [63, "CodexLiveVoice"],
-    ]);
-    assert.deepStrictEqual(yield* sql`SELECT * FROM codex_live_voice_leases`, leases);
-    assert.deepStrictEqual(yield* sql`SELECT * FROM codex_live_voice_intents`, intents);
-    assert.deepStrictEqual(yield* sql`
+      const leases = yield* sql`SELECT * FROM codex_live_voice_leases`;
+      const intents = yield* sql`SELECT * FROM codex_live_voice_intents`;
+      assert.lengthOf(yield* failureIndex, 0);
+      assert.deepStrictEqual(yield* runMigrations(), [
+        [62, "ThreadFailureLookupIndex"],
+        [63, "CodexLiveVoice"],
+        [64, "DropUnusedV1Projections"],
+      ]);
+      assert.deepStrictEqual(yield* sql`SELECT * FROM codex_live_voice_leases`, leases);
+      assert.deepStrictEqual(yield* sql`SELECT * FROM codex_live_voice_intents`, intents);
+      assert.deepStrictEqual(
+        yield* sql`
       SELECT migration_id, name, created_at FROM effect_sql_migrations WHERE migration_id = 63
-    `, [{ migration_id: 63, name: "CodexLiveVoice", created_at: "2026-10-14 01:52:17" }]);
-    const ledger = yield* sql<{ migration_id: number; name: string }>`
+    `,
+        [{ migration_id: 63, name: "CodexLiveVoice", created_at: "2026-10-14 01:52:17" }],
+      );
+      const ledger = yield* sql<{ migration_id: number; name: string }>`
       SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id
     `;
-    assert.deepStrictEqual(ledger.map((row) => [row.migration_id, row.name] as const), migrationManifest);
-    assert.lengthOf(yield* failureIndex, 1);
-    assert.deepStrictEqual(yield* runMigrations(), []);
-  }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+      assert.deepStrictEqual(
+        ledger.map((row) => [row.migration_id, row.name] as const),
+        migrationManifest,
+      );
+      assert.lengthOf(yield* failureIndex, 1);
+      assert.deepStrictEqual(yield* runMigrations(), []);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
 );
 
 it.effect.each(["OtherForkMigration", "CodexLiveVoice"])(
   "refuses a conflicting or incomplete recorded 62 schema: %s",
-  (name) => Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* runMigrations({ toMigrationInclusive: 61 });
-    yield* sql`
+  (name) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 61 });
+      yield* sql`
       INSERT INTO effect_sql_migrations (migration_id, name) VALUES (62, ${name})
     `;
-    const before = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
-    const result = yield* Effect.exit(runMigrations());
-    assert.isTrue(Exit.isFailure(result));
-    assert.deepStrictEqual(yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`, before);
-    assert.lengthOf(yield* failureIndex, 0);
-  }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+      const before = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
+      const result = yield* Effect.exit(runMigrations());
+      assert.isTrue(Exit.isFailure(result));
+      assert.deepStrictEqual(
+        yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
+        before,
+      );
+      assert.lengthOf(yield* failureIndex, 0);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
 );

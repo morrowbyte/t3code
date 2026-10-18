@@ -68,12 +68,12 @@ function HostHistory({ environmentId, label }: { environmentId: EnvironmentId; l
     )
       return;
     setDeleting(entry.id);
-    try {
-      await remove({ environmentId, input: { id: entry.id, component: entry.component } });
-    } finally {
-      setDeleting(null);
-      refresh();
-    }
+    await remove({ environmentId, input: { id: entry.id, component: entry.component } }).finally(
+      () => {
+        setDeleting(null);
+        refresh();
+      },
+    );
   };
   return (
     <div className="space-y-2 border-t border-border/60 px-3 py-3">

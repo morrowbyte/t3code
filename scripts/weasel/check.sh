@@ -52,7 +52,7 @@ try {
   const web = resolve('apps/web');
   await new Generator({ config: getConfig({ autoCodeSplitting: true }, web), root: web }).run();
   const changes = git('diff', '--name-only', 'HEAD').trim().split('\n').filter(Boolean);
-  if (changes.length !== 1 || changes[0] !== generated) throw Error('unexpected-tracked-delta');
+  if (changes.some(path => path !== generated)) throw Error('unexpected-tracked-delta: ' + changes.join(', '));
   if (git('ls-files', '--others', '--exclude-standard').trim()) throw Error('unexpected-untracked-file');
   if (git('rev-parse', 'HEAD').trim() !== receipt.source || sha(readFileSync('pnpm-lock.yaml')) !== receipt.lockSha256) throw Error('source-changed');
   const bytes = readFileSync(generated);
@@ -110,7 +110,6 @@ focused_tests=(
   apps/desktop/src/electron/quitAndInstallInPlace.test.ts
   apps/web/src/components/sidebar/updateEverything.logic.test.ts
   apps/web/src/components/ProviderUpdateLaunchNotification.logic.test.ts
-  apps/web/src/components/ServerUpdateAction.test.tsx
   apps/web/src/components/desktopUpdate.logic.test.ts
   apps/web/src/branding.test.ts
   apps/web/src/connection/fleetBootstrap.test.ts
@@ -209,7 +208,6 @@ for automatic_update_test in "${automatic_update_tests[@]}"; do
   focused_tests+=("$automatic_update_test")
 done
 approval_tests=(
-  apps/web/src/components/chat/ComposerPendingApprovalPanel.test.tsx
   apps/web/src/components/chat/ComposerPendingApprovalActions.test.tsx
   apps/web/src/components/chat/ApprovalActionSummary.test.tsx
   apps/mobile/src/features/threads/PendingApprovalCard.test.tsx
@@ -295,7 +293,6 @@ live_tests=(
   apps/server/src/voice/CodexLiveEventHub.test.ts
   apps/server/src/voice/CodexLiveSessionService.test.ts
   apps/server/src/orchestration-v2/assistantStreaming.test.ts
-  apps/web/src/components/ChatMarkdown.test.tsx
   apps/web/src/components/streamable-ui/protocol.test.ts
   apps/web/src/components/streamable-ui/StreamableUi.test.tsx
   apps/web/src/localDevLogin.test.ts
@@ -361,6 +358,18 @@ if [[ ! -f "$mobile_composer_test" ]]; then
   exit 1
 fi
 focused_tests+=("$mobile_composer_test")
+renderer_tests=(
+  apps/web/src/components/ServerUpdateAction.browser.test.tsx
+  apps/web/src/components/chat/ComposerPendingApprovalPanel.browser.test.tsx
+  apps/web/src/components/ChatMarkdown.browser.test.tsx
+)
+for renderer_test in "${renderer_tests[@]}"; do
+  if [[ ! -f "$renderer_test" ]]; then
+    echo "Required browser renderer gate is missing: $renderer_test" >&2
+    exit 1
+  fi
+done
 vp_cmd lint --report-unused-disable-directives "$mobile_composer_test"
 vp_cmd test run --config vite.config.ts "${focused_tests[@]}"
+(cd apps/web && vp_cmd test run --project browser "${renderer_tests[@]#apps/web/}")
 (cd scripts && vp_cmd test run --config ../vite.config.ts build-desktop-artifact.test.ts lib/morrowbyte-branding.test.ts)

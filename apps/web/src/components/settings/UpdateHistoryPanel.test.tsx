@@ -3,6 +3,7 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 import type { HostUpdateRecord } from "@t3tools/contracts";
+import { AsyncResult } from "effect/reactivity";
 
 const state = vi.hoisted(() => ({
   allowed: true,
@@ -56,6 +57,7 @@ beforeEach(() => {
   state.allowed = true;
   state.confirm.mockReset();
   state.remove.mockReset();
+  state.remove.mockResolvedValue(AsyncResult.success(undefined));
   state.refresh.mockReset();
   const now = "2026-10-17T00:00:00.000Z";
   state.entries = [
