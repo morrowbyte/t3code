@@ -49,7 +49,7 @@ export function SharedProjectSetup({ group }: { group: SidebarProjectSnapshot })
   const settings = useClientSettings();
   const projects = useProjects();
   const [open, setOpen] = useState(false);
-  const source = group.memberProjects.find(
+  const readableMembers = group.memberProjects.filter(
     (member) =>
       readable.has(member.environmentId) &&
       environments.some(
@@ -58,13 +58,19 @@ export function SharedProjectSetup({ group }: { group: SidebarProjectSnapshot })
           environment.connection.phase === "connected",
       ),
   );
-  const cloneSource = source
-    ? sharedProjectCloneSource(source)
+  const source = readableMembers.find(
+    (member) =>
+      !("error" in sharedProjectCloneSource(member)) &&
+      resolveProjectGroupingMode(member, settings) !== "separate",
+  );
+  const sourceForFeedback = source ?? readableMembers[0];
+  const cloneSource = sourceForFeedback
+    ? sharedProjectCloneSource(sourceForFeedback)
     : { error: "Connect a host with permission to read this repository." };
   const sourceError =
     "error" in cloneSource
       ? cloneSource.error
-      : source && resolveProjectGroupingMode(source, settings) === "separate"
+      : sourceForFeedback && resolveProjectGroupingMode(sourceForFeedback, settings) === "separate"
         ? "Enable repository grouping for this project before adding a host."
         : null;
   const hosts: SharedProjectHost[] = environments.map((environment) => ({

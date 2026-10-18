@@ -76,6 +76,7 @@ vi.mock(import("./settingsLayout"), async (original) => ({
 }));
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { buildSidebarProjectSnapshots } from "../../sidebarProjectGrouping";
+import type { SidebarProjectSnapshot } from "../../sidebarProjectGrouping";
 import { SharedProjectSetup } from "./SharedProjectSetup";
 
 const sourceId = EnvironmentId.make("source");
@@ -134,13 +135,15 @@ afterEach(async () => {
   container.remove();
   vi.unstubAllGlobals();
 });
-async function render() {
-  const group = buildSidebarProjectSnapshots({
+function projectGroup() {
+  return buildSidebarProjectSnapshots({
     projects: state.projects,
     settings: DEFAULT_CLIENT_SETTINGS,
     primaryEnvironmentId: sourceId,
     resolveEnvironmentLabel: (id) => id,
   })[0]!;
+}
+async function render(group = projectGroup()) {
   await act(async () =>
     root.render(
       <RegistryContext value={appAtomRegistry}>
@@ -149,9 +152,11 @@ async function render() {
     ),
   );
 }
-async function open() {
-  await render();
-  await userEvent.click(container.querySelector("button")!);
+async function open(group?: SidebarProjectSnapshot) {
+  await render(group);
+  const addHost = container.querySelector("button")!;
+  expect(addHost.disabled).toBe(false);
+  await userEvent.click(addHost);
   await userEvent.click(document.querySelector('[id="shared-project-host"]')!);
   await userEvent.click(
     Array.from(document.querySelectorAll('[role="option"]')).find(
@@ -169,6 +174,41 @@ const submit = () =>
   )!;
 
 describe("shared project setup", () => {
+  it("clones from the eligible root when an earlier group member is a subdirectory", async () => {
+    const source = state.projects[0]!;
+    const identity = source.repositoryIdentity!;
+    const subdirectory = {
+      ...source,
+      id: ProjectId.make("synthetic-subdirectory"),
+      workspaceRoot: `${source.workspaceRoot}/apps/web`,
+      repositoryIdentity: {
+        ...identity,
+        locator: { ...identity.locator, remoteUrl: "git@github.com:example/fixture.git" },
+      },
+    };
+    state.projects = [subdirectory, source];
+    const group = projectGroup();
+    const mixedGroup = {
+      ...group,
+      memberProjects: [
+        group.memberProjects.find((member) => member.id === subdirectory.id)!,
+        group.memberProjects.find((member) => member.id === source.id)!,
+      ],
+    };
+    await open(mixedGroup);
+    await userEvent.click(document.querySelector('[role="checkbox"]')!);
+    await userEvent.click(submit());
+    expect(state.startClone).toHaveBeenCalledExactlyOnceWith({
+      environmentId: targetId,
+      input: {
+        projectId: expect.any(String),
+        title: "Shared fixture",
+        createdAt: expect.any(String),
+        remoteUrl: identity.locator.remoteUrl,
+        destinationPath: "/synthetic/target",
+      },
+    });
+  });
   it("starts one normal tracked clone on the selected host without copying scripts or changing the source", async () => {
     const original = structuredClone(state.projects);
     await open();
