@@ -109,7 +109,11 @@ export function formatChartTick(value: number) {
   }).format(value);
 }
 
-export function workflowLayout(workflow: VisualWorkflow, textScale = 1) {
+export function workflowLayout(
+  workflow: VisualWorkflow,
+  textScale = 1,
+  nodeSizes?: ReadonlyMap<string, { width: number; height: number }>,
+) {
   const graph = new dagre.graphlib.Graph({ multigraph: true });
   graph.setGraph({
     rankdir: "TB",
@@ -120,7 +124,9 @@ export function workflowLayout(workflow: VisualWorkflow, textScale = 1) {
   });
   graph.setDefaultEdgeLabel(() => ({}));
   workflow.nodes.forEach((node) =>
-    graph.setNode(node.key, { width: 184 * textScale, height: 80 * textScale }),
+    graph.setNode(node.key, {
+      ...(nodeSizes?.get(node.key) ?? { width: 184 * textScale, height: 80 * textScale }),
+    }),
   );
   workflow.edges.forEach((edge) =>
     graph.setEdge(

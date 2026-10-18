@@ -120,11 +120,6 @@ export const StreamableUi = memo(function StreamableUi({
           <Sources sources={component.sources} />
         </section>
       ))}
-      {parsed.pending ? (
-        <p role="status" className="text-xs text-muted-foreground">
-          Receiving visual data…
-        </p>
-      ) : null}
       {parsed.error ? (
         <details className="text-xs text-muted-foreground">
           <summary className="cursor-pointer">{parsed.error} View source</summary>

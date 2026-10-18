@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   BaseEdge,
   Handle,
@@ -13,6 +13,7 @@ import {
   type Edge,
   type EdgeProps,
   type ReactFlowInstance,
+  type NodeChange,
 } from "@xyflow/react";
 import {
   CheckCircle2Icon,
@@ -95,7 +96,7 @@ const WorkflowNode = memo(function WorkflowNode({ data, id }: NodeProps<Workflow
     <div
       data-workflow-kind={step.kind ?? "step"}
       data-workflow-status={step.status ?? "pending"}
-      className="grid h-full min-w-0 content-center gap-1 px-3 py-2 text-left"
+      className="grid min-w-0 gap-1.5 p-3 text-left"
     >
       {ports.map((port) => (
         <Handle
@@ -104,7 +105,14 @@ const WorkflowNode = memo(function WorkflowNode({ data, id }: NodeProps<Workflow
           type={port.type}
           position={port.position}
           isConnectable={false}
-          style={{ left: port.x, top: port.y, right: "auto", bottom: "auto" }}
+          style={{
+            // Dagre uses the border box; handles are positioned inside its 1px border.
+            left: port.x - 1,
+            top: port.y - 1,
+            right: "auto",
+            bottom: "auto",
+            transform: "translate(-50%, -50%)",
+          }}
         />
       ))}
       <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
@@ -114,8 +122,12 @@ const WorkflowNode = memo(function WorkflowNode({ data, id }: NodeProps<Workflow
         </span>
         {StateIcon ? <StateIcon aria-label={state?.label} className="size-3.5" /> : null}
       </div>
-      <p className="line-clamp-2 text-sm font-medium">{step.title}</p>
-      {step.detail ? <p className="truncate text-xs text-muted-foreground">{step.detail}</p> : null}
+      <div className="text-sm font-medium leading-5 [overflow-wrap:anywhere]">{step.title}</div>
+      {step.detail ? (
+        <div className="text-xs leading-4 text-muted-foreground [overflow-wrap:anywhere]">
+          {step.detail}
+        </div>
+      ) : null}
     </div>
   );
 });
@@ -126,7 +138,37 @@ export const RichWorkflow = memo(
   function RichWorkflow({ workflow }: { workflow: VisualWorkflow }) {
     const reducedMotion = useVisualReducedMotion();
     const textScale = useVisualTextScale();
-    const layout = workflowLayout(workflow, textScale);
+    const [measurements, setMeasurements] = useState({
+      textScale,
+      sizes: new Map<string, { width: number; height: number }>(),
+    });
+    const layout = workflowLayout(
+      workflow,
+      textScale,
+      measurements.textScale === textScale ? measurements.sizes : undefined,
+    );
+    const measureNodes = (changes: NodeChange<WorkflowNodeType>[]) => {
+      const dimensions = changes.filter((change) => change.type === "dimensions");
+      if (dimensions.length === 0) return;
+      setMeasurements((current) => {
+        const sizes = new Map(current.textScale === textScale ? current.sizes : []);
+        let changed = current.textScale !== textScale;
+        for (const change of dimensions) {
+          if (!change.dimensions) continue;
+          const previous = sizes.get(change.id);
+          const { width, height } = change.dimensions;
+          if (
+            previous &&
+            Math.abs(previous.width - width) < 0.5 &&
+            Math.abs(previous.height - height) < 0.5
+          )
+            continue;
+          sizes.set(change.id, { width, height });
+          changed = true;
+        }
+        return changed ? { textScale, sizes } : current;
+      });
+    };
     const [instance, setInstance] = useState<ReactFlowInstance<WorkflowNodeType, RoutedEdge>>();
     const [selected, setSelected] = useState<string>();
     const [container, setContainer] = useState<HTMLDivElement | null>(null);
@@ -183,7 +225,7 @@ export const RichWorkflow = memo(
       ariaLabel: node.title,
       draggable: false,
       connectable: false,
-      style: { width: node.width, height: node.height },
+      style: { width: 184 * textScale, minHeight: 80 * textScale },
     }));
     const edges: RoutedEdge[] = layout.edges.map((edge) => ({
       id: edge.key,
@@ -205,20 +247,18 @@ export const RichWorkflow = memo(
       deletable: false,
       animated: false,
     }));
-    useEffect(() => {
+    useLayoutEffect(() => {
       if (instance && size.width > 0 && !userMoved.current)
-        void instance.setViewport(fittedViewport, { duration: reducedMotion ? 0 : 220 });
-    }, [instance, fittedViewport, size.width, reducedMotion]);
+        void instance.setViewport(fittedViewport, { duration: 0 });
+    }, [instance, fittedViewport, size.width]);
     const detail = workflow.nodes.find((node) => node.key === selected);
-    if (workflow.nodes.length === 0)
-      return <p className="text-xs text-muted-foreground">Waiting for steps…</p>;
     return (
       <div className="grid min-w-0 gap-3">
         <div
           ref={setContainer}
           data-iui-workflow=""
-          className="min-w-0 rounded-md border border-border"
-          style={{ height: Math.min(520, Math.max(220, layout.height + 32)) }}
+          className="relative min-w-0 rounded-md border border-border"
+          style={{ height: "min(32.5rem, 70dvh)" }}
           aria-label={workflow.title}
         >
           <ReactFlow
@@ -227,6 +267,7 @@ export const RichWorkflow = memo(
             edges={edges}
             edgeTypes={edgeTypes}
             onInit={setInstance}
+            onNodesChange={measureNodes}
             onMoveStart={(event) => {
               if (event) userMoved.current = true;
             }}
@@ -266,6 +307,14 @@ export const RichWorkflow = memo(
               }}
             />
           </ReactFlow>
+          {workflow.nodes.length === 0 ? (
+            <p
+              role="status"
+              className="pointer-events-none absolute inset-0 grid place-items-center text-xs text-muted-foreground"
+            >
+              Waiting for steps…
+            </p>
+          ) : null}
         </div>
         {detail ? (
           <div className="grid gap-2 rounded-md border border-border p-3">

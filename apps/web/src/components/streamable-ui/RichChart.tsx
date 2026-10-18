@@ -201,8 +201,6 @@ export const RichChart = memo(
     const [keyboardFocused, setKeyboardFocused] = useState(false);
     const [plotWidth, setPlotWidth] = useState(300);
     const model = chartDataModel(chart);
-    if (chart.points.length === 0)
-      return <p className="text-xs text-muted-foreground">No data points yet.</p>;
     const circular = ["pie", "donut", "radial"].includes(chart.kind);
     const legend = circular
       ? model.categories.map((label, index) => ({
@@ -445,7 +443,7 @@ export const RichChart = memo(
       );
     return (
       <div className="grid min-w-0 gap-3" data-rich-chart="">
-        <div className="flex flex-wrap gap-1">
+        <div className="flex min-h-8 flex-wrap gap-1">
           {legend.map((series, index) => (
             <Button
               key={series.key}
@@ -491,20 +489,35 @@ export const RichChart = memo(
           onKeyDownCapture={() => setTouchTooltip(false)}
           className="min-w-0"
           style={{
-            height: chart.horizontal
-              ? Math.max(256, model.categories.length * 44)
-              : circular || chart.kind === "radar"
-                ? 320
-                : 256,
+            overflowY: chart.horizontal ? "auto" : undefined,
+            height: chart.horizontal || circular || chart.kind === "radar" ? 320 : 256,
           }}
           onFocusCapture={() => setKeyboardFocused(true)}
           onBlurCapture={() => setKeyboardFocused(false)}
           role="group"
+          tabIndex={chart.horizontal ? 0 : undefined}
           aria-label={`${chart.title}. ${chart.xLabel ?? "Category"} versus ${chart.yLabel ?? "Value"}`}
         >
-          <ResponsiveContainer width="100%" height="100%" minWidth={0} onResize={setPlotWidth}>
-            {plot}
-          </ResponsiveContainer>
+          {chart.points.length === 0 ? (
+            <p
+              role="status"
+              className="grid h-full place-items-center text-xs text-muted-foreground"
+            >
+              Waiting for data…
+            </p>
+          ) : (
+            <div
+              style={{
+                height: chart.horizontal
+                  ? Math.max(320, model.categories.length * 44 * textScale)
+                  : "100%",
+              }}
+            >
+              <ResponsiveContainer width="100%" height="100%" minWidth={0} onResize={setPlotWidth}>
+                {plot}
+              </ResponsiveContainer>
+            </div>
+          )}
         </div>
         {!circular && chart.kind !== "radar" && (chart.horizontal ? chart.yLabel : chart.xLabel) ? (
           <p className="text-center text-xs text-muted-foreground">

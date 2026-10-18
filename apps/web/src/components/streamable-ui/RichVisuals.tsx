@@ -7,6 +7,8 @@ import {
   type VisualStatus,
 } from "@t3tools/shared/streamableUi";
 import { Button } from "../ui/button";
+import { Badge } from "../ui/badge";
+import { CheckIcon, CircleDotIcon, CircleIcon, BanIcon } from "lucide-react";
 import type { EnvironmentId } from "@t3tools/contracts";
 
 const Chart = lazy(() => import("./RichChart").then((module) => ({ default: module.RichChart })));
@@ -23,14 +25,29 @@ const statusLabels: Record<VisualStatus, string> = {
 
 function Status({ status }: { status: VisualStatus | undefined }) {
   if (!status) return null;
+  const Icon =
+    status === "complete"
+      ? CheckIcon
+      : status === "active"
+        ? CircleDotIcon
+        : status === "blocked"
+          ? BanIcon
+          : CircleIcon;
   return (
-    <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-      <span
-        aria-hidden
-        className={`size-2 shrink-0 rounded-full ${status === "complete" ? "bg-success" : status === "active" ? "bg-primary" : status === "blocked" ? "bg-destructive" : "bg-muted-foreground"}`}
-      />
+    <Badge
+      variant={
+        status === "complete"
+          ? "success"
+          : status === "active"
+            ? "info"
+            : status === "blocked"
+              ? "error"
+              : "secondary"
+      }
+    >
+      <Icon aria-hidden />
       {statusLabels[status]}
-    </span>
+    </Badge>
   );
 }
 
@@ -146,7 +163,19 @@ export function RichVisualBody({
   switch (component.type) {
     case "uml":
       return (
-        <Suspense fallback={<p className="text-xs text-muted-foreground">Loading diagram…</p>}>
+        <Suspense
+          fallback={
+            <div
+              role="status"
+              className="grid place-items-center text-xs text-muted-foreground"
+              style={{
+                height: `calc(${component.kind === "class" ? "min(24rem, 55dvh)" : "min(18rem, 45dvh)"} + 4rem)`,
+              }}
+            >
+              Loading diagram…
+            </div>
+          }
+        >
           <Uml diagram={component} environmentId={environmentId} />
         </Suspense>
       );
@@ -165,7 +194,7 @@ export function RichVisualBody({
                   {card.title}
                 </h4>
                 {card.badge ? (
-                  <span className="max-w-full rounded-md bg-secondary px-2 py-1 text-xs text-secondary-foreground [overflow-wrap:anywhere]">
+                  <span className="max-w-full rounded border border-border px-2 py-0.5 text-xs text-muted-foreground [overflow-wrap:anywhere]">
                     {card.badge}
                   </span>
                 ) : null}
@@ -187,25 +216,45 @@ export function RichVisualBody({
       );
     case "timeline":
       return (
-        <ol className="grid gap-0">
+        <ol className="grid gap-0" data-iui-timeline="">
           {component.items.map((item, index) => (
             <li
               data-iui-entry=""
               key={item.key}
-              className="relative grid grid-cols-[1.75rem_minmax(0,1fr)] gap-3 pb-5 last:pb-0"
+              className="relative grid grid-cols-[32px_minmax(0,1fr)] gap-3 pb-3 last:pb-0"
             >
-              <div aria-hidden className="flex flex-col items-center">
-                <span className="flex size-7 shrink-0 items-center justify-center rounded-full border border-border bg-secondary text-xs tabular-nums">
-                  {index + 1}
-                </span>
-                {index < component.items.length - 1 ? (
-                  <span className="mt-2 w-px flex-1 bg-border" />
-                ) : null}
-              </div>
-              <div className="grid min-w-0 content-start gap-1">
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                  <h4 className="text-sm font-medium [overflow-wrap:anywhere]">{item.title}</h4>
-                  <Status status={item.status} />
+              {index < component.items.length - 1 ? (
+                <span
+                  aria-hidden
+                  className={`absolute -bottom-1.5 left-[16px] top-[calc(32px+0.5rem)] w-px ${item.status === "complete" ? "bg-success/30" : "bg-border"}`}
+                />
+              ) : null}
+              <span
+                aria-hidden
+                className={`relative z-10 mt-1.5 flex size-[32px] items-center justify-center rounded-full border text-xs font-medium tabular-nums ${item.status === "active" ? "border-primary bg-primary text-primary-foreground ring-4 ring-primary/10" : item.status === "complete" ? "border-success/30 bg-card text-success-foreground" : item.status === "blocked" ? "border-destructive/30 bg-card text-destructive-foreground" : "border-border bg-card text-muted-foreground"}`}
+              >
+                {item.status === "complete" ? (
+                  <CheckIcon className="size-4" />
+                ) : item.status === "active" ? (
+                  <CircleDotIcon className="size-4" />
+                ) : item.status === "blocked" ? (
+                  <BanIcon className="size-4" />
+                ) : (
+                  index + 1
+                )}
+              </span>
+              <div
+                data-iui-status={item.status ?? "pending"}
+                className={`grid min-w-0 content-start gap-2 rounded-lg border px-3 py-3 sm:px-4 ${item.status === "active" ? "border-primary/30 bg-primary/4" : "border-border bg-secondary/10"}`}
+              >
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <h4 className="min-w-0 flex-[1_1_12ch] text-sm font-medium [overflow-wrap:anywhere]">
+                    <span className="sr-only">Step {index + 1}. </span>
+                    {item.title}
+                  </h4>
+                  <div className="ml-auto shrink-0">
+                    <Status status={item.status} />
+                  </div>
                 </div>
                 {item.time ? <p className="text-xs text-muted-foreground">{item.time}</p> : null}
                 {item.detail ? (
@@ -222,7 +271,11 @@ export function RichVisualBody({
       return (
         <Suspense
           fallback={
-            <div className="h-80" role="status">
+            <div
+              className="grid place-items-center text-xs text-muted-foreground"
+              style={{ height: "calc(min(32.5rem, 70dvh) + 2rem)" }}
+              role="status"
+            >
               Loading workflow…
             </div>
           }
@@ -239,7 +292,16 @@ export function RichChart({ chart }: { chart: VisualChart }) {
   return (
     <Suspense
       fallback={
-        <div className="h-64" role="status">
+        <div
+          className="grid place-items-center text-xs text-muted-foreground"
+          style={{
+            height:
+              (["pie", "donut", "radar", "radial"].includes(chart.kind) || chart.horizontal
+                ? 320
+                : 256) + 128,
+          }}
+          role="status"
+        >
           Loading chart…
         </div>
       }

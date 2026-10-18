@@ -16,6 +16,7 @@ import { connectionAtomRuntime } from "../../connection/runtime";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { usePreparedConnection } from "../../state/session";
 import { Button } from "../ui/button";
+import { observeResize } from "../../lib/observeResize";
 
 function readPalette(): UmlRenderRequest["palette"] {
   const style = getComputedStyle(document.documentElement);
@@ -93,11 +94,19 @@ export function RichUml({
     Extract<UmlRenderResult, { status: "ready" }> & { sourceKey: string }
   >();
   const [error, setError] = useState(false);
-  const [zoom, setZoom] = useState(1);
+  const [zoom, setZoom] = useState<number>();
+  const [reservedHeight, setReservedHeight] = useState(0);
+  const [size, setSize] = useState({ width: 0, height: 0 });
   const [textScale, setTextScale] = useState(() =>
     Math.max(1, parseFloat(getComputedStyle(document.documentElement).fontSize) / 16),
   );
   const viewport = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!viewport.current) return;
+    return observeResize(viewport.current, ([entry]) => {
+      if (entry) setSize({ width: entry.contentRect.width, height: entry.contentRect.height });
+    });
+  }, []);
   const queue = useRef<ReturnType<typeof createUmlSnapshotQueue> | null>(null);
   const snapshots = useRef(diagram.snapshots);
   useEffect(() => {
@@ -130,6 +139,9 @@ export function RichUml({
       onResult: (result, source) => {
         if (!live) return;
         if (result.status === "ready") {
+          // The first real viewBox sets the frame. Later snapshots fit inside it;
+          // zooming and scrolling stay available without shifting the response.
+          setReservedHeight((height) => height || result.height);
           setFrame({
             ...result,
             sourceKey:
@@ -147,6 +159,16 @@ export function RichUml({
       queue.current = null;
     };
   }, [prepared, diagram.kind, palette]);
+  const fittedZoom =
+    frame && size.width > 0 && size.height > 0
+      ? Math.min(
+          1,
+          size.width / (frame.width * textScale),
+          size.height / (frame.height * textScale),
+        )
+      : 1;
+  const displayZoom = zoom ?? fittedZoom;
+  const provisionalHeight = diagram.kind === "class" ? "min(24rem, 55dvh)" : "min(18rem, 45dvh)";
   return (
     <div className="grid min-w-0 gap-2" data-iui-uml={diagram.kind}>
       <div role="group" aria-label={`${diagram.title} zoom`} className="flex items-center gap-1">
@@ -155,7 +177,7 @@ export function RichUml({
           size="icon-sm"
           aria-label="Zoom out diagram"
           disabled={!frame}
-          onClick={() => setZoom((v) => Math.max(0.25, v / 1.25))}
+          onClick={() => setZoom((v) => Math.max(0.05, (v ?? fittedZoom) / 1.25))}
         >
           <MinusIcon />
         </Button>
@@ -164,7 +186,7 @@ export function RichUml({
           size="icon-sm"
           aria-label="Zoom in diagram"
           disabled={!frame}
-          onClick={() => setZoom((v) => Math.min(3, v * 1.25))}
+          onClick={() => setZoom((v) => Math.min(3, (v ?? fittedZoom) * 1.25))}
         >
           <PlusIcon />
         </Button>
@@ -175,12 +197,8 @@ export function RichUml({
           disabled={!frame}
           onClick={() => {
             if (!frame) return;
-            setZoom(
-              Math.min(
-                1,
-                (viewport.current?.clientWidth ?? frame.width) / (frame.width * textScale),
-              ),
-            );
+            setZoom(undefined);
+            viewport.current?.scrollTo({ top: 0, left: 0 });
           }}
         >
           <ScanIcon />
@@ -196,14 +214,17 @@ export function RichUml({
           </Button>
         ) : null}
       </div>
-      {frame ? (
-        <div
-          ref={viewport}
-          role="region"
-          aria-label={diagram.title}
-          tabIndex={0}
-          className="max-h-[min(40rem,70dvh)] min-w-0 overflow-auto scrollbar-gutter-both rounded-md border border-border focus-visible:outline-2 focus-visible:outline-ring"
-        >
+      <div
+        ref={viewport}
+        role="region"
+        aria-label={diagram.title}
+        tabIndex={0}
+        className="min-w-0 overflow-auto scrollbar-gutter-both rounded-md border border-border focus-visible:outline-2 focus-visible:outline-ring"
+        style={{
+          height: `clamp(${provisionalHeight}, ${(reservedHeight || (frame?.height ?? 0)) * textScale}px, min(32rem, 65dvh))`,
+        }}
+      >
+        {frame ? (
           <img
             className="mx-auto"
             data-uml-snapshot={frame.sourceKey}
@@ -211,21 +232,21 @@ export function RichUml({
             alt={`${diagram.title} · ${diagram.kind} UML diagram`}
             draggable={false}
             style={{
-              width: frame.width * zoom * textScale,
-              height: frame.height * zoom * textScale,
+              width: frame.width * displayZoom * textScale,
+              height: frame.height * displayZoom * textScale,
               maxWidth: "none",
             }}
           />
-        </div>
-      ) : (
-        <p className="text-xs text-muted-foreground" role="status">
-          {diagram.snapshots.length === 0
-            ? "Waiting for diagram data…"
-            : error || prepared._tag === "None"
-              ? "Diagram unavailable."
-              : "Rendering diagram…"}
-        </p>
-      )}
+        ) : (
+          <p className="grid h-full place-items-center text-xs text-muted-foreground" role="status">
+            {diagram.snapshots.length === 0
+              ? "Waiting for diagram data…"
+              : error || prepared._tag === "None"
+                ? "Diagram unavailable."
+                : "Rendering diagram…"}
+          </p>
+        )}
+      </div>
       {error && frame ? (
         <p className="text-xs text-muted-foreground" role="status">
           Latest diagram update unavailable.

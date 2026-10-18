@@ -73,6 +73,30 @@ describe("chart CSV", () => {
 });
 
 describe("directed workflow layout", () => {
+  it("routes around measured multiline nodes after text resizing", () => {
+    const workflow = parse(
+      { type: "workflow", id: "f", title: "Review" },
+      { type: "node", id: "f", key: "review", title: "Review the proposal" },
+      { type: "node", id: "f", key: "accept", title: "Accept" },
+      { type: "edge", id: "f", key: "next", from: "review", to: "accept" },
+    )[0];
+    if (workflow?.type !== "workflow") throw new Error("Expected workflow");
+    const layout = workflowLayout(
+      workflow,
+      1.5,
+      new Map([["review", { width: 276, height: 212 }]]),
+    );
+    const source = layout.nodes[0]!;
+    const target = layout.nodes[1]!;
+    expect(source).toMatchObject({ width: 276, height: 212 });
+    expect(target).toMatchObject({ width: 276, height: 120 });
+    expect(target.y).toBeGreaterThanOrEqual(source.y + source.height + 48);
+    expect(layout.edges[0]!.points[0]!.y).toBeCloseTo(source.y + source.height);
+    expect(layout.edges[0]!.points.at(-1)!.y).toBeCloseTo(target.y);
+    expect(layout.height).toBeGreaterThanOrEqual(target.y + target.height);
+    expect(workflowLayout(workflow).nodes[0]!.height).toBe(80);
+  });
+
   it("routes branching and cyclic edges to the correct node borders without mutating input", () => {
     const workflow = parse(
       { type: "workflow", id: "f", title: "Review" },

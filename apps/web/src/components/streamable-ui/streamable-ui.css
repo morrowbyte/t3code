@@ -22,8 +22,7 @@
 }
 
 [data-iui-workflow] .react-flow__node {
-  display: grid;
-  align-content: center;
+  display: block;
   padding: 0;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -61,7 +60,7 @@
   outline: 2px solid var(--ring);
 }
 
-[data-streamable-ui] :is(p, h4) {
+.chat-markdown [data-streamable-ui] :is(p, h4) {
   margin-block: 0;
 }
 
@@ -80,9 +79,4 @@
 }
 [data-iui-workflow] .react-flow__node:has([data-workflow-kind="decision"]) {
   border-color: var(--warning-foreground);
-}
-@media (prefers-reduced-motion: no-preference) {
-  [data-iui-workflow] .react-flow__node {
-    transition: transform 220ms ease-out;
-  }
 }
