@@ -54,6 +54,22 @@ describe("parseAgentMessage", () => {
     });
   });
 
+  it("keeps technical label-value prose inside its disclosure", () => {
+    const technical =
+      "Bestehender Nachrichtentext beginnt Kurz: Ein Satz.\nProps: text, direction.";
+    expect(
+      parseAgentMessage(`Kurz: Vorlage bereit.\nTechnik:\n${technical}\nOffen: Sichtcheck.`),
+    ).toEqual({
+      kind: "structured",
+      summary: "Vorlage bereit.",
+      status: null,
+      sections: [
+        { kind: "technical", label: "Technik", text: technical },
+        { kind: "open", label: "Offen", text: "Sichtcheck." },
+      ],
+    });
+  });
+
   it("maps only the declared section headings", () => {
     expect(
       parseAgentMessage(

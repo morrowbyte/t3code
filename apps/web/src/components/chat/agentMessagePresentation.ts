@@ -92,7 +92,17 @@ export function parseAgentMessage(text: string): AgentMessagePresentation {
       current.lines.push(line);
       continue;
     }
-    const heading = fence === null ? messageHeading(line) : null;
+    const candidate = fence === null ? messageHeading(line) : null;
+    // Technical prose often contains label: value lines. Only known fields or
+    // explicit Markdown headings end that disclosure.
+    const heading =
+      candidate &&
+      current.label.toLowerCase() === "technik" &&
+      !SECTION_KINDS.has(candidate.label.toLowerCase()) &&
+      !["kurz", "summary", "status"].includes(candidate.label.toLowerCase()) &&
+      !/^ {0,3}(?:##[\t ]|\*\*)/u.test(line)
+        ? null
+        : candidate;
     if (heading) {
       current = { label: heading.label, lines: [heading.text] };
       blocks.push(current);
