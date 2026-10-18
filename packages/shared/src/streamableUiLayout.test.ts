@@ -6,6 +6,26 @@ const parse = (...records: unknown[]) =>
   parseStreamableUi(records.map((record) => JSON.stringify(record)).join("\n"), false).components;
 
 describe("chart data shared by Recharts and native SVG", () => {
+  it("preserves every implicit scatter sample at a repeated numeric X in the plot, tooltip rows and CSV", () => {
+    const chart = parse(
+      { type: "chart", id: "s", title: "Samples", kind: "scatter", xLabel: "KB", yLabel: "ms" },
+      { type: "point", id: "s", label: "First", x: 12, value: 7 },
+      { type: "point", id: "s", label: "Second", x: 12, value: 9 },
+      { type: "point", id: "s", label: "Second", x: 12, value: 11 },
+    )[0];
+    if (chart?.type !== "chart") throw new Error("Expected chart");
+    expect(chart.points).toHaveLength(3);
+    const model = chartDataModel(chart);
+    expect(model.xValues).toEqual([12, 12, 12]);
+    expect(model.rows).toEqual([
+      { _index: 0, x: 12, label: "First", s0: 7 },
+      { _index: 1, x: 12, label: "Second", s0: 9 },
+      { _index: 2, x: 12, label: "Second", s0: 11 },
+    ]);
+    expect(chartCsv(chart)).toBe(
+      "Sample,KB,Value (ms)\r\nFirst,12,7\r\nSecond,12,9\r\nSecond,12,11",
+    );
+  });
   it("compares all series at the same category, keeps missing values empty and uses a signed nice domain", () => {
     const chart = parse(
       { type: "chart", id: "c", title: "Costs", kind: "bar" },
@@ -137,7 +157,9 @@ describe("directed workflow layout", () => {
         Math.abs(point.y - node.y - node.height) < 0.001;
       expect(edge.points.length).toBeGreaterThanOrEqual(2);
       expect(
-        edge.points.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y)),
+        edge.points.every(
+          (point: { x: number; y: number }) => Number.isFinite(point.x) && Number.isFinite(point.y),
+        ),
       ).toBe(true);
       expect(onBorder(first, source)).toBe(true);
       expect(onBorder(last, target)).toBe(true);

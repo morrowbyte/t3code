@@ -3,6 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import type { OpencodeClient, ToolPart } from "@opencode-ai/sdk/v2";
 import {
   CheckpointId,
+  EnvironmentId,
   NodeId,
   ProjectId,
   ProviderInstanceId,
@@ -148,6 +149,7 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
   suffix: string,
   nativeSessionId: string,
   client: object,
+  external = true,
 ) {
   const instanceId = ProviderInstanceId.make(`opencode-${suffix}`);
   const threadId = ThreadId.make(`thread-opencode-${suffix}`);
@@ -163,7 +165,8 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
     environment: {},
   }).pipe(
     Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, {
-      connectToOpenCodeServer: () => Effect.succeed({ url: "http://test.invalid", external: true }),
+      connectToOpenCodeServer: () =>
+        Effect.succeed({ url: "http://test.invalid", external, exitCode: null }),
       createOpenCodeSdkClient: () => client,
     } as unknown as OpenCodeRuntime.OpenCodeRuntime["Service"]),
     Effect.provideService(ProviderHost.ProviderHost, {
@@ -241,6 +244,47 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
 });
 
 describe("OpenCodeAdapterV2", () => {
+  it.effect.each([true, false])("sends one visual protocol with T3 MCP attached=%s", (attached) =>
+    Effect.gen(function* () {
+      const suffix = `visual-protocol-${attached}`;
+      const sessions = yield* McpProviderSessions.McpProviderSessions;
+      yield* sessions.set({
+        environmentId: EnvironmentId.make("environment-opencode-test"),
+        threadId: ThreadId.make(`thread-opencode-${suffix}`),
+        providerSessionId: "mcp-opencode-test",
+        providerInstanceId: ProviderInstanceId.make(`opencode-${suffix}`),
+        endpoint: "http://test.invalid/mcp",
+        authorizationHeader: "Bearer dummy-mcp-credential",
+        browserToolsAvailable: false,
+      });
+      const nativeEvents = asyncEventStream();
+      const prompts: string[] = [];
+      const harness = yield* makeOpenCodeRuntimeHarness(
+        suffix,
+        suffix,
+        {
+          event: { subscribe: async () => ({ stream: nativeEvents.stream }) },
+          mcp: { add: async () => ({ data: {} }) },
+          session: {
+            create: async () => ({ data: { id: suffix, time: { created: 1, updated: 1 } } }),
+            promptAsync: async (input: { system: string }) => {
+              prompts.push(input.system);
+              return { data: true };
+            },
+          },
+        },
+        !attached,
+      );
+      yield* harness.startTurn();
+      assert.lengthOf(prompts, 1);
+      assert.equal((prompts[0]!.match(/Showing visuals/g) ?? []).length, 1);
+      assert.include(prompts[0]!, '"type":"chart"');
+      assert.equal(prompts[0]!.includes("Use `delegate_task`"), attached);
+    }).pipe(
+      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.scoped,
+    ),
+  );
   it.effect.each(["completed", "failed", "unresolved", "unavailable", "reconnect"] as const)(
     "normalizes OpenCode step usage for %s turns",
     (ending) =>

@@ -6,9 +6,13 @@ export function chartDataModel(chart: VisualChart) {
   const grouped = chart.series.length > 0;
   const series = grouped ? chart.series : [{ key: "", label: "Value" }];
   const categoryKeys =
-    chart.kind === "scatter" ? [...new Set(chart.points.map((point) => point.x!))] : [];
-  const categories =
     chart.kind === "scatter"
+      ? grouped
+        ? [...new Set(chart.points.map((point) => point.x!))]
+        : chart.points.map((point) => point.x!)
+      : [];
+  const categories =
+    chart.kind === "scatter" && grouped
       ? categoryKeys.map((x) => chart.points.find((point) => point.x === x)!.label)
       : grouped
         ? [...new Set(chart.points.map((point) => point.label))]
@@ -16,7 +20,7 @@ export function chartDataModel(chart: VisualChart) {
   const values = categories.map(() => series.map((): number | null => null));
   chart.points.forEach((point, index) => {
     const category =
-      chart.kind === "scatter"
+      chart.kind === "scatter" && grouped
         ? categoryKeys.indexOf(point.x!)
         : grouped
           ? categories.indexOf(point.label)

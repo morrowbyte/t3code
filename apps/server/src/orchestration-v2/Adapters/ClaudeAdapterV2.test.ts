@@ -710,6 +710,19 @@ describe("ClaudeAdapterV2 MCP query overrides", () => {
 });
 
 describe("ClaudeAdapterV2 native protocol logging", () => {
+  it("sends one visual protocol without T3 MCP", () => {
+    const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+      modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+      nativeThreadId: "native-thread-claude-no-mcp",
+      resume: false,
+      cwd: null,
+      environment: {},
+    });
+    const prompt = options.systemPrompt as { readonly append: string };
+    assert.equal((prompt.append.match(/Showing visuals/g) ?? []).length, 1);
+    assert.include(prompt.append, '"type":"chart"');
+    assert.notInclude(prompt.append, "Use `delegate_task`");
+  });
   it("injects thread-scoped MCP configuration without logging the credential", () => {
     const threadId = ThreadId.make("thread-claude-mcp");
     const mcpSession = {
@@ -762,6 +775,7 @@ describe("ClaudeAdapterV2 native protocol logging", () => {
     assert.equal(systemPrompt.type, "preset");
     assert.equal(systemPrompt.preset, "claude_code");
     assert.include(systemPrompt.append ?? "", "Use `delegate_task`");
+    assert.equal((systemPrompt.append?.match(/Showing visuals/g) ?? []).length, 1);
     const logged = ClaudeAdapterV2.loggedClaudeQueryOptions(options);
     assert.equal(logged.hasMcpServers, true);
     assert.notInclude(JSON.stringify(logged), "secret-claude-token");

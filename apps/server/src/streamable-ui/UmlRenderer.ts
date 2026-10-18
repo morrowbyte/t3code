@@ -325,6 +325,8 @@ const make = Effect.gen(function* () {
     if (pending >= 8) return { status: "unavailable", reason: "busy" } as const;
     pending++;
     return yield* Effect.gen(function* () {
+      const cached = cache.get(key);
+      if (cached) return cached;
       const result = yield* renderIsolated(source).pipe(Effect.timeoutOption("6 seconds"));
       if (result._tag === "None") return { status: "unavailable", reason: "timeout" } as const;
       const raw = result.value;

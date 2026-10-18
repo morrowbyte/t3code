@@ -19,6 +19,7 @@ import {
   RadialBar,
   RadialBarChart,
   Scatter,
+  ScatterChart,
   ComposedChart,
   Line,
   Label,
@@ -208,6 +209,7 @@ export const RichChart = memo(
     const [keyboardIndex, setKeyboardIndex] = useState(0);
     const [plotWidth, setPlotWidth] = useState(300);
     const model = chartDataModel(chart);
+    const CartesianChart = chart.kind === "scatter" ? ScatterChart : ComposedChart;
     const circular = ["pie", "donut", "radial"].includes(chart.kind);
     const legend = circular
       ? model.categories.map((label, index) => ({
@@ -220,7 +222,7 @@ export const RichChart = memo(
         : [];
     const tooltip = (
       <Tooltip
-        shared
+        shared={chart.kind !== "scatter"}
         includeHidden
         filterNull={false}
         trigger={touchTooltip ? "click" : "hover"}
@@ -329,7 +331,7 @@ export const RichChart = memo(
           />
         </RadialBarChart>
       ) : (
-        <ComposedChart
+        <CartesianChart
           accessibilityLayer
           data={model.rows}
           layout={chart.horizontal ? "vertical" : "horizontal"}
@@ -446,7 +448,7 @@ export const RichChart = memo(
               />
             );
           })}
-        </ComposedChart>
+        </CartesianChart>
       );
     return (
       <div className="grid min-w-0 gap-3" data-rich-chart="">

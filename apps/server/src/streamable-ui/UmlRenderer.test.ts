@@ -1,8 +1,22 @@
-import { expect } from "vite-plus/test";
+import { expect, vi } from "vite-plus/test";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import type { UmlRenderRequest } from "@t3tools/contracts";
 import * as UmlRenderer from "./UmlRenderer.ts";
+
+const workers = vi.hoisted(() => ({ started: 0 }));
+vi.mock(import("node:worker_threads"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    Worker: class extends actual.Worker {
+      constructor(...args: ConstructorParameters<typeof actual.Worker>) {
+        super(...args);
+        workers.started++;
+      }
+    },
+  };
+});
 
 const palette = {
   background: "#0f1724",
@@ -34,6 +48,27 @@ const examples: Array<[UmlRenderRequest["kind"], string]> = [
     "start\nif (Allowed?) then (yes)\n fork\n  :Read;\n fork again\n  :Verify;\n end fork\nelse (no)\n :Reject;\nendif\nstop",
   ],
 ];
+
+it.effect("renders identical queued UML requests in one worker and serves their cached SVG", () =>
+  Effect.gen(function* () {
+    const renderer = yield* UmlRenderer.UmlRenderer;
+    const input = {
+      kind: "sequence" as const,
+      source: "@startuml\nAlice -> Bob: Queued\n@enduml",
+      palette,
+    };
+    const before = workers.started;
+    const results = yield* Effect.all(
+      Array.from({ length: 4 }, () => renderer.render(input)),
+      { concurrency: "unbounded" },
+    );
+    expect(results.every((result) => result.status === "ready")).toBe(true);
+    expect(workers.started - before).toBe(1);
+    expect(results).toEqual(Array.from({ length: 4 }, () => results[0]));
+    expect(yield* renderer.render(input)).toEqual(results[0]);
+    expect(workers.started - before).toBe(1);
+  }).pipe(Effect.provide(UmlRenderer.layer)),
+);
 
 it.effect(
   "renders all five UML notations privately with readable SVG and rejects external resources and mismatched diagram types",
