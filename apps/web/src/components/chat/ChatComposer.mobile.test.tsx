@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act, createRef, useCallback, useState } from "react";
+import { act, createRef, useState } from "react";
+import { useStableCallback } from "../../hooks/useStableCallback";
 import { createRoot, type Root } from "react-dom/client";
 import {
   EnvironmentId,
@@ -103,10 +104,11 @@ describe("production composer mobile footer", () => {
     function Fixture() {
       const [heroExpanded, setHeroExpanded] = useState(true);
       const voice = useLiveVoiceComposerState("same-scoped-draft-thread");
-      const beforePrepare = useCallback(async () => {
+      const onPhaseChange = useStableCallback(voice.onPhaseChange);
+      const beforePrepare = useStableCallback(async () => {
         setHeroExpanded(false);
         await saving;
-      }, [saving]);
+      });
       return (
         <TooltipProvider delay={0}>
           <textarea aria-label="Unfocused message" defaultValue="Keep this draft" />
@@ -128,7 +130,7 @@ describe("production composer mobile footer", () => {
                 eligible
                 availability={availability}
                 beforePrepare={beforePrepare}
-                onPhaseChange={voice.onPhaseChange}
+                onPhaseChange={onPhaseChange}
               />
             }
           />
