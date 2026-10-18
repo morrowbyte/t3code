@@ -21,7 +21,15 @@ import type { EnvironmentThreadSearchMatch } from "@t3tools/client-runtime/state
 import { AuthOrchestrationOperateScope, type EnvironmentMachineKind } from "@t3tools/contracts";
 import { canSnooze, resolveSnoozePresets } from "@t3tools/client-runtime/state/thread-settled";
 import type { MenuAction } from "@react-native-menu/menu";
-import { memo, useCallback, useEffect, useMemo, useState, type ComponentProps } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ComponentProps,
+  type ReactNode,
+} from "react";
 import { Pressable, useWindowDimensions, View } from "react-native";
 import type { SwipeableMethods } from "react-native-gesture-handler/ReanimatedSwipeable";
 
@@ -54,6 +62,7 @@ import {
   resolveThreadListV2ProviderDrivers,
   resolveThreadListV2SwipeActions,
   type ThreadListV2Status,
+  type ThreadListV2FamilyRow,
 } from "./threadListV2";
 import { QueuedMessageIcon } from "./queued-message-icon";
 import { shouldRecedeThreadRow } from "./thread-row-emphasis";
@@ -472,6 +481,8 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
 });
 
 export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
+  readonly family?: ThreadListV2FamilyRow;
+  readonly onToggleFamily?: (key: string) => void;
   readonly thread: EnvironmentThreadShell;
   readonly variant: "card" | "slim";
   readonly hasQueuedMessages?: boolean;
@@ -589,6 +600,43 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       : workingLabel) ?? (isUnread ? DONE_STATUS_LABEL : undefined);
   const recede = shouldRecedeThreadRow({ status, selected });
   const timeLabel = props.timeLabel;
+  const childRow = (props.family?.depth ?? 0) > 0;
+  const familySummary =
+    props.family?.hasChildren && !props.family.expanded ? (
+      <Text className="mt-1 text-xs text-foreground-muted">
+        {props.family.descendantCount} {props.family.descendantCount === 1 ? "thread" : "threads"}
+        {props.family.activeDescendantCount > 0
+          ? ` · ${props.family.activeDescendantCount} active`
+          : ""}
+      </Text>
+    ) : null;
+  const withFamilyDisclosure = (content: ReactNode) => {
+    const family = props.family;
+    if (!family || (!family.hasChildren && family.depth === 0)) return content;
+    return (
+      <View className="flex-row" style={{ marginLeft: Math.min(family.depth, 4) * 12 }}>
+        {family.hasChildren ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ expanded: family.expanded }}
+            accessibilityLabel={`${family.expanded ? "Collapse" : "Expand"} ${thread.title}, ${family.descendantCount} child threads, ${family.activeDescendantCount} active`}
+            onPress={() => props.onToggleFamily?.(family.key)}
+            hitSlop={{ top: 2, bottom: 2 }}
+            className="min-h-12 w-12 items-center justify-center"
+          >
+            <SymbolView
+              name={family.expanded ? "chevron.down" : "chevron.right"}
+              size={14}
+              tintColorClassName={rowAppearance.mutedIconTintClassName}
+            />
+          </Pressable>
+        ) : (
+          <View className="w-12" />
+        )}
+        <View className="min-w-0 flex-1">{content}</View>
+      </View>
+    );
+  };
 
   const handleDelete = useCallback(() => onDeleteThread(thread), [onDeleteThread, thread]);
   const handleRename = useCallback(() => onRenameThread(thread), [onRenameThread, thread]);
@@ -1127,6 +1175,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           </View>
         ) : null}
       </View>
+      {familySummary}
     </>
   );
 
@@ -1137,7 +1186,70 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   );
 
   const rowContent = (close: () => void) =>
-    variant === "card" ? (
+    childRow ? (
+      <RowPressable
+        interactionClassName={rowAppearance.interactionClassName}
+        className="mb-0.5 rounded-xl bg-row-hover/40"
+        accessibilityHint={swipeAccessibilityHint}
+        accessibilityLabel={`${thread.title}, ${statusLabel?.label ?? (snoozedRow ? "Snoozed" : variant === "slim" ? "Settled" : "Ready")}`}
+        accessibilityRole="button"
+        accessibilityState={{ selected }}
+        onPress={() => {
+          close();
+          onSelectThread(thread);
+        }}
+        style={rowAppearance.style}
+      >
+        <View className="min-h-12 justify-center gap-1 px-3 py-2">
+          <View className="flex-row items-center gap-2">
+            <Text
+              className={cn(
+                "min-w-0 flex-1 text-[15px] font-t3-medium",
+                selected
+                  ? selectedThreadRowColors.foregroundClassName
+                  : rowAppearance.foregroundClassName,
+              )}
+              numberOfLines={2}
+            >
+              {thread.title}
+            </Text>
+            {props.hasQueuedMessages ? <QueuedMessageIcon selected={selected} /> : null}
+            {pinnedRow ? (
+              <SymbolView
+                name="pin"
+                size={11}
+                tintColorClassName={rowAppearance.mutedIconTintClassName}
+              />
+            ) : null}
+          </View>
+          <Text
+            className={cn(
+              "text-xs",
+              selected
+                ? selectedThreadRowColors.mutedForegroundClassName
+                : (statusLabel?.className ?? rowAppearance.mutedForegroundClassName),
+            )}
+          >
+            {statusLabel?.label ??
+              (snoozedRow
+                ? (props.snoozeWakeLabelText ?? "Snoozed")
+                : variant === "slim"
+                  ? "Settled"
+                  : "Ready")}
+            {timeLabel ? ` · ${timeLabel}` : ""}
+          </Text>
+          {props.searchMatch ? (
+            <ThreadSearchMatchExcerpt
+              sidebar={sidebarPane}
+              match={props.searchMatch}
+              query={props.searchQuery ?? ""}
+              selected={selected}
+            />
+          ) : null}
+          {familySummary}
+        </View>
+      </RowPressable>
+    ) : variant === "card" ? (
       <RowPressable
         key={`${thread.environmentId}:${thread.id}`}
         interactionClassName={rowAppearance.interactionClassName}
@@ -1226,6 +1338,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                 selected={selected}
               />
             ) : null}
+            {familySummary}
           </View>
           {props.hasQueuedMessages ? <QueuedMessageIcon selected={selected} /> : null}
           <Text
@@ -1248,9 +1361,11 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     );
 
   if (!canOperateThread)
-    return <View style={rowAppearance.swipeContainerStyle}>{rowContent(() => {})}</View>;
+    return withFamilyDisclosure(
+      <View style={rowAppearance.swipeContainerStyle}>{rowContent(() => {})}</View>,
+    );
 
-  return (
+  return withFamilyDisclosure(
     <View collapsable={false}>
       {customSnoozeOpen && (
         <CustomSnoozeSheet onClose={() => setCustomSnoozeOpen(false)} onSnooze={handleSnooze} />
@@ -1303,6 +1418,6 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           </Menu>
         )}
       </ThreadSwipeable>
-    </View>
+    </View>,
   );
 });
