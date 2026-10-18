@@ -248,6 +248,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
         instanceId: ProviderInstanceId.make("native-old-auth"),
         displayName: undefined,
         enabled: false,
+        environment: [],
         config: { ...CodexDriver.defaultConfig(), setupMode: "existing", homePath: home },
       }).pipe(
         Effect.provideService(CodexInstallation.CodexInstallation, {
@@ -262,7 +263,9 @@ it.layer(layerTest)("CodexDriver", (it) => {
         }),
       );
       if (!instance.auth) throw new Error("Missing native auth controller");
-      yield* instance.auth.refreshMethods;
+      const refreshMethods = instance.auth.refreshMethods;
+      if (refreshMethods === undefined) throw new Error("Missing native auth method refresh");
+      yield* refreshMethods;
       const state = yield* instance.auth.subscribe("owner").pipe(Stream.runHead);
       if (Option.isNone(state)) throw new Error("Missing native auth state");
       expect(state.value.methods).toEqual([]);

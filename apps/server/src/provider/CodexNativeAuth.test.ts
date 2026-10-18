@@ -287,7 +287,9 @@ it.effect("withholds device sign-in for an older runtime and rechecks before log
       ),
       connect: Effect.die("Unsupported runtime must not connect or start account login"),
     });
-    yield* auth.refreshMethods;
+    const refreshMethods = auth.refreshMethods;
+    if (refreshMethods === undefined) throw new Error("Missing native auth method refresh");
+    yield* refreshMethods;
     const blocked = yield* auth.subscribe("owner").pipe(Stream.runHead);
     assert.isTrue(Option.isSome(blocked));
     if (Option.isSome(blocked)) {
@@ -295,7 +297,7 @@ it.effect("withholds device sign-in for an older runtime and rechecks before log
       assert.include(blocked.value.message ?? "", "Install or update");
     }
     supported = true;
-    yield* auth.refreshMethods;
+    yield* refreshMethods;
     const ready = yield* auth.subscribe("owner").pipe(Stream.runHead);
     if (Option.isSome(ready)) assert.equal(ready.value.methods?.[0]?.id, "chatgpt");
     else assert.fail("Missing ready auth state");
