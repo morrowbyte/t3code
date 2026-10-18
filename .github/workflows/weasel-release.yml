@@ -284,6 +284,10 @@ jobs:
         if: inputs.recover_desktop_run_id == ''
         run: node apps/desktop/scripts/ensure-electron-runtime.mjs
 
+      - name: Install pinned Chromium for focused renderer gates
+        if: inputs.recover_desktop_run_id == ''
+        run: node apps/server/node_modules/playwright-core/cli.js install --with-deps --only-shell chromium
+
       - name: Check source before release
         if: inputs.recover_desktop_run_id == ''
         env:
