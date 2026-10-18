@@ -3,8 +3,10 @@ import {
   DEFAULT_SERVER_SETTINGS,
   DeviceId,
   DeviceOperationError,
+  EventId,
   LOCAL_DEVICE_HOST_ID,
   ProjectId,
+  ProviderInstanceId,
   ThreadId,
   type DeviceServiceState,
   type ServerSettings as Settings,
@@ -14,6 +16,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NetService from "@t3tools/shared/Net";
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
 import * as Exit from "effect/Exit";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
@@ -30,7 +33,11 @@ import { HttpClient, HttpClientResponse } from "effect/http";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as DeviceHost from "./DeviceHost.ts";
+import { AGENT_DEVICE_VERSION } from "./DeviceToolchain.ts";
 import { NodeRuntimeUnavailableError } from "@t3tools/shared/nodeRuntime";
 
 import * as DeviceService from "./DeviceService.ts";
@@ -85,6 +92,7 @@ const fixture = Effect.fn("fixture")(function* (
   inspectError = false,
   installTool?: Parameters<typeof DeviceService.makeWithHosts>[3],
   projectForThread?: Parameters<typeof DeviceService.makeWithHosts>[4],
+  composedBaseDir?: string,
 ) {
   const settings = yield* Ref.make(DEFAULT_SERVER_SETTINGS);
   const starts: string[] = [];
@@ -147,13 +155,29 @@ const fixture = Effect.fn("fixture")(function* (
       starts.push("stop");
     }),
   };
-  const service = yield* DeviceService.makeWithHosts(
-    new Map([[host.id, host]]),
-    undefined,
-    projectForThread === undefined ? undefined : () => Effect.succeed("/test-agent-config.json"),
-    installTool,
-    projectForThread,
-  ).pipe(
+  const factory =
+    composedBaseDir === undefined
+      ? DeviceService.makeWithHosts(
+          new Map([[host.id, host]]),
+          undefined,
+          projectForThread === undefined
+            ? undefined
+            : () => Effect.succeed("/test-agent-config.json"),
+          installTool,
+          projectForThread,
+        )
+      : DeviceService.make.pipe(
+          Effect.provideService(ProcessRunner.ProcessRunner, {
+            run: () => Effect.die("The composed open must use the installed fixture CLI"),
+          }),
+          Effect.provide(
+            Layer.mergeAll(
+              ServerConfig.layerTest(composedBaseDir, composedBaseDir),
+              NetService.layer,
+            ).pipe(Layer.provideMerge(NodeServices.layer)),
+          ),
+        );
+  const service = yield* factory.pipe(
     Effect.provide(NodeCrypto.layer),
     Effect.provideService(DeviceHost.DeviceHost, host),
     Effect.provideService(
@@ -235,6 +259,154 @@ const fixture = Effect.fn("fixture")(function* (
 });
 
 describe("device setup consent", () => {
+  it.effect("composes project-authorized agent launchers with the booted device serial", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-device-open-target-" });
+      const projects = yield* ProjectStore.ProjectStoreV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const now = yield* DateTime.now;
+      const allowed = ThreadId.make("composed-allowed");
+      const denied = ThreadId.make("composed-denied");
+      const allowedProject = ProjectId.make("composed-project");
+      const deniedProject = ProjectId.make("composed-other-project");
+      const providerInstanceId = ProviderInstanceId.make("codex");
+      for (const [index, [threadId, projectId]] of (
+        [
+          [allowed, allowedProject],
+          [denied, deniedProject],
+        ] as const
+      ).entries()) {
+        yield* projects.apply({
+          sequence: index + 1,
+          eventId: EventId.make(`composed-project-${index}`),
+          aggregateKind: "project",
+          aggregateId: projectId,
+          occurredAt: DateTime.formatIso(now),
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "project.created",
+          payload: {
+            projectId,
+            title: "Device project",
+            workspaceRoot: baseDir,
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: DateTime.formatIso(now),
+            updatedAt: DateTime.formatIso(now),
+          },
+        });
+        yield* projections.apply({
+          id: EventId.make(`composed-thread-${index}`),
+          type: "thread.created",
+          threadId,
+          occurredAt: now,
+          payload: {
+            id: threadId,
+            projectId,
+            title: "Device caller",
+            createdBy: "user",
+            creationSource: "web",
+            providerInstanceId,
+            modelSelection: { instanceId: providerInstanceId, model: "gpt-6.1-sol" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            activeProviderThreadId: null,
+            lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+            forkedFrom: null,
+            createdAt: now,
+            updatedAt: now,
+            archivedAt: null,
+            settledOverride: null,
+            settledAt: null,
+            lastVisitedAt: null,
+            deletedAt: null,
+          },
+        });
+      }
+      const { service, settings, starts, agentStarts, requests } = yield* fixture(
+        Effect.void,
+        undefined,
+        false,
+        undefined,
+        false,
+        undefined,
+        undefined,
+        baseDir,
+      );
+      yield* Ref.update(settings, (current) => ({
+        ...current,
+        enableDeviceSupport: true,
+        enableAgentDeviceAccess: false,
+        projectSettingsOverrides: {
+          [allowedProject]: { enableAgentDeviceAccess: true },
+          [deniedProject]: { enableAgentDeviceAccess: false },
+        },
+      }));
+      const config = yield* ServerConfig.ServerConfig.pipe(
+        Effect.provide(ServerConfig.layerTest(baseDir, baseDir)),
+      );
+      for (const threadId of [denied, ThreadId.make("composed-missing-thread")]) {
+        const error = yield* service
+          .open({
+            threadId,
+            deviceId: "Pixel_API_35",
+            platform: "android",
+            includeAgentTarget: true,
+          })
+          .pipe(Effect.flip);
+        expect(error._tag).toBe("DeviceHostUnavailableError");
+      }
+      expect(starts).toEqual([]);
+      expect(agentStarts).toEqual([]);
+      expect(requests).toEqual([]);
+      expect(yield* fs.exists(`${config.stateDir}/device/bin`)).toBe(false);
+
+      // Only a previously installed fixture CLI is used; any installer process is a defect.
+      const installDir = `${baseDir}/tools/agent-device/${AGENT_DEVICE_VERSION}`;
+      yield* fs.makeDirectory(`${installDir}/node_modules/agent-device/bin`, { recursive: true });
+      yield* fs.writeFileString(`${installDir}/node_modules/agent-device/bin/agent-device.mjs`, "");
+      yield* fs.writeFileString(`${installDir}/.install-complete`, AGENT_DEVICE_VERSION);
+      const session = yield* service.open({
+        threadId: allowed,
+        deviceId: "Pixel_API_35",
+        platform: "android",
+        includeAgentTarget: true,
+      });
+      expect(session.deviceId).toBe("emulator-5554");
+      expect(session.agentDevice).toEqual({
+        command: `${config.stateDir}/device/bin/agent-device`,
+        targetArgs: [
+          "--platform",
+          "android",
+          "--serial",
+          "emulator-5554",
+          "--config",
+          expect.stringMatching(/\/device\/hosts\/[a-f0-9]+\.json$/),
+          "--session",
+          expect.stringMatching(/^t3-[a-f0-9]+$/),
+        ],
+      });
+      expect(yield* fs.exists(session.agentDevice?.command ?? "missing-launcher")).toBe(true);
+      expect(agentStarts).toEqual(["start"]);
+      expect(requests.filter((url) => url.endsWith("/boot"))).toHaveLength(1);
+      expect((yield* Ref.get(settings)).enableAgentDeviceAccess).toBe(false);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          ProjectStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+          ProjectionStore.layerMemory,
+          NodeServices.layer,
+        ),
+      ),
+    ),
+  );
+
   it.effect(
     "honors the calling project's current device access without granting other projects",
     () =>
