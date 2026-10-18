@@ -79,6 +79,12 @@ describe("buildRuntimeInstructions", () => {
       "Keep different units on separate charts or clearly separate scales",
     );
     expect(instructions).toContain("never imply a shared numeric scale for unlike quantities");
+    expect(instructions).toContain(
+      "Do not repeat a charted comparison in an extra table unless requested",
+    );
+    expect(instructions).toContain(
+      "give scenario assumptions briefly in text or on-demand details",
+    );
     expect(instructions).toContain("explicit table requests and tabular reference or lookup tasks");
     expect(instructions).toContain(
       "a request to explain or compare quantities is not by itself a lookup task",
