@@ -82,7 +82,7 @@ import * as PreviewManager from "./Manager.ts";
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 import * as PreviewBrowser from "./PreviewBrowser.ts";
 import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
-import { presentAsChrome, ServerBrowserContexts } from "./ServerBrowserContexts.ts";
+import { ServerBrowserContexts } from "./ServerBrowserContexts.ts";
 import { BrowserControlInterrupted, SessionControl } from "./SessionControl.ts";
 
 type NativeControlRequest = DesktopBrowserPrivateEntryRequest;
@@ -267,7 +267,8 @@ export const makeDesktopPrivateEntryAuthority = (
         const tab = lookup(input);
         if (!tab || tab.closing || tab.desktop === null) return yield* refuse(input, "unavailable");
         if (tab.control.agentId !== null) return yield* refuse(input, "agent-owned");
-        if (tab.control.controller !== null) return yield* refuse(input, "viewer-owned");
+        if (tab.control.controller !== null || tab.control.requiresHuman)
+          return yield* refuse(input, "viewer-owned");
         const leaseId = NodeCrypto.randomUUID();
         const holder = `native-private-entry:${leaseId}`;
         // No await between the authority predicate above and this synchronous reservation.
@@ -707,7 +708,6 @@ const CLIPBOARD_SCRIPT = `(() => {
 
 const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
-  const host = { platform: yield* HostProcess.Platform, arch: yield* HostProcess.Architecture };
   const manager = yield* PreviewManager.PreviewManager;
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   const environment = yield* ServerEnvironment.ServerEnvironment;
@@ -769,12 +769,35 @@ const make = Effect.gen(function* () {
             ? "you"
             : tab.control.controller !== null
               ? "another-viewer"
-              : tab.control.agentId !== null
+              : tab.control.agentId !== null && !tab.control.requiresHuman
                 ? "agent"
                 : "unclaimed",
         generation: tab.control.generation,
         dialog: dialogStatus(tab),
       });
+  };
+
+  const requireHumanForChallenge = (tab: ServerTab) => {
+    if (tab.closing || tab.control.requiresHuman) return;
+    tab.control.requireHuman();
+    broadcastControl(tab);
+    runFork(
+      manager
+        .requestReveal({ threadId: tab.threadId, tabId: tab.tabId, force: true })
+        .pipe(Effect.ignore),
+    );
+  };
+
+  const isChallengeFrame = (url: string) => {
+    try {
+      const parsed = new URL(url);
+      return (
+        parsed.hostname === "challenges.cloudflare.com" &&
+        parsed.pathname.startsWith("/cdn-cgi/challenge-platform/")
+      );
+    } catch {
+      return false;
+    }
   };
 
   const resolveDialog = async (tab: ServerTab, input: PreviewAutomationDialogInput) => {
@@ -981,9 +1004,6 @@ const make = Effect.gen(function* () {
     if (!desktop) await prepareContext(context);
     const page = adopted?.page ?? desktop?.page ?? (await context.newPage());
     const cdp = await context.newCDPSession(page);
-    // The desktop's page is already a normal browser. A popup's first request
-    // went out before it became a tab; everything after presents as Chrome.
-    if (!desktop) await presentAsChrome(cdp, host);
     if (!desktop) await recordCopies(cdp);
     page.setDefaultTimeout(NAVIGATION_TIMEOUT_MS);
     page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
@@ -1043,6 +1063,7 @@ const make = Effect.gen(function* () {
       void reportLoaded(tab);
     });
     page.on("framenavigated", (frame) => {
+      if (isChallengeFrame(frame.url())) requireHumanForChallenge(tab);
       // Same-document navigations (SPA routes) fire no load event.
       if (frame === page.mainFrame() && !tab.loading) void reportLoaded(tab);
       if (!desktop) void recordFrameCopies(tab, frame);
@@ -1092,6 +1113,11 @@ const make = Effect.gen(function* () {
       });
     });
     page.on("response", (response) => {
+      if (
+        isMainNavigation(response.request()) &&
+        response.headers()["cf-mitigated"] === "challenge"
+      )
+        requireHumanForChallenge(tab);
       pushBounded(tab.networkEntries, {
         url: response.url(),
         method: response.request().method(),
@@ -1127,6 +1153,7 @@ const make = Effect.gen(function* () {
     page.on("close", () => dropTab(tab, true));
     page.on("crash", () => dropTab(tab, true));
     tabs.set(key, tab);
+    if (page.frames().some((frame) => isChallengeFrame(frame.url()))) requireHumanForChallenge(tab);
     reportLiveTabs();
     // A popup is already loading its own URL, and the desktop loads its tab's.
     if (!adopted && !desktop && snapshot.navStatus._tag === "Loading") {
@@ -1521,7 +1548,7 @@ const make = Effect.gen(function* () {
   };
 
   const tabOwner = (tab: ServerTab) =>
-    tab.control.controller !== null
+    tab.control.controller !== null || tab.control.requiresHuman
       ? ("human" as const)
       : tab.control.agentId !== null
         ? ("agent" as const)
@@ -1933,6 +1960,17 @@ const make = Effect.gen(function* () {
 
   const runOperation = async (request: PreviewAutomationRequest): Promise<unknown> => {
     const input = request.input;
+    const humanHandoff = [...tabs.values()].find(
+      (tab) =>
+        tab.threadId === request.threadId &&
+        tab.control.requiresHuman &&
+        tab.control.agentMayAct(request.agentSessionId ?? ""),
+    );
+    if (humanHandoff && !READ_OPERATIONS.has(request.operation))
+      throw new BrowserControlInterrupted(
+        `A browser challenge needs human control in tab ${humanHandoff.tabId}. Take control, then explicitly release it before resuming browser actions.`,
+        "humanControl",
+      );
     switch (request.operation) {
       case "status":
         return statusWithTitle(
@@ -2073,7 +2111,7 @@ const make = Effect.gen(function* () {
           "Only the agent session that opened this tab can close it.",
           "agentMismatch",
         );
-      if (tab.control.controller !== null)
+      if (tab.control.controller !== null || tab.control.requiresHuman)
         throw new BrowserControlInterrupted("A human controls this tab.", "humanControl");
       void tab.control.close().catch(constVoid);
       await Effect.runPromise(manager.close({ threadId: tab.threadId, tabId: tab.tabId }));
@@ -2083,18 +2121,14 @@ const make = Effect.gen(function* () {
     // A click can be waiting for its dialog. Resolve it outside the serial queue,
     // with the same owner check, so the operation can finish and control can drain.
     if (request.operation === "dialog") {
-      if (tab.control.controller !== null)
+      if (tab.control.controller !== null || tab.control.requiresHuman)
         throw new BrowserControlInterrupted("A human controls this tab.", "humanControl");
       await resolveDialog(tab, input as PreviewAutomationDialogInput);
       return statusWithTitle(tab, request.agentSessionId);
     }
     const agentSessionId = request.agentSessionId!;
 
-    if (
-      READ_OPERATIONS.has(request.operation) &&
-      tab.control.agentId !== agentSessionId &&
-      !tab.control.agentCanActNow(agentSessionId)
-    ) {
+    if (READ_OPERATIONS.has(request.operation) && !tab.control.agentCanActNow(agentSessionId)) {
       return tab.control.observe(async () => {
         if (tab.dialog)
           throw new BrowserControlInterrupted(

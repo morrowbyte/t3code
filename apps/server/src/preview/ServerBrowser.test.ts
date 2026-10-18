@@ -34,7 +34,6 @@ import * as PreviewBrowser from "./PreviewBrowser.ts";
 import { SessionControl } from "./SessionControl.ts";
 
 vi.mock("./ServerBrowserContexts.ts", () => ({
-  presentAsChrome: async () => {},
   ServerBrowserContexts: class {
     private readonly onClose: ((context: BrowserContext) => void) | undefined;
     constructor(options: { onContextClose?: (context: BrowserContext) => void }) {
@@ -62,8 +61,9 @@ vi.mock("./ServerBrowserContexts.ts", () => ({
   },
 }));
 
-function makeFrame() {
+function makeFrame(url = "about:blank") {
   const frame = {
+    url: () => url,
     copy: "",
     detached: false,
     isDetached: () => frame.detached,
@@ -336,6 +336,108 @@ beforeEach(() => {
   releasedDesktopTabs.length = 0;
   desktopConnections.length = 0;
 });
+
+it.live(
+  "a confirmed challenge stops agent mutations and new tabs but leaves snapshots readable until human release",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { browser, broker, tabId } = yield* ready;
+        const page = contexts[0]!.page;
+        page.emit("response", {
+          url: () => "http://localhost/challenge",
+          status: () => 403,
+          headers: () => ({ "cf-mitigated": "challenge" }),
+          request: () => ({
+            isNavigationRequest: () => true,
+            frame: () => page,
+            method: () => "GET",
+          }),
+        });
+        const status = yield* broker.invoke<PreviewAutomationStatus>({
+          scope,
+          tabId,
+          operation: "status",
+          input: {},
+        });
+        expect(status.control?.owner).toBe("human");
+        yield* broker.invoke({ scope, tabId, operation: "snapshot", input: {} });
+        for (const operation of ["evaluate", "navigate", "click", "open", "close"] as const) {
+          const refused = yield* broker
+            .invoke<void>({ scope, tabId, operation, input: {} })
+            .pipe(Effect.flip);
+          expect(refused).toMatchObject({ reason: "humanControl" });
+        }
+        const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+        yield* viewer.input({ type: "takeControl" });
+        yield* viewer.input({ type: "releaseControl" });
+        yield* broker.invoke({
+          scope,
+          tabId,
+          operation: "evaluate",
+          input: { expression: "resumed()" },
+        });
+      }),
+    ).pipe(Effect.provide(layer)),
+);
+
+it.live(
+  "HTTP auth, forbidden and rate-limit responses alone do not become browser challenges",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { broker, tabId } = yield* ready;
+        const page = contexts[0]!.page;
+        for (const status of [401, 403, 429]) {
+          page.emit("response", {
+            url: () => "http://localhost/result",
+            status: () => status,
+            headers: () => ({}),
+            request: () => ({
+              isNavigationRequest: () => true,
+              frame: () => page,
+              method: () => "GET",
+            }),
+          });
+        }
+        yield* broker.invoke({
+          scope,
+          tabId,
+          operation: "evaluate",
+          input: { expression: "normal()" },
+        });
+      }),
+    ).pipe(Effect.provide(layer)),
+);
+
+it.live("a recognized challenge frame pauses the attached desktop path as well", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      desktopRendersNext = true;
+      const { browser, broker, tabId } = yield* ready;
+      const page = desktopConnections[0]!.context.page;
+      page.emit(
+        "framenavigated",
+        makeFrame("https://challenges.cloudflare.com/cdn-cgi/challenge-platform/widget"),
+      );
+      yield* broker.invoke({ scope, tabId, operation: "snapshot", input: {} });
+      expect(
+        yield* broker
+          .invoke<void>({ scope, tabId, operation: "evaluate", input: {} })
+          .pipe(Effect.flip),
+      ).toMatchObject({ reason: "humanControl" });
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+      yield* viewer.input({ type: "takeControl" });
+      yield* viewer.input({ type: "releaseControl" });
+      yield* broker.invoke({
+        scope,
+        tabId,
+        operation: "evaluate",
+        input: { expression: "resumed()" },
+      });
+    }),
+  ).pipe(Effect.provide(layer)),
+);
 
 it.live("readiness none responds immediately but takeover input waits for navigation commit", () =>
   Effect.scoped(
