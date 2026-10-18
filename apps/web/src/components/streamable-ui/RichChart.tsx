@@ -193,7 +193,7 @@ function CategoryTooltip({
 }
 
 export const RichChart = memo(
-  function RichChart({ chart }: { chart: VisualChart }) {
+  function RichChart({ chart, isStreaming }: { chart: VisualChart; isStreaming: boolean }) {
     const [hidden, setHidden] = useState<Set<string>>(() => new Set());
     const [touchTooltip, setTouchTooltip] = useState(false);
     const [copyError, setCopyError] = useState(false);
@@ -232,7 +232,7 @@ export const RichChart = memo(
       />
     );
     const motion = {
-      isAnimationActive: !reduceMotion,
+      isAnimationActive: !isStreaming && !reduceMotion,
       animationBegin: 0,
       animationDuration: 320,
       animationEasing: "ease-out" as const,
@@ -643,5 +643,7 @@ export const RichChart = memo(
       </div>
     );
   },
-  (previous, next) => JSON.stringify(previous.chart) === JSON.stringify(next.chart),
+  (previous, next) =>
+    previous.isStreaming === next.isStreaming &&
+    JSON.stringify(previous.chart) === JSON.stringify(next.chart),
 );

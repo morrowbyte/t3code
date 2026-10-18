@@ -110,7 +110,7 @@ export const StreamableUi = memo(function StreamableUi({
                 {component.type === "table" ? (
                   <DataTable {...component} />
                 ) : component.type === "chart" ? (
-                  <RichChart chart={component} />
+                  <RichChart chart={component} isStreaming={isStreaming} />
                 ) : (
                   <RichVisualBody component={component} environmentId={environmentId} />
                 )}
@@ -120,6 +120,9 @@ export const StreamableUi = memo(function StreamableUi({
           <Sources sources={component.sources} />
         </section>
       ))}
+      <div className="h-5 text-xs text-muted-foreground" data-iui-stream-status="">
+        {parsed.pending ? <span role="status">Receiving visual data…</span> : null}
+      </div>
       {parsed.error ? (
         <details className="text-xs text-muted-foreground">
           <summary className="cursor-pointer">{parsed.error} View source</summary>

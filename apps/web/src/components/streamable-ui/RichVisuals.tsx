@@ -288,7 +288,7 @@ export function RichVisualBody({
   }
 }
 
-export function RichChart({ chart }: { chart: VisualChart }) {
+export function RichChart({ chart, isStreaming }: { chart: VisualChart; isStreaming: boolean }) {
   return (
     <Suspense
       fallback={
@@ -306,7 +306,7 @@ export function RichChart({ chart }: { chart: VisualChart }) {
         </div>
       }
     >
-      <Chart chart={chart} />
+      <Chart chart={chart} isStreaming={isStreaming} />
     </Suspense>
   );
 }

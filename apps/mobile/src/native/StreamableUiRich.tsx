@@ -660,6 +660,7 @@ type ChartModel = ReturnType<typeof chartDataModel>;
 type ChartSample = { index: number; value: number | null; start: number; end: number };
 type ChartPlotProps = {
   chart: VisualChart;
+  isStreaming: boolean;
   model: ChartModel;
   hidden: Set<string>;
   colors: Array<ColorValue | undefined>;
@@ -681,6 +682,7 @@ function ChartBar({
   height,
   fill,
   rx,
+  isStreaming,
 }: {
   x: number;
   y: number;
@@ -688,13 +690,16 @@ function ChartBar({
   height: number;
   fill: ColorValue | undefined;
   rx: number;
+  isStreaming: boolean;
 }) {
   const geometry = useSharedValue({ x, y, width, height });
   useEffect(() => {
     geometry.set(
-      withTiming({ x, y, width, height }, { duration: 260, reduceMotion: ReduceMotion.System }),
+      isStreaming
+        ? { x, y, width, height }
+        : withTiming({ x, y, width, height }, { duration: 260, reduceMotion: ReduceMotion.System }),
     );
-  }, [x, y, width, height, geometry]);
+  }, [x, y, width, height, geometry, isStreaming]);
   const animatedProps = useAnimatedProps(() => geometry.get());
   return <AnimatedRect animatedProps={animatedProps} fill={fill} rx={rx} />;
 }
@@ -704,16 +709,22 @@ function ChartDot({
   cy,
   r,
   fill,
+  isStreaming,
 }: {
   cx: number;
   cy: number;
   r: number;
   fill: ColorValue | undefined;
+  isStreaming: boolean;
 }) {
-  const geometry = useSharedValue({ cx, cy, r: 0 });
+  const geometry = useSharedValue({ cx, cy, r: isStreaming ? r : 0 });
   useEffect(() => {
-    geometry.set(withTiming({ cx, cy, r }, { duration: 260, reduceMotion: ReduceMotion.System }));
-  }, [cx, cy, r, geometry]);
+    geometry.set(
+      isStreaming
+        ? { cx, cy, r }
+        : withTiming({ cx, cy, r }, { duration: 260, reduceMotion: ReduceMotion.System }),
+    );
+  }, [cx, cy, r, geometry, isStreaming]);
   const animatedProps = useAnimatedProps(() => geometry.get());
   return <AnimatedCircle animatedProps={animatedProps} fill={fill} />;
 }
@@ -765,6 +776,7 @@ function spacedIndices(length: number, maximum: number) {
 
 function CartesianChart({
   chart,
+  isStreaming,
   model,
   hidden,
   colors,
@@ -912,6 +924,7 @@ function CartesianChart({
                       return (
                         <ChartBar
                           key={sample.index}
+                          isStreaming={isStreaming}
                           x={horizontal ? Math.min(start, end) : band}
                           y={horizontal ? band : Math.min(start, end)}
                           width={horizontal ? Math.abs(start - end) : barSlot * 0.84}
@@ -954,6 +967,7 @@ function CartesianChart({
                         sample.value === null ? null : (
                           <ChartDot
                             key={sample.index}
+                            isStreaming={isStreaming}
                             cx={pointX(sample)}
                             cy={pointY(sample)}
                             r={scatter ? 4 : 3}
@@ -1361,7 +1375,7 @@ function PolarChart({
 }
 
 export const RichChart = memo(
-  function RichChart({ chart }: { chart: VisualChart }) {
+  function RichChart({ chart, isStreaming }: { chart: VisualChart; isStreaming: boolean }) {
     const model = useMemo(() => chartDataModel(chart), [chart]);
     const [hidden, setHidden] = useState<Set<string>>(() => new Set());
     const [selected, setSelected] = useState<number | null>(null);
@@ -1393,6 +1407,7 @@ export const RichChart = memo(
     const active = selected !== null && model.categories[selected] !== undefined ? selected : null;
     const plotProps = {
       chart,
+      isStreaming,
       model,
       hidden,
       colors,
@@ -1626,5 +1641,7 @@ export const RichChart = memo(
       </View>
     );
   },
-  (previous, next) => JSON.stringify(previous.chart) === JSON.stringify(next.chart),
+  (previous, next) =>
+    previous.isStreaming === next.isStreaming &&
+    JSON.stringify(previous.chart) === JSON.stringify(next.chart),
 );

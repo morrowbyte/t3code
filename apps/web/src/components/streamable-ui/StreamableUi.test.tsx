@@ -60,11 +60,16 @@ describe("native streamable visuals", () => {
       const firstRow = table.querySelector("tbody tr");
       expect(table.querySelectorAll("tbody tr")).toHaveLength(1);
       expect(container.querySelector('[role="status"]')?.textContent).toContain("Receiving");
+      const receiving = container.querySelector('[role="status"]');
       expect(container.querySelector("a")?.href).toBe("https://example.com/nvda");
       const disclosure = container.querySelector("details")!;
       disclosure.querySelector("summary")!.click();
       expect(disclosure.open).toBe(true);
       expect(disclosure.querySelector("table")?.textContent).toContain("123.45");
+
+      await act(async () => root.render(<StreamableUi code={header} isStreaming />));
+      expect(container.querySelector('[role="status"]')).toBe(receiving);
+      expect(receiving?.textContent).toBe("Receiving visual data…");
 
       const finished =
         header +

@@ -1,6 +1,6 @@
 /* oxlint-disable react/no-array-index-key -- Protocol lists only append; positional keys preserve existing rows, points and disclosures as records arrive. */
 import { memo, useMemo, useState } from "react";
-import { Linking, Pressable, ScrollView, View } from "react-native";
+import { Linking, Pressable, ScrollView, View, useWindowDimensions } from "react-native";
 import {
   parseStreamableUi,
   STREAMABLE_UI_LIMITS,
@@ -110,6 +110,7 @@ export const NativeStreamableUi = memo(function NativeStreamableUi({
   onLinkPress?: ((href: string) => void) | undefined;
 }) {
   const parsed = useMemo(() => parseStreamableUi(code, isStreaming), [code, isStreaming]);
+  const { fontScale } = useWindowDimensions();
   return (
     <View className="my-3 min-w-0 gap-3">
       {parsed.components.map((component) => (
@@ -135,20 +136,26 @@ export const NativeStreamableUi = memo(function NativeStreamableUi({
               {component.type === "table" ? (
                 <DataTable {...component} />
               ) : component.type === "chart" ? (
-                <RichChart chart={component} />
+                <RichChart chart={component} isStreaming={isStreaming} />
               ) : (
-                <RichVisualBody component={component} environmentId={environmentId} />
+                <RichVisualBody
+                  component={component}
+                  environmentId={environmentId}
+                  isStreaming={isStreaming}
+                />
               )}
             </>
           )}
           <Sources sources={component.sources} onLinkPress={onLinkPress} />
         </View>
       ))}
-      {parsed.pending ? (
-        <Text accessibilityLiveRegion="polite" className="text-xs text-foreground-muted">
-          Receiving visual data…
-        </Text>
-      ) : null}
+      <View style={{ minHeight: 20 * Math.max(1, fontScale) }}>
+        {parsed.pending ? (
+          <Text accessibilityLiveRegion="polite" className="text-xs text-foreground-muted">
+            Receiving visual data…
+          </Text>
+        ) : null}
+      </View>
       {parsed.error ? <SourceError code={code} error={parsed.error} /> : null}
     </View>
   );

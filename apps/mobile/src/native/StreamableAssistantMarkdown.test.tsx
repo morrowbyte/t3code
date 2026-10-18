@@ -8,6 +8,7 @@ import type { NativeMarkdownTextStyle } from "./SelectableMarkdownText.types";
 // layout, gestures, SVG drawing and screen-reader behavior still require a device.
 const native = vi.hoisted(() => ({
   copyCsv: vi.fn<(_text: string) => Promise<void>>().mockResolvedValue(undefined),
+  timing: vi.fn(),
 }));
 
 vi.mock("../connection/runtime", () => ({ connectionAtomRuntime: { fn: vi.fn() } }));
@@ -65,7 +66,10 @@ vi.mock("react-native-reanimated", async () => {
     },
     FadeIn: { duration: () => ({ reduceMotion: () => undefined }) },
     ReduceMotion: { System: "system" },
-    withTiming: <T,>(value: T) => value,
+    withTiming: <T,>(value: T, options: unknown) => {
+      native.timing(options);
+      return value;
+    },
     useAnimatedProps: <T,>(read: () => T) => read(),
     useSharedValue: function useSharedValue<T>(initial: T) {
       const value = useRef(initial);
@@ -241,6 +245,21 @@ describe("native assistant streaming visuals", () => {
     expect(host.textContent).toContain(partial);
     click("Hide source");
     expect(host.textContent).not.toContain(partial);
+  });
+
+  it("updates chart geometry immediately while the fence is open and animates once it closes", () => {
+    native.timing.mockClear();
+    render(prefix, true);
+    expect(host.querySelectorAll("circle")).toHaveLength(1);
+    expect(native.timing).not.toHaveBeenCalled();
+    const appended = prefix + '\n{"type":"point","id":"trend","label":"B","value":9.75}';
+    render(appended, true);
+    expect(host.querySelectorAll("circle")).toHaveLength(2);
+    expect(native.timing).not.toHaveBeenCalled();
+    render(appended + "\n```", true);
+    expect(native.timing).toHaveBeenCalledTimes(2);
+    expect(native.timing).toHaveBeenLastCalledWith({ duration: 260, reduceMotion: "system" });
+    expect(host.textContent).not.toContain("Receiving visual data…");
   });
 
   it("keeps executable-looking values literal and never exposes rejected sources or records", () => {
