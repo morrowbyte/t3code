@@ -1,15 +1,15 @@
-name: Android .48 native x86_64 test
-run-name: Android .48 x86_64 test only · source f2b90a6
+name: Android .55 native x86_64 test
+run-name: Android .55 x86_64 test only · source 1af269d
 on:
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: android48-x86-native-test
+  group: android55-x86-native-test
   cancel-in-progress: false
 jobs:
   build_android_test:
-    name: Build .48 x86_64 native test APK
+    name: Build .55 x86_64 native test APK
     runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 60
     outputs:
@@ -17,10 +17,10 @@ jobs:
       receipt_sha256: ${{ steps.apk.outputs.receipt_sha256 }}
       build_attempt: ${{ steps.apk.outputs.build_attempt }}
     env:
-      DESKTOP_SOURCE_SHA: ce275176a119b1a2c599c23e6acd7d537cc4c336
+      DESKTOP_SOURCE_SHA: 1af269d6144fb63cdaf74002d5e65ef6403a6822
       APP_VARIANT: production
-      T3CODE_MOBILE_VERSION: 0.1.2-nightly.20261018.48
-      MORROWBYTE_ANDROID_VERSION_CODE: "48"
+      T3CODE_MOBILE_VERSION: 0.1.2-nightly.20261018.55
+      MORROWBYTE_ANDROID_VERSION_CODE: "55"
       ANDROID_BUILD_TOOLS: "36.0.0"
       CI: "1"
     steps:
@@ -35,7 +35,7 @@ jobs:
       - name: Checkout exact promoted source
         uses: actions/checkout@v4
         with:
-          ref: f2b90a689d9e683291d46f09a6fbac785a211025
+          ref: 1af269d6144fb63cdaf74002d5e65ef6403a6822
           fetch-depth: 1
 
       - name: Setup Vite+
@@ -66,7 +66,7 @@ jobs:
       - name: Bind source and verify standalone fork configuration
         working-directory: apps/mobile
         env:
-          SOURCE_SHA: f2b90a689d9e683291d46f09a6fbac785a211025
+          SOURCE_SHA: 1af269d6144fb63cdaf74002d5e65ef6403a6822
           NODE_ENV: production
         run: |
           set -euo pipefail
@@ -134,7 +134,7 @@ jobs:
       - id: apk
         name: Verify APK signature, embedded bundle, identity and 16KB native alignment
         env:
-          SOURCE_SHA: f2b90a689d9e683291d46f09a6fbac785a211025
+          SOURCE_SHA: 1af269d6144fb63cdaf74002d5e65ef6403a6822
         run: |
           set -euo pipefail
           python3 - <<'PYAPK'
@@ -188,7 +188,7 @@ jobs:
                       assert alignment >= 16384 and file_offset % 16384 == address % 16384, name
                   assert loads > 0, name
               bundle_sha = hashlib.sha256(archive.read(bundle)).hexdigest()
-          assert bundle_sha == '5563c4fad0a35787754ae09fa7fb437fec0479127f2d988f9db53ffe56d5b78d', 'Test ABI must retain the exact published release JS bundle.'
+          assert bundle_sha == '2fc6e9c664236d16258d3d9fc08e0f3aa26be3fdc704972c3575724ba1b5cbcf', 'Test ABI must retain the exact published release JS bundle.'
           output = Path('release-android')
           output.mkdir()
           name = f'Morrowbyte-{version}-android-test-x86_64.apk'
@@ -199,7 +199,7 @@ jobs:
           (output / (name + '.sha256')).write_text(f'{apk_sha}  {name}\n')
           receipt = {
               'schemaVersion': 1, 'testOnly': True, 'shippingArtifact': False,
-              'shippingApkSha256': '103610daf40263baf57d3abeffcf22eba5a19d6867de31048420e86e8de8dd8a',
+              'shippingApkSha256': '7b7e1163b035f8e3610fa6788665358fa33a27bb3da57e1f05d93050ac4a3325',
               'buildMode': 'release', 'minificationUnchanged': True, 'source': source, 'desktopSource': os.environ['DESKTOP_SOURCE_SHA'],
               'lockSha256': digest(Path('pnpm-lock.yaml')),
               'run': os.environ['GITHUB_RUN_ID'], 'attempt': os.environ['GITHUB_RUN_ATTEMPT'],
@@ -221,7 +221,7 @@ jobs:
       - name: Upload verified Android release payload
         uses: actions/upload-artifact@v4
         with:
-          name: weasel-test-android-x86_64-f2b90a6
+          name: weasel-test-android-x86_64-1af269d
           path: release-android/*
           if-no-files-found: error
           retention-days: 7
@@ -230,7 +230,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: weasel-android-test-build-evidence-f2b90a689d9e683291d46f09a6fbac785a211025-${{ github.run_attempt }}
+          name: weasel-android-test-build-evidence-1af269d6144fb63cdaf74002d5e65ef6403a6822-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/morrowbyte-android-dependencies.txt
             apps/mobile/android/app/build/outputs/mapping/release/mapping.txt
