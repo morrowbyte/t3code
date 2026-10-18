@@ -79,6 +79,12 @@ describe("ServerBrowserContexts", () => {
     expect(a).toBe(reused);
     expect(new Set([a, b, privateContext]).size).toBe(3);
     expect(launches.launch).toHaveBeenCalledTimes(1);
+    const configurationUsed = launches.launch.mock.calls[0]![0]!;
+    expect(configurationUsed).not.toHaveProperty("ignoreDefaultArgs");
+    expect(configurationUsed).not.toHaveProperty("userAgent");
+    expect(
+      configurationUsed.args?.some((argument) => argument.includes("AutomationControlled")),
+    ).toBe(false);
     expect(launches.persistent).not.toHaveBeenCalled();
     expect(browser.newContext).toHaveBeenCalledWith({
       viewport: { width: 1280, height: 800 },
