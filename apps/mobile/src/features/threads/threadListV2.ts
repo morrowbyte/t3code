@@ -323,8 +323,9 @@ export interface ThreadListV2FamilyRow {
 
 /**
  * Pass scoped items with includeSubagents and all shelves expanded; visibleKeys
- * comes from the normally paged/collapsed layout. Context ancestors retain their
- * own item flags so grouping cannot change their swipe actions or status.
+ * comes from the normally filtered/paged/collapsed layout. Activity and the
+ * current route must not bypass that eligibility. Context ancestors retain
+ * their own item flags so grouping cannot change their swipe actions or status.
  */
 export function buildThreadListV2FamilyRows(input: {
   readonly items: readonly ThreadListV2Item[];
@@ -404,12 +405,9 @@ export function buildThreadListV2FamilyRows(input: {
             ? "working"
             : "active";
   const groups = [...families].flatMap(([root, family]) => {
-    const visible = family.filter(
-      (key) =>
-        input.visibleKeys.has(key) || workingKeys.has(key) || key === input.disclosure.routeKey,
-    );
+    const visible = family.filter((key) => input.visibleKeys.has(key));
     if (visible.length === 0) return [];
-    const anchor = visible.find((key) => input.visibleKeys.has(key)) ?? root;
+    const anchor = visible[0]!;
     const displaySection: ThreadListV2FamilySection = family.some((key) => workingKeys.has(key))
       ? input.workingShelfEnabled
         ? "working"

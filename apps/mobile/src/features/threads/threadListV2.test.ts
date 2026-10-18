@@ -174,6 +174,34 @@ describe("native thread families", () => {
     },
   );
 
+  it("admits only search-matching families even when another family is working and routed", () => {
+    const match = makeThread({ id: ThreadId.make("match"), title: "Needle" });
+    const threads = [parent, child, working, match];
+    const items = itemsFor(threads);
+    for (const [searchQuery, expectedKeys] of [
+      ["Needle", [keyOf(match)]],
+      ["No results", []],
+      ["Grandchild", [parentKey, childKey, grandchildKey]],
+    ] as const) {
+      const visible = buildThreadListV2Items({
+        threads,
+        environmentId: null,
+        searchQuery,
+        now: NOW,
+        includeSubagents: true,
+        workingShelfEnabled: true,
+        workingShelfExpanded: true,
+      });
+      const rows = buildThreadListV2FamilyRows({
+        items,
+        visibleKeys: new Set(visible.items.map((item) => keyOf(item.thread))),
+        disclosure,
+        workingShelfEnabled: true,
+      });
+      expect(rows.map((row) => row.key)).toEqual(expectedKeys);
+    }
+  });
+
   it("keeps a selected active descendant hidden through status changes and repeated manual toggles", () => {
     let current = toggleThreadListV2Family(disclosure, parentKey);
     for (const descendant of [working, grandchild, working]) {
