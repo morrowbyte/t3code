@@ -27,6 +27,7 @@ export function StreamableAssistantMarkdown({
       <SelectableMarkdownText
         key={`markdown:${segment.sourceOffset}`}
         {...props}
+        isStreaming={isStreaming}
         markdown={
           segment.referenceDefinitions
             ? `${segment.referenceDefinitions}\n\n${segment.markdown}`
