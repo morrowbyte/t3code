@@ -49,7 +49,7 @@ const request = connectionAtomRuntime.fn<VoiceRequest>()(
       }
       return yield* transcribeEnvironmentVoiceRecording({
         ...authorization,
-        nativeAudioFile: { uri: input.uri, name: "voice-message.m4a", type: "audio/mp4" },
+        audio: new File(input.uri),
         filename: "voice-message.m4a",
         signal: input.signal,
       });

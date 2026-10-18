@@ -2,6 +2,7 @@ import { RegistryContext, useAtomMount } from "@effect/atom-react";
 import {
   AudioModule,
   RecordingPresets,
+  getRecordingPermissionsAsync,
   requestRecordingPermissionsAsync,
   setAudioModeAsync,
   setIsAudioActiveAsync,
@@ -157,7 +158,8 @@ function useVoiceInputRuntime() {
       recorder,
       getTranscriber: getLocalVoiceTranscriber,
       requestPermission: async () => {
-        const permission = await requestRecordingPermissionsAsync();
+        const current = await getRecordingPermissionsAsync();
+        const permission = current.granted ? current : await requestRecordingPermissionsAsync();
         return { granted: permission.granted, canAskAgain: permission.canAskAgain };
       },
       configureRecording: async () => {

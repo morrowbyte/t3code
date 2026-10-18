@@ -1,6 +1,6 @@
 import type { LiveVoiceAudioSink } from "@t3tools/client-runtime/live-voice";
 
-type NativeAudioTrack = { enabled: boolean; stop(): void; release(): void };
+type NativeAudioTrack = { enabled: boolean; stop(): void };
 type NativeAudioStream = {
   getTracks(): NativeAudioTrack[];
   getAudioTracks(): NativeAudioTrack[];
@@ -17,12 +17,10 @@ export function releaseNativeStreamOnStop(stream: NativeAudioStream): void {
       try {
         stop();
       } catch {}
-      try {
-        track.release();
-      } catch {}
       if (pending.size === 0) {
         try {
-          stream.release(false);
+          // Android must detach tracks from their stream before disposing them.
+          stream.release();
         } catch {}
       }
     };
