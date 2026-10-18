@@ -125,3 +125,93 @@ it.effect.each(["success", "early", "api-key", "cancel", "failed"] as const)(
       assert.isFalse(requests.some((request) => request.method === "turn/start"));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
+
+it.effect("keeps simultaneous account logins isolated even when native login IDs coincide", () =>
+  Effect.gen(function* () {
+    const open = (instance: string) =>
+      Effect.gen(function* () {
+        const incoming = yield* Queue.unbounded<Uint8Array>();
+        const reads: string[] = [];
+        const send = (value: unknown) =>
+          encode(value).pipe(
+            Effect.flatMap((json) => Queue.offer(incoming, new TextEncoder().encode(`${json}\n`))),
+          );
+        const client = yield* CodexClient.make(
+          Stdio.make({
+            args: Effect.succeed([]),
+            stdin: Stream.fromQueue(incoming),
+            stderr: () => Sink.drain,
+            stdout: () =>
+              Sink.forEach((chunk: string | Uint8Array) =>
+                Effect.gen(function* () {
+                  const request = yield* Schema.decodeEffect(Schema.fromJsonString(frame))(
+                    typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk),
+                  );
+                  if (request.method === "account/read") reads.push(instance);
+                  yield* send({
+                    id: request.id,
+                    result:
+                      request.method === "account/login/start"
+                        ? {
+                            type: "chatgpt",
+                            loginId: "same-native-id",
+                            authUrl: "https://auth.openai.com/authorize",
+                          }
+                        : request.method === "account/read"
+                          ? {
+                              requiresOpenaiAuth: true,
+                              account: {
+                                type: "chatgpt",
+                                email: `${instance}@example.test`,
+                                planType: "plus",
+                              },
+                            }
+                          : { status: "canceled" },
+                  });
+                }).pipe(Effect.orDie),
+              ),
+          }),
+        );
+        const auth = yield* makeCodexNativeAuth({
+          instanceId: ProviderInstanceId.make(instance),
+          homePath: `isolated/${instance}`,
+          connect: Effect.succeed({ client }),
+        });
+        return {
+          auth,
+          reads,
+          complete: send({
+            method: "account/login/completed",
+            params: { loginId: "same-native-id", success: true },
+          }),
+        };
+      });
+    const first = yield* open("personal");
+    const second = yield* open("work");
+    for (const fixture of [first, second]) {
+      yield* fixture.auth.start("owner", Effect.void, "chatgpt");
+      yield* fixture.auth.subscribe("owner").pipe(
+        Stream.filter((s) => s.phase === "waiting"),
+        Stream.take(1),
+        Stream.runDrain,
+      );
+    }
+    assert.notDeepEqual(first.auth.credentialBinding, second.auth.credentialBinding);
+    yield* first.complete;
+    yield* first.auth.subscribe("owner").pipe(
+      Stream.filter((s) => s.phase === "succeeded"),
+      Stream.take(1),
+      Stream.runDrain,
+    );
+    assert.deepEqual(first.reads, ["personal"]);
+    assert.deepEqual(second.reads, []);
+    yield* second.complete;
+    yield* second.auth.subscribe("owner").pipe(
+      Stream.filter((s) => s.phase === "succeeded"),
+      Stream.take(1),
+      Stream.runDrain,
+    );
+    assert.deepEqual(second.reads, ["work"]);
+    assert.deepEqual(first.reads, ["personal"]);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);

@@ -706,6 +706,7 @@ function ConnectedAgentsStep({
     instanceId: ProviderInstanceId;
     displayName: string;
     autoStart: boolean;
+    mode: "existing" | "managed";
   } | null>(null);
   const canOperateTerminal = useEnvironmentScope(environmentId, AuthTerminalOperateScope);
 
@@ -831,8 +832,8 @@ function ConnectedAgentsStep({
         <AddManagedCodexAccountDialog
           environmentId={environmentId}
           onClose={() => setAddingAccount(false)}
-          onAccountCreated={(instanceId, displayName) =>
-            setCreatedAccount({ instanceId, displayName, autoStart: true })
+          onAccountCreated={(instanceId, displayName, mode) =>
+            setCreatedAccount({ instanceId, displayName, mode, autoStart: mode === "managed" })
           }
         />
       ) : null}
@@ -868,6 +869,7 @@ function OnboardingCodexSetup({
     instanceId: ProviderInstanceId;
     displayName: string;
     autoStart: boolean;
+    mode: "existing" | "managed";
   } | null;
   readonly onAutoStartConsumed: () => void;
 }) {
@@ -880,7 +882,7 @@ function OnboardingCodexSetup({
   const settings = serverConfig.settings;
   const instance = settings.providerInstances[instanceId] ?? {
     driver: ProviderDriverKind.make("codex"),
-    config: createdAccount ? { enabled: true, setupMode: "managed" } : {},
+    config: createdAccount ? { enabled: true, setupMode: createdAccount.mode } : {},
   };
   const mode = readCodexSetupMode(instance.config);
   const existingChosen =

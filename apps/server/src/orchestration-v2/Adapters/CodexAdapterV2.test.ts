@@ -67,6 +67,7 @@ import * as ProviderReplayHarness from "../testkit/ProviderReplayHarness.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
+import type { CodexEffectiveRuntime } from "../../provider/CodexManagedRuntime.ts";
 import { makeReplayServerConfig, withCodexReplayChildMetadata } from "./CodexAdapterV2.testkit.ts";
 import * as CodexAdapterV2Testkit from "./CodexAdapterV2.testkit.ts";
 
@@ -2485,6 +2486,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     onRequest: (method: string, params: unknown) => Effect.Effect<void> = () => Effect.void,
     readChildMetadata?: Parameters<typeof withCodexReplayChildMetadata>[2],
     observatoryAvailable?: boolean,
+    effectiveRuntime?: CodexEffectiveRuntime,
   ) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -2543,6 +2545,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         fileSystem,
         idAllocator,
         serverConfig,
+        ...(effectiveRuntime === undefined
+          ? {}
+          : { resolveRuntime: Effect.succeed(effectiveRuntime) }),
         continuationRequests: {
           offer: (request) =>
             Effect.sync(() => {
@@ -3695,6 +3700,86 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         ),
       ),
     ),
+  );
+
+  it.effect.each(["managed", "native"] as const)(
+    "keeps %s transport policy on new and repeatedly resumed cached native threads",
+    (route) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const nativeThreadId = `policy-${route}`;
+          const policy =
+            route === "managed"
+              ? { "features.multi_agent": false, "features.multi_agent_v2": false }
+              : {};
+          const config = { ...CodexAdapterV2.CODEX_THREAD_CONFIG, ...policy };
+          const preamble = codexReplayPreamble({
+            nativeThreadId,
+            nativeTurnId: "unused",
+            prompt: "unused",
+          })
+            .slice(0, 5)
+            .map((entry) =>
+              entry.type === "expect_outbound" && entry.label === "thread/start"
+                ? { ...entry, frame: { id: 2, method: "thread/start", params: { config } } }
+                : entry,
+            );
+          const transcript = makeCodexReplayTranscript({
+            scenario: `cached-policy-${route}`,
+            entries: [
+              ...preamble,
+              ...[3, 4].flatMap((id): Array<CodexReplay.CodexAppServerReplayEntry> => [
+                {
+                  type: "expect_outbound",
+                  label: "resume-policy",
+                  frame: {
+                    id,
+                    method: "thread/resume",
+                    params: {
+                      threadId: nativeThreadId,
+                      excludeTurns: true,
+                      config,
+                    },
+                  },
+                },
+                {
+                  type: "emit_inbound",
+                  label: "resume-policy",
+                  frame: {
+                    id,
+                    result: { thread: { id: nativeThreadId, updatedAt: 1782622450 } },
+                  },
+                },
+              ]),
+            ],
+          });
+          const harness = yield* makeCodexReplayHarness(
+            transcript,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              config: {
+                ...DEFAULT_CODEX_SETTINGS,
+                setupMode: route === "managed" ? "managed" : "existing",
+              },
+              environment: {},
+              revision: `policy-${route}`,
+              ...(route === "managed" ? { nativeSubagents: false } : {}),
+            },
+          );
+          let thread = harness.providerThread;
+          for (const _ of [0, 1]) {
+            thread = yield* harness.runtime.resumeThread({ providerThread: thread });
+            assert.equal(thread.nativeThreadRef?.nativeId, nativeThreadId);
+          }
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
   );
 
   it.effect("resumes a provider thread without requesting or decoding its history", () =>

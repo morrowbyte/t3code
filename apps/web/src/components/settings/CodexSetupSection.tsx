@@ -261,7 +261,7 @@ export function AddManagedCodexAccountDialog({
   readonly environmentId: EnvironmentId;
   readonly onClose: () => void;
   readonly onAccountCreated?:
-    | ((instanceId: ProviderInstanceId, displayName: string) => void)
+    | ((instanceId: ProviderInstanceId, displayName: string, mode: "existing" | "managed") => void)
     | undefined;
 }) {
   const canManageProviders = useEnvironmentScope(environmentId, AuthProvidersManageScope);
@@ -270,22 +270,35 @@ export function AddManagedCodexAccountDialog({
       environmentId={environmentId}
       onClose={onClose}
       onAccountCreated={onAccountCreated}
-      renderSetup={(instanceId, provider) => (
-        <ManagedCodexSetup
-          key={instanceId}
-          environmentId={environmentId}
-          instanceId={instanceId}
-          provider={provider}
-          mode="managed"
-          enabled
-          readOnly={!canManageProviders}
-          autoStart
-          onAutoStartConsumed={noop}
-          onModeChange={noop}
-          onSignInCancelled={onClose}
-          allowExistingCli={false}
-        />
-      )}
+      renderSetup={(instanceId, provider, mode) =>
+        mode === "existing" ? (
+          <CodexSetupSection
+            key={instanceId}
+            environmentId={environmentId}
+            instanceId={instanceId}
+            provider={provider}
+            mode="existing"
+            enabled={provider.enabled}
+            readOnly={!canManageProviders}
+            onModeChange={noop}
+          />
+        ) : (
+          <ManagedCodexSetup
+            key={instanceId}
+            environmentId={environmentId}
+            instanceId={instanceId}
+            provider={provider}
+            mode="managed"
+            enabled
+            readOnly={!canManageProviders}
+            autoStart
+            onAutoStartConsumed={noop}
+            onModeChange={noop}
+            onSignInCancelled={onClose}
+            allowExistingCli={false}
+          />
+        )
+      }
     />
   );
 }
@@ -934,7 +947,7 @@ function ManagedCodexSetup({
                 disabled={readOnly || busy}
                 onClick={() => onModeChange("existing")}
               >
-                Use existing CLI
+                Use Codex sign-in for Live voice
               </Button>
             ) : null
           }
@@ -954,8 +967,10 @@ function ManagedCodexSetup({
     <section aria-label="Codex setup" className="divide-y divide-border/50">
       {accountPicker}
       <SettingsRow
-        title="ChatGPT account"
-        description={accountDescription}
+        title="ChatGPT token sharing"
+        description={
+          <>Native subagents unavailable. Use Codex sign-in for Live voice. {accountDescription}</>
+        }
         control={
           <div className="flex flex-wrap items-center justify-end gap-2">
             {authActive ? (

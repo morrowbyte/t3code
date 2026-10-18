@@ -5,8 +5,11 @@ import {
   type ProviderAuthState,
   type ProviderInstallState,
   type ServerProvider,
+  type ServerSettingsPatch,
+  ProviderInstanceConfig,
 } from "@t3tools/contracts";
 import { act } from "react";
+import * as Schema from "effect/Schema";
 import { createRoot, type Root } from "react-dom/client";
 import { userEvent } from "vite-plus/test/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -26,14 +29,29 @@ const setup = vi.hoisted(() => ({
   removeInstall: vi.fn(),
   refreshProviders: vi.fn(),
   confirm: vi.fn(),
+  updateSettings:
+    vi.fn<
+      (input: {
+        environmentId: EnvironmentId;
+        input: { patch: ServerSettingsPatch };
+      }) => Promise<{ _tag: "Success"; value: undefined }>
+    >(),
+  publishProviders: vi.fn<(providers: ReadonlyArray<ServerProvider>) => void>(),
+  canManage: true,
 }));
 
 vi.mock(import("../../state/server"), async (original) => {
   const actual = await original();
+  const { Atom } = await import("effect/reactivity");
+  const { appAtomRegistry } = await import("../../rpc/atomRegistry");
+  const providers = Atom.make<ReadonlyArray<ServerProvider>>([]);
+  setup.publishProviders.mockImplementation((value) => appAtomRegistry.set(providers, value));
   return {
     ...actual,
     serverEnvironment: {
       ...actual.serverEnvironment,
+      providersValueAtom: () => providers,
+      updateSettings: setup.updateSettings as never,
       providerAuthState: setup.authState as never,
       providerInstallState: setup.installState as never,
       startProviderAuth: setup.startAuth as never,
@@ -47,6 +65,15 @@ vi.mock(import("../../state/server"), async (original) => {
       refreshProviders: setup.refreshProviders as never,
     },
   };
+});
+vi.mock(import("../../state/session"), async (original) => ({
+  ...(await original()),
+  useEnvironmentScope: () => setup.canManage,
+  readEnvironmentScope: () => setup.canManage,
+}));
+vi.mock(import("../../hooks/useSettings"), async (original) => {
+  const { DEFAULT_UNIFIED_SETTINGS } = await import("@t3tools/contracts/settings");
+  return { ...(await original()), useEnvironmentSettings: () => DEFAULT_UNIFIED_SETTINGS };
 });
 vi.mock(import("../../state/use-atom-command"), async (original) => ({
   ...(await original()),
@@ -83,8 +110,11 @@ vi.mock(import("../../localApi"), async (original) => ({
 }));
 
 import { ProviderSetupSection } from "./ProviderSetupSection";
-import { CodexSetupSection } from "./CodexSetupSection";
+import { CodexSetupSection, AddManagedCodexAccountDialog } from "./CodexSetupSection";
+import { AddCodexAccountDialog } from "./AddCodexAccountDialog";
+import { AppAtomRegistryProvider } from "../../rpc/atomRegistry";
 
+const decodeProviderInstance = Schema.decodeUnknownSync(ProviderInstanceConfig);
 const environmentId = EnvironmentId.make("remote-google");
 const instanceId = ProviderInstanceId.make("antigravity_work");
 const provider: ServerProvider = {
@@ -172,6 +202,9 @@ describe("Antigravity setup", () => {
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.clearAllMocks();
+    setup.canManage = true;
+    setup.publishProviders([]);
+    setup.updateSettings.mockResolvedValue({ _tag: "Success", value: undefined });
     setup.auth = authState();
     setup.installation = {
       driver: ProviderDriverKind.make("antigravity"),
@@ -487,11 +520,152 @@ describe("Antigravity setup", () => {
         />,
       ),
     );
+    expect(container.textContent).toContain("ChatGPT token sharing");
+    expect(container.textContent).toContain("Native subagents unavailable");
     expect(setup.logoutAuth).not.toHaveBeenCalled();
     expect(setup.startAuth).not.toHaveBeenCalled();
     await click("Use Codex sign-in for Live voice");
     expect(changeMode).toHaveBeenCalledExactlyOnceWith("existing");
     expect(setup.logoutAuth).not.toHaveBeenCalled();
     expect(setup.startAuth).not.toHaveBeenCalled();
+  });
+  it.each(["existing", "managed"] as const)(
+    "creates an isolated %s account only after explicit route choice",
+    async (mode) => {
+      const close = vi.fn();
+      await act(async () =>
+        root.render(
+          <AppAtomRegistryProvider>
+            <AddCodexAccountDialog
+              environmentId={environmentId}
+              onClose={close}
+              renderSetup={(_id, _provider, selectedMode) => (
+                <div>Selected setup: {selectedMode}</div>
+              )}
+            />
+          </AppAtomRegistryProvider>,
+        ),
+      );
+      const native = document.querySelector<HTMLInputElement>('input[value="existing"]');
+      expect(native?.checked).toBe(true);
+      expect(setup.updateSettings).not.toHaveBeenCalled();
+      if (mode === "managed") {
+        const alternative = [...document.querySelectorAll("label")].find((label) =>
+          label.textContent?.includes("Token sharing"),
+        );
+        if (!alternative) throw new Error("Expected explicit sharing choice");
+        await userEvent.click(alternative);
+      }
+      const submit = document.querySelector<HTMLButtonElement>('button[form="add-codex-account"]');
+      if (!submit) throw new Error("Expected account creation control");
+      await act(async () => submit.click());
+      expect(setup.updateSettings).toHaveBeenCalledTimes(1);
+      const patch = setup.updateSettings.mock.calls[0]?.[0];
+      if (!patch) throw new Error("Expected account update");
+      expect(patch.environmentId).toBe(environmentId);
+      const entries = Object.entries(patch.input.patch.providerInstances ?? {});
+      const created = entries.find(([id]) => id.startsWith("codex_"));
+      if (!created) throw new Error("Expected a new instance");
+      const [id, raw] = created;
+      const instance = decodeProviderInstance(raw);
+      expect(instance.driver).toBe("codex");
+      expect(instance.config).toEqual(
+        mode === "existing"
+          ? { enabled: true, setupMode: "existing", homePath: `~/.codex-t3/${id}` }
+          : { enabled: true, setupMode: "managed" },
+      );
+      expect(setup.startAuth).not.toHaveBeenCalled();
+      expect(setup.logoutAuth).not.toHaveBeenCalled();
+      await act(async () =>
+        setup.publishProviders([
+          {
+            ...provider,
+            instanceId: ProviderInstanceId.make(id),
+            driver: ProviderDriverKind.make("codex"),
+            auth: { status: "unauthenticated" },
+          },
+        ]),
+      );
+      expect(document.body.textContent).toContain(`Selected setup: ${mode}`);
+      expect(close).not.toHaveBeenCalled();
+      await act(async () =>
+        setup.publishProviders([
+          {
+            ...provider,
+            instanceId: ProviderInstanceId.make(id),
+            driver: ProviderDriverKind.make("codex"),
+            auth: {
+              status: "authenticated",
+              type: "chatgpt",
+              subscriptionSharing: mode === "managed",
+            },
+          },
+        ]),
+      );
+      expect(close).toHaveBeenCalledTimes(1);
+    },
+  );
+  it("routes a default account through real native setup without starting token sharing", async () => {
+    const close = vi.fn();
+    await act(async () =>
+      root.render(
+        <AppAtomRegistryProvider>
+          <AddManagedCodexAccountDialog environmentId={environmentId} onClose={close} />
+        </AppAtomRegistryProvider>,
+      ),
+    );
+    const submit = document.querySelector<HTMLButtonElement>('button[form="add-codex-account"]');
+    if (!submit) throw new Error("Expected account creation control");
+    await act(async () => submit.click());
+    const request = setup.updateSettings.mock.calls[0]?.[0];
+    if (!request) throw new Error("Expected account creation");
+    const id = Object.keys(request.input.patch.providerInstances ?? {}).find((key) =>
+      key.startsWith("codex_"),
+    );
+    if (!id) throw new Error("Expected isolated account ID");
+    const newInstanceId = ProviderInstanceId.make(id);
+    setup.auth = authState({
+      instanceId: newInstanceId,
+      phase: "idle",
+      flowId: null,
+      authorizationUrl: null,
+    });
+    await act(async () =>
+      setup.publishProviders([
+        {
+          ...provider,
+          instanceId: newInstanceId,
+          driver: ProviderDriverKind.make("codex"),
+          status: "ready",
+          auth: { status: "unauthenticated" },
+        },
+      ]),
+    );
+    expect(document.body.textContent).toContain("Codex runtime");
+    expect(document.body.textContent).not.toContain("ChatGPT token sharing");
+    expect(setup.startAuth).not.toHaveBeenCalled();
+    const signIn = [...document.querySelectorAll("button")].find(
+      (element) => element.textContent === "Sign in",
+    );
+    if (!signIn) throw new Error("Expected explicit native sign-in");
+    expect(signIn.disabled).toBe(false);
+    await act(async () => signIn.click());
+    expect(setup.startAuth).toHaveBeenCalledExactlyOnceWith({
+      environmentId,
+      input: { instanceId: newInstanceId },
+    });
+    expect(setup.logoutAuth).not.toHaveBeenCalled();
+    await act(async () =>
+      setup.publishProviders([
+        {
+          ...provider,
+          instanceId: newInstanceId,
+          driver: ProviderDriverKind.make("codex"),
+          status: "ready",
+          auth: { status: "authenticated", type: "chatgpt" },
+        },
+      ]),
+    );
+    expect(close).toHaveBeenCalledTimes(1);
   });
 });
