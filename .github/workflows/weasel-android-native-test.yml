@@ -1,0 +1,241 @@
+name: Android .48 native x86_64 test
+run-name: Android .48 x86_64 test only · source f2b90a6
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: android48-x86-native-test
+  cancel-in-progress: false
+jobs:
+  build_android_test:
+    name: Build .48 x86_64 native test APK
+    runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    timeout-minutes: 60
+    outputs:
+      apk_sha256: ${{ steps.apk.outputs.apk_sha256 }}
+      receipt_sha256: ${{ steps.apk.outputs.receipt_sha256 }}
+      build_attempt: ${{ steps.apk.outputs.build_attempt }}
+    env:
+      DESKTOP_SOURCE_SHA: ce275176a119b1a2c599c23e6acd7d537cc4c336
+      APP_VARIANT: production
+      T3CODE_MOBILE_VERSION: 0.1.2-nightly.20261018.48
+      MORROWBYTE_ANDROID_VERSION_CODE: "48"
+      ANDROID_BUILD_TOOLS: "36.0.0"
+      CI: "1"
+    steps:
+      - name: Require normal trusted main dispatch
+        env:
+          REQUESTED_REF: ${{ github.ref }}
+        run: test "$REQUESTED_REF" = refs/heads/main
+
+      - name: Bind runner-local signing path
+        run: printf 'MORROWBYTE_ANDROID_KEYSTORE_PATH=%s/morrowbyte-signing/morrowbyte-release.p12\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - name: Checkout exact promoted source
+        uses: actions/checkout@v4
+        with:
+          ref: f2b90a689d9e683291d46f09a6fbac785a211025
+          fetch-depth: 1
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: false
+
+      - name: Install frozen mobile dependency closure
+        run: vp install --frozen-lockfile --filter=@t3tools/mobile... --filter=@t3tools/scripts...
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Setup Android build and verification tools
+        uses: android-actions/setup-android@v4
+        with:
+          packages: "platform-tools build-tools;36.0.0"
+          log-accepted-android-sdk-licenses: false
+
+      - name: Setup Gradle cache
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Bind source and verify standalone fork configuration
+        working-directory: apps/mobile
+        env:
+          SOURCE_SHA: f2b90a689d9e683291d46f09a6fbac785a211025
+          NODE_ENV: production
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          node node_modules/expo/bin/cli config --type public --json > "$RUNNER_TEMP/morrowbyte-config.json"
+          python3 - <<'PYCONFIG'
+          import json, os
+          from pathlib import Path
+          config = json.loads((Path(os.environ['RUNNER_TEMP']) / 'morrowbyte-config.json').read_text())
+          assert config['name'] == 'Morrowbyte'
+          assert config['scheme'] == 'morrowbyte'
+          assert config['android']['package'] == 'com.morrowbyte.t3code'
+          assert config['version'] == os.environ['T3CODE_MOBILE_VERSION']
+          assert config['android']['versionCode'] == int(os.environ['MORROWBYTE_ANDROID_VERSION_CODE'])
+          assert config['updates']['enabled'] is False and not config['updates'].get('url')
+          assert not config.get('owner'), 'Standalone Android must not have an EAS owner.'
+          # Sharing/widgets add local iOS extension metadata without binding an EAS project.
+          eas_metadata = config.get('extra', {}).get('eas', {})
+          for key in ('build', 'experimental', 'ios', 'appExtensions'):
+              assert isinstance(eas_metadata, dict) and set(eas_metadata) <= {key}, 'Unexpected EAS account/project configuration.'
+              eas_metadata = eas_metadata.get(key, [] if key == 'appExtensions' else {})
+          assert isinstance(eas_metadata, list), 'Unexpected EAS extension metadata.'
+          PYCONFIG
+
+      - name: Generate Android release project
+        working-directory: apps/mobile
+        env:
+          NODE_ENV: production
+        run: node node_modules/expo/bin/cli prebuild --platform android --no-install --clean
+
+      - name: Materialize own release keystore
+        env:
+          MORROWBYTE_ANDROID_KEYSTORE_BASE64: ${{ secrets.MORROWBYTE_ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 - <<'PYKEY'
+          import base64, os
+          from pathlib import Path
+          target = Path(os.environ['MORROWBYTE_ANDROID_KEYSTORE_PATH'])
+          target.parent.mkdir(mode=0o700, exist_ok=True)
+          encoded = ''.join(os.environ['MORROWBYTE_ANDROID_KEYSTORE_BASE64'].split())
+          assert encoded, 'Own Android signing keystore is missing.'
+          target.write_bytes(base64.b64decode(encoded, validate=True))
+          target.chmod(0o600)
+          PYKEY
+
+      - name: Build signed standalone x86_64 test APK once
+        working-directory: apps/mobile/android
+        env:
+          NODE_ENV: production
+          MORROWBYTE_ANDROID_STORE_PASSWORD: ${{ secrets.MORROWBYTE_ANDROID_STORE_PASSWORD }}
+          MORROWBYTE_ANDROID_KEY_ALIAS: ${{ secrets.MORROWBYTE_ANDROID_KEY_ALIAS }}
+          MORROWBYTE_ANDROID_KEY_PASSWORD: ${{ secrets.MORROWBYTE_ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -s "$MORROWBYTE_ANDROID_KEYSTORE_PATH"
+          test -n "$MORROWBYTE_ANDROID_STORE_PASSWORD"
+          test "$MORROWBYTE_ANDROID_KEY_ALIAS" = morrowbyte-release
+          test -n "$MORROWBYTE_ANDROID_KEY_PASSWORD"
+          ./gradlew :app:dependencies --configuration releaseRuntimeClasspath --no-daemon --no-configuration-cache \
+            -PreactNativeArchitectures=x86_64 > "$RUNNER_TEMP/morrowbyte-android-dependencies.txt"
+          ./gradlew :app:assembleRelease --no-daemon --no-configuration-cache -PreactNativeArchitectures=x86_64
+
+      - id: apk
+        name: Verify APK signature, embedded bundle, identity and 16KB native alignment
+        env:
+          SOURCE_SHA: f2b90a689d9e683291d46f09a6fbac785a211025
+        run: |
+          set -euo pipefail
+          python3 - <<'PYAPK'
+          import hashlib, json, os, re, shutil, struct, subprocess, zipfile
+          from pathlib import Path
+          digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+          source = os.environ['SOURCE_SHA']
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == source
+          version = os.environ['T3CODE_MOBILE_VERSION']
+          assert re.fullmatch(r'[0-9A-Za-z][0-9A-Za-z.+-]*', version)
+          code = int(os.environ['MORROWBYTE_ANDROID_VERSION_CODE'])
+          assert 0 < code <= 2100000000
+          expected_cert = '34a33c2541544bc4a96e359a33e9f71aaa449ee9a0cd725c2469b65b057aa2b2'
+          sdk = Path(os.environ['ANDROID_HOME']) / 'build-tools' / os.environ['ANDROID_BUILD_TOOLS']
+          built = Path('apps/mobile/android/app/build/outputs/apk/release')
+          candidates = list(built.glob('*.apk'))
+          assert len(candidates) == 1, 'Expected one standalone release APK.'
+          apk = candidates[0]
+          signature = subprocess.check_output([str(sdk / 'apksigner'), 'verify', '-Werr', '--verbose', '--print-certs', str(apk)], text=True)
+          certificates = re.findall(r'^Signer #\d+ certificate SHA-256 digest: ([0-9a-fA-F:]+)$', signature, re.M)
+          assert len(certificates) == 1 and certificates[0].replace(':', '').lower() == expected_cert
+          subprocess.run([str(sdk / 'zipalign'), '-c', '-P', '16', '-v', '4', str(apk)], check=True, stdout=subprocess.DEVNULL)
+          badging = subprocess.check_output([str(sdk / 'aapt'), 'dump', 'badging', str(apk)], text=True)
+          identity = re.search(r"^package: name='([^']+)' versionCode='([^']+)' versionName='([^']+)'", badging, re.M)
+          assert identity and identity.groups() == ('com.morrowbyte.t3code', str(code), version)
+          assert "application-label:'Morrowbyte'" in badging and 'application-debuggable' not in badging
+          for permission in ['INTERNET', 'RECORD_AUDIO', 'MODIFY_AUDIO_SETTINGS']:
+              assert "name='android.permission." + permission + "'" in badging
+          with zipfile.ZipFile(apk) as archive:
+              names = archive.namelist()
+              bundle = 'assets/index.android.bundle'
+              assert bundle in names and archive.getinfo(bundle).file_size > 10000
+              libraries = [name for name in names if name.startswith('lib/') and name.endswith('.so')]
+              assert libraries and {name.split('/')[1] for name in libraries} == {'x86_64'}
+              assert any('hermes' in name for name in libraries)
+              assert any('jingle_peerconnection' in name or 'webrtc' in name for name in libraries)
+              for name in libraries:
+                  data = archive.read(name)
+                  assert data[:6] == b'\x7fELF\x02\x01', name
+                  assert struct.unpack_from('<H', data, 18)[0] == 62, name
+                  offset = struct.unpack_from('<Q', data, 32)[0]
+                  entry_size, entry_count = struct.unpack_from('<HH', data, 54)
+                  loads = 0
+                  for index in range(entry_count):
+                      header = offset + index * entry_size
+                      if struct.unpack_from('<I', data, header)[0] != 1:
+                          continue
+                      loads += 1
+                      file_offset, address = struct.unpack_from('<QQ', data, header + 8)
+                      alignment = struct.unpack_from('<Q', data, header + 48)[0]
+                      assert alignment >= 16384 and file_offset % 16384 == address % 16384, name
+                  assert loads > 0, name
+              bundle_sha = hashlib.sha256(archive.read(bundle)).hexdigest()
+          assert bundle_sha == '5563c4fad0a35787754ae09fa7fb437fec0479127f2d988f9db53ffe56d5b78d', 'Test ABI must retain the exact published release JS bundle.'
+          output = Path('release-android')
+          output.mkdir()
+          name = f'Morrowbyte-{version}-android-test-x86_64.apk'
+          target = output / name
+          shutil.copyfile(apk, target)
+          assert digest(target) == digest(apk)
+          apk_sha = digest(target)
+          (output / (name + '.sha256')).write_text(f'{apk_sha}  {name}\n')
+          receipt = {
+              'schemaVersion': 1, 'testOnly': True, 'shippingArtifact': False,
+              'shippingApkSha256': '103610daf40263baf57d3abeffcf22eba5a19d6867de31048420e86e8de8dd8a',
+              'buildMode': 'release', 'minificationUnchanged': True, 'source': source, 'desktopSource': os.environ['DESKTOP_SOURCE_SHA'],
+              'lockSha256': digest(Path('pnpm-lock.yaml')),
+              'run': os.environ['GITHUB_RUN_ID'], 'attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'trustedContextSha': os.environ['GITHUB_SHA'], 'trustedWorkflowSha': os.environ['GITHUB_WORKFLOW_SHA'],
+              'trustedWorkflowRef': os.environ['GITHUB_WORKFLOW_REF'],
+              'package': 'com.morrowbyte.t3code', 'name': 'Morrowbyte', 'version': version, 'versionCode': code,
+              'apk': name, 'apkSha256': apk_sha, 'certificateSha256': expected_cert,
+              'abis': ['x86_64'], 'embeddedBundle': bundle, 'embeddedBundleSha256': bundle_sha,
+              'nativeLibraryCount': len(libraries), 'signatureVerified': True, 'zip16KB': True, 'elf16KB': True,
+              'dependencyReportSha256': digest(Path(os.environ['RUNNER_TEMP']) / 'morrowbyte-android-dependencies.txt'),
+              'deviceAcceptance': 'not-run',
+          }
+          receipt_file = output / (name + '.json')
+          receipt_file.write_text(json.dumps(receipt, indent=2) + '\n')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as outputs:
+              outputs.write(f'apk_sha256={apk_sha}\nreceipt_sha256={digest(receipt_file)}\nbuild_attempt={os.environ["GITHUB_RUN_ATTEMPT"]}\n')
+          PYAPK
+
+      - name: Upload verified Android release payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: weasel-test-android-x86_64-f2b90a6
+          path: release-android/*
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Preserve resolved Android dependencies
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weasel-android-test-build-evidence-f2b90a689d9e683291d46f09a6fbac785a211025-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/morrowbyte-android-dependencies.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Remove ephemeral signing material
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/morrowbyte-signing"
+
