@@ -58,6 +58,7 @@ import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
+const isProviderSetupError = Schema.is(ProviderSetupError);
 
 const DRIVER_KIND = ProviderDriverKind.make("codex");
 function isCodexStandaloneCommandPath(commandPath: string): boolean {
@@ -159,6 +160,20 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
       const setup = { canAuthenticate: true, canInstall: usesDefaultExecutable };
       const resolveRuntime = Effect.gen(function* () {
         const executable = usesDefaultExecutable ? yield* installation.acquire() : undefined;
+        yield* fileSystem
+          .makeDirectory(homeLayout.effectiveHomePath ?? homeLayout.sharedHomePath, {
+            recursive: true,
+          })
+          .pipe(
+            Effect.mapError(
+              () =>
+                new ProviderSetupError({
+                  instanceId,
+                  operation: "runtime",
+                  detail: "Could not prepare this Codex account's home directory.",
+                }),
+            ),
+          );
         return {
           config: {
             ...effectiveConfig,
@@ -170,13 +185,14 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv, Path.Pat
             : effectiveConfig.binaryPath,
         };
       }).pipe(
-        Effect.mapError(
-          () =>
-            new ProviderSetupError({
-              instanceId,
-              operation: "install",
-              detail: "Install Codex in provider settings before signing in or starting work.",
-            }),
+        Effect.mapError((cause) =>
+          isProviderSetupError(cause)
+            ? cause
+            : new ProviderSetupError({
+                instanceId,
+                operation: "install",
+                detail: "Install Codex in provider settings before signing in or starting work.",
+              }),
         ),
       );
       const auth = yield* makeCodexNativeAuth({

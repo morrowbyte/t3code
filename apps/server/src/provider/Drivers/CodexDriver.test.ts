@@ -101,7 +101,12 @@ it.layer(layerTest)("CodexDriver", (it) => {
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
-        const homePath = yield* fs.makeTempDirectoryScoped({ prefix: "native-codex-launch-" });
+        const parentHome = yield* fs.makeTempDirectoryScoped({ prefix: "native-codex-launch-" });
+        const homePath = NodePath.join(parentHome, "new-account-home");
+        yield* fs.writeFileString(
+          NodePath.join(parentHome, "auth.json"),
+          "untouched-native-parent",
+        );
         const installation = yield* CodexInstallation.CodexInstallation;
         const launches: Array<
           Parameters<CodexAdapterV2.CodexAppServerClientFactoryShape["open"]>[0]
@@ -131,6 +136,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
           }),
           Effect.provideService(HostProcess.Environment, { PATH: "synthetic-only" }),
         );
+        expect(yield* fs.exists(homePath)).toBe(false);
         yield* instance.orchestrationAdapter
           .openSession({
             threadId: ThreadId.make("native-launch-thread"),
@@ -143,7 +149,13 @@ it.layer(layerTest)("CodexDriver", (it) => {
             }),
           })
           .pipe(Effect.scoped, Effect.exit);
+        expect(yield* fs.exists(homePath)).toBe(true);
         expect(launches).toHaveLength(1);
+        expect(launches[0]?.settings.homePath).toBe(homePath);
+        expect(yield* fs.exists(NodePath.join(homePath, "auth.json"))).toBe(false);
+        expect(yield* fs.readFileString(NodePath.join(parentHome, "auth.json"))).toBe(
+          "untouched-native-parent",
+        );
         expect(launches[0]?.settings.binaryPath).toBe("C:\\T3\\tools\\codex.exe");
         expect(launches[0]?.settings.setupMode).toBe("existing");
         expect(launches[0]?.settings.launchArgs).not.toContain("openai_token_sharing");

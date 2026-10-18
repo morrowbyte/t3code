@@ -29,6 +29,7 @@ const setup = vi.hoisted(() => ({
   removeInstall: vi.fn(),
   refreshProviders: vi.fn(),
   confirm: vi.fn(),
+  openExternal: vi.fn(),
   updateSettings:
     vi.fn<
       (input: {
@@ -106,7 +107,8 @@ const publish = () =>
   });
 vi.mock(import("../../localApi"), async (original) => ({
   ...(await original()),
-  ensureLocalApi: () => ({ dialogs: { confirm: setup.confirm } }) as never,
+  ensureLocalApi: () =>
+    ({ dialogs: { confirm: setup.confirm }, shell: { openExternal: setup.openExternal } }) as never,
 }));
 
 import { ProviderSetupSection } from "./ProviderSetupSection";
@@ -229,6 +231,7 @@ describe("Antigravity setup", () => {
       command.mockReset().mockResolvedValue({ _tag: "Success", value: undefined });
     }
     setup.confirm.mockReset().mockResolvedValue(false);
+    setup.openExternal.mockReset().mockResolvedValue(undefined);
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -667,5 +670,43 @@ describe("Antigravity setup", () => {
       ]),
     );
     expect(close).toHaveBeenCalledTimes(1);
+  });
+  it("shows the native device code for a remote host and opens only the user-selected verification page", async () => {
+    const url = "https://auth.openai.com/codex/device";
+    setup.auth = authState({
+      interaction: { type: "deviceCode", id: "remote-native-code", url, userCode: "SYNTH-REMOTE" },
+      authorizationUrl: url,
+    });
+    await act(async () =>
+      root.render(
+        <CodexSetupSection
+          environmentId={environmentId}
+          instanceId={instanceId}
+          provider={{
+            ...provider,
+            driver: ProviderDriverKind.make("codex"),
+            auth: { status: "unauthenticated" },
+          }}
+          mode="existing"
+          enabled
+          onModeChange={vi.fn()}
+        />,
+      ),
+    );
+    expect(container.textContent).toContain("SYNTH-REMOTE");
+    expect(container.textContent).toContain("in your browser");
+    expect(container.querySelector(`[id="provider-callback-${instanceId}"]`)).toBeNull();
+    expect(setup.openExternal).not.toHaveBeenCalled();
+    expect(setup.startAuth).not.toHaveBeenCalled();
+    await click("Open browser");
+    expect(setup.openExternal).toHaveBeenCalledExactlyOnceWith(url);
+    expect(setup.completeAuth).not.toHaveBeenCalled();
+    expect(setup.respondAuth).not.toHaveBeenCalled();
+    await click("Cancel");
+    expect(setup.cancelAuth).toHaveBeenCalledExactlyOnceWith({
+      environmentId,
+      input: { instanceId, flowId: "flow-1" },
+    });
+    expect(setup.logoutAuth).not.toHaveBeenCalled();
   });
 });
