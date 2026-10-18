@@ -5,6 +5,69 @@ const rowTravel = (height: number) => Math.min(height, 40);
 // between force synchronous reflows.
 const MAX_FADED_ROWS_PER_UPDATE = 40;
 
+export function createSidebarFamilyMotion(
+  group: HTMLElement,
+  clip: HTMLElement,
+  content: HTMLElement,
+) {
+  const reducedMotion = clip.ownerDocument.defaultView?.matchMedia(
+    "(prefers-reduced-motion: reduce)",
+  );
+  let animation: Animation | null = null;
+  let expanded: boolean | undefined;
+  let targetHeight = 0;
+  let settled: ((open: boolean) => void) | undefined;
+  let disposed = false;
+
+  return {
+    update(open: boolean, onSettled?: (open: boolean) => void) {
+      if (disposed) return;
+      settled = onSettled;
+      if (expanded === open && animation === null) return;
+      const target = open ? content.scrollHeight : 0;
+      if (expanded === open && target === targetHeight) return;
+      const initial = expanded === undefined;
+      const height = clip.getBoundingClientRect().height;
+      animation?.cancel();
+      animation = null;
+      expanded = open;
+      targetHeight = target;
+      clip.style.height = open ? "auto" : "0px";
+      group.removeAttribute("data-sidebar-family-resizing");
+      if (initial) return;
+      if (reducedMotion?.matches || height === target) {
+        settled?.(open);
+        return;
+      }
+      clip.style.height = `${target}px`;
+      group.setAttribute("data-sidebar-family-resizing", "true");
+      const current = clip.animate(
+        [{ height: `${height}px` }, { height: `${target}px` }],
+        motionTiming,
+      );
+      animation = current;
+      current.currentTime = 0;
+      current.addEventListener(
+        "finish",
+        () => {
+          if (animation !== current) return;
+          animation = null;
+          clip.style.height = open ? "auto" : "0px";
+          group.removeAttribute("data-sidebar-family-resizing");
+          settled?.(open);
+        },
+        { once: true },
+      );
+    },
+    dispose() {
+      disposed = true;
+      animation?.cancel();
+      animation = null;
+      group.removeAttribute("data-sidebar-family-resizing");
+    },
+  };
+}
+
 type RowPosition = { top: number; left: number; width: number; height: number };
 
 function progress(animation: Animation) {
@@ -137,6 +200,9 @@ export function createSidebarListMotion(parent: HTMLUListElement) {
           ]),
       );
       let fadeCount = 0;
+      const familyResizing = Array.from(parent.children).some(
+        (node) => node.getAttribute("data-sidebar-family-resizing") === "true",
+      );
       if (positions !== null) {
         for (const [node, position] of positions) {
           if (!next.has(node) && position.height > 0) fadeCount++;
@@ -148,6 +214,8 @@ export function createSidebarListMotion(parent: HTMLUListElement) {
       const shouldAnimate =
         animate &&
         positions !== null &&
+        // Family height already moves its neighbours in normal flow.
+        !familyResizing &&
         !reducedMotion?.matches &&
         fadeCount <= MAX_FADED_ROWS_PER_UPDATE;
       const movedDelta = new Map<HTMLElement, number>();
@@ -221,7 +289,7 @@ export function createSidebarListMotion(parent: HTMLUListElement) {
         }
       }
       if (released !== null) {
-        if (!reducedMotion?.matches) {
+        if (!reducedMotion?.matches && !familyResizing) {
           for (const [node, position] of next) {
             const top = released.get(node);
             if (top !== undefined) move(node, top - position.top);
