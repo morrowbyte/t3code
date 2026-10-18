@@ -1706,6 +1706,64 @@ it("excludes subagents from navigation, search and ordering while retaining user
   ).toEqual([fork.id, root.id]);
 });
 
+it("keeps promoted children in working, search and ordering independently of their parents", () => {
+  const parent = makeThread({
+    id: ThreadId.make("settled-parent"),
+    title: "Parent",
+    settledOverride: "settled",
+    settledAt: NOW,
+    snoozedUntil: "2099-01-01T00:00:00.000Z",
+    snoozedAt: NOW,
+  });
+  const rawChild = makeRawThreadShell({
+    id: ThreadId.make("promoted-child"),
+    title: "Promoted child",
+    lineage: {
+      parentThreadId: parent.id,
+      rootThreadId: parent.id,
+      relationshipToParent: "subagent",
+    },
+    activeRunId: RunId.make("child-followup"),
+    latestRunId: RunId.make("child-followup"),
+    status: "running",
+    creationSource: "mcp",
+  });
+  const rawNested = {
+    ...rawChild,
+    id: ThreadId.make("promoted-nested"),
+    title: "Promoted nested child",
+    lineage: { ...rawChild.lineage, parentThreadId: rawChild.id },
+  };
+  for (const presentation of ["top_level", "default", undefined] as const) {
+    const children = [rawChild, rawNested].map((thread) =>
+      presentThreadShell(environmentId, { ...thread, presentation }),
+    );
+    const threads = [parent, ...children];
+    const expectedIds =
+      presentation === "top_level" ? children.map((thread) => thread.id).sort() : [];
+    const layout = buildThreadListV2Items({
+      threads,
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+      workingShelfEnabled: true,
+      workingShelfExpanded: true,
+    });
+    expect(layout.items.map((item) => item.thread.id).sort()).toEqual(expectedIds);
+    expect(layout.workingCount).toBe(expectedIds.length);
+    expect(
+      buildThreadListV2Items({ threads, environmentId: null, searchQuery: "child", now: NOW })
+        .items.map((item) => item.thread.id)
+        .sort(),
+    ).toEqual(expectedIds);
+    expect(
+      getThreadListV2OrderedSection({ threads, section: "active", now: NOW })
+        .map((thread) => thread.id)
+        .sort(),
+    ).toEqual(expectedIds);
+  }
+});
+
 const BASE_MS = Date.parse(NOW);
 const isoAt = (ms: number) => new Date(ms).toISOString();
 const MINUTE_MS = 60_000;

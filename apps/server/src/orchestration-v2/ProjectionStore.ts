@@ -56,6 +56,7 @@ import {
   OrchestrationV2SubagentJson as OrchestrationV2SubagentJsonSchema,
   OrchestrationV2TurnItemJson as OrchestrationV2TurnItemJsonSchema,
   orchestrationV2RunWorkStartedAt,
+  isProviderNativeSubagentThread,
   RunId,
   MessageId,
   RuntimeRequestId,
@@ -1063,6 +1064,7 @@ type ShellThreadRow = {
   readonly forked_from_run_source_thread_id: string | null;
   readonly latest_run_id: string | null;
   readonly latest_run_status: string | null;
+  readonly native_root_payload_json: string | null;
   readonly latest_run_requested_at: string | null;
   readonly latest_run_started_at: string | null;
   readonly latest_run_completed_at: string | null;
@@ -1507,6 +1509,17 @@ export function threadShellFromProjection(
     projection.runs
       .filter(isActivityRunForShell)
       .toSorted((left, right) => right.ordinal - left.ordinal)[0] ?? null;
+  const nativeRoot =
+    latestRun === null && isProviderNativeSubagentThread(projection.thread)
+      ? (projection.nodes
+          .filter((node) => node.kind === "root_turn" && node.runId === null)
+          .toSorted(
+            (left, right) =>
+              (right.startedAt === null ? 0 : DateTime.toEpochMillis(right.startedAt)) -
+                (left.startedAt === null ? 0 : DateTime.toEpochMillis(left.startedAt)) ||
+              right.id.localeCompare(left.id),
+          )[0] ?? null)
+      : null;
   const liveRunIds = new Set(projection.runs.filter(isActivityRunForShell).map((run) => run.id));
   const pendingRuntimeRequest =
     projection.runtimeRequests
@@ -1567,6 +1580,9 @@ export function threadShellFromProjection(
       ? {}
       : { activeOrderKey: projection.thread.activeOrderKey }),
     lineage: projection.thread.lineage,
+    ...(projection.thread.presentation === undefined
+      ? {}
+      : { presentation: projection.thread.presentation }),
     forkedFrom: projection.thread.forkedFrom,
     activeProviderThreadId: projection.thread.activeProviderThreadId,
     ...(projection.thread.historyOrigin === undefined
@@ -1577,10 +1593,16 @@ export function threadShellFromProjection(
     latestRunStartedAt: latestRun?.startedAt ?? null,
     latestRunCompletedAt: latestRun?.completedAt ?? null,
     activeRunId: activeRun?.id ?? null,
-    activityRunStatus: activityRun?.status ?? null,
+    activityRunStatus:
+      activityRun?.status ??
+      (nativeRoot?.status === "running" || nativeRoot?.status === "waiting"
+        ? nativeRoot.status
+        : null),
     activityRunStartedAt:
-      activityRun === null ? null : orchestrationV2RunWorkStartedAt(activityRun),
-    status: latestRun?.status ?? "idle",
+      activityRun === null
+        ? (nativeRoot?.startedAt ?? null)
+        : orchestrationV2RunWorkStartedAt(activityRun),
+    status: latestRun?.status ?? shellStatusFromStoredRunStatus(nativeRoot?.status ?? null),
     ...threadErrorSummary(
       latestRootProviderFailure(latestRun, projection.turnItems),
       providerSession?.lastError ?? null,
@@ -1704,7 +1726,10 @@ type ShellThreadState = {
 function shellStatusFromStoredRunStatus(status: string | null): OrchestrationV2ShellThreadStatus {
   switch (status) {
     case null:
+    case "idle":
       return "idle";
+    case "pending":
+      return "starting";
     case "preparing":
     case "queued":
     case "starting":
@@ -1824,6 +1849,9 @@ function shellFromState(input: {
       ? {}
       : { activeOrderKey: input.state.thread.activeOrderKey }),
     lineage: input.state.thread.lineage,
+    ...(input.state.thread.presentation === undefined
+      ? {}
+      : { presentation: input.state.thread.presentation }),
     forkedFrom: input.state.thread.forkedFrom,
     activeProviderThreadId: input.state.thread.activeProviderThreadId,
     ...(input.state.thread.historyOrigin === undefined
@@ -5391,6 +5419,15 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               END AS forked_from_run_source_thread_id,
               presented.run_id AS latest_run_id,
               presented.status AS latest_run_status,
+              CASE WHEN presented.run_id IS NULL
+                AND json_extract(t.payload_json, '$.creationSource') = 'provider'
+                AND json_extract(t.payload_json, '$.lineage.relationshipToParent') = 'subagent'
+              THEN (
+                SELECT node.payload_json FROM orchestration_v2_projection_nodes node
+                WHERE node.thread_id = t.thread_id AND node.run_id IS NULL AND node.kind = 'root_turn'
+                ORDER BY COALESCE(node.started_at, '') DESC, node.node_id DESC
+                LIMIT 1
+              ) ELSE NULL END AS native_root_payload_json,
               presented.requested_at AS latest_run_requested_at,
               json_extract(presented.payload_json, '$.startedAt') AS latest_run_started_at,
               presented.completed_at AS latest_run_completed_at,
@@ -5892,8 +5929,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           row.terminal_failure_payload_json === null
             ? null
             : yield* decodeTurnItemPayload(row.terminal_failure_payload_json);
+        const nativeRoot =
+          row.native_root_payload_json === null
+            ? null
+            : yield* decodeNodePayload(row.native_root_payload_json);
         let latestRunId = row.latest_run_id === null ? null : RunId.make(row.latest_run_id);
-        let latestRunStatus = shellStatusFromStoredRunStatus(row.latest_run_status);
+        let latestRunStatus = shellStatusFromStoredRunStatus(
+          row.latest_run_status ?? nativeRoot?.status ?? null,
+        );
         let latestRunRequestedAt =
           row.latest_run_requested_at === null
             ? null
@@ -5960,7 +6003,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           activeRunId: row.active_run_id === null ? null : RunId.make(row.active_run_id),
           activityRunStartedAt:
             row.activity_run_started_at === null
-              ? null
+              ? (nativeRoot?.startedAt ?? null)
               : DateTime.makeUnsafe(row.activity_run_started_at),
           activityRunStatus:
             row.activity_run_status === "preparing" ||
@@ -5968,7 +6011,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             row.activity_run_status === "running" ||
             row.activity_run_status === "waiting"
               ? row.activity_run_status
-              : null,
+              : nativeRoot?.status === "running" || nativeRoot?.status === "waiting"
+                ? nativeRoot.status
+                : null,
           ...threadErrorSummary(
             terminalFailureItem?.type === "error" ? terminalFailureItem.failure : null,
             row.last_error,

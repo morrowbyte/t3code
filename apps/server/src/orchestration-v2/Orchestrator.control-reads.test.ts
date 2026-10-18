@@ -531,7 +531,7 @@ it.effect("settles only the stopped run's background work, once", () =>
   }).pipe(Effect.provide(layerTest)),
 );
 
-it.effect("keeps delegated child pull-request links independent of the parent", () =>
+it.effect("promotes child presentation without changing execution ownership", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -618,6 +618,133 @@ it.effect("keeps delegated child pull-request links independent of the parent", 
     const parentAfterChildLink = yield* projections.getThreadProjection(parentThreadId);
     assert.deepEqual(parentAfterChildLink.thread.linkedPullRequest, parentPullRequest);
     assert.deepEqual(parentAfterChildLink.thread.pullRequests, parent.thread.pullRequests);
+
+    const childRun = linkedChild.runs[0]!;
+    yield* orchestrator.dispatch({
+      type: "delegated_task.request",
+      commandId: CommandId.make("delegate-nested-presentation"),
+      parentThreadId: childThreadId,
+      parentRunId: childRun.id,
+      parentNodeId: childRun.rootNodeId!,
+      task: "Nested work",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      createdBy: "agent",
+      creationSource: "mcp",
+    });
+    const childWithNested = yield* projections.getThreadProjection(childThreadId);
+    const nestedThreadId = childWithNested.subagents[0]!.childThreadId!;
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("child-presentation-followup"),
+      threadId: childThreadId,
+      messageId: MessageId.make("message:child-presentation-followup"),
+      text: "Continue in this same child thread",
+      attachments: [],
+      dispatchMode: { type: "queue_after_active" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const now = yield* DateTime.now;
+    const eventSink = yield* EventSink.EventSinkV2;
+    yield* eventSink.write({
+      events: [
+        {
+          type: "run.updated",
+          id: EventId.make("complete-presentation-parent"),
+          threadId: parentThreadId,
+          runId: parentRun.id,
+          occurredAt: now,
+          payload: { ...parentRun, status: "completed", completedAt: now },
+        },
+      ],
+    });
+    yield* orchestrator.dispatch({
+      type: "thread.settle",
+      commandId: CommandId.make("settle-presentation-parent"),
+      threadId: parentThreadId,
+    });
+    yield* orchestrator.dispatch({
+      type: "thread.snooze",
+      commandId: CommandId.make("snooze-presentation-parent"),
+      threadId: parentThreadId,
+      snoozedUntil: "2099-01-01T00:00:00.000Z",
+    });
+    const parentBeforePromotion = yield* projections.getThreadProjection(parentThreadId);
+    const sql = yield* SqlClient.SqlClient;
+    const outboxBefore = yield* sql`SELECT COUNT(*) AS count FROM orchestration_v2_effect_outbox`;
+    for (const targetId of [childThreadId, nestedThreadId]) {
+      const before = yield* projections.getThreadProjection(targetId);
+      const promote = {
+        type: "thread.metadata.update" as const,
+        commandId: CommandId.make(`promote:${targetId}`),
+        threadId: targetId,
+        presentation: "top_level" as const,
+      };
+      const receipt = yield* orchestrator.dispatch(promote);
+      assert.deepEqual(
+        receipt.storedEvents.map(({ event }) => event.type),
+        ["thread.metadata-updated"],
+      );
+      const replay = yield* orchestrator.dispatch(promote);
+      assert.equal(replay.sequence, receipt.sequence);
+      const promoted = yield* projections.getThreadProjection(targetId);
+      assert.equal(promoted.thread.presentation, "top_level");
+      assert.deepEqual(
+        {
+          ...promoted,
+          thread: {
+            ...promoted.thread,
+            presentation: undefined,
+            updatedAt: before.thread.updatedAt,
+          },
+          updatedAt: before.updatedAt,
+        },
+        { ...before, thread: { ...before.thread, presentation: undefined } },
+      );
+      assert.equal((yield* projections.getThreadShell(targetId))?.presentation, "top_level");
+      assert.equal(
+        (yield* projections.getShellSnapshot()).threads.find((thread) => thread.id === targetId)
+          ?.presentation,
+        "top_level",
+      );
+      yield* orchestrator.dispatch({
+        ...promote,
+        commandId: CommandId.make(`unpromote:${targetId}`),
+        presentation: "default",
+      });
+      const restored = yield* projections.getThreadProjection(targetId);
+      assert.equal(restored.thread.presentation, "default");
+      assert.deepEqual(restored.thread.lineage, before.thread.lineage);
+    }
+    assert.deepEqual(yield* projections.getThreadProjection(parentThreadId), parentBeforePromotion);
+    assert.deepEqual(
+      yield* sql`SELECT COUNT(*) AS count FROM orchestration_v2_effect_outbox`,
+      outboxBefore,
+    );
+    const nativeThreadId = ThreadId.make("thread:native-presentation");
+    yield* eventSink.write({
+      events: [
+        {
+          type: "thread.created",
+          id: EventId.make("create-native-presentation"),
+          threadId: nativeThreadId,
+          occurredAt: now,
+          payload: { ...child.thread, id: nativeThreadId, creationSource: "provider" },
+        },
+      ],
+    });
+    const nativeError = yield* orchestrator
+      .dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make("promote-native-rejected"),
+        threadId: nativeThreadId,
+        presentation: "top_level",
+      })
+      .pipe(Effect.flip);
+    assert.equal(nativeError._tag, "OrchestratorSubagentThreadReadOnlyError");
+    assert.isUndefined((yield* projections.getThreadShell(nativeThreadId))?.presentation);
   }).pipe(Effect.provide(layerTest)),
 );
 

@@ -526,10 +526,188 @@ export function filterSidebarV2VisibleThreads<
   return threads.filter(
     (thread) =>
       thread.archivedAt === null &&
-      !isSidebarSubagentThread(thread) &&
       (scopedProjectKeys === null ||
         scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
   );
+}
+
+export interface SidebarHierarchyRow {
+  readonly key: string;
+  readonly section: SidebarSection;
+  readonly displaySection: SidebarSection;
+  readonly depth: number;
+  readonly hasChildren: boolean;
+  readonly expanded: boolean;
+  readonly contextOnly: boolean;
+  readonly descendantCount: number;
+  readonly activeDescendantCount: number;
+}
+
+type SidebarHierarchyThread = Pick<
+  SidebarThreadSummary,
+  "id" | "environmentId" | "projectId" | "lineage" | "presentation"
+>;
+
+export interface SidebarFamilyDisclosure {
+  readonly routeKey: string | null;
+  readonly expandedKeys: ReadonlySet<string>;
+  readonly closedKeys: ReadonlySet<string>;
+}
+
+export function revealSidebarRouteAncestors(
+  previous: SidebarFamilyDisclosure,
+  threads: readonly SidebarHierarchyThread[],
+  routeKey: string | null,
+): SidebarFamilyDisclosure {
+  if (previous.routeKey === routeKey) return previous;
+  const byKey = new Map(threads.map((thread) => [`${thread.environmentId}:${thread.id}`, thread]));
+  if (routeKey !== null && !byKey.has(routeKey)) return previous;
+  const expandedKeys = new Set(previous.expandedKeys);
+  const closedKeys = new Set(previous.closedKeys);
+  const seen = new Set<string>();
+  let thread = routeKey === null ? undefined : byKey.get(routeKey);
+  while (
+    thread !== undefined &&
+    thread.presentation !== "top_level" &&
+    thread.lineage.relationshipToParent === "subagent" &&
+    thread.lineage.parentThreadId !== null
+  ) {
+    const key = `${thread.environmentId}:${thread.lineage.parentThreadId}`;
+    const parent = byKey.get(key);
+    if (parent === undefined || parent.projectId !== thread.projectId || seen.has(key)) break;
+    seen.add(key);
+    expandedKeys.add(key);
+    closedKeys.delete(key);
+    thread = parent;
+  }
+  return { routeKey, expandedKeys, closedKeys };
+}
+
+export function buildSidebarHierarchy(input: {
+  readonly threads: readonly SidebarHierarchyThread[];
+  readonly sectionByKey: ReadonlyMap<string, SidebarSection>;
+  readonly visibleKeys: ReadonlySet<string>;
+  readonly workingKeys: ReadonlySet<string>;
+  readonly expandedKeys: ReadonlySet<string>;
+  readonly closedKeys?: ReadonlySet<string>;
+  readonly activeKey: string | null;
+  readonly workingShelfEnabled: boolean;
+}): SidebarHierarchyRow[] {
+  const keyOf = (thread: (typeof input.threads)[number]) => `${thread.environmentId}:${thread.id}`;
+  const byKey = new Map(input.threads.map((thread) => [keyOf(thread), thread]));
+  const rank = new Map(input.threads.map((thread, index) => [keyOf(thread), index]));
+  const parents = new Map<string, string>();
+  for (const thread of input.threads) {
+    if (
+      thread.presentation === "top_level" ||
+      thread.lineage.relationshipToParent !== "subagent" ||
+      !thread.lineage.parentThreadId
+    )
+      continue;
+    const key = keyOf(thread);
+    const parentKey = `${thread.environmentId}:${thread.lineage.parentThreadId}`;
+    const parent = byKey.get(parentKey);
+    if (parent && parent.projectId === thread.projectId && parentKey !== key)
+      parents.set(key, parentKey);
+  }
+  // Malformed lineage must not make an entire family unreachable.
+  const roots = new Map<string, string>();
+  for (const key of byKey.keys()) {
+    const path: string[] = [];
+    const seen = new Set<string>();
+    let root = key;
+    while (parents.has(root) && !roots.has(root)) {
+      if (seen.has(root)) {
+        parents.delete(root);
+        break;
+      }
+      seen.add(root);
+      path.push(root);
+      root = parents.get(root)!;
+    }
+    root = roots.get(root) ?? root;
+    roots.set(key, root);
+    for (const member of path) roots.set(member, root);
+  }
+  const children = new Map<string, string[]>();
+  for (const [child, parent] of parents) {
+    const siblings = children.get(parent) ?? [];
+    siblings.push(child);
+    children.set(parent, siblings);
+  }
+  const relevant = new Set<string>();
+  for (const key of [
+    ...input.workingKeys,
+    ...(input.activeKey === null ? [] : [input.activeKey]),
+    ...[...input.visibleKeys].filter((key) => !input.visibleKeys.has(roots.get(key) ?? key)),
+  ]) {
+    let current: string | undefined = key;
+    while (current !== undefined && byKey.has(current) && !relevant.has(current)) {
+      relevant.add(current);
+      current = parents.get(current);
+    }
+  }
+  const counts = new Map<string, { total: number; active: number }>();
+  for (const key of byKey.keys()) {
+    let parent = parents.get(key);
+    while (parent !== undefined) {
+      const count = counts.get(parent) ?? { total: 0, active: 0 };
+      count.total++;
+      if (input.workingKeys.has(key)) count.active++;
+      counts.set(parent, count);
+      parent = parents.get(parent);
+    }
+  }
+  const families = new Map<string, string[]>();
+  for (const key of byKey.keys()) {
+    const root = roots.get(key)!;
+    const family = families.get(root) ?? [];
+    family.push(key);
+    families.set(root, family);
+  }
+  const groups: Array<{ root: string; section: SidebarSection; rank: number }> = [];
+  for (const [root, family] of families) {
+    const visible = family.filter((key) => input.visibleKeys.has(key) || relevant.has(key));
+    if (visible.length === 0) continue;
+    const working = family.some((key) => input.workingKeys.has(key));
+    const anchor = visible.find((key) => input.visibleKeys.has(key)) ?? root;
+    groups.push({
+      root,
+      section: working
+        ? input.workingShelfEnabled
+          ? "working"
+          : "active"
+        : (input.sectionByKey.get(anchor) ?? "active"),
+      rank: Math.min(...visible.map((key) => rank.get(key)!)),
+    });
+  }
+  groups.sort((a, b) => a.rank - b.rank);
+  const rows: SidebarHierarchyRow[] = [];
+  for (const group of groups) {
+    const stack = [{ key: group.root, depth: 0 }];
+    while (stack.length > 0) {
+      const { key, depth } = stack.pop()!;
+      const descendants = children.get(key) ?? [];
+      const expanded = input.expandedKeys.has(key) && !input.closedKeys?.has(key);
+      const section = input.sectionByKey.get(key) ?? group.section;
+      rows.push({
+        key,
+        section,
+        displaySection: group.section,
+        depth,
+        hasChildren: descendants.length > 0,
+        expanded,
+        contextOnly: section !== group.section || !input.visibleKeys.has(key),
+        descendantCount: counts.get(key)?.total ?? 0,
+        activeDescendantCount: counts.get(key)?.active ?? 0,
+      });
+      for (let index = descendants.length - 1; index >= 0; index--) {
+        const child = descendants[index]!;
+        if (expanded) stack.push({ key: child, depth: depth + 1 });
+      }
+    }
+  }
+  return rows;
 }
 
 export function getSidebarForkParentThreadId(
