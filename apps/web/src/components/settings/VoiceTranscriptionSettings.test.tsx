@@ -133,12 +133,14 @@ it.each(["all", "project", "checkout"] as const)(
   },
 );
 
-it("names the explicit host and sends reads and changes only to that host", async () => {
+it("loads and saves settings only for the explicit host", async () => {
   state.request.mockResolvedValue(settings("model-a"));
   await act(async () => {
     renderer = create(<VoiceTranscriptionSettingsPanel />);
   });
-  expect(JSON.stringify(renderer!.toJSON())).toContain("Host environment-a");
+  expect(renderer!.root.findByProps({ "aria-label": "Transcription model" }).props.value).toBe(
+    "model-a",
+  );
   await act(async () => {
     renderer!.root.findByType("button").props.onClick();
   });

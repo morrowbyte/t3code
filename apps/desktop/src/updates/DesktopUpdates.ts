@@ -743,7 +743,6 @@ export const make = Effect.gen(function* () {
     });
     yield* fileSystem.writeFileString(installRecordPath, text);
     yield* history.patch(id, "awaiting-restart", { targetVersion });
-    yield* setState(yield* Ref.get(updateStateRef));
   });
   const removeInstallRecord = fileSystem
     .remove(installRecordPath, { force: true })
