@@ -32,6 +32,7 @@ import {
 } from "@t3tools/client-runtime/work-log/presentation";
 import {
   resolveT3McpToolDefinition,
+  resolveT3McpToolId,
   resolveT3McpToolPresentation,
   type T3McpToolLogo,
   type T3McpToolPresentation,
@@ -154,6 +155,13 @@ export interface LocalThreadMessage {
 
 type RawThreadFeedEntry =
   | {
+      readonly type: "agent-send";
+      readonly id: string;
+      readonly createdAt: string;
+      readonly runId: RunId | null;
+      readonly projectedItem: OrchestrationV2ProjectedTurnItem;
+    }
+  | {
       readonly type: "message";
       readonly id: string;
       readonly createdAt: string;
@@ -188,7 +196,7 @@ type RawThreadFeedEntry =
 export type ThreadFeedEntry = ThreadFeedEntryContent & { readonly continuesWorkLog?: boolean };
 
 type ThreadFeedEntryContent =
-  | Extract<RawThreadFeedEntry, { type: "message" | "html-render" | "mcp-app" }>
+  | Extract<RawThreadFeedEntry, { type: "message" | "html-render" | "mcp-app" | "agent-send" }>
   | {
       readonly type: "activity-group";
       readonly id: string;
@@ -1767,6 +1775,18 @@ export function buildThreadFeed(
       continue;
     }
     const createdAt = DateTime.formatIso(item.startedAt ?? item.updatedAt);
+    if (item.type === "dynamic_tool" && resolveT3McpToolId(item.toolName) === "t3_thread_send") {
+      const entry: RawThreadFeedEntry = {
+        type: "agent-send",
+        id: `agent-send:${row.visibility}:${row.sourceThreadId}:${row.sourceItemId}`,
+        createdAt,
+        runId: item.runId,
+        projectedItem: row,
+      };
+      projectedEntriesCache.set(row, { attemptId, entry });
+      entries.push(entry);
+      continue;
+    }
     const render =
       item.type === "dynamic_tool" && item.status === "completed"
         ? htmlRenderFromToolItem(item)
