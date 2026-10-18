@@ -72,24 +72,25 @@ const make = Effect.gen(function* () {
     // response never replays a mutation; the caller must reconcile with read.
     return yield* Effect.scoped(
       Effect.gen(function* () {
-        const client = yield* RpcClient.make(WsRpcGroup).pipe(
-          Effect.provide(
-            Layer.effect(
-              RpcClient.Protocol,
-              RpcClient.makeProtocolSocket({
-                retryTransientErrors: false,
-                retryPolicy: Schedule.recurs(0),
-              }),
-            ).pipe(
-              Layer.provide(
-                Socket.layerWebSocket(socketUrl.href).pipe(
-                  Layer.provide(Socket.layerWebSocketConstructorGlobal),
-                ),
+        // Keep the socket protocol alive for the request, rather than only
+        // for construction of the client that will use it.
+        const protocolContext = yield* Layer.build(
+          Layer.effect(
+            RpcClient.Protocol,
+            RpcClient.makeProtocolSocket({
+              retryTransientErrors: false,
+              retryPolicy: Schedule.recurs(0),
+            }),
+          ).pipe(
+            Layer.provide(
+              Socket.layerWebSocket(socketUrl.href).pipe(
+                Layer.provide(Socket.layerWebSocketConstructorGlobal),
               ),
-              Layer.provide(RpcSerialization.layerJson),
             ),
+            Layer.provide(RpcSerialization.layerJson),
           ),
         );
+        const client = yield* RpcClient.make(WsRpcGroup).pipe(Effect.provide(protocolContext));
         yield* stage("rpc-ready");
         return yield* request.operation === "read" || request.operation === "open-results"
           ? client[WS_METHODS.nativeAuthorRead](request)
