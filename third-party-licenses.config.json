@@ -151,6 +151,24 @@
   ],
   "packageOverrides": [
     {
+      "name": "remark-math",
+      "version": "6.0.0",
+      "sourceUrl": "https://raw.githubusercontent.com/remarkjs/remark-math/d5d0660b150810a535bbb07eac6cc96a4510aa24/license",
+      "noticeFile": "third-party-notices/remark-math-6.0.0.txt"
+    },
+    {
+      "name": "@viz-js/viz",
+      "version": "3.28.0",
+      "sourceUrl": "https://raw.githubusercontent.com/mdaines/viz-js/b9f689720033ec89b678cf0b151817728b6be1de/LICENSE",
+      "noticeFile": "third-party-notices/viz-3.28.0.txt"
+    },
+    {
+      "name": "saxes",
+      "version": "6.0.0",
+      "sourceUrl": "https://raw.githubusercontent.com/lddubeau/saxes/211fa0ebec9b628affc09219199639887174bfc3/LICENSE",
+      "noticeFile": "third-party-notices/saxes-6.0.0.txt"
+    },
+    {
       "name": "@bufbuild/protobuf",
       "version": "1.10.0",
       "generatedNotices": [

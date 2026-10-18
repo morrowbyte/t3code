@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+node scripts/sync-third-party-license-notices.ts --check
+
 node --test scripts/weasel/nightly-after-ci.test.cjs
 
 bash scripts/weasel/test.sh
