@@ -310,8 +310,8 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
   });
 
   const agentReadiness = Effect.fn("DeviceService.agentReadiness")(function* (
-    hostId?: DeviceHostId,
-    threadId?: ThreadId,
+    hostId: DeviceHostId | undefined,
+    threadId: ThreadId | undefined,
   ) {
     if (!(yield* agentAccessFor(threadId))) return null;
     const host = yield* resolveHost(hostId);
@@ -351,7 +351,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
   }, lifecycleLock.withPermit);
   const agentReadinessIfSupported: DeviceService["Service"]["agentReadinessIfSupported"] = (
     hostId,
-  ) => agentReadiness(hostId);
+  ) => agentReadiness(hostId, undefined);
 
   const currentReadiness: DeviceService["Service"]["currentReadiness"] = (hostId) =>
     resolveHost(hostId).pipe(
