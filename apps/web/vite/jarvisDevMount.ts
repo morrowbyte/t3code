@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Vite serves explicit local source files in its Node plugin host; this is not an Effect runtime service.
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";

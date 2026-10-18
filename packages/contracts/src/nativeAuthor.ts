@@ -13,15 +13,24 @@ import { OrchestrationV2RunStatus } from "./orchestrationV2.ts";
 
 export const NATIVE_AUTHOR_MAX_FRAME_BYTES = 65_536;
 
+// Preserve strict UTF-16 validation in clients whose TypeScript library target predates ES2024.
+const isWellFormed = (value: string): boolean => {
+  for (const character of value) {
+    const unit = character.charCodeAt(0);
+    if (character.length === 1 && unit >= 0xd800 && unit <= 0xdfff) return false;
+  }
+  return true;
+};
+
 const SourceId = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(128),
-  Schema.makeFilter((value) => value.trim() === value && value.isWellFormed()),
+  Schema.makeFilter((value) => value.trim() === value && isWellFormed(value)),
 );
 const Text = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(24_000),
-  Schema.makeFilter((value) => value.trim().length > 0 && value.isWellFormed()),
+  Schema.makeFilter((value) => value.trim().length > 0 && isWellFormed(value)),
 );
 
 export const NativeAuthorSource = Schema.Struct({
@@ -94,7 +103,7 @@ export const NativeAuthorOutput = Schema.Struct({
   kind: Schema.Literals(["assistant-text", "phase"]),
   text: Schema.String.check(
     Schema.isMaxLength(8_192),
-    Schema.makeFilter((value) => value.isWellFormed()),
+    Schema.makeFilter((value) => isWellFormed(value)),
   ),
   textOffset: NonNegativeInt,
   totalTextLength: NonNegativeInt,

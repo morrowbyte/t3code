@@ -633,7 +633,7 @@ it.effect("requires the destination read grant before delegating feature timing"
       const outcome = yield* client[WS_METHODS.projectsFeatureTiming]({
         projectId: ProjectId.make("project:timing"),
       }).pipe(Effect.result);
-      if (scopes.includes(AuthOrchestrationReadScope)) expect(calls).toBe(1);
+      if (scopes.some((scope) => scope === AuthOrchestrationReadScope)) expect(calls).toBe(1);
       else {
         expect(outcome).toMatchObject({ _tag: "Failure" });
         expect(calls).toBe(0);

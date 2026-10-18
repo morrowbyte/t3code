@@ -127,6 +127,10 @@ import {
   HttpServerResponse,
 } from "effect/http";
 import { RpcSerialization, RpcServer } from "effect/rpc";
+import type * as Rpc from "effect/rpc/Rpc";
+import type * as RpcGroup from "effect/rpc/RpcGroup";
+import type * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
+import type * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as ServerConfig from "./config.ts";
@@ -583,8 +587,33 @@ const PROVIDER_STATUS_DEBOUNCE_MS = 200;
 // Middleware added later wraps middleware added earlier, so instrumentation wraps authorization.
 const ServerWsRpcGroup = WsRpcGroup.middleware(RpcInstrumentation);
 
-// Keeping the native service in the handler context avoids exceeding inference
-// depth in the large handler-builder generator.
+// Materialize the signatures once so deriving handler services does not repeatedly
+// expand the complete RPC schema union.
+type WsRpcHandlerServices =
+  | NativeAuthorService.NativeAuthorService
+  | ProjectEnrichmentService.ProjectEnrichmentService
+  | OrchestrationEventStore.OrchestrationEventStore
+  | ProjectService.ProjectService
+  | ProjectStore.ProjectStoreV2
+  | SqlClient.SqlClient
+  | ThreadManagementService.ThreadManagementService
+  | Crypto.Crypto
+  | FileSystem.FileSystem
+  | Path.Path
+  | TraceDiagnostics.TraceDiagnostics
+  | ServerConfig.ServerConfig
+  | ServerSecretStore.ServerSecretStore
+  | Orchestrator.OrchestratorV2
+  | ProjectFaviconResolver.ProjectFaviconResolver
+  | WorkspacePaths.WorkspacePaths;
+type WsRpcHandlerSignatures = {
+  readonly [Current in RpcGroup.Rpcs<typeof ServerWsRpcGroup> as Current["_tag"]]: Rpc.ToHandlerFn<
+    Current,
+    WsRpcHandlerServices
+  >;
+};
+interface WsRpcHandlers extends WsRpcHandlerSignatures {}
+
 const nativeAuthorRpcHandler = (
   request: NativeAuthorRequest,
 ): Effect.Effect<NativeAuthorState, NativeAuthorError, NativeAuthorService.NativeAuthorService> =>
@@ -1839,7 +1868,7 @@ const layerWsRpc = (
         return result;
       });
 
-      const handlers = ServerWsRpcGroup.of({
+      const handlers = ServerWsRpcGroup.of<WsRpcHandlers>({
         [WS_METHODS.nativeAuthorRead]: nativeAuthorRpcHandler,
         [WS_METHODS.nativeAuthorWrite]: nativeAuthorRpcHandler,
         ...agentObservatoryReadHandlers(observatoryService),
