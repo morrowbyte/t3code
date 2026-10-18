@@ -99,6 +99,15 @@ describe("parseAgentMessage", () => {
     });
   });
 
+  it("retains an explicit blocking status when a short message has no detail sections", () => {
+    expect(parseAgentMessage("Kurz: Upload geprüft.\nStatus: blockiert")).toEqual({
+      kind: "structured",
+      summary: "Upload geprüft.",
+      status: "blockiert",
+      sections: [],
+    });
+  });
+
   it("never infers status from summary or technical prose", () => {
     const parsed = parseAgentMessage(
       "Kurz: Fertig, HTTP 403 bleibt blockiert.\nStatus: vielleicht fertig\nDetails: **Offen: kaputt",

@@ -53,10 +53,16 @@ export const AgentMessage = memo(function AgentMessage(props: {
         ? "An · Ziel nicht hinterlegt"
         : `${actor} · Sender nicht hinterlegt`;
   const metadata = (
-    <Text className="shrink text-xs text-foreground-muted" numberOfLines={1}>
-      {senderLabel}
-      {props.senderThreadId ? " ↗" : ""}
-    </Text>
+    <View className="w-full min-w-0 flex-row items-center gap-1">
+      <Text className="min-w-0 flex-1 text-xs text-foreground-muted" numberOfLines={1}>
+        {senderLabel}
+      </Text>
+      {props.senderThreadId ? (
+        <View className="shrink-0">
+          <SymbolView name="arrow.up.right" size={14} tintColorClassName="accent-foreground-muted" />
+        </View>
+      ) : null}
+    </View>
   );
 
   return (
@@ -81,6 +87,14 @@ export const AgentMessage = memo(function AgentMessage(props: {
         )}
         <Text className="text-xs tabular-nums text-foreground-muted">{props.timestampLabel}</Text>
       </View>
+      {structured.status ? (
+        <Text
+          accessibilityLabel={`Nachrichtenstatus: ${structured.status}`}
+          className="text-sm font-t3-medium text-foreground-muted"
+        >
+          Status: {structured.status}
+        </Text>
+      ) : null}
       <Pressable
         ref={trigger}
         className="min-h-12 flex-row items-start gap-3 py-2"
@@ -132,30 +146,34 @@ export const AgentMessage = memo(function AgentMessage(props: {
             : props.children(parts.body)}
         </View>
       ) : null}
-      <View className="mt-2 flex-row flex-wrap items-center gap-2">
-        <Button
-          label={raw ? "Hide original" : "Original"}
-          tone="text"
-          onPress={() => setRaw((value) => !value)}
-        />
-        <Button
-          label={copiedText === props.text ? "Copied" : "Copy original"}
-          tone="text"
-          disabled={props.text.length === 0}
-          onPress={() => {
-            void tryCopyTextWithHaptic(props.text).then((copied) => {
-              if (copied) setCopiedText(props.text);
-              else Dialog.alert("Could not copy", "Try again.");
-            });
-          }}
-        />
-        {expanded ? <Button label="Show less" tone="text" onPress={collapse} /> : null}
-        {props.streaming ? (
-          <Text accessibilityRole="text" className="text-xs text-foreground-muted">
-            Receiving…
-          </Text>
-        ) : null}
-      </View>
+      {expanded ? (
+        <View className="mt-2 flex-row flex-wrap items-center gap-2">
+          <Button
+            label={raw ? "Hide original" : "Original"}
+            tone="text"
+            onPress={() => setRaw((value) => !value)}
+          />
+          <Button
+            label={copiedText === props.text ? "Copied" : "Copy original"}
+            tone="text"
+            disabled={props.text.length === 0}
+            onPress={() => {
+              void tryCopyTextWithHaptic(props.text).then((copied) => {
+                if (copied) setCopiedText(props.text);
+                else Dialog.alert("Could not copy", "Try again.");
+              });
+            }}
+          />
+          {expanded ? <Button label="Show less" tone="text" onPress={collapse} /> : null}
+          {props.streaming ? (
+            <Text accessibilityRole="text" className="text-xs text-foreground-muted">
+              Receiving…
+            </Text>
+          ) : null}
+        </View>
+      ) : props.streaming ? (
+        <Text className="mt-2 text-xs text-foreground-muted">Receiving…</Text>
+      ) : null}
       {raw ? (
         <Text
           selectable
