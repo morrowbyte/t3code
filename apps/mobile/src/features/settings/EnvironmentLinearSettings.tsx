@@ -37,7 +37,7 @@ async function linearRequest(environmentId: EnvironmentId, action?: LinearAction
   if (
     !readEnvironmentScope(environmentId, required) ||
     (action?.type === "bind" && !readEnvironmentScope(environmentId, AuthOrchestrationReadScope)) ||
-    ((action?.type === "sync" || action?.type === "retry") &&
+    ((action?.type === "bind" || action?.type === "sync" || action?.type === "retry") &&
       !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope))
   ) {
     throw new LinearIntegrationError({ reason: "target_unavailable" });
@@ -109,13 +109,15 @@ export function EnvironmentLinearSettingsPanel(props: PanelProps) {
   const thread = threads.find((entry) => entry.id === threadId);
   const readable = props.connected && props.canRead;
   const editable = readable && props.canWrite;
+  const canDeliver = editable && props.canOperate;
 
   async function run(action?: LinearAction) {
     if (
       inFlight.current ||
       !readable ||
       (action && !editable) ||
-      ((action?.type === "retry" || action?.type === "sync") && !props.canOperate)
+      ((action?.type === "bind" || action?.type === "retry" || action?.type === "sync") &&
+        !canDeliver)
     )
       return;
     const current = generation.current;
@@ -247,7 +249,7 @@ export function EnvironmentLinearSettingsPanel(props: PanelProps) {
               <SettingsActionRow
                 icon="link"
                 label="Bind issue"
-                disabled={busy || !project || !thread || !issueId.trim()}
+                disabled={pending || !canDeliver || !project || !thread || !issueId.trim()}
                 onPress={() => {
                   if (project && thread)
                     void run({
@@ -271,6 +273,12 @@ export function EnvironmentLinearSettingsPanel(props: PanelProps) {
                     )?.title ?? binding.threadId}
                   </Text>
                   <SettingsActionRow
+                    icon="arrow.clockwise"
+                    label={`Fetch ${binding.identifier}`}
+                    disabled={pending || !canDeliver}
+                    onPress={() => void run({ type: "sync", bindingId: binding.id })}
+                  />
+                  <SettingsActionRow
                     label={`Unbind ${binding.identifier}`}
                     disabled={busy}
                     onPress={() => void run({ type: "unbind", bindingId: binding.id })}
@@ -291,7 +299,7 @@ export function EnvironmentLinearSettingsPanel(props: PanelProps) {
                     icon="arrow.clockwise"
                     label="Retry delivery"
                     detail={delivery.outcome}
-                    disabled={busy || !props.canOperate}
+                    disabled={pending || !canDeliver}
                     onPress={() => void run({ type: "retry", deliveryId: delivery.id })}
                   />
                 ))}
