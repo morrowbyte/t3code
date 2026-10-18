@@ -12,6 +12,10 @@ on:
         description: Exact source commit (fork main for publishing, dispatched branch for artifacts only)
         required: true
         type: string
+      desktop_only:
+        description: Build and publish only Windows, Linux and NixOS desktop assets
+        type: boolean
+        default: false
       recover_desktop_run_id:
         description: One-off .48 recovery only (39093205395); reuse desktop bytes and build only Android
         type: string
@@ -57,6 +61,13 @@ jobs:
         with:
           ref: ${{ inputs.source_sha }}
           fetch-depth: 0
+
+      - name: Validate platform selection
+        env:
+          DESKTOP_ONLY: ${{ inputs.desktop_only }}
+          RECOVERY_RUN_ID: ${{ inputs.recover_desktop_run_id }}
+        run: |
+          test "$DESKTOP_ONLY" != true || test -z "$RECOVERY_RUN_ID"
 
       - id: recovery
         name: Recover only the pinned .48 desktop bytes and original proofs
@@ -730,6 +741,7 @@ jobs:
 
   build_android_apk:
     name: Build Morrowbyte Android APK
+    if: ${{ !inputs.desktop_only }}
     needs: [preflight]
     runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 60
@@ -954,7 +966,8 @@ jobs:
 
   publish:
     if: >-
-      ${{ !cancelled() && inputs.publish && needs.preflight.result == 'success' && needs.build_android_apk.result == 'success' &&
+      ${{ !cancelled() && inputs.publish && needs.preflight.result == 'success' &&
+          ((inputs.desktop_only && needs.build_android_apk.result == 'skipped') || (!inputs.desktop_only && needs.build_android_apk.result == 'success')) &&
           ((inputs.recover_desktop_run_id == '' && needs.build_bundle.result == 'success' && needs.build_linux.result == 'success' && needs.build_nixos.result == 'success' && needs.build_windows.result == 'success') ||
            (inputs.recover_desktop_run_id == '39093205395' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'skipped' && needs.build_nixos.result == 'skipped' && needs.build_windows.result == 'skipped')) }}
     needs: [preflight, build_bundle, build_linux, build_nixos, build_windows, build_android_apk]
@@ -1040,6 +1053,7 @@ jobs:
           run-install: false
 
       - name: Verify Android bytes from this build before publication
+        if: ${{ !inputs.desktop_only }}
         env:
           SOURCE_SHA: ${{ needs.preflight.outputs.android_source_sha || needs.preflight.outputs.source_sha }}
           DESKTOP_SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
@@ -1101,8 +1115,13 @@ jobs:
           PYDESKTOP
 
       - name: Verify isolated release payload
+        env:
+          DESKTOP_ONLY: ${{ inputs.desktop_only }}
         run: |
           set -euo pipefail
+          if [[ "$DESKTOP_ONLY" == true ]]; then
+            test -z "$(find release-assets -maxdepth 1 -type f \( -name '*.apk' -o -name '*.aab' -o -name '*.ipa' \) -print -quit)"
+          fi
           test -s release-assets/nightly-linux.yml
           test -s release-assets/nightly.yml
           test -s release-assets/weasel-linux-x64.tar.gz
@@ -1128,6 +1147,7 @@ jobs:
           RECOVERY_WORKFLOW_SHA256: ${{ needs.preflight.outputs.recovery_workflow_sha256 }}
           ANDROID_SOURCE_SHA: ${{ needs.preflight.outputs.android_source_sha || needs.preflight.outputs.source_sha }}
           ANDROID_LOCK_SHA256: ${{ needs.preflight.outputs.android_lock_sha256 }}
+          DESKTOP_ONLY: ${{ inputs.desktop_only }}
         run: |
           set -euo pipefail
           tag="${{ needs.preflight.outputs.tag }}"
@@ -1156,12 +1176,17 @@ jobs:
             fi
             assert_draft_release
           else
+            if [[ "$DESKTOP_ONLY" == true ]]; then
+              platform_notes="Desktop-only hotfix for Windows x64, Linux x64 and NixOS x64. No Android or macOS assets were built for this release."
+            else
+              platform_notes="Android source $ANDROID_SOURCE_SHA."
+            fi
             gh release create "$tag" \
               --target "$source_sha" \
               --title "Weasel Nightly ${{ needs.preflight.outputs.version }}" \
               --prerelease \
               --draft \
-              --notes "Fork channel desktop source $source_sha; Android source $ANDROID_SOURCE_SHA. Linux AppImage installs include a user-local installer. NixOS installs use the dedicated package and updater launcher when available at https://github.com/$GH_REPO/tree/main/packaging/nixos. Linux auto-updates stay disabled for Nix store installs. This build has no configured T3 Connect relay backend."
+              --notes "Fork channel desktop source $source_sha. $platform_notes Linux AppImage installs include a user-local installer. NixOS installs use the dedicated package and updater launcher when available at https://github.com/$GH_REPO/tree/main/packaging/nixos. Linux auto-updates stay disabled for Nix store installs. This build has no configured T3 Connect relay backend."
           fi
           # Asset replacement is permitted only while the release is still a
           # draft. Recheck immediately before each clobber in case a maintainer
@@ -1186,8 +1211,12 @@ jobs:
             printf 'publication_run_id=%s\npublication_run_attempt=%s\npublication_context_sha=%s\npublication_workflow_sha=%s\npublication_workflow_ref=%s\npublication_workflow_sha256=%s\n' \
               "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" "$GITHUB_WORKFLOW_SHA" "$GITHUB_WORKFLOW_REF" \
               "${RECOVERY_WORKFLOW_SHA256:-$(sha256sum .github/workflows/weasel-release.yml | cut -d ' ' -f 1)}"
-            printf 'android_source_sha=%s\nandroid_pnpm_lock_sha256=%s\n' \
-              "$ANDROID_SOURCE_SHA" "${ANDROID_LOCK_SHA256:-$lock_sha}"
+            if [[ "$DESKTOP_ONLY" == true ]]; then
+              printf 'release_platforms=windows-x64,linux-x64,nixos-x64\nandroid_status=not-built-desktop-only\n'
+            else
+              printf 'android_source_sha=%s\nandroid_pnpm_lock_sha256=%s\n' \
+                "$ANDROID_SOURCE_SHA" "${ANDROID_LOCK_SHA256:-$lock_sha}"
+            fi
             printf 'github_asset_digests=%s\n' "$(jq -c '[.[] | {name, digest}]' <<<"$assets_json")"
             printf 'artifact_sha256:\n'
             cat release-assets/SHA256SUMS
