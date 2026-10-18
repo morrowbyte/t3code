@@ -108,6 +108,7 @@ function ProviderAccount({
     (provider.auth.status === "unknown" && state?.phase === "succeeded");
   const isDiscovering =
     provider.driver === "acpRegistry" &&
+    provider.installed &&
     !active &&
     !signedIn &&
     !auth.error &&
@@ -115,7 +116,8 @@ function ProviderAccount({
   const needsExternalSetup =
     !active &&
     !signedIn &&
-    (provider.setup?.canAuthenticate === false ||
+    (!provider.installed ||
+      provider.setup?.canAuthenticate === false ||
       (provider.driver === "acpRegistry" && state?.methods?.length === 0));
   const url =
     interaction?.type === "browser" || interaction?.type === "deviceCode"
@@ -190,7 +192,9 @@ function ProviderAccount({
               : isDiscovering
                 ? "Discovering sign-in methods…"
                 : needsExternalSetup
-                  ? "No in-app sign-in advertised. Follow the provider's docs to finish setup."
+                  ? !provider.installed
+                    ? "Set up this provider in web or desktop Settings before signing in here."
+                    : "No in-app sign-in advertised. Follow the provider's docs to finish setup."
                   : "Connect this provider."}
         </Text>
         {signedIn && !active && provider.auth.email?.trim() ? (
