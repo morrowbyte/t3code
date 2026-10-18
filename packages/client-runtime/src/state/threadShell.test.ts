@@ -15,6 +15,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { PrimaryConnectionTarget } from "../connection/model.ts";
 import { v2Now, v2ShellSnapshot, v2ThreadShell } from "./orchestrationV2TestFixtures.ts";
 import { applyShellStreamEvent } from "./shellReducer.ts";
+import { presentThreadShell } from "./models.ts";
 import { isThreadWorking } from "./threadInbox.ts";
 import { childThreadInputsTitle, createEnvironmentThreadShellAtoms } from "./threadShell.ts";
 
@@ -53,6 +54,28 @@ function makeHarness(environmentIds: ReadonlyArray<EnvironmentId> = [environment
 }
 
 describe("v2 thread shell lists", () => {
+  it("preserves native terminal status without inventing an app run", () => {
+    for (const status of ["running", "waiting", "completed", "cancelled", "failed"] as const) {
+      const child = presentThreadShell(environmentId, {
+        ...v2ThreadShell,
+        creationSource: "provider",
+        latestRunId: null,
+        activeRunId: null,
+        activeProviderThreadId: null,
+        status,
+        activityRunStatus: null,
+        lineage: {
+          ...v2ThreadShell.lineage,
+          parentThreadId: ThreadId.make("parent"),
+          relationshipToParent: "subagent",
+        },
+      });
+      expect(child.runtime?.status).toBe(status);
+      expect(child.latestRun).toBeNull();
+      expect(child.runtime?.activeRunId).toBeNull();
+    }
+  });
+
   it("preserves ordered reference arrays when a middle thread changes", () => {
     const { registry, threads, snapshotAtom } = makeHarness();
     const snapshot = {

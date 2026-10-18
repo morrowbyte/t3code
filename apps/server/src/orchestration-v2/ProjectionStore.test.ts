@@ -2923,6 +2923,88 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
     }),
   );
 
+  it.effect("derives native runless shell status from the child's own root turn", () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const parentId = yield* addRolledBackRecoveryCandidate("native-shell-parent");
+      const parent = (yield* store.getThreadProjection(parentId)).thread;
+      const now = yield* DateTime.now;
+      const childId = ThreadId.make("thread:native-shell-child");
+      const nodeId = NodeId.make("node:native-shell-child:root");
+      yield* store.apply({
+        id: EventId.make("event:native-shell:child"),
+        type: "thread.created",
+        threadId: childId,
+        occurredAt: now,
+        payload: {
+          ...parent,
+          id: childId,
+          creationSource: "provider",
+          lineage: {
+            rootThreadId: parentId,
+            parentThreadId: parentId,
+            relationshipToParent: "subagent",
+          },
+        },
+      });
+      assert.equal((yield* store.getThreadShell(childId))?.status, "idle");
+      for (const status of [
+        "running",
+        "waiting",
+        "completed",
+        "running",
+        "cancelled",
+        "failed",
+      ] as const) {
+        const terminal = status !== "running" && status !== "waiting";
+        yield* store.apply({
+          id: EventId.make(`event:native-shell:${status}:${terminal}`),
+          type: "node.updated",
+          threadId: childId,
+          nodeId,
+          driver,
+          occurredAt: now,
+          payload: {
+            id: nodeId,
+            threadId: childId,
+            runId: null,
+            rootNodeId: nodeId,
+            parentNodeId: null,
+            kind: "root_turn",
+            status,
+            countsForRun: false,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef: null,
+            runtimeRequestId: null,
+            checkpointScopeId: null,
+            startedAt: now,
+            completedAt: terminal ? now : null,
+          },
+        });
+        const direct = (yield* store.getThreadShell(childId))!;
+        const listed = (yield* store.getShellSnapshot()).threads.find(
+          (thread) => thread.id === childId,
+        )!;
+        const projection = yield* store.getThreadProjection(childId);
+        const memory = ProjectionStore.threadShellFromProjection(projection);
+        for (const shell of [direct, listed, memory]) {
+          assert.equal(shell.status, status);
+          assert.isNull(shell.latestRunId);
+          assert.isNull(shell.activeRunId);
+          assert.equal(shell.activityRunStatus, terminal ? null : status);
+        }
+        assert.deepEqual(projection.runs, []);
+        assert.deepEqual(projection.runtimeRequests, []);
+        assert.deepEqual(projection.thread.lineage, {
+          rootThreadId: parentId,
+          parentThreadId: parentId,
+          relationshipToParent: "subagent",
+        });
+      }
+    }),
+  );
+
   it.effect("only exposes interruptible runs through the shell activeRunId", () =>
     Effect.gen(function* () {
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
