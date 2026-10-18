@@ -92,6 +92,12 @@ export const DeviceSession = Schema.Struct({
   deviceId: DeviceId,
   platform: DevicePlatform,
   openedAt: Schema.String,
+  agentDevice: Schema.optional(
+    Schema.Struct({
+      command: Schema.String,
+      targetArgs: Schema.Array(Schema.String),
+    }),
+  ),
 });
 export type DeviceSession = typeof DeviceSession.Type;
 
@@ -142,6 +148,8 @@ export const DeviceOpenInput = Schema.Struct({
   platform: DevicePlatform,
   /** Boot the simulator or emulator when it is not running. Defaults to true. */
   boot: Schema.optional(Schema.Boolean),
+  /** Resolve the calling thread's project consent before opening and return its pinned CLI. */
+  includeAgentTarget: Schema.optional(Schema.Boolean),
 });
 export type DeviceOpenInput = typeof DeviceOpenInput.Type;
 
