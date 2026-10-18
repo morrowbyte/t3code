@@ -1,4 +1,5 @@
-import { EnvironmentId } from "@t3tools/contracts";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import {
   createHashHistory,
   createRootRoute,
@@ -53,11 +54,13 @@ vi.mock(import("../ui/toast"), async (original) => ({
 }));
 
 import { DesktopWebLinkCoordinator } from "./DesktopWebLinkCoordinator";
+import { useComposerDraftStore } from "../../composerDraftStore";
 
 const environmentId = "24efa85c-862c-4de4-9b5e-aaaa041e28a4";
 const threadId =
   "thread:delegated-task:command%3Amcp%3A474c7d68-6293-4de4-9859-011aec7f079b%3Adelegate-task%3At3-iui-rich-components-e2e-20261018-bootstrap-v1";
 const encodedLink = `t3code://threads/${environmentId}/${encodeURIComponent(threadId)}`;
+const threadRef = scopeThreadRef(EnvironmentId.make(environmentId), ThreadId.make(threadId));
 let root: Root;
 let container: HTMLDivElement;
 let history: ReturnType<typeof createHashHistory>;
@@ -71,6 +74,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.clearAllMocks();
   mocks.connected = ["primary", environmentId];
+  useComposerDraftStore.getState().setPrompt(threadRef, "");
   pending = [];
   listener = undefined;
   vi.stubGlobal("desktopBridge", {
@@ -165,6 +169,41 @@ describe("desktop existing thread links", () => {
     await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalled());
     expect(router.state.location.pathname).toBe("/primary/current");
     expect(mocks.toast.mock.calls[0]?.[0].description).toContain("Connect to");
+    expectNoCreation();
+  });
+
+  it.each(['"fix"', "true", "123", '{ "fix": true }', "[1, 2]"])(
+    "preserves the raw linked prompt %s through existing-thread navigation",
+    async (prompt) => {
+      const router = await openApp();
+      const search = `?prompt=${encodeURIComponent(prompt)}&panel=diff`;
+      await act(async () => listener!(`${encodedLink}${search}`));
+      await vi.waitFor(() =>
+        expect(container.textContent).toBe(JSON.stringify({ environmentId, threadId })),
+      );
+      await vi.waitFor(() =>
+        expect(useComposerDraftStore.getState().getComposerDraft(threadRef)?.prompt).toBe(prompt),
+      );
+      expect(router.state.location.searchStr).toBe("?panel=diff");
+      expect(window.location.hash).toBe(
+        `#/${environmentId}/${encodeURIComponent(threadId)}?panel=diff`,
+      );
+      expectNoCreation();
+    },
+  );
+
+  it("keeps an existing draft until the linked prompt is explicitly accepted", async () => {
+    useComposerDraftStore.getState().setPrompt(threadRef, "Keep my draft");
+    await openApp();
+    await act(async () => listener!(`${encodedLink}?prompt=%22fix%22`));
+    await vi.waitFor(() =>
+      expect(mocks.toast).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "Linked prompt ready" }),
+      ),
+    );
+    expect(useComposerDraftStore.getState().getComposerDraft(threadRef)?.prompt).toBe(
+      "Keep my draft",
+    );
     expectNoCreation();
   });
 

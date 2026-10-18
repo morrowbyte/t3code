@@ -1,7 +1,11 @@
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { EnvironmentId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
-import { promptLinkTarget } from "@t3tools/shared/promptLinks";
+import {
+  parseThreadLinkPrompt,
+  promptLinkTarget,
+  withoutPromptLinkParams,
+} from "@t3tools/shared/promptLinks";
 import { useRouter } from "@tanstack/react-router";
 import { useEffect, useEffectEvent, useRef } from "react";
 
@@ -22,6 +26,7 @@ import { previewEnvironment } from "../../state/preview";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
 import { stackedThreadToast, toastManager } from "../ui/toast";
+import { placeLinkedPrompt } from "../promptLinks/linkedPrompt";
 
 /**
  * HTML files are served by this machine's environment, so only its threads can
@@ -100,11 +105,27 @@ export function DesktopWebLinkCoordinator() {
           reportFailure(url, "Connect to the link's environment, then open the link again.");
           return;
         }
+        // Consume linked prompts before the router's JSON query codec can change their text.
+        const hasPrompt = new URLSearchParams(target.search).has("prompt");
+        const prompt = parseThreadLinkPrompt(target.search);
         await router.navigate({
           to: "/$environmentId/$threadId",
           params: { environmentId, threadId: ThreadId.make(target.threadId) },
-          search: () => router.options.parseSearch(target.search),
+          search: () =>
+            router.options.parseSearch(
+              hasPrompt ? withoutPromptLinkParams(target.search) : target.search,
+            ),
         });
+        const params: Record<string, string | undefined> =
+          router.state.matches.at(-1)?.params ?? {};
+        if (params?.environmentId !== environmentId || params.threadId !== target.threadId) return;
+        if (!prompt.ok) reportFailure(url, prompt.error);
+        else if (prompt.value !== null) {
+          placeLinkedPrompt(
+            scopeThreadRef(environmentId, ThreadId.make(target.threadId)),
+            prompt.value,
+          );
+        }
       } else {
         await router.navigate({ href: target.appPath });
       }
