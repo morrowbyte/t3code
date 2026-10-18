@@ -202,13 +202,34 @@ export function buildCodexAdditionalContext(
   toolsAvailable: boolean | T3CodeToolAvailability = true,
 ): Record<string, V2TurnStartParams__AdditionalContextEntry> {
   const tools = toolInstructions(toolsAvailable);
-  // Separate keys keep each value under Codex's per-entry token cap.
-  return {
-    t3_code_orchestration: { kind: "application", value: T3_CODE_ORCHESTRATION_INSTRUCTIONS },
-    t3_code_runtime: {
-      kind: "application",
-      value: buildRuntimeInstructions({ harness: "Codex", ...runtime }),
-    },
-    ...(tools ? { t3_code_tools: { kind: "application", value: tools } } : {}),
-  };
+  const instructions = [
+    { key: "t3_code_orchestration", value: T3_CODE_ORCHESTRATION_INSTRUCTIONS },
+    { key: "t3_code_runtime", value: buildRuntimeInstructions({ harness: "Codex", ...runtime }) },
+    ...(tools ? [{ key: "t3_code_tools", value: tools }] : []),
+  ];
+  return Object.fromEntries(
+    instructions.flatMap(({ key, value }) =>
+      contextChunks(value).map((chunk, index) => [
+        index === 0 ? key : `${key}_${String(index + 1).padStart(2, "0")}`,
+        { kind: "application", value: chunk },
+      ]),
+    ),
+  );
+}
+
+function contextChunks(value: string): string[] {
+  // Codex truncates application entries individually, including the middle of
+  // JSONL examples. Leave room for punctuation-heavy protocol text and wrappers.
+  const maxChars = 2000;
+  const chunks: string[] = [];
+  while (value.length > maxChars) {
+    const prefix = value.slice(0, maxChars);
+    const newline = prefix.lastIndexOf("\n");
+    const boundary = newline > 0 ? newline : prefix.lastIndexOf(" ");
+    const end = boundary > 0 ? boundary + 1 : maxChars;
+    chunks.push(value.slice(0, end));
+    value = value.slice(end);
+  }
+  if (value) chunks.push(value);
+  return chunks;
 }

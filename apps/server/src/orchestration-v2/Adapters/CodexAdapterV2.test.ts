@@ -192,7 +192,9 @@ describe("restricted conversational LiveVoice tools", () => {
           });
           const reply = yield* CodexAdapterV2.routeCodexLiveVoiceTool(planner, payload);
           assert.isTrue(reply.success);
-          assert.isFalse((yield* CodexAdapterV2.routeCodexLiveVoiceTool(undefined, payload)).success);
+          assert.isFalse(
+            (yield* CodexAdapterV2.routeCodexLiveVoiceTool(undefined, payload)).success,
+          );
         }
         assert.deepEqual(submissions, ["bound-planner:Check the requested data."]);
         assert.deepEqual(controls, ["bound-planner:status"]);
@@ -700,7 +702,10 @@ describe("CodexAdapterV2 runtime policy", () => {
         "Use `delegate_task`",
       );
       assert.include(
-        params.additionalContext?.t3_code_orchestration?.value ?? "",
+        Object.entries(params.additionalContext ?? {})
+          .filter(([key]) => key.startsWith("t3_code_orchestration"))
+          .map(([, entry]) => entry.value)
+          .join(""),
         "structured object, never as JSON text",
       );
     }),
