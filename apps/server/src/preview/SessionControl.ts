@@ -18,6 +18,7 @@ export class SessionControl {
   private tail: Promise<unknown> = Promise.resolve();
   private pending: Promise<void> = Promise.resolve();
   private owner: string | null = null;
+  private awaitingHuman = false;
   private epoch = 0;
   private closed = false;
 
@@ -32,6 +33,17 @@ export class SessionControl {
 
   get generation() {
     return this.epoch;
+  }
+
+  get requiresHuman() {
+    return this.awaitingHuman;
+  }
+
+  requireHuman() {
+    this.assertOpen();
+    if (this.awaitingHuman) return;
+    this.awaitingHuman = true;
+    this.changeOwner(this.owner);
   }
 
   private enqueue<A>(run: () => Promise<A>): Promise<A> {
@@ -82,15 +94,22 @@ export class SessionControl {
       return Promise.reject(
         new BrowserControlInterrupted("This tab belongs to another agent.", "agentMismatch"),
       );
+    if (this.awaitingHuman)
+      return Promise.reject(
+        new BrowserControlInterrupted(
+          "A browser challenge needs human control. Take control, then explicitly release it to resume the agent.",
+          "humanControl",
+        ),
+      );
     if (this.owner !== null)
       return Promise.reject(
         new BrowserControlInterrupted("A human controls this tab.", "humanControl"),
       );
-    return this.action(() => this.agentMayAct(agentId) && this.owner === null, run);
+    return this.action(() => this.agentCanActNow(agentId), run);
   }
 
   agentCanActNow(agentId: string) {
-    return this.agentMayAct(agentId) && this.owner === null;
+    return this.agentMayAct(agentId) && this.owner === null && !this.awaitingHuman;
   }
 
   /**
@@ -130,12 +149,17 @@ export class SessionControl {
         "Only the controlling viewer can release this browser tab.",
       );
     }
+    this.awaitingHuman = false;
     this.changeOwner(null);
     await this.enqueue(afterDrain);
   }
 
   async disconnect(viewerId: string, afterDrain?: () => Promise<void>) {
-    if (!this.closed && this.owner === viewerId) await this.release(viewerId, afterDrain);
+    if (!this.closed && this.owner === viewerId) {
+      // Disconnect is not the user's explicit return of control after a challenge.
+      this.changeOwner(null);
+      await this.enqueue(afterDrain ?? (async () => {}));
+    }
   }
 
   async close() {
