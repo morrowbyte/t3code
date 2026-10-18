@@ -65,6 +65,10 @@
   margin-block: 0;
 }
 
+[data-streamable-ui] [data-iui-uml] img {
+  display: block;
+}
+
 [data-workflow-status="complete"] svg {
   color: var(--success-foreground);
 }
