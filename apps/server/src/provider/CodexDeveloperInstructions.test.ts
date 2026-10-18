@@ -1,6 +1,8 @@
 import * as NodeAssert from "node:assert/strict";
 
 import { describe, it } from "vite-plus/test";
+import { T3_CODE_ORCHESTRATION_INSTRUCTIONS } from "@t3tools/provider-core/server/orchestrationInstructions";
+import { parseStreamableUi } from "@t3tools/shared/streamableUi";
 
 import {
   buildCodexAdditionalContext,
@@ -101,12 +103,46 @@ describe("T3 browser developer instructions", () => {
   });
 });
 
+describe("Codex application context limits", () => {
+  it("delivers complete visual examples within each entry's truncation budget", () => {
+    const context = buildCodexAdditionalContext({ model: "gpt-6.1-sol", reasoningEffort: "low" });
+    for (const entry of Object.values(context)) {
+      NodeAssert.equal(entry.kind, "application");
+      NodeAssert.ok(entry.value.length <= 2000);
+    }
+    const orchestration = contextText(context, "t3_code_orchestration");
+    NodeAssert.equal(orchestration, T3_CODE_ORCHESTRATION_INSTRUCTIONS);
+    const examples = orchestration.split("\n").filter((line) => line.startsWith('{"type":'));
+    for (const example of examples) {
+      NodeAssert.ok(Object.values(context).some((entry) => entry.value.includes(example)));
+    }
+    const parsed = parseStreamableUi(examples.join("\n"), false);
+    NodeAssert.equal(parsed.error, undefined);
+    NodeAssert.deepEqual(
+      parsed.components.map((component) => component.type),
+      ["metric", "table", "chart", "chart", "cards", "timeline", "workflow", "report", "uml"],
+    );
+    const comparison = parsed.components.find((component) => component.id === "comparison");
+    NodeAssert.equal(comparison?.type, "chart");
+    if (comparison?.type !== "chart") return;
+    NodeAssert.equal(comparison.series.length, 2);
+    NodeAssert.equal(comparison.points.length, 2);
+  });
+});
+
+function contextText(context: ReturnType<typeof buildCodexAdditionalContext>, prefix: string) {
+  return Object.entries(context)
+    .filter(([key]) => key === prefix || key.startsWith(`${prefix}_`))
+    .map(([, entry]) => entry.value)
+    .join("");
+}
+
 function runtimeInstructions(runtime: Parameters<typeof buildCodexAdditionalContext>[0]) {
-  return buildCodexAdditionalContext(runtime).t3_code_runtime!.value;
+  return contextText(buildCodexAdditionalContext(runtime), "t3_code_runtime");
 }
 function toolInstructions(
   runtime: Parameters<typeof buildCodexAdditionalContext>[0],
   available: boolean,
 ) {
-  return buildCodexAdditionalContext(runtime, available).t3_code_tools?.value ?? "";
+  return contextText(buildCodexAdditionalContext(runtime, available), "t3_code_tools");
 }

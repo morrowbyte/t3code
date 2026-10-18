@@ -114,6 +114,31 @@ describe("Pi MCP tool exposure", () => {
     ui: { notify: () => undefined },
   };
 
+  it.each([false, true])(
+    "delivers the visual audience policy once through Pi's system prompt, modern=%s",
+    async (modern) => {
+      const bridge = await loadMcpBridge({ modern, toolSearchAvailable: true });
+      const start = bridge.handlers.get("before_agent_start")!;
+      const event = { systemPrompt: "Pi system prompt" };
+      const prompt = (await start(event, discoveryContext)).systemPrompt;
+      assert.isTrue(prompt.startsWith("Pi system prompt\n\n"));
+      assert.include(prompt, "through the Pi harness");
+      assert.include(prompt, "use relevant native t3-ui visuals by default");
+      assert.include(prompt, "Email drafts, simple facts and tasks without a useful visual");
+      assert.include(prompt, "Internal agent-to-agent handoffs and steering messages");
+      assert.include(prompt, "let that agent render the visuals once");
+      for (const marker of [
+        "### Showing visuals",
+        "<response_audience>",
+        "<tool_output_selection>",
+      ]) {
+        assert.equal(prompt.split(marker).length - 1, 1);
+      }
+      assert.equal(event.systemPrompt, "Pi system prompt");
+      assert.equal((await start(event, discoveryContext)).systemPrompt, prompt);
+    },
+  );
+
   it.each(["session_start", "session_tree", "model_select", "before_agent_start"])(
     "declares optional T3 tools for OpenAI-compatible gateways at %s",
     async (hookName) => {

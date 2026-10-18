@@ -59,6 +59,7 @@ import {
   OrchestrationV2ThreadTranscript,
 } from "./orchestrationV2.ts";
 import { Project, ProjectMutation, ProjectSnapshot } from "./project.ts";
+import { UmlRenderRequest, UmlRenderResult } from "./uml.ts";
 import {
   PullRequestDiffInput,
   PullRequestDiffResult,
@@ -694,6 +695,15 @@ class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestration")
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}
 
+class EnvironmentStreamableUiHttpApi extends HttpApiGroup.make("streamableUi").add(
+  HttpApiEndpoint.post("renderUml", "/api/streamable-ui/uml", {
+    headers: OptionalBearerHeaders,
+    payload: UmlRenderRequest,
+    success: UmlRenderResult,
+    error: [EnvironmentScopeRequiredError],
+  }).middleware(EnvironmentAuthenticatedAuth),
+) {}
+
 class EnvironmentProjectsHttpApi extends HttpApiGroup.make("projects")
   .add(
     HttpApiEndpoint.get("snapshot", "/api/projects", {
@@ -896,6 +906,7 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentAuthHttpApi)
   .add(EnvironmentMcpOAuthHttpApi)
   .add(EnvironmentOrchestrationHttpApi)
+  .add(EnvironmentStreamableUiHttpApi)
   .add(EnvironmentPullRequestsHttpApi)
   .add(EnvironmentVoiceHttpApi)
   .add(EnvironmentProjectsHttpApi)

@@ -74,3 +74,4 @@ export * from "./agentObservatory.ts";
 
 export * from "./updateHistory.ts";
 export * from "./featureTiming.ts";
+export * from "./uml.ts";

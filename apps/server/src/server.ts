@@ -40,6 +40,8 @@ import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as NodePtyAdapter from "./terminal/NodePtyAdapter.ts";
 import * as PullRequestHttp from "./pullRequest/http.ts";
 import * as VoiceHttp from "./voice/http.ts";
+import * as UmlRenderRoute from "./streamable-ui/UmlRenderRoute.ts";
+import * as UmlRenderer from "./streamable-ui/UmlRenderer.ts";
 import * as VoiceTranscriptionService from "./voice/VoiceTranscriptionService.ts";
 import * as PullRequestProviderRegistry from "./pullRequest/PullRequestProviderRegistry.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
@@ -686,6 +688,7 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(OrchestrationHttp.layer),
       Layer.provide(PullRequestHttp.layer),
       Layer.provide(VoiceHttp.layer.pipe(Layer.provide(VoiceTranscriptionService.layer))),
+      Layer.provide(UmlRenderRoute.layer.pipe(Layer.provide(UmlRenderer.layer))),
       Layer.provide(ProjectHttp.layer),
       Layer.provide(ServerHttp.layerServerEnvironmentHttpApi),
       Layer.provide(WebhookRoute.layer.pipe(Layer.provide(RelayDeliveryProof.layer))),

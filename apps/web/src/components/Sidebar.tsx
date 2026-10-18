@@ -77,6 +77,7 @@ import {
   CircleCheckIcon,
   CircleDashedIcon,
   CircleDotDashedIcon,
+  CircleStopIcon,
   ClockIcon,
   FolderIcon,
   GitBranchIcon,
@@ -242,7 +243,7 @@ import {
   restrictBelowSidebarLabel,
 } from "./Sidebar.drag";
 import { SidebarDragLifecycle, SidebarPointerSensor } from "./Sidebar.pointer";
-import { createSidebarListMotion } from "./Sidebar.motion";
+import { createSidebarFamilyMotion, createSidebarListMotion } from "./Sidebar.motion";
 import {
   ThreadPullRequestBadgeControl,
   ThreadPullRequestsMiniList,
@@ -1175,6 +1176,67 @@ type SortableThreadRowBag = Pick<
 const SIDEBAR_SORTABLE_DRAG_DISABLED = { draggable: true } as const;
 const SIDEBAR_SORTABLE_DRAG_ENABLED = { draggable: false } as const;
 
+function SidebarThreadFamily({
+  familyKey,
+  root,
+  descendants: currentDescendants,
+  expanded,
+  onMotionEnd,
+}: {
+  familyKey: string;
+  root: ReactNode;
+  descendants: readonly ReactNode[];
+  expanded: boolean;
+  onMotionEnd: () => void;
+}) {
+  const [cached, setCached] = useState(currentDescendants);
+  if (currentDescendants.length > 0 && cached !== currentDescendants) setCached(currentDescendants);
+  const descendants = currentDescendants.length > 0 ? currentDescendants : cached;
+  const groupRef = useRef<HTMLDivElement>(null);
+  const clipRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const motionRef = useRef<ReturnType<typeof createSidebarFamilyMotion> | null>(null);
+  useLayoutEffect(() => {
+    const motion = createSidebarFamilyMotion(
+      groupRef.current!,
+      clipRef.current!,
+      contentRef.current!,
+    );
+    motionRef.current = motion;
+    return () => {
+      motion.dispose();
+      motionRef.current = null;
+    };
+  }, []);
+  useLayoutEffect(() => {
+    motionRef.current?.update(expanded, (open) => {
+      if (!open && cached.length > 0) setCached([]);
+      onMotionEnd();
+    });
+  }, [expanded, cached, onMotionEnd]);
+  return (
+    <div
+      ref={groupRef}
+      data-sidebar-family-group={familyKey}
+      role="presentation"
+      className="min-w-0"
+    >
+      {root}
+      <div
+        ref={clipRef}
+        role="presentation"
+        aria-hidden={!expanded}
+        inert={!expanded}
+        className="overflow-hidden"
+      >
+        <div ref={contentRef} role="presentation" className="flex flex-col gap-px pt-px">
+          {descendants}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Takes the row's props rather than a render function: a closure from the
 // sidebar body is new on every sidebar render, which rebuilt the bag and
 // re-rendered every memoized row with it.
@@ -1580,8 +1642,10 @@ const dropVerbBadge: Record<SidebarDropVerb, ReactNode> = {
 type SidebarThreadRowProps = {
   thread: SidebarThreadSummary;
   familyRow?: boolean;
-  compact?: boolean;
-  familySummary?: string | null;
+  familyRoot?: boolean;
+  familyCount?: number | undefined;
+  familyActiveCount?: number | undefined;
+  familyDisclosure?: ReactNode;
   variant: "card" | "slim";
   variantAction: SidebarSweepAction;
   settlementSupported: boolean;
@@ -1712,7 +1776,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     (lastVisitedDate === null || lastVisitedDate < wokeAtDate) &&
     thread.settledOverride !== "settled";
   const shouldRecede =
-    !props.compact &&
+    !props.familyRow &&
     shouldRecedeSidebarThread({
       status,
       isUnread,
@@ -1778,7 +1842,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                             thread.runtime?.status === "cancelled")
                         ? {
                             label: "Cancelled",
-                            icon: "done" as const,
+                            icon: "cancelled" as const,
                             className: "text-muted-foreground",
                           }
                         : null;
@@ -1969,11 +2033,13 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
 
   const rowSurfaceClassName = cn(
     "group/sidebar-row relative w-full cursor-pointer overflow-hidden rounded-md text-left outline-none select-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-    !props.compact &&
+    !props.familyRow &&
       variantAction === "unsettle" &&
       "[&:not(:hover):not(:focus-within)_*]:text-secondary-label/70",
     props.isActive
-      ? "bg-sidebar-row-active text-sidebar-foreground"
+      ? props.familyRow
+        ? "bg-primary/10 text-sidebar-foreground ring-1 ring-inset ring-primary/20"
+        : "bg-sidebar-row-active text-sidebar-foreground"
       : isSelected || props.sweepAction !== null
         ? "bg-sidebar-row-selected text-sidebar-foreground"
         : hasUnsentDraft
@@ -2048,8 +2114,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         className={cn(
           "min-w-0 flex-1 text-sm transition-opacity motion-reduce:transition-none",
           shouldRecede ? "font-normal" : "font-medium",
-          props.compact
-            ? "line-clamp-2 text-sidebar-foreground"
+          props.familyRow
+            ? cn(
+                "line-clamp-2 text-sidebar-foreground",
+                props.familyRoot ? "font-semibold" : "font-normal",
+              )
             : variant === "card"
               ? cn(
                   "truncate",
@@ -2071,7 +2140,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                         ? "text-muted-foreground"
                         : "text-secondary-label/70",
                 ),
-          isRegeneratingTitle && !props.compact && "opacity-55",
+          isRegeneratingTitle && !props.familyRow && "opacity-55",
         )}
       >
         {thread.title}
@@ -2158,6 +2227,70 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     )
   ) : null;
 
+  const ownRunDuration =
+    thread.latestRun?.startedAt && thread.latestRun.completedAt
+      ? Date.parse(thread.latestRun.completedAt) - Date.parse(thread.latestRun.startedAt)
+      : null;
+  const threadStatus = topStatus ? (
+    <span className={cn("inline-flex items-center gap-1 font-medium text-xs", topStatus.className)}>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <span role="status" aria-label={topStatus.label} className="inline-flex shrink-0" />
+          }
+        >
+          {topStatus.icon === "working" ? (
+            <CircleDashedIcon aria-hidden className="size-4" />
+          ) : topStatus.icon === "waiting" ? (
+            <CircleDotDashedIcon aria-hidden className="size-4" />
+          ) : topStatus.icon === "input" ? (
+            <MessageCircleQuestionIcon aria-hidden className="size-4" />
+          ) : topStatus.icon === "approval" ? (
+            <ShieldQuestionIcon aria-hidden className="size-4" />
+          ) : topStatus.icon === "failed" ? (
+            <CircleAlertIcon aria-hidden className="size-4" />
+          ) : topStatus.icon === "cancelled" ? (
+            <CircleStopIcon aria-hidden className="size-4" />
+          ) : topStatus.icon === "done" ? (
+            <CircleCheckIcon aria-hidden className="size-4" />
+          ) : (
+            <AlarmClockIcon aria-hidden className="size-4" />
+          )}
+          {!props.familyRow ? <span>{topStatus.label}</span> : null}
+        </TooltipTrigger>
+        <TooltipPopup side="top">{topStatus.label}</TooltipPopup>
+      </Tooltip>
+      {status === "working" ? (
+        <span aria-label="Run duration">
+          <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
+        </span>
+      ) : status === "waiting" ? (
+        <span aria-label="Waiting duration">
+          <WorkingDuration startedAt={thread.latestRun?.completedAt ?? null} />
+        </span>
+      ) : props.familyRow &&
+        ownRunDuration !== null &&
+        Number.isFinite(ownRunDuration) &&
+        ownRunDuration >= 0 ? (
+        <span aria-label="Run duration" className="tabular-nums">
+          {formatWorkingDurationLabel(ownRunDuration)}
+        </span>
+      ) : null}
+    </span>
+  ) : null;
+  const familyCount = props.familyCount ? (
+    <span
+      aria-label={`${props.familyCount} ${props.familyCount === 1 ? "agent" : "agents"}${props.familyActiveCount ? `, ${props.familyActiveCount} active` : ""}`}
+      className="inline-flex shrink-0 items-center gap-1 rounded px-1 text-2xs tabular-nums text-sidebar-muted-foreground"
+    >
+      {props.familyActiveCount ? (
+        <span aria-hidden className="size-1.5 rounded-full bg-info" />
+      ) : null}
+      {props.familyCount}
+    </span>
+  ) : null;
+  const familyChild = props.familyRow && !props.familyRoot;
+
   if (variant === "slim") {
     return (
       <li
@@ -2183,7 +2316,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 className={cn(
                   rowSurfaceClassName,
                   "flex items-center gap-2.5 px-2.5",
-                  props.compact ? "min-h-9 py-1.5" : "h-9",
+                  props.familyRow ? "min-h-10 py-2" : "h-9",
                 )}
                 onClick={handleClick}
                 onDoubleClick={handleDoubleClick}
@@ -2193,7 +2326,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             }
           >
             {accessibleTitle}
-            {!props.compact ? (
+            {!props.familyRow ? (
               <span
                 className={cn(
                   "flex shrink-0 items-center transition-opacity",
@@ -2207,14 +2340,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               </span>
             ) : null}
             {draftIndicator}
-            <div className="flex min-w-0 flex-1 flex-col">
-              {title}
-              {props.familySummary ? (
-                <span className="truncate text-2xs text-muted-foreground">
-                  {props.familySummary}
-                </span>
-              ) : null}
-            </div>
+            {title}
+            {familyCount}
             {pinIndicator}
             {terminalStatusIcon}
             {isRegeneratingTitle ? (
@@ -2343,7 +2470,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       {...sortableRootProps}
       {...(fileDropHandlers ?? {})}
       className={cn(
-        "list-none py-0.5 [content-visibility:auto] [contain-intrinsic-size:auto_78px]",
+        "list-none py-0.5",
+        !props.familyRow && "[content-visibility:auto] [contain-intrinsic-size:auto_78px]",
         sortable?.isDragging && "relative z-20",
       )}
     >
@@ -2367,13 +2495,20 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           }
         >
           {accessibleTitle}
-          <div className="relative z-10 h-[4.875rem] px-(--sidebar-row-content-inset) py-(--sidebar-content-inset)">
-            <div className="flex h-5 min-w-0 items-center gap-1.5">
+          <div
+            className={cn(
+              "relative z-10 px-(--sidebar-row-content-inset) py-(--sidebar-content-inset)",
+              !props.familyRow && "h-[4.875rem]",
+            )}
+          >
+            <div className={cn("flex min-w-0 items-center gap-1.5", !familyChild && "h-5")}>
               {draftIndicator}
-              {props.project ? (
+              {familyChild ? (
+                title
+              ) : props.project ? (
                 <ProjectFavicon project={props.project} className="size-4 shrink-0" />
               ) : null}
-              {props.projectDisplayName ? (
+              {!familyChild && props.projectDisplayName ? (
                 <span
                   className={cn(
                     "min-w-0 flex-1 truncate text-secondary-label text-xs",
@@ -2382,7 +2517,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 >
                   {props.projectDisplayName}
                 </span>
-              ) : (
+              ) : familyChild ? null : (
                 <span className="flex-1" />
               )}
               {pinIndicator}
@@ -2397,7 +2532,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 >
                   <span
                     className={cn(
-                      isWokeStatus
+                      isWokeStatus || props.familyRow
                         ? "pointer-events-auto"
                         : "pointer-events-none group-has-[:focus-visible]/sidebar-status-slot:absolute group-has-[:focus-visible]/sidebar-status-slot:right-0 group-has-[:focus-visible]/sidebar-status-slot:opacity-0 group-any-hover/sidebar-row:absolute group-any-hover/sidebar-row:right-0 group-any-hover/sidebar-row:opacity-0",
                       "flex items-center self-center justify-self-end tabular-nums text-secondary-label transition-opacity",
@@ -2426,39 +2561,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                           <TooltipPopup side="top">Dismiss Woke notification</TooltipPopup>
                         </Tooltip>
                       ) : (
-                        <span
-                          className={cn(
-                            "inline-flex items-center gap-1 font-medium",
-                            topStatus.className,
-                          )}
-                        >
-                          {topStatus.icon === "working" ? (
-                            <CircleDashedIcon aria-hidden className="size-4 shrink-0" />
-                          ) : topStatus.icon === "waiting" ? (
-                            <CircleDotDashedIcon aria-hidden className="size-4 shrink-0" />
-                          ) : topStatus.icon === "input" ? (
-                            <MessageCircleQuestionIcon aria-hidden className="size-4 shrink-0" />
-                          ) : topStatus.icon === "approval" ? (
-                            <ShieldQuestionIcon aria-hidden className="size-4 shrink-0" />
-                          ) : topStatus.icon === "failed" ? (
-                            <CircleAlertIcon aria-hidden className="size-4 shrink-0" />
-                          ) : topStatus.icon === "done" ? (
-                            <CircleCheckIcon aria-hidden className="size-4 shrink-0" />
-                          ) : null}
-                          {/* The label alone is the live region: a role="status"
-                            wrapper around the ticking duration would make
-                            screen readers announce every second. */}
-                          <span role="status">{topStatus.label}</span>
-                          {status === "working" ? (
-                            <span aria-hidden>
-                              <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
-                            </span>
-                          ) : status === "waiting" ? (
-                            <span aria-hidden>
-                              <WorkingDuration startedAt={thread.latestRun?.completedAt ?? null} />
-                            </span>
-                          ) : null}
-                        </span>
+                        threadStatus
                       )
                     ) : (
                       <RelativeTimeLabel timestamp={threadTimeTimestamp(thread)} />
@@ -2526,20 +2629,20 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               )}
               {props.sweepAction !== null ? dragDestination : null}
             </div>
-            <div className="mt-1 flex min-w-0">
-              {title}
-              {isRegeneratingTitle ? (
-                <span role="status" className="sr-only">
-                  Regenerating title
-                </span>
-              ) : null}
-            </div>
+            {!familyChild ? (
+              <div className="mt-1 flex min-w-0 items-center gap-1">
+                {title}
+                {familyCount}
+                {isRegeneratingTitle ? (
+                  <span role="status" className="sr-only">
+                    Regenerating title
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
             <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-secondary-label text-xs">
-              {props.familySummary ? (
-                <span className="min-w-0 flex-1 truncate text-2xs text-muted-foreground">
-                  {props.familySummary}
-                </span>
-              ) : thread.branch ? (
+              {props.familyDisclosure}
+              {thread.branch ? (
                 <>
                   <ThreadWorktreeIndicator thread={thread} />
                   <span className="flex min-w-0 flex-1 text-muted-foreground/40">
@@ -4887,10 +4990,13 @@ export default function Sidebar() {
                           scopeThreadRef(thread.environmentId, thread.id),
                         );
                         const family = hierarchyByKey.get(threadKey);
+                        const isFamily =
+                          family !== undefined && (family.depth > 0 || family.hasChildren);
                         const isCard =
-                          !family?.contextOnly &&
-                          (family?.depth ?? 0) === 0 &&
-                          (section === "active" || section === "pinned" || section === "working");
+                          isFamily ||
+                          section === "active" ||
+                          section === "pinned" ||
+                          section === "working";
                         const rowVariant = isCard ? "card" : "slim";
                         return (
                           <div
@@ -4898,31 +5004,9 @@ export default function Sidebar() {
                             role="presentation"
                             data-sidebar-family-row={threadKey}
                             data-family-depth={family?.depth ?? 0}
+                            data-family-navigation={isFamily || undefined}
                             className="relative min-w-0"
-                            style={{
-                              marginInlineStart: Math.min(family?.depth ?? 0, 8) * 12,
-                              paddingInlineStart: family?.depth || family?.hasChildren ? 18 : 0,
-                            }}
                           >
-                            {family?.hasChildren ? (
-                              <button
-                                type="button"
-                                data-thread-selection-safe
-                                aria-label={`${family.expanded ? "Collapse" : "Expand"} ${thread.title} agents`}
-                                aria-expanded={family.expanded}
-                                onClick={() => toggleFamily(threadKey)}
-                                className={cn(
-                                  "absolute left-0 z-10 flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring",
-                                  isCard ? "top-7" : "top-2",
-                                )}
-                              >
-                                {family.expanded ? (
-                                  <ChevronDownIcon aria-hidden className="size-3.5" />
-                                ) : (
-                                  <ChevronRightIcon aria-hidden className="size-3.5" />
-                                )}
-                              </button>
-                            ) : null}
                             <SortableThreadRow
                               key={threadKey}
                               sortableId={threadKey}
@@ -4935,14 +5019,32 @@ export default function Sidebar() {
                                 optimisticDrop !== null
                               }
                               thread={thread}
-                              familyRow={
-                                family !== undefined && (family.depth > 0 || family.hasChildren)
+                              familyRow={isFamily}
+                              familyRoot={isFamily && family.depth === 0}
+                              familyCount={family?.depth === 0 ? family.descendantCount : undefined}
+                              familyActiveCount={
+                                family?.depth === 0 ? family.activeDescendantCount : undefined
                               }
-                              compact={(family?.depth ?? 0) > 0}
-                              familySummary={
-                                family?.hasChildren && !family.expanded
-                                  ? `${family.descendantCount} ${family.descendantCount === 1 ? "agent" : "agents"}${family.activeDescendantCount > 0 ? ` · ${family.activeDescendantCount} active` : ""}`
-                                  : null
+                              familyDisclosure={
+                                family?.hasChildren ? (
+                                  <button
+                                    type="button"
+                                    data-thread-selection-safe
+                                    aria-label={`${family.expanded ? "Collapse" : "Expand"} ${thread.title} agents`}
+                                    aria-expanded={family.expanded}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      toggleFamily(threadKey);
+                                    }}
+                                    className="ms-1 flex size-6 shrink-0 items-center justify-center rounded text-sidebar-foreground hover:bg-sidebar-row-hover focus-visible:outline-2 focus-visible:outline-ring"
+                                  >
+                                    {family.expanded ? (
+                                      <ChevronDownIcon aria-hidden className="size-3.5" />
+                                    ) : (
+                                      <ChevronRightIcon aria-hidden className="size-3.5" />
+                                    )}
+                                  </button>
+                                ) : null
                               }
                               variant={rowVariant}
                               variantAction={
@@ -5047,9 +5149,38 @@ export default function Sidebar() {
                           onDraftContextMenu={handleDraftContextMenu}
                         />,
                       ];
-                      for (const item of sidebarListItems) {
+                      for (let index = 0; index < sidebarListItems.length; index++) {
+                        const item = sidebarListItems[index]!;
                         if (item.kind === "thread") {
-                          items.push(renderThreadRow(threadByKey.get(item.key)!, item.section));
+                          const family = hierarchyByKey.get(item.key);
+                          const root = renderThreadRow(threadByKey.get(item.key)!, item.section);
+                          if (family?.hasChildren) {
+                            const descendants: ReactNode[] = [];
+                            while (index + 1 < sidebarListItems.length) {
+                              const next = sidebarListItems[index + 1]!;
+                              if (
+                                next.kind !== "thread" ||
+                                (hierarchyByKey.get(next.key)?.depth ?? 0) === 0
+                              )
+                                break;
+                              descendants.push(
+                                renderThreadRow(threadByKey.get(next.key)!, next.section),
+                              );
+                              index++;
+                            }
+                            items.push(
+                              <SidebarThreadFamily
+                                key={item.key}
+                                familyKey={item.key}
+                                root={root}
+                                descendants={descendants}
+                                expanded={family.expanded}
+                                onMotionEnd={() => listMotionRef.current?.update(false)}
+                              />,
+                            );
+                          } else {
+                            items.push(root);
+                          }
                           continue;
                         }
                         switch (item.marker) {

@@ -502,6 +502,10 @@
     "./streamableUi": {
       "types": "./src/streamableUi.ts",
       "import": "./src/streamableUi.ts"
+    },
+    "./streamableUiLayout": {
+      "types": "./src/streamableUiLayout.ts",
+      "import": "./src/streamableUiLayout.ts"
     }
   },
   "scripts": {
@@ -509,9 +513,11 @@
     "test": "vp test run --config ../../vite.config.ts --dir ."
   },
   "dependencies": {
+    "@dagrejs/dagre": "3.1.1",
     "@noble/curves": "catalog:",
     "@noble/hashes": "catalog:",
     "@t3tools/contracts": "workspace:*",
+    "d3-scale": "4.0.2",
     "effect": "catalog:",
     "jose": "catalog:",
     "mdast-util-directive": "catalog:",
@@ -529,6 +535,7 @@
   "devDependencies": {
     "@effect/platform-node": "catalog:",
     "@effect/vitest": "catalog:",
+    "@types/d3-scale": "4.0.9",
     "@types/node": "catalog:",
     "micromark-util-types": "catalog:",
     "vite-plus": "catalog:"

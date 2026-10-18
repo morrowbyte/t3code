@@ -6,9 +6,28 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import { StreamableUi } from "./StreamableUi";
 
+// Layout is checked in the real Browser panel; these tests keep disclosures
+// and interaction state observable while Recharts awaits a measured viewport.
+function prepareVisualTest() {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.stubGlobal("matchMedia", () => ({
+    matches: true,
+    addEventListener() {},
+    removeEventListener() {},
+  }));
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+}
+
 describe("native streamable visuals", () => {
   it("appends real table rows and chart points while keeping data disclosure and sources available", async () => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    prepareVisualTest();
     const container = document.createElement("div");
     document.body.append(container);
     const root = createRoot(container);
@@ -35,17 +54,22 @@ describe("native streamable visuals", () => {
       .join("\n");
     const unfinished = '\n{"type":"row","id":"prices","cells":["Day 2",12';
     try {
+      await import("./RichChart");
       await act(async () => root.render(<StreamableUi code={header + unfinished} isStreaming />));
       const table = container.querySelector("table")!;
       const firstRow = table.querySelector("tbody tr");
       expect(table.querySelectorAll("tbody tr")).toHaveLength(1);
-      expect(container.querySelectorAll("svg circle")).toHaveLength(1);
       expect(container.querySelector('[role="status"]')?.textContent).toContain("Receiving");
+      const receiving = container.querySelector('[role="status"]');
       expect(container.querySelector("a")?.href).toBe("https://example.com/nvda");
       const disclosure = container.querySelector("details")!;
       disclosure.querySelector("summary")!.click();
       expect(disclosure.open).toBe(true);
       expect(disclosure.querySelector("table")?.textContent).toContain("123.45");
+
+      await act(async () => root.render(<StreamableUi code={header} isStreaming />));
+      expect(container.querySelector('[role="status"]')).toBe(receiving);
+      expect(receiving?.textContent).toBe("Receiving visual data…");
 
       const finished =
         header +
@@ -56,7 +80,7 @@ describe("native streamable visuals", () => {
       expect(table.querySelector("tbody tr")).toBe(firstRow);
       expect(table.querySelectorAll("tbody tr")).toHaveLength(2);
       expect(table.textContent).toContain("124.56");
-      expect(container.querySelectorAll("svg circle")).toHaveLength(2);
+      expect(disclosure.querySelectorAll("tbody tr")).toHaveLength(2);
       expect(container.querySelector('[role="status"]')).toBeNull();
       expect(container.querySelector("details")).toBe(disclosure);
       expect(disclosure.open).toBe(true);
@@ -68,7 +92,7 @@ describe("native streamable visuals", () => {
   });
 
   it("escapes executable-looking text and retains readable source for rejected records", async () => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    prepareVisualTest();
     const container = document.createElement("div");
     const root = createRoot(container);
     const label = '<img src=x onerror="alert(1)">';
@@ -81,6 +105,80 @@ describe("native streamable visuals", () => {
       expect(container.querySelector("summary")?.textContent).toContain("line 2");
     } finally {
       await act(async () => root.unmount());
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+const lines = (...records: unknown[]) => records.map((record) => JSON.stringify(record)).join("\n");
+const prefix = lines(
+  { type: "report", id: "report", title: "Decision", layout: "tabs" },
+  { type: "section", id: "report", key: "benefit", title: "Benefits", text: "Faster" },
+  { type: "section", id: "report", key: "risk", title: "Risks", text: "Costs" },
+  { type: "chart", id: "plot", title: "Forecast", kind: "area" },
+  { type: "series", id: "plot", key: "plan", label: "Plan" },
+  { type: "point", id: "plot", series: "plan", label: "Day 1", value: 4 },
+);
+
+describe("rich visual interaction during assistant streaming", () => {
+  it("retains tabs, chart visibility, disclosures and focus as records append or cancel; rehydrates content", async () => {
+    prepareVisualTest();
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(<StreamableUi code={prefix} isStreaming />));
+      const benefits = host.querySelector<HTMLButtonElement>('[role="tab"]')!;
+      benefits.focus();
+      await act(async () =>
+        benefits.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })),
+      );
+      const selected = host.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]')!;
+      expect(selected.textContent).toBe("Risks");
+      expect(document.activeElement).toBe(selected);
+      const toggle = host.querySelector<HTMLButtonElement>('[aria-label="Plan series"]')!;
+      await act(async () => toggle.click());
+      const disclosure = host.querySelector("details")!;
+      disclosure.open = true;
+      selected.focus();
+      const appended =
+        prefix +
+        "\n" +
+        lines(
+          {
+            type: "fact",
+            id: "report",
+            item: "risk",
+            key: "cost",
+            label: "Budget",
+            value: "20 EUR",
+          },
+          { type: "point", id: "plot", series: "plan", label: "Day 2", value: 8 },
+        );
+      await act(async () =>
+        root.render(<StreamableUi code={appended + '\n{"type":"section"'} isStreaming />),
+      );
+      expect(host.querySelector('[role="tab"][aria-selected="true"]')).toBe(selected);
+      expect(document.activeElement).toBe(selected);
+      expect(disclosure.open).toBe(true);
+      expect(toggle.getAttribute("aria-pressed")).toBe("false");
+      expect(host.textContent).toContain("20 EUR");
+      expect(host.querySelectorAll("tbody tr")).toHaveLength(2);
+      await act(async () =>
+        root.render(<StreamableUi code={appended + '\n{"type":"section"'} isStreaming={false} />),
+      );
+      expect(host.querySelector('[role="status"]')).toBeNull();
+      expect(host.textContent).toContain("Invalid visual JSON");
+      expect(document.activeElement).toBe(selected);
+      await act(async () =>
+        root.render(<StreamableUi key="history" code={appended} isStreaming={false} />),
+      );
+      expect(host.textContent).toContain("20 EUR");
+      expect(host.querySelectorAll('[role="tab"]')).toHaveLength(2);
+      expect(host.querySelector('[role="status"]')).toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
       vi.unstubAllGlobals();
     }
   });

@@ -824,6 +824,7 @@ const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
     return (
       <StreamableAssistantMarkdown
         key={`markdown:${segment.sourceOffset}`}
+        environmentId={props.environmentId}
         markdown={markdown}
         isStreaming={props.isStreaming ?? false}
         skills={props.skills}

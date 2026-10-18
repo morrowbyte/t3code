@@ -1,0 +1,82 @@
+@media (prefers-reduced-motion: no-preference) {
+  .chat-markdown[data-streaming] [data-iui-entry] {
+    transition:
+      opacity 180ms ease-out,
+      translate 180ms ease-out;
+
+    @starting-style {
+      opacity: 0;
+      translate: 0 3px;
+    }
+  }
+}
+
+[data-iui-chart] .recharts-cartesian-axis-tick text {
+  fill: var(--muted-foreground);
+  font-size: 0.75rem;
+}
+
+[data-iui-chart] .recharts-surface:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+[data-iui-workflow] .react-flow__node {
+  display: block;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  border-color: var(--border);
+  background: var(--card);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 1rem;
+  box-shadow: none;
+}
+
+[data-iui-workflow] .react-flow__node.selected,
+[data-iui-workflow] .react-flow__node:focus-visible {
+  border-color: var(--primary);
+  outline: 2px solid var(--ring);
+}
+
+[data-iui-workflow] .react-flow__handle {
+  width: 7px;
+  height: 7px;
+  border: 2px solid var(--card);
+  background: var(--muted-foreground);
+}
+
+[data-iui-workflow] .react-flow__controls-button {
+  width: 36px;
+  height: 36px;
+  border-color: var(--border);
+  background: var(--card);
+  color: var(--foreground);
+  fill: currentColor;
+}
+
+[data-iui-workflow] .react-flow__controls-button:focus-visible {
+  outline: 2px solid var(--ring);
+}
+
+.chat-markdown [data-streamable-ui] :is(p, h4) {
+  margin-block: 0;
+}
+
+[data-streamable-ui] [data-iui-uml] img {
+  display: block;
+}
+
+[data-workflow-status="complete"] svg {
+  color: var(--success-foreground);
+}
+[data-workflow-status="active"] svg {
+  color: var(--primary);
+}
+[data-workflow-status="blocked"] svg {
+  color: var(--destructive-foreground);
+}
+[data-iui-workflow] .react-flow__node:has([data-workflow-kind="decision"]) {
+  border-color: var(--warning-foreground);
+}

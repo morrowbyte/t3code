@@ -1,6 +1,6 @@
 import type { ProviderInteractionMode } from "@t3tools/contracts";
 
-export const T3_CODE_ORCHESTRATION_INSTRUCTIONS = `
+const T3_CODE_ORCHESTRATION_CONTROL_INSTRUCTIONS = `
 
 ## T3 Code orchestration
 
@@ -31,18 +31,43 @@ Tool names may include a harness-normalized MCP prefix, such as \`mcp__t3_code__
 
 ACP fallback: some ACP agents accept the injected MCP server but fail to expose its tools. When the T3 tools are absent and \`T3_ACP_MCP_NODE\` is present, call the same tools through the terminal: \`ELECTRON_RUN_AS_NODE=1 "$T3_ACP_MCP_NODE" \${T3_ACP_MCP_ENTRYPOINT:+"$T3_ACP_MCP_ENTRYPOINT"} acp-mcp-call orchestrator_capabilities '{}'\` (\`T3_ACP_MCP_ENTRYPOINT\` is unset when T3 runs as a standalone executable). Delegate with \`acp-mcp-call delegate_task '{"task":"...","target":{"providerInstanceId":"...","model":"..."},"mode":"async","clientRequestId":"..."}'\`. This is the supported T3 transport fallback, not an ordinary shell-based substitute for delegation.
 
-### Showing visuals
+`;
 
-Native inline visuals are available in assistant messages on web and desktop. When useful, stream normal Markdown together with fenced \`t3-ui\` blocks containing JSON Lines: one complete JSON object per physical line, with no enclosing array or commas between records. Completed records render immediately, before the fence closes. This is Morrowbyte's bounded local component protocol, not OpenUI Lang. Only these records and fields are supported:
+export const T3_CODE_VISUAL_INSTRUCTIONS = `### Showing visuals
+
+Native inline visuals are available in assistant messages on web, desktop, and mobile. When useful, stream normal Markdown together with fenced \`t3-ui\` blocks containing JSON Lines: one complete JSON object per physical line, with no enclosing array or commas between records. Completed records render immediately, before the fence closes. This is Morrowbyte's bounded local component protocol, not OpenUI Lang. Only these records and fields are supported:
 {"type":"metric","id":"summary","label":"Label","value":"123 USD","detail":"Optional explanation","sources":[{"label":"Source","url":"https://example.com"}]}
 {"type":"table","id":"prices","title":"Daily closes","columns":["Date","Close (USD)"]}
 {"type":"row","id":"prices","cells":["Day 1",123.45]}
 {"type":"chart","id":"trend","title":"Daily closes","xLabel":"Date","yLabel":"USD"}
 {"type":"point","id":"trend","label":"Day 1","value":123.45}
-Declare each metric/table/chart once; IDs are 1-64 letters, digits, underscores or hyphens. Each row or point references an already declared table or chart. Append row/point records as data becomes available; never rewrite a declaration. Metric detail and chart xLabel/yLabel are optional. Sources are optional on metric/table/chart declarations only, with at most 8 named HTTP(S) links; use verified citations and never invent a URL or data. Table cells are strings, numbers or null and must match the column count. Chart values must be finite numbers, not formatted strings. Numbers must have magnitude at most 1e12. Labels/titles are nonempty and at most 200 characters; other strings at most 2000. Limit each block to 128000 characters, 512 records, 24 components, 12 table columns and 200 rows/points per table/chart. Close the fence, then continue normal Markdown as needed. Do not emit HTML, JavaScript, JSX, CSS, arbitrary SVG, event handlers, tool calls or unlisted fields in a t3-ui block. This feature needs no HTML authoring, screenshot, preview or publication tool. Use ordinary Markdown if the requested visual exceeds these capabilities.
+{"type":"chart","id":"comparison","title":"Plan and actual","kind":"bar","xLabel":"Week","yLabel":"Hours"}
+{"type":"series","id":"comparison","key":"plan","label":"Plan"}
+{"type":"series","id":"comparison","key":"actual","label":"Actual"}
+{"type":"point","id":"comparison","series":"plan","label":"Week 1","value":20}
+{"type":"point","id":"comparison","series":"actual","label":"Week 1","value":18}
+{"type":"cards","id":"options","title":"Options"}
+{"type":"card","id":"options","key":"small","title":"Small","value":"20 EUR","badge":"Starter","detail":"Optional detail"}
+{"type":"fact","id":"options","item":"small","key":"capacity","label":"Capacity","value":2}
+{"type":"timeline","id":"plan","title":"Plan"}
+{"type":"event","id":"plan","key":"pilot","title":"Pilot","time":"Week 1","status":"active","detail":"Optional detail"}
+{"type":"workflow","id":"flow","title":"Review"}
+{"type":"node","id":"flow","key":"start","title":"Start","status":"complete"}
+{"type":"node","id":"flow","key":"review","title":"Review"}
+{"type":"edge","id":"flow","key":"next","from":"start","to":"review","label":"Ready"}
+{"type":"report","id":"decision","title":"Decision","layout":"tabs"}
+{"type":"section","id":"decision","key":"risks","title":"Risks","text":"Optional plain text"}
+{"type":"fact","id":"decision","item":"risks","key":"budget","label":"Budget buffer","value":"7000 EUR"}
+{"type":"uml","id":"request","title":"Request flow","kind":"sequence"}
+{"type":"uml-snapshot","id":"request","key":"request-1","source":"@startuml\\nactor User\\nparticipant API\\nUser -> API: Request\\n@enduml"}
+Declare each component once. IDs and item keys are 1-64 letters, digits, underscores or hyphens. Data records reference an already declared component by id; facts reference a prior card or report section by item; points reference a prior series by series; edges reference prior nodes by from/to. Append completed records as data becomes available. Never redeclare a component or keyed item. Chart kind is optional: "line" (default), "area", "bar", "pie", "donut", "radar", "radial", "scatter", or "composed". Choose a chart for a real comparison, trend, distribution or relationship. Bar supports horizontal:true; bar/area support stacked:true. Radar/radial may set maximum (for example 100 for percent). Pie/donut/radial use one value series; all polar values must be nonnegative. Scatter points require numeric x and use label for the sample name. Composed series may set kind:"bar", "area" or "line"; keep comparable units. Omit series for a legacy single-series chart; otherwise declare each series first and use its key on points. A series has at most one point per category label (per numeric x for scatter). Values at the same category share a tooltip. Users can copy all arrived chart data as CSV from View data. Choose comparable units within one chart. Reports use layout "tabs" or "details" (default). Status is optional: "pending", "active", "complete", or "blocked". Card value/badge/detail, event/node time/status/detail, edge label and section text are optional. Report text is plain text, not Markdown or HTML. Workflow nodes may set kind:"start", "step", "decision" or "end". UML kind is "sequence", "class", "state", "usecase" or "activity". Append uml-snapshot records with a unique key and a COMPLETE valid @startuml/@enduml PlantUML source string; escape newlines inside the JSON string. Each snapshot expands the diagram so far; do not send incomplete DSL fragments. Include proper UML notation: sequence lifelines/activations/alt/loop, class members/relations, state transitions, use-case actors/boundary/include/extend, activity branches/forks/joins. Snapshot source permits at most 16000 characters/256 lines, 24 snapshots per diagram; preprocessing, external resources, links, images and custom styling are unsupported. Rendering stays on the connected environment. Invalid or cancelled updates preserve the last valid image. No generated controls execute actions or send messages.
+Sources are optional on component declarations only, with at most 8 named HTTP(S) links; use verified citations and never invent a URL or data. Fact values and table cells are strings, numbers or null. Row width must match columns. Chart values must be finite numbers, not formatted strings. Numbers have magnitude at most 1e12. Labels/titles are nonempty and at most 200 characters; other strings at most 2000. Each block is limited to 128000 characters, 512 records, 24 components, 12 table columns, 8 series per chart, 12 sections per report and 200 rows/points/items per collection. Close the fence, then continue normal Markdown. Do not emit HTML, JavaScript, JSX, CSS, arbitrary SVG, event handlers, tool calls or unlisted fields in a t3-ui block. This feature needs no HTML authoring, screenshot, preview or publication tool. Use ordinary Markdown when a visual exceeds these capabilities.
 
 For richer visuals outside these components, build a self-contained HTML page, check it with \`html_preview\`, then publish it with \`html_render\` before your final reply. The reader sees that page above the reply, so add only what it does not say.
 `;
+
+export const T3_CODE_ORCHESTRATION_INSTRUCTIONS =
+  T3_CODE_ORCHESTRATION_CONTROL_INSTRUCTIONS + T3_CODE_VISUAL_INSTRUCTIONS;
 
 export const T3_CODE_BROWSER_TOOL_INSTRUCTIONS = `
 

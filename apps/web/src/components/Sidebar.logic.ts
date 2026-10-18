@@ -545,8 +545,8 @@ export interface SidebarHierarchyRow {
 
 type SidebarHierarchyThread = Pick<
   SidebarThreadSummary,
-  "id" | "environmentId" | "projectId" | "lineage" | "presentation"
->;
+  "id" | "environmentId" | "projectId" | "lineage"
+> & { readonly presentation?: "default" | "top_level" | undefined };
 
 export interface SidebarFamilyDisclosure {
   readonly routeKey: string | null;
@@ -566,6 +566,7 @@ export function revealSidebarRouteAncestors(
   const closedKeys = new Set(previous.closedKeys);
   const seen = new Set<string>();
   let thread = routeKey === null ? undefined : byKey.get(routeKey);
+  let familyRoot: string | null = null;
   while (
     thread !== undefined &&
     thread.presentation !== "top_level" &&
@@ -576,9 +577,12 @@ export function revealSidebarRouteAncestors(
     const parent = byKey.get(key);
     if (parent === undefined || parent.projectId !== thread.projectId || seen.has(key)) break;
     seen.add(key);
-    expandedKeys.add(key);
-    closedKeys.delete(key);
+    familyRoot = key;
     thread = parent;
+  }
+  if (familyRoot !== null) {
+    expandedKeys.add(familyRoot);
+    closedKeys.delete(familyRoot);
   }
   return { routeKey, expandedKeys, closedKeys };
 }
@@ -684,19 +688,19 @@ export function buildSidebarHierarchy(input: {
   groups.sort((a, b) => a.rank - b.rank);
   const rows: SidebarHierarchyRow[] = [];
   for (const group of groups) {
+    const expanded = input.expandedKeys.has(group.root) && !input.closedKeys?.has(group.root);
     const stack = [{ key: group.root, depth: 0 }];
     while (stack.length > 0) {
       const { key, depth } = stack.pop()!;
       const descendants = children.get(key) ?? [];
-      const expanded = input.expandedKeys.has(key) && !input.closedKeys?.has(key);
       const section = input.sectionByKey.get(key) ?? group.section;
       rows.push({
         key,
         section,
         displaySection: group.section,
         depth,
-        hasChildren: descendants.length > 0,
-        expanded,
+        hasChildren: depth === 0 && descendants.length > 0,
+        expanded: depth === 0 && expanded,
         contextOnly: section !== group.section || !input.visibleKeys.has(key),
         descendantCount: counts.get(key)?.total ?? 0,
         activeDescendantCount: counts.get(key)?.active ?? 0,

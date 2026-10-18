@@ -459,10 +459,33 @@ describe("sidebar thread lineage helpers", () => {
       ),
     ).toEqual(collapsed.map((row) => row.key));
     expect(
-      buildSidebarHierarchy({ ...input, expandedKeys: new Set([key(parent), key(running)]) }).map(
+      buildSidebarHierarchy({ ...input, expandedKeys: new Set([key(parent)]) }).map(
         (row) => row.key,
       ),
     ).toEqual([key(parent), key(running), key(selected), key(completed), key(unrelated)]);
+    const open = buildSidebarHierarchy({
+      ...input,
+      expandedKeys: new Set([key(parent)]),
+      closedKeys: new Set([key(running)]),
+    });
+    expect(open.filter((row) => row.hasChildren).map((row) => row.key)).toEqual([key(parent)]);
+    expect(open.map((row) => row.key)).toEqual([
+      key(parent),
+      key(running),
+      key(selected),
+      key(completed),
+      key(unrelated),
+    ]);
+    const arriving = child("new-grandchild", "selected");
+    expect(
+      buildSidebarHierarchy({
+        ...input,
+        threads: [...threads, arriving],
+        expandedKeys: new Set([key(parent)]),
+        closedKeys: new Set([key(parent)]),
+        workingKeys: new Set([key(arriving)]),
+      }).map((row) => row.key),
+    ).toEqual(collapsed.map((row) => row.key));
     expect(parent.lineage.relationshipToParent).toBeNull();
     expect(selected.lineage.parentThreadId).toBe(running.id);
   });
@@ -490,8 +513,8 @@ describe("sidebar thread lineage helpers", () => {
       closedKeys: new Set([key(parent), key(child)]),
     };
     const revealed = revealSidebarRouteAncestors(initial, threads, key(grandchild));
-    expect([...revealed.expandedKeys]).toEqual([key(child), key(parent)]);
-    expect(revealed.closedKeys.size).toBe(0);
+    expect([...revealed.expandedKeys]).toEqual([key(parent)]);
+    expect([...revealed.closedKeys]).toEqual([key(child)]);
     const closed = { ...revealed, closedKeys: new Set([key(parent)]) };
     expect(
       revealSidebarRouteAncestors(
@@ -502,7 +525,9 @@ describe("sidebar thread lineage helpers", () => {
     ).toBe(closed);
     const away = revealSidebarRouteAncestors(closed, threads, key(parent));
     expect(away.closedKeys.has(key(parent))).toBe(true);
-    expect(revealSidebarRouteAncestors(away, threads, key(grandchild)).closedKeys.size).toBe(0);
+    expect(
+      revealSidebarRouteAncestors(away, threads, key(grandchild)).closedKeys.has(key(parent)),
+    ).toBe(false);
     const promoted = revealSidebarRouteAncestors(
       initial,
       [parent, { ...child, presentation: "top_level" }, grandchild],

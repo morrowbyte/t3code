@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { createSidebarListMotion } from "./Sidebar.motion";
+import { createSidebarFamilyMotion, createSidebarListMotion } from "./Sidebar.motion";
 
 class TestAnimation {
+  currentTime = 0;
   progress: number | null = 0;
   playState: AnimationPlayState = "running";
   effect = { getComputedTiming: () => ({ progress: this.progress }) };
@@ -45,6 +46,9 @@ class TestRow {
   }
   removeAttribute(name: string) {
     this.attributes = this.attributes.filter((attribute) => attribute.name !== name);
+  }
+  getAttribute(name: string) {
+    return this.attributes.find((attribute) => attribute.name === name)?.value ?? null;
   }
   querySelectorAll(_selector: string): TestRow[] {
     return this.children.flatMap((child) => [child, ...child.querySelectorAll("*")]);
@@ -104,7 +108,123 @@ function expectMove(row: TestRow, offset: number) {
 beforeEach(() => vi.stubGlobal("HTMLElement", TestRow));
 afterEach(() => vi.unstubAllGlobals());
 
+describe("sidebar family motion", () => {
+  function familyFixture(open = true) {
+    const group = new TestRow("family");
+    const media = { matches: false };
+    const clip = Object.assign(new TestRow("clip", open ? 160 : 0), {
+      ownerDocument: { defaultView: { matchMedia: () => media } },
+    });
+    const content = { scrollHeight: 160 };
+    const motion = createSidebarFamilyMotion(
+      group as unknown as HTMLElement,
+      clip as unknown as HTMLElement,
+      content as HTMLElement,
+    );
+    motion.update(open);
+    return { group, clip, content, motion, media };
+  }
+
+  it("animates the clipped descendants' height in both directions", () => {
+    const { group, clip, motion } = familyFixture();
+    const settled = vi.fn();
+    motion.update(false, settled);
+    expect(clip.animate).toHaveBeenLastCalledWith([{ height: "160px" }, { height: "0px" }], {
+      duration: 150,
+      easing: "ease-out",
+    });
+    expect(group.getAttribute("data-sidebar-family-resizing")).toBe("true");
+    expect(settled).not.toHaveBeenCalled();
+    clip.animations[0]!.finish();
+    clip.offsetHeight = 0;
+    expect(settled).toHaveBeenCalledWith(false);
+    expect(clip.style.height).toBe("0px");
+    expect(group.getAttribute("data-sidebar-family-resizing")).toBeNull();
+    motion.update(true, settled);
+    expect(clip.animate).toHaveBeenLastCalledWith([{ height: "0px" }, { height: "160px" }], {
+      duration: 150,
+      easing: "ease-out",
+    });
+    clip.animations[1]!.finish();
+    expect(clip.style.height).toBe("auto");
+    expect(settled).toHaveBeenLastCalledWith(true);
+  });
+
+  it("reverses from the current height and ignores the canceled completion", () => {
+    const { clip, motion } = familyFixture();
+    const settled = vi.fn();
+    motion.update(false, settled);
+    const closing = clip.animations[0]!;
+    clip.offsetHeight = 63;
+    motion.update(true, settled);
+    expect(closing.cancel).toHaveBeenCalledOnce();
+    expect(clip.animate).toHaveBeenLastCalledWith([{ height: "63px" }, { height: "160px" }], {
+      duration: 150,
+      easing: "ease-out",
+    });
+    closing.finish();
+    expect(settled).not.toHaveBeenCalled();
+    motion.update(true, settled);
+    expect(clip.animations).toHaveLength(2);
+    clip.animations[1]!.finish();
+    expect(settled).toHaveBeenCalledExactlyOnceWith(true);
+    expect(clip.style.height).toBe("auto");
+  });
+
+  it("retargets a changed descendant height during opening without replaying status updates", () => {
+    const { clip, content, motion } = familyFixture(false);
+    motion.update(true);
+    clip.offsetHeight = 54;
+    content.scrollHeight = 240;
+    motion.update(true);
+    expect(clip.animate).toHaveBeenLastCalledWith([{ height: "54px" }, { height: "240px" }], {
+      duration: 150,
+      easing: "ease-out",
+    });
+    clip.animations[1]!.finish();
+    motion.update(true);
+    expect(clip.animations).toHaveLength(2);
+  });
+
+  it("respects reduced motion and cancels only its owned animation on disposal", () => {
+    const { group, clip, motion, media } = familyFixture();
+    const settled = vi.fn();
+    media.matches = true;
+    motion.update(false, settled);
+    expect(clip.animate).not.toHaveBeenCalled();
+    expect(settled).toHaveBeenCalledWith(false);
+    media.matches = false;
+    clip.offsetHeight = 0;
+    motion.update(true, settled);
+    motion.dispose();
+    expect(clip.animations[0]!.cancel).toHaveBeenCalledOnce();
+    expect(group.getAttribute("data-sidebar-family-resizing")).toBeNull();
+    motion.update(false);
+    expect(clip.animations).toHaveLength(1);
+  });
+});
+
 describe("sidebar list motion", () => {
+  it("lets the family height move neighbours without adding a second transform", () => {
+    const group = new TestRow("family", 242);
+    const next = new TestRow("next");
+    const { motion, layout } = fixture([group, next]);
+    motion.update(true);
+    group.setAttribute("data-sidebar-family-resizing", "true");
+    group.offsetHeight = 160;
+    layout([group, next]);
+    motion.update(true);
+    expect(next.animate).not.toHaveBeenCalled();
+    group.removeAttribute("data-sidebar-family-resizing");
+    group.offsetHeight = 82;
+    layout([group, next]);
+    motion.update(false);
+    motion.update(true);
+    expect(next.animate).not.toHaveBeenCalled();
+    layout([next, group]);
+    motion.update(true);
+    expectMove(next, 83);
+  });
   it("moves a retained Active row into Settled with its displaced peers", () => {
     const pinnedHeader = new TestRow("Pinned", 0);
     const pinned = new TestRow("pin");
