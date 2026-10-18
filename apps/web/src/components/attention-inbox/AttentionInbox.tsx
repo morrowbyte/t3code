@@ -21,7 +21,7 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { SidebarMenuButton, SidebarMenuItem, useSidebar } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { AttentionInboxView } from "./AttentionInboxView";
-import { deriveAttentionInbox } from "./attentionInbox";
+import { deriveAttentionInbox } from "./attentionInbox.logic";
 
 function EnvironmentAttention({
   environmentId,

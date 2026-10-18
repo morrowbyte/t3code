@@ -10,7 +10,7 @@ import {
   type AttentionCategory,
   type AttentionFilter,
   type AttentionInboxModel,
-} from "./attentionInbox";
+} from "./attentionInbox.logic";
 
 export function AttentionInboxView({
   model,
