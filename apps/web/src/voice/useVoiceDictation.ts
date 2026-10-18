@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useStableCallback } from "~/hooks/useStableCallback";
 import { acquireMicrophoneOwnership } from "@t3tools/client-runtime/live-voice";
 import {
   MAX_RECORDING_BYTES,
@@ -60,27 +61,34 @@ export function useVoiceDictation(input: {
   const abortRef = useRef<AbortController | null>(null);
   const generationRef = useRef(0);
   const targetKey = input.targetKey;
+  const [stateTargetKey, setStateTargetKey] = useState(targetKey);
+  if (stateTargetKey !== targetKey) {
+    setStateTargetKey(targetKey);
+    setState({ phase: "idle" });
+  }
   const inputRef = useRef(input);
-  inputRef.current = input;
+  useLayoutEffect(() => {
+    inputRef.current = input;
+  }, [input]);
   const insertedTranscriptRef = useRef<string | undefined>(undefined);
 
-  const releaseCapture = useCallback((capture: ActiveCapture) => {
+  const releaseCapture = useStableCallback((capture: ActiveCapture) => {
     if (capture.timeout !== undefined) clearTimeout(capture.timeout);
     for (const track of capture.stream?.getTracks() ?? []) track.stop();
     delete capture.stream;
     // Keep the token through a cancelled, nonabortable permission request.
     if (!capture.mediaRequestPending) capture.releaseMicrophone();
     if (captureRef.current === capture) captureRef.current = null;
-  }, []);
+  });
 
-  const clearAudio = useCallback(() => {
+  const clearAudio = useStableCallback(() => {
     if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
     audioUrlRef.current = null;
     audioRef.current = null;
     insertedTranscriptRef.current = undefined;
-  }, []);
+  });
 
-  const cancel = useCallback(() => {
+  const cancel = () => {
     generationRef.current += 1;
     abortRef.current?.abort();
     abortRef.current = null;
@@ -92,76 +100,74 @@ export function useVoiceDictation(input: {
     clearAudio();
     if (targetKey) writeRecordingDraft(targetKey, null);
     setState({ phase: "idle" });
-  }, [clearAudio, releaseCapture, targetKey]);
+  };
 
-  const transcribe = useCallback(
-    async (delivery: Exclude<VoiceDictationDelivery, "review"> = "insert") => {
-      const audio = audioRef.current;
-      const audioUrl = audioUrlRef.current;
-      const transcriber = inputRef.current.transcribe;
-      if (
-        !audio ||
-        !audioUrl ||
-        (!transcriber && !insertedTranscriptRef.current) ||
-        abortRef.current !== null
-      )
+  const transcribe = async (delivery: Exclude<VoiceDictationDelivery, "review"> = "insert") => {
+    const audio = audioRef.current;
+    const audioUrl = audioUrlRef.current;
+    const transcriber = inputRef.current.transcribe;
+    if (
+      !audio ||
+      !audioUrl ||
+      (!transcriber && !insertedTranscriptRef.current) ||
+      abortRef.current !== null
+    )
+      return;
+    const generation = ++generationRef.current;
+    const abortController = new AbortController();
+    abortRef.current = abortController;
+    setState({ phase: "transcribing", audioUrl });
+    return (async () => {
+      const transcript =
+        insertedTranscriptRef.current ??
+        (transcriber ? (await transcriber(audio, { signal: abortController.signal })).trim() : "");
+      if (generationRef.current !== generation || abortController.signal.aborted) return;
+      if (!transcript) {
+        setState({
+          phase: "error",
+          message: "No speech was detected. You can record again.",
+          audioUrl,
+        });
         return;
-      const generation = ++generationRef.current;
-      const abortController = new AbortController();
-      abortRef.current = abortController;
-      setState({ phase: "transcribing", audioUrl });
-      try {
-        const transcript =
-          insertedTranscriptRef.current ??
-          (transcriber
-            ? (await transcriber(audio, { signal: abortController.signal })).trim()
-            : "");
+      }
+      const transcriptMissing =
+        insertedTranscriptRef.current && inputRef.current.hasTranscript?.(transcript) === false;
+      if (transcriptMissing && delivery === "send")
+        throw new VoiceDictationServiceError(
+          "The recorded text is no longer in this prompt. Choose Insert text to restore it before sending.",
+        );
+      if (!insertedTranscriptRef.current || transcriptMissing) {
+        inputRef.current.onTranscript(transcript);
+        insertedTranscriptRef.current = transcript;
+        if (targetKey) writeRecordingDraft(targetKey, { audio, transcript });
+      }
+      if (delivery === "send") {
+        let sending = pendingSends.get(audio);
+        if (!sending) {
+          sending = inputRef.current.onSend?.(transcript) ?? Promise.resolve(false);
+          pendingSends.set(audio, sending);
+          void sending
+            .finally(() => {
+              if (pendingSends.get(audio) === sending) pendingSends.delete(audio);
+            })
+            .catch(() => undefined);
+        }
+        const accepted = await sending;
+        // Admission belongs to the original draft even after Settings/navigation.
+        // Do not erase a replacement recording made while this request was pending.
+        if (accepted && targetKey && (await readRecordingDraft(targetKey))?.audio === audio)
+          writeRecordingDraft(targetKey, null);
         if (generationRef.current !== generation || abortController.signal.aborted) return;
-        if (!transcript) {
-          setState({
-            phase: "error",
-            message: "No speech was detected. You can record again.",
-            audioUrl,
-          });
-          return;
-        }
-        const transcriptMissing =
-          insertedTranscriptRef.current && inputRef.current.hasTranscript?.(transcript) === false;
-        if (transcriptMissing && delivery === "send")
+        if (!accepted)
           throw new VoiceDictationServiceError(
-            "The recorded text is no longer in this prompt. Choose Insert text to restore it before sending.",
+            "The message could not be sent. Your text and recording are available to retry.",
           );
-        if (!insertedTranscriptRef.current || transcriptMissing) {
-          inputRef.current.onTranscript(transcript);
-          insertedTranscriptRef.current = transcript;
-          if (targetKey) writeRecordingDraft(targetKey, { audio, transcript });
-        }
-        if (delivery === "send") {
-          let sending = pendingSends.get(audio);
-          if (!sending) {
-            sending = inputRef.current.onSend?.(transcript) ?? Promise.resolve(false);
-            pendingSends.set(audio, sending);
-            void sending
-              .finally(() => {
-                if (pendingSends.get(audio) === sending) pendingSends.delete(audio);
-              })
-              .catch(() => undefined);
-          }
-          const accepted = await sending;
-          // Admission belongs to the original draft even after Settings/navigation.
-          // Do not erase a replacement recording made while this request was pending.
-          if (accepted && targetKey && (await readRecordingDraft(targetKey))?.audio === audio)
-            writeRecordingDraft(targetKey, null);
-          if (generationRef.current !== generation || abortController.signal.aborted) return;
-          if (!accepted)
-            throw new VoiceDictationServiceError(
-              "The message could not be sent. Your text and recording are available to retry.",
-            );
-        }
-        if (targetKey) writeRecordingDraft(targetKey, null);
-        clearAudio();
-        setState({ phase: "idle" });
-      } catch (error) {
+      }
+      if (targetKey) writeRecordingDraft(targetKey, null);
+      clearAudio();
+      setState({ phase: "idle" });
+    })()
+      .catch((error: unknown) => {
         if (generationRef.current !== generation || abortController.signal.aborted) return;
         const message =
           error instanceof VoiceDictationServiceError
@@ -180,14 +186,13 @@ export function useVoiceDictation(input: {
           message,
           audioUrl,
         });
-      } finally {
+      })
+      .finally(() => {
         if (abortRef.current === abortController) abortRef.current = null;
-      }
-    },
-    [clearAudio, targetKey],
-  );
+      });
+  };
 
-  const start = useCallback(async () => {
+  const start = async () => {
     if (
       startingRef.current ||
       captureRef.current !== null ||
@@ -293,19 +298,18 @@ export function useVoiceDictation(input: {
         message: "Microphone access is unavailable. Check browser permissions and try again.",
       });
     }
-  }, [clearAudio, releaseCapture, state.phase, targetKey, transcribe]);
+  };
 
-  const stop = useCallback((delivery: VoiceDictationDelivery = "insert") => {
+  const stop = (delivery: VoiceDictationDelivery = "insert") => {
     const capture = captureRef.current;
     if (capture?.recorder?.state === "recording") {
       capture.delivery = delivery;
       capture.recorder.stop();
     }
-  }, []);
+  };
 
   useEffect(() => {
     const generation = ++generationRef.current;
-    setState({ phase: "idle" });
     if (targetKey)
       void readRecordingDraft(targetKey).then((draft) => {
         if (!draft || generationRef.current !== generation || audioRef.current) return;

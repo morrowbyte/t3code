@@ -6,7 +6,7 @@ import type {
   RuntimeMode,
   RuntimeRequestId,
 } from "@t3tools/contracts";
-import { useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
@@ -47,9 +47,12 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
   const options = props.approval.options ?? DEFAULT_APPROVAL_OPTIONS;
   const key = `${props.environmentId ?? "unknown"}:${props.approval.requestId}`;
   const latest = useRef(props);
-  latest.current = props;
+  useLayoutEffect(() => {
+    latest.current = props;
+  }, [props]);
   const inFlight = useRef(new Set<string>());
-  const [, refreshResponses] = useState(0);
+  const [inFlightSnapshot, setInFlightSnapshot] = useState<ReadonlySet<string>>(new Set());
+  const refreshResponses = () => setInFlightSnapshot(new Set(inFlight.current));
   const [failedKey, setFailedKey] = useState<string | null>(null);
   const [detailsFor, setDetailsFor] = useState<string | null>(null);
   const canRespond = props.approval.responseCapability === "live";
@@ -57,7 +60,7 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
     !canRespond ||
     !props.canOperateThread ||
     props.respondingApprovalId === props.approval.requestId ||
-    inFlight.current.has(key);
+    inFlightSnapshot.has(key);
   const respond = async (decision: ProviderApprovalDecision) => {
     const current = latest.current;
     if (
@@ -74,20 +77,22 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
     )
       return;
     inFlight.current.add(key);
-    refreshResponses((value) => value + 1);
+    refreshResponses();
     setFailedKey(null);
-    try {
+    await (async () => {
       await props.onRespond(props.approval.requestId, decision);
-    } catch {
-      if (
-        latest.current.environmentId === props.environmentId &&
-        latest.current.approval.requestId === props.approval.requestId
-      )
-        setFailedKey(key);
-    } finally {
-      inFlight.current.delete(key);
-      refreshResponses((value) => value + 1);
-    }
+    })()
+      .catch(() => {
+        if (
+          latest.current.environmentId === props.environmentId &&
+          latest.current.approval.requestId === props.approval.requestId
+        )
+          setFailedKey(key);
+      })
+      .finally(() => {
+        inFlight.current.delete(key);
+        refreshResponses();
+      });
   };
   return (
     <View className="gap-3 rounded-[20px] border border-border bg-card-alt p-4">
