@@ -70,7 +70,7 @@ const Event = Schema.Struct({
   action: Schema.String,
   organizationId: Schema.String,
   webhookTimestamp: Schema.Number,
-  actor: Schema.optional(Schema.Struct({ id: Schema.String })),
+  actor: Schema.optional(Schema.NullOr(Schema.Struct({ id: Schema.String }))),
   data: Schema.Struct({
     id: Schema.String,
     issueId: Schema.optional(Schema.String),

@@ -82,12 +82,22 @@ it.effect("settings writes and delivery require destination scopes", () =>
   Effect.gen(function* () {
     const context = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
     const readOnly = fixture(["orchestration:read"]);
-    const post = (type: "enable" | "sync") =>
+    const post = (type: "enable" | "sync" | "bind") =>
       new Request("http://environment.test/api/integrations/linear", {
         method: "POST",
         headers: { authorization: "Bearer fixture", "content-type": "application/json" },
         body: encode({
-          action: type === "enable" ? { type, enabled: true } : { type, bindingId: "bound" },
+          action:
+            type === "enable"
+              ? { type, enabled: true }
+              : type === "bind"
+                ? {
+                    type,
+                    issueId: "WEA-14",
+                    projectId: "fixture-project",
+                    threadId: "fixture-thread",
+                  }
+                : { type, bindingId: "bound" },
         }),
       });
     expect((yield* Effect.promise(() => readOnly.handler(post("enable"), context))).status).toBe(
@@ -102,8 +112,15 @@ it.effect("settings writes and delivery require destination scopes", () =>
     expect(
       (yield* Effect.promise(() => settingsWriter.handler(post("sync"), context))).status,
     ).toBe(403);
+    expect(
+      (yield* Effect.promise(() => settingsWriter.handler(post("bind"), context))).status,
+    ).toBe(403);
     expect(settingsWriter.actions).toEqual(["enable"]);
     yield* Effect.promise(() => settingsWriter.dispose());
+    const operator = fixture(["orchestration:read", "settings:write", "orchestration:operate"]);
+    expect((yield* Effect.promise(() => operator.handler(post("bind"), context))).status).toBe(200);
+    expect(operator.actions).toEqual(["bind"]);
+    yield* Effect.promise(() => operator.dispose());
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 

@@ -276,6 +276,24 @@ it.effect(
   },
 );
 
+it.effect("a signed null-actor event is delivered once to its bound active thread", () => {
+  const f = fixture();
+  return Effect.gen(function* () {
+    const service = yield* LinearIntegration.LinearIntegration;
+    yield* connect;
+    const request = yield* event("human-actor", { actor: null });
+    assert.equal(yield* service.receive(request), "accepted");
+    assert.equal((yield* service.settings).deliveries[0]?.outcome, "pending");
+    yield* service.drain;
+    assert.equal(f.sends.length, 1);
+    assert.equal(f.sends[0]?.threadId, threadId);
+    assert.equal((yield* service.settings).deliveries[0]?.outcome, "delivered");
+    assert.equal(yield* service.receive(request), "duplicate");
+    yield* service.drain;
+    assert.equal(f.sends.length, 1);
+  }).pipe(Effect.provide(f.layer), Effect.scoped);
+});
+
 it.effect("a long issue description cannot displace the triggering comment", () => {
   const f = fixture();
   f.upstream.description = "Description context ".repeat(3000);

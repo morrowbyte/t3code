@@ -27,7 +27,7 @@ const settingsLayer = HttpApiBuilder.group(
       .handle("linearAction", ({ payload: { action } }) =>
         Effect.gen(function* () {
           yield* requireEnvironmentScope(AuthSettingsWriteScope);
-          if (action.type === "sync" || action.type === "retry")
+          if (action.type === "bind" || action.type === "sync" || action.type === "retry")
             yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
           if (action.type === "bind") yield* requireEnvironmentScope(AuthOrchestrationReadScope);
           return yield* service.action(action);
