@@ -63,9 +63,11 @@ export const ThreadMetadataMcpAction = Schema.Literals([
   "regenerate_title",
   "link_pull_request",
   "unlink_pull_request",
+  "promote",
+  "unpromote",
 ]).annotate({
   description:
-    "Metadata mutation: rename, regenerate_title, link_pull_request, or unlink_pull_request.",
+    "Metadata mutation. promote shows this same thread at top level; unpromote restores default presentation. Execution ancestry and parent task ownership stay unchanged.",
 });
 export type ThreadMetadataMcpAction = typeof ThreadMetadataMcpAction.Type;
 
@@ -101,6 +103,8 @@ export const ThreadMetadataMcpUpdateInput = Schema.Struct({
           : "link_pull_request requires pullRequest and does not accept title.";
       case "regenerate_title":
       case "unlink_pull_request":
+      case "promote":
+      case "unpromote":
         return input.title === undefined && input.pullRequest === undefined
           ? true
           : `${input.action} does not accept title or pullRequest.`;
@@ -115,6 +119,7 @@ export const ThreadMetadataMcpUpdateResult = Schema.Struct({
   commandId: CommandId,
   sequence: NonNegativeInt,
   title: Schema.String,
+  presentation: Schema.optional(Schema.Literals(["default", "top_level"])),
   titleRegeneration: Schema.NullOr(ThreadTitleRegeneration),
   linkedPullRequest: Schema.NullOr(ThreadLinkedPullRequest),
   updatedAt: IsoDateTime,

@@ -2440,6 +2440,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
     if (
+      command.type === "thread.metadata.update" &&
+      command.presentation === "top_level" &&
+      isProviderNativeSubagentThread(thread)
+    ) {
+      return yield* new OrchestratorSubagentThreadReadOnlyError({
+        commandId: command.commandId,
+        threadId: command.threadId,
+      });
+    }
+    if (
       command.type === "thread.pull-request.watch" &&
       command.watching &&
       isProviderNativeSubagentThread(thread)
@@ -2957,6 +2967,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   };
           return {
             ...thread,
+            ...(command.presentation === undefined ? {} : { presentation: command.presentation }),
             ...(command.title === undefined ? {} : { title: command.title }),
             ...(command.limitRecovery === undefined ? {} : { limitRecovery }),
             ...(command.limitRecovery !== undefined &&

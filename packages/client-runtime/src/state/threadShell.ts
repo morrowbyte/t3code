@@ -344,7 +344,11 @@ export function createEnvironmentThreadShellAtoms(input: {
     for (const environmentId of enabledEnvironmentIds(get(input.catalogValueAtom))) {
       const subagentRequests = get(pendingSubagentRequestsAtom(environmentId));
       for (const thread of get(environmentThreadsAtom(environmentId))) {
-        if (thread.archivedAt !== null || thread.lineage.relationshipToParent === "subagent")
+        if (
+          thread.archivedAt !== null ||
+          (thread.lineage.relationshipToParent === "subagent" &&
+            thread.presentation !== "top_level")
+        )
           continue;
         next.push(scopedThread(environmentId, thread, subagentRequests));
       }

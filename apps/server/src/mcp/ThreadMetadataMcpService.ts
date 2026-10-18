@@ -73,6 +73,14 @@ function metadataCommand(input: {
   readonly update: ThreadMetadataMcpUpdateInput;
 }): Extract<OrchestrationV2Command, { readonly type: "thread.metadata.update" }> {
   switch (input.update.action) {
+    case "promote":
+    case "unpromote":
+      return {
+        type: "thread.metadata.update",
+        commandId: input.commandId,
+        threadId: input.threadId,
+        presentation: input.update.action === "promote" ? "top_level" : "default",
+      };
     case "rename":
       return {
         type: "thread.metadata.update",
@@ -113,7 +121,7 @@ function resultFromThread(input: {
   readonly sequence: number;
   readonly thread: Pick<
     OrchestrationV2AppThread,
-    "id" | "title" | "titleRegeneration" | "linkedPullRequest" | "updatedAt"
+    "id" | "title" | "titleRegeneration" | "linkedPullRequest" | "updatedAt" | "presentation"
   >;
 }): ThreadMetadataMcpUpdateResult {
   return {
@@ -122,6 +130,7 @@ function resultFromThread(input: {
     commandId: input.commandId,
     sequence: input.sequence,
     title: input.thread.title,
+    presentation: input.thread.presentation ?? "default",
     titleRegeneration:
       input.thread.titleRegeneration === undefined || input.thread.titleRegeneration === null
         ? null
