@@ -51,6 +51,8 @@ jobs:
         run: vp install --frozen-lockfile
       - name: Prepare pinned Electron runtime before desktop imports
         run: node apps/desktop/scripts/ensure-electron-runtime.mjs
+      - name: Install pinned Chromium for focused renderer gates
+        run: node apps/server/node_modules/playwright-core/cli.js install --with-deps --only-shell chromium
       - name: Capture emulated mobile composer before source gates
         if: (github.ref_name == 'feature/mobile-composer-hotfix-candidate-20261016' || github.ref_name == 'feature/mobile-compact-config-candidate-20261016')
         run: |
