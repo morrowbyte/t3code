@@ -100,7 +100,7 @@ jobs:
               subprocess.run(['git', 'merge-base', '--is-ancestor', source, android_source], check=True)
               subprocess.run(['git', 'merge-base', '--is-ancestor', android_source, control], check=True)
               expected_files = {
-                  'apps/mobile/app.config.ts': '0ef261dad9fa9a77395ec2740355ce12b707ded81615fc69a7b76945a0135f88',
+                  'apps/mobile/app.config.ts': '39ff2c29ea82cba87d7a5b680da7215f0774fe2c8730a6bf947068c36785ddcb',
                   'patches/expo-widgets@58.0.18.patch': 'f9b031e1d1f4f98313930ca01eb0939d4193566d6da03d0f3da31019e0a3f5fc',
                   'pnpm-lock.yaml': '9d6aa0a8991480b891126e69a364fff7061a7f3452d3a368d0b35761b74ddb9b',
               }
