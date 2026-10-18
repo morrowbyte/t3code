@@ -86,4 +86,25 @@ describe("DesktopWebLinks", () => {
       assert.deepStrictEqual(sent, ["https://example.com/during-reload"]);
     }).pipe(Effect.provide(layer));
   });
+
+  it.effect(
+    "preserves nested thread encoding across initial readiness and a renderer reload",
+    () => {
+      const { sent, layer, reload } = makeWindow();
+      const link =
+        "t3code://threads/24efa85c-862c-4de4-9b5e-aaaa041e28a4/thread%3Adelegated-task%3Acommand%253Amcp%253A474c7d68-6293-4de4-9859-011aec7f079b%253Adelegate-task%253At3-iui-rich-components-e2e-20261018-bootstrap-v1";
+      return Effect.gen(function* () {
+        const webLinks = yield* DesktopWebLinks.DesktopWebLinks;
+        yield* webLinks.receive(link);
+        assert.deepStrictEqual(sent, []);
+        yield* webLinks.setRendererReady(true);
+        assert.deepStrictEqual(sent, [link]);
+        reload();
+        yield* webLinks.receive(link);
+        assert.deepStrictEqual(sent, [link]);
+        yield* webLinks.setRendererReady(true);
+        assert.deepStrictEqual(sent, [link, link]);
+      }).pipe(Effect.provide(layer));
+    },
+  );
 });
