@@ -335,6 +335,10 @@
       "types": "./src/state/threadRequests.ts",
       "default": "./src/state/threadRequests.ts"
     },
+    "./state/descendant-thread-requests": {
+      "types": "./src/state/descendantThreadRequests.ts",
+      "default": "./src/state/descendantThreadRequests.ts"
+    },
     "./state/thread-workflows": {
       "types": "./src/state/threadWorkflows.ts",
       "default": "./src/state/threadWorkflows.ts"

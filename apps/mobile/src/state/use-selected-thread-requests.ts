@@ -14,7 +14,11 @@ import {
 import { useAtomValue } from "@effect/atom-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { type ProviderApprovalDecision, type RuntimeRequestId } from "@t3tools/contracts";
+import {
+  type ProviderApprovalDecision,
+  type RuntimeRequestId,
+  type ScopedThreadRef,
+} from "@t3tools/contracts";
 import {
   type PendingThreadRequests,
   type ThreadUserInputQuestion,
@@ -23,7 +27,7 @@ import {
 import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
-import { threadEnvironment } from "../state/threads";
+import { environmentThreadDetails, threadEnvironment } from "../state/threads";
 import { scopedRequestKey } from "../lib/scopedEntities";
 import {
   buildPendingUserInputAnswers,
@@ -82,6 +86,16 @@ function setUserInputDraftCustomAnswer(
 }
 
 export function useSelectedThreadRequests() {
+  const { selectedThreadDetailRef } = useThreadSelection();
+  const pendingRequests = useSelectedThreadPendingRequests();
+  return useThreadRequests(selectedThreadDetailRef, pendingRequests);
+}
+
+export function useThreadRequests(
+  origin: ScopedThreadRef | null,
+  pendingRequests: PendingThreadRequests | null,
+  options?: { readonly requestId?: RuntimeRequestId; readonly requireLive?: boolean },
+) {
   const respondToApproval = useAtomCommand(
     threadEnvironment.respondToApproval,
     "thread approval response",
@@ -94,46 +108,50 @@ export function useSelectedThreadRequests() {
     threadEnvironment.dismissUserInput,
     "thread user input dismissal",
   );
-  const { selectedThread: selectedThreadShell } = useThreadSelection();
-  const pendingRequests = useSelectedThreadPendingRequests();
   const userInputDraftsByRequestKey = useAtomValue(userInputDraftsByRequestKeyAtom);
   const userInputResponsesInFlight = useRef(new Set<string>());
   const [respondingApprovalId, setRespondingApprovalId] = useState<RuntimeRequestId | null>(null);
   const [respondingUserInputId, setRespondingUserInputId] = useState<RuntimeRequestId | null>(null);
 
   const activePendingApprovals = pendingRequests?.approvals ?? EMPTY_PENDING_REQUESTS.approvals;
-  const activePendingApproval = activePendingApprovals[0] ?? null;
+  const activePendingApproval =
+    (options?.requestId
+      ? activePendingApprovals.find((entry) => entry.requestId === options.requestId)
+      : activePendingApprovals[0]) ?? null;
   const activePendingUserInputs = pendingRequests?.userInputs ?? EMPTY_PENDING_REQUESTS.userInputs;
-  const activePendingUserInput = activePendingUserInputs[0] ?? null;
+  const activePendingUserInput =
+    (options?.requestId
+      ? activePendingUserInputs.find((entry) => entry.requestId === options.requestId)
+      : activePendingUserInputs[0]) ?? null;
+  const currentRequests = useCallback(() => {
+    if (!origin) return null;
+    if (!options?.requireLive) return pendingRequests;
+    if (appAtomRegistry.get(environmentThreadDetails.statusAtom(origin)) !== "live") return null;
+    return appAtomRegistry.get(environmentThreadDetails.pendingRequestsAtom(origin));
+  }, [origin, pendingRequests, options?.requireLive]);
   useEffect(() => {
-    if (!activePendingUserInput || !selectedThreadShell) return;
-    const requestKey = scopedRequestKey(
-      selectedThreadShell.environmentId,
-      activePendingUserInput.requestId,
-    );
+    if (!activePendingUserInput || !origin) return;
+    const requestKey = scopedRequestKey(origin.environmentId, activePendingUserInput.requestId);
     const existing = appAtomRegistry.get(userInputDraftsByRequestKeyAtom);
     const drafts = existing[requestKey] ?? {};
     const seeded = seedUserInputDraftAnswers(activePendingUserInput.questions, drafts);
     if (seeded !== drafts) {
       appAtomRegistry.set(userInputDraftsByRequestKeyAtom, { ...existing, [requestKey]: seeded });
     }
-  }, [activePendingUserInput, selectedThreadShell]);
+  }, [activePendingUserInput, origin]);
   const questionServerConfigs = useServerConfigs();
   const attachmentDrafts = useAtomValue(composerDraftsAtom);
   const preparationCounts = useAtomValue(questionAttachmentPreparationAtom);
   const uploadStates = useAtomValue(composerAttachmentUploadsAtom);
   useEffect(() => {
-    if (!selectedThreadShell || !pendingRequests) return;
-    const prefix = questionAttachmentDraftPrefix(
-      selectedThreadShell.environmentId,
-      selectedThreadShell.id,
-    );
+    if (!origin || !pendingRequests) return;
+    const prefix = questionAttachmentDraftPrefix(origin.environmentId, origin.threadId);
     const retained = new Set(
       activePendingUserInputs.flatMap((request) =>
         request.questions.map((question) =>
           questionAttachmentDraftKey(
-            selectedThreadShell.environmentId,
-            selectedThreadShell.id,
+            origin.environmentId,
+            origin.threadId,
             request.requestId,
             question.id,
           ),
@@ -151,38 +169,35 @@ export function useSelectedThreadRequests() {
       }
     }
     if (changed) appAtomRegistry.set(questionAttachmentPreparationAtom, counts);
-  }, [activePendingUserInputs, attachmentDrafts, pendingRequests, selectedThreadShell]);
+  }, [activePendingUserInputs, attachmentDrafts, pendingRequests, origin]);
   const activePendingUserInputDrafts =
-    activePendingUserInput && selectedThreadShell
+    activePendingUserInput && origin
       ? Object.fromEntries(
           activePendingUserInput.questions.map((question) => {
             const key = questionAttachmentDraftKey(
-              selectedThreadShell.environmentId,
-              selectedThreadShell.id,
+              origin.environmentId,
+              origin.threadId,
               activePendingUserInput.requestId,
               question.id,
             );
             const attachments = attachmentDrafts[key]?.attachments ?? [];
             const uploadInput = {
-              environmentId: selectedThreadShell.environmentId,
+              environmentId: origin.environmentId,
               attachments,
-              serverConfig: questionServerConfigs.get(selectedThreadShell.environmentId) ?? null,
+              serverConfig: questionServerConfigs.get(origin.environmentId) ?? null,
               states: uploadStates,
             };
             return [
               question.id,
               {
                 ...userInputDraftsByRequestKey[
-                  scopedRequestKey(
-                    selectedThreadShell.environmentId,
-                    activePendingUserInput.requestId,
-                  )
+                  scopedRequestKey(origin.environmentId, activePendingUserInput.requestId)
                 ]?.[question.id],
                 attachmentCount: attachments.length,
                 attachmentsBlocked:
                   (attachments.length > 0 &&
-                    questionServerConfigs.get(selectedThreadShell.environmentId)?.environment
-                      .capabilities.questionAttachments !== true) ||
+                    questionServerConfigs.get(origin.environmentId)?.environment.capabilities
+                      .questionAttachments !== true) ||
                   (preparationCounts[key] ?? 0) > 0 ||
                   composerAttachmentsStillUploading(uploadInput) ||
                   composerAttachmentUploadBlockReason({
@@ -200,14 +215,14 @@ export function useSelectedThreadRequests() {
 
   const onSelectUserInputOption = useCallback(
     (requestId: RuntimeRequestId, question: ThreadUserInputQuestion, value: string) => {
-      if (!selectedThreadShell) {
+      if (!origin) {
         return;
       }
 
-      const requestKey = scopedRequestKey(selectedThreadShell.environmentId, requestId);
+      const requestKey = scopedRequestKey(origin.environmentId, requestId);
       setUserInputDraftOption(requestKey, question, value);
     },
-    [selectedThreadShell],
+    [origin],
   );
 
   const onChangeUserInputCustomAnswer = useCallback(
@@ -215,26 +230,23 @@ export function useSelectedThreadRequests() {
       const question = activePendingUserInputs
         .find((request) => request.requestId === requestId)
         ?.questions.find((entry) => entry.id === questionId);
-      if (!selectedThreadShell || !question) {
+      if (!origin || !question) {
         return;
       }
 
-      const requestKey = scopedRequestKey(selectedThreadShell.environmentId, requestId);
+      const requestKey = scopedRequestKey(origin.environmentId, requestId);
       setUserInputDraftCustomAnswer(requestKey, question, customAnswer);
     },
-    [activePendingUserInputs, selectedThreadShell],
+    [activePendingUserInputs, origin],
   );
 
   const onRespondToApproval = useCallback(
     async (requestId: RuntimeRequestId, decision: ProviderApprovalDecision) => {
-      if (
-        !selectedThreadShell ||
-        !readEnvironmentScope(selectedThreadShell.environmentId, AuthOrchestrationOperateScope)
-      ) {
+      if (!origin || !readEnvironmentScope(origin.environmentId, AuthOrchestrationOperateScope)) {
         return;
       }
       if (
-        activePendingApprovals.find((approval) => approval.requestId === requestId)
+        currentRequests()?.approvals.find((approval) => approval.requestId === requestId)
           ?.responseCapability !== "live"
       ) {
         return;
@@ -242,9 +254,9 @@ export function useSelectedThreadRequests() {
 
       setRespondingApprovalId(requestId);
       const result = await respondToApproval({
-        environmentId: selectedThreadShell.environmentId,
+        environmentId: origin.environmentId,
         input: {
-          threadId: selectedThreadShell.id,
+          threadId: origin.threadId,
           requestId,
           decision,
         },
@@ -252,23 +264,26 @@ export function useSelectedThreadRequests() {
       setRespondingApprovalId((current) => (current === requestId ? null : current));
       return result;
     },
-    [activePendingApprovals, respondToApproval, selectedThreadShell],
+    [currentRequests, respondToApproval, origin],
   );
 
   const onSubmitUserInput = useCallback(async () => {
     if (
-      !selectedThreadShell ||
+      !origin ||
       !activePendingUserInput ||
+      !currentRequests()?.userInputs.some(
+        (entry) => entry.requestId === activePendingUserInput.requestId,
+      ) ||
       activePendingUserInput.responseCapability === "not_resumable" ||
       !activePendingUserInputAnswers ||
-      !readEnvironmentScope(selectedThreadShell.environmentId, AuthOrchestrationOperateScope)
+      !readEnvironmentScope(origin.environmentId, AuthOrchestrationOperateScope)
     ) {
       return;
     }
 
     const responseKey = questionAttachmentDraftKey(
-      selectedThreadShell.environmentId,
-      selectedThreadShell.id,
+      origin.environmentId,
+      origin.threadId,
       activePendingUserInput.requestId,
       "",
     );
@@ -279,8 +294,8 @@ export function useSelectedThreadRequests() {
     >();
     for (const question of activePendingUserInput.questions) {
       const key = questionAttachmentDraftKey(
-        selectedThreadShell.environmentId,
-        selectedThreadShell.id,
+        origin.environmentId,
+        origin.threadId,
         activePendingUserInput.requestId,
         question.id,
       );
@@ -291,7 +306,7 @@ export function useSelectedThreadRequests() {
         attachments.some(
           (attachment) =>
             !attachment.uploadedAttachmentId ||
-            attachment.uploadEnvironmentId !== selectedThreadShell.environmentId,
+            attachment.uploadEnvironmentId !== origin.environmentId,
         )
       ) {
         Dialog.alert(
@@ -314,9 +329,9 @@ export function useSelectedThreadRequests() {
     userInputResponsesInFlight.current.add(responseKey);
     setRespondingUserInputId(activePendingUserInput.requestId);
     const result = await respondToUserInput({
-      environmentId: selectedThreadShell.environmentId,
+      environmentId: origin.environmentId,
       input: {
-        threadId: selectedThreadShell.id,
+        threadId: origin.threadId,
         requestId: activePendingUserInput.requestId,
         answers: activePendingUserInputAnswers,
         ...(attachmentsByQuestionId.size > 0
@@ -332,24 +347,29 @@ export function useSelectedThreadRequests() {
   }, [
     activePendingUserInput,
     activePendingUserInputAnswers,
+    currentRequests,
     respondToUserInput,
-    selectedThreadShell,
+    origin,
   ]);
 
   const onDismissUserInput = useCallback(async () => {
     if (
-      !selectedThreadShell ||
+      !origin ||
       !activePendingUserInput ||
-      !readEnvironmentScope(selectedThreadShell.environmentId, AuthOrchestrationOperateScope)
+      !activePendingUserInput.dismissible ||
+      !currentRequests()?.userInputs.some(
+        (entry) => entry.requestId === activePendingUserInput.requestId && entry.dismissible,
+      ) ||
+      !readEnvironmentScope(origin.environmentId, AuthOrchestrationOperateScope)
     ) {
       return;
     }
 
     setRespondingUserInputId(activePendingUserInput.requestId);
     const result = await dismissUserInput({
-      environmentId: selectedThreadShell.environmentId,
+      environmentId: origin.environmentId,
       input: {
-        threadId: selectedThreadShell.id,
+        threadId: origin.threadId,
         requestId: activePendingUserInput.requestId,
       },
     });
@@ -357,7 +377,7 @@ export function useSelectedThreadRequests() {
       current === activePendingUserInput.requestId ? null : current,
     );
     return result;
-  }, [activePendingUserInput, dismissUserInput, selectedThreadShell]);
+  }, [activePendingUserInput, currentRequests, dismissUserInput, origin]);
 
   return {
     activePendingApproval,

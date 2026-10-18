@@ -6,6 +6,11 @@ const fixture = vi.hoisted(() => ({
   uploads: {} as Record<string, unknown>,
   preparations: {} as Record<string, number>,
   preparationAtom: Symbol("preparation"),
+  answers: {} as Record<string, unknown>,
+  pending: null as unknown,
+  status: "live",
+  canOperate: true,
+  commands: [] as Array<{ command: unknown; value: unknown }>,
 }));
 vi.mock("react-native", () => ({ Alert: { alert: vi.fn() } }));
 vi.mock("@effect/atom-react", () => ({
@@ -16,7 +21,7 @@ vi.mock("@effect/atom-react", () => ({
         ? fixture.uploads
         : atom === fixture.preparationAtom
           ? fixture.preparations
-          : {},
+          : fixture.answers,
 }));
 vi.mock("./use-composer-drafts", () => ({
   composerDraftsAtom: "drafts",
@@ -47,12 +52,44 @@ vi.mock("./entities", () => ({
       ],
     ]),
 }));
-vi.mock("./session", () => ({ readEnvironmentScope: () => true }));
-vi.mock("./threads", () => ({ threadEnvironment: {} }));
-vi.mock("./use-atom-command", () => ({ useAtomCommand: () => vi.fn() }));
+vi.mock("./session", () => ({ readEnvironmentScope: () => fixture.canOperate }));
+vi.mock("./threads", () => ({
+  threadEnvironment: {
+    respondToApproval: "approve",
+    respondToUserInput: "answer",
+    dismissUserInput: "dismiss",
+  },
+  environmentThreadDetails: {
+    statusAtom: () => "currentStatus",
+    pendingRequestsAtom: () => "currentPending",
+  },
+}));
+vi.mock("./atom-registry", () => ({
+  appAtomRegistry: {
+    get: (atom: unknown) =>
+      atom === "currentStatus"
+        ? fixture.status
+        : atom === "currentPending"
+          ? fixture.pending
+          : atom === "drafts"
+            ? fixture.drafts
+            : atom === fixture.preparationAtom
+              ? fixture.preparations
+              : fixture.answers,
+    set: (_atom: unknown, value: Record<string, unknown>) => {
+      fixture.answers = value;
+    },
+  },
+}));
+vi.mock("./use-atom-command", () => ({
+  useAtomCommand: (command: unknown) => async (value: unknown) => {
+    fixture.commands.push({ command, value });
+    return { _tag: "Success" };
+  },
+}));
 vi.mock("./use-thread-selection", () => ({
   useThreadSelection: () => ({
-    selectedThread: { environmentId: "environment-1", id: "thread-1" },
+    selectedThreadDetailRef: { environmentId: "environment-1", threadId: "thread-1" },
   }),
 }));
 vi.mock("./use-thread-detail", () => ({
@@ -77,9 +114,9 @@ vi.mock("./use-thread-detail", () => ({
   }),
 }));
 
-import { ApprovalRequestId, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { ApprovalRequestId, RuntimeRequestId, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { questionAttachmentDraftKey } from "./question-attachments";
-import { useSelectedThreadRequests } from "./use-selected-thread-requests";
+import { useSelectedThreadRequests, useThreadRequests } from "./use-selected-thread-requests";
 
 const environmentId = EnvironmentId.make("environment-1");
 const key = (question: string) =>
@@ -98,6 +135,11 @@ function submitButtonMarkup() {
 }
 beforeEach(() => {
   fixture.preparations = {};
+  fixture.answers = {};
+  fixture.pending = null;
+  fixture.status = "live";
+  fixture.canOperate = true;
+  fixture.commands = [];
   fixture.drafts = Object.fromEntries(
     ["first", "second"].map((id) => [
       key(id),
@@ -137,5 +179,119 @@ describe("question attachment submission readiness", () => {
     fixture.uploads["environment-1:second"] = { status: "ready" };
     fixture.preparations[key("first")] = 1;
     expect(submitButtonMarkup()).toContain("disabled");
+  });
+});
+
+describe("descendant request origin", () => {
+  const origin = { environmentId, threadId: ThreadId.make("original-child") };
+  const requestId = RuntimeRequestId.make("original-request");
+  const question = {
+    id: "scope",
+    header: "Scope",
+    question: "Test?",
+    options: [{ label: "Fixtures", description: "No execution.", value: "  fixtures_only  " }],
+    allowCustomAnswer: true,
+    multiSelect: false,
+  };
+  const pending = {
+    approvals: [
+      {
+        requestId,
+        createdAt: "2026-10-19T00:00:00.000Z",
+        responseCapability: "live" as const,
+        requestKind: "command" as const,
+      },
+    ],
+    userInputs: [
+      {
+        requestId,
+        createdAt: "2026-10-19T00:00:00.000Z",
+        responseCapability: "message" as const,
+        dismissible: true,
+        questions: [question],
+      },
+    ],
+  };
+  function probe() {
+    const rendered = vi.fn<(value: ReturnType<typeof useThreadRequests>) => void>();
+    function Probe() {
+      rendered(useThreadRequests(origin, pending, { requestId, requireLive: true }));
+      return null;
+    }
+    renderToStaticMarkup(<Probe />);
+    const value = rendered.mock.lastCall?.[0];
+    if (!value) throw new Error("Probe did not render");
+    return value;
+  }
+  function prepare() {
+    fixture.drafts = {};
+    fixture.pending = pending;
+    fixture.answers = {
+      [String(environmentId) + ":" + requestId]: {
+        scope: { selectedOptionValues: ["  fixtures_only  "], customAnswer: "" },
+      },
+    };
+  }
+  it("answers and declines at the original child, preserving the option value", async () => {
+    prepare();
+    const result = probe();
+    expect(result.activePendingUserInputAnswers).toEqual({ scope: "  fixtures_only  " });
+    await result.onSubmitUserInput();
+    await result.onRespondToApproval(requestId, "decline");
+    await result.onDismissUserInput();
+    expect(fixture.commands).toEqual([
+      {
+        command: "answer",
+        value: {
+          environmentId,
+          input: {
+            threadId: origin.threadId,
+            requestId,
+            answers: { scope: "  fixtures_only  " },
+          },
+        },
+      },
+      {
+        command: "approve",
+        value: {
+          environmentId,
+          input: { threadId: origin.threadId, requestId, decision: "decline" },
+        },
+      },
+      {
+        command: "dismiss",
+        value: { environmentId, input: { threadId: origin.threadId, requestId } },
+      },
+    ]);
+  });
+  it.each(["cached", "synchronizing", "live"])(
+    "rejects a stale action when current state is %s",
+    async (status) => {
+      prepare();
+      const result = probe();
+      fixture.status = status;
+      fixture.pending = null;
+      await result.onSubmitUserInput();
+      await result.onRespondToApproval(requestId, "decline");
+      await result.onDismissUserInput();
+      expect(fixture.commands).toEqual([]);
+    },
+  );
+  it("rechecks origin permission and rejects an attachment uploaded elsewhere", async () => {
+    prepare();
+    const result = probe();
+    fixture.canOperate = false;
+    await result.onSubmitUserInput();
+    expect(fixture.commands).toEqual([]);
+    fixture.canOperate = true;
+    fixture.drafts = {
+      [questionAttachmentDraftKey(environmentId, origin.threadId, requestId, question.id)]: {
+        attachments: [
+          { id: "file", uploadedAttachmentId: "upload", uploadEnvironmentId: "environment-other" },
+        ],
+      },
+    };
+    await result.onSubmitUserInput();
+    expect(fixture.commands).toEqual([]);
   });
 });
