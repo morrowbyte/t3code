@@ -1,0 +1,151 @@
+name: Android Expo development client
+run-name: Android Metro development client · x86_64 · source 1af269d
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-expo-dev-client-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  build_dev_client:
+    name: Build x86_64 Expo development client
+    runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    timeout-minutes: 60
+    env:
+      SOURCE_SHA: 1af269d6144fb63cdaf74002d5e65ef6403a6822
+      APP_VARIANT: development
+      MOBILE_VERSION_POLICY: appVersion
+      T3CODE_MOBILE_VERSION: 0.1.2-nightly.20261018.55
+      MORROWBYTE_ANDROID_VERSION_CODE: "55"
+      ANDROID_BUILD_TOOLS: "36.0.0"
+      CI: "1"
+    steps:
+      - name: Require trusted main dispatch
+        env:
+          REQUESTED_REF: ${{ github.ref }}
+        run: test "$REQUESTED_REF" = refs/heads/main
+
+      - name: Checkout native development baseline
+        uses: actions/checkout@v4
+        with:
+          ref: 1af269d6144fb63cdaf74002d5e65ef6403a6822
+          fetch-depth: 1
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: false
+
+      - name: Install frozen mobile dependency closure
+        run: vp install --frozen-lockfile --filter=@t3tools/mobile... --filter=@t3tools/scripts...
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Setup Android build and verification tools
+        uses: android-actions/setup-android@v4
+        with:
+          packages: "platform-tools build-tools;36.0.0"
+          log-accepted-android-sdk-licenses: false
+
+      - name: Setup Gradle cache
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Verify development variant and generate native project
+        working-directory: apps/mobile
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          node node_modules/expo/bin/cli config --type public --json > "$RUNNER_TEMP/dev-client-config.json"
+          python3 - <<'PYCONFIG'
+          import json, os
+          from pathlib import Path
+          config = json.loads((Path(os.environ['RUNNER_TEMP']) / 'dev-client-config.json').read_text())
+          assert config['name'] == 'Morrowbyte Dev'
+          assert config['android']['package'] == 'com.morrowbyte.t3code.dev'
+          assert config['scheme'] == 'morrowbyte-dev'
+          assert config['runtimeVersion']['policy'] == 'appVersion'
+          assert config['extra']['appVariant'] == 'development'
+          assert config['version'] == os.environ['T3CODE_MOBILE_VERSION']
+          assert config['android']['versionCode'] == int(os.environ['MORROWBYTE_ANDROID_VERSION_CODE'])
+          PYCONFIG
+          node node_modules/expo/bin/cli prebuild --clean --platform android --no-install
+
+      - name: Build development client once without Release or R8
+        working-directory: apps/mobile/android
+        run: |
+          set -euo pipefail
+          ./gradlew :app:dependencies --configuration debugRuntimeClasspath --no-daemon --no-configuration-cache \
+            -PreactNativeArchitectures=x86_64 > "$RUNNER_TEMP/dev-client-dependencies.txt"
+          ./gradlew :app:assembleDebug --no-daemon --no-configuration-cache -PreactNativeArchitectures=x86_64
+
+      - name: Verify debug APK identity and retain native baseline receipt
+        run: |
+          set -euo pipefail
+          python3 - <<'PYAPK'
+          import hashlib, json, os, re, shutil, struct, subprocess, zipfile
+          from pathlib import Path
+          digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+          source = os.environ['SOURCE_SHA']
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == source
+          sdk = Path(os.environ['ANDROID_HOME']) / 'build-tools' / os.environ['ANDROID_BUILD_TOOLS']
+          apks = list(Path('apps/mobile/android/app/build/outputs/apk/debug').glob('*.apk'))
+          assert len(apks) == 1, 'Expected one development APK.'
+          apk = apks[0]
+          signature = subprocess.check_output([str(sdk / 'apksigner'), 'verify', '--verbose', '--print-certs', str(apk)], text=True)
+          certs = re.findall(r'^Signer #\d+ certificate SHA-256 digest: ([0-9a-fA-F:]+)$', signature, re.M)
+          assert len(certs) == 1
+          badging = subprocess.check_output([str(sdk / 'aapt'), 'dump', 'badging', str(apk)], text=True)
+          identity = re.search(r"^package: name='([^']+)' versionCode='([^']+)' versionName='([^']+)'", badging, re.M)
+          assert identity and identity.groups() == ('com.morrowbyte.t3code.dev', os.environ['MORROWBYTE_ANDROID_VERSION_CODE'], os.environ['T3CODE_MOBILE_VERSION'])
+          assert 'application-debuggable' in badging
+          manifest = subprocess.check_output([str(sdk / 'aapt'), 'dump', 'xmltree', str(apk), 'AndroidManifest.xml'], text=True)
+          assert 'morrowbyte-dev' in manifest
+          with zipfile.ZipFile(apk) as archive:
+              libraries = [name for name in archive.namelist() if name.startswith('lib/') and name.endswith('.so')]
+              assert libraries and {name.split('/')[1] for name in libraries} == {'x86_64'}
+              assert any('hermes' in name for name in libraries)
+              assert any('jingle_peerconnection' in name or 'webrtc' in name for name in libraries)
+              for name in libraries:
+                  data = archive.read(name)
+                  assert data[:6] == b'\x7fELF\x02\x01' and struct.unpack_from('<H', data, 18)[0] == 62, name
+          mobile = Path('apps/mobile')
+          versions = {name: json.loads((mobile / 'node_modules' / name / 'package.json').read_text())['version'] for name in ['expo', 'expo-dev-client', 'react-native', 'react-native-webrtc', 'expo-audio', 'expo-widgets']}
+          assert versions['expo-widgets'] == '58.0.20'
+          modules = {p.parent.name: json.loads(p.read_text())['android']['modules'] for p in (mobile / 'modules').glob('*/expo-module.config.json') if 'android' in json.loads(p.read_text()).get('platforms', [])}
+          output = Path('android-dev-client')
+          output.mkdir()
+          target = output / 'Morrowbyte-Dev-1af269d-android-x86_64.apk'
+          shutil.copyfile(apk, target)
+          assert digest(apk) == digest(target)
+          receipt = {'schemaVersion': 1, 'developmentClient': True, 'shippingArtifact': False, 'buildMode': 'debug', 'minification': False, 'source': source, 'lockSha256': digest(Path('pnpm-lock.yaml')), 'run': os.environ['GITHUB_RUN_ID'], 'attempt': os.environ['GITHUB_RUN_ATTEMPT'], 'trustedWorkflowSha': os.environ['GITHUB_WORKFLOW_SHA'], 'package': 'com.morrowbyte.t3code.dev', 'scheme': 'morrowbyte-dev', 'runtimeVersionPolicy': 'appVersion', 'apk': target.name, 'apkSha256': digest(target), 'certificateSha256': certs[0].replace(':', '').lower(), 'signatureVerified': True, 'abis': ['x86_64'], 'nativeLibraryCount': len(libraries), 'versions': versions, 'localAndroidModules': modules, 'metroRequired': True, 'deviceAcceptance': 'not-run'}
+          (output / (target.name + '.json')).write_text(json.dumps(receipt, indent=2) + '\n')
+          (output / (target.name + '.sha256')).write_text(f'{digest(target)}  {target.name}\n')
+          PYAPK
+
+      - name: Upload development client and receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: morrowbyte-android-dev-client-x86_64-1af269d
+          path: android-dev-client/*
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Preserve native development dependency evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: morrowbyte-android-dev-client-evidence-1af269d-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dev-client-dependencies.txt
+          if-no-files-found: ignore
+          retention-days: 7
