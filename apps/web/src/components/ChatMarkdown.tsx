@@ -103,6 +103,8 @@ import type {
 import ReactMarkdown from "react-markdown";
 import { toHtml } from "hast-util-to-html";
 import { createIncrementalMarkdownPlugin } from "../markdown-incremental";
+import { mathSourceIsClosed, remarkChatMath } from "../markdown-math";
+import { MarkdownMath } from "./chat/MarkdownMath";
 import { defaultUrlTransform } from "react-markdown";
 import { parseAssistantCitationHref } from "@t3tools/shared/assistantCitations";
 import { parseComposerContextHref } from "@t3tools/shared/composerContextReferences";
@@ -3110,6 +3112,20 @@ const CHAT_MARKDOWN_COMPONENTS = {
     );
   },
   code: function MarkdownCode({ node, children, className, ...props }) {
+    const text = use(ChatMarkdownTextContext);
+    const { isStreaming } = use(ChatMarkdownRendererContext);
+    if (className?.split(" ").includes("language-math")) {
+      const raw = text.slice(node?.position?.start.offset, node?.position?.end.offset);
+      return (
+        <MarkdownMath
+          source={nodeToPlainText(children)}
+          raw={raw}
+          display={false}
+          closed={mathSourceIsClosed(raw, false)}
+          isStreaming={isStreaming}
+        />
+      );
+    }
     const { cwd, imageBaseDir, inlineCodeFileLinkMetaByText, fileLinkChip } = use(
       ChatMarkdownRendererContext,
     );
@@ -3280,6 +3296,18 @@ const CHAT_MARKDOWN_COMPONENTS = {
     }
 
     const language = extractFenceLanguage(codeBlock.className);
+    if (language === "math") {
+      const raw = text.slice(node?.position?.start.offset, node?.position?.end.offset);
+      return (
+        <MarkdownMath
+          source={codeBlock.code}
+          raw={raw}
+          display
+          closed={mathSourceIsClosed(raw, true)}
+          isStreaming={isStreaming}
+        />
+      );
+    }
     if (streamableUi && language === "t3-ui") {
       return (
         <StreamableUi
@@ -3364,6 +3392,7 @@ function ChatMarkdown({
     extraRemarkPlugins.length === 0 &&
     /(?:^|\n) {0,3}(?:`{3}|~{3})/.test(text);
   const remarkPlugins = [
+    remarkChatMath,
     ...(lineBreaks ? CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS : CHAT_MARKDOWN_REMARK_PLUGINS),
     ...extraRemarkPlugins,
     ...(incrementalParsing ? [createIncrementalMarkdownPlugin()] : []),

@@ -58,6 +58,25 @@ describe("buildRuntimeInstructions", () => {
     expect(instructions).toContain("do not duplicate components");
   });
 
+  it("explains quantities with honest scales and TeX without prohibiting reference tables", () => {
+    const instructions = buildRuntimeInstructions({ harness: "Codex" });
+    expect(instructions).toContain(
+      "Neither Markdown nor t3-ui tables should replace a useful chart by default",
+    );
+    expect(instructions).toContain(
+      "Keep different units on separate charts or clearly separate scales",
+    );
+    expect(instructions).toContain("never imply a shared numeric scale for unlike quantities");
+    expect(instructions).toContain("explicit table requests and tabular reference or lookup tasks");
+    expect(instructions).toContain(
+      "a request to explain or compare quantities is not by itself a lookup task",
+    );
+    expect(instructions).toContain("$...$ inline, or $$ on separate lines");
+    expect(instructions).toContain("Do not put equations in text code blocks");
+    expect(instructions).toContain("Email drafts, simple facts and tasks without a useful visual");
+    expect(instructions).toContain("Internal agent-to-agent handoffs and steering messages");
+  });
+
   it("includes the bounded output policy independently of model metadata", () => {
     const instructions = buildRuntimeInstructions({ harness: "Codex" });
     const policy =

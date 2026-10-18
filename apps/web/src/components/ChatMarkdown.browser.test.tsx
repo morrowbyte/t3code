@@ -89,6 +89,100 @@ function fileOptions(container: HTMLElement) {
     .filter((label) => label?.startsWith("File options for "));
 }
 
+describe("ChatMarkdown math", () => {
+  it("recognizes closed equations inside quotes and indented math fences while text keeps streaming", async () => {
+    const container = await renderText(
+      "> $$\n> x^2\n> $$\n\n   ```math\n   y^2\n   ```\n\nStill streaming.",
+      { isStreaming: true },
+    );
+    await expect.poll(() => container.querySelectorAll("msup").length).toBe(2);
+    expect(container.querySelectorAll('[data-math-state="pending"]')).toHaveLength(0);
+  });
+  it("renders completed inline and display equations and preserves their Markdown for copying", async () => {
+    const inline = "$x^2$";
+    const display = "$$\n\\frac{1}{2} + x = 3\n$$";
+    const container = await renderText(`Before ${inline}.\n\n${display}\n\nAfter.`);
+    await expect.poll(() => container.querySelectorAll("math").length).toBe(2);
+    expect(container.querySelector("msup")).not.toBeNull();
+    expect(container.querySelector("mfrac")).not.toBeNull();
+    expect(
+      [...container.querySelectorAll("[data-markdown-copy]")].map((node) =>
+        node.getAttribute("data-markdown-copy"),
+      ),
+    ).toEqual([inline, display]);
+    expect(container.querySelectorAll("pre, [data-markdown-math] code")).toHaveLength(0);
+    expect(container.textContent).toContain("After.");
+  });
+
+  it("waits for the closing delimiter, keeps cancellation readable, and rehydrates a completed formula", async () => {
+    const message = (text: string, isStreaming: boolean) => (
+      <ChatMarkdown cwd={undefined} text={text} isStreaming={isStreaming} />
+    );
+    const { container, rerender } = await render(message("$$\n\\frac{", true));
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Formel…");
+    expect(container.querySelector("math")).toBeNull();
+    await rerender(message("$$\n\\frac{1}{2}", true));
+    expect(container.querySelector("math")).toBeNull();
+    await rerender(message("$$\n\\frac{1}{2}", false));
+    expect(container.textContent).toBe("$$\n\\frac{1}{2}");
+    expect(container.querySelector('[role="status"]')).toBeNull();
+    const closed = "$$\n\\frac{1}{2}\n$$";
+    await rerender(message(closed, true));
+    await expect.poll(() => container.querySelectorAll("mfrac").length).toBe(1);
+    await rerender(message(closed, false));
+    expect(container.querySelectorAll("math")).toHaveLength(1);
+    const history = await renderText(closed);
+    await expect.poll(() => history.querySelectorAll("mfrac").length).toBe(1);
+  });
+
+  it("keeps an unfinished inline equation stable without interpreting prices and shell variables", async () => {
+    const { container, rerender } = await render(
+      <ChatMarkdown cwd={undefined} text={"Result $x=\\frac{"} isStreaming />,
+    );
+    expect(container.querySelector('[data-math-state="pending"]')).not.toBeNull();
+    await rerender(
+      <ChatMarkdown cwd={undefined} text={"Result $x=\\frac{1}{2}$ done"} isStreaming />,
+    );
+    await expect.poll(() => container.querySelectorAll("mfrac").length).toBe(1);
+    expect(container.textContent).toContain("done");
+    const literal = "Costs $5 and $10. Use $HOME/$PATH, or `echo $x^2$`. Escaped \\$x^2\\$.";
+    await rerender(<ChatMarkdown cwd={undefined} text={literal} />);
+    expect(container.querySelectorAll("math, [data-markdown-math]")).toHaveLength(0);
+    expect(container.textContent).toContain("Costs $5 and $10.");
+    expect(container.textContent).toContain("$HOME/$PATH");
+    expect(container.querySelector("code")?.textContent).toBe("echo $x^2$");
+  });
+
+  it("keeps invalid TeX readable and disables active links and HTML commands", async () => {
+    const raw = "$\\notARealCommand{x}$";
+    const container = await renderText(raw);
+    await expect
+      .poll(() => container.querySelector('[data-math-state="source"]')?.textContent)
+      .toBe(raw);
+    const unsafe = await renderText(
+      "$\\href{javascript:alert(1)}{click}$ and $\\htmlClass{injected}{x}$",
+    );
+    await expect.poll(() => unsafe.querySelectorAll('[data-math-state="pending"]').length).toBe(0);
+    expect(unsafe.querySelectorAll("a, script, img, .injected")).toHaveLength(0);
+  });
+
+  it("retains correct math offsets after an incrementally cached visual fence", async () => {
+    const prefix = '```t3-ui\n{"type":"metric","id":"m","label":"Count","value":"2"}\n```\n\n';
+    const { container, rerender } = await render(
+      <ChatMarkdown cwd={undefined} text={prefix + "$$\nx^"} streamableUi isStreaming />,
+    );
+    await rerender(
+      <ChatMarkdown cwd={undefined} text={prefix + "$$\nx^2\n$$\n\nAfter."} streamableUi />,
+    );
+    await expect.poll(() => container.querySelectorAll("msup").length).toBe(1);
+    expect(
+      container.querySelector("[data-markdown-math]")?.getAttribute("data-markdown-copy"),
+    ).toBe("$$\nx^2\n$$");
+    expect(container.textContent).toContain("Count");
+    expect(container.textContent).toContain("After.");
+  });
+});
+
 describe("ChatMarkdown bare anchor placeholders", () => {
   it.each(["<A>", "<a>", "<a >", "<a/>", "<A/>", "<a />"])(
     "preserves unmatched %s without linking later blocks",
