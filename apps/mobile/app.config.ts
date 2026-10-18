@@ -444,6 +444,8 @@ const config: ExpoConfig = {
             "-dontwarn kotlin.MustUseReturnValues",
             "-keep class * extends androidx.work.InputMerger { <init>(); }",
             "-keep class org.webrtc.** { *; }",
+            // Jitsi's native bootstrap calls JNI Zero's annotated Java callbacks by name.
+            "-keepclasseswithmembers,includedescriptorclasses class org.jni_zero.** { @org.jni_zero.CalledByNative <methods>; }",
             // Jitsi 155 retains an unused Dav1d JNI wrapper but omits its AV1 decoder interface.
             "-dontwarn org.webrtc.Dav1dDecoder$Natives",
           ].join("\n"),
