@@ -81,7 +81,7 @@ describe("native thread families", () => {
   const grandchildKey = keyOf(grandchild);
   const disclosure: ThreadListV2FamilyDisclosure = {
     routeKey: grandchildKey,
-    expandedKeys: new Set([parentKey, childKey]),
+    expandedKeys: new Set([parentKey]),
     closedKeys: new Set(),
   };
   const itemsFor = (threads: readonly EnvironmentThreadShell[]) =>
@@ -156,6 +156,7 @@ describe("native thread families", () => {
         disclosure,
         workingShelfEnabled: true,
       });
+      expect(rows.filter((row) => row.hasChildren).map((row) => row.key)).toEqual([parentKey]);
       expect(rows.map((row) => [row.key, row.depth, row.parentKey])).toEqual([
         [parentKey, 0, null],
         [childKey, 1, parentKey],
@@ -218,7 +219,10 @@ describe("native thread families", () => {
           disclosure: current,
         });
       expect(rows().map((row) => row.key)).toEqual([parentKey]);
-      current = toggleThreadListV2Family(current, parentKey);
+      current = {
+        ...toggleThreadListV2Family(current, parentKey),
+        closedKeys: new Set([childKey]),
+      };
       expect(rows().map((row) => row.key)).toEqual([parentKey, childKey, grandchildKey]);
       current = toggleThreadListV2Family(current, parentKey);
     }
@@ -232,7 +236,7 @@ describe("native thread families", () => {
     const rows = buildThreadListV2FamilyRows({
       items,
       visibleKeys: new Set(items.map((item) => keyOf(item.thread))),
-      disclosure,
+      disclosure: { ...disclosure, expandedKeys: new Set([childKey]) },
     });
     expect(rows.find((row) => row.key === childKey)).toMatchObject({
       depth: 0,
@@ -260,7 +264,7 @@ describe("native thread families", () => {
     ).toEqual([parentKey]);
     const navigated = revealThreadListV2RouteAncestors(closed, unpromoted, grandchildKey);
     expect(navigated.closedKeys.size).toBe(0);
-    expect([...navigated.expandedKeys]).toEqual([parentKey, childKey]);
+    expect([...navigated.expandedKeys]).toEqual([parentKey]);
   });
 
   it("leaves foreign, missing and cyclic ancestry reachable without rewriting lineage", () => {
@@ -281,7 +285,7 @@ describe("native thread families", () => {
       const rows = buildThreadListV2FamilyRows({
         items,
         visibleKeys: new Set(items.map((item) => keyOf(item.thread))),
-        disclosure,
+        disclosure: { ...disclosure, expandedKeys: new Set(threads.map(keyOf)) },
       });
       expect(rows.map((row) => row.key).sort()).toEqual(threads.map(keyOf).sort());
       expect(threads.map((thread) => thread.lineage)).toEqual(lineage);

@@ -271,6 +271,7 @@ export function revealThreadListV2RouteAncestors(
   const closedKeys = new Set(previous.closedKeys);
   const seen = new Set<string>();
   let thread = routeKey === null ? undefined : byKey.get(routeKey);
+  let familyRoot: string | null = null;
   while (
     thread !== undefined &&
     thread.presentation !== "top_level" &&
@@ -281,9 +282,12 @@ export function revealThreadListV2RouteAncestors(
     const parent = byKey.get(key);
     if (parent === undefined || parent.projectId !== thread.projectId || seen.has(key)) break;
     seen.add(key);
-    expandedKeys.add(key);
-    closedKeys.delete(key);
+    familyRoot = key;
     thread = parent;
+  }
+  if (familyRoot !== null) {
+    expandedKeys.add(familyRoot);
+    closedKeys.delete(familyRoot);
   }
   return { routeKey, expandedKeys, closedKeys };
 }
@@ -418,13 +422,13 @@ export function buildThreadListV2FamilyRows(input: {
   groups.sort((left, right) => left.rank - right.rank);
   const rows: ThreadListV2FamilyRow[] = [];
   for (const { root, displaySection } of groups) {
+    const expanded =
+      input.disclosure.expandedKeys.has(root) && !input.disclosure.closedKeys.has(root);
     const stack = [{ key: root, depth: 0 }];
     while (stack.length > 0) {
       const { key, depth } = stack.pop()!;
       const item = byKey.get(key)!;
       const descendants = children.get(key) ?? [];
-      const expanded =
-        input.disclosure.expandedKeys.has(key) && !input.disclosure.closedKeys.has(key);
       const section = sectionOf(item);
       rows.push({
         key,
@@ -434,8 +438,8 @@ export function buildThreadListV2FamilyRows(input: {
         depth,
         section,
         displaySection,
-        hasChildren: descendants.length > 0,
-        expanded,
+        hasChildren: depth === 0 && descendants.length > 0,
+        expanded: depth === 0 && expanded,
         contextOnly: section !== displaySection || !input.visibleKeys.has(key),
         descendantCount: counts.get(key)?.total ?? 0,
         activeDescendantCount: counts.get(key)?.active ?? 0,
