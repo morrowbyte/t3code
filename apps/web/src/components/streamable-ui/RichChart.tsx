@@ -87,7 +87,13 @@ function RadarSample({
   );
 }
 
-function RadarCategoryTick({ x = 0, y = 0, textAnchor, payload }: BaseTickContentProps) {
+function RadarCategoryTick({
+  x = 0,
+  y = 0,
+  textAnchor,
+  payload,
+  textScale,
+}: Partial<BaseTickContentProps> & { textScale: number }) {
   const label = String(payload?.value ?? "");
   return (
     <g>
@@ -96,11 +102,11 @@ function RadarCategoryTick({ x = 0, y = 0, textAnchor, payload }: BaseTickConten
         x={x}
         y={y}
         textAnchor={textAnchor ?? "middle"}
-        verticalAnchor="middle"
+        verticalAnchor={Number(y) < 160 ? "end" : Number(y) > 160 ? "start" : "middle"}
         width={75}
         breakAll
-        maxLines={2}
-        fontSize="0.75rem"
+        maxLines={3}
+        fontSize={12 * textScale}
         fill="var(--muted-foreground)"
       >
         {label}
@@ -274,7 +280,7 @@ export const RichChart = memo(
           outerRadius={Math.max(30, Math.min(110, (plotWidth - 180) / 2))}
         >
           <PolarGrid stroke="var(--border)" />
-          <PolarAngleAxis dataKey="label" tick={RadarCategoryTick} />
+          <PolarAngleAxis dataKey="label" tick={<RadarCategoryTick textScale={textScale} />} />
           <PolarRadiusAxis
             angle={90}
             domain={[0, model.domain[1]]}
