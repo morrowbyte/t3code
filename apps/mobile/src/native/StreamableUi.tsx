@@ -1,17 +1,15 @@
 /* oxlint-disable react/no-array-index-key -- Protocol lists only append; positional keys preserve existing rows, points and disclosures as records arrive. */
 import { memo, useMemo, useState } from "react";
 import { Linking, Pressable, ScrollView, View } from "react-native";
-import Svg, { Circle, Path, Polyline } from "react-native-svg";
-import { useResolveClassNames } from "uniwind";
 import {
-  chartGeometry,
   parseStreamableUi,
   STREAMABLE_UI_LIMITS,
-  type VisualChart,
   type VisualSource,
   type VisualTable,
 } from "@t3tools/shared/streamableUi";
+import type { EnvironmentId } from "@t3tools/contracts";
 import { AppText as Text } from "../components/ui/AppText";
+import { RichChart, RichVisualBody } from "./StreamableUiRich";
 
 function Sources({
   sources,
@@ -75,85 +73,6 @@ function DataTable({ title, columns, rows }: Pick<VisualTable, "title" | "column
   );
 }
 
-function LineChart({ chart }: { chart: VisualChart }) {
-  const [showData, setShowData] = useState(false);
-  const geometry = chartGeometry(chart.points);
-  const { color: primary } = useResolveClassNames("text-primary");
-  const { color: border } = useResolveClassNames("text-border");
-  if (!geometry) return <Text className="text-xs text-foreground-muted">No data points yet.</Text>;
-  return (
-    <View className="gap-2">
-      {/* Native text keeps axis labels readable at narrow widths and follows the user's text scale. */}
-      <View className="flex-row gap-3">
-        <Text className="min-w-0 flex-1 text-xs text-foreground-muted">Min {geometry.minimum}</Text>
-        <Text className="min-w-0 flex-1 text-right text-xs text-foreground-muted">
-          Max {geometry.maximum}
-        </Text>
-      </View>
-      <View style={{ aspectRatio: 3 }}>
-        <Svg
-          viewBox="0 0 600 200"
-          width="100%"
-          height="100%"
-          accessible
-          accessibilityRole="image"
-          accessibilityLabel={`${chart.title}. ${chart.points.length} points. ${chart.xLabel ?? "Category"} versus ${chart.yLabel ?? "Value"}. Range ${geometry.minimum} to ${geometry.maximum}. Exact values are available in View data.`}
-        >
-          <Path d="M52 24 V164 H548" fill="none" stroke={border} />
-          <Polyline
-            points={geometry.coordinates.map((point) => `${point.x},${point.y}`).join(" ")}
-            fill="none"
-            stroke={primary}
-            strokeWidth={2}
-          />
-          {geometry.coordinates.map((point, index) => (
-            <Circle key={index} cx={point.x} cy={point.y} r={3} fill={primary} />
-          ))}
-        </Svg>
-      </View>
-      <View className="flex-row gap-3">
-        <Text
-          className="min-w-0 flex-1 text-xs text-foreground-muted"
-          accessibilityLabel={chart.points[0]!.label}
-        >
-          {chart.points[0]!.label.slice(0, 24)}
-        </Text>
-        {chart.points.length > 1 ? (
-          <Text
-            className="min-w-0 flex-1 text-right text-xs text-foreground-muted"
-            accessibilityLabel={chart.points.at(-1)!.label}
-          >
-            {chart.points.at(-1)!.label.slice(0, 24)}
-          </Text>
-        ) : null}
-      </View>
-      {chart.xLabel || chart.yLabel ? (
-        <Text className="text-xs text-foreground-muted">
-          {chart.xLabel ?? "Category"} · {chart.yLabel ?? "Value"}
-        </Text>
-      ) : null}
-      <Pressable
-        accessibilityRole="button"
-        accessibilityState={{ expanded: showData }}
-        accessibilityLabel={`${showData ? "Hide" : "View"} data for ${chart.title}`}
-        className="min-h-11 justify-center active:opacity-65"
-        onPress={() => setShowData((value) => !value)}
-      >
-        <Text className="text-xs text-md-link underline">
-          {showData ? "Hide" : "View"} data ({chart.points.length} points)
-        </Text>
-      </Pressable>
-      {showData ? (
-        <DataTable
-          title={`${chart.title} data`}
-          columns={[chart.xLabel ?? "Category", chart.yLabel ?? "Value"]}
-          rows={chart.points.map((point) => [point.label, point.value])}
-        />
-      ) : null}
-    </View>
-  );
-}
-
 function SourceError({ code, error }: { code: string; error: string }) {
   const [showSource, setShowSource] = useState(false);
   return (
@@ -182,10 +101,12 @@ function SourceError({ code, error }: { code: string; error: string }) {
 export const NativeStreamableUi = memo(function NativeStreamableUi({
   code,
   isStreaming,
+  environmentId = null,
   onLinkPress,
 }: {
   code: string;
   isStreaming: boolean;
+  environmentId?: EnvironmentId | null | undefined;
   onLinkPress?: ((href: string) => void) | undefined;
 }) {
   const parsed = useMemo(() => parseStreamableUi(code, isStreaming), [code, isStreaming]);
@@ -213,8 +134,10 @@ export const NativeStreamableUi = memo(function NativeStreamableUi({
               </Text>
               {component.type === "table" ? (
                 <DataTable {...component} />
+              ) : component.type === "chart" ? (
+                <RichChart chart={component} />
               ) : (
-                <LineChart chart={component} />
+                <RichVisualBody component={component} environmentId={environmentId} />
               )}
             </>
           )}

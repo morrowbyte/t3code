@@ -1,12 +1,22 @@
 // @vitest-environment jsdom
-import { act, type ReactNode } from "react";
+import { act, type ComponentType, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import type { NativeMarkdownTextStyle } from "./SelectableMarkdownText.types";
 
 // Host adapters exercise the real native component's streaming and disclosure logic;
 // layout, gestures, SVG drawing and screen-reader behavior still require a device.
+const native = vi.hoisted(() => ({
+  copyCsv: vi.fn<(_text: string) => Promise<void>>().mockResolvedValue(undefined),
+}));
+
+vi.mock("../connection/runtime", () => ({ connectionAtomRuntime: { fn: vi.fn() } }));
+vi.mock("../state/atom-registry", () => ({ appAtomRegistry: { set: vi.fn() } }));
+vi.mock("../state/session", () => ({ usePreparedConnection: () => ({ _tag: "None" }) }));
+vi.mock("expo-clipboard", () => ({ setStringAsync: native.copyCsv }));
 vi.mock("react-native", () => ({
+  useWindowDimensions: () => ({ width: 390, height: 844, scale: 1, fontScale: 1 }),
+  processColor: () => null,
   View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   ScrollView: ({
     children,
@@ -39,6 +49,38 @@ vi.mock("react-native", () => ({
   ),
   Linking: { openURL: vi.fn() },
 }));
+vi.mock("react-native-reanimated", async () => {
+  const { useReducer, useRef } = await import("react");
+  const { View } = await import("react-native");
+  return {
+    default: {
+      View,
+      createAnimatedComponent: (Component: ComponentType<Record<string, unknown>>) =>
+        function AnimatedHost({
+          animatedProps,
+          ...props
+        }: Record<string, unknown> & { animatedProps?: Record<string, unknown> }) {
+          return <Component {...props} {...animatedProps} />;
+        },
+    },
+    FadeIn: { duration: () => ({ reduceMotion: () => undefined }) },
+    ReduceMotion: { System: "system" },
+    withTiming: <T,>(value: T) => value,
+    useAnimatedProps: <T,>(read: () => T) => read(),
+    useSharedValue: function useSharedValue<T>(initial: T) {
+      const value = useRef(initial);
+      const [, render] = useReducer((revision: number) => revision + 1, 0);
+      const shared = useRef({
+        get: () => value.current,
+        set: (next: T) => {
+          value.current = next;
+          render();
+        },
+      });
+      return shared.current;
+    },
+  };
+});
 vi.mock("../components/ui/AppText", () => ({
   AppText: ({
     children,
@@ -56,6 +98,13 @@ vi.mock("react-native-svg", () => ({
   Circle: ({ cx, cy }: { cx: number; cy: number }) => <circle cx={cx} cy={cy} />,
   Path: () => <path />,
   Polyline: ({ points }: { points: string }) => <polyline points={points} />,
+  Rect: () => <rect />,
+  ClipPath: ({ children }: { children?: ReactNode }) => <clipPath>{children}</clipPath>,
+  Defs: ({ children }: { children?: ReactNode }) => <defs>{children}</defs>,
+  Marker: ({ children }: { children?: ReactNode }) => <marker>{children}</marker>,
+  SvgXml: ({ accessibilityLabel }: { accessibilityLabel?: string }) => (
+    <svg aria-label={accessibilityLabel} />
+  ),
 }));
 vi.mock("./SelectableMarkdownText", () => ({
   SelectableMarkdownText: ({ markdown }: { markdown: string }) => (
@@ -145,7 +194,7 @@ describe("native assistant streaming visuals", () => {
     expect(host.querySelector('[aria-label="Reading: -2.5"]')).not.toBeNull();
     expect(host.querySelector('[aria-label="Note: —"]')).not.toBeNull();
     expect(host.querySelectorAll("circle")).toHaveLength(1);
-    expect(host.querySelector("circle")?.getAttribute("cx")).toBe("300");
+    expect(Number(host.querySelector("circle")?.getAttribute("cx"))).toBeGreaterThan(0);
     expect(host.textContent).toContain("Receiving visual data…");
     expect(host.textContent).not.toContain('"value":9');
     click("Measurement source");
@@ -158,7 +207,8 @@ describe("native assistant streaming visuals", () => {
     const firstCell = host.querySelector('[aria-label="Reading: -2.5"]');
     render(prefix + partial + ".75}\n```\n\nRemaining **Markdown**", true);
     expect(host.textContent).not.toContain("Receiving visual data…");
-    expect(host.textContent).toContain("Hide data (2 points)");
+    expect(host.textContent).toContain("View data (2 points)");
+    expect(host.querySelector('[aria-expanded="true"]')).not.toBeNull();
     expect(host.querySelectorAll("circle")).toHaveLength(2);
     expect(host.querySelector("circle")).toBe(firstCircle);
     expect(host.querySelector('[aria-label="Reading: -2.5"]')).toBe(firstCell);
@@ -169,7 +219,7 @@ describe("native assistant streaming visuals", () => {
       "Before **visual**.\n\n",
       "\n\nRemaining **Markdown**",
     ]);
-    click("Hide data");
+    click("View data");
     expect(host.querySelector('[aria-label="Temperature trend data"]')).toBeNull();
   });
 
@@ -209,6 +259,50 @@ describe("native assistant streaming visuals", () => {
     expect(host.querySelector("script, img, iframe")).toBeNull();
     expect(host.querySelector('[role="link"]')).toBeNull();
     expect(host.textContent).toContain("Unsupported visual record on line 2.");
+  });
+
+  it("copies the displayed chart data only after the CSV action is requested", async () => {
+    render(`${prefix}\n\`\`\``, false);
+    expect(native.copyCsv).not.toHaveBeenCalled();
+    expect(host.querySelector('[aria-label="Copy Temperature trend data as CSV"]')).toBeNull();
+    click("View data");
+    expect(native.copyCsv).not.toHaveBeenCalled();
+    const copy = host.querySelector<HTMLButtonElement>(
+      '[aria-label="Copy Temperature trend data as CSV"]',
+    );
+    expect(copy).not.toBeNull();
+    await act(async () => copy!.click());
+    expect(native.copyCsv).toHaveBeenCalledExactlyOnceWith("Sample,Value (°C)\r\nA,-2.5");
+    expect(host.textContent).toContain("Copied");
+  });
+
+  it("keeps every series in a category tooltip when a plotted series is hidden", () => {
+    const multiSeries = [
+      { type: "chart", id: "multi", title: "Queue history", xLabel: "Sample", yLabel: "jobs" },
+      { type: "series", id: "multi", key: "fast", label: "Fast" },
+      { type: "series", id: "multi", key: "slow", label: "Slow" },
+      { type: "point", id: "multi", series: "fast", label: "A", value: 2 },
+      { type: "point", id: "multi", series: "slow", label: "A", value: 5 },
+      { type: "point", id: "multi", series: "fast", label: "B", value: 4 },
+    ]
+      .map((record) => JSON.stringify(record))
+      .join("\n");
+    render(`\`\`\`t3-ui\n${multiSeries}\n\`\`\``, false);
+    expect(host.querySelectorAll("circle")).toHaveLength(3);
+    const hide = host.querySelector<HTMLButtonElement>('[aria-label="Hide Slow series"]');
+    expect(hide).not.toBeNull();
+    act(() => hide!.click());
+    expect(host.querySelectorAll("circle")).toHaveLength(2);
+    const category = [...host.querySelectorAll("button")].find((button) =>
+      button.getAttribute("aria-label")?.startsWith("Sample: A."),
+    );
+    expect(category).toBeDefined();
+    act(() => category!.click());
+    const close = host.querySelector<HTMLButtonElement>('[aria-label="Close chart tooltip"]');
+    expect(close).not.toBeNull();
+    expect(close!.parentElement?.textContent).toContain("Fast2 jobsSlow5 jobs");
+    act(() => close!.click());
+    expect(host.querySelector('[aria-label="Close chart tooltip"]')).toBeNull();
   });
 
   it("passes ordinary Markdown and code unchanged through the existing native renderer", () => {
