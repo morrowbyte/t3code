@@ -29,3 +29,50 @@ test('truncated observations cannot clear intent or invent a unique run',()=>{
   assert.throws(()=>decideDispatch({...state(),runCount:1}));
   assert.throws(()=>decideDispatch({...state(),releases:undefined}));
 });
+
+const {readFileSync}=require('node:fs');
+const {createRequire}=require('node:module');
+const {resolve}=require('node:path');
+const {spawnSync}=require('node:child_process');
+const {parse}=createRequire(resolve(__dirname,'../../packages/shared/package.json'))('yaml');
+const releaseWorkflow=parse(readFileSync(resolve(__dirname,'../../.github/workflows/weasel-release.yml'),'utf8'));
+const expression=(value,inputs,needs,cancelled=false)=>Function('inputs','needs','cancelled',`return (${value.trim().replace(/^\$\{\{/, '').replace(/\}\}$/, '')})`)(inputs,needs,()=>cancelled);
+const platformInputs=(desktop_only=false)=>({desktop_only,publish:true,recover_desktop_run_id:''});
+const desktopJobs=['preflight','build_bundle','build_linux','build_nixos','build_windows'];
+const releaseNeeds=(android)=>Object.fromEntries([...desktopJobs.map(name=>[name,{result:'success'}]),['build_android_apk',{result:android}]]);
+test('desktop-only release skips Android while the default still requires it',()=>{
+  assert.equal(releaseWorkflow.on.workflow_dispatch.inputs.desktop_only.default,false);
+  assert.equal(expression(releaseWorkflow.jobs.build_android_apk.if,platformInputs(true),{}),false);
+  assert.equal(expression(releaseWorkflow.jobs.build_android_apk.if,platformInputs(false),{}),true);
+  const gate=releaseWorkflow.jobs.publish.if;
+  assert.equal(expression(gate,platformInputs(true),releaseNeeds('skipped')),true);
+  assert.equal(expression(gate,platformInputs(false),releaseNeeds('skipped')),false);
+  assert.equal(expression(gate,platformInputs(false),releaseNeeds('success')),true);
+  assert.equal(expression(gate,platformInputs(true),releaseNeeds('success')),false);
+});
+test('every desktop package and cancellation gate remains required in either mode',()=>{
+  const gate=releaseWorkflow.jobs.publish.if;
+  for(const desktopOnly of [false,true]){
+    const inputs=platformInputs(desktopOnly),needs=releaseNeeds(desktopOnly?'skipped':'success');
+    for(const job of desktopJobs)assert.equal(expression(gate,inputs,{...needs,[job]:{result:'failure'}}),false);
+    assert.equal(expression(gate,{...inputs,publish:false},needs),false);
+    assert.equal(expression(gate,inputs,needs,true),false);
+  }
+  const recoveryNeeds=Object.fromEntries([...desktopJobs.map(name=>[name,{result:name==='preflight'?'success':'skipped'}]),['build_android_apk',{result:'success'}]]);
+  assert.equal(expression(gate,{...platformInputs(),recover_desktop_run_id:'39093205395'},recoveryNeeds),true);
+});
+test('desktop-only cannot enter Android recovery or publish mobile assets',()=>{
+  const steps=releaseWorkflow.jobs.preflight.steps;
+  const validation=steps.find(step=>step.name==='Validate platform selection');
+  const run=(desktop,recovery)=>spawnSync('bash',['-c',validation.run],{env:{...process.env,DESKTOP_ONLY:String(desktop),RECOVERY_RUN_ID:recovery}}).status;
+  assert.equal(run(true,''),0);
+  assert.equal(run(false,'39093205395'),0);
+  assert.notEqual(run(true,'39093205395'),0);
+  const publishSteps=releaseWorkflow.jobs.publish.steps;
+  const androidProof=publishSteps.find(step=>step.name==='Verify Android bytes from this build before publication');
+  assert.equal(expression(androidProof.if,platformInputs(true),{}),false);
+  const payload=publishSteps.find(step=>step.name==='Verify isolated release payload');
+  assert.match(payload.run,/DESKTOP_ONLY/);
+  assert.match(payload.run,/\*\.apk/);
+  assert.equal(Object.keys(releaseWorkflow.jobs).some(name=>/mac/i.test(name)),false);
+});
