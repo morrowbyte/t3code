@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as DatabaseMaintenance from "./DatabaseMaintenance.ts";
@@ -50,6 +51,7 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
           const sql = yield* SqlClient.SqlClient;
           yield* sql`PRAGMA journal_mode = WAL`;
           yield* sql`CREATE TABLE v1_data (value TEXT)`;
+          yield* sql`INSERT INTO v1_data VALUES ('keep until deleted')`;
         }).pipe(Effect.provide(openLegacy));
         assert.isAbove((yield* maintenance.inspect(dbPath)).legacyDatabaseBytes ?? 0, 0);
 
@@ -62,9 +64,65 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
         assert.equal(refused._tag, "DatabaseInUseError");
         assert.isTrue(yield* fs.exists(legacy));
 
-        yield* maintenance.removeLegacyDatabase(dbPath);
+        const removed: Array<string> = [];
+        let refuseUnlink = true;
+        const guardedMaintenance = Layer.fresh(DatabaseMaintenance.layer).pipe(
+          Layer.provide(
+            Layer.succeed(FileSystem.FileSystem, {
+              ...fs,
+              remove: (file, options) =>
+                Effect.gen(function* () {
+                  removed.push(file);
+                  assert.equal(file, legacy);
+                  assert.isFalse(yield* fs.exists(`${legacy}-wal`));
+                  assert.isFalse(yield* fs.exists(`${legacy}-shm`));
+                  // A fresh writer can lock and read only after maintenance's
+                  // exclusive connection has closed, including on Linux CI.
+                  yield* Effect.gen(function* () {
+                    const sql = yield* SqlClient.SqlClient;
+                    yield* sql`PRAGMA busy_timeout = 0`;
+                    yield* sql`BEGIN EXCLUSIVE`;
+                    assert.deepEqual(yield* sql`SELECT value FROM v1_data`, [
+                      { value: "keep until deleted" },
+                    ]);
+                    yield* sql`COMMIT`;
+                  }).pipe(Effect.provide(openLegacy));
+                  if (refuseUnlink) {
+                    // Windows refuses unlink if another process reopens the
+                    // database after maintenance closes its own connection.
+                    yield* fs.writeFileString(`${legacy}-wal`, "new writer WAL");
+                    yield* fs.writeFileString(`${legacy}-shm`, "new writer SHM");
+                    return yield* Effect.fail(
+                      PlatformError.systemError({
+                        _tag: "PermissionDenied",
+                        module: "FileSystem",
+                        method: "remove",
+                        pathOrDescriptor: file,
+                      }),
+                    );
+                  }
+                  yield* fs.remove(file, options);
+                }),
+            }),
+          ),
+        );
+        const removeLegacy = Effect.flatMap(DatabaseMaintenance.DatabaseMaintenance, (service) =>
+          service.removeLegacyDatabase(dbPath),
+        ).pipe(Effect.provide(guardedMaintenance));
+        const unlinkFailure = yield* Effect.flip(removeLegacy);
+        assert.equal(unlinkFailure._tag, "LegacyDatabaseRemoveError");
+        assert.deepEqual(removed, [legacy]);
+        assert.isTrue(yield* fs.exists(legacy));
+        assert.equal(yield* fs.readFileString(`${legacy}-wal`), "new writer WAL");
+        assert.equal(yield* fs.readFileString(`${legacy}-shm`), "new writer SHM");
+        yield* fs.remove(`${legacy}-wal`);
+        yield* fs.remove(`${legacy}-shm`);
+
+        refuseUnlink = false;
+        yield* removeLegacy;
         assert.isFalse(yield* fs.exists(legacy));
         assert.isFalse(yield* fs.exists(`${legacy}-wal`));
+        assert.isFalse(yield* fs.exists(`${legacy}-shm`));
         assert.isTrue(yield* fs.exists(dbPath));
         assert.isNull((yield* maintenance.inspect(dbPath)).legacyDatabaseBytes);
       }).pipe(Effect.scoped),

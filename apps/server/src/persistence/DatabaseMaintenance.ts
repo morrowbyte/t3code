@@ -223,15 +223,13 @@ const make = Effect.gen(function* () {
     function* (databasePath: string) {
       const legacy = legacyPath(databasePath);
       if (!(yield* fs.exists(legacy))) return;
-      // A version before 0.1.0 may still be running against it. Keep the lock
-      // while deleting, and delete the database before its WAL so a failure
-      // never leaves it without committed transactions.
-      yield* Effect.gen(function* () {
-        yield* lockExclusively(legacy);
-        for (const suffix of ["", "-wal", "-shm"]) {
-          yield* fs.remove(legacy + suffix, { force: true });
-        }
-      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: legacy })));
+      // Closing under the exclusive lock lets SQLite clean its WAL/SHM before
+      // Windows can unlink the database. Sidecars recreated after close belong
+      // to another connection and must not be deleted here.
+      yield* lockExclusively(legacy).pipe(
+        Effect.provide(NodeSqliteClient.layer({ filename: legacy })),
+      );
+      yield* fs.remove(legacy, { force: true });
     },
     (effect, databasePath) =>
       effect.pipe(
