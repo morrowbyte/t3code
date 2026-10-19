@@ -21,6 +21,7 @@ import { SettingsScreen } from "./components/SettingsScreen";
 
 export function SettingsAboutRouteScreen() {
   const insets = useSafeAreaInsets();
+  const variant = (Constants.expoConfig?.extra?.appVariant as string | undefined) ?? "production";
 
   return (
     <SettingsScreen title="About Morrowbyte">
@@ -32,7 +33,7 @@ export function SettingsAboutRouteScreen() {
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
         <AppSettingsSection />
-        {Platform.OS === "android" ? <AndroidApkUpdateSection /> : null}
+        {Platform.OS === "android" && variant === "production" ? <AndroidApkUpdateSection /> : null}
       </ScrollView>
     </SettingsScreen>
   );
