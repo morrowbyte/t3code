@@ -1,8 +1,14 @@
 package expo.modules.t3nativecontrols
 
 import android.content.Intent
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.ResultReceiver
+import expo.modules.kotlin.functions.Queues
 import android.text.format.DateFormat
 import androidx.core.content.FileProvider
+import androidx.core.content.ContextCompat
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
@@ -11,10 +17,42 @@ import java.net.URI
 
 class T3NativeControlsModule : Module() {
   private var filePreviewPromise: Promise? = null
+  private var voiceSessionId: String? = null
+  private val voiceStopped: (String, String) -> Unit = { sessionId, reason ->
+    sendEvent("onVoiceSessionStopped", mapOf("sessionId" to sessionId, "reason" to reason))
+  }
 
   @Suppress("TooGenericExceptionCaught") // Clear the pending promise before rethrowing.
   override fun definition() = ModuleDefinition {
     Name("T3NativeControls")
+    Events("onVoiceSessionStopped")
+
+    OnCreate { T3VoiceSessionService.onStopped = voiceStopped }
+    OnDestroy {
+      voiceSessionId?.let { T3VoiceSessionService.stop(it) }
+      if (T3VoiceSessionService.onStopped === voiceStopped) T3VoiceSessionService.onStopped = null
+    }
+    Function("isVoiceSessionActive") { sessionId: String -> T3VoiceSessionService.isActive(sessionId) }
+    AsyncFunction("startVoiceSession") { sessionId: String, promise: Promise ->
+      val context = appContext.reactContext ?: error("The app is not active.")
+      check(appContext.currentActivity != null) { "Start voice from the visible app." }
+      voiceSessionId = sessionId
+      val reply = object : ResultReceiver(Handler(Looper.getMainLooper())) {
+        override fun onReceiveResult(code: Int, data: Bundle?) {
+          if (code == 0) promise.resolve(null)
+          else promise.reject("VOICE_FOREGROUND_START_FAILED", data?.getString("error") ?: "Could not start background voice.", null)
+        }
+      }
+      ContextCompat.startForegroundService(context, Intent(context, T3VoiceSessionService::class.java).apply {
+        action = T3VoiceSessionService.START
+        putExtra(T3VoiceSessionService.SESSION, sessionId)
+        putExtra(T3VoiceSessionService.REPLY, reply)
+      })
+    }.runOnQueue(Queues.MAIN)
+    AsyncFunction("stopVoiceSession") { sessionId: String ->
+      T3VoiceSessionService.stop(sessionId)
+      if (voiceSessionId == sessionId) voiceSessionId = null
+    }.runOnQueue(Queues.MAIN)
 
     Function("is24HourFormat") {
       val context = appContext.reactContext ?: error("The app is not active.")

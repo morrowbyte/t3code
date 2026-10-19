@@ -12,7 +12,7 @@ import { AsyncResult } from "effect/reactivity";
 import { randomUUID } from "expo-crypto";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AppState, Linking, ScrollView, View } from "react-native";
+import { AppState, Linking, Platform, ScrollView, View } from "react-native";
 
 import { AppText } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
@@ -22,6 +22,7 @@ import { useGlobalVoiceInput } from "../voice-input/VoiceInputProvider";
 import { unwrapLiveVoiceCommand } from "./liveVoiceCommands";
 import { createVoiceEventBridge } from "./liveVoiceEvents";
 import { nativeVoiceMedia } from "./nativeVoiceMedia";
+import { subscribeNativeVoiceStopped } from "./nativeVoiceBackground";
 
 type VoiceProps = {
   readonly environmentId: EnvironmentId;
@@ -172,12 +173,12 @@ function LiveVoiceSession(props: VoiceProps) {
   );
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (next) => {
-      if (next === "background") void controller.end();
+      if (next === "background" && Platform.OS !== "android") void controller.end();
     });
     return () => subscription.remove();
   }, [controller]);
   useEffect(() => {
-    if (!busy) return;
+    if (!busy || Platform.OS === "android") return;
     const tag = `live-voice:${keepAwakeId}`;
     const activation = activateKeepAwakeAsync(tag);
     void activation.catch(() => {});
@@ -185,6 +186,14 @@ function LiveVoiceSession(props: VoiceProps) {
       void activation.then(() => deactivateKeepAwake(tag)).catch(() => {});
     };
   }, [busy, keepAwakeId]);
+
+  useEffect(
+    () =>
+      subscribeNativeVoiceStopped(() => {
+        void controller.end();
+      }),
+    [controller],
+  );
 
   if (!props.eligible && !busy && !current.error) return null;
   return (

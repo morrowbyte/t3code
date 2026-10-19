@@ -8,8 +8,20 @@ type NativeAudioStream = {
 };
 
 // RN's stop only disables capture; release also frees the native microphone source.
-export function releaseNativeStreamOnStop(stream: NativeAudioStream): void {
+export function releaseNativeStreamOnStop(
+  stream: NativeAudioStream,
+  onReleased?: () => void,
+): void {
   const pending = new Set(stream.getTracks());
+  if (pending.size === 0) {
+    try {
+      stream.release();
+    } catch {
+    } finally {
+      onReleased?.();
+    }
+    return;
+  }
   for (const track of pending) {
     const stop = track.stop.bind(track);
     track.stop = () => {
@@ -21,7 +33,10 @@ export function releaseNativeStreamOnStop(stream: NativeAudioStream): void {
         try {
           // Android must detach tracks from their stream before disposing them.
           stream.release();
-        } catch {}
+        } catch {
+        } finally {
+          onReleased?.();
+        }
       }
     };
   }

@@ -71,4 +71,27 @@ describe("native voice audio boundary", () => {
     expect(track.release).toHaveBeenCalledOnce();
     expect(stream.release).toHaveBeenCalledExactlyOnceWith();
   });
+  it("ends the foreground lifetime once after final track disposal even when disposal fails", () => {
+    const track = { enabled: true, stop: vi.fn() };
+    const end = vi.fn();
+    const stream = {
+      getTracks: () => [track],
+      getAudioTracks: () => [track],
+      release: () => {
+        throw new Error("disposed");
+      },
+    };
+    releaseNativeStreamOnStop(stream, end);
+    track.stop();
+    track.stop();
+    expect(end).toHaveBeenCalledOnce();
+  });
+
+  it("releases an empty native stream and its foreground lifetime immediately", () => {
+    const end = vi.fn();
+    const stream = { getTracks: () => [], getAudioTracks: () => [], release: vi.fn() };
+    releaseNativeStreamOnStop(stream, end);
+    expect(stream.release).toHaveBeenCalledOnce();
+    expect(end).toHaveBeenCalledOnce();
+  });
 });
