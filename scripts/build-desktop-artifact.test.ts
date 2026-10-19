@@ -55,6 +55,7 @@ import {
   resolveBuildOptions,
   resolveDesktopBuildIconAssets,
   resolveDesktopProductName,
+  resolveWindowsExecutableName,
   resolveDesktopUpdateChannel,
   resolveDesktopWebAssetBrand,
   resolveResourceMonitorRustTargets,
@@ -270,6 +271,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   it("switches desktop packaging product names to nightly for nightly builds", () => {
     assert.equal(resolveDesktopProductName("0.1.0"), "T3 Code (Beta)");
     assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "T3 Code (Nightly)");
+    assert.equal(resolveWindowsExecutableName("0.1.0"), "T3 Code (Beta)");
+    assert.equal(resolveWindowsExecutableName("0.0.17-nightly.20260413.42"), "T3 Code (Nightly)");
   });
 
   it("switches desktop packaging icons to the nightly artwork for nightly versions", () => {
@@ -788,6 +791,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         );
         assert.equal(win.productName, "Morrowbyte");
         assert.equal(linux.productName, "Morrowbyte");
+        assert.equal(
+          resolveWindowsExecutableName("1.2.3-nightly.20261014.1"),
+          "T3 Code (Weasel Nightly)",
+        );
         assert.equal(
           (win.win as Record<string, unknown>).executableName,
           "T3 Code (Weasel Nightly)",
