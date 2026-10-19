@@ -1,3 +1,4 @@
+import type { SendImageAnnotation } from "../lib/imageAnnotation";
 import * as Dialog from "./ui/Dialog";
 import { useEffect, useEffectEvent } from "react";
 import { Modal, Pressable, View } from "react-native";
@@ -98,13 +99,14 @@ function DocumentPreview(props: {
 }
 
 export function FilePreview(props: {
+  readonly onSendAnnotation?: SendImageAnnotation;
   readonly source: ResolvedFilePreviewSource;
   readonly onRequestClose: () => void;
   readonly onOpenError?: (error: unknown) => void;
 }) {
   if (props.source.kind === "pdf") return <PdfDocumentPreview {...props} />;
   if (props.source.kind !== "image") return <DocumentPreview {...props} />;
-  if (props.source.actionsSource) return <MediaImagePreview {...props} />;
+  if (props.source.actionsSource || props.onSendAnnotation) return <MediaImagePreview {...props} />;
   return (
     <ImageViewing
       images={

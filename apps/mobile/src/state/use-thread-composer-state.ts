@@ -1,3 +1,5 @@
+import { File } from "expo-file-system";
+import type { ImageAnnotationDraft } from "../lib/imageAnnotation";
 import * as Dialog from "../components/ui/Dialog";
 import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import { readEnvironmentScope } from "./session";
@@ -12,7 +14,7 @@ import {
   deriveThreadRuntime,
   threadRuntimeHasInterruptibleRun,
 } from "@t3tools/client-runtime/state/thread-execution";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import {
   CommandId,
@@ -56,6 +58,7 @@ import {
   pickComposerFiles,
   pickComposerMedia,
   removePersistedComposerAttachmentFile,
+  persistComposerAttachmentFile,
 } from "../lib/composerImages";
 import type { DraftComposerImageAttachment } from "../lib/composerImages";
 import { scopedThreadKey } from "../lib/scopedEntities";
@@ -107,20 +110,115 @@ import {
   useQueuedRunEdit,
 } from "./queued-run-edit";
 import { setPendingConnectionError } from "../state/use-remote-environment-registry";
-import { clearThreadComposerError, setThreadComposerError } from "./thread-composer-error";
+import {
+  clearThreadComposerError,
+  setThreadComposerError,
+  threadComposerErrorsAtom,
+} from "./thread-composer-error";
 import {
   useSelectedThreadProjection,
   useSelectedThreadVisibleTurnItems,
 } from "../state/use-thread-detail";
 import { useThreadSelection } from "../state/use-thread-selection";
-import { enqueueThreadOutboxMessage } from "./thread-outbox";
-import { dispatchingQueuedMessageIdAtom, useThreadOutboxMessages } from "./use-thread-outbox";
+import {
+  enqueueThreadOutboxMessage,
+  threadOutboxManager,
+  threadOutboxRevision,
+} from "./thread-outbox";
+import { removeThreadOutboxMessage } from "./thread-outbox-removal";
+import {
+  dispatchingQueuedMessageIdAtom,
+  useThreadOutboxMessages,
+  holdEditingQueuedMessage,
+  releaseEditingQueuedMessage,
+} from "./use-thread-outbox";
 import { threadEnvironment } from "./threads";
 import { useAtomCommand } from "./use-atom-command";
 
 const EMPTY_QUEUE_WORKFLOW_ATOM = Atom.make<null>(null).pipe(
   Atom.withLabel("mobile-thread-queue-workflow:empty"),
 );
+
+function waitForAnnotationReceipt(messageId: MessageId, threadKey: string, signal: AbortSignal) {
+  let dispose = () => {};
+  const promise = new Promise<void>((resolve, reject) => {
+    const subscriptions: (() => void)[] = [];
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      for (const unsubscribe of subscriptions) unsubscribe();
+      signal.removeEventListener("abort", onAbort);
+      if (error) reject(error);
+      else resolve();
+    };
+    const onAbort = () => finish(new Error("Annotation send canceled."));
+    const check = () => {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      if (
+        appAtomRegistry
+          .get(acknowledgedThreadMessagesAtom)
+          .some((message) => message.messageId === messageId)
+      ) {
+        finish();
+        return;
+      }
+      const error = appAtomRegistry.get(threadComposerErrorsAtom)[threadKey];
+      if (error?.messageId === messageId) finish(new Error(error.message));
+    };
+    subscriptions.push(
+      appAtomRegistry.subscribe(acknowledgedThreadMessagesAtom, check),
+      appAtomRegistry.subscribe(threadComposerErrorsAtom, check),
+    );
+    if (settled) for (const unsubscribe of subscriptions) unsubscribe();
+    else signal.addEventListener("abort", onAbort, { once: true });
+    dispose = () => finish(new Error("Annotation could not be queued."));
+    check();
+  });
+  void promise.catch(() => {});
+  return { promise, dispose };
+}
+
+async function settleQueuedAnnotationSend(input: {
+  readonly enqueuePromise: Promise<unknown>;
+  readonly receipt: ReturnType<typeof waitForAnnotationReceipt> | null;
+  readonly annotation: ImageAnnotationDraft;
+  readonly annotationAttachment: DraftComposerImageAttachment | undefined;
+  readonly messageId: MessageId;
+  readonly threadKey: string;
+  readonly holdCanceledAnnotation: () => void;
+}) {
+  const {
+    enqueuePromise,
+    receipt,
+    annotation,
+    annotationAttachment,
+    messageId,
+    threadKey,
+    holdCanceledAnnotation,
+  } = input;
+  try {
+    await enqueuePromise;
+    await receipt?.promise;
+  } catch (cause) {
+    receipt?.dispose();
+    const queue = appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom)[threadKey];
+    const queued = queue?.find((message) => message.messageId === messageId);
+    if (annotation.signal.aborted) {
+      if (queued) await removeThreadOutboxMessage(queued, threadOutboxRevision(messageId));
+    } else if (!queued && annotationAttachment?.fileUri)
+      removePersistedComposerAttachmentFile(annotationAttachment.fileUri);
+    throw cause;
+  } finally {
+    annotation.signal.removeEventListener("abort", holdCanceledAnnotation);
+    const queue = appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom)[threadKey];
+    const remaining = queue?.some((message) => message.messageId === messageId);
+    if (!annotation.signal.aborted || !remaining) releaseEditingQueuedMessage(messageId);
+  }
+}
 
 export function appendReviewCommentToDraft(input: {
   readonly environmentId: EnvironmentId;
@@ -187,6 +285,16 @@ export function useThreadComposerState() {
     selectedThreadDetailRef,
     selectedEnvironmentRuntime,
   } = useThreadSelection();
+  const annotationTarget = useRef<{
+    thread: typeof selectedThreadShell;
+    runtime: typeof selectedEnvironmentRuntime;
+  } | null>(null);
+  useLayoutEffect(() => {
+    annotationTarget.current = { thread: selectedThreadShell, runtime: selectedEnvironmentRuntime };
+    return () => {
+      annotationTarget.current = null;
+    };
+  }, [selectedThreadShell, selectedEnvironmentRuntime]);
   const selectedThreadProjection = useSelectedThreadProjection();
   const selectedThreadVisibleTurnItems = useSelectedThreadVisibleTurnItems();
   const acknowledgedMessages = useAtomValue(acknowledgedThreadMessagesAtom);
@@ -508,7 +616,25 @@ export function useThreadComposerState() {
     scheduleUnusedComposerAttachmentCleanup(draft.attachments);
   };
 
-  const onSendMessage = async (followUpOverride?: ActiveTurnComposerAction) => {
+  const onSendMessage = async (
+    followUpOverride?: ActiveTurnComposerAction,
+    annotation?: ImageAnnotationDraft,
+  ) => {
+    const assertAnnotationTarget = () => {
+      const live = annotationTarget.current;
+      if (
+        !annotation ||
+        annotation.signal.aborted ||
+        !live?.thread ||
+        live.thread.environmentId !== annotation.environmentId ||
+        live.thread.id !== annotation.threadId ||
+        live.runtime?.connectionState !== "connected" ||
+        !readEnvironmentScope(annotation.environmentId, AuthOrchestrationOperateScope)
+      ) {
+        throw new Error("Reconnect to the original thread with permission to send, then retry.");
+      }
+    };
+    if (annotation) assertAnnotationTarget();
     if (
       selectedThreadShell &&
       selectedEnvironmentRuntime?.connectionState === "connected" &&
@@ -527,16 +653,40 @@ export function useThreadComposerState() {
 
     const editKey = scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id);
     if (getQueuedRunEdit(editKey) !== null) {
+      if (annotation)
+        throw new Error("Finish editing the queued message before sending an annotation.");
       await saveQueuedRunEdit();
       return null;
     }
 
     const threadKey = scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id);
-    const draft = getComposerDraftSnapshot(threadKey);
-    if (appAtomRegistry.get(composerContextImportsAtom)[threadKey]) return null;
+    const parentDraft = getComposerDraftSnapshot(threadKey);
+    let annotationAttachment: DraftComposerImageAttachment | undefined;
+    if (annotation) {
+      const fileUri = annotation.image.uri;
+      annotationAttachment = {
+        id: uuidv4(),
+        type: "image",
+        name: annotation.image.name,
+        mimeType: "image/png",
+        sizeBytes: new File(fileUri).size ?? 0,
+        fileUri,
+        previewUri: fileUri,
+      };
+    }
+    const draft =
+      annotation && annotationAttachment
+        ? {
+            ...parentDraft,
+            text: annotation.text,
+            context: undefined,
+            attachments: [annotationAttachment],
+          }
+        : parentDraft;
+    if (!annotation && appAtomRegistry.get(composerContextImportsAtom)[threadKey]) return null;
     const thread = selectedThreadShell;
     const text = draft.text.trim();
-    const attachments = draft.attachments;
+    let attachments = draft.attachments;
     if (
       composerAttachmentUploadBlockReason({
         environmentId: selectedThreadShell.environmentId,
@@ -649,6 +799,30 @@ export function useThreadComposerState() {
     const metadata = makeQueuedMessageMetadata();
     const messageId = MessageId.make(metadata.messageId);
     clearThreadComposerError(threadKey);
+    if (annotation && annotationAttachment) {
+      assertAnnotationTarget();
+      const fileUri = await persistComposerAttachmentFile(
+        annotation.image.uri,
+        annotation.image.name,
+        10 * 1024 * 1024,
+      );
+      try {
+        assertAnnotationTarget();
+      } catch (cause) {
+        removePersistedComposerAttachmentFile(fileUri);
+        throw cause;
+      }
+      annotationAttachment = { ...annotationAttachment, fileUri, previewUri: fileUri };
+      attachments = [annotationAttachment];
+    }
+    const receipt = annotation
+      ? waitForAnnotationReceipt(messageId, threadKey, annotation.signal)
+      : null;
+    const holdCanceledAnnotation = () => holdEditingQueuedMessage(messageId);
+    if (annotation) {
+      annotation.signal.addEventListener("abort", holdCanceledAnnotation, { once: true });
+      if (annotation.signal.aborted) holdCanceledAnnotation();
+    }
     const enqueuePromise = enqueueThreadOutboxMessage({
       environmentId: selectedThreadShell.environmentId,
       threadId: selectedThreadShell.id,
@@ -656,6 +830,7 @@ export function useThreadComposerState() {
       commandId: CommandId.make(metadata.commandId),
       text,
       attachments,
+      ...(annotation ? { recoveryPolicy: { kind: "keep-outbox" as const } } : {}),
       context: trimmedComposerContext(draft.text, draft.context),
       modelSelection,
       runtimeMode: draft.runtimeMode ?? thread.runtimeMode,
@@ -666,6 +841,18 @@ export function useThreadComposerState() {
       ...(followUpDispatchMode === null ? {} : { dispatchMode: followUpDispatchMode }),
       createdAt: metadata.createdAt,
     });
+    if (annotation) {
+      await settleQueuedAnnotationSend({
+        enqueuePromise,
+        receipt,
+        annotation,
+        annotationAttachment,
+        messageId,
+        threadKey,
+        holdCanceledAnnotation,
+      });
+      return messageId;
+    }
     clearComposerDraftContent(threadKey, { deferAttachmentCleanup: true });
     enqueuePromise.then(
       () => scheduleUnusedComposerAttachmentCleanup(attachments),

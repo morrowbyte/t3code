@@ -1,3 +1,4 @@
+import type { ImageAnnotationDraft, SendImageAnnotation } from "../../lib/imageAnnotation";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { AsyncResult } from "effect/reactivity";
 import * as Dialog from "../../components/ui/Dialog";
@@ -220,7 +221,10 @@ export interface ThreadDetailScreenProps {
   readonly onStopThread: () => void;
   /** Present while the thread's queue is held. */
   readonly onResumeQueue: (() => Promise<void>) | null;
-  readonly onSendMessage: (followUp?: ActiveTurnComposerAction) => Promise<MessageId | null>;
+  readonly onSendMessage: (
+    followUp?: ActiveTurnComposerAction,
+    annotation?: ImageAnnotationDraft,
+  ) => Promise<MessageId | null>;
   readonly onReconnectEnvironment: () => void;
   readonly canSwitchThreadProvider: boolean;
   readonly onUpdateThreadModelSelection: (modelSelection: ModelSelection) => void;
@@ -901,6 +905,16 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
     selectedThreadKey,
   ]);
 
+  const sendAnnotation: SendImageAnnotation = async (image, text, signal) => {
+    const target = { environmentId: props.environmentId, threadId: props.selectedThread.id };
+    const messageId = await props.onSendMessage(undefined, { ...target, image, text, signal });
+    if (messageId === null)
+      throw new Error(
+        "Could not send the annotated image. Check the connection and thread permissions.",
+      );
+    return true;
+  };
+
   const handleSendMessage = async (followUp?: ActiveTurnComposerAction) => {
     const targetThreadKey = selectedThreadKey;
     const hasUserMessage = selectedThreadFeed.some(
@@ -1032,6 +1046,9 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
             )}
           >
             <ThreadFeed
+              onSendAnnotation={
+                props.canOperateThread && !isProviderSubagent ? sendAnnotation : undefined
+              }
               environmentId={props.environmentId}
               threadId={props.selectedThread.id}
               workspaceRoot={props.threadCwd}
@@ -1309,6 +1326,9 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
                   ) : (
                     <>
                       <ThreadComposer
+                        onSendAnnotation={
+                          props.canOperateThread && !isProviderSubagent ? sendAnnotation : undefined
+                        }
                         canOperateThread={props.canOperateThread}
                         reportedModelSelection={reportedModelSelection}
                         editorRef={composerEditorRef}

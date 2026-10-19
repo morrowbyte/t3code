@@ -1,3 +1,4 @@
+import type { SendImageAnnotation } from "../../lib/imageAnnotation";
 import { AgentIdentityLabel } from "../agent-identity/AgentIdentityLabel";
 import * as Dialog from "../../components/ui/Dialog";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
@@ -285,6 +286,7 @@ export interface ThreadFeedHistoryControls {
 }
 
 export interface ThreadFeedProps {
+  readonly onSendAnnotation?: SendImageAnnotation;
   readonly worktreeSetup?: WorktreeSetupCardProps | null;
   readonly setupWorkingStartedAt?: string | null;
   readonly queuedMessages: ReadonlyArray<QueuedThreadMessage>;
@@ -2619,7 +2621,11 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
           </View>
         ) : null}
         <VideoPreviewModal source={expandedVideo} onRequestClose={() => setExpandedVideo(null)} />
-        <FilePreviewModal source={expandedFile} onRequestClose={() => setExpandedFile(null)} />
+        <FilePreviewModal
+          source={expandedFile}
+          onRequestClose={() => setExpandedFile(null)}
+          onSendAnnotation={props.onSendAnnotation}
+        />
       </View>
     </PresentationSource>
   );
