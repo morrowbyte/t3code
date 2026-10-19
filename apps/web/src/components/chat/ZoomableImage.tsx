@@ -1,28 +1,55 @@
-import { useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref } from "react";
+import {
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type Ref,
+  type ReactNode,
+} from "react";
+
+import {
+  onWindowControlsOverlayGeometryChange,
+  windowControlsOverlayHeight,
+} from "../../lib/windowControlsOverlay";
+
+import { AttachmentImage } from "../media/AttachmentImage";
 
 const MAX_ZOOM = 8;
 
+// The viewer lays out below the native caption strip so its controls never share a row with
+// the window buttons. ExpandedImageDialog and the media dialog viewport mirror this in CSS
+// through --native-titlebar-height.
+function readViewerSize() {
+  return { width: window.innerWidth, height: window.innerHeight - windowControlsOverlayHeight() };
+}
+
 export interface ZoomableImageHandle {
   pan: (key: string) => boolean;
+  zoom: (factor: number) => void;
+  fit: () => void;
 }
 
 export function ZoomableImage({
   src,
   name,
+  mimeType,
   onError,
   ref,
+  overlay,
+  reservedHeight = 160,
 }: {
   src: string;
   name: string;
+  mimeType?: string | undefined;
   onError: () => void;
   ref?: Ref<ZoomableImageHandle>;
+  overlay?: ReactNode;
+  reservedHeight?: number;
 }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const [naturalSize, setNaturalSize] = useState({ width: 0, height: 0 });
-  const [windowSize, setWindowSize] = useState(() => ({
-    width: window.innerWidth,
-    height: window.innerHeight,
-  }));
+  const [viewerSize, setViewerSize] = useState(readViewerSize);
   const [zoom, setZoom] = useState(1);
   const zoomRef = useRef(1);
   const anchorRef = useRef<{ x: number; y: number; clientX: number; clientY: number } | null>(null);
@@ -35,18 +62,41 @@ export function ZoomableImage({
   } | null>(null);
   const suppressClickRef = useRef(false);
   const [dragging, setDragging] = useState(false);
-  const maxHeight = Math.max(1, Math.min(windowSize.height * 0.86, windowSize.height - 160));
+  const maxHeight = Math.max(
+    1,
+    Math.min(viewerSize.height * 0.86, viewerSize.height - reservedHeight),
+  );
   const fit = Math.min(
     1,
-    (windowSize.width * 0.92 - (windowSize.width >= 640 ? 96 : 0)) / (naturalSize.width || 1),
+    (viewerSize.width * 0.92 - (viewerSize.width >= 640 ? 96 : 0)) / (naturalSize.width || 1),
     maxHeight / (naturalSize.height || 1),
   );
   const width = naturalSize.width * fit * zoom;
   const height = naturalSize.height * fit * zoom;
 
+  const changeZoom = (next: number, point?: { x: number; y: number }) => {
+    const viewport = viewportRef.current;
+    const previous = zoomRef.current;
+    const clamped = Math.min(MAX_ZOOM, Math.max(1, next));
+    if (!viewport || previous === clamped) return;
+    const bounds = viewport.getBoundingClientRect();
+    const x = point ? point.x - bounds.left : viewport.clientWidth / 2;
+    const y = point ? point.y - bounds.top : viewport.clientHeight / 2;
+    anchorRef.current = {
+      x: (viewport.scrollLeft + x) / previous,
+      y: (viewport.scrollTop + y) / previous,
+      clientX: bounds.left + x,
+      clientY: bounds.top + y,
+    };
+    zoomRef.current = clamped;
+    setZoom(clamped);
+  };
+
   useImperativeHandle(
     ref,
     () => ({
+      zoom: (factor) => changeZoom(zoomRef.current * factor),
+      fit: () => changeZoom(1),
       pan(key) {
         const viewport = viewportRef.current;
         if (!viewport || zoomRef.current <= 1) return false;
@@ -78,24 +128,6 @@ export function ZoomableImage({
     [],
   );
 
-  const changeZoom = (next: number, point?: { x: number; y: number }) => {
-    const viewport = viewportRef.current;
-    const previous = zoomRef.current;
-    const clamped = Math.min(MAX_ZOOM, Math.max(1, next));
-    if (!viewport || previous === clamped) return;
-    const bounds = viewport.getBoundingClientRect();
-    const x = point ? point.x - bounds.left : viewport.clientWidth / 2;
-    const y = point ? point.y - bounds.top : viewport.clientHeight / 2;
-    anchorRef.current = {
-      x: (viewport.scrollLeft + x) / previous,
-      y: (viewport.scrollTop + y) / previous,
-      clientX: bounds.left + x,
-      clientY: bounds.top + y,
-    };
-    zoomRef.current = clamped;
-    setZoom(clamped);
-  };
-
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
     const anchor = anchorRef.current;
@@ -108,11 +140,16 @@ export function ZoomableImage({
 
   useEffect(() => {
     const resize = () => {
-      setWindowSize({ width: window.innerWidth, height: window.innerHeight });
+      setViewerSize(readViewerSize());
       changeZoom(1);
     };
     window.addEventListener("resize", resize);
-    return () => window.removeEventListener("resize", resize);
+    // The caption strip can come and go around fullscreen without a matching resize event.
+    const stopOverlayListener = onWindowControlsOverlayGeometryChange(resize);
+    return () => {
+      window.removeEventListener("resize", resize);
+      stopOverlayListener();
+    };
   }, [changeZoom]);
 
   useEffect(() => {
@@ -139,7 +176,11 @@ export function ZoomableImage({
         ref={viewportRef}
         role="region"
         aria-label={`${name}, zoomable image`}
-        aria-description="Click to zoom in or return to fit. Scroll to zoom, drag to pan. Use Enter to toggle zoom, plus or minus to zoom, and 0 to fit."
+        aria-description={
+          overlay
+            ? "Draw on the image. Scroll, plus or minus to zoom, and 0 to fit."
+            : "Click to zoom in or return to fit. Scroll to zoom, drag to pan. Use Enter to toggle zoom, plus or minus to zoom, and 0 to fit."
+        }
         tabIndex={0}
         className="max-w-[var(--media-width)] overflow-auto overscroll-contain rounded-lg bg-background shadow-2xl ring-1 ring-border/70 outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:-outline-offset-2 focus-visible:outline-ring"
         style={{
@@ -213,22 +254,27 @@ export function ZoomableImage({
           setDragging(false);
         }}
       >
-        <img
-          src={src}
-          alt={name}
-          draggable={false}
-          className="block max-w-none select-none"
-          style={
-            naturalSize.width ? { width, height } : { maxWidth: "var(--media-width)", maxHeight }
-          }
-          onLoad={(event) => {
-            setNaturalSize({
-              width: event.currentTarget.naturalWidth,
-              height: event.currentTarget.naturalHeight,
-            });
-          }}
-          onError={onError}
-        />
+        <div className={overlay ? "relative w-fit" : "contents"}>
+          <AttachmentImage
+            name={name}
+            mimeType={mimeType}
+            src={src}
+            alt={name}
+            draggable={false}
+            className="block max-w-none select-none"
+            style={
+              naturalSize.width ? { width, height } : { maxWidth: "var(--media-width)", maxHeight }
+            }
+            onLoad={(event) => {
+              setNaturalSize({
+                width: event.currentTarget.naturalWidth,
+                height: event.currentTarget.naturalHeight,
+              });
+            }}
+            onError={onError}
+          />
+          {overlay}
+        </div>
       </div>
       <span className="sr-only" aria-live="polite">
         {Math.round(zoom * 100)}% zoom

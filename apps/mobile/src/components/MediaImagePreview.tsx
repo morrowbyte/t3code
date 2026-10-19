@@ -1,4 +1,6 @@
-import { createContext, useContext, useState, useMemo } from "react";
+import type { SendImageAnnotation } from "../lib/imageAnnotation";
+import { ImageAnnotationEditor } from "./ImageAnnotationEditor";
+import { createContext, useContext, useState } from "react";
 import { Pressable, View } from "react-native";
 import ImageViewing from "react-native-image-viewing";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -12,21 +14,34 @@ import { MediaSourceCaption } from "./MediaSourceCaption";
 
 type MediaImagePreviewProps = {
   readonly source: ResolvedFilePreviewSource;
+  readonly onSendAnnotation?: SendImageAnnotation;
+  readonly onAnnotate?: (source: ResolvedFilePreviewSource) => void;
   readonly onRequestClose: () => void;
 };
 
 const ImagePreviewContext = createContext<MediaImagePreviewProps | null>(null);
 
-function ImagePreviewHeader() {
+function ImagePreviewHeader(header: { readonly imageIndex: number }) {
   const props = useContext(ImagePreviewContext)!;
+  const source = props.source.gallery?.[header.imageIndex] ?? props.source;
   const insets = useSafeAreaInsets();
-  const mediaActions = useMediaActions(props.source.actionsSource, props.onRequestClose);
+  const mediaActions = useMediaActions(source.actionsSource, props.onRequestClose);
   return (
     <View className="bg-black/70" style={{ paddingTop: insets.top }}>
       <View className="flex-row items-center gap-2 px-3">
         <AppText className="flex-1 text-base text-white" numberOfLines={2}>
-          {props.source.name ?? "Image"}
+          {source.name ?? "Image"}
         </AppText>
+        {props.onAnnotate ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Annotate image"
+            onPress={() => props.onAnnotate?.(source)}
+            className="min-h-12 min-w-12 items-center justify-center px-3"
+          >
+            <AppText className="text-white">Annotate</AppText>
+          </Pressable>
+        ) : null}
         <MediaActionsMenu media={mediaActions} inModal />
         <Pressable
           accessibilityRole="button"
@@ -43,21 +58,41 @@ function ImagePreviewHeader() {
 }
 
 export function MediaImagePreview(props: MediaImagePreviewProps) {
+  const [annotating, setAnnotating] = useState<{
+    readonly source: ResolvedFilePreviewSource;
+    readonly onSend: SendImageAnnotation;
+  } | null>(null);
+  const onSendAnnotation = props.onSendAnnotation;
   const gallery = props.source.gallery ?? [props.source];
-  const [index, setIndex] = useState(() =>
+  // react-native-image-viewing keys its whole Modal by imageIndex, so changing it remounts the
+  // viewer and replays the Android fade over the screen behind. Keep the opening index; the
+  // header follows paging through the index the library passes it.
+  const [initialIndex] = useState(() =>
     Math.max(
       0,
       gallery.findIndex((item) => item.uri === props.source.uri),
     ),
   );
-  const selected = gallery[index] ?? props.source;
-  const context = useMemo(() => ({ ...props, source: selected }), [props, selected]);
+  if (annotating)
+    return (
+      <ImageAnnotationEditor
+        source={annotating.source}
+        onSend={annotating.onSend}
+        onRequestClose={() => setAnnotating(null)}
+      />
+    );
   return (
-    <ImagePreviewContext value={context}>
+    <ImagePreviewContext
+      value={{
+        ...props,
+        onAnnotate: onSendAnnotation
+          ? (source) => setAnnotating({ source, onSend: onSendAnnotation })
+          : undefined,
+      }}
+    >
       <ImageViewing
         images={gallery.map((item) => ({ uri: item.uri }))}
-        imageIndex={index}
-        onImageIndexChange={setIndex}
+        imageIndex={initialIndex}
         visible
         presentationStyle="fullScreen"
         onRequestClose={props.onRequestClose}

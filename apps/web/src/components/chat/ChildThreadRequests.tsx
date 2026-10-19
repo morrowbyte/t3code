@@ -760,6 +760,52 @@ function ChildQuestionForm({
   );
 }
 
+async function prepareQuestionAttachment(
+  file: File,
+  fileLimit: number | null,
+): Promise<ComposerFileAttachment | ComposerImageAttachment> {
+  const kind = classifyComposerAttachmentFile(file);
+  if (kind === "unsupported-image")
+    throw new Error(`'${file.name}' is not a supported image type.`);
+  let attachment: ComposerFileAttachment | ComposerImageAttachment;
+  if (kind === "image") {
+    const prepared = await prepareImageForAttachment(
+      normalizeComposerImageFileMimeType(file),
+      PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+    );
+    if (!prepared.ok) throw new Error(`'${file.name}' could not be prepared as an image.`);
+    attachment = {
+      type: "image",
+      id: randomUUID(),
+      name: prepared.file.name || "image",
+      mimeType: prepared.file.type,
+      sizeBytes: prepared.file.size,
+      previewUrl: URL.createObjectURL(prepared.file),
+      file: prepared.file,
+    };
+  } else {
+    if (fileLimit === null) throw new Error("This server does not support file attachments.");
+    if (file.size <= 0) throw new Error(`'${file.name}' is empty or could not be read.`);
+    if (file.size > fileLimit) throw new Error(fileAttachmentTooLargeMessage(file.name, fileLimit));
+    const mimeType =
+      videoMimeType({ name: file.name, mimeType: file.type }) ??
+      (file.type || "application/octet-stream");
+    const normalized =
+      file.type === mimeType
+        ? file
+        : new File([file], file.name, { type: mimeType, lastModified: file.lastModified });
+    attachment = {
+      type: "file",
+      id: randomUUID(),
+      name: normalized.name || "file",
+      mimeType,
+      sizeBytes: normalized.size,
+      file: normalized,
+    };
+  }
+  return attachment;
+}
+
 function QuestionAttachmentPicker({
   origin,
   draftTarget,
@@ -812,51 +858,13 @@ function QuestionAttachmentPicker({
       }
       changeQuestionAttachmentPreparation(draftTarget, 1);
       try {
-        const kind = classifyComposerAttachmentFile(file);
-        if (kind === "unsupported-image")
-          throw new Error(`'${file.name}' is not a supported image type.`);
-        let attachment: ComposerFileAttachment | ComposerImageAttachment;
-        if (kind === "image") {
-          const prepared = await prepareImageForAttachment(
-            normalizeComposerImageFileMimeType(file),
-            PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
-          );
-          if (!prepared.ok) throw new Error(`'${file.name}' could not be prepared as an image.`);
-          attachment = {
-            type: "image",
-            id: randomUUID(),
-            name: prepared.file.name || "image",
-            mimeType: prepared.file.type,
-            sizeBytes: prepared.file.size,
-            previewUrl: URL.createObjectURL(prepared.file),
-            file: prepared.file,
-          };
-        } else {
-          if (fileLimit === null) throw new Error("This server does not support file attachments.");
-          if (file.size <= 0) throw new Error(`'${file.name}' is empty or could not be read.`);
-          if (file.size > fileLimit)
-            throw new Error(fileAttachmentTooLargeMessage(file.name, fileLimit));
-          const mimeType =
-            videoMimeType({ name: file.name, mimeType: file.type }) ??
-            (file.type || "application/octet-stream");
-          const normalized =
-            file.type === mimeType
-              ? file
-              : new File([file], file.name, { type: mimeType, lastModified: file.lastModified });
-          attachment = {
-            type: "file",
-            id: randomUUID(),
-            name: normalized.name || "file",
-            mimeType,
-            sizeBytes: normalized.size,
-            file: normalized,
-          };
-        }
+        const attachment = await prepareQuestionAttachment(file, fileLimit);
         if (
           !mounted.current ||
           !readEnvironmentScope(origin.environmentId, AuthOrchestrationOperateScope)
         ) {
           if (attachment.type === "image") URL.revokeObjectURL(attachment.previewUrl);
+          changeQuestionAttachmentPreparation(draftTarget, -1);
           return;
         }
         const store = useComposerDraftStore.getState();
@@ -865,9 +873,8 @@ function QuestionAttachmentPicker({
       } catch (cause) {
         if (mounted.current)
           setError(cause instanceof Error ? cause.message : "Could not attach the file.");
-      } finally {
-        changeQuestionAttachmentPreparation(draftTarget, -1);
       }
+      changeQuestionAttachmentPreparation(draftTarget, -1);
     }
   };
   const uploadError = attachmentUploadBlockReason({

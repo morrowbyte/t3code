@@ -219,10 +219,9 @@ function NativeCodexSetup(props: CodexSetupSectionProps & { readonly provider: S
         setError("Codex installation could not finish. Try again.");
     } catch {
       setError("Codex installation could not finish. Try again.");
-    } finally {
-      pendingRef.current = false;
-      setPending(false);
     }
+    pendingRef.current = false;
+    setPending(false);
   };
   return (
     <section className="space-y-3" aria-label="Codex setup">

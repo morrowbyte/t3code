@@ -24,7 +24,8 @@ vi.mock("@effect/atom-react", () => ({
           : fixture.answers,
 }));
 vi.mock("./use-composer-drafts", () => ({
-  composerDraftsAtom: "drafts",
+  composerDraftsAtom: "all-drafts",
+  questionAttachmentDraftsAtom: () => "drafts",
   clearComposerDraft: vi.fn(),
 }));
 vi.mock("./composer-attachment-uploads", async () => ({
@@ -71,7 +72,7 @@ vi.mock("./atom-registry", () => ({
         ? fixture.status
         : atom === "currentPending"
           ? fixture.pending
-          : atom === "drafts"
+          : atom === "drafts" || atom === "all-drafts"
             ? fixture.drafts
             : atom === fixture.preparationAtom
               ? fixture.preparations

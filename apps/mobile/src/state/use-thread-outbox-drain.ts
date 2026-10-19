@@ -58,6 +58,7 @@ import {
 import { removeThreadOutboxMessage } from "./thread-outbox-removal";
 import {
   isQueuedThreadCreationSendable,
+  nextDeliverableQueuedThreadMessage,
   resolveThreadOutboxDeliveryAction,
   resolveThreadOutboxDispatchStep,
   resolveThreadOutboxFailureAction,
@@ -90,7 +91,11 @@ import {
   useThreadOutboxMessages,
   useThreadOutboxShellStatuses,
 } from "./use-thread-outbox";
-import { clearThreadComposerError, setThreadComposerError } from "./thread-composer-error";
+import {
+  clearThreadComposerError,
+  setThreadComposerError,
+  threadComposerErrorsAtom,
+} from "./thread-composer-error";
 import { useRemoteConnectionStatus } from "./use-remote-environment-registry";
 
 const threadOutboxDebug = createDebugLogger("thread-outbox");
@@ -410,6 +415,17 @@ export async function restoreRejectedQueuedMessage(
     }
     const revision = threadOutboxRevision(queuedMessage.messageId);
 
+    if (queuedMessage.recoveryPolicy?.kind === "keep-outbox") {
+      const revision = threadOutboxRevision(queuedMessage.messageId);
+      const kept = await updateThreadOutboxMessage(
+        { ...queuedMessage, recoveryPolicy: { kind: "keep-outbox", error: message } },
+        revision,
+      );
+      if (!kept) return "deferred";
+      setThreadComposerError(threadKey, message, queuedMessage.messageId);
+      return "blocked";
+    }
+
     await waitForComposerDraftsLoaded();
     if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]) {
       return "deferred";
@@ -643,6 +659,7 @@ export function useThreadOutboxDrain(): void {
   const restoreQueuedMessage = useCallback(
     async (queuedMessage: QueuedThreadMessage, message: string): Promise<boolean> => {
       const result = await restoreRejectedQueuedMessage(queuedMessage, message);
+      if (result === "blocked" && queuedMessage.recoveryPolicy?.kind === "keep-outbox") return true;
       if (result !== "blocked") {
         return result !== "retry";
       }
@@ -1101,7 +1118,20 @@ export function useThreadOutboxDrain(): void {
     }
 
     for (const [threadKey, queuedMessages] of Object.entries(queuedMessagesByThreadKey)) {
-      const nextQueuedMessage = queuedMessages[0];
+      const rejectedAnnotation = queuedMessages.find((message) => message.recoveryPolicy?.error);
+      if (rejectedAnnotation?.recoveryPolicy?.error) {
+        const error = appAtomRegistry.get(threadComposerErrorsAtom)[threadKey];
+        if (
+          error?.messageId !== rejectedAnnotation.messageId ||
+          error.message !== rejectedAnnotation.recoveryPolicy.error
+        )
+          setThreadComposerError(
+            threadKey,
+            rejectedAnnotation.recoveryPolicy.error,
+            rejectedAnnotation.messageId,
+          );
+      }
+      const nextQueuedMessage = nextDeliverableQueuedThreadMessage(queuedMessages);
       if (!nextQueuedMessage) {
         continue;
       }

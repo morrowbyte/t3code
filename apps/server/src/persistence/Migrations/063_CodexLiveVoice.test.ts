@@ -17,6 +17,7 @@ it.effect(
         [62, "ThreadFailureLookupIndex"],
         [63, "CodexLiveVoice"],
         [64, "DropUnusedV1Projections"],
+        [65, "CanonicalizeThreadPullRequestLinks"],
       ]);
       assert.lengthOf(yield* failureIndex, 1);
       assert.deepStrictEqual(
@@ -28,6 +29,7 @@ it.effect(
           { migration_id: 62, name: "ThreadFailureLookupIndex" },
           { migration_id: 63, name: "CodexLiveVoice" },
           { migration_id: 64, name: "DropUnusedV1Projections" },
+          { migration_id: 65, name: "CanonicalizeThreadPullRequestLinks" },
         ],
       );
       assert.lengthOf(
@@ -172,6 +174,7 @@ it.effect("adds Voice 63 to the current main 62 database without replacing main'
     assert.deepStrictEqual(yield* runMigrations(), [
       [63, "CodexLiveVoice"],
       [64, "DropUnusedV1Projections"],
+      [65, "CanonicalizeThreadPullRequestLinks"],
     ]);
     assert.lengthOf(yield* failureIndex, 1);
     const ledger = yield* sql<{ migration_id: number; name: string }>`
@@ -219,6 +222,7 @@ it.effect(
         [62, "ThreadFailureLookupIndex"],
         [63, "CodexLiveVoice"],
         [64, "DropUnusedV1Projections"],
+        [65, "CanonicalizeThreadPullRequestLinks"],
       ]);
       assert.deepStrictEqual(yield* sql`SELECT * FROM codex_live_voice_leases`, leases);
       assert.deepStrictEqual(yield* sql`SELECT * FROM codex_live_voice_intents`, intents);

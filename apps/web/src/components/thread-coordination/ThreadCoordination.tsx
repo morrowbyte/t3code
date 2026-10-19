@@ -132,10 +132,9 @@ export function ThreadCoordination({ threadRef }: { threadRef: ScopedThreadRef }
           ? error.message
           : "The request failed. Check the original thread before retrying.",
       );
-    } finally {
-      inFlight.current = false;
-      setPending(false);
     }
+    inFlight.current = false;
+    setPending(false);
   };
 
   return (

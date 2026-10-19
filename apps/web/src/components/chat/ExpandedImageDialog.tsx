@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState, type ReactNode, type KeyboardEvent } from "react";
-import { ChevronLeftIcon, ChevronRightIcon, XIcon } from "lucide-react";
+import { ChevronLeftIcon, ChevronRightIcon, PencilIcon, XIcon } from "lucide-react";
 import { Image as ImageGlyph, Text as TextGlyph } from "lucide";
 import { Button } from "../ui/button";
 import { MorphIcon } from "~/components/MorphIcon";
@@ -23,10 +23,14 @@ import { useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { expandedImageKey } from "./ExpandedImagePreview";
+import { ImageAnnotationEditor } from "./ImageAnnotationEditor";
 
 interface ExpandedImageDialogProps {
   preview: ExpandedImagePreview;
   onClose: () => void;
+  onSendAnnotation?:
+    | ((file: File, text: string, signal: AbortSignal) => Promise<boolean>)
+    | undefined;
 }
 
 const EXPANDED_MEDIA_STATE_CLASS_NAME =
@@ -68,8 +72,11 @@ function ExpandedVideo({ item }: { readonly item: ExpandedImageItem }) {
 export const ExpandedImageDialog = memo(function ExpandedImageDialog({
   preview,
   onClose,
+  onSendAnnotation,
 }: ExpandedImageDialogProps) {
   const [imageOffset, setImageOffset] = useState(0);
+  const [annotating, setAnnotating] = useState(false);
+  const [sendingAnnotation, setSendingAnnotation] = useState(false);
   const [failedImageSrc, setFailedImageSrc] = useState<string | null>(null);
   const [accessibilityDetailsSrc, setAccessibilityDetailsSrc] = useState<string | null>(null);
   const zoomableImageRef = useRef<ZoomableImageHandle>(null);
@@ -117,6 +124,7 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
   }, []);
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (annotating) return;
     if (event.defaultPrevented || isContextMenuOpen() || event.target instanceof HTMLVideoElement)
       return;
     if (zoomableImageRef.current?.pan(event.key)) {
@@ -142,11 +150,13 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
       if (event.key !== "Escape" || isContextMenuOpen()) return;
       event.preventDefault();
       event.stopPropagation();
-      onClose();
+      if (sendingAnnotation) return;
+      if (annotating) setAnnotating(false);
+      else onClose();
     };
     window.addEventListener("keydown", onEscape, { capture: true });
     return () => window.removeEventListener("keydown", onEscape, { capture: true });
-  }, [onClose]);
+  }, [onClose, annotating, sendingAnnotation]);
 
   if (!item) return null;
   const mediaLabel = item.type === "video" ? "video" : "image";
@@ -167,7 +177,7 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
     <Dialog
       open
       onOpenChange={(open) => {
-        if (!open) onClose();
+        if (!open && !sendingAnnotation) onClose();
       }}
     >
       <DialogPopup
@@ -175,12 +185,12 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
         variant="media"
         showCloseButton={false}
         bottomStickOnMobile={false}
-        className="row-start-1 h-full max-h-[92vh] w-[92vw] max-w-[92vw] items-center justify-center overflow-visible [--media-width:92vw] [--media-height:min(86vh,calc(100vh-160px))] sm:[--media-width:calc(92vw-96px)]"
+        className="row-start-1 h-full max-h-[92vh] w-[92vw] max-w-[92vw] items-center justify-center overflow-visible [--media-width:92vw] [--media-height:min(calc((100vh-var(--native-titlebar-height,0px))*0.86),calc(100vh-var(--native-titlebar-height,0px)-160px))] sm:[--media-width:calc(92vw-96px)]"
         onKeyDown={onKeyDown}
         initialFocus={closeButtonRef}
         finalFocus={() => returnFocusTarget}
         onClick={(event) => {
-          if (event.target === event.currentTarget) onClose();
+          if (event.target === event.currentTarget && !sendingAnnotation) onClose();
         }}
       >
         <DialogTitle className="sr-only">Expanded {mediaLabel} preview</DialogTitle>
@@ -191,11 +201,12 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
           variant="media-close"
           className="absolute right-0 top-0 z-20"
           onClick={onClose}
+          disabled={sendingAnnotation}
           aria-label={`Close ${mediaLabel} preview`}
         >
           <XIcon />
         </Button>
-        {preview.images.length > 1 && (
+        {!annotating && preview.images.length > 1 && (
           <Button
             type="button"
             size="icon"
@@ -209,7 +220,37 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
         )}
         <MediaActions source={actionsSource}>
           <div className="relative isolate z-10 flex max-h-full max-w-[var(--media-width)] flex-col items-center">
-            {item.type === "video" ? (
+            {annotating && item.src && onSendAnnotation ? (
+              <ImageAnnotationEditor
+                key={`${index}:${item.src}`}
+                src={item.src}
+                name={item.name}
+                onCancel={() => setAnnotating(false)}
+                onZoom={(factor) => zoomableImageRef.current?.zoom(factor)}
+                onFit={() => zoomableImageRef.current?.fit()}
+                renderImage={(overlay) => (
+                  <ZoomableImage
+                    ref={zoomableImageRef}
+                    src={item.src!}
+                    name={item.name}
+                    mimeType={item.mimeType}
+                    onError={() => setFailedImageSrc(item.src)}
+                    overlay={overlay}
+                    reservedHeight={340}
+                  />
+                )}
+                onSend={async (file, text, signal) => {
+                  setSendingAnnotation(true);
+                  try {
+                    const accepted = await onSendAnnotation(file, text, signal);
+                    if (accepted && !signal.aborted) onClose();
+                    return accepted;
+                  } finally {
+                    setSendingAnnotation(false);
+                  }
+                }}
+              />
+            ) : item.type === "video" ? (
               <ExpandedVideo key={index} item={item} />
             ) : showingAccessibilityDetails ? (
               accessibilityDetails ? (
@@ -233,44 +274,65 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
                 key={`${index}:${item.src}`}
                 src={item.src}
                 name={item.name}
+                mimeType={item.mimeType}
                 onError={() => setFailedImageSrc(item.src)}
               />
             )}
-            <div className="mt-2 flex max-w-[var(--media-width)] items-center justify-center gap-1.5 text-xs text-white/80 max-sm:px-10">
-              <span className="truncate" aria-live="polite" aria-atomic="true">
-                {item.name}
-                {preview.images.length > 1 ? ` (${index + 1}/${preview.images.length})` : ""}
-              </span>
-              {accessibilityDetails && item.source ? (
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <Button
-                        aria-label={contentsLabel}
-                        aria-pressed={showingAccessibilityDetails}
-                        onClick={() =>
-                          setAccessibilityDetailsSrc(showingAccessibilityDetails ? null : item.src)
-                        }
-                        size="icon-micro"
-                        variant="overlay"
-                      />
-                    }
+            {!annotating && (
+              <div className="mt-2 flex max-w-[var(--media-width)] items-center justify-center gap-1.5 text-xs text-white/80 max-sm:px-10">
+                <span className="truncate" aria-live="polite" aria-atomic="true">
+                  {item.name}
+                  {preview.images.length > 1 ? ` (${index + 1}/${preview.images.length})` : ""}
+                </span>
+                {item.type !== "video" &&
+                item.src &&
+                failedImageSrc !== item.src &&
+                onSendAnnotation ? (
+                  <Button
+                    size="xs"
+                    variant="overlay"
+                    onClick={() => {
+                      setAccessibilityDetailsSrc(null);
+                      setAnnotating(true);
+                    }}
                   >
-                    <MorphIcon
-                      className="size-3"
-                      aria-hidden="true"
-                      icon={showingAccessibilityDetails ? ImageGlyph : TextGlyph}
-                    />
-                  </TooltipTrigger>
-                  <TooltipPopup side="top">{contentsLabel}</TooltipPopup>
-                </Tooltip>
-              ) : item.source ? (
-                <SnapShotContentsButton source={item.source} side="top" />
-              ) : null}
-            </div>
+                    <PencilIcon />
+                    Annotate
+                  </Button>
+                ) : null}
+                {accessibilityDetails && item.source ? (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <Button
+                          aria-label={contentsLabel}
+                          aria-pressed={showingAccessibilityDetails}
+                          onClick={() =>
+                            setAccessibilityDetailsSrc(
+                              showingAccessibilityDetails ? null : item.src,
+                            )
+                          }
+                          size="icon-micro"
+                          variant="overlay"
+                        />
+                      }
+                    >
+                      <MorphIcon
+                        className="size-3"
+                        aria-hidden="true"
+                        icon={showingAccessibilityDetails ? ImageGlyph : TextGlyph}
+                      />
+                    </TooltipTrigger>
+                    <TooltipPopup side="top">{contentsLabel}</TooltipPopup>
+                  </Tooltip>
+                ) : item.source ? (
+                  <SnapShotContentsButton source={item.source} side="top" />
+                ) : null}
+              </div>
+            )}
           </div>
         </MediaActions>
-        {preview.images.length > 1 && (
+        {!annotating && preview.images.length > 1 && (
           <Button
             type="button"
             size="icon"
@@ -310,7 +372,13 @@ function closeExpandedImagePreviewFor(threadKey: string): void {
   }
 }
 
-export function ExpandedImageDialogHost({ threadKey }: { readonly threadKey: string }) {
+export function ExpandedImageDialogHost({
+  threadKey,
+  onSendAnnotation,
+}: {
+  readonly threadKey: string;
+  readonly onSendAnnotation?: ExpandedImageDialogProps["onSendAnnotation"];
+}) {
   const state = useAtomValue(expandedImagePreviewAtom);
   const preview = state?.threadKey === threadKey ? state.preview : null;
   const item = preview?.images[preview.index];
@@ -327,6 +395,7 @@ export function ExpandedImageDialogHost({ threadKey }: { readonly threadKey: str
       key={expandedImageKey(preview)}
       preview={preview}
       onClose={closeExpandedImagePreview}
+      onSendAnnotation={onSendAnnotation}
     />
   );
 }
