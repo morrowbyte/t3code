@@ -23,6 +23,54 @@ import { projectScriptIdFromCommand } from "./projectScripts";
 export type { ShortcutEventLike, ShortcutModifierStateLike } from "@t3tools/shared/keybindings";
 export { shortcutKeyFromEvent } from "@t3tools/shared/keybindings";
 
+export type NavigationKeyEvent = ShortcutEventLike & {
+  readonly isComposing?: boolean | undefined;
+  readonly keyCode?: number | undefined;
+  readonly defaultPrevented?: boolean | undefined;
+};
+
+export function isNavigationKeyEvent(event: NavigationKeyEvent): boolean {
+  return !(
+    event.defaultPrevented ||
+    event.isComposing ||
+    event.keyCode === 229 ||
+    event.key === "Process" ||
+    event.key === "Dead" ||
+    event.getModifierState?.("AltGraph")
+  );
+}
+
+export function isLeaderNavigationShortcut(
+  event: NavigationKeyEvent,
+  context: { editable: boolean; interactive: boolean; blocked: boolean; claimed: boolean },
+): boolean {
+  return (
+    isNavigationKeyEvent(event) &&
+    event.key === " " &&
+    !event.repeat &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.altKey &&
+    !event.shiftKey &&
+    !context.editable &&
+    !context.interactive &&
+    !context.blocked &&
+    !context.claimed
+  );
+}
+
+export function menuControlDirection(event: NavigationKeyEvent): -1 | 1 | null {
+  if (
+    !isNavigationKeyEvent(event) ||
+    !event.ctrlKey ||
+    event.metaKey ||
+    event.altKey ||
+    event.shiftKey
+  )
+    return null;
+  return event.key.toLowerCase() === "n" ? 1 : event.key.toLowerCase() === "p" ? -1 : null;
+}
+
 export interface ShortcutMatchContext {
   terminalFocus: boolean;
   terminalOpen: boolean;

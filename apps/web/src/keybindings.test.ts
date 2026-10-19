@@ -27,6 +27,9 @@ import {
   isTerminalToggleShortcut,
   resolveChatShortcutCommand,
   resolveShortcutCommand,
+  isLeaderNavigationShortcut,
+  isNavigationKeyEvent,
+  menuControlDirection,
   shouldShowThreadJumpHintsForModifiers,
   shortcutLabelForCommand,
   terminalDeleteShortcutData,
@@ -47,6 +50,48 @@ function event(overrides: Partial<ShortcutEventLike> = {}): ShortcutEventLike {
     ...overrides,
   };
 }
+
+describe("leader navigation boundaries", () => {
+  const outside = { editable: false, interactive: false, blocked: false, claimed: false };
+  it("uses unmodified Space without replacing configured shortcuts or control activation", () => {
+    assert.equal(isLeaderNavigationShortcut(event({ key: " " }), outside), true);
+    for (const key of ["editable", "interactive", "blocked", "claimed"] as const) {
+      assert.equal(
+        isLeaderNavigationShortcut(event({ key: " " }), { ...outside, [key]: true }),
+        false,
+      );
+    }
+    for (const modifier of ["ctrlKey", "metaKey", "altKey", "shiftKey"] as const) {
+      assert.equal(
+        isLeaderNavigationShortcut(event({ key: " ", [modifier]: true }), outside),
+        false,
+      );
+    }
+  });
+  it.each([
+    { isComposing: true },
+    { keyCode: 229 },
+    { key: "Dead" },
+    { key: "Process" },
+    { defaultPrevented: true },
+    { getModifierState: (name: string) => name === "AltGraph" },
+  ])("leaves composition and already handled events alone: %j", (overrides) => {
+    const input = { ...event({ key: " " }), ...overrides };
+    assert.equal(isNavigationKeyEvent(input), false);
+    assert.equal(isLeaderNavigationShortcut(input, outside), false);
+  });
+  it("does not repeat-open and confines Ctrl N/P to menu adapters", () => {
+    assert.equal(
+      isLeaderNavigationShortcut({ ...event({ key: " " }), repeat: true }, outside),
+      false,
+    );
+    assert.equal(menuControlDirection(event({ key: "n", ctrlKey: true })), 1);
+    assert.equal(menuControlDirection(event({ key: "p", ctrlKey: true })), -1);
+    assert.equal(menuControlDirection(event({ key: "p" })), null);
+    assert.equal(menuControlDirection(event({ key: "p", ctrlKey: true, altKey: true })), null);
+    assert.equal(menuControlDirection(event({ key: "p", ctrlKey: true, shiftKey: true })), null);
+  });
+});
 
 function modShortcut(
   key: string,

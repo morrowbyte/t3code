@@ -79,6 +79,7 @@ import {
   TextSearchIcon,
 } from "lucide-react";
 import { requestThreadFindOpen } from "./chat/threadFindActionBus";
+import { requestLeaderNavigation } from "./keyboard/LeaderNavigation.dom";
 import {
   useDeferredValue,
   useEffect,
@@ -1576,6 +1577,16 @@ function OpenCommandPaletteDialog(props: {
   };
 
   const actionItems: Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> = [];
+  actionItems.push({
+    kind: "action",
+    value: "action:keyboard-navigation",
+    title: "Keyboard navigation",
+    searchTerms: ["keyboard", "leader", "which key", "shortcuts", "messages", "navigation"],
+    icon: <ChevronRightIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      requestLeaderNavigation();
+    },
+  });
 
   if (projects.length > 0) {
     const activeProjectTitle =

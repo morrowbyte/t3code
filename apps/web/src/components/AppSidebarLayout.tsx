@@ -56,6 +56,7 @@ import {
 } from "./ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { useThreadRouteRef } from "../hooks/useThreadRouteTarget";
+import { LeaderNavigationHost } from "./keyboard/LeaderNavigationHost";
 
 const MACOS_TRAFFIC_LIGHTS_LEFT_INSET = "var(--desktop-window-controls-inset, 90px)";
 
@@ -356,6 +357,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
         </Sidebar>
         {children}
         <SidebarControl />
+        <LeaderNavigationHost />
         <NavigationHistoryShortcuts />
         <MainAppLocationTracker />
       </SidebarProvider>
