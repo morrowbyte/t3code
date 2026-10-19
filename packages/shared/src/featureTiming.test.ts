@@ -62,6 +62,100 @@ const accept = (
 });
 
 describe("feature timing", () => {
+  it("summarizes unique completed run durations, scoped to linked threads", () => {
+    const input = feed([registration]);
+    const run = input.observations[0]!.runs[0]!;
+    const observations = [
+      {
+        threadId,
+        waits: [],
+        runs: [
+          run,
+          { ...run },
+          { ...run, id: "short", end: at(2) },
+          { ...run, id: "long", end: at(5) },
+        ],
+      },
+      { threadId, runs: [{ ...run }], waits: [] },
+      { threadId: ThreadId.make("unlinked"), runs: [{ ...run, end: at(11) }], waits: [] },
+    ];
+    expect(projectFeatureTiming({ ...input, observations })[0]?.observedRunTiming).toEqual({
+      sampleSize: 3,
+      minimumMs: 0,
+      medianMs: 3_600_000,
+      maximumMs: 3 * 3_600_000,
+    });
+    const pair = [{ threadId, runs: [run, { ...run, id: "second", end: at(4) }], waits: [] }];
+    expect(
+      projectFeatureTiming({ ...input, observations: pair })[0]?.observedRunTiming?.medianMs,
+    ).toBe(1.5 * 3_600_000);
+    const records = [
+      ...input.records,
+      record(2, 3, {
+        type: "thread_linked",
+        featureId: "feature",
+        threadId: ThreadId.make("linked"),
+      }),
+    ];
+    expect(
+      projectFeatureTiming({
+        ...input,
+        records,
+        observations: [...pair, { threadId: ThreadId.make("linked"), runs: [run], waits: [] }],
+      })[0]?.observedRunTiming?.sampleSize,
+    ).toBe(3);
+  });
+
+  it("excludes unfinished, unsuccessful, invalid and conflicting runs in either order", () => {
+    const input = feed([registration]);
+    const run = input.observations[0]!.runs[0]!;
+    const invalid = [
+      ...["running", "waiting", "failed", "cancelled", "interrupted", "rolled_back"].map(
+        (status) => ({ ...run, id: status, status }),
+      ),
+      { ...run, id: "missing-start", startedAt: null },
+      { ...run, id: "missing-end", end: null },
+      { ...run, id: "invalid-start", startedAt: "invalid" },
+      { ...run, id: "invalid-end", end: "invalid" },
+      { ...run, id: "invalid-request", requestedAt: "invalid" },
+      { ...run, id: "reverse", end: at(1) },
+      { ...run, id: "before-request", requestedAt: at(4) },
+      { ...run, id: "future", end: at(13) },
+      { ...run, id: "conflict" },
+      { ...run, id: "conflict", status: "failed" },
+      { ...run, id: "conflict" },
+      { ...run, id: "time-conflict" },
+      { ...run, id: "time-conflict", end: at(4) },
+    ];
+    for (const runs of [invalid, invalid.toReversed()]) {
+      const observed = { ...input, observations: [{ threadId, runs, waits: [] }] };
+      expect(projectFeatureTiming(observed)[0]?.observedRunTiming).toBeNull();
+      expect(
+        projectFeatureTiming({
+          ...observed,
+          observations: [{ threadId, runs: [...runs, run], waits: [] }],
+        })[0]?.observedRunTiming,
+      ).toMatchObject({
+        sampleSize: 1,
+        medianMs: 3_600_000,
+      });
+    }
+  });
+
+  it("keeps missing or incomplete history unavailable rather than manufacturing a sample", () => {
+    for (const coverage of ["unavailable", "incomplete", "no_feature_history"] as const) {
+      expect(
+        projectFeatureTiming({ ...feed([registration]), coverage })[0]?.observedRunTiming,
+      ).toBeNull();
+    }
+    expect(
+      projectFeatureTiming({ ...feed([registration]), observations: [] })[0]?.observedRunTiming,
+    ).toBeNull();
+    expect(
+      projectFeatureTiming({ ...feed([registration]), asOf: "invalid" })[0]?.observedRunTiming,
+    ).toBeNull();
+  });
+
   it("unions nested, simultaneous and adjacent waits without double counting", () => {
     expect(
       unionDuration([

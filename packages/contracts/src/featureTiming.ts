@@ -123,6 +123,16 @@ export const ProjectFeatureTiming = Schema.Struct({
       reopenCount: NonNegativeInt,
       waitMs: NonNegativeInt,
       runCount: NonNegativeInt,
+      observedRunTiming: Schema.optional(
+        Schema.NullOr(
+          Schema.Struct({
+            sampleSize: NonNegativeInt,
+            minimumMs: NonNegativeInt,
+            medianMs: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+            maximumMs: NonNegativeInt,
+          }),
+        ),
+      ),
       state: Schema.Literals(["accepted", "reopened", "in_development"]),
       waitReasons: Schema.Array(Schema.Struct({ reason: Label, ms: NonNegativeInt })),
       phases: Schema.Array(Schema.Struct({ phase: Label, ms: NonNegativeInt })),

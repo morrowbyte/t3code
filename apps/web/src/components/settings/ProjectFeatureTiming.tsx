@@ -157,6 +157,12 @@ export function ProjectFeatureTiming({ member }: { member: SidebarProjectGroupMe
               ["Latest accepted completion", date(feature.latestCompletionAt)],
               ["Reopenings", String(feature.reopenCount)],
               ["Linked runs", String(feature.runCount)],
+              [
+                "Observed completed run duration",
+                feature.observedRunTiming
+                  ? `n = ${feature.observedRunTiming.sampleSize} · median ${duration(feature.observedRunTiming.medianMs)} · range ${duration(feature.observedRunTiming.minimumMs)}–${duration(feature.observedRunTiming.maximumMs)}${feature.observedRunTiming.sampleSize < 5 ? " · Small sample, uncertain" : ""}`
+                  : "Unavailable",
+              ],
             ].map(([label, value]) => (
               <div key={label}>
                 <dt className="text-xs text-muted-foreground">{label}</dt>
@@ -164,6 +170,11 @@ export function ProjectFeatureTiming({ member }: { member: SidebarProjectGroupMe
               </div>
             ))}
           </dl>
+          <p className="pb-2 text-xs text-muted-foreground">
+            Completed run duration is observed start-to-completion time, including waits within a
+            run. It is not active development effort, human work hours, feature completion or a
+            future ETA.
+          </p>
           {feature.waitReasons.length ? (
             <p className="pb-2 text-xs text-muted-foreground">
               Observed waits:{" "}

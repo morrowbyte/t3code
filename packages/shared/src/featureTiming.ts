@@ -1,5 +1,6 @@
 import type {
   FeatureTimingFact,
+  FeatureTimingObservation,
   FeatureTimingRecord,
   ProjectFeatureTimingHistory,
 } from "@t3tools/contracts";
@@ -21,6 +22,54 @@ export function unionDuration(intervals: ReadonlyArray<readonly [number, number]
     end = Math.max(end, b);
   }
   return total;
+}
+
+function observedRunTiming(observations: readonly FeatureTimingObservation[], now: number) {
+  type Run = FeatureTimingObservation["runs"][number];
+  const runs = new Map<string, Run | null>();
+  for (const observation of observations) {
+    for (const run of observation.runs) {
+      const key = JSON.stringify([observation.threadId, run.id]);
+      const previous = runs.get(key);
+      // Conflicting snapshots cannot establish one completed run, regardless of input order.
+      if (
+        previous === null ||
+        (previous !== undefined &&
+          (previous.status !== run.status ||
+            previous.requestedAt !== run.requestedAt ||
+            previous.startedAt !== run.startedAt ||
+            previous.end !== run.end))
+      ) {
+        runs.set(key, null);
+      } else runs.set(key, run);
+    }
+  }
+  const durations = [...runs.values()]
+    .flatMap((run) => {
+      if (!run || run.status !== "completed" || run.startedAt === null || run.end === null)
+        return [];
+      const requested = Date.parse(run.requestedAt);
+      const start = Date.parse(run.startedAt);
+      const end = Date.parse(run.end);
+      return Number.isFinite(requested) &&
+        Number.isFinite(start) &&
+        Number.isFinite(end) &&
+        requested <= start &&
+        start <= end &&
+        end <= now
+        ? [end - start]
+        : [];
+    })
+    .sort((a, b) => a - b);
+  if (!durations.length) return null;
+  const middle = Math.floor(durations.length / 2);
+  return {
+    sampleSize: durations.length,
+    minimumMs: durations[0]!,
+    medianMs:
+      durations.length % 2 ? durations[middle]! : (durations[middle - 1]! + durations[middle]!) / 2,
+    maximumMs: durations.at(-1)!,
+  };
 }
 
 export function validateFeatureTimingRecords(records: readonly FeatureTimingRecord[]) {
@@ -172,6 +221,8 @@ export function projectFeatureTiming(feed: ProjectFeatureTimingHistory) {
             ? ("reopened" as const)
             : ("in_development" as const),
         runCount: observations.reduce((sum, o) => sum + o.runs.length, 0),
+        observedRunTiming:
+          feed.coverage === "complete" ? observedRunTiming(observations, now) : null,
         records,
         threadIds: [...threadIds],
       },
