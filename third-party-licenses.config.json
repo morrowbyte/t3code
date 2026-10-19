@@ -158,15 +158,42 @@
     },
     {
       "name": "@viz-js/viz",
-      "version": "3.28.0",
-      "sourceUrl": "https://raw.githubusercontent.com/mdaines/viz-js/b9f689720033ec89b678cf0b151817728b6be1de/LICENSE",
-      "noticeFile": "third-party-notices/viz-3.28.0.txt"
+      "version": "3.31.0",
+      "sourceUrl": "https://raw.githubusercontent.com/mdaines/viz-js/c8ce050d28eb0dc1ed1629ea32ab7f3dc117db0f/LICENSE",
+      "noticeFile": "third-party-notices/viz-3.31.0.txt"
     },
     {
       "name": "saxes",
       "version": "6.0.0",
       "sourceUrl": "https://raw.githubusercontent.com/lddubeau/saxes/211fa0ebec9b628affc09219199639887174bfc3/LICENSE",
       "noticeFile": "third-party-notices/saxes-6.0.0.txt"
+    },
+    {
+      "name": "@react-native-async-storage/async-storage",
+      "version": "3.1.1",
+      "sourceUrl": "https://github.com/react-native-async-storage/async-storage",
+      "generatedNotice": {
+        "licenseId": "MIT",
+        "copyrights": ["Copyright (c) 2025 Krzysztof Borowy"]
+      }
+    },
+    {
+      "name": "deprecated-react-native-prop-types",
+      "version": "2.3.0",
+      "sourceUrl": "https://github.com/facebookarchive/react-native-deprecated-modules",
+      "generatedNotice": {
+        "licenseId": "MIT",
+        "copyrights": ["Copyright (c) Meta Platforms, Inc. and affiliates."]
+      }
+    },
+    {
+      "name": "@react-native/normalize-color",
+      "version": "2.1.0",
+      "sourceUrl": "https://github.com/facebook/react-native",
+      "generatedNotice": {
+        "licenseId": "MIT",
+        "copyrights": ["Copyright (c) Meta Platforms, Inc. and affiliates."]
+      }
     },
     {
       "name": "@bufbuild/protobuf",

@@ -1,9 +1,10 @@
-import { RegistryProvider } from "@effect/atom-react";
+import { RegistryContext } from "@effect/atom-react";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import { EnvironmentId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
 import { act } from "react";
+import { Atom, AtomRegistry } from "effect/reactivity";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, expect, it, vi } from "vite-plus/test";
+import { afterAll, afterEach, expect, it, vi } from "vite-plus/test";
 
 const fixture = vi.hoisted(() => ({
   threads: [] as EnvironmentThreadShell[],
@@ -26,13 +27,12 @@ vi.mock(import("../../state/entities"), () => ({
 }));
 vi.mock(import("../../state/session"), () => ({ readEnvironmentScope: () => fixture.allowed }));
 vi.mock(import("../../state/shell"), () => ({ useEnvironmentShellStatus: () => "live" }));
-vi.mock(import("../../state/orchestration"), async () => {
-  const { Atom } = await import("effect/reactivity");
+vi.mock(import("../../state/orchestration"), () => {
   return {
     orchestrationEnvironment: {
       v2: {
         dispatchCommand: {
-          permissionAtom: () => Atom.make(fixture.allowed),
+          permissionAtom: () => permissionAtom,
         },
       },
     } as never,
@@ -70,6 +70,10 @@ vi.mock(import("../../state/threads"), async () => {
 
 import { ThreadCoordination } from "./ThreadCoordination";
 
+const permissionAtom = Atom.make(true);
+const permissionRegistry = AtomRegistry.make();
+afterAll(() => permissionRegistry.dispose());
+
 let root: Root | undefined;
 let container: HTMLDivElement | undefined;
 afterEach(async () => {
@@ -104,6 +108,7 @@ it("keeps a reversible local group across remount and dispatches once to the sel
   fixture.threads = makeThreads();
   fixture.calls = [];
   fixture.allowed = true;
+  permissionRegistry.set(permissionAtom, true);
   const originals = structuredClone(fixture.threads);
   const threadRef = { environmentId, threadId: ThreadId.make("coordinator") };
   container = document.createElement("div");
@@ -112,9 +117,9 @@ it("keeps a reversible local group across remount and dispatches once to the sel
     root = createRoot(container!);
     await act(async () =>
       root!.render(
-        <RegistryProvider>
+        <RegistryContext.Provider value={permissionRegistry}>
           <ThreadCoordination threadRef={threadRef} />
-        </RegistryProvider>,
+        </RegistryContext.Provider>,
       ),
     );
   };
@@ -174,7 +179,10 @@ it("keeps a reversible local group across remount and dispatches once to the sel
   await act(async () => root!.unmount());
   await mount();
   expect(container.querySelectorAll("li")).toHaveLength(1);
-  fixture.allowed = false;
+  await act(async () => {
+    fixture.allowed = false;
+    permissionRegistry.set(permissionAtom, false);
+  });
   await act(async () => container!.querySelector<HTMLInputElement>('input[type="radio"]')!.click());
   expect(container.textContent).toContain("read-only");
   expect(fixture.calls).toHaveLength(1);
@@ -184,6 +192,7 @@ it("steers and cancels only the selected run and blocks held, paused and archive
   fixture.threads = makeThreads();
   fixture.calls = [];
   fixture.allowed = true;
+  permissionRegistry.set(permissionAtom, true);
   fixture.active = true;
   localStorage.setItem(
     `t3code:thread-coordination:v1:${JSON.stringify([environmentId, "coordinator"])}`,
@@ -194,9 +203,9 @@ it("steers and cancels only the selected run and blocks held, paused and archive
   root = createRoot(container);
   const render = () =>
     root!.render(
-      <RegistryProvider>
+      <RegistryContext.Provider value={permissionRegistry}>
         <ThreadCoordination threadRef={{ environmentId, threadId: ThreadId.make("coordinator") }} />
-      </RegistryProvider>,
+      </RegistryContext.Provider>,
     );
   await act(async () => render());
   await act(async () =>

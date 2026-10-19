@@ -100,9 +100,8 @@ export function LinearSettingsPanel() {
       if (result.authorizeUrl) window.open(result.authorizeUrl, "_blank", "noopener,noreferrer");
     } catch (failure) {
       if (current === generation.current) setError(linearErrorMessage(failure));
-    } finally {
-      if (current === generation.current) setBusy(false);
     }
+    if (current === generation.current) setBusy(false);
   };
   if (!environmentId)
     return (

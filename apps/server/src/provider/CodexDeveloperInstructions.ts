@@ -7,6 +7,9 @@ import {
   T3_CODE_ORCHESTRATION_INSTRUCTIONS,
 } from "@t3tools/provider-core/server/orchestrationInstructions";
 
+// Codex silently removes the middle of entries over 1,000 UTF-8-byte/4 tokens.
+export const CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES = 4_000;
+
 const T3_CODE_DEVICE_TOOL_INSTRUCTIONS = `## T3 Code devices
 
 The \`t3-code\` MCP server also exposes \`device_*\` tools for iOS Simulators and Android Emulators on this environment. For mobile verification, call \`device_list\`, then \`device_open\` so the user can watch the device in their Device panel; its result explains how to drive the device. Driving happens through the \`agent-device\` CLI, using the exact launcher path returned by \`device_open\`. Keep the host config and session flags returned by \`device_open\` on every command so concurrent devices stay independent: prefer \`agent-device snapshot -i\` refs over coordinates, and use \`device_screenshot\` when you need to see the screen. Prefer these tools and \`agent-device\` for opening and driving devices. Platform tools such as \`xcrun simctl\` and \`adb\` remain available for anything they do not cover, such as builds, logs, or port forwarding. If \`device_list\` reports a platform as unavailable, say so.`;
@@ -217,7 +220,9 @@ export function buildCodexAdditionalContext(
   return Object.fromEntries(
     instructions.flatMap(({ key, value }) =>
       contextChunks(value).map((chunk, index) => [
-        index === 0 ? key : `${key}_${String(index + 1).padStart(2, "0")}`,
+        index === 0 && key !== "t3_code_orchestration"
+          ? key
+          : `${key}_${String(index + 1).padStart(2, "0")}`,
         { kind: "application", value: chunk },
       ]),
     ),
@@ -229,11 +234,21 @@ function contextChunks(value: string): string[] {
   // JSONL examples. Leave room for punctuation-heavy protocol text and wrappers.
   const maxChars = 2000;
   const chunks: string[] = [];
-  while (value.length > maxChars) {
-    const prefix = value.slice(0, maxChars);
+  while (
+    value.length > maxChars ||
+    Buffer.byteLength(value, "utf8") > CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES
+  ) {
+    let limit = Math.min(maxChars, value.length);
+    while (
+      Buffer.byteLength(value.slice(0, limit), "utf8") > CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES
+    ) {
+      limit -= 1;
+    }
+    if (/[\uD800-\uDBFF]/.test(value[limit - 1]!)) limit -= 1;
+    const prefix = value.slice(0, limit);
     const newline = prefix.lastIndexOf("\n");
     const boundary = newline > 0 ? newline : prefix.lastIndexOf(" ");
-    const end = boundary > 0 ? boundary + 1 : maxChars;
+    const end = boundary > 0 ? boundary + 1 : limit;
     chunks.push(value.slice(0, end));
     value = value.slice(end);
   }

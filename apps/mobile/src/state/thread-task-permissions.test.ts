@@ -67,6 +67,10 @@ vi.mock("./session", () => ({
 vi.mock("./use-thread-selection", () => ({
   useThreadSelection: () => ({
     selectedThread: state.thread,
+    selectedThreadDetailRef: {
+      environmentId: state.thread.environmentId,
+      threadId: state.thread.id,
+    },
     selectedThreadCreation: null,
     selectedEnvironmentRuntime: {
       connectionState: state.connectionState,
@@ -126,6 +130,8 @@ vi.mock("./use-composer-drafts", async () => {
     mergeComposerDraftContent: vi.fn(),
     removeComposerDraftAttachment: vi.fn(),
     useComposerDraft: () => state.draft,
+    useComposerDraftSettings: () => ({}),
+    questionAttachmentDraftsAtom: () => Atom.make({}),
   };
 });
 vi.mock("../lib/composerImages", () => ({

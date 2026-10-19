@@ -29,6 +29,8 @@ export interface UpdatesHarnessOptions {
   readonly quitAndInstall?: Effect.Effect<void, ElectronUpdater.ElectronUpdaterQuitAndInstallError>;
   readonly stopBackend?: Effect.Effect<void>;
   readonly startBackend?: Effect.Effect<void>;
+  readonly backendDesiredRunning?: boolean;
+  readonly backendInstances?: ReadonlyArray<DesktopBackendPool.DesktopBackendInstance>;
   readonly env?: Record<string, string | undefined>;
   readonly platform?: NodeJS.Platform;
   readonly packageType?: string | undefined;
@@ -143,31 +145,35 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
     syncAllAppearance: () => Effect.void,
   } satisfies ElectronWindow.ElectronWindow["Service"]);
 
+  let backendDesiredRunning =
+    options.backendDesiredRunning ?? options.clientOnlyInventory === undefined;
   const stubBackendInstance: DesktopBackendPool.DesktopBackendInstance = {
     id: DesktopBackendPool.PRIMARY_INSTANCE_ID,
     label: Effect.succeed("Windows"),
     start: Effect.sync(() => {
+      backendDesiredRunning = true;
       installSteps.push("startBackend");
     }).pipe(Effect.andThen(options.startBackend ?? Effect.void)),
     stop: () =>
       Effect.sync(() => {
         stopCount += 1;
+        backendDesiredRunning = false;
       }).pipe(Effect.andThen(options.stopBackend ?? Effect.void)),
     currentConfig: Effect.succeedNone,
     snapshot:
       options.backendSnapshot ??
-      Effect.succeed({
-        desiredRunning: false,
+      Effect.sync(() => ({
+        desiredRunning: backendDesiredRunning,
         ready: false,
         activePid: Option.none(),
         restartAttempt: 0,
         restartScheduled: false,
-      }),
+      })),
     waitForReady: () => Effect.succeed(true),
   };
   const layerBackend =
     options.clientOnlyInventory === undefined
-      ? DesktopBackendPool.layerTest([stubBackendInstance])
+      ? DesktopBackendPool.layerTest(options.backendInstances ?? [stubBackendInstance])
       : Layer.succeed(DesktopBackendPool.DesktopBackendPool, {
           primary: Effect.succeed(stubBackendInstance),
           get: () => Effect.succeedSome(stubBackendInstance),
