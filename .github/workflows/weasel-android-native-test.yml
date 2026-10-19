@@ -1,5 +1,5 @@
 name: Android updater native x86_64 test
-run-name: Android updater x86_64 test only · source c402e63a
+run-name: Android updater x86_64 test only · source eba83b2a
 on:
   workflow_dispatch:
 permissions:
@@ -40,7 +40,7 @@ jobs:
       - name: Checkout exact updater source
         uses: actions/checkout@v4
         with:
-          ref: c402e63a05319fadbb8eb09ab99c4adf9676a545
+          ref: eba83b2af7b4ff00f63da598b4948f75dc6a6b8e
           fetch-depth: 1
 
       - name: Setup Vite+
@@ -71,7 +71,7 @@ jobs:
       - name: Bind source and verify standalone fork configuration
         working-directory: apps/mobile
         env:
-          SOURCE_SHA: c402e63a05319fadbb8eb09ab99c4adf9676a545
+          SOURCE_SHA: eba83b2af7b4ff00f63da598b4948f75dc6a6b8e
           NODE_ENV: production
         run: |
           set -euo pipefail
@@ -176,7 +176,7 @@ jobs:
       - id: apk
         name: Verify APK signature, embedded bundle, identity and 16KB native alignment
         env:
-          SOURCE_SHA: c402e63a05319fadbb8eb09ab99c4adf9676a545
+          SOURCE_SHA: eba83b2af7b4ff00f63da598b4948f75dc6a6b8e
         run: |
           set -euo pipefail
           python3 - <<'PYAPK'
@@ -286,7 +286,7 @@ jobs:
       - name: Upload verified Android release payload
         uses: actions/upload-artifact@v4
         with:
-          name: weasel-test-android-updater-x86_64-c402e63a
+          name: weasel-test-android-updater-x86_64-eba83b2a
           path: release-android/*
           if-no-files-found: error
           retention-days: 7
@@ -295,7 +295,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: weasel-android-updater-test-evidence-c402e63a-${{ github.run_attempt }}
+          name: weasel-android-updater-test-evidence-eba83b2a-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/morrowbyte-android-dependencies.txt
             ${{ runner.temp }}/morrowbyte-config.json
