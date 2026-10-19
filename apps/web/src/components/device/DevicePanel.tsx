@@ -98,7 +98,7 @@ export function DevicePanel(props: {
         session.deviceId === device.id &&
         session.platform === device.platform,
     );
-    if (existingSession) {
+    if (device.booted && existingSession) {
       setOperation(null);
       useRightPanelStore.getState().openDevice(props.threadRef, {
         hostId: existingSession.hostId,
