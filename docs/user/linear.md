@@ -6,6 +6,28 @@ thread on the environment you select.
 
 ## Connect an environment
 
+In the web or desktop client, when Settings shows **Setup required**, choose
+**Set up Linear** to open and copy the host setup checklist. This setup/copy flow
+is not available in the native mobile app; use a web or desktop client to set up
+the host for mobile access. The copy contains public placeholders, not credentials
+or a verified callback address. Replace them before applying the configuration.
+An enabled switch alone does not mean Linear is connected.
+
+For your own installation, register an OAuth app you control and choose its exact
+callback address. Environments connected to the same Linear workspace at the same
+time must use separate OAuth apps with the current authorization-code/PKCE,
+`actor=app` flow. One shared product app cannot provide independent parallel
+app-actor connections to that workspace with this flow. Linear's
+[OAuth documentation](https://linear.app/developers/oauth-2-0-authentication)
+describes the parallel app-token restriction.
+
+For colleagues, a product app owner must provide separately registered apps for
+such simultaneous connections, their public client IDs and approved callbacks.
+If those do not exist yet, app ownership and callback addresses remain a human
+setup decision. Keep each environment's credentials private; do not distribute
+personal keys or OAuth tokens. No shared app or callback service is bundled or
+provisioned automatically.
+
 The environment owner must register a Linear OAuth app and configure these public
 values in the T3 server's launch environment, replacing the example values:
 
@@ -19,6 +41,13 @@ the browser completing Connect; on a remote connection, `localhost` refers to th
 browser's machine. Use an approved HTTPS address for remote access. T3 requests
 `read` access with `actor=app` and PKCE S256; this flow does not use a client secret
 or a shared personal API key.
+
+The environment owner applies those startup values through the installation's
+normal deployment procedure. Then return to Linear settings and use **Reload**;
+Connect becomes available once the running environment reports that setup is
+configured. A callback for sign-in is separate from the optional webhook endpoint
+for push. Start with OAuth and **Fetch issue**; no public webhook ingress is needed
+for manual delivery.
 
 Open **Settings → Integrations → Linear**, select one environment, enable Linear
 and choose **Connect Linear**. Approve access in Linear, then return and reload

@@ -1013,6 +1013,7 @@ function SidebarThreadTooltip({
     <ThreadHoverCardPopup side="right" align="start" sideOffset={4}>
       <ThreadHoverCard
         title={thread.title}
+        wrapTitle
         footer={
           supportsMultiplePullRequests && thread.pullRequests.length > 0 ? (
             <div className="border-t border-border/60 pt-2 pl-0.5 text-xs text-muted-foreground">
@@ -1024,7 +1025,7 @@ function SidebarThreadTooltip({
         {projectDisplayName ? (
           <div className="flex min-w-0 items-center gap-2">
             {project ? <ProjectFavicon project={project} className="size-3 shrink-0" /> : null}
-            <div className="min-w-0 truncate text-foreground/75">{projectDisplayName}</div>
+            <div className="min-w-0 wrap-anywhere text-foreground/75">{projectDisplayName}</div>
           </div>
         ) : null}
         {environmentLabel ? (
@@ -1033,13 +1034,13 @@ function SidebarThreadTooltip({
               kind={environmentMachine}
               className="size-3 shrink-0 stroke-muted-foreground"
             />
-            <div className="min-w-0 truncate text-foreground/75">{environmentLabel}</div>
+            <div className="min-w-0 wrap-anywhere text-foreground/75">{environmentLabel}</div>
           </div>
         ) : null}
         {thread.branch ? (
           <div className="flex min-w-0 items-center gap-2">
             <GitBranchIcon className="size-3 shrink-0 stroke-muted-foreground" />
-            <MiddleTruncate value={thread.branch} className="flex" />
+            <span className="min-w-0 wrap-anywhere">{thread.branch}</span>
           </div>
         ) : null}
         {branchMismatch ? (
@@ -1065,7 +1066,7 @@ function SidebarThreadTooltip({
               badgeClassName="h-2 min-w-2 px-0"
               iconClassName="size-3 shrink-0 grayscale opacity-60"
             />
-            <div className="min-w-0 truncate text-foreground/75">
+            <div className="min-w-0 wrap-anywhere text-foreground/75">
               {showInstanceBadge && providerEntry
                 ? `${modelLabel} · ${providerEntry.displayName}`
                 : modelLabel}
@@ -1075,7 +1076,7 @@ function SidebarThreadTooltip({
         {previousProviderNames.length > 0 ? (
           <div className="flex min-w-0 items-center gap-2">
             <ArrowRightLeftIcon className="size-3 shrink-0 stroke-muted-foreground" />
-            <div className="min-w-0 truncate text-foreground/75">
+            <div className="min-w-0 wrap-anywhere text-foreground/75">
               Handed off from {previousProviderNames.join(", ")}
             </div>
           </div>
@@ -1230,8 +1231,13 @@ function SidebarThreadFamily({
         role="presentation"
         aria-hidden={!expanded}
         inert={!expanded}
-        className="overflow-hidden"
+        className="relative overflow-hidden"
       >
+        <span
+          aria-hidden
+          data-sidebar-family-rail
+          className="pointer-events-none absolute inset-y-2 start-1.5 z-20 w-px bg-sidebar-foreground/20"
+        />
         <div ref={contentRef} role="presentation" className="flex flex-col gap-px pt-px">
           {descendants}
         </div>
@@ -2115,13 +2121,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       <span
         aria-hidden
         className={cn(
-          "min-w-0 flex-1 text-sm transition-opacity motion-reduce:transition-none",
+          "min-w-0 flex-1 basis-32 text-sm transition-opacity motion-reduce:transition-none [&_[data-agent-identity]]:flex-wrap [&_[data-agent-identity]>span:first-of-type]:flex-1 [&_[data-agent-identity]>span:first-of-type]:basis-16",
           shouldRecede ? "font-normal" : "font-medium",
           props.familyRow
-            ? cn(
-                "line-clamp-2 text-sidebar-foreground",
-                props.familyRoot ? "font-semibold" : "font-normal",
-              )
+            ? cn("text-sidebar-foreground", props.familyRoot ? "font-semibold" : "font-normal")
             : variant === "card"
               ? cn(
                   "truncate",
@@ -2238,11 +2241,20 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       ? Date.parse(thread.latestRun.completedAt) - Date.parse(thread.latestRun.startedAt)
       : null;
   const threadStatus = topStatus ? (
-    <span className={cn("inline-flex items-center gap-1 font-medium text-xs", topStatus.className)}>
+    <span
+      className={cn(
+        "inline-flex max-w-full flex-wrap items-center gap-1 font-medium text-xs",
+        topStatus.className,
+      )}
+    >
       <Tooltip>
         <TooltipTrigger
           render={
-            <span role="status" aria-label={topStatus.label} className="inline-flex shrink-0" />
+            <span
+              role="status"
+              aria-label={topStatus.label}
+              className="inline-flex max-w-full shrink-0 flex-wrap"
+            />
           }
         >
           {topStatus.icon === "working" ? (
@@ -2304,7 +2316,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         {...sortableRootProps}
         {...(fileDropHandlers ?? {})}
         className={cn(
-          "list-none [content-visibility:auto] [contain-intrinsic-size:auto_36px]",
+          "list-none [content-visibility:auto] [contain-intrinsic-size:auto_56px]",
           sortable?.isDragging && "relative z-20",
         )}
       >
@@ -2321,8 +2333,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 aria-busy={isRegeneratingTitle || undefined}
                 className={cn(
                   rowSurfaceClassName,
-                  "flex items-center gap-2.5 px-2.5",
-                  props.familyRow ? "min-h-10 py-2" : "h-9",
+                  "flex min-h-14 flex-wrap items-center gap-2.5 px-2.5 py-2.5",
                 )}
                 onClick={handleClick}
                 onDoubleClick={handleDoubleClick}
@@ -2361,7 +2372,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             ) : (
               <span
                 className={cn(
-                  "relative ml-auto flex h-6 min-w-8 shrink-0 items-center justify-end",
+                  "relative ml-auto flex min-h-6 min-w-8 max-w-full shrink-0 flex-wrap items-center justify-end",
                   props.sweepAction !== null && "hidden",
                 )}
               >
@@ -2477,7 +2488,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       {...(fileDropHandlers ?? {})}
       className={cn(
         "list-none py-0.5",
-        !props.familyRow && "[content-visibility:auto] [contain-intrinsic-size:auto_78px]",
+        !props.familyRow && "[content-visibility:auto] [contain-intrinsic-size:auto_104px]",
         sortable?.isDragging && "relative z-20",
       )}
     >
@@ -2503,11 +2514,16 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           {accessibleTitle}
           <div
             className={cn(
-              "relative z-10 px-(--sidebar-row-content-inset) py-(--sidebar-content-inset)",
-              !props.familyRow && "h-[4.875rem]",
+              "relative z-10 px-(--sidebar-row-content-inset) py-2.5",
+              familyChild ? "min-h-20 ps-4" : "min-h-[6.5rem]",
             )}
           >
-            <div className={cn("flex min-w-0 items-center gap-1.5", !familyChild && "h-5")}>
+            <div
+              className={cn(
+                "flex min-w-0 flex-wrap items-center gap-1.5",
+                !familyChild && "min-h-5",
+              )}
+            >
               {draftIndicator}
               {familyChild ? (
                 title
@@ -2517,7 +2533,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               {!familyChild && props.projectDisplayName ? (
                 <span
                   className={cn(
-                    "min-w-0 flex-1 truncate text-secondary-label text-xs",
+                    "min-w-0 flex-1 basis-20 truncate text-secondary-label text-xs",
                     shouldRecede ? "font-normal" : "font-medium",
                   )}
                 >
@@ -2533,7 +2549,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 <span
                   className={cn(
                     // Hidden actions retain their space so hover cannot rewrap the title.
-                    "group/sidebar-status-slot relative ml-auto grid h-5 min-w-8 shrink-0 items-stretch justify-end text-xs",
+                    "group/sidebar-status-slot relative ml-auto min-h-5 min-w-8 max-w-full shrink-0 items-stretch justify-end text-xs",
+                    isWokeStatus || props.familyRow ? "flex flex-wrap" : "grid",
                     props.sweepAction !== null && "hidden",
                   )}
                 >
@@ -2542,7 +2559,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                       isWokeStatus || props.familyRow
                         ? "pointer-events-auto"
                         : "pointer-events-none group-has-[:focus-visible]/sidebar-status-slot:opacity-0 group-any-hover/sidebar-row:opacity-0",
-                      "col-start-1 row-start-1 flex items-center self-center justify-self-end tabular-nums text-secondary-label transition-opacity",
+                      "col-start-1 row-start-1 flex min-w-0 items-center self-center justify-self-end tabular-nums text-secondary-label transition-opacity",
                       snoozeMenuOpen && "pointer-events-none opacity-0",
                     )}
                   >
@@ -2648,12 +2665,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 ) : null}
               </div>
             ) : null}
-            <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-secondary-label text-xs">
+            <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-1.5 text-secondary-label text-xs">
               {props.familyDisclosure}
               {thread.branch ? (
                 <>
                   <ThreadWorktreeIndicator thread={thread} />
-                  <span className="flex min-w-0 flex-1 text-muted-foreground/40">
+                  <span className="flex min-w-0 flex-1 basis-20 text-muted-foreground/40">
                     <MiddleTruncate value={thread.branch} showTitle={false} />
                   </span>
                 </>
@@ -2664,7 +2681,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                     kind={props.environmentMachine}
                     className="size-3 shrink-0 text-muted-foreground/40"
                   />
-                  <span className="min-w-0 flex-1 truncate text-muted-foreground/40">
+                  <span className="min-w-0 flex-1 basis-20 truncate text-muted-foreground/40">
                     {props.scratchMachineLabel}
                   </span>
                 </>

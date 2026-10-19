@@ -1,4 +1,6 @@
 import { AgentIdentityLabel } from "../agent-identity/AgentIdentityLabel";
+import { useAgentIdentityTheme } from "../agent-identity/useAgentIdentityTheme";
+import { deriveAgentIdentity } from "@t3tools/client-runtime/state/agent-identity";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
 import { useVisibleSecondClock } from "./use-visible-second-clock";
@@ -588,6 +590,34 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     onSetThreadAutoSettle,
     onMoveThread,
   } = props;
+  const { theme: identityTheme } = useAgentIdentityTheme();
+  const identity = deriveAgentIdentity(
+    { environmentId: thread.environmentId, threadId: thread.id },
+    thread.lineage,
+    identityTheme,
+  );
+  const handleShowThreadDetails = useCallback(() => {
+    Dialog.alert(
+      thread.title,
+      [
+        identity.label,
+        props.projectTitle ?? props.project?.title,
+        thread.branch,
+        props.environmentLabel,
+        thread.id,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    );
+  }, [
+    identity.label,
+    props.projectTitle,
+    props.project?.title,
+    props.environmentLabel,
+    thread.title,
+    thread.branch,
+    thread.id,
+  ]);
   const identityLabel = (
     <AgentIdentityLabel
       threadRef={{ environmentId: thread.environmentId, threadId: thread.id }}
@@ -620,8 +650,20 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   // VoiceOver cannot focus the badge inside the accessible row, so the row
   // exposes the same action.
   const rowAccessibilityActions = useMemo(
-    () => (prBadgeLabel ? [{ name: "openPullRequests", label: prBadgeLabel }] : undefined),
+    () => [
+      { name: "threadDetails", label: "Thread details" },
+      ...(prBadgeLabel ? [{ name: "openPullRequests", label: prBadgeLabel }] : []),
+    ],
     [prBadgeLabel],
+  );
+  const handleRowAccessibilityAction = useCallback<
+    NonNullable<ComponentProps<typeof RowPressable>["onAccessibilityAction"]>
+  >(
+    (event) => {
+      if (event.nativeEvent.actionName === "threadDetails") handleShowThreadDetails();
+      if (event.nativeEvent.actionName === "openPullRequests") handleOpenPullRequests();
+    },
+    [handleShowThreadDetails, handleOpenPullRequests],
   );
 
   const theme = useUniwindTheme();
@@ -639,40 +681,46 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const recede = !props.family?.hasChildren && shouldRecedeThreadRow({ status, selected });
   const timeLabel = props.timeLabel;
   const childRow = (props.family?.depth ?? 0) > 0;
-  const familySummary =
-    props.family?.hasChildren && !props.family.expanded ? (
-      <Text className="mt-1 text-xs text-foreground-muted">
-        {props.family.descendantCount} {props.family.descendantCount === 1 ? "thread" : "threads"}
-        {props.family.activeDescendantCount > 0
-          ? ` · ${props.family.activeDescendantCount} active`
-          : ""}
-      </Text>
-    ) : null;
   const withFamilyDisclosure = (content: ReactNode) => {
     const family = props.family;
     if (!family || (!family.hasChildren && family.depth === 0)) return content;
+    if (family.depth > 0)
+      return (
+        <View className="min-w-0" style={{ paddingLeft: 4 }}>
+          <View
+            pointerEvents="none"
+            className="absolute bottom-0 top-0 w-px bg-border-subtle"
+            style={{ left: sidebarPane ? 0 : 8 }}
+          />
+          {content}
+        </View>
+      );
     return (
-      <View
-        className="flex-row"
-        style={{ marginLeft: family.depth > 0 ? 44 + Math.min(family.depth, 4) * 12 : 0 }}
-      >
+      <View className="min-w-0">
+        {content}
         {family.hasChildren ? (
           <Pressable
             accessibilityRole="button"
             accessibilityState={{ expanded: family.expanded }}
             accessibilityLabel={`${family.expanded ? "Collapse" : "Expand"} ${thread.title}, ${family.descendantCount} child threads, ${family.activeDescendantCount} active`}
             onPress={() => props.onToggleFamily?.(family.key)}
-            hitSlop={{ top: 2, bottom: 2 }}
-            className="min-h-12 w-11 items-center justify-center"
+            className={cn(
+              "min-h-12 flex-row flex-wrap items-center gap-2 py-2",
+              sidebarPane ? "px-3" : "px-5",
+            )}
           >
             <SymbolView
               name={family.expanded ? "chevron.down" : "chevron.right"}
               size={14}
               tintColorClassName={rowAppearance.mutedIconTintClassName}
             />
+            <Text className="min-w-0 shrink text-xs text-foreground-muted">
+              {family.expanded ? "Collapse" : "Expand"} · {family.descendantCount}{" "}
+              {family.descendantCount === 1 ? "thread" : "threads"}
+              {family.activeDescendantCount > 0 ? ` · ${family.activeDescendantCount} active` : ""}
+            </Text>
           </Pressable>
         ) : null}
-        <View className="min-w-0 flex-1">{content}</View>
       </View>
     );
   };
@@ -881,6 +929,10 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   );
   const handleMenuAction = useCallback(
     ({ nativeEvent }: { readonly nativeEvent: { readonly event: string } }) => {
+      if (nativeEvent.event === "thread-details") {
+        handleShowThreadDetails();
+        return;
+      }
       if (nativeEvent.event === "new-thread-on-branch") onNewThreadOnBranch(thread);
       if (nativeEvent.event === "settle") handleSettle();
       if (nativeEvent.event === "unsettle") handleUnsettle();
@@ -919,6 +971,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     },
     [
       onNewThreadOnBranch,
+      handleShowThreadDetails,
       thread,
       handleArchive,
       handleDelete,
@@ -1000,7 +1053,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
 
   const cardContent = (
     <>
-      <View className="flex-row items-center gap-1.5">
+      <View className="flex-row flex-wrap items-center gap-1.5">
         {props.project ? (
           <ProjectFavicon
             environmentId={thread.environmentId}
@@ -1013,7 +1066,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         ) : null}
         <Text
           className={cn(
-            "flex-1 text-sm font-t3-medium",
+            "min-w-20 flex-1 text-sm font-t3-medium",
             selected
               ? selectedThreadRowColors.mutedForegroundClassName
               : rowAppearance.mutedForegroundClassName,
@@ -1087,7 +1140,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           />
         </View>
       ) : null}
-      <View className="mt-1 flex-row items-center gap-2">
+      <View className="mt-1 flex-row flex-wrap items-center gap-2">
         {(status === "failed" || status === "limited") && thread.runtime?.lastError ? (
           <Text
             className={cn(
@@ -1215,7 +1268,6 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           </View>
         ) : null}
       </View>
-      {familySummary}
     </>
   );
 
@@ -1234,13 +1286,16 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         accessibilityLabel={`${thread.title}, ${statusLabel?.label ?? (snoozedRow ? "Snoozed" : variant === "slim" ? "Settled" : "Ready")}`}
         accessibilityRole="button"
         accessibilityState={{ selected }}
+        accessibilityActions={rowAccessibilityActions}
+        onAccessibilityAction={handleRowAccessibilityAction}
+        onLongPress={!canOperateThread ? handleShowThreadDetails : undefined}
         onPress={() => {
           close();
           onSelectThread(thread);
         }}
         style={rowAppearance.style}
       >
-        <View className="min-h-12 justify-center gap-1 px-5 py-2">
+        <View className={cn("min-h-12 justify-center gap-1 py-2", sidebarPane ? "px-3" : "px-5")}>
           <View className="flex-row items-center gap-2">
             <Text
               className={cn(
@@ -1263,7 +1318,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
             ) : null}
           </View>
           {identityLabel}
-          <View className="flex-row items-center gap-1.5">
+          <View className="flex-row flex-wrap items-center gap-1.5">
             <SymbolView
               name={statusLabel?.icon ?? (snoozedRow ? "clock" : "checkmark.circle")}
               size={12}
@@ -1318,7 +1373,6 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
               selected={selected}
             />
           ) : null}
-          {familySummary}
         </View>
       </RowPressable>
     ) : variant === "card" ? (
@@ -1334,9 +1388,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         accessibilityRole="button"
         accessibilityState={{ selected }}
         accessibilityActions={rowAccessibilityActions}
-        onAccessibilityAction={(event) => {
-          if (event.nativeEvent.actionName === "openPullRequests") handleOpenPullRequests();
-        }}
+        onAccessibilityAction={handleRowAccessibilityAction}
+        onLongPress={!canOperateThread ? handleShowThreadDetails : undefined}
         onPress={() => {
           close();
           onSelectThread(thread);
@@ -1366,6 +1419,9 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         accessibilityRole="button"
         accessibilityState={{ selected }}
         className={rowAppearance.className}
+        accessibilityActions={rowAccessibilityActions}
+        onAccessibilityAction={handleRowAccessibilityAction}
+        onLongPress={!canOperateThread ? handleShowThreadDetails : undefined}
         onPress={() => {
           close();
           onSelectThread(thread);
@@ -1411,7 +1467,6 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                 selected={selected}
               />
             ) : null}
-            {familySummary}
           </View>
           {props.hasQueuedMessages ? <QueuedMessageIcon selected={selected} /> : null}
           <Text
@@ -1464,6 +1519,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         {(close) => (
           <Menu
             actions={[
+              { id: "thread-details", title: "Thread details", image: "info.circle" },
               ...(thread.branch
                 ? [
                     {

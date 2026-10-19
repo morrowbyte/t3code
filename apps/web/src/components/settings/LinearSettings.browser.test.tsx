@@ -151,19 +151,44 @@ describe("optional Linear settings", () => {
     expect(fixture.request).not.toHaveBeenCalled();
   });
   it("starts OFF and exposes the real OAuth-registration blocker when enabled", async () => {
+    const copy = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
     await openPanel();
     await vi.waitFor(() => expect(fixture.request).toHaveBeenCalledTimes(1));
     expect(container.querySelector("[aria-label='Linear issue']")).toBeNull();
     await page.getByRole("switch", { name: "Enable Linear" }).click();
-    await vi.waitFor(() => expect(container.textContent).toContain("registered OAuth app"));
+    await vi.waitFor(() => expect(container.textContent).toContain("Setup required"));
     expect(fixture.request).toHaveBeenCalledWith("fixture-env", { type: "enable", enabled: true });
     await expect.element(page.getByRole("button", { name: "Connect Linear" })).toBeDisabled();
+    await page.getByRole("button", { name: "Set up Linear" }).click();
+    await expect.element(page.getByRole("region", { name: "Linear host setup" })).toBeVisible();
+    expect(container.textContent).toContain("T3CODE_LINEAR_CLIENT_ID");
+    expect(container.textContent).toContain("T3CODE_LINEAR_REDIRECT_URI");
+    expect(container.textContent).toContain("/api/integrations/linear/oauth/callback");
+    expect(container.textContent).toContain("Manual Fetch needs OAuth, not a public webhook");
+    await page.getByRole("button", { name: "Copy setup checklist" }).click();
+    await vi.waitFor(() => expect(copy).toHaveBeenCalledOnce());
+    const checklist = copy.mock.calls[0]![0];
+    expect(checklist).toContain("T3CODE_LINEAR_CLIENT_ID=<registered-public-client-id>");
+    expect(checklist).toContain("T3CODE_LINEAR_REDIRECT_URI=<exact-registered-callback-url>");
+    expect(checklist).toContain("your product app owner");
+    expect(checklist).toContain("Open this setup/copy flow in the web or desktop client");
+    expect(checklist).toContain("On mobile, set up the host through one of those clients");
+    expect(checklist).toContain("same Linear workspace at the same time, use separate OAuth apps");
+    expect(checklist).toContain(
+      "does not support independent parallel connections through one shared app",
+    );
+    expect(fixture.request).toHaveBeenCalledTimes(2);
     expect(fixture.request.mock.calls.some((call) => call[1]?.type === "connect")).toBe(false);
+    await page.getByRole("button", { name: "Set up Linear" }).click();
+    await expect
+      .element(page.getByRole("region", { name: "Linear host setup" }))
+      .not.toBeInTheDocument();
   });
   it("starts a configured OAuth flow only on Connect", async () => {
     settings = { ...settings, enabled: true, oauthConfigured: true };
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     await openPanel();
+    expect(container.textContent).not.toContain("Set up Linear");
     await page.getByRole("button", { name: "Connect Linear" }).click();
     await vi.waitFor(() =>
       expect(open).toHaveBeenCalledWith(

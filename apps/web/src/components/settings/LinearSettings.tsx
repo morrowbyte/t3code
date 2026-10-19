@@ -8,6 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { useEffect, useRef, useState } from "react";
 import { linearErrorMessage, linearRequest } from "../../linear/linearClient";
+import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { readEnvironmentScope } from "../../state/session";
 import { useProjects, useThreadShells } from "../../state/entities";
 import { useSettingsScope } from "./SettingsScopeContext";
@@ -31,6 +32,26 @@ const deliveryLabel: Record<LinearSettings["deliveries"][number]["outcome"], str
   failed: "Delivery failed",
 };
 
+const setupChecklist = `Linear OAuth host setup (web/desktop)
+
+Open this setup/copy flow in the web or desktop client. On mobile, set up the host through one of those clients.
+
+1. Register an OAuth app you control, or ask your product app owner for a separately registered app and approved callback for this environment. For environments connected to the same Linear workspace at the same time, use separate OAuth apps. This PKCE/app-actor flow does not support independent parallel connections through one shared app for that workspace.
+
+2. Register the exact callback URL in Linear:
+<approved-base-url>/api/integrations/linear/oauth/callback
+
+3. Set these public values in the selected T3 server's launch environment:
+T3CODE_LINEAR_CLIENT_ID=<registered-public-client-id>
+T3CODE_LINEAR_REDIRECT_URI=<exact-registered-callback-url>
+
+Replace every placeholder before applying. The sign-in browser must be able to reach the callback. Use an approved HTTPS address for remote access; localhost refers to the browser's machine.
+T3 uses PKCE S256, actor=app and read scope. Do not distribute personal API keys, OAuth tokens or client secrets.
+
+4. Have the environment owner apply that startup configuration through their normal deployment procedure. Return here, Reload, Connect Linear, approve access in Linear, then Reload again.
+
+Manual Fetch needs OAuth, not a public webhook. Optional push separately needs an approved HTTPS endpoint at /api/integrations/linear/events and a privately saved webhook signing secret.`;
+
 export function LinearSettingsPanel() {
   const { scope, target } = useSettingsScope();
   const environmentId =
@@ -45,6 +66,11 @@ export function LinearSettingsPanel() {
   const [threadId, setThreadId] = useState("");
   const [secret, setSecret] = useState("");
   const [authorizeUrl, setAuthorizeUrl] = useState("");
+  const [setupOpen, setSetupOpen] = useState(false);
+  const { copyToClipboard, isCopied } = useCopyToClipboard({
+    target: "Linear setup checklist",
+    onError: () => setError("Could not copy the checklist. Select its text to copy it manually."),
+  });
   const generation = useRef(0);
   const editable =
     environmentId !== undefined && readEnvironmentScope(environmentId, AuthSettingsWriteScope);
@@ -65,6 +91,7 @@ export function LinearSettingsPanel() {
     setSettings(null);
     setSecret("");
     setAuthorizeUrl("");
+    setSetupOpen(false);
     setIssueId("");
     setProjectId("");
     setThreadId("");
@@ -141,10 +168,21 @@ export function LinearSettingsPanel() {
                 ? "Connected"
                 : settings.oauthConfigured
                   ? "Not connected"
-                  : "A registered OAuth app and callback are required on this environment."
+                  : "Setup required: OAuth app / callback configuration is incomplete on this environment."
             }
             control={
               <div className="flex flex-wrap items-center gap-2">
+                {!settings.oauthConfigured && settings.connection !== "connected" ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    aria-expanded={setupOpen}
+                    aria-controls="linear-host-setup"
+                    onClick={() => setSetupOpen((open) => !open)}
+                  >
+                    Set up Linear
+                  </Button>
+                ) : null}
                 {authorizeUrl ? (
                   <Button
                     size="sm"
@@ -178,6 +216,34 @@ export function LinearSettingsPanel() {
               </div>
             }
           />
+          {setupOpen && !settings.oauthConfigured ? (
+            <div
+              id="linear-host-setup"
+              role="region"
+              aria-label="Linear host setup"
+              className="flex flex-col gap-3 border-t border-border/50 px-4 py-3"
+            >
+              <pre className="whitespace-pre-wrap break-words text-xs">{setupChecklist}</pre>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button size="sm" variant="outline" onClick={() => copyToClipboard(setupChecklist)}>
+                  {isCopied ? "Copied" : "Copy setup checklist"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="link"
+                  render={
+                    <a
+                      href="https://linear.app/developers/oauth-2-0-authentication"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    />
+                  }
+                >
+                  Linear OAuth guide
+                </Button>
+              </div>
+            </div>
+          ) : null}
           {settings.connection === "connected" ? (
             <>
               <div className="flex flex-col gap-3 border-t border-border/50 px-4 py-3">
