@@ -73,6 +73,23 @@ export function DevicePanel(props: {
   const selectDevice = async (value: string) => {
     const device = state.devices.find((candidate) => deviceKey(candidate) === value);
     if (!device) return;
+    const existingSession = state.sessions.find(
+      (session) =>
+        session.threadId === threadId &&
+        session.hostId === device.hostId &&
+        session.deviceId === device.id &&
+        session.platform === device.platform,
+    );
+    if (existingSession) {
+      setOperationError(null);
+      useRightPanelStore.getState().openDevice(props.threadRef, {
+        hostId: existingSession.hostId,
+        deviceId: existingSession.deviceId,
+        platform: existingSession.platform,
+        name: device.name,
+      });
+      return;
+    }
     setOperationError(null);
     setPendingDevice(device);
     const result = await open({
