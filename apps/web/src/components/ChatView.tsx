@@ -408,6 +408,7 @@ import { createPageScrollController, type PageScrollKey } from "./chat/pageScrol
 import { isTimelineScrollTarget } from "./chat/timelineScrollTarget";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialogHost, openExpandedImagePreview } from "./chat/ExpandedImageDialog";
+import { sendImageAnnotation, type ImageAnnotationSubmission } from "./chat/ImageAnnotationSend";
 import {
   BranchRestoreConfirmHost,
   DeviceSetupDialogHost,
@@ -6012,9 +6013,19 @@ export default function ChatView(props: ChatViewProps) {
       annotation: PreviewAnnotationPayload;
       image: ComposerImageAttachment | null;
     },
+    imageAnnotation?: ImageAnnotationSubmission,
   ) => {
     e?.preventDefault();
     if (
+      imageAnnotation &&
+      (!imageAnnotation.isCurrent() ||
+        !isServerThread ||
+        queuedRunEdit.isEditing ||
+        activePendingProgress)
+    )
+      return false;
+    if (
+      !imageAnnotation &&
       usageLimitsOffered &&
       usageLimitsKey !== null &&
       !directAnnotation &&
@@ -6080,7 +6091,21 @@ export default function ChatView(props: ChatViewProps) {
       });
       return;
     }
-    const sendCtx = composerRef.current?.getSendContext();
+    const normalSendCtx = composerRef.current?.getSendContext();
+    if (imageAnnotation && normalSendCtx?.multipleModelSelections !== null) return false;
+    const sendCtx =
+      imageAnnotation && normalSendCtx
+        ? {
+            ...normalSendCtx,
+            images: [imageAnnotation.image],
+            files: [],
+            terminalContexts: [],
+            previewAnnotations: [],
+            reviewComments: [],
+            threadContexts: [],
+            speechTranscription: undefined,
+          }
+        : normalSendCtx;
     if (activePendingProgress && sendCtx?.answeringPendingUserInput !== false) {
       if (directAnnotation) {
         notifyDirectAnnotationAttached();
@@ -6143,11 +6168,13 @@ export default function ChatView(props: ChatViewProps) {
       });
     // A direct "send annotation" writes the draft and sends in the same tick; the reference
     // must be in the text now, not after the next render.
-    const promptForSend = directAnnotation
-      ? ensureInlineContextReferences(promptRef.current, [
-          previewAnnotationContextReference(directAnnotation.annotation),
-        ])
-      : promptRef.current;
+    const promptForSend = imageAnnotation
+      ? imageAnnotation.text
+      : directAnnotation
+        ? ensureInlineContextReferences(promptRef.current, [
+            previewAnnotationContextReference(directAnnotation.annotation),
+          ])
+        : promptRef.current;
     if (queuedRunEdit.isEditing) {
       // Edit mode repurposes the composer: sending saves the queued message
       // in place instead of dispatching a new turn.
@@ -6525,6 +6552,10 @@ export default function ChatView(props: ChatViewProps) {
       composerFilesSnapshot.length > 0
         ? attachmentCapabilitiesBeforeUpload.supportsAttachmentUploads
         : supportsAttachmentUploads;
+    if (imageAnnotation && !turnUsesAttachmentUploads) {
+      sendInFlightRef.current = false;
+      throw new Error("Update this server before sending an annotated image.");
+    }
     if (turnUsesAttachmentUploads && composerAttachmentsSnapshot.length > 0) {
       for (const attachment of composerAttachmentsSnapshot) {
         const upload =
@@ -6534,7 +6565,7 @@ export default function ChatView(props: ChatViewProps) {
         upload({
           environmentId,
           image: attachment,
-          draftTarget: composerDraftTarget,
+          draftTarget: imageAnnotation?.draftTarget ?? composerDraftTarget,
         });
       }
       await awaitAttachmentUploads(composerAttachmentsSnapshot.map((attachment) => attachment.id));
@@ -6577,6 +6608,10 @@ export default function ChatView(props: ChatViewProps) {
       await dockStarted;
     }
 
+    if (imageAnnotation && !imageAnnotation.isCurrent()) {
+      sendInFlightRef.current = false;
+      return false;
+    }
     const attachmentCapabilitiesBeforeDispatch = readLiveAttachmentCapabilities();
     if (
       !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope) ||
@@ -6857,7 +6892,9 @@ export default function ChatView(props: ChatViewProps) {
             name: attachment.name,
             mimeType: attachment.mimeType,
             sizeBytes: attachment.sizeBytes,
-            previewUrl: attachment.previewUrl,
+            previewUrl: imageAnnotation
+              ? URL.createObjectURL(attachment.file)
+              : attachment.previewUrl,
             ...(attachment.source ? { source: attachment.source } : {}),
           }
         : {
@@ -6917,9 +6954,11 @@ export default function ChatView(props: ChatViewProps) {
         }),
       );
     }
-    promptRef.current = "";
-    clearComposerDraftContent(composerDraftTarget);
-    composerRef.current?.resetCursorState();
+    if (!imageAnnotation) {
+      promptRef.current = "";
+      clearComposerDraftContent(composerDraftTarget);
+      composerRef.current?.resetCursorState();
+    }
 
     let firstComposerImageName: string | null = null;
     if (composerImagesSnapshot.length > 0) {
@@ -6980,6 +7019,18 @@ export default function ChatView(props: ChatViewProps) {
       failure = turnAttachmentsResult;
     }
 
+    if (
+      failure === null &&
+      imageAnnotation &&
+      (!imageAnnotation.isCurrent() ||
+        !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope))
+    ) {
+      const fenceResult = await settlePromise(async () => {
+        throw new Error("The thread or connection changed. Reopen the image before sending.");
+      });
+      if (fenceResult._tag === "Failure") failure = fenceResult;
+    }
+
     if (failure === null && compactBeforeSend) {
       const compactResult = await startThreadTurn({
         environmentId,
@@ -6994,6 +7045,19 @@ export default function ChatView(props: ChatViewProps) {
       if (compactResult._tag === "Failure") {
         failure = compactResult;
       }
+    }
+
+    if (
+      failure === null &&
+      compactBeforeSend &&
+      imageAnnotation &&
+      (!imageAnnotation.isCurrent() ||
+        !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope))
+    ) {
+      const fenceResult = await settlePromise(async () => {
+        throw new Error("The thread or connection changed. Reopen the image before sending.");
+      });
+      if (fenceResult._tag === "Failure") failure = fenceResult;
     }
 
     let backgroundDraftOpened = false;
@@ -7157,8 +7221,18 @@ export default function ChatView(props: ChatViewProps) {
         );
         clearBackgroundDraftSubmissionByRef(scopeThreadRef(environmentId, threadIdForSend));
       }
+      if (imageAnnotation) {
+        setOptimisticUserMessages((existing) =>
+          existing.filter((message) => {
+            if (message.id !== messageIdForSend) return true;
+            revokeUserMessagePreviewUrls(message);
+            return false;
+          }),
+        );
+      }
       if (
-        backgroundDraftOpened
+        !imageAnnotation &&
+        (backgroundDraftOpened
           ? !composerDraftHasUserContent(
               useComposerDraftStore.getState().getComposerDraft(composerDraftTarget),
             )
@@ -7171,7 +7245,7 @@ export default function ChatView(props: ChatViewProps) {
             (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.reviewComments
               .length ?? 0) === 0 &&
             (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.threadContexts
-              .length ?? 0) === 0
+              .length ?? 0) === 0)
       ) {
         setOptimisticUserMessages((existing) => {
           const removed = existing.filter((message) => message.id === messageIdForSend);
@@ -8728,7 +8802,27 @@ export default function ChatView(props: ChatViewProps) {
       <RevertConfirmHost threadKey={routeThreadKey} onConfirm={onConfirmRevertStable} />
       <LinkPullRequestDialogHost />
       <ThreadVisitWatermark threadRef={routeThreadRef} />
-      <ExpandedImageDialogHost threadKey={routeThreadKey} />
+      <ExpandedImageDialogHost
+        threadKey={routeThreadKey}
+        onSendAnnotation={
+          isServerThread
+            ? async (file, text, signal) => {
+                const isCurrent = () =>
+                  currentRouteThreadKeyRef.current === routeThreadKey &&
+                  readPendingEnvironmentChange() === null &&
+                  readEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
+                return sendImageAnnotation({
+                  file,
+                  text,
+                  signal,
+                  isCurrent,
+                  send: async (submission) =>
+                    (await onSend(undefined, "auto", "foreground", undefined, submission)) === true,
+                });
+              }
+            : undefined
+        }
+      />
     </div>
   );
   return (
