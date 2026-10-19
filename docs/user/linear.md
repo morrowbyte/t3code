@@ -6,6 +6,20 @@ thread on the environment you select.
 
 ## Connect an environment
 
+When Settings shows **Setup required**, choose **Set up Linear** to open and copy
+the host setup checklist. The copy contains public placeholders, not credentials
+or a verified callback address. Replace them before applying the configuration.
+An enabled switch alone does not mean Linear is connected.
+
+For your own installation, register an OAuth app you control and choose its exact
+callback address. For colleagues, a shared product app needs a named app owner,
+its public client ID and approved callbacks for the intended installations.
+Ask that owner for these public values; if none exist yet, app ownership and the
+callback address are the remaining human setup decision. A shared app does not
+require distributing personal keys or OAuth tokens: each environment completes
+Connect separately and keeps its own credentials. No shared app or callback
+service is bundled or provisioned automatically.
+
 The environment owner must register a Linear OAuth app and configure these public
 values in the T3 server's launch environment, replacing the example values:
 
@@ -19,6 +33,13 @@ the browser completing Connect; on a remote connection, `localhost` refers to th
 browser's machine. Use an approved HTTPS address for remote access. T3 requests
 `read` access with `actor=app` and PKCE S256; this flow does not use a client secret
 or a shared personal API key.
+
+The environment owner applies those startup values through the installation's
+normal deployment procedure. Then return to Linear settings and use **Reload**;
+Connect becomes available once the running environment reports that setup is
+configured. A callback for sign-in is separate from the optional webhook endpoint
+for push. Start with OAuth and **Fetch issue**; no public webhook ingress is needed
+for manual delivery.
 
 Open **Settings → Integrations → Linear**, select one environment, enable Linear
 and choose **Connect Linear**. Approve access in Linear, then return and reload
