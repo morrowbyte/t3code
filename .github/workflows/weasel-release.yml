@@ -78,8 +78,15 @@ jobs:
           WINDOWS_RECOVERY_RUN_ID: ${{ inputs.recover_windows_run_id }}
           ANDROID_SOURCE_SHA: ${{ inputs.android_source_sha }}
         run: |
-          test "$DESKTOP_ONLY" != true || { test -z "$RECOVERY_RUN_ID" && test -z "$WINDOWS_RECOVERY_RUN_ID"; }
-          test -z "$WINDOWS_RECOVERY_RUN_ID" || { test -z "$RECOVERY_RUN_ID" && test -z "$ANDROID_SOURCE_SHA"; }
+          set -euo pipefail
+          if [[ "$DESKTOP_ONLY" == true ]]; then
+            test -z "$RECOVERY_RUN_ID"
+            test -z "$WINDOWS_RECOVERY_RUN_ID"
+          fi
+          if [[ -n "$WINDOWS_RECOVERY_RUN_ID" ]]; then
+            test -z "$RECOVERY_RUN_ID"
+            test -z "$ANDROID_SOURCE_SHA"
+          fi
 
       - id: recovery
         name: Recover only the pinned .48 desktop bytes and original proofs
@@ -295,9 +302,10 @@ jobs:
           assert control == os.environ['GITHUB_SHA'], 'Recovery control must still be current main.'
           subprocess.run(['git', 'merge-base', '--is-ancestor', source, control], check=True)
           changed = git('diff', '--name-only', source, control).splitlines()
-          assert set(changed) == {workflow, packaging, 'scripts/build-desktop-artifact.test.ts'}, 'Only the reviewed packaging validation fix and workflow may differ.'
+          assert set(changed) == {workflow, packaging, 'scripts/build-desktop-artifact.test.ts', 'scripts/weasel/nightly-after-ci.test.cjs'}, 'Only the reviewed packaging validation fix, workflow and their tests may differ.'
           assert hashlib.sha256(subprocess.check_output(['git', 'show', control + ':' + packaging])).hexdigest() == packaging_sha256
           assert hashlib.sha256(subprocess.check_output(['git', 'show', control + ':scripts/build-desktop-artifact.test.ts'])).hexdigest() == 'dab4ead08843340d79b1e8cd4f584ee87c29de1f64834a835d937714aa6699a4'
+          assert hashlib.sha256(subprocess.check_output(['git', 'show', control + ':scripts/weasel/nightly-after-ci.test.cjs'])).hexdigest() == '458bbeb4f0cc348e10aa7f7c2d1c9f73eab1a0e480c430a779fcb036d0494d7f'
           origin_workflow = subprocess.check_output(['git', 'show', source + ':' + workflow])
           assert hashlib.sha256(origin_workflow).hexdigest() == '20bb97bc06ce14695be27f62bf42e27d371efbf68e48f7bcb4090cb3a648d984'
           control_workflow_sha256 = hashlib.sha256(subprocess.check_output(['git', 'show', control + ':' + workflow])).hexdigest()
