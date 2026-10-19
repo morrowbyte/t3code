@@ -803,6 +803,60 @@ describe("thread outbox recovery rollback", () => {
     expect(appAtomRegistry.get(pendingThreadCreationOutcomesAtom)[key]).toBeUndefined();
   });
 
+  it("keeps a rejected annotation and its raster after reload without touching the edited parent draft", async () => {
+    const { encodeQueuedThreadMessage, decodeQueuedThreadMessage } =
+      await import("./thread-outbox-model");
+    const original: QueuedThreadMessage = {
+      ...queuedMessage({
+        messageId: "annotation-reject",
+        text: "annotation only",
+        fileUri: "file:///annotation.png",
+      }),
+      recoveryPolicy: { kind: "keep-outbox" },
+    };
+    const message = decodeQueuedThreadMessage(encodeQueuedThreadMessage(original));
+    const key = `${message.environmentId}:${message.threadId}`;
+    await harness.manager.enqueue(message);
+    await composerDrafts.mergeComposerDraftContent(key, {
+      text: "Parent typed while exporting",
+      attachments: [
+        {
+          id: "parent-file",
+          type: "file",
+          name: "parent.txt",
+          mimeType: "text/plain",
+          sizeBytes: 7,
+          fileUri: "file:///parent.txt",
+        },
+      ],
+    });
+    const before = JSON.stringify(composerDrafts.getComposerDraftSnapshot(key));
+    await expect(restoreRejectedQueuedMessage(message, "scope revoked")).resolves.toBe("blocked");
+    expect(JSON.stringify(composerDrafts.getComposerDraftSnapshot(key))).toBe(before);
+    const kept = Object.values(appAtomRegistry.get(harness.manager.queuedMessagesByThreadKeyAtom))
+      .flat()
+      .find((entry) => entry.messageId === message.messageId);
+    expect(kept?.attachments).toEqual(message.attachments);
+    expect(decodeQueuedThreadMessage(encodeQueuedThreadMessage(kept!)).recoveryPolicy).toEqual({
+      kind: "keep-outbox",
+      error: "scope revoked",
+    });
+    expect(appAtomRegistry.get(threadComposerErrorsAtom)[key]).toEqual({
+      message: "scope revoked",
+      messageId: message.messageId,
+    });
+    expect(harness.removeOutboxMessage).not.toHaveBeenCalled();
+    const later = queuedMessage({
+      messageId: "later-normal-message",
+      text: "Continue the conversation",
+    });
+    await harness.manager.enqueue(later);
+    const { nextDeliverableQueuedThreadMessage } = await import("./thread-outbox-model");
+    expect(nextDeliverableQueuedThreadMessage(remainingMessages())?.messageId).toBe(
+      later.messageId,
+    );
+  });
+
   it("does not record a creation outcome for a rejected follow-up message", async () => {
     const message = queuedMessage({ messageId: "message-followup-restore", text: "follow up" });
     await harness.manager.enqueue(message);

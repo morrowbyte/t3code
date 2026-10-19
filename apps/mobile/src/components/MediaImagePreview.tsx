@@ -1,3 +1,5 @@
+import type { SendImageAnnotation } from "../lib/imageAnnotation";
+import { ImageAnnotationEditor } from "./ImageAnnotationEditor";
 import { createContext, useContext, useState } from "react";
 import { Pressable, View } from "react-native";
 import ImageViewing from "react-native-image-viewing";
@@ -12,6 +14,8 @@ import { MediaSourceCaption } from "./MediaSourceCaption";
 
 type MediaImagePreviewProps = {
   readonly source: ResolvedFilePreviewSource;
+  readonly onSendAnnotation?: SendImageAnnotation;
+  readonly onAnnotate?: (source: ResolvedFilePreviewSource) => void;
   readonly onRequestClose: () => void;
 };
 
@@ -28,6 +32,16 @@ function ImagePreviewHeader(header: { readonly imageIndex: number }) {
         <AppText className="flex-1 text-base text-white" numberOfLines={2}>
           {source.name ?? "Image"}
         </AppText>
+        {props.onAnnotate ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Annotate image"
+            onPress={() => props.onAnnotate?.(source)}
+            className="min-h-12 min-w-12 items-center justify-center px-3"
+          >
+            <AppText className="text-white">Annotate</AppText>
+          </Pressable>
+        ) : null}
         <MediaActionsMenu media={mediaActions} inModal />
         <Pressable
           accessibilityRole="button"
@@ -44,6 +58,11 @@ function ImagePreviewHeader(header: { readonly imageIndex: number }) {
 }
 
 export function MediaImagePreview(props: MediaImagePreviewProps) {
+  const [annotating, setAnnotating] = useState<{
+    readonly source: ResolvedFilePreviewSource;
+    readonly onSend: SendImageAnnotation;
+  } | null>(null);
+  const onSendAnnotation = props.onSendAnnotation;
   const gallery = props.source.gallery ?? [props.source];
   // react-native-image-viewing keys its whole Modal by imageIndex, so changing it remounts the
   // viewer and replays the Android fade over the screen behind. Keep the opening index; the
@@ -54,8 +73,23 @@ export function MediaImagePreview(props: MediaImagePreviewProps) {
       gallery.findIndex((item) => item.uri === props.source.uri),
     ),
   );
+  if (annotating)
+    return (
+      <ImageAnnotationEditor
+        source={annotating.source}
+        onSend={annotating.onSend}
+        onRequestClose={() => setAnnotating(null)}
+      />
+    );
   return (
-    <ImagePreviewContext value={props}>
+    <ImagePreviewContext
+      value={{
+        ...props,
+        onAnnotate: onSendAnnotation
+          ? (source) => setAnnotating({ source, onSend: onSendAnnotation })
+          : undefined,
+      }}
+    >
       <ImageViewing
         images={gallery.map((item) => ({ uri: item.uri }))}
         imageIndex={initialIndex}

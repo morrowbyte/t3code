@@ -1,3 +1,4 @@
+import type { SendImageAnnotation } from "../lib/imageAnnotation";
 import * as Dialog from "./ui/Dialog";
 import { useNavigation } from "@react-navigation/native";
 import {
@@ -104,6 +105,7 @@ function PreviewItemResolver(props: {
 
 function ResolvedFilePreview(props: {
   readonly source: FilePreviewSource;
+  readonly onSendAnnotation?: SendImageAnnotation;
   readonly onRequestClose: () => void;
   readonly onOpenError?: (error: unknown) => void;
 }) {
@@ -137,6 +139,7 @@ function ResolvedFilePreview(props: {
       {ready ? (
         <FilePreview
           source={{ ...selected, gallery }}
+          onSendAnnotation={props.onSendAnnotation}
           onRequestClose={props.onRequestClose}
           onOpenError={props.onOpenError}
         />
@@ -147,6 +150,7 @@ function ResolvedFilePreview(props: {
 
 export function FilePreviewModal(props: {
   readonly source: FilePreviewSource | null;
+  readonly onSendAnnotation?: SendImageAnnotation;
   readonly onRequestClose: () => void;
 
   readonly onOpenError?: (error: unknown) => void;
@@ -192,6 +196,7 @@ export function FilePreviewModal(props: {
     <ResolvedFilePreview
       key={filePreviewKey(source)}
       source={source}
+      onSendAnnotation={props.onSendAnnotation}
       onRequestClose={props.onRequestClose}
       {...(props.onOpenError ? { onOpenError: props.onOpenError } : {})}
     />

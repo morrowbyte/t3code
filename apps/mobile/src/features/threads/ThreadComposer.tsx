@@ -1,3 +1,4 @@
+import type { SendImageAnnotation } from "../../lib/imageAnnotation";
 import * as Dialog from "../../components/ui/Dialog";
 import type { ComposerTextPaste } from "../../native/T3ComposerEditor.types";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
@@ -164,6 +165,7 @@ export interface ThreadComposerProps {
   readonly onNativePasteText: (paste: ComposerTextPaste) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
+  readonly onSendAnnotation?: SendImageAnnotation;
   /** Present while the thread's queue is held. */
   readonly onResumeQueue: (() => Promise<void>) | null;
   readonly onSendMessage: (followUp?: ActiveTurnComposerAction) => Promise<MessageId | null>;
@@ -1119,7 +1121,11 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
       </Animated.View>
 
       <VideoPreviewModal source={previewVideo} onRequestClose={closePreview} />
-      <FilePreviewModal source={previewFile} onRequestClose={closePreview} />
+      <FilePreviewModal
+        source={previewFile}
+        onRequestClose={closePreview}
+        onSendAnnotation={props.onSendAnnotation}
+      />
     </Animated.View>
   );
 };

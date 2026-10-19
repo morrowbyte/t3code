@@ -52,6 +52,9 @@ export const QueuedThreadMessageSchema = Schema.Struct({
   commandId: CommandId,
   text: Schema.String,
   context: Schema.optional(OrchestrationMessageContext),
+  recoveryPolicy: Schema.optional(
+    Schema.Struct({ kind: Schema.Literal("keep-outbox"), error: Schema.optional(Schema.String) }),
+  ),
   attachments: Schema.Array(DraftComposerAttachmentSchema),
   modelSelection: Schema.optional(ModelSelection),
   dispatchMode: Schema.optional(Schema.Literals(["auto", "queue", "steer", "restart"])),
@@ -82,6 +85,7 @@ export interface QueuedThreadMessage {
   readonly commandId: CommandId;
   readonly text: string;
   readonly context?: OrchestrationMessageContext;
+  readonly recoveryPolicy?: { readonly kind: "keep-outbox"; readonly error?: string };
   readonly attachments: ReadonlyArray<DraftComposerAttachment>;
   readonly modelSelection?: ModelSelectionType;
   readonly runtimeMode?: RuntimeModeType;
@@ -92,6 +96,10 @@ export interface QueuedThreadMessage {
   readonly dispatchMode?: ComposerDispatchMode;
   readonly creation?: QueuedThreadCreation;
   readonly createdAt: string;
+}
+
+export function nextDeliverableQueuedThreadMessage(messages: ReadonlyArray<QueuedThreadMessage>) {
+  return messages.find((message) => !message.recoveryPolicy?.error);
 }
 
 export interface ThreadSettingsSnapshot {
