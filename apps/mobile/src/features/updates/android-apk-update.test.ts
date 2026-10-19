@@ -6,8 +6,7 @@ import {
   type AndroidApkTransport,
 } from "./android-apk-update";
 
-function fixture(versionCode = 60) {
-  const version = `0.1.2-nightly.20261019.${versionCode}`;
+function fixture(versionCode = 60, version = `0.1.2-nightly.20261019.${versionCode}`) {
   const name = `Morrowbyte-${version}-android-arm64.apk`;
   const sha = "a".repeat(64);
   const source = "b".repeat(40);
@@ -81,9 +80,95 @@ describe("explicit Android APK updates", () => {
     expect(updater.getState().phase).toBe("installer-opened");
     expect(native.install).toHaveBeenCalledOnce();
   });
+  it("reads only the strongest Nightly receipt from thirty arbitrarily ordered releases", async () => {
+    const { updater, transport } = fixture();
+    const releases = Array.from({ length: 30 }, (_, offset) => fixture(60 + ((offset * 7) % 30)));
+    vi.mocked(transport.releases).mockResolvedValue({
+      repository: "morrowbyte/t3code",
+      releases: releases.map((item) => item.release),
+    });
+    vi.mocked(transport.receipt).mockImplementation(async (selected) => ({
+      value: releases.find((item) => item.release.id === selected.id)!.value,
+      sha256: selected.receipt.sha256,
+    }));
+    await updater.check();
+    expect(updater.getState()).toMatchObject({ phase: "available", release: { id: 89 } });
+    expect(transport.releases).toHaveBeenCalledOnce();
+    expect(transport.receipt).toHaveBeenCalledOnce();
+    expect(vi.mocked(transport.receipt).mock.calls[0]?.[0].id).toBe(89);
+  });
+  it("reads no receipts when every proven Nightly boundary is already installed", async () => {
+    const { updater, transport } = fixture();
+    const releases = Array.from({ length: 30 }, (_, index) => fixture(30 + index));
+    vi.mocked(transport.releases).mockResolvedValue({
+      repository: "morrowbyte/t3code",
+      releases: releases.map((item) => item.release),
+    });
+    await updater.check();
+    expect(updater.getState().phase).toBe("current");
+    expect(transport.releases).toHaveBeenCalledOnce();
+    expect(transport.receipt).not.toHaveBeenCalled();
+  });
+  it("rejects a conflicting Nightly receipt code and keeps the next valid candidate", async () => {
+    const { updater, transport, release, value } = fixture();
+    const conflicting = fixture(61);
+    conflicting.value.versionCode = 1000;
+    vi.mocked(transport.releases).mockResolvedValue({
+      repository: "morrowbyte/t3code",
+      releases: [release, conflicting.release],
+    });
+    vi.mocked(transport.receipt).mockImplementation(async (selected) => ({
+      value: selected.id === 61 ? conflicting.value : value,
+      sha256: selected.receipt.sha256,
+    }));
+    await updater.check();
+    expect(updater.getState()).toMatchObject({ phase: "available", release: { id: 60 } });
+    expect(vi.mocked(transport.receipt).mock.calls.map(([selected]) => selected.id)).toEqual([
+      61, 60,
+    ]);
+  });
+  it.each(["0.2.0", "0.2.0-nightly.20261019.0007", "0.2.0-nightly.20261019.2100000001"])(
+    "fully verifies an unbounded release %s before pruning Nightlies",
+    async (version) => {
+      const { updater, transport, release, value } = fixture();
+      const unbounded = fixture(500, version);
+      vi.mocked(transport.releases).mockResolvedValue({
+        repository: "morrowbyte/t3code",
+        releases: [release, unbounded.release],
+      });
+      vi.mocked(transport.receipt).mockImplementation(async (selected) => ({
+        value: selected.id === 500 ? unbounded.value : value,
+        sha256: selected.receipt.sha256,
+      }));
+      await updater.check();
+      expect(updater.getState()).toMatchObject({ phase: "available", release: { id: 500 } });
+      expect(vi.mocked(transport.receipt).mock.calls.map(([selected]) => selected.id)).toEqual([
+        500,
+      ]);
+    },
+  );
+  it("compares all unbounded receipts and retains a stronger Nightly", async () => {
+    const { updater, transport, release, value } = fixture();
+    const unbounded = Array.from({ length: 7 }, (_, index) => fixture(53 + index, `0.2.${index}`));
+    vi.mocked(transport.releases).mockResolvedValue({
+      repository: "morrowbyte/t3code",
+      releases: [unbounded[0]!.release, release, ...unbounded.slice(1).map((item) => item.release)],
+    });
+    vi.mocked(transport.receipt).mockImplementation(async (selected) => ({
+      value:
+        selected.id === release.id
+          ? value
+          : unbounded.find((item) => item.release.id === selected.id)!.value,
+      sha256: selected.receipt.sha256,
+    }));
+    await updater.check();
+    expect(updater.getState()).toMatchObject({ phase: "available", release: { id: 60 } });
+    expect(vi.mocked(transport.receipt).mock.calls.map(([selected]) => selected.id)).toEqual([
+      53, 54, 55, 56, 57, 58, 59, 60,
+    ]);
+  });
   it("cannot download a downgrade and never trusts a mismatched receipt digest", async () => {
-    const current = fixture();
-    current.value.versionCode = 58;
+    const current = fixture(58);
     await current.updater.check();
     expect(current.updater.getState().phase).toBe("current");
     await current.updater.download();
@@ -102,10 +187,10 @@ describe("explicit Android APK updates", () => {
       ["http", "schema", "digest"].map((failure) => ({ position, failure })),
     ),
   )(
-    "keeps the strongest valid update with a $failure historical receipt $position it",
+    "falls back from a $failure higher receipt $position the strongest valid candidate",
     async ({ position, failure }) => {
       const { updater, transport, native, release, value } = fixture();
-      const historical = fixture(58);
+      const historical = fixture(63);
       const strongest = fixture(62);
       vi.mocked(transport.releases).mockResolvedValue({
         repository: "morrowbyte/t3code",
@@ -116,7 +201,7 @@ describe("explicit Android APK updates", () => {
       });
       vi.mocked(transport.receipt).mockImplementation(async (selected) => {
         if (selected.id === historical.release.id) {
-          if (failure === "http") throw new Error("Historical receipt HTTP 404");
+          if (failure === "http") throw new Error("Newer receipt HTTP 404");
           return {
             value: { ...historical.value, schemaVersion: failure === "schema" ? 0 : 1 },
             sha256: failure === "digest" ? "f".repeat(64) : historical.value.apkSha256,
@@ -132,7 +217,9 @@ describe("explicit Android APK updates", () => {
         phase: "available",
         release: { id: strongest.release.id },
       });
-      expect(transport.receipt).toHaveBeenCalledTimes(3);
+      expect(vi.mocked(transport.receipt).mock.calls.map(([selected]) => selected.id)).toEqual([
+        63, 62,
+      ]);
       expect(transport.download).not.toHaveBeenCalled();
       expect(native.install).not.toHaveBeenCalled();
     },

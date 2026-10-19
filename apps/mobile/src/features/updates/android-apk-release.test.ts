@@ -96,6 +96,7 @@ describe("Android APK release trust", () => {
       { apkSha256: "d".repeat(64) },
       { source: "e".repeat(40) },
       { version: "0.1.2-nightly.20261019.60" },
+      { versionCode: 60 },
       { abis: ["x86_64"] },
     ])
       expect(() =>

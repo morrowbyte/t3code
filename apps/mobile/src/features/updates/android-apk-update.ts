@@ -1,5 +1,6 @@
 import {
   assertAndroidInstalledIdentity,
+  androidNightlyVersionCode,
   parseAndroidReleaseIndex,
   verifyAndroidApkProof,
   type AndroidApkRelease,
@@ -97,11 +98,20 @@ export function createAndroidApkUpdater(transport: AndroidApkTransport, native: 
       }
       const installed = await native.installed();
       assertAndroidInstalledIdentity(installed);
-      const releases = parseAndroidReleaseIndex(await transport.releases(controller.signal));
+      const releases = parseAndroidReleaseIndex(await transport.releases(controller.signal))
+        .map((release) => ({ release, code: androidNightlyVersionCode(release.version) }))
+        .sort((left, right) => {
+          // Unbounded releases must be verified before Nightly bounds can prune the scan.
+          if (left.code === null) return right.code === null ? 0 : -1;
+          if (right.code === null) return 1;
+          return right.code - left.code;
+        });
       let candidate: { release: AndroidApkRelease; proof: AndroidApkProof } | null = null;
       let receiptFailure: { cause: unknown } | null = null;
-      for (const release of releases) {
+      for (const { release, code } of releases) {
         if (!valid(id, controller.signal)) return;
+        if (code !== null && code <= (candidate?.proof.versionCode ?? installed.versionCode))
+          continue;
         try {
           const receipt = await transport.receipt(release, controller.signal);
           if (!valid(id, controller.signal)) return;

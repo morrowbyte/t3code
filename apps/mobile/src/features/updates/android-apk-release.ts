@@ -129,6 +129,14 @@ export function assertAndroidInstalledIdentity(identity: AndroidInstalledIdentit
     throw new Error("This Android device cannot run the published ARM64 APK.");
 }
 
+// The publisher uses RELEASE_RUN for both fields; proof validation enforces this bound.
+export function androidNightlyVersionCode(version: string): number | null {
+  const match = /^\d+\.\d+\.\d+-nightly\.\d{8}\.([1-9]\d*)$/.exec(version);
+  if (!match) return null;
+  const code = Number(match[1]);
+  return Number.isSafeInteger(code) && code <= 2_100_000_000 ? code : null;
+}
+
 export function verifyAndroidApkProof(
   value: unknown,
   release: AndroidApkRelease,
@@ -138,6 +146,7 @@ export function verifyAndroidApkProof(
   assertAndroidInstalledIdentity(identity);
   const proof = record(value);
   const code = positiveInteger(proof.versionCode);
+  const nightlyCode = androidNightlyVersionCode(release.version);
   if (
     receiptSha256 !== release.receipt.sha256 ||
     !SHA256.test(receiptSha256) ||
@@ -145,6 +154,7 @@ export function verifyAndroidApkProof(
     proof.package !== ANDROID_UPDATE_PACKAGE ||
     proof.certificateSha256 !== ANDROID_UPDATE_CERT ||
     proof.version !== release.version ||
+    (nightlyCode !== null && code !== nightlyCode) ||
     proof.source !== release.source ||
     proof.apk !== release.apk.name ||
     proof.apkSha256 !== release.apk.sha256 ||
