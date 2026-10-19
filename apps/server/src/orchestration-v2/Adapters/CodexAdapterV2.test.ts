@@ -77,6 +77,57 @@ const encodeReplayTranscriptJson = Schema.encodeEffect(replayTranscriptJson);
 const decodeReplayTranscriptJson = Schema.decodeUnknownEffect(replayTranscriptJson);
 const encodeStringJson = Schema.encodeEffect(Schema.fromJsonString(Schema.String));
 
+describe("original LiveVoice transcript segments", () => {
+  it("retains provider IDs, raw deltas and corrected finals without flat mirrors or late partials", () => {
+    const tracker = CodexAdapterV2.makeCodexLiveTranscriptTracker();
+    const item = {
+      id: "provider-item",
+      realtimeSessionId: "lease:1",
+      role: "user" as const,
+      text: "",
+    };
+    assert.deepEqual(tracker.snapshot("planner", item, false), {
+      type: "transcript",
+      plannerNativeThreadId: "planner",
+      realtimeSessionId: "lease:1",
+      role: "user",
+      text: "",
+      segment: { id: "provider-item", revision: 1, kind: "snapshot", final: false },
+    });
+    const rawDelta = "  Suche Berlin — ";
+    assert.deepEqual(tracker.delta("planner", item.id, rawDelta), {
+      type: "transcript",
+      plannerNativeThreadId: "planner",
+      realtimeSessionId: "lease:1",
+      role: "user",
+      text: rawDelta,
+      segment: { id: "provider-item", revision: 2, kind: "delta", final: false },
+    });
+    assert.isUndefined(
+      tracker.snapshot("planner", item, false),
+      "replayed starts cannot rewind a growing segment",
+    );
+    assert.isDefined(
+      tracker.legacy("planner", "assistant", "legacy assistant answer"),
+      "mixed provider channels remain available per role",
+    );
+    const corrected = { ...item, text: "  Suche Bonn.  " };
+    const final = tracker.snapshot("planner", corrected, true);
+    assert.isDefined(final);
+    assert.equal(final?.type === "transcript" ? final.text : null, corrected.text);
+    assert.isUndefined(tracker.snapshot("planner", corrected, true));
+    assert.isUndefined(tracker.legacy("planner", "user", corrected.text));
+    assert.isUndefined(tracker.delta("planner", item.id, " late delta"));
+    assert.isUndefined(
+      tracker.snapshot("planner", { ...corrected, realtimeSessionId: "foreign:2" }, true),
+    );
+    tracker.close("planner");
+    const legacy = tracker.legacy("planner", "user", corrected.text);
+    assert.equal(legacy?.type === "transcript" ? legacy.text : null, corrected.text);
+    assert.isUndefined(tracker.legacy("planner", "system", "private context"));
+  });
+});
+
 describe("restricted conversational LiveVoice tools", () => {
   it.effect("keeps correlated status and steering available while submitted work is held", () =>
     Effect.gen(function* () {

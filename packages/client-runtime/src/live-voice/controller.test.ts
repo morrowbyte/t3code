@@ -867,6 +867,81 @@ describe("LiveVoiceController", () => {
     expect(harness.signaling.stop).toHaveBeenCalledOnce();
   });
 
+  it("applies correlated ASR revisions once, rejects missing deltas, and accepts authoritative corrections", async () => {
+    const harness = createHarness();
+    await connectFirst(harness, harness.controller.start(target));
+    const emit = (revision: number, kind: "delta" | "snapshot", text: string, final = false) =>
+      harness.emit({
+        type: "transcript",
+        leaseId: lease.leaseId,
+        generation: lease.generation,
+        role: "user",
+        text,
+        segment: { id: "native-segment", revision, kind, final, partIndex: 0, partCount: 1 },
+      });
+    emit(1, "snapshot", "  Suche");
+    emit(2, "delta", " nach Berlin");
+    emit(2, "delta", " nach Berlin");
+    emit(4, "delta", " missing text must not be invented");
+    expect(harness.controller.currentState.transcript).toEqual([
+      {
+        speaker: "user",
+        text: "  Suche nach Berlin",
+        final: false,
+        segmentId: "native-segment",
+        revision: 2,
+      },
+    ]);
+    emit(5, "snapshot", "  Suche nach Bonn, nicht Berlin.  ", true);
+    emit(6, "delta", " stale continuation");
+    emit(6, "snapshot", "  Suche nur lesend nach Bonn.  ", true);
+    emit(6, "snapshot", "  Suche nur lesend nach Bonn.  ", true);
+    expect(harness.controller.currentState.transcript).toEqual([
+      {
+        speaker: "user",
+        text: "  Suche nur lesend nach Bonn.  ",
+        final: true,
+        segmentId: "native-segment",
+        revision: 6,
+      },
+    ]);
+    expect(harness.signaling.start).toHaveBeenCalledOnce();
+    await harness.controller.end();
+  });
+
+  it("joins complete original ASR parts in order without publishing an incomplete or stale revision", async () => {
+    const harness = createHarness();
+    await connectFirst(harness, harness.controller.start(target));
+    const original = "Original-ASR ".repeat(2000);
+    const emit = (revision: number, partIndex: number, text: string) =>
+      harness.emit({
+        type: "transcript",
+        leaseId: lease.leaseId,
+        generation: lease.generation,
+        role: "user",
+        text,
+        segment: {
+          id: "long-native-segment",
+          revision,
+          kind: "snapshot",
+          final: true,
+          partIndex,
+          partCount: 2,
+        },
+      });
+    emit(1, 1, original.slice(16_384));
+    emit(1, 1, original.slice(16_384));
+    expect(harness.controller.currentState.transcript).toHaveLength(0);
+    emit(1, 0, original.slice(0, 16_384));
+    expect(harness.controller.currentState.transcript[0]?.text).toBe(original);
+    emit(2, 0, "Korrektur ");
+    emit(1, 1, "stale part");
+    expect(harness.controller.currentState.transcript[0]?.text).toBe(original);
+    emit(2, 1, "des Providers");
+    expect(harness.controller.currentState.transcript[0]?.text).toBe("Korrektur des Providers");
+    await harness.controller.end();
+  });
+
   it("keeps the ended call transcript available while releasing all media", async () => {
     const harness = createHarness();
     await connect(harness, harness.controller.start(target));

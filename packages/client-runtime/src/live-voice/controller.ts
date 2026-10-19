@@ -69,6 +69,8 @@ export type LiveVoiceTranscript = {
   readonly speaker: "user" | "assistant";
   readonly text: string;
   readonly final: boolean;
+  readonly segmentId?: string;
+  readonly revision?: number;
 };
 export type LiveVoicePhase =
   | "idle"
@@ -213,6 +215,18 @@ export class LiveVoiceController {
   private microphoneOwnership: MicrophoneOwnership | null = null;
   private readonly stopRequestIds = new Map<string, string>();
   private readonly stopRequests = new Map<string, Promise<void>>();
+  private readonly transcriptSegments = new Map<string, LiveVoiceTranscript>();
+  private readonly transcriptParts = new Map<
+    string,
+    {
+      revision: number;
+      count: number;
+      kind: "delta" | "snapshot";
+      final: boolean;
+      speaker: "user" | "assistant";
+      parts: Map<number, string>;
+    }
+  >();
 
   constructor(dependencies: LiveVoiceControllerDependencies) {
     this.dependencies = dependencies;
@@ -260,6 +274,8 @@ export class LiveVoiceController {
     }
 
     const operation = ++this.operation;
+    this.transcriptSegments.clear();
+    this.transcriptParts.clear();
     const microphoneOwnership: MicrophoneOwnership = {
       release: releaseMicrophone,
       mediaRequestPending: false,
@@ -574,13 +590,69 @@ export class LiveVoiceController {
         identity,
         new Error(liveVoicePublicErrorMessage(event.code)),
       );
-    if (event.type === "transcript" && event.text.trim()) {
+    if (event.type === "transcript" && event.segment) {
+      this.acceptTranscriptSegment(event);
+    } else if (event.type === "transcript" && event.text.trim()) {
       const transcript = [
         ...this.state.transcript,
         { speaker: event.role, text: event.text, final: true },
       ].slice(-MAX_TRANSCRIPT_ENTRIES);
       this.setState({ ...this.state, transcript });
     }
+  }
+
+  private acceptTranscriptSegment(event: Extract<LiveVoiceEvent, { type: "transcript" }>): void {
+    const segment = event.segment!;
+    const current = this.transcriptSegments.get(segment.id);
+    if (
+      segment.revision <= (current?.revision ?? 0) ||
+      (segment.kind === "delta" &&
+        (current?.final || segment.revision !== (current?.revision ?? 0) + 1))
+    )
+      return;
+    let pending = this.transcriptParts.get(segment.id);
+    if (pending && segment.revision < pending.revision) return;
+    if (!pending || segment.revision > pending.revision) {
+      pending = {
+        revision: segment.revision,
+        count: segment.partCount,
+        kind: segment.kind,
+        final: segment.final,
+        speaker: event.role,
+        parts: new Map(),
+      };
+      this.transcriptParts.set(segment.id, pending);
+      if (this.transcriptParts.size > MAX_TRANSCRIPT_ENTRIES)
+        this.transcriptParts.delete(this.transcriptParts.keys().next().value!);
+    }
+    if (
+      pending.count !== segment.partCount ||
+      pending.kind !== segment.kind ||
+      pending.final !== segment.final ||
+      pending.speaker !== event.role ||
+      pending.parts.has(segment.partIndex)
+    )
+      return;
+    pending.parts.set(segment.partIndex, event.text);
+    if (pending.parts.size !== pending.count) return;
+    this.transcriptParts.delete(segment.id);
+    const originalText = Array.from({ length: pending.count }, (_, index) =>
+      pending.parts.get(index)!,
+    ).join("");
+    const entry: LiveVoiceTranscript = {
+      speaker: event.role,
+      text: segment.kind === "delta" ? (current?.text ?? "") + originalText : originalText,
+      final: segment.final,
+      segmentId: segment.id,
+      revision: segment.revision,
+    };
+    this.transcriptSegments.set(segment.id, entry);
+    if (this.transcriptSegments.size > 128)
+      this.transcriptSegments.delete(this.transcriptSegments.keys().next().value!);
+    const transcript = this.state.transcript.filter((item) => item.segmentId !== segment.id);
+    const index = this.state.transcript.findIndex((item) => item.segmentId === segment.id);
+    if (entry.text.trim()) transcript.splice(index < 0 ? transcript.length : index, 0, entry);
+    this.setState({ ...this.state, transcript: transcript.slice(-MAX_TRANSCRIPT_ENTRIES) });
   }
 
   private acceptSessionStatus(

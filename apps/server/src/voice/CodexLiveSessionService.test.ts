@@ -95,6 +95,8 @@ it.effect.each([false, true])(
       let sends = 0;
       let stops = 0;
       const spoken: Array<{ plannerNativeThreadId: string; text: string }> = [];
+      const contexts: Array<{ plannerNativeThreadId: string; text: string }> = [];
+      const contextSignals = new Map<string, Deferred.Deferred<void>>();
       let appendAttempts = 0;
       let appendSpeechFails = false;
       let resolveAppendAttempt: (() => void) | undefined;
@@ -140,6 +142,7 @@ it.effect.each([false, true])(
         ["subagent.updated", yield* Queue.unbounded<OrchestrationV2StoredEvent>()],
         ["checkpoint.captured", yield* Queue.unbounded<OrchestrationV2StoredEvent>()],
         ["message.updated", yield* Queue.unbounded<OrchestrationV2StoredEvent>()],
+        ["turn-item.updated", yield* Queue.unbounded<OrchestrationV2StoredEvent>()],
       ]);
       let plannerCalls = 0;
       let plannerAttempts = 0;
@@ -203,6 +206,12 @@ it.effect.each([false, true])(
           stop: () =>
             Effect.sync(() => {
               stops += 1;
+            }),
+          appendContext: (input: { plannerNativeThreadId: string; text: string }) =>
+            Effect.gen(function* () {
+              contexts.push(input);
+              const signal = contextSignals.get(input.text);
+              if (signal) yield* Deferred.succeed(signal, undefined);
             }),
           appendSpeech: (input: { plannerNativeThreadId: string; text: string }) =>
             Effect.gen(function* () {
@@ -453,6 +462,7 @@ it.effect.each([false, true])(
 
         const delivered = yield* Queue.unbounded<LiveVoiceEvent>();
         const observedStatuses: string[] = [];
+        const observedTranscripts: Array<Extract<LiveVoiceEvent, { type: "transcript" }>> = [];
         yield* service
           .subscribe(session, {
             leaseId: prepared.leaseId,
@@ -462,6 +472,7 @@ it.effect.each([false, true])(
             Stream.runForEach((event) =>
               Effect.sync(() => {
                 if (event.type === "status") observedStatuses.push(event.session.status);
+                if (event.type === "transcript") observedTranscripts.push(event);
               }).pipe(Effect.andThen(Queue.offer(delivered, event))),
             ),
             Effect.forkChild({ startImmediately: true }),
@@ -772,7 +783,141 @@ it.effect.each([false, true])(
           messages: completedFixture.messages.filter((message) =>
             message.id.startsWith("commentary-"),
           ),
+          providerTurns: completedFixture.providerTurns.map((turn) => ({
+            ...turn,
+            status: "running" as const,
+            completedAt: null,
+          })),
+          turnItems: completedFixture.turnItems.map((item) =>
+            item.ordinal === 2
+              ? {
+                  ...item,
+                  type: "command_execution" as const,
+                  input: "read-only inventory",
+                  output: "PRIVATE_TOOL_DATA_MUST_NOT_FORWARD",
+                }
+              : item,
+          ),
         };
+        const firstContext = yield* Deferred.make<void>();
+        contextSignals.set("commentary for durable-run-1", firstContext);
+        const updateEvent = () =>
+          eventFor({
+            type: "turn-item.updated",
+            id: "public-update-event",
+            threadId,
+            runId: "durable-run-1",
+            nodeId: "root-durable-run-1",
+            providerInstanceId,
+            occurredAt: "2026-10-14T00:00:03.000Z",
+            payload: durableProjection.turnItems[0]!,
+          } as never);
+        yield* Queue.offer(t3EventQueues.get("turn-item.updated")!, updateEvent());
+        yield* Deferred.await(firstContext);
+        assert.deepEqual(
+          contexts.map((message) => message.text),
+          ["commentary for durable-run-1"],
+        );
+        assert.equal(
+          completedWork,
+          0,
+          "public context arrives while the real work completion gate is still held",
+        );
+        assert.equal(
+          spoken.length,
+          0,
+          "public context must not use forced speech during an unqualified speaking slot",
+        );
+        const question = "Soll ich zuerst den kleineren Befund erklären?";
+        const secondContext = yield* Deferred.make<void>();
+        contextSignals.set(question, secondContext);
+        const firstMessage = durableProjection.messages[0]!;
+        const firstItem = durableProjection.turnItems[0]!;
+        const firstNode = durableProjection.nodes.find((node) => node.id === firstMessage.nodeId)!;
+        durableProjection = {
+          ...durableProjection,
+          messages: [
+            ...durableProjection.messages,
+            {
+              ...firstMessage,
+              id: "public-question" as never,
+              nodeId: "public-question-node" as never,
+              text: question,
+            },
+          ],
+          nodes: [
+            ...durableProjection.nodes,
+            { ...firstNode, id: "public-question-node" as never },
+          ],
+          turnItems: [
+            ...durableProjection.turnItems,
+            {
+              ...firstItem,
+              id: "public-question-item" as never,
+              nodeId: "public-question-node" as never,
+              messageId: "public-question" as never,
+              text: question,
+              ordinal: 3,
+            },
+            {
+              ...firstItem,
+              id: "private-next-item" as never,
+              type: "command_execution",
+              input: "read-only continuation",
+              output: "PRIVATE_TOOL_CONTEXT_MUST_NOT_FORWARD",
+              ordinal: 4,
+            },
+          ],
+        } as OrchestrationV2ThreadProjection;
+        yield* Queue.offer(t3EventQueues.get("turn-item.updated")!, updateEvent());
+        yield* Queue.offer(t3EventQueues.get("turn-item.updated")!, updateEvent());
+        yield* Deferred.await(secondContext);
+        assert.deepEqual(
+          contexts.map((message) => message.text),
+          ["commentary for durable-run-1", question],
+          "replayed events do not repeat already-claimed public messages or expose reasoning",
+        );
+
+        const rawAsr = "  Original-ASR ohne Rekonstruktion. ".repeat(1000);
+        yield* Queue.offer(nativeEvents, {
+          type: "transcript",
+          plannerNativeThreadId: "planner-native-1",
+          realtimeSessionId: "foreign-session",
+          role: "user",
+          text: "STALE_ASR_MUST_NOT_FORWARD",
+          segment: { id: "stale-asr", revision: 1, kind: "snapshot", final: true },
+        });
+        yield* Queue.offer(nativeEvents, {
+          type: "transcript",
+          plannerNativeThreadId: "planner-native-1",
+          realtimeSessionId: `${prepared.leaseId}:${prepared.generation}`,
+          role: "user",
+          text: rawAsr,
+          segment: { id: "original-asr", revision: 1, kind: "snapshot", final: true },
+        });
+        const rawParts: string[] = [];
+        for (let partIndex = 0; partIndex < Math.ceil(rawAsr.length / 16_384); partIndex += 1) {
+          const event = yield* waitForEvent(
+            (event) =>
+              event.type === "transcript" &&
+              event.segment?.id === "original-asr" &&
+              event.segment.partIndex === partIndex,
+          );
+          if (event.type === "transcript") rawParts.push(event.text);
+        }
+        assert.equal(
+          rawParts.join(""),
+          rawAsr,
+          "long original ASR is transported in bounded parts without clipping",
+        );
+        assert.isFalse(
+          observedTranscripts.some((event) => event.text.includes("STALE_ASR_MUST_NOT_FORWARD")),
+        );
+        assert.equal(
+          sends,
+          1,
+          "ASR segments and public output never authorize or dispatch new work",
+        );
         const control = (
           action: "status" | "steer",
           callId: string,
@@ -799,10 +944,66 @@ it.effect.each([false, true])(
             runId: "durable-run-1",
             status: "running",
             resultReady: false,
-            commentary: "commentary for durable-run-1",
+            commentary: question,
           },
         ]);
         assert.equal(completedWork, 0);
+        const staleContext = "Dieser Zwischenbefund gehört zum alten Kontext.";
+        const contextLookup = holdDispatchPrincipalLookup();
+        durableProjection = {
+          ...durableProjection,
+          messages: [
+            ...durableProjection.messages,
+            {
+              ...firstMessage,
+              id: "stale-public" as never,
+              nodeId: "stale-public-node" as never,
+              text: staleContext,
+            },
+          ],
+          nodes: [...durableProjection.nodes, { ...firstNode, id: "stale-public-node" as never }],
+          turnItems: [
+            ...durableProjection.turnItems,
+            {
+              ...firstItem,
+              id: "stale-public-item" as never,
+              nodeId: "stale-public-node" as never,
+              messageId: "stale-public" as never,
+              text: staleContext,
+              ordinal: 5,
+            },
+            {
+              ...firstItem,
+              id: "stale-public-next" as never,
+              type: "command_execution",
+              input: "read-only continuation",
+              ordinal: 6,
+            },
+          ],
+        } as OrchestrationV2ThreadProjection;
+        yield* Queue.offer(t3EventQueues.get("turn-item.updated")!, updateEvent());
+        yield* Effect.promise(() => contextLookup.started);
+        currentPolicy = { ...policy, cwd: "/changed-during-public-delivery" };
+        contextLookup.release();
+        // The same lease lock makes this status call a barrier after the pending append.
+        assert.isTrue(
+          Exit.isFailure(yield* Effect.exit(control("status", "public-context-barrier"))),
+        );
+        currentPolicy = policy;
+        assert.isFalse(contexts.some((message) => message.text === staleContext));
+        const refusedContext = yield* sql<{ receipt_json: string }>`
+          SELECT receipt_json FROM codex_live_voice_intents
+          WHERE lease_id = ${prepared.leaseId} AND generation = ${prepared.generation}
+            AND planner_turn_id = ${"planner-turn-1"}
+        `;
+        assert.equal(
+          (
+            decodeJson(refusedContext[0]!.receipt_json) as {
+              publicReadbacks: Record<string, { state: string }>;
+            }
+          ).publicReadbacks["stale-public"]?.state,
+          "refused",
+        );
         yield* Queue.offer(nativeEvents, {
           type: "transcript",
           plannerNativeThreadId: "planner-native-1",

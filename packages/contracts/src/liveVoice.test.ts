@@ -6,12 +6,41 @@ import {
   LiveVoicePrepareInput,
   LiveVoiceStartInput,
   LiveVoiceSubscribeInput,
+  LiveVoiceEvent,
 } from "./liveVoice.ts";
 import { WS_METHODS } from "./rpc.ts";
 import { clientRpcRequiredScopes } from "./clientRpcPermissions.ts";
 import { AuthOrchestrationOperateScope } from "./auth.ts";
 
 describe("subscription Codex Live contracts", () => {
+  it("preserves original transcript parts and validates revision correlation without changing legacy events", () => {
+    const decode = Schema.decodeUnknownSync(LiveVoiceEvent);
+    const legacy = {
+      type: "transcript",
+      leaseId: "lease",
+      generation: 1,
+      role: "user",
+      text: "  Original ASR  ",
+    };
+    expect(decode(legacy)).toEqual(legacy);
+    const segment = {
+      id: "native-item",
+      revision: 2,
+      kind: "delta",
+      final: false,
+      partIndex: 0,
+      partCount: 1,
+    };
+    expect(decode({ ...legacy, segment })).toEqual({ ...legacy, segment });
+    for (const invalid of [
+      { ...segment, partIndex: 1 },
+      { ...segment, partCount: 257 },
+      { ...segment, revision: Number.MAX_SAFE_INTEGER + 1 },
+      { ...segment, final: true },
+    ])
+      expect(() => decode({ ...legacy, segment: invalid })).toThrow();
+  });
+
   it("bounds offer size and requires a positive lease generation", () => {
     expect(
       Schema.decodeUnknownSync(LiveVoiceStartInput)({

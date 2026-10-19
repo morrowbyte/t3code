@@ -106,6 +106,24 @@ export const LiveVoiceSession = Schema.Struct({
 });
 export type LiveVoiceSession = typeof LiveVoiceSession.Type;
 
+export const LiveVoiceTranscriptSegment = Schema.Struct({
+  id: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+  revision: LiveVoiceGeneration,
+  kind: Schema.Literals(["delta", "snapshot"]),
+  final: Schema.Boolean,
+  partIndex: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  partCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)).check(
+    Schema.isLessThanOrEqualTo(256),
+  ),
+}).check(
+  Schema.makeFilter(
+    (segment) =>
+      (segment.partIndex < segment.partCount && !(segment.kind === "delta" && segment.final)) ||
+      "Expected a valid transcript part and a non-final delta.",
+  ),
+);
+export type LiveVoiceTranscriptSegment = typeof LiveVoiceTranscriptSegment.Type;
+
 export const LiveVoiceEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("status"), session: LiveVoiceSession }),
   Schema.Struct({
@@ -120,6 +138,7 @@ export const LiveVoiceEvent = Schema.Union([
     generation: LiveVoiceGeneration,
     role: Schema.Literals(["user", "assistant"]),
     text: Schema.String.check(Schema.isMaxLength(16_384)),
+    segment: Schema.optional(LiveVoiceTranscriptSegment),
   }),
   Schema.Struct({
     type: Schema.Literal("error"),
