@@ -1641,9 +1641,12 @@ describe("buildThreadFeed", () => {
     );
 
     expect(presented.filter((entry) => entry.type === "agent-send")).toHaveLength(3);
-    expect(presented.filter((entry) => entry.type === "work-toggle")).toMatchObject([
-      { hiddenCount: 1, hasFailure: false },
-      { hiddenCount: 1, hasFailure: false },
+    expect(presented.map((entry) => entry.type)).toEqual([
+      "activity-group",
+      "agent-send",
+      "agent-send",
+      "agent-send",
+      "activity-group",
     ]);
     const settled = deriveThreadFeedPresentation(
       buildThreadFeed([

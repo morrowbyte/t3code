@@ -67,6 +67,10 @@ vi.mock("./session", () => ({
 vi.mock("./use-thread-selection", () => ({
   useThreadSelection: () => ({
     selectedThread: state.thread,
+    selectedThreadDetailRef: {
+      environmentId: state.thread.environmentId,
+      threadId: state.thread.id,
+    },
     selectedThreadCreation: null,
     selectedEnvironmentRuntime: {
       connectionState: state.connectionState,

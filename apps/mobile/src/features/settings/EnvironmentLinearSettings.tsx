@@ -78,6 +78,16 @@ interface PanelProps {
   readonly openUrl: (url: string) => Promise<unknown>;
 }
 
+function linearResultForEnvironment(
+  result: typeof LinearActionResult.Type,
+  environmentId: EnvironmentId,
+) {
+  if (result.settings.environmentId !== environmentId) {
+    throw new LinearIntegrationError({ reason: "target_unavailable" });
+  }
+  return { ...result, authorizeUrl: result.authorizeUrl ?? null };
+}
+
 export function EnvironmentLinearSettingsPanel(props: PanelProps) {
   const [opened, setOpened] = useState(false);
   const [settings, setSettings] = useState<LinearSettings | null>(null);
@@ -125,22 +135,19 @@ export function EnvironmentLinearSettingsPanel(props: PanelProps) {
     setPending(true);
     setError(null);
     try {
-      const result = await props.request(props.environmentId, action);
+      const response = await props.request(props.environmentId, action);
       if (generation.current !== current) return;
-      if (result.settings.environmentId !== props.environmentId) {
-        throw new LinearIntegrationError({ reason: "target_unavailable" });
-      }
+      const result = linearResultForEnvironment(response, props.environmentId);
       setSettings(result.settings);
-      setAuthorizeUrl(result.authorizeUrl ?? null);
+      setAuthorizeUrl(result.authorizeUrl);
       if (result.authorizeUrl) await props.openUrl(result.authorizeUrl);
     } catch (cause) {
       if (generation.current === current)
         setError(cause instanceof Error ? cause.message : "Could not update Linear. Try again.");
-    } finally {
-      if (generation.current === current) {
-        inFlight.current = false;
-        setPending(false);
-      }
+    }
+    if (generation.current === current) {
+      inFlight.current = false;
+      setPending(false);
     }
   }
 

@@ -2430,7 +2430,8 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
         attachments={messageAttachments}
         delivery={
           <>
-            {row.message.inputIntent && row.message.inputIntent !== "turn_start" ? (
+            {row.message.inputIntent === "steer" ||
+            row.message.inputIntent === "promoted_queued_to_steer" ? (
               <UserMessageIntentMarker intent={row.message.inputIntent} />
             ) : null}
             {row.projectedItem &&
