@@ -131,17 +131,15 @@ function LiveVoiceSession(props: VoiceProps) {
   const current = observed?.controller === controller ? observed.state : controller.currentState;
   const busy = !["idle", "ended", "error"].includes(current.phase);
   const canMute = ["live", "reconnecting", "playback-blocked"].includes(current.phase);
-  const target = useMemo<LiveVoiceTarget | null>(
-    () =>
-      props.eligible
-        ? {
-            environmentId: props.environmentId,
-            threadId: props.threadId,
-            provider: "codex",
-            providerInstanceId: props.providerInstanceId,
-          }
-        : null,
-    [props.eligible, props.environmentId, props.providerInstanceId, props.threadId],
+  // Start availability may refresh on resume; it is not the active call's identity.
+  const target = useMemo<LiveVoiceTarget>(
+    () => ({
+      environmentId: props.environmentId,
+      threadId: props.threadId,
+      provider: "codex",
+      providerInstanceId: props.providerInstanceId,
+    }),
+    [props.environmentId, props.providerInstanceId, props.threadId],
   );
   const focused = useRef(false);
   const dictation = useGlobalVoiceInput();
@@ -228,9 +226,9 @@ function LiveVoiceSession(props: VoiceProps) {
         ) : (
           <Button
             label="Voice chat"
-            disabled={!target || dictation.isBusy}
+            disabled={!props.eligible || dictation.isBusy}
             onPress={() => {
-              if (target && focused.current && AppState.currentState === "active")
+              if (props.eligible && focused.current && AppState.currentState === "active")
                 void controller.start(target);
             }}
           />
