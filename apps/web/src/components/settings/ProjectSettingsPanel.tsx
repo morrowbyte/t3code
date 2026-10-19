@@ -45,6 +45,7 @@ import {
   ProjectFaviconPickerDialog,
 } from "./ProjectFaviconPickerDialog";
 import { ProjectActionsSettings } from "./ProjectActionsSettings";
+import { SharedProjectSetup } from "./SharedProjectSetup";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
 import { projectGroupTitleNeedsUpdate } from "./ProjectSettingsPanel.logic";
 import { useSettingsProjectGroups } from "./useSettingsProjectGroups";
@@ -573,6 +574,7 @@ function ProjectDetail({
         ))}
         <ProjectDefaultsSettings category="project" />
         <ProjectActionsSettings />
+        <SharedProjectSetup group={group} />
         {hasMultipleCheckouts ? checkoutChoices : null}
         <SettingsSection title="Danger">
           <SettingsRow

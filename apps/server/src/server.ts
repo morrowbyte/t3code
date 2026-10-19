@@ -40,6 +40,10 @@ import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as NodePtyAdapter from "./terminal/NodePtyAdapter.ts";
 import * as PullRequestHttp from "./pullRequest/http.ts";
 import * as VoiceHttp from "./voice/http.ts";
+import * as LinearHttp from "./integrations/linear/http.ts";
+import * as LinearIntegration from "./integrations/linear/LinearIntegration.ts";
+import * as LinearApi from "./integrations/linear/LinearApi.ts";
+import * as Scheduler from "./scheduling/Scheduler.ts";
 import * as UmlRenderRoute from "./streamable-ui/UmlRenderRoute.ts";
 import * as UmlRenderer from "./streamable-ui/UmlRenderer.ts";
 import * as VoiceTranscriptionService from "./voice/VoiceTranscriptionService.ts";
@@ -688,6 +692,16 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(OrchestrationHttp.layer),
       Layer.provide(PullRequestHttp.layer),
       Layer.provide(VoiceHttp.layer.pipe(Layer.provide(VoiceTranscriptionService.layer))),
+      Layer.provide(
+        LinearHttp.layer.pipe(
+          Layer.provide(
+            LinearIntegration.layer.pipe(
+              Layer.provide(LinearApi.layer),
+              Layer.provide(Scheduler.layer),
+            ),
+          ),
+        ),
+      ),
       Layer.provide(UmlRenderRoute.layer.pipe(Layer.provide(UmlRenderer.layer))),
       Layer.provide(ProjectHttp.layer),
       Layer.provide(ServerHttp.layerServerEnvironmentHttpApi),

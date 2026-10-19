@@ -239,6 +239,10 @@
       "types": "./src/state/voiceTranscriptionHttp.ts",
       "default": "./src/state/voiceTranscriptionHttp.ts"
     },
+    "./state/linear": {
+      "types": "./src/state/linearHttp.ts",
+      "default": "./src/state/linearHttp.ts"
+    },
     "./state/streamable-uml": {
       "types": "./src/state/streamableUml.ts",
       "default": "./src/state/streamableUml.ts"

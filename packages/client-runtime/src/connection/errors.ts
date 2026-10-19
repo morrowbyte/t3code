@@ -174,6 +174,7 @@ export function mapRemoteEnvironmentError(
         traceId: error.traceId,
       });
     case "VoiceTranscriptionHttpError":
+    case "LinearIntegrationError":
       return new ConnectionTransientError({
         reason: "remote-unavailable",
         detail: "The environment could not authorize the connection.",

@@ -8,6 +8,7 @@ import {
   type EnvironmentResourceNotFoundError,
   type EnvironmentScopeRequiredError,
   VoiceTranscriptionHttpError,
+  LinearIntegrationError,
 } from "@t3tools/contracts";
 import * as HttpObservability from "@t3tools/shared/httpObservability";
 import * as Data from "effect/Data";
@@ -21,6 +22,7 @@ import * as HttpApiClient from "effect/http-api/HttpApiClient";
 
 const isEnvironmentHttpCommonError = Schema.is(EnvironmentHttpCommonError);
 const isVoiceTranscriptionHttpError = Schema.is(VoiceTranscriptionHttpError);
+const isLinearIntegrationError = Schema.is(LinearIntegrationError);
 
 export class RemoteEnvironmentAuthFetchError extends Data.TaggedError(
   "RemoteEnvironmentAuthFetchError",
@@ -73,6 +75,7 @@ export type RemoteEnvironmentRequestError =
   | EnvironmentAuthInvalidError
   | EnvironmentScopeRequiredError
   | VoiceTranscriptionHttpError
+  | LinearIntegrationError
   | EnvironmentOperationForbiddenError
   | EnvironmentResourceNotFoundError
   | EnvironmentInternalError
@@ -129,6 +132,9 @@ const failRemoteRequest = (
     return Effect.fail(cause);
   }
   if (isVoiceTranscriptionHttpError(cause)) {
+    return Effect.fail(cause);
+  }
+  if (isLinearIntegrationError(cause)) {
     return Effect.fail(cause);
   }
   if (isEnvironmentHttpCommonError(cause)) {
