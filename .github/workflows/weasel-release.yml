@@ -495,21 +495,21 @@ jobs:
       - name: Install dependencies
         if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == ''
         run: |
-          if [[ '${{ inputs.android_only }}' == true ]]; then
+          if [[ '${{ inputs.android_only }}' == true && '${{ inputs.publish }}' == true ]]; then
             vp install --frozen-lockfile --filter=@t3tools/mobile... --filter=@t3tools/scripts...
           else
             vp install --frozen-lockfile
           fi
       - name: Prepare pinned Electron runtime before desktop imports
-        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.android_only != true
+        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && (inputs.android_only != true || inputs.publish != true)
         run: node apps/desktop/scripts/ensure-electron-runtime.mjs
 
       - name: Install pinned Chromium for focused renderer gates
-        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.android_only != true
+        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && (inputs.android_only != true || inputs.publish != true)
         run: node apps/server/node_modules/playwright-core/cli.js install --with-deps --only-shell chromium
 
       - name: Check source before release
-        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.android_only != true
+        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && (inputs.android_only != true || inputs.publish != true)
         env:
           EFFECTIVE_SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
@@ -520,7 +520,7 @@ jobs:
 
       - id: android_ci
         name: Reuse exact main source CI before Android-only release
-        if: inputs.android_only
+        if: inputs.android_only && inputs.publish
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
           GH_TOKEN: ${{ github.token }}
@@ -543,7 +543,7 @@ jobs:
 
       - id: route
         name: Verify reviewed Observatory preflight route
-        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.android_only != true
+        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && (inputs.android_only != true || inputs.publish != true)
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
@@ -578,7 +578,7 @@ jobs:
           PYROUTE
 
       - name: Preserve release Observatory preflight route evidence
-        if: always() && hashFiles('apps/web/src/routes/observatory.tsx') != '' && ((inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '') || steps.recovery.outcome == 'success' || steps.windows_recovery.outcome == 'success') && inputs.android_only != true
+        if: always() && hashFiles('apps/web/src/routes/observatory.tsx') != '' && ((inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '') || steps.recovery.outcome == 'success' || steps.windows_recovery.outcome == 'success') && (inputs.android_only != true || inputs.publish != true)
         uses: actions/upload-artifact@v4
         with:
           name: weasel-observatory-preflight-${{ inputs.source_sha }}-${{ github.run_attempt }}
