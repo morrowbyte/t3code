@@ -171,6 +171,12 @@ describe("optional Linear settings", () => {
     expect(checklist).toContain("T3CODE_LINEAR_CLIENT_ID=<registered-public-client-id>");
     expect(checklist).toContain("T3CODE_LINEAR_REDIRECT_URI=<exact-registered-callback-url>");
     expect(checklist).toContain("your product app owner");
+    expect(checklist).toContain("Open this setup/copy flow in the web or desktop client");
+    expect(checklist).toContain("On mobile, set up the host through one of those clients");
+    expect(checklist).toContain("same Linear workspace at the same time, use separate OAuth apps");
+    expect(checklist).toContain(
+      "does not support independent parallel connections through one shared app",
+    );
     expect(fixture.request).toHaveBeenCalledTimes(2);
     expect(fixture.request.mock.calls.some((call) => call[1]?.type === "connect")).toBe(false);
     await page.getByRole("button", { name: "Set up Linear" }).click();

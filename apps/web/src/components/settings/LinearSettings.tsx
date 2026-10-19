@@ -32,9 +32,11 @@ const deliveryLabel: Record<LinearSettings["deliveries"][number]["outcome"], str
   failed: "Delivery failed",
 };
 
-const setupChecklist = `Linear OAuth setup for the selected T3 environment
+const setupChecklist = `Linear OAuth host setup (web/desktop)
 
-1. Choose an OAuth app you own, or ask your product app owner for its public client ID and an approved redirect URI.
+Open this setup/copy flow in the web or desktop client. On mobile, set up the host through one of those clients.
+
+1. Register an OAuth app you control, or ask your product app owner for a separately registered app and approved callback for this environment. For environments connected to the same Linear workspace at the same time, use separate OAuth apps. This PKCE/app-actor flow does not support independent parallel connections through one shared app for that workspace.
 
 2. Register the exact callback URL in Linear:
 <approved-base-url>/api/integrations/linear/oauth/callback

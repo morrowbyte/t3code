@@ -6,19 +6,27 @@ thread on the environment you select.
 
 ## Connect an environment
 
-When Settings shows **Setup required**, choose **Set up Linear** to open and copy
-the host setup checklist. The copy contains public placeholders, not credentials
+In the web or desktop client, when Settings shows **Setup required**, choose
+**Set up Linear** to open and copy the host setup checklist. This setup/copy flow
+is not available in the native mobile app; use a web or desktop client to set up
+the host for mobile access. The copy contains public placeholders, not credentials
 or a verified callback address. Replace them before applying the configuration.
 An enabled switch alone does not mean Linear is connected.
 
 For your own installation, register an OAuth app you control and choose its exact
-callback address. For colleagues, a shared product app needs a named app owner,
-its public client ID and approved callbacks for the intended installations.
-Ask that owner for these public values; if none exist yet, app ownership and the
-callback address are the remaining human setup decision. A shared app does not
-require distributing personal keys or OAuth tokens: each environment completes
-Connect separately and keeps its own credentials. No shared app or callback
-service is bundled or provisioned automatically.
+callback address. Environments connected to the same Linear workspace at the same
+time must use separate OAuth apps with the current authorization-code/PKCE,
+`actor=app` flow. One shared product app cannot provide independent parallel
+app-actor connections to that workspace with this flow. Linear's
+[OAuth documentation](https://linear.app/developers/oauth-2-0-authentication)
+describes the parallel app-token restriction.
+
+For colleagues, a product app owner must provide separately registered apps for
+such simultaneous connections, their public client IDs and approved callbacks.
+If those do not exist yet, app ownership and callback addresses remain a human
+setup decision. Keep each environment's credentials private; do not distribute
+personal keys or OAuth tokens. No shared app or callback service is bundled or
+provisioned automatically.
 
 The environment owner must register a Linear OAuth app and configure these public
 values in the T3 server's launch environment, replacing the example values:
