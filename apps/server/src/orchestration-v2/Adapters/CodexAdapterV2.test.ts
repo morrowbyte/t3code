@@ -2758,6 +2758,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           clientInfo: { name: "T3 Code", title: "T3 Code", version: packageJson.version },
           capabilities: {
             experimentalApi: true,
+            mcpServerOpenaiFormElicitation: true,
             optOutNotificationMethods: ["turn/diff/updated"],
             extensions: {
               "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] },
