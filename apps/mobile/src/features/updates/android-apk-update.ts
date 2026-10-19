@@ -99,16 +99,25 @@ export function createAndroidApkUpdater(transport: AndroidApkTransport, native: 
       assertAndroidInstalledIdentity(installed);
       const releases = parseAndroidReleaseIndex(await transport.releases(controller.signal));
       let candidate: { release: AndroidApkRelease; proof: AndroidApkProof } | null = null;
+      let receiptFailure: { cause: unknown } | null = null;
       for (const release of releases) {
         if (!valid(id, controller.signal)) return;
-        const receipt = await transport.receipt(release, controller.signal);
-        const proof = verifyAndroidApkProof(receipt.value, release, receipt.sha256, installed);
-        if (
-          proof.versionCode > installed.versionCode &&
-          (!candidate || proof.versionCode > candidate.proof.versionCode)
-        )
-          candidate = { release, proof };
+        try {
+          const receipt = await transport.receipt(release, controller.signal);
+          if (!valid(id, controller.signal)) return;
+          const proof = verifyAndroidApkProof(receipt.value, release, receipt.sha256, installed);
+          if (
+            proof.versionCode > installed.versionCode &&
+            (!candidate || proof.versionCode > candidate.proof.versionCode)
+          )
+            candidate = { release, proof };
+        } catch (cause) {
+          if (!valid(id, controller.signal)) return;
+          if (cause instanceof Error && cause.name === "AbortError") throw cause;
+          receiptFailure ??= { cause };
+        }
       }
+      if (!candidate && receiptFailure) throw receiptFailure.cause;
       if (valid(id, controller.signal))
         publish({
           phase: candidate ? "available" : "current",
