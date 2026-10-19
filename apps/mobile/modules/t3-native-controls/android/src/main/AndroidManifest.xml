@@ -3,6 +3,7 @@
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
   <uses-permission android:name="android.permission.WAKE_LOCK" />
+  <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
   <application>
     <service android:name=".T3VoiceSessionService" android:exported="false" android:stopWithTask="true" android:foregroundServiceType="microphone|mediaPlayback" />
   </application>

@@ -3,7 +3,7 @@ import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScroll
 import Constants from "expo-constants";
 import { settlePromise } from "@t3tools/client-runtime/state/runtime";
 import { useEffect, useRef, useState } from "react";
-import { Pressable, View } from "react-native";
+import { Platform, Pressable, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppText as Text } from "../../components/ui/AppText";
@@ -14,6 +14,7 @@ import {
   registerHiddenUpdateTap,
   runAppUpdateCheck,
 } from "../updates/app-updates";
+import { AndroidApkUpdateSection } from "../updates/AndroidApkUpdateSection";
 import { SettingsRow } from "./components/SettingsRow";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsScreen } from "./components/SettingsScreen";
@@ -31,6 +32,7 @@ export function SettingsAboutRouteScreen() {
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
         <AppSettingsSection />
+        {Platform.OS === "android" ? <AndroidApkUpdateSection /> : null}
       </ScrollView>
     </SettingsScreen>
   );
@@ -96,7 +98,7 @@ function AppSettingsSection() {
               : null;
 
   const versionRow = (
-    <View className="flex-row items-center gap-4 p-4">
+    <View className="flex-row items-start gap-4 p-4">
       <SymbolView
         name="info.circle"
         size={22}
@@ -104,9 +106,11 @@ function AppSettingsSection() {
         type="monochrome"
         weight="regular"
       />
-      <Text className="flex-1 text-lg text-foreground">Version</Text>
-      <View className="items-end">
-        <Text className="text-lg text-foreground-muted">{versionLabel}</Text>
+      <View className="min-w-0 flex-1 gap-1">
+        <Text className="text-lg text-foreground">Version</Text>
+        <Text selectable className="shrink text-lg text-foreground-muted">
+          {versionLabel}
+        </Text>
         {statusLabel ? (
           <Text className="text-xs text-foreground-muted/70">{statusLabel}</Text>
         ) : null}
