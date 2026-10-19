@@ -1,5 +1,5 @@
-name: Android .55 native x86_64 test
-run-name: Android .55 x86_64 test only · source 1af269d
+name: Android updater native x86_64 test
+run-name: Android updater x86_64 test only · source 9dc2028e
 on:
   workflow_dispatch:
 permissions:
@@ -17,25 +17,30 @@ jobs:
       receipt_sha256: ${{ steps.apk.outputs.receipt_sha256 }}
       build_attempt: ${{ steps.apk.outputs.build_attempt }}
     env:
-      DESKTOP_SOURCE_SHA: 1af269d6144fb63cdaf74002d5e65ef6403a6822
       APP_VARIANT: production
+      MOBILE_VERSION_POLICY: appVersion
       T3CODE_MOBILE_VERSION: 0.1.2-nightly.20261018.55
       MORROWBYTE_ANDROID_VERSION_CODE: "55"
       ANDROID_BUILD_TOOLS: "36.0.0"
       CI: "1"
+      NODE_OPTIONS: --max-old-space-size=2560
+      CMAKE_BUILD_PARALLEL_LEVEL: "2"
     steps:
-      - name: Require normal trusted main dispatch
+      - name: Require exact private updater candidate dispatch
         env:
           REQUESTED_REF: ${{ github.ref }}
-        run: test "$REQUESTED_REF" = refs/heads/main
+          REQUESTED_REPOSITORY: ${{ github.repository }}
+        run: |
+          test "$REQUESTED_REPOSITORY" = morrowbyte/t3code
+          test "$REQUESTED_REF" = refs/heads/fix/android-background-voice-transcript-20261019
 
       - name: Bind runner-local signing path
         run: printf 'MORROWBYTE_ANDROID_KEYSTORE_PATH=%s/morrowbyte-signing/morrowbyte-release.p12\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
 
-      - name: Checkout exact promoted source
+      - name: Checkout exact updater source
         uses: actions/checkout@v4
         with:
-          ref: 1af269d6144fb63cdaf74002d5e65ef6403a6822
+          ref: 9dc2028e73e7ea0345b479f9b4cb19e9c285268a
           fetch-depth: 1
 
       - name: Setup Vite+
@@ -66,11 +71,12 @@ jobs:
       - name: Bind source and verify standalone fork configuration
         working-directory: apps/mobile
         env:
-          SOURCE_SHA: 1af269d6144fb63cdaf74002d5e65ef6403a6822
+          SOURCE_SHA: 9dc2028e73e7ea0345b479f9b4cb19e9c285268a
           NODE_ENV: production
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(sha256sum ../../pnpm-lock.yaml | cut -d' ' -f1)" = 6b7540e69f174e62461b68a2918fcf498461dccd3cdd6edd94877f9f1d1e8484
           node node_modules/expo/bin/cli config --type public --json > "$RUNNER_TEMP/morrowbyte-config.json"
           python3 - <<'PYCONFIG'
           import json, os
@@ -96,6 +102,37 @@ jobs:
         env:
           NODE_ENV: production
         run: node node_modules/expo/bin/cli prebuild --platform android --no-install --clean
+
+      - name: Bound Metro workers and fingerprint the generated test project
+        working-directory: apps/mobile
+        env:
+          NODE_ENV: production
+        run: |
+          set -euo pipefail
+          python3 - <<'PYPACKAGER'
+          import hashlib
+          from pathlib import Path
+          gradle = Path('android/app/build.gradle')
+          text = gradle.read_text()
+          assert text.count('react {\n') == 1
+          gradle.write_text(text.replace('react {\n', 'react {\n    extraPackagerArgs = ["--max-workers", "2"]\n', 1))
+          assert 'android.enableMinifyInReleaseBuilds=true' in Path('android/gradle.properties').read_text().splitlines()
+          verifier = Path('modules/t3-native-controls/android/src/main/java/expo/modules/t3nativecontrols/ApkUpdateVerifier.kt')
+          assert hashlib.sha256(verifier.read_bytes()).hexdigest() == '47c60f4766a180485bc752c4637a9cbeec5ad983bfb84e2d21dc69a5519eb9df'
+          PYPACKAGER
+          node <<'JSFINGERPRINT'
+          const fs = require('node:fs');
+          const { createRequire } = require('node:module');
+          const mobileRequire = createRequire(process.cwd() + '/package.json');
+          const fingerprint = createRequire(mobileRequire.resolve('expo-updates/package.json'))('@expo/fingerprint');
+          fingerprint.createFingerprintAsync(process.cwd(), { platforms: ['android'] }).then(value => {
+            if (!value.hash || !value.sources.some(source => source.filePath === 'modules/t3-native-controls/android')) {
+              throw new Error('Native controls missing from the generated test fingerprint');
+            }
+            fs.writeFileSync(process.env.RUNNER_TEMP + '/morrowbyte-fingerprint.json', JSON.stringify(value, null, 2));
+            console.log(JSON.stringify({ hash: value.hash, sources: value.sources.length }));
+          }).catch(error => { console.error(error); process.exitCode = 1; });
+          JSFINGERPRINT
 
       - name: Materialize own release keystore
         env:
@@ -128,13 +165,18 @@ jobs:
           test "$MORROWBYTE_ANDROID_KEY_ALIAS" = morrowbyte-release
           test -n "$MORROWBYTE_ANDROID_KEY_PASSWORD"
           ./gradlew :app:dependencies --configuration releaseRuntimeClasspath --no-daemon --no-configuration-cache \
-            -PreactNativeArchitectures=x86_64 > "$RUNNER_TEMP/morrowbyte-android-dependencies.txt"
-          ./gradlew :app:assembleRelease --no-daemon --no-configuration-cache -PreactNativeArchitectures=x86_64
+            --max-workers=2 -Dorg.gradle.parallel=false -PreactNativeArchitectures=x86_64 \
+            -Dorg.gradle.jvmargs='-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:ActiveProcessorCount=4' \
+            > "$RUNNER_TEMP/morrowbyte-android-dependencies.txt"
+          ./gradlew :app:assembleRelease --no-daemon --no-configuration-cache --max-workers=2 \
+            -Dorg.gradle.parallel=false -PreactNativeArchitectures=x86_64 \
+            -Dorg.gradle.jvmargs='-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:ActiveProcessorCount=4' \
+            -Pkotlin.daemon.jvmargs=-Xmx1024m
 
       - id: apk
         name: Verify APK signature, embedded bundle, identity and 16KB native alignment
         env:
-          SOURCE_SHA: 1af269d6144fb63cdaf74002d5e65ef6403a6822
+          SOURCE_SHA: 9dc2028e73e7ea0345b479f9b4cb19e9c285268a
         run: |
           set -euo pipefail
           python3 - <<'PYAPK'
@@ -187,8 +229,27 @@ jobs:
                       alignment = struct.unpack_from('<Q', data, header + 48)[0]
                       assert alignment >= 16384 and file_offset % 16384 == address % 16384, name
                   assert loads > 0, name
+              defined = set()
+              for name in [name for name in names if re.fullmatch(r'classes\d*\.dex', name)]:
+                  data = archive.read(name)
+                  strings_count, strings_offset, types_count, types_offset = struct.unpack_from('<IIII', data, 56)
+                  classes_count, classes_offset = struct.unpack_from('<II', data, 96)
+                  strings = []
+                  for index in range(strings_count):
+                      offset = struct.unpack_from('<I', data, strings_offset + index * 4)[0]
+                      while data[offset] & 128:
+                          offset += 1
+                      offset += 1
+                      strings.append(data[offset:data.index(0, offset)].decode('utf-8', errors='replace'))
+                  types = struct.unpack_from('<' + str(types_count) + 'I', data, types_offset)
+                  defined.update(strings[types[struct.unpack_from('<I', data, classes_offset + index * 32)[0]]] for index in range(classes_count))
+              assert {'Lorg/jni_zero/JniZero;', 'Lorg/jni_zero/CommonApis;', 'Lcom/morrowbyte/t3code/MainActivity;'} <= defined
               bundle_sha = hashlib.sha256(archive.read(bundle)).hexdigest()
-          assert bundle_sha == '2fc6e9c664236d16258d3d9fc08e0f3aa26be3fdc704972c3575724ba1b5cbcf', 'Test ABI must retain the exact published release JS bundle.'
+          generated_bundle = Path('apps/mobile/android/app/build/generated/assets/createBundleReleaseJsAndAssets/index.android.bundle')
+          assert generated_bundle.is_file() and digest(generated_bundle) == bundle_sha, 'APK must embed the bundle generated from the pinned updater source.'
+          mapping = Path('apps/mobile/android/app/build/outputs/mapping/release/mapping.txt')
+          assert mapping.is_file() and mapping.stat().st_size > 0, 'Minified release mapping is missing.'
+          fingerprint = json.loads((Path(os.environ['RUNNER_TEMP']) / 'morrowbyte-fingerprint.json').read_text())
           output = Path('release-android')
           output.mkdir()
           name = f'Morrowbyte-{version}-android-test-x86_64.apk'
@@ -199,8 +260,11 @@ jobs:
           (output / (name + '.sha256')).write_text(f'{apk_sha}  {name}\n')
           receipt = {
               'schemaVersion': 1, 'testOnly': True, 'shippingArtifact': False,
-              'shippingApkSha256': '7b7e1163b035f8e3610fa6788665358fa33a27bb3da57e1f05d93050ac4a3325',
-              'buildMode': 'release', 'minificationUnchanged': True, 'source': source, 'desktopSource': os.environ['DESKTOP_SOURCE_SHA'],
+              'buildMode': 'release', 'minificationUnchanged': True, 'source': source,
+              'nativeFingerprint': fingerprint['hash'], 'nativeFingerprintSourceCount': len(fingerprint['sources']),
+              'apkVerifierSha256': digest(Path('apps/mobile/modules/t3-native-controls/android/src/main/java/expo/modules/t3nativecontrols/ApkUpdateVerifier.kt')),
+              'generatedAppGradleSha256': digest(Path('apps/mobile/android/app/build.gradle')),
+              'resourceProfile': {'metroWorkers': 2, 'gradleWorkers': 2, 'gradleHeapMiB': 4096, 'kotlinHeapMiB': 1024, 'nodeOldSpaceMiB': 2560},
               'lockSha256': digest(Path('pnpm-lock.yaml')),
               'run': os.environ['GITHUB_RUN_ID'], 'attempt': os.environ['GITHUB_RUN_ATTEMPT'],
               'trustedContextSha': os.environ['GITHUB_SHA'], 'trustedWorkflowSha': os.environ['GITHUB_WORKFLOW_SHA'],
@@ -209,6 +273,7 @@ jobs:
               'apk': name, 'apkSha256': apk_sha, 'certificateSha256': expected_cert,
               'abis': ['x86_64'], 'embeddedBundle': bundle, 'embeddedBundleSha256': bundle_sha,
               'nativeLibraryCount': len(libraries), 'signatureVerified': True, 'zip16KB': True, 'elf16KB': True,
+              'jniZeroClassesDefined': True,
               'dependencyReportSha256': digest(Path(os.environ['RUNNER_TEMP']) / 'morrowbyte-android-dependencies.txt'),
               'deviceAcceptance': 'not-run',
           }
@@ -221,7 +286,7 @@ jobs:
       - name: Upload verified Android release payload
         uses: actions/upload-artifact@v4
         with:
-          name: weasel-test-android-x86_64-1af269d
+          name: weasel-test-android-updater-x86_64-9dc2028e
           path: release-android/*
           if-no-files-found: error
           retention-days: 7
@@ -230,9 +295,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: weasel-android-test-build-evidence-1af269d6144fb63cdaf74002d5e65ef6403a6822-${{ github.run_attempt }}
+          name: weasel-android-updater-test-evidence-9dc2028e-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/morrowbyte-android-dependencies.txt
+            ${{ runner.temp }}/morrowbyte-config.json
+            ${{ runner.temp }}/morrowbyte-fingerprint.json
+            apps/mobile/android/app/build.gradle
             apps/mobile/android/app/build/outputs/mapping/release/mapping.txt
             apps/mobile/android/app/build/generated/sourcemaps/react/release/*.map
           if-no-files-found: ignore
@@ -241,4 +309,3 @@ jobs:
       - name: Remove ephemeral signing material
         if: always()
         run: rm -rf -- "$RUNNER_TEMP/morrowbyte-signing"
-
