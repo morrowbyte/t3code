@@ -9,6 +9,7 @@ import {
   type EnvironmentScopeRequiredError,
   VoiceTranscriptionHttpError,
   LinearIntegrationError,
+  AndroidAppUpdateHttpError,
 } from "@t3tools/contracts";
 import * as HttpObservability from "@t3tools/shared/httpObservability";
 import * as Data from "effect/Data";
@@ -23,6 +24,7 @@ import * as HttpApiClient from "effect/http-api/HttpApiClient";
 const isEnvironmentHttpCommonError = Schema.is(EnvironmentHttpCommonError);
 const isVoiceTranscriptionHttpError = Schema.is(VoiceTranscriptionHttpError);
 const isLinearIntegrationError = Schema.is(LinearIntegrationError);
+const isAndroidAppUpdateHttpError = Schema.is(AndroidAppUpdateHttpError);
 
 export class RemoteEnvironmentAuthFetchError extends Data.TaggedError(
   "RemoteEnvironmentAuthFetchError",
@@ -76,6 +78,7 @@ export type RemoteEnvironmentRequestError =
   | EnvironmentScopeRequiredError
   | VoiceTranscriptionHttpError
   | LinearIntegrationError
+  | AndroidAppUpdateHttpError
   | EnvironmentOperationForbiddenError
   | EnvironmentResourceNotFoundError
   | EnvironmentInternalError
@@ -131,7 +134,7 @@ const failRemoteRequest = (
   if (cause instanceof RemoteEnvironmentAuthTimeoutError) {
     return Effect.fail(cause);
   }
-  if (isVoiceTranscriptionHttpError(cause)) {
+  if (isVoiceTranscriptionHttpError(cause) || isAndroidAppUpdateHttpError(cause)) {
     return Effect.fail(cause);
   }
   if (isLinearIntegrationError(cause)) {

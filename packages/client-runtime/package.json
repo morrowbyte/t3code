@@ -243,6 +243,10 @@
       "types": "./src/state/linearHttp.ts",
       "default": "./src/state/linearHttp.ts"
     },
+    "./state/android-app-updates": {
+      "types": "./src/state/androidAppUpdates.ts",
+      "default": "./src/state/androidAppUpdates.ts"
+    },
     "./state/streamable-uml": {
       "types": "./src/state/streamableUml.ts",
       "default": "./src/state/streamableUml.ts"
