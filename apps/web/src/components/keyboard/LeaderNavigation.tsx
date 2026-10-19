@@ -112,7 +112,8 @@ export function LeaderNavigation({
   };
   const focusEntry = (direction: -1 | 1) => {
     const entries = [
-      ...(popup.current?.querySelectorAll<HTMLButtonElement>("[data-leader-key]") ?? []),
+      ...(popup.current?.querySelectorAll<HTMLButtonElement>("[data-leader-key]:not(:disabled)") ??
+        []),
     ];
     const current = entries.indexOf(document.activeElement as HTMLButtonElement);
     entries[(current + direction + entries.length) % entries.length]?.focus();

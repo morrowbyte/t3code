@@ -2,6 +2,8 @@ import { act, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { LeaderNavigation } from "./LeaderNavigation";
+import { LeaderNavigationHost } from "./LeaderNavigationHost";
+import { SidebarProvider } from "../ui/sidebar";
 import { requestLeaderNavigation } from "./LeaderNavigation.dom";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { shouldTypeToFocusComposer } from "../chat/composerFocusRedirect";
@@ -91,6 +93,57 @@ async function open() {
 }
 
 describe("LeaderNavigation", () => {
+  it("opens the existing project filter after a project has already been selected", async () => {
+    const filter = fixture.querySelector<HTMLButtonElement>("nav > button")!;
+    filter.setAttribute("aria-label", "Filter threads by project: Example project");
+    filter.setAttribute("popovertarget", "selected-project-filter");
+    const popup = document.createElement("div");
+    popup.id = "selected-project-filter";
+    popup.setAttribute("popover", "auto");
+    popup.textContent = "Switch project";
+    fixture.append(popup);
+    await act(() =>
+      root.render(
+        <SidebarProvider>
+          <LeaderNavigationHost />
+        </SidebarProvider>,
+      ),
+    );
+    await open();
+    await press("p");
+    await press("f");
+    expect(popup.matches(":popover-open")).toBe(true);
+  });
+
+  it("skips disabled message navigation in both directions with arrows and Ctrl N/P", async () => {
+    fixture.querySelectorAll("[data-message-id]").forEach((message) => message.remove());
+    await act(() =>
+      root.render(
+        <SidebarProvider>
+          <LeaderNavigationHost />
+        </SidebarProvider>,
+      ),
+    );
+    await open();
+    expect(document.querySelector<HTMLButtonElement>('[data-leader-key="m"]')?.disabled).toBe(true);
+    for (const [key, ctrlKey, from, expected] of [
+      ["ArrowDown", false, "t", ["p", "s", "a", "i"]],
+      ["n", true, "t", ["p", "s", "a", "i"]],
+      ["ArrowUp", false, "i", ["a", "s", "p", "t"]],
+      ["p", true, "i", ["a", "s", "p", "t"]],
+    ] as const) {
+      document.querySelector<HTMLButtonElement>(`[data-leader-key="${from}"]`)!.focus();
+      const visited: Array<string | null> = [];
+      for (const _entry of expected) {
+        await press(key, { ctrlKey });
+        visited.push(document.activeElement?.getAttribute("data-leader-key") ?? null);
+      }
+      expect.soft(visited).toEqual(expected);
+    }
+    await press("i");
+    expect(document.activeElement).toBe(fixture.querySelector("textarea"));
+  });
+
   it("discovers messages loaded after the navigation host mounted", async () => {
     const messages = [...fixture.querySelectorAll("[data-message-id]")];
     messages.forEach((message) => message.remove());

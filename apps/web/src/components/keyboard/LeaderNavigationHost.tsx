@@ -69,7 +69,7 @@ export function LeaderNavigationHost() {
           run: async () => {
             showSidebar();
             requestAnimationFrame(() => {
-              clickVisible('[aria-label="Filter threads by project"]');
+              clickVisible('[aria-label^="Filter threads by project"]');
             });
           },
         },
