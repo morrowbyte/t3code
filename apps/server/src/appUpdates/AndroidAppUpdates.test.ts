@@ -34,6 +34,7 @@ function release(releaseVersion = version) {
 function fixture(
   releases = [release()],
   fetchFn: typeof fetch = () => Promise.resolve(new Response(bytes)),
+  pages?: ReadonlyArray<ReadonlyArray<ReturnType<typeof release>>>,
 ) {
   const paths: string[] = [];
   const github = GitHubRest.GitHubRest.of({
@@ -45,7 +46,15 @@ function fixture(
         return {
           status: 200,
           headers: {},
-          body: JSON.stringify(input.path.includes("?") ? releases : releases[0]),
+          body: JSON.stringify(
+            input.path.includes("?")
+              ? (pages?.[
+                  Number(
+                    new URL("https://api.github.com/" + input.path).searchParams.get("page") ?? "1",
+                  ) - 1
+                ] ?? releases)
+              : releases[0],
+          ),
           truncated: false,
           invalidUtf8: false,
         };
@@ -87,6 +96,53 @@ it.effect(
       expect(index.releases[0]!.assets).toHaveLength(3);
       expect(f.paths).toEqual(["repos/morrowbyte/t3code/releases?per_page=30"]);
     }),
+);
+
+it.effect("finds the Android release beyond a full ineligible first page", () =>
+  Effect.gen(function* () {
+    const good = release();
+    const f = fixture([good], undefined, [
+      Array.from({ length: 30 }, () => ({ ...good, draft: true })),
+      [good],
+    ]);
+    const index = yield* AndroidAppUpdates.AndroidAppUpdates.pipe(
+      Effect.flatMap((service) => service.releases),
+      Effect.provide(f.layer),
+    );
+    expect(index.releases.map((entry) => entry.id)).toEqual([good.id]);
+    expect(f.paths).toEqual([
+      "repos/morrowbyte/t3code/releases?per_page=30",
+      "repos/morrowbyte/t3code/releases?per_page=30&page=2",
+    ]);
+  }),
+);
+
+it.effect("returns an empty index only after reaching the end of release history", () =>
+  Effect.gen(function* () {
+    const f = fixture([release()], undefined, [
+      Array.from({ length: 30 }, () => ({ ...release(), draft: true })),
+      [],
+    ]);
+    const index = yield* AndroidAppUpdates.AndroidAppUpdates.pipe(
+      Effect.flatMap((service) => service.releases),
+      Effect.provide(f.layer),
+    );
+    expect(index.releases).toEqual([]);
+    expect(f.paths).toHaveLength(2);
+  }),
+);
+
+it.effect("fails the check instead of reporting current when its request budget is exhausted", () =>
+  Effect.gen(function* () {
+    const f = fixture(Array.from({ length: 30 }, () => ({ ...release(), draft: true })));
+    const error = yield* AndroidAppUpdates.AndroidAppUpdates.pipe(
+      Effect.flatMap((service) => service.releases),
+      Effect.provide(f.layer),
+      Effect.flip,
+    );
+    expect(error.reason).toBe("invalid_release");
+    expect(f.paths).toHaveLength(10);
+  }),
 );
 
 it.effect.each(["0.1.3-nightly.20261020.60", "1.0.0-nightly.20261020.61"])(

@@ -22,6 +22,23 @@ export interface AndroidApkTransport {
   remove(uri: string): Promise<void>;
 }
 
+export function orphanedAndroidApkDownloadNames(
+  entries: ReadonlyArray<{ readonly name: string; readonly uri: string; readonly isFile: boolean }>,
+  protectedUris: ReadonlySet<string>,
+): readonly string[] {
+  return entries
+    .filter(
+      (entry) =>
+        entry.isFile &&
+        /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\.apk$/.test(
+          entry.name,
+        ) &&
+        !protectedUris.has(entry.uri),
+    )
+    .slice(0, 8)
+    .map((entry) => entry.name);
+}
+
 export interface AndroidApkNative {
   installed(): Promise<AndroidInstalledIdentity>;
   verify(uri: string, release: AndroidApkRelease, proof: AndroidApkProof): Promise<void>;

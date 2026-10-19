@@ -18,9 +18,11 @@ import { CryptoDigestAlgorithm, digest, randomUUID } from "expo-crypto";
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { environmentSession, readEnvironmentScope } from "../../state/session";
-import type { AndroidApkTransport } from "./android-apk-update";
+import { orphanedAndroidApkDownloadNames, type AndroidApkTransport } from "./android-apk-update";
 
 type UpdateConnection = Parameters<typeof requestEnvironmentAndroidAppReleases>[0];
+// Keep completed downloads protected until their updater releases the URI too.
+const protectedDownloads = new Set<string>();
 
 async function request<A, E>(
   environmentId: EnvironmentId,
@@ -98,8 +100,18 @@ export function createAndroidApkTransport(environmentId: EnvironmentId): Android
     async download(release, signal, progress) {
       const directory = new Directory(Paths.cache, "apk-updates");
       directory.create({ intermediates: true, idempotent: true });
+      const orphaned = orphanedAndroidApkDownloadNames(
+        directory.list().map((entry) => ({
+          name: entry.name,
+          uri: entry.uri,
+          isFile: entry instanceof File,
+        })),
+        protectedDownloads,
+      );
+      for (const name of orphaned) new File(directory, name).delete();
       const file = new File(directory, `${randomUUID()}.apk`);
       file.create();
+      protectedDownloads.add(file.uri);
       try {
         await request(environmentId, signal, (connection) =>
           consumeEnvironmentAndroidAppAsset({
@@ -144,13 +156,18 @@ export function createAndroidApkTransport(environmentId: EnvironmentId): Android
         if (signal.aborted) throw new Error("Download cancelled.");
         return file.uri;
       } catch (cause) {
+        protectedDownloads.delete(file.uri);
         if (file.exists) file.delete();
         throw cause;
       }
     },
     async remove(uri) {
       const file = new File(uri);
-      if (file.exists) file.delete();
+      try {
+        if (file.exists) file.delete();
+      } finally {
+        protectedDownloads.delete(uri);
+      }
     },
   };
 }

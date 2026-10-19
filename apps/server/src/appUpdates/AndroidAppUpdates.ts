@@ -138,18 +138,23 @@ const make = Effect.gen(function* () {
         ),
       );
 
-  const releases = read("releases?per_page=30").pipe(
-    Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(GitHubRelease)))),
-    Effect.map(
-      (releases) =>
-        ({
-          repository: REPOSITORY,
-          releases: releases.flatMap((release) => {
-            const approved = approvedRelease(release);
-            return approved ? [approved] : [];
-          }),
-        }) as const,
-    ),
+  const releases = Effect.gen(function* () {
+    for (let page = 1; page <= 10; page++) {
+      const batch = yield* read(`releases?per_page=30${page === 1 ? "" : `&page=${page}`}`).pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(GitHubRelease))),
+        ),
+      );
+      const approved = batch.flatMap((release) => {
+        const entry = approvedRelease(release);
+        return entry ? [entry] : [];
+      });
+      if (approved.length > 0 || batch.length < 30)
+        return { repository: REPOSITORY, releases: approved } as const;
+    }
+    // A bounded check must fail rather than claim current with unsearched history.
+    return yield* new AndroidAppUpdateFailure({ reason: "invalid_release" });
+  }).pipe(
     Effect.mapError((cause) =>
       Schema.is(AndroidAppUpdateFailure)(cause)
         ? cause

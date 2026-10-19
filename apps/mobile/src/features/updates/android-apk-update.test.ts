@@ -2,9 +2,37 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { ANDROID_UPDATE_CERT, ANDROID_UPDATE_PACKAGE } from "./android-apk-release";
 import {
   createAndroidApkUpdater,
+  orphanedAndroidApkDownloadNames,
   type AndroidApkNative,
   type AndroidApkTransport,
 } from "./android-apk-update";
+
+describe("orphaned Android download files", () => {
+  const entries = Array.from({ length: 12 }, (_, index) => {
+    const name = `${index.toString(16).padStart(8, "0")}-0000-4000-8000-000000000000.apk`;
+    return { name, uri: `file:///cache/apk-updates/${name}`, isFile: true };
+  });
+
+  it("prunes a bounded batch after restart while preserving foreign files and directories", () => {
+    const files = [
+      { ...entries[0]!, name: "notes.txt" },
+      { ...entries[0]!, name: `install-${"a".repeat(64)}.apk` },
+      { ...entries[0]!, isFile: false },
+      ...entries,
+    ];
+    expect(orphanedAndroidApkDownloadNames(files, new Set())).toEqual(
+      entries.slice(0, 8).map((entry) => entry.name),
+    );
+  });
+
+  it("preserves active and completed downloads still referenced by any updater", () => {
+    const referenced = new Set([entries[0]!.uri, entries[1]!.uri]);
+    expect(orphanedAndroidApkDownloadNames(entries.slice(0, 3), referenced)).toEqual([
+      entries[2]!.name,
+    ]);
+    expect(orphanedAndroidApkDownloadNames(entries.slice(0, 3), new Set())).toHaveLength(3);
+  });
+});
 
 function fixture(versionCode = 60, version = `0.1.2-nightly.20261019.${versionCode}`) {
   const name = `Morrowbyte-${version}-android-arm64.apk`;
