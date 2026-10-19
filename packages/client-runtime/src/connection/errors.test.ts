@@ -1,4 +1,4 @@
-import { EnvironmentAuthInvalidError } from "@t3tools/contracts";
+import { AndroidAppUpdateHttpError, EnvironmentAuthInvalidError } from "@t3tools/contracts";
 import {
   RelayAuthInvalidError,
   RelayEnvironmentConnectNotAuthorizedError,
@@ -110,6 +110,15 @@ describe("mapManagedRelayError", () => {
 });
 
 describe("mapRemoteDpopEnvironmentError", () => {
+  it("maps Android update failures to a transient connection error", () => {
+    expect(
+      mapRemoteEnvironmentError(new AndroidAppUpdateHttpError({ reason: "github_access" })),
+    ).toMatchObject({
+      _tag: "ConnectionTransientError",
+      reason: "remote-unavailable",
+    });
+  });
+
   it("keeps relay descriptor auth failures distinct from DPoP proof failures", () => {
     const error = new EnvironmentAuthInvalidError({
       code: "auth_invalid",

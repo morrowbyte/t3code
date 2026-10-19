@@ -175,6 +175,7 @@ export function mapRemoteEnvironmentError(
       });
     case "VoiceTranscriptionHttpError":
     case "LinearIntegrationError":
+    case "AndroidAppUpdateHttpError":
       return new ConnectionTransientError({
         reason: "remote-unavailable",
         detail: "The environment could not authorize the connection.",

@@ -1,3 +1,4 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect Crypto has no incremental digest; APK verification must stay bounded while streaming.
 import * as NodeCrypto from "node:crypto";
 import {
   AndroidAppUpdateFailureReason,
@@ -150,7 +151,7 @@ const make = Effect.gen(function* () {
         }) as const,
     ),
     Effect.mapError((cause) =>
-      cause instanceof AndroidAppUpdateFailure
+      Schema.is(AndroidAppUpdateFailure)(cause)
         ? cause
         : new AndroidAppUpdateFailure({ reason: "invalid_release", cause }),
     ),
@@ -170,7 +171,7 @@ const make = Effect.gen(function* () {
       Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(GitHubRelease))),
       Effect.map(approvedRelease),
       Effect.mapError((cause) =>
-        cause instanceof AndroidAppUpdateFailure
+        Schema.is(AndroidAppUpdateFailure)(cause)
           ? cause
           : new AndroidAppUpdateFailure({ reason: "invalid_release", cause }),
       ),

@@ -1,4 +1,3 @@
-import * as NodeCrypto from "node:crypto";
 import { expect, it } from "@effect/vitest";
 import * as GitHubRest from "@t3tools/source-control-github/server/GitHubRest";
 import * as Effect from "effect/Effect";
@@ -11,7 +10,7 @@ import { FetchHttpClient } from "effect/http";
 import * as AndroidAppUpdates from "./AndroidAppUpdates.ts";
 
 const bytes = new TextEncoder().encode("signed APK fixture bytes");
-const digest = NodeCrypto.createHash("sha256").update(bytes).digest("hex");
+const digest = "cad5053d1e4695d837497eccb744f0016d82fa2362fe2b9cd01a446030d6e824";
 const version = "0.1.2-nightly.20261019.59";
 const name = `Morrowbyte-${version}-android-arm64.apk`;
 function release() {
