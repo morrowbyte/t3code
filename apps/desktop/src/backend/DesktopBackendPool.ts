@@ -233,13 +233,13 @@ export const layer = Layer.effect(
                   ] as const);
                 }
                 return Effect.gen(function* () {
-                  // Provide the captured factory services first, then the child scope
-                  // last so instance finalizers are owned by the unregisterable scope.
+                  // Apply the child scope inside the captured factory context so unregister
+                  // closes this instance rather than the pool scope.
                   const instanceScope = yield* Scope.fork(layerScope, "sequential");
                   const instance = yield* DesktopBackendManager.makeBackendInstance({
                     ...spec,
                     reserveStart,
-                  }).pipe(Effect.provide(factoryContext), Scope.provide(instanceScope));
+                  }).pipe(Scope.provide(instanceScope), Effect.provide(factoryContext));
                   const next = new Map(current);
                   next.set(spec.id, {
                     _tag: "Active",

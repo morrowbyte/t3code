@@ -393,6 +393,9 @@ export const make = Effect.gen(function* () {
 
   const appUpdateYmlConfigRef = yield* Ref.make<Option.Option<AppUpdateYmlConfig>>(Option.none());
   const activeUpdateActionRef = yield* Ref.make<Option.Option<UpdateAction>>(Option.none());
+  const installRunningBackendsRef = yield* Ref.make<
+    ReadonlyArray<DesktopBackendPool.DesktopBackendInstance>
+  >([]);
   const finishedUpdateActions = yield* PubSub.unbounded<UpdateAction>();
   const updaterConfiguredRef = yield* Ref.make(false);
   const clientOnlyInstallRef = yield* Ref.make(false);
@@ -840,6 +843,7 @@ export const make = Effect.gen(function* () {
       finishUpdateAction("install"),
       Ref.set(desktopState.quitting, false),
       Ref.set(clientOnlyInstallRef, false),
+      Ref.set(installRunningBackendsRef, []),
       removeUpdateRestartMarker,
       removeInstallRecord,
       interruptHistory,
@@ -861,7 +865,10 @@ export const make = Effect.gen(function* () {
     yield* removeUpdateRestartMarker;
     yield* removeInstallRecord;
     yield* Effect.gen(function* () {
-      const instances = (yield* Ref.get(clientOnlyInstallRef)) ? [] : yield* pool.list;
+      const runningInstances = yield* Ref.getAndSet(installRunningBackendsRef, []);
+      const instances = (yield* Ref.get(clientOnlyInstallRef))
+        ? []
+        : (yield* pool.list).filter((instance) => runningInstances.includes(instance));
       const restartExit = yield* Effect.forEach(instances, (instance) => instance.start, {
         concurrency: "unbounded",
         discard: true,
@@ -938,20 +945,24 @@ export const make = Effect.gen(function* () {
 
         yield* Ref.set(clientOnlyInstallRef, clientOnly);
         yield* Ref.set(desktopState.quitting, true);
+        yield* Ref.set(installRunningBackendsRef, []);
 
         return yield* Effect.gen(function* () {
           if (!clientOnly) yield* writeUpdateRestartMarker;
           const { downloadedVersion } = yield* Ref.get(updateStateRef);
           if (downloadedVersion !== null)
             yield* writeInstallRecord(downloadedVersion).pipe(Effect.orDie);
-          // Stop every backend in the pool, not just the primary. With
-          // parallel WSL + Windows backends, leaving the WSL instance up
-          // means quitAndInstall's app.quit() exits before the pool's
-          // scope cascade has a chance to run its stop finalizer, so the
-          // WSL child gets hard-killed by the OS instead of receiving
-          // SIGTERM + grace. Stops run concurrently with the same 5s
-          // budget the primary had on its own.
+          // Stop every backend in the pool, not just the primary. With parallel
+          // WSL + Windows backends, leaving the WSL instance up means
+          // quitAndInstall's app.quit() exits before the pool's scope cascade
+          // has a chance to run its stop finalizer, so the WSL child gets
+          // hard-killed by the OS instead of receiving SIGTERM + grace.
           const instances = clientOnly ? [] : yield* pool.list;
+          // stop clears desiredRunning, so retain the recovery set beforehand.
+          const runningInstances = yield* Effect.filter(instances, (instance) =>
+            instance.snapshot.pipe(Effect.map((snapshot) => snapshot.desiredRunning)),
+          );
+          yield* Ref.set(installRunningBackendsRef, runningInstances);
           yield* Effect.forEach(
             instances,
             (instance) => instance.stop({ timeout: Duration.seconds(5) }),
