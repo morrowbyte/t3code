@@ -16,6 +16,20 @@ internal class ApkUpdateVerifier(private val context: Context) {
     private const val PACKAGE = "com.morrowbyte.t3code"
     private const val CERT = "34a33c2541544bc4a96e359a33e9f71aaa449ee9a0cd725c2469b65b057aa2b2"
     private const val MAX_BYTES = 250L * 1024 * 1024
+
+    internal fun pruneInstallerFiles(directory: File, current: File, now: Long) {
+      val copies = directory.listFiles()?.filter {
+        Regex("install-[a-f0-9]{64}\\.apk").matches(it.name) &&
+          it.isFile && it.canonicalFile == it.absoluteFile && it != current
+      } ?: return
+      // There is no installer-result callback. Keep the previous handoff and a full day of read grace.
+      val previous = copies.maxByOrNull { it.lastModified() }
+      copies.asSequence()
+        .filter { it != previous && it.lastModified() <= now - 24L * 60 * 60 * 1000 }
+        .sortedBy { it.lastModified() }
+        .take(8)
+        .forEach { it.delete() }
+    }
   }
 
   private val directory: File get() = File(context.cacheDir, "apk-updates").canonicalFile
@@ -137,6 +151,10 @@ internal class ApkUpdateVerifier(private val context: Context) {
       }
     }
     // A private copy survives the settings screen closing while Android reads it.
-    return verify(target.toURI().toString(), digest, version, versionCode, bytes)
+    val verified = verify(target.toURI().toString(), digest, version, versionCode, bytes)
+    val now = System.currentTimeMillis()
+    check(verified.setLastModified(now)) { "Could not retain the installer handoff." }
+    pruneInstallerFiles(directory, verified, now)
+    return verified
   }
 }
