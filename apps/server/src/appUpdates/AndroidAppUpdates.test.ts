@@ -12,11 +12,11 @@ import * as AndroidAppUpdates from "./AndroidAppUpdates.ts";
 const bytes = new TextEncoder().encode("signed APK fixture bytes");
 const digest = "cad5053d1e4695d837497eccb744f0016d82fa2362fe2b9cd01a446030d6e824";
 const version = "0.1.2-nightly.20261019.59";
-const name = `Morrowbyte-${version}-android-arm64.apk`;
-function release() {
+function release(releaseVersion = version) {
+  const name = `Morrowbyte-${releaseVersion}-android-arm64.apk`;
   return {
     id: 10,
-    tag_name: "v" + version,
+    tag_name: "v" + releaseVersion,
     target_commitish: "a".repeat(40),
     draft: false,
     prerelease: true,
@@ -87,6 +87,53 @@ it.effect(
       expect(index.releases[0]!.assets).toHaveLength(3);
       expect(f.paths).toEqual(["repos/morrowbyte/t3code/releases?per_page=30"]);
     }),
+);
+
+it.effect.each(["0.1.3-nightly.20261020.60", "1.0.0-nightly.20261020.61"])(
+  "accepts the all-platform nightly channel after the base version advances to %s",
+  (nextVersion) =>
+    Effect.gen(function* () {
+      const f = fixture([release(nextVersion)]);
+      const index = yield* AndroidAppUpdates.AndroidAppUpdates.pipe(
+        Effect.flatMap((service) => service.releases),
+        Effect.provide(f.layer),
+      );
+      expect(index.releases).toHaveLength(1);
+      expect(index.releases[0]).toMatchObject({
+        tagName: "v" + nextVersion,
+        version: nextVersion,
+      });
+    }),
+);
+
+it.effect.each([
+  { assetIndex: 0, limit: 250 * 1024 * 1024 },
+  { assetIndex: 1, limit: 64_000 },
+])("keeps the client size boundary for asset $assetIndex", ({ assetIndex, limit }) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const good = release();
+      good.assets[assetIndex]!.size = limit;
+      const oversized = release();
+      oversized.id = 11;
+      oversized.assets[assetIndex]!.size = limit + 1;
+      let downloads = 0;
+      const f = fixture([oversized, good], () => {
+        downloads++;
+        return Promise.resolve(new Response(bytes));
+      });
+      yield* Effect.gen(function* () {
+        const service = yield* AndroidAppUpdates.AndroidAppUpdates;
+        const index = yield* service.releases;
+        expect(index.releases.map((entry) => entry.id)).toEqual([good.id]);
+        const error = yield* service
+          .asset({ releaseId: "11", assetId: String(oversized.assets[assetIndex]!.id) })
+          .pipe(Effect.flip);
+        expect(error.reason).toBe("asset_unavailable");
+      }).pipe(Effect.provide(f.layer));
+      expect(downloads).toBe(0);
+    }),
+  ),
 );
 
 it.effect(

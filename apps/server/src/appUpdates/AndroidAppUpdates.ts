@@ -17,7 +17,7 @@ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
 const REPOSITORY = "morrowbyte/t3code";
 const API = `https://api.github.com/repos/${REPOSITORY}`;
-const MAX_APK_BYTES = 512 * 1024 * 1024;
+const MAX_APK_BYTES = 250 * 1024 * 1024;
 const DOWNLOAD_HOSTS = new Set([
   "api.github.com",
   "release-assets.githubusercontent.com",
@@ -75,15 +75,15 @@ function approvedRelease(
     release.id <= 0
   )
     return null;
-  const legacy = /^v(0\.1\.2-nightly\.\d{8}\.\d+)$/.exec(release.tag_name);
+  const nightly = /^v(\d+\.\d+\.\d+-nightly\.\d{8}\.\d+)$/.exec(release.tag_name);
   const android = /^android\/v(\d+\.\d+\.\d+(?:-nightly\.\d{8}\.\d+)?)$/.exec(release.tag_name);
   const version =
-    legacy && release.prerelease ? legacy[1] : android && !release.prerelease ? android[1] : null;
+    nightly && release.prerelease ? nightly[1] : android && !release.prerelease ? android[1] : null;
   if (!version || !/^[a-f0-9]{40}$/.test(release.target_commitish)) return null;
   const name = `Morrowbyte-${version}-android-arm64.apk`;
   const wanted = new Map([
     [name, MAX_APK_BYTES],
-    [name + ".json", 64 * 1024],
+    [name + ".json", 64_000],
     [name + ".sha256", 1024],
   ]);
   const assets: AndroidAppReleaseAsset[] = [];
