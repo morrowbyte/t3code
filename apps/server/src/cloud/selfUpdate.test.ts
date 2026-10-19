@@ -448,6 +448,7 @@ it.layer(NodeServices.layer)("server self update", (it) => {
       const releaseDownload = yield* Deferred.make<void>();
       const sawDownloading = yield* Deferred.make<void>();
       const accepted = yield* Deferred.make<void>();
+      const prepared = yield* Deferred.make<void>();
       const { selfUpdate, order } = yield* makeHarness({
         beforeDownload: Deferred.await(releaseDownload),
         requestUpdate: () =>
@@ -456,9 +457,16 @@ it.layer(NodeServices.layer)("server self update", (it) => {
           }).pipe(Effect.andThen(Deferred.succeed(accepted, undefined)), Effect.as("launcher-id")),
       });
 
-      const consumed = yield* ServerSelfUpdate.updateProgressStream(selfUpdate, {
-        targetVersion: "1.1.0",
-      }).pipe(
+      const consumed = yield* ServerSelfUpdate.updateProgressStream(
+        {
+          ...selfUpdate,
+          update: (...args) =>
+            selfUpdate.update(...args).pipe(Effect.ensuring(Deferred.succeed(prepared, undefined))),
+        },
+        {
+          targetVersion: "1.1.0",
+        },
+      ).pipe(
         Stream.tap((event) =>
           event.type === "progress" && event.stage === "downloading"
             ? Deferred.succeed(sawDownloading, undefined)
@@ -482,6 +490,7 @@ it.layer(NodeServices.layer)("server self update", (it) => {
       expect((yield* selfUpdate.update({ targetVersion: "1.1.0" }).pipe(Effect.flip)).reason).toBe(
         "A server update is already in progress.",
       );
+      yield* Deferred.await(prepared);
     }),
   );
 });

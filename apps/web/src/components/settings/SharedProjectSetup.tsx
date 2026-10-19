@@ -205,10 +205,9 @@ function SharedProjectSetupForm({
       }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not start the clone.");
-    } finally {
-      inFlight.current = false;
-      setPending(false);
     }
+    inFlight.current = false;
+    setPending(false);
   };
   return (
     <DialogPopup>

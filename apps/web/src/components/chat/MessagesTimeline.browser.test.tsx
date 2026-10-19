@@ -533,10 +533,10 @@ describe("MessagesTimeline messages", () => {
     await renderTimeline([
       message("Review this area", { createdBy: "agent", creationSource: "provider" }),
     ]);
-    expect(text()).toContain("Sent by another agent");
+    expect(text()).toContain("Agent · Absender nicht erfasst");
     await act(async () => roots.pop()!.unmount());
     await renderTimeline([message("Review this area")]);
-    expect(text()).not.toContain("Sent by another agent");
+    expect(text()).not.toContain("Agent · Absender nicht erfasst");
   });
 
   it("shows steer intent ahead of committed user messages", async () => {

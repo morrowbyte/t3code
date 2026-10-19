@@ -625,13 +625,15 @@ describe("orchestrator MCP toolkit", () => {
             ),
             Layer.provide(
               Layer.mock(GitVcsDriver.GitVcsDriver)({
-                resolveCommit: () =>
-                  Effect.gen(function* () {
-                    const gate = yield* Queue.take(preparations);
-                    yield* Deferred.succeed(gate.started, undefined);
-                    yield* Deferred.await(gate.release);
-                    return { commitSha: "a".repeat(40) };
-                  }),
+                resolveCommit: ({ revision }) =>
+                  revision !== "HEAD"
+                    ? Effect.succeed({ commitSha: revision })
+                    : Effect.gen(function* () {
+                        const gate = yield* Queue.take(preparations);
+                        yield* Deferred.succeed(gate.started, undefined);
+                        yield* Deferred.await(gate.release);
+                        return { commitSha: "a".repeat(40) };
+                      }),
               }),
             ),
             Layer.provideMerge(McpServer.McpServer.layer),

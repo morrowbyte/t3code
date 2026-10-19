@@ -72,7 +72,7 @@ vi.mock("./atom-registry", () => ({
         ? fixture.status
         : atom === "currentPending"
           ? fixture.pending
-          : atom === "drafts"
+          : atom === "drafts" || atom === "all-drafts"
             ? fixture.drafts
             : atom === fixture.preparationAtom
               ? fixture.preparations

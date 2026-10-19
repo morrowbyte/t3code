@@ -575,7 +575,7 @@ it.effect.each(["startup", "second-instance", "open-url"] as const)(
         }
         assert.strictEqual(yield* Effect.promise(() => received.promise), link);
       }).pipe(
-        Effect.provide(layerDesktopClerk(false, [], "linux")),
+        Effect.provide(layerDesktopClerk(false, [], "linux", undefined, undefined, listeners)),
         Effect.provideService(HostProcess.Arguments, entry === "startup" ? ["t3", link] : ["t3"]),
         Effect.provideService(ElectronApp.ElectronApp, electronApp),
         Effect.provideService(

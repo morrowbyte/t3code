@@ -146,9 +146,7 @@ export function useThreadRequests(
   const questionServerConfigs = useServerConfigs();
   const attachmentDrafts = useAtomValue(
     questionAttachmentDraftsAtom(
-      selectedThreadShell
-        ? questionAttachmentDraftPrefix(selectedThreadShell.environmentId, selectedThreadShell.id)
-        : "",
+      origin ? questionAttachmentDraftPrefix(origin.environmentId, origin.threadId) : "",
     ),
   );
   const preparationCounts = useAtomValue(questionAttachmentPreparationAtom);

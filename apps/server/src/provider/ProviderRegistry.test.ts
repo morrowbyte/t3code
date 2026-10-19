@@ -3262,7 +3262,9 @@ it.layer(
             currentCodex?.status === "error" ? currentCodex : (yield* firstError)[0];
           assert.strictEqual(initialCodex?.status, "error");
           assert.strictEqual(initialCodex?.installed, false);
-          assert.deepStrictEqual(spawnedCommands, [firstMissing]);
+          // Version and native discovery probe separately, but share the configured path.
+          assert.deepStrictEqual([...new Set(spawnedCommands)], [firstMissing]);
+          const initialProbeCount = spawnedCommands.length;
 
           const pendingRebuild = yield* Stream.toPull(
             codexSnapshots.pipe(
@@ -3288,7 +3290,10 @@ it.layer(
           );
           yield* Deferred.succeed(releaseSecondProbe, undefined);
           const [reprobedCodex] = yield* rebuiltError;
-          assert.deepStrictEqual(spawnedCommands, [firstMissing, secondMissing]);
+          assert.deepStrictEqual(
+            [...new Set(spawnedCommands.slice(initialProbeCount))],
+            [secondMissing],
+          );
           assert.strictEqual(reprobedCodex?.status, "error");
           assert.strictEqual(reprobedCodex?.installed, false);
         }).pipe(Effect.provide(runtimeServices));

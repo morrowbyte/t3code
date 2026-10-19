@@ -3,6 +3,10 @@ import styles from "./markdown-math.module.css";
 
 let engine: Promise<typeof import("katex")> | undefined;
 
+function loadMathEngine() {
+  return (engine ??= import("katex"));
+}
+
 export const MarkdownMath = memo(function MarkdownMath({
   source,
   raw,
@@ -31,7 +35,7 @@ export const MarkdownMath = memo(function MarkdownMath({
       publish(null);
       return;
     }
-    (engine ??= import("katex")).then(
+    loadMathEngine().then(
       (katex) => {
         try {
           publish(
