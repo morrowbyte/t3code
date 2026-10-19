@@ -1873,6 +1873,7 @@ function codexReplayPreamble(input: {
           clientInfo: { name: "T3 Code", title: "T3 Code", version: packageJson.version },
           capabilities: {
             experimentalApi: true,
+            mcpServerOpenaiFormElicitation: true,
             optOutNotificationMethods: ["turn/diff/updated"],
             extensions: {
               "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] },
@@ -3180,6 +3181,83 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         ? [event.turnItem]
         : [],
     );
+
+  it.effect.each(["accept", "decline", "cancel"] as const)(
+    "round-trips a native MCP app approval after OpenAI form opt-in (%s)",
+    (decision) =>
+      Effect.gen(function* () {
+        const nativeThreadId = "mcp-app-approval-thread";
+        const nativeTurnId = "mcp-app-approval-turn";
+        const transcript = makeCodexReplayTranscript({
+          scenario: `mcp-app-approval-${decision}`,
+          entries: [
+            ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "Check app approval." }),
+            {
+              type: "emit_inbound",
+              label: "app approval request",
+              frame: {
+                id: 100,
+                method: "mcpServer/elicitation/request",
+                params: {
+                  threadId: nativeThreadId,
+                  turnId: nativeTurnId,
+                  serverName: "computer-use",
+                  mode: "openai/form",
+                  message: "Allow Codex to use ChatGPT?",
+                  _meta: { tool_params: { app: "OpenAI.Codex_2p2nqsd0c76g0!App" } },
+                  requestedSchema: { type: "object", properties: {}, required: [] },
+                },
+              },
+            },
+            {
+              type: "expect_outbound",
+              label: "original app approval response",
+              frame: {
+                id: 100,
+                result:
+                  decision === "accept" ? { action: "accept", content: {} } : { action: decision },
+              },
+            },
+            {
+              type: "emit_inbound",
+              label: "turn complete after decision",
+              frame: {
+                method: "turn/completed",
+                params: {
+                  threadId: nativeThreadId,
+                  turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+                },
+              },
+            },
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(transcript);
+        yield* harness.runtime.startTurn(
+          makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make(`mcp-app-approval-${decision}`),
+            text: "Check app approval.",
+          }),
+        );
+        const requests = () =>
+          harness.events.flatMap((event) =>
+            event.type === "runtime_request.updated" ? [event.runtimeRequest] : [],
+          );
+        yield* awaitUntil(() => requests().length === 1, "pending app approval");
+        const request = requests()[0]!;
+        assert.equal(request.status, "pending");
+        assert.equal(request.kind, "mcp-elicitation");
+        yield* harness.runtime.respondToRuntimeRequest({ requestId: request.id, decision });
+        yield* harness.firstTerminal;
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
 
   it.effect("keeps an asynchronous Codex question actionable after the turn completes", () =>
     Effect.scoped(

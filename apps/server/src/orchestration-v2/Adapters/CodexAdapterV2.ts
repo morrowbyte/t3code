@@ -327,6 +327,7 @@ const decodeCodexBackgroundTerminalsListResponse = Schema.decodeUnknownEffect(
 );
 const CODEX_CLIENT_CAPABILITIES = {
   experimentalApi: true,
+  mcpServerOpenaiFormElicitation: true,
   optOutNotificationMethods: ["turn/diff/updated"],
   extensions: { [MCP_APP_EXTENSION_ID]: { mimeTypes: [MCP_APP_MIME_TYPE] } },
 } as const;
