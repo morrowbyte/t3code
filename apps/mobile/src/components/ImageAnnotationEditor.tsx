@@ -22,6 +22,71 @@ const COLORS = ["#EF4444", "#FACC15", "#38BDF8", "#111827", "#FFFFFF"];
 const WIDTHS = [0.004, 0.008, 0.016];
 const MAX_POINTS = 10_000;
 
+async function prepareAnnotationImage(uri: string) {
+  const rendered = await ImageManipulator.manipulate(uri).renderAsync();
+  try {
+    const size = annotationRasterSize(rendered.width, rendered.height);
+    const saved = await rendered.saveAsync({ format: SaveFormat.PNG });
+    return { uri: saved.uri, ...size };
+  } finally {
+    rendered.release();
+  }
+}
+
+async function exportAnnotationImage(
+  view: Svg,
+  image: { width: number; height: number },
+  ownedFiles: Set<string>,
+  signal: AbortSignal,
+  isMounted: () => boolean,
+) {
+  const base64 = await new Promise<string>((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error("Image export timed out. Your image has not been sent.")),
+      15_000,
+    );
+    try {
+      view.toDataURL(
+        (bytes) => {
+          clearTimeout(timeout);
+          if (bytes) resolve(bytes);
+          else reject(new Error("Image export returned no bytes."));
+        },
+        { width: image.width, height: image.height },
+      );
+    } catch (cause) {
+      clearTimeout(timeout);
+      reject(cause);
+    }
+  });
+  if (!isMounted()) return null;
+  const file = new File(Paths.cache, `annotation-${uuidv4()}.png`);
+  ownedFiles.add(file.uri);
+  await file.write(base64, { encoding: "base64" });
+  if (!isMounted() || signal.aborted) {
+    if (file.exists) file.delete();
+    return null;
+  }
+  if (!file.size) throw new Error("Image export returned an empty file. Nothing was sent.");
+  if (file.size > 10 * 1024 * 1024)
+    throw new Error("The annotated image exceeds the 10 MB attachment limit.");
+  return file;
+}
+
+async function settleAnnotationSend(
+  operation: () => Promise<void>,
+  onError: (cause: unknown) => void,
+  onSettled: () => void,
+) {
+  try {
+    await operation();
+  } catch (cause) {
+    onError(cause);
+  } finally {
+    onSettled();
+  }
+}
+
 function Tool(props: {
   label: string;
   selected?: boolean;
@@ -76,19 +141,13 @@ export function ImageAnnotationEditor(props: {
     mounted.current = true;
     let cancelled = false;
     void (async () => {
-      const rendered = await ImageManipulator.manipulate(props.source.uri).renderAsync();
-      try {
-        const size = annotationRasterSize(rendered.width, rendered.height);
-        const saved = await rendered.saveAsync({ format: SaveFormat.PNG });
-        if (cancelled) {
-          new File(saved.uri).delete();
-          return;
-        }
-        ownedFiles.current.add(saved.uri);
-        setImage({ uri: saved.uri, ...size });
-      } finally {
-        rendered.release();
+      const saved = await prepareAnnotationImage(props.source.uri);
+      if (cancelled) {
+        new File(saved.uri).delete();
+        return;
       }
+      ownedFiles.current.add(saved.uri);
+      setImage(saved);
     })().catch((cause: unknown) => {
       if (!cancelled)
         setError(cause instanceof Error ? cause.message : "Could not load the image.");
@@ -121,109 +180,98 @@ export function ImageAnnotationEditor(props: {
   });
   const drawing = useRef(false);
   const panStart = useRef(pan);
-  const [responder] = useState(() =>
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => !current.current.sending && current.current.rect !== null,
-      onMoveShouldSetPanResponder: () => !current.current.sending,
-      onPanResponderGrant: (event) => {
-        const value = current.current;
-        panStart.current = value.pan;
-        if (value.mode !== "Draw" || !value.rect || value.strokes.length >= 100) return;
-        const point = annotationPoint(
-          { x: event.nativeEvent.locationX, y: event.nativeEvent.locationY },
-          value.rect,
-        );
-        drawing.current = point !== null;
-        if (point)
-          setStrokes((old) => [
-            ...old,
-            { key: uuidv4(), color: value.color, width: value.width, points: [point] },
-          ]);
-      },
-      onPanResponderMove: (event, gesture) => {
-        const value = current.current;
-        if (value.mode === "Move") {
-          setPan({ x: panStart.current.x + gesture.dx, y: panStart.current.y + gesture.dy });
-          return;
-        }
-        if (!drawing.current || !value.rect) return;
-        const point = annotationPoint(
-          { x: event.nativeEvent.locationX, y: event.nativeEvent.locationY },
-          value.rect,
-        );
-        if (!point) return;
-        setStrokes((old) => {
-          const last = old.at(-1);
-          if (!last || old.reduce((count, stroke) => count + stroke.points.length, 0) >= MAX_POINTS)
-            return old;
-          return [...old.slice(0, -1), { ...last, points: [...last.points, point] }];
-        });
-      },
-      onPanResponderRelease: () => {
-        drawing.current = false;
-      },
-      onPanResponderTerminate: () => {
-        drawing.current = false;
-      },
-      onPanResponderTerminationRequest: () => false,
-    }),
-  );
+  const [responder, setResponder] = useState<ReturnType<typeof PanResponder.create> | null>(null);
+  useEffect(() => {
+    setResponder(
+      PanResponder.create({
+        onStartShouldSetPanResponder: () =>
+          !current.current.sending && current.current.rect !== null,
+        onMoveShouldSetPanResponder: () => !current.current.sending,
+        onPanResponderGrant: (event) => {
+          const value = current.current;
+          panStart.current = value.pan;
+          if (value.mode !== "Draw" || !value.rect || value.strokes.length >= 100) return;
+          const point = annotationPoint(
+            { x: event.nativeEvent.locationX, y: event.nativeEvent.locationY },
+            value.rect,
+          );
+          drawing.current = point !== null;
+          if (point)
+            setStrokes((old) => [
+              ...old,
+              { key: uuidv4(), color: value.color, width: value.width, points: [point] },
+            ]);
+        },
+        onPanResponderMove: (event, gesture) => {
+          const value = current.current;
+          if (value.mode === "Move") {
+            setPan({ x: panStart.current.x + gesture.dx, y: panStart.current.y + gesture.dy });
+            return;
+          }
+          if (!drawing.current || !value.rect) return;
+          const point = annotationPoint(
+            { x: event.nativeEvent.locationX, y: event.nativeEvent.locationY },
+            value.rect,
+          );
+          if (!point) return;
+          setStrokes((old) => {
+            const last = old.at(-1);
+            if (
+              !last ||
+              old.reduce((count, stroke) => count + stroke.points.length, 0) >= MAX_POINTS
+            )
+              return old;
+            return [...old.slice(0, -1), { ...last, points: [...last.points, point] }];
+          });
+        },
+        onPanResponderRelease: () => {
+          drawing.current = false;
+        },
+        onPanResponderTerminate: () => {
+          drawing.current = false;
+        },
+        onPanResponderTerminationRequest: () => false,
+      }),
+    );
+  }, []);
 
   async function send() {
     if (sendingRef.current || !image || !imageLoaded || !svg.current || strokes.length === 0)
       return;
+    const view = svg.current;
     const controller = new AbortController();
     activeSend.current = controller;
     sendingRef.current = true;
     setSending(true);
     setError(null);
-    try {
-      const view = svg.current;
-      const base64 = await new Promise<string>((resolve, reject) => {
-        const timeout = setTimeout(
-          () => reject(new Error("Image export timed out. Your image has not been sent.")),
-          15_000,
+    await settleAnnotationSend(
+      async () => {
+        const file = await exportAnnotationImage(
+          view,
+          image,
+          ownedFiles.current,
+          controller.signal,
+          () => mounted.current,
         );
-        try {
-          view.toDataURL(
-            (bytes) => {
-              clearTimeout(timeout);
-              if (bytes) resolve(bytes);
-              else reject(new Error("Image export returned no bytes."));
-            },
-            { width: image.width, height: image.height },
-          );
-        } catch (cause) {
-          clearTimeout(timeout);
-          reject(cause);
-        }
-      });
-      if (!mounted.current) return;
-      const file = new File(Paths.cache, `annotation-${uuidv4()}.png`);
-      ownedFiles.current.add(file.uri);
-      await file.write(base64, { encoding: "base64" });
-      if (!mounted.current || controller.signal.aborted) {
-        if (file.exists) file.delete();
-        return;
-      }
-      if (!file.size) throw new Error("Image export returned an empty file. Nothing was sent.");
-      if (file.size > 10 * 1024 * 1024)
-        throw new Error("The annotated image exceeds the 10 MB attachment limit.");
-      const name = `${(props.source.name ?? "Image").replace(/\.[^.]+$/, "")}-annotated.png`;
-      const sent = await props.onSend(
-        { uri: file.uri, name, width: image.width, height: image.height },
-        text,
-        controller.signal,
-      );
-      if (sent && mounted.current && !controller.signal.aborted) props.onRequestClose();
-    } catch (cause) {
-      if (mounted.current)
-        setError(cause instanceof Error ? cause.message : "Could not send the annotated image.");
-    } finally {
-      if (activeSend.current === controller) activeSend.current = null;
-      sendingRef.current = false;
-      if (mounted.current) setSending(false);
-    }
+        if (!file) return;
+        const name = `${(props.source.name ?? "Image").replace(/\.[^.]+$/, "")}-annotated.png`;
+        const sent = await props.onSend(
+          { uri: file.uri, name, width: image.width, height: image.height },
+          text,
+          controller.signal,
+        );
+        if (sent && mounted.current && !controller.signal.aborted) props.onRequestClose();
+      },
+      (cause) => {
+        if (mounted.current)
+          setError(cause instanceof Error ? cause.message : "Could not send the annotated image.");
+      },
+      () => {
+        if (activeSend.current === controller) activeSend.current = null;
+        sendingRef.current = false;
+        if (mounted.current) setSending(false);
+      },
+    );
   }
 
   return (
@@ -344,7 +392,7 @@ export function ImageAnnotationEditor(props: {
           accessibilityLabel="Annotation canvas"
           className="flex-1 overflow-hidden bg-black/10"
           onLayout={(event) => setViewport(event.nativeEvent.layout)}
-          {...responder.panHandlers}
+          {...responder?.panHandlers}
         >
           {image && rect ? (
             <View

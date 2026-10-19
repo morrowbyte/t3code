@@ -58,8 +58,11 @@ function ImagePreviewHeader(header: { readonly imageIndex: number }) {
 }
 
 export function MediaImagePreview(props: MediaImagePreviewProps) {
-  const [sendAnnotation] = useState(() => props.onSendAnnotation);
-  const [annotating, setAnnotating] = useState<ResolvedFilePreviewSource | null>(null);
+  const [annotating, setAnnotating] = useState<{
+    readonly source: ResolvedFilePreviewSource;
+    readonly onSend: SendImageAnnotation;
+  } | null>(null);
+  const onSendAnnotation = props.onSendAnnotation;
   const gallery = props.source.gallery ?? [props.source];
   // react-native-image-viewing keys its whole Modal by imageIndex, so changing it remounts the
   // viewer and replays the Android fade over the screen behind. Keep the opening index; the
@@ -70,17 +73,22 @@ export function MediaImagePreview(props: MediaImagePreviewProps) {
       gallery.findIndex((item) => item.uri === props.source.uri),
     ),
   );
-  if (annotating && sendAnnotation)
+  if (annotating)
     return (
       <ImageAnnotationEditor
-        source={annotating}
-        onSend={sendAnnotation}
+        source={annotating.source}
+        onSend={annotating.onSend}
         onRequestClose={() => setAnnotating(null)}
       />
     );
   return (
     <ImagePreviewContext
-      value={{ ...props, onAnnotate: props.onSendAnnotation ? setAnnotating : undefined }}
+      value={{
+        ...props,
+        onAnnotate: onSendAnnotation
+          ? (source) => setAnnotating({ source, onSend: onSendAnnotation })
+          : undefined,
+      }}
     >
       <ImageViewing
         images={gallery.map((item) => ({ uri: item.uri }))}
