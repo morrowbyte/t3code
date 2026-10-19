@@ -2302,7 +2302,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         {...sortableRootProps}
         {...(fileDropHandlers ?? {})}
         className={cn(
-          "list-none [content-visibility:auto] [contain-intrinsic-size:auto_36px]",
+          "list-none [content-visibility:auto] [contain-intrinsic-size:auto_56px]",
           sortable?.isDragging && "relative z-20",
         )}
       >
@@ -2319,8 +2319,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 aria-busy={isRegeneratingTitle || undefined}
                 className={cn(
                   rowSurfaceClassName,
-                  "flex items-center gap-2.5 px-2.5",
-                  props.familyRow ? "min-h-10 py-2" : "h-9",
+                  "flex min-h-14 items-center gap-2.5 px-2.5 py-2.5",
                 )}
                 onClick={handleClick}
                 onDoubleClick={handleDoubleClick}
@@ -2475,7 +2474,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       {...(fileDropHandlers ?? {})}
       className={cn(
         "list-none py-0.5",
-        !props.familyRow && "[content-visibility:auto] [contain-intrinsic-size:auto_78px]",
+        !props.familyRow && "[content-visibility:auto] [contain-intrinsic-size:auto_104px]",
         sortable?.isDragging && "relative z-20",
       )}
     >
@@ -2501,8 +2500,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           {accessibleTitle}
           <div
             className={cn(
-              "relative z-10 px-(--sidebar-row-content-inset) py-(--sidebar-content-inset)",
-              !props.familyRow && "h-[4.875rem]",
+              "relative z-10 px-(--sidebar-row-content-inset) py-2.5",
+              familyChild ? "min-h-20" : "min-h-[6.5rem]",
             )}
           >
             <div className={cn("flex min-w-0 items-center gap-1.5", !familyChild && "h-5")}>
