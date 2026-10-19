@@ -12,7 +12,7 @@ import { AsyncResult } from "effect/reactivity";
 import { randomUUID } from "expo-crypto";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AppState, Linking, Platform, ScrollView, View } from "react-native";
+import { AppState, Linking, Platform, View } from "react-native";
 
 import { AppText } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
@@ -23,6 +23,7 @@ import { unwrapLiveVoiceCommand } from "./liveVoiceCommands";
 import { createVoiceEventBridge } from "./liveVoiceEvents";
 import { nativeVoiceMedia } from "./nativeVoiceMedia";
 import { subscribeNativeVoiceStopped } from "./nativeVoiceBackground";
+import { VoiceTranscript } from "./VoiceTranscript";
 
 type VoiceProps = {
   readonly environmentId: EnvironmentId;
@@ -270,19 +271,7 @@ function LiveVoiceSession(props: VoiceProps) {
         </View>
       ) : null}
       {showTranscript && current.transcript.length ? (
-        <ScrollView nestedScrollEnabled style={{ maxHeight: 160 }}>
-          {current.transcript.map((entry, index) => (
-            <View key={index} className="pb-2">
-              <AppText className="text-xs font-t3-medium text-foreground-muted">
-                {entry.speaker === "user" ? "You" : "Assistant"}
-                {entry.final ? "" : "…"}
-              </AppText>
-              <AppText selectable className="text-sm text-foreground">
-                {entry.text}
-              </AppText>
-            </View>
-          ))}
-        </ScrollView>
+        <VoiceTranscript entries={current.transcript} />
       ) : null}
     </View>
   );
