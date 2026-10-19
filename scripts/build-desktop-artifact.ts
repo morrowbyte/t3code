@@ -2687,6 +2687,11 @@ export function resolveDesktopProductName(version: string): string {
     : (desktopPackageJson.productName ?? "T3 Code");
 }
 
+export function resolveWindowsExecutableName(version: string): string {
+  if (process.env.T3CODE_DESKTOP_PROFILE?.trim() === "weasel") return "T3 Code (Weasel Nightly)";
+  return resolveDesktopProductName(version);
+}
+
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   platform: typeof BuildPlatform.Type,
   target: string,
@@ -2905,7 +2910,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     const winConfig: Record<string, unknown> = {
       target: [target],
       // Keep existing shortcuts, protocol handlers and rollout launchers working.
-      ...(profile === "weasel" ? { executableName: "T3 Code (Weasel Nightly)" } : {}),
+      ...(profile === "weasel" ? { executableName: resolveWindowsExecutableName(version) } : {}),
       icon: "icon.ico",
       // Smart App Control validates unpacked native addons independently from
       // the signed desktop executable. Extend release signing to every native
@@ -3967,7 +3972,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   if (options.platform === "win") {
     yield* validateWindowsPackagedPayload({
       stageDistDir,
-      appExecutableName: `${resolveDesktopProductName(appVersion)}.exe`,
+      appExecutableName: `${resolveWindowsExecutableName(appVersion)}.exe`,
       targetArch: options.arch,
       appVersion,
       expectWslRuntime: bundlesWslRuntime({
