@@ -85,6 +85,14 @@ export function DeviceControlsRail(props: {
             >
               <Square />
             </RailButton>
+            <RailButton
+              tooltipSide={popupSide}
+              label="Lock / wake screen"
+              disabled={inputDisabled}
+              onClick={() => handle?.pressButton("power")}
+            >
+              <Power />
+            </RailButton>
             <Menu>
               <MenuTrigger
                 render={
