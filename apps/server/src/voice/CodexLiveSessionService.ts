@@ -300,39 +300,60 @@ export const layer: Layer.Layer<
           candidate.runId === runId,
       );
       if (!attempt) return [];
-      const turn = latestProviderTurnForAttempt(projection.providerTurns, attempt.id);
-      if (!turn || !["running", "waiting"].includes(turn.status)) return [];
-      const items = projection.turnItems.filter(
-        (item) =>
-          item.threadId === projection.thread.id &&
-          item.runId === runId &&
-          item.providerTurnId === turn.id,
-      );
-      const lastOrdinal = Math.max(
-        -1,
-        ...items
-          .filter((item) =>
-            [
-              "assistant_message",
-              "command_execution",
-              "dynamic_tool",
-              "web_search",
-              "file_search",
-              "file_change",
-              "user_input_request",
-              "approval_request",
-            ].includes(item.type),
+      const latestTurn = latestProviderTurnForAttempt(projection.providerTurns, attempt.id);
+      if (!latestTurn) return [];
+      const turns = new Map(
+        projection.providerTurns
+          .filter(
+            (turn) =>
+              turn.runAttemptId === attempt.id &&
+              (turn.status === "completed" ||
+                (turn.id === latestTurn.id && turn.status === "running")),
           )
-          .map((item) => item.ordinal),
+          .map((turn) => [turn.id, turn]),
       );
+      const items = projection.turnItems
+        .filter(
+          (item) =>
+            item.threadId === projection.thread.id &&
+            item.runId === runId &&
+            item.providerTurnId !== null &&
+            turns.has(item.providerTurnId),
+        )
+        .sort(
+          (a, b) =>
+            turns.get(a.providerTurnId!)!.ordinal - turns.get(b.providerTurnId!)!.ordinal ||
+            a.ordinal - b.ordinal,
+        );
+      const lastOrdinals = new Map<string, number>();
+      for (const item of items) {
+        if (
+          [
+            "assistant_message",
+            "command_execution",
+            "dynamic_tool",
+            "web_search",
+            "file_search",
+            "file_change",
+            "user_input_request",
+            "approval_request",
+          ].includes(item.type)
+        )
+          lastOrdinals.set(
+            item.providerTurnId!,
+            Math.max(lastOrdinals.get(item.providerTurnId!) ?? -1, item.ordinal),
+          );
+      }
       return items.flatMap((item) => {
-        // A following public message or operation proves this is intermediate, without guessing
-        // from prose or accidentally forwarding the final again as context.
+        const turn = turns.get(item.providerTurnId!)!;
+        // A later native turn also proves the previous completed turn's last answer is
+        // intermediate. The latest turn's last answer still belongs to the final path.
         if (
           item.type !== "assistant_message" ||
           item.streaming ||
           item.status !== "completed" ||
-          item.ordinal >= lastOrdinal ||
+          (turn.ordinal === latestTurn.ordinal &&
+            item.ordinal >= (lastOrdinals.get(turn.id) ?? -1)) ||
           !item.text.trim() ||
           item.text.length > 16_384
         )

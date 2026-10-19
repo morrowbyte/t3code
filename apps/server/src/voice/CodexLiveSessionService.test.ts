@@ -293,11 +293,11 @@ it.effect.each([false, true])(
         checkpoints: [],
         messages: [],
       } as unknown as OrchestrationV2ThreadProjection;
-      const policy = {
+      const policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy = {
         runtimeMode: "approval-required",
         interactionMode: "default",
         cwd: "/private/test-worktree",
-      } as never;
+      };
       let currentPolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy = policy;
       const dependencies = Layer.mergeAll(
         NodeSqliteClient.layer({ filename: ":memory:" }),
@@ -789,7 +789,7 @@ it.effect.each([false, true])(
             completedAt: null,
           })),
           turnItems: completedFixture.turnItems.map((item) =>
-            item.ordinal === 2
+            item.type === "assistant_message" && item.ordinal === 2
               ? {
                   ...item,
                   type: "command_execution" as const,
@@ -832,11 +832,41 @@ it.effect.each([false, true])(
         const secondContext = yield* Deferred.make<void>();
         contextSignals.set(question, secondContext);
         const firstMessage = durableProjection.messages[0]!;
-        const firstItem = durableProjection.turnItems[0]!;
+        const firstItem = durableProjection.turnItems.find(
+          (item) => item.type === "assistant_message",
+        )!;
         const firstNode = durableProjection.nodes.find((node) => node.id === firstMessage.nodeId)!;
+        const previousUpdate = "Der erste native Turn ist fertig; der Auftrag läuft weiter.";
+        const previousTurn = {
+          ...completedFixture.providerTurns[0]!,
+          id: "previous-native-turn" as never,
+        };
+        const otherAttemptTurn = {
+          ...previousTurn,
+          id: "other-attempt-native-turn" as never,
+          runAttemptId: "other-attempt" as never,
+          ordinal: 99,
+        };
         durableProjection = {
           ...durableProjection,
+          providerTurns: [
+            previousTurn,
+            otherAttemptTurn,
+            ...durableProjection.providerTurns.map((turn) => ({ ...turn, ordinal: 2 })),
+          ],
           messages: [
+            {
+              ...firstMessage,
+              id: "previous-turn-message" as never,
+              nodeId: "previous-turn-node" as never,
+              text: previousUpdate,
+            },
+            {
+              ...firstMessage,
+              id: "other-attempt-message" as never,
+              nodeId: "other-attempt-node" as never,
+              text: "OTHER_ATTEMPT_MUST_NOT_FORWARD",
+            },
             ...durableProjection.messages,
             {
               ...firstMessage,
@@ -846,10 +876,36 @@ it.effect.each([false, true])(
             },
           ],
           nodes: [
+            {
+              ...firstNode,
+              id: "previous-turn-node" as never,
+              providerTurnId: previousTurn.id,
+            },
+            {
+              ...firstNode,
+              id: "other-attempt-node" as never,
+              providerTurnId: otherAttemptTurn.id,
+            },
             ...durableProjection.nodes,
             { ...firstNode, id: "public-question-node" as never },
           ],
           turnItems: [
+            {
+              ...firstItem,
+              id: "previous-turn-item" as never,
+              nodeId: "previous-turn-node" as never,
+              providerTurnId: previousTurn.id,
+              messageId: "previous-turn-message" as never,
+              text: previousUpdate,
+            },
+            {
+              ...firstItem,
+              id: "other-attempt-item" as never,
+              nodeId: "other-attempt-node" as never,
+              providerTurnId: otherAttemptTurn.id,
+              messageId: "other-attempt-message" as never,
+              text: "OTHER_ATTEMPT_MUST_NOT_FORWARD",
+            },
             ...durableProjection.turnItems,
             {
               ...firstItem,
@@ -874,8 +930,53 @@ it.effect.each([false, true])(
         yield* Deferred.await(secondContext);
         assert.deepEqual(
           contexts.map((message) => message.text),
-          ["commentary for durable-run-1", question],
-          "replayed events do not repeat already-claimed public messages or expose reasoning",
+          ["commentary for durable-run-1", previousUpdate, question],
+          "a later native turn admits the earlier turn's last answer once, within this attempt",
+        );
+
+        const betweenTurnsUpdate = "Öffentlicher Befund zwischen zwei nativen Turns.";
+        const betweenTurnsContext = yield* Deferred.make<void>();
+        contextSignals.set(betweenTurnsUpdate, betweenTurnsContext);
+        durableProjection = {
+          ...durableProjection,
+          providerTurns: durableProjection.providerTurns.map((turn) => ({
+            ...turn,
+            status: "completed",
+          })),
+          messages: [
+            ...durableProjection.messages,
+            {
+              ...firstMessage,
+              id: "between-turns-message" as never,
+              nodeId: "between-turns-node" as never,
+              text: betweenTurnsUpdate,
+            },
+          ],
+          nodes: [...durableProjection.nodes, { ...firstNode, id: "between-turns-node" as never }],
+          turnItems: [
+            ...durableProjection.turnItems,
+            {
+              ...firstItem,
+              id: "between-turns-item" as never,
+              nodeId: "between-turns-node" as never,
+              messageId: "between-turns-message" as never,
+              text: betweenTurnsUpdate,
+              ordinal: 5,
+            },
+            {
+              ...firstItem,
+              id: "between-turns-next" as never,
+              type: "command_execution",
+              input: "read-only continuation",
+              ordinal: 6,
+            },
+          ],
+        } as OrchestrationV2ThreadProjection;
+        yield* Queue.offer(t3EventQueues.get("turn-item.updated")!, updateEvent());
+        yield* Deferred.await(betweenTurnsContext);
+        assert.deepEqual(
+          contexts.map((message) => message.text),
+          ["commentary for durable-run-1", previousUpdate, question, betweenTurnsUpdate],
         );
 
         const rawAsr = "  Original-ASR ohne Rekonstruktion. ".repeat(1000);
@@ -944,7 +1045,7 @@ it.effect.each([false, true])(
             runId: "durable-run-1",
             status: "running",
             resultReady: false,
-            commentary: question,
+            commentary: betweenTurnsUpdate,
           },
         ]);
         assert.equal(completedWork, 0);
@@ -970,14 +1071,14 @@ it.effect.each([false, true])(
               nodeId: "stale-public-node" as never,
               messageId: "stale-public" as never,
               text: staleContext,
-              ordinal: 5,
+              ordinal: 7,
             },
             {
               ...firstItem,
               id: "stale-public-next" as never,
               type: "command_execution",
               input: "read-only continuation",
-              ordinal: 6,
+              ordinal: 8,
             },
           ],
         } as OrchestrationV2ThreadProjection;
@@ -1153,6 +1254,10 @@ it.effect.each([false, true])(
             text: `  ${`durable answer for durable-run-1 `.repeat(400)}\n  `,
           },
         ]);
+        assert.isFalse(
+          contexts.some((message) => message.text.includes("durable answer for durable-run-1")),
+          "the actual final answer is delivered only by the final path",
+        );
         const sentReceipt = yield* sql<{ receipt_json: string }>`
           SELECT receipt_json FROM codex_live_voice_intents
           WHERE lease_id = ${prepared.leaseId} AND generation = ${prepared.generation}

@@ -266,7 +266,7 @@ export function makeCodexLiveTranscriptTracker() {
         sessionId: string;
         revision: number;
         final: boolean;
-        snapshot?: string;
+        snapshot: string | undefined;
       }
     >
   >();
