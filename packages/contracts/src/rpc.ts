@@ -2092,6 +2092,15 @@ export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthori
   { error: EnvironmentAuthorizationError },
 ) {}
 
+export const YaziPickerRpcGroup = RpcGroup.make(
+  WsYaziPickerOpenRpc,
+  WsYaziPickerPollRpc,
+  WsYaziPickerWriteRpc,
+  WsYaziPickerResizeRpc,
+  WsYaziPickerReadRpc,
+  WsYaziPickerCloseRpc,
+).middleware(RpcScopeAuthorization);
+
 export const WsRpcGroup = RpcGroup.make(
   WsAgentObservatorySubscribeRpc,
   WsAgentObservatoryReadNativeRosterRpc,
@@ -2249,12 +2258,6 @@ export const WsRpcGroup = RpcGroup.make(
   WsVcsInitRpc,
   WsReviewGetDiffPreviewRpc,
   WsReviewGetDiffFileContentsRpc,
-  WsYaziPickerOpenRpc,
-  WsYaziPickerPollRpc,
-  WsYaziPickerWriteRpc,
-  WsYaziPickerResizeRpc,
-  WsYaziPickerReadRpc,
-  WsYaziPickerCloseRpc,
   WsTerminalOpenRpc,
   WsTerminalAttachRpc,
   WsTerminalObserveRpc,
@@ -2307,4 +2310,6 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2SubscribeShellRpc,
   WsOrchestrationV2SubscribeThreadRpc,
   WsOrchestrationV2SubscribeCommandOutputRpc,
-).middleware(RpcScopeAuthorization);
+)
+  .middleware(RpcScopeAuthorization)
+  .merge(YaziPickerRpcGroup);

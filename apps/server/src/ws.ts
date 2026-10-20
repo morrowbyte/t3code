@@ -1,3 +1,4 @@
+import { YaziPickerRpcGroup } from "@t3tools/contracts";
 import { HostUpdateHistoryError } from "@t3tools/contracts";
 import type {
   MainRendererDiagnosticsReadInput,
@@ -589,6 +590,15 @@ const PROVIDER_STATUS_DEBOUNCE_MS = 200;
 
 // Middleware added later wraps middleware added earlier, so instrumentation wraps authorization.
 const ServerWsRpcGroup = WsRpcGroup.middleware(RpcInstrumentation);
+const YaziWsRpcGroup = YaziPickerRpcGroup.middleware(RpcInstrumentation);
+const CoreWsRpcGroup = ServerWsRpcGroup.omit(
+  WS_METHODS.yaziPickerOpen,
+  WS_METHODS.yaziPickerPoll,
+  WS_METHODS.yaziPickerWrite,
+  WS_METHODS.yaziPickerResize,
+  WS_METHODS.yaziPickerRead,
+  WS_METHODS.yaziPickerClose,
+);
 
 // Materialize the signatures once so deriving handler services does not repeatedly
 // expand the complete RPC schema union.
@@ -610,7 +620,7 @@ type WsRpcHandlerServices =
   | ProjectFaviconResolver.ProjectFaviconResolver
   | WorkspacePaths.WorkspacePaths;
 type WsRpcHandlerSignatures = {
-  readonly [Current in RpcGroup.Rpcs<typeof ServerWsRpcGroup> as Current["_tag"]]: Rpc.ToHandlerFn<
+  readonly [Current in RpcGroup.Rpcs<typeof CoreWsRpcGroup> as Current["_tag"]]: Rpc.ToHandlerFn<
     Current,
     WsRpcHandlerServices
   >;
@@ -1235,14 +1245,14 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
   },
 );
 
-const layerWsRpc = (
+const layerCoreWsRpc = (
   currentSession: EnvironmentAuth.AuthenticatedSession,
   clientOrigin: OrchestrationClientOrigin,
   clientAnalyticsProps: Readonly<Record<string, unknown>>,
   previewAutomationBroker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
   serverBrowser: ServerBrowser.ServerBrowser["Service"],
 ) =>
-  ServerWsRpcGroup.toLayer(
+  CoreWsRpcGroup.toLayer(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
       const sql = yield* SqlClient.SqlClient;
@@ -1321,7 +1331,6 @@ const layerWsRpc = (
       const vcsProvisioning = yield* VcsProvisioningService.VcsProvisioningService;
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
       const terminalManager = yield* TerminalManager.TerminalManager;
-      const yaziPicker = yield* YaziPicker.YaziPicker;
       const previewManager = yield* PreviewManager.PreviewManager;
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
@@ -1872,7 +1881,7 @@ const layerWsRpc = (
         return result;
       });
 
-      const handlers = ServerWsRpcGroup.of<WsRpcHandlers>({
+      const handlers = CoreWsRpcGroup.of<WsRpcHandlers>({
         [WS_METHODS.nativeAuthorRead]: nativeAuthorRpcHandler,
         [WS_METHODS.nativeAuthorWrite]: nativeAuthorRpcHandler,
         ...agentObservatoryReadHandlers(observatoryService),
@@ -2961,12 +2970,6 @@ const layerWsRpc = (
           vcsProvisioning.initRepository(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
         [WS_METHODS.reviewGetDiffPreview]: (input) => review.getDiffPreview(input),
         [WS_METHODS.reviewGetDiffFileContents]: (input) => review.getDiffFileContents(input),
-        [WS_METHODS.yaziPickerOpen]: (input) => yaziPicker.open(currentSessionId, input),
-        [WS_METHODS.yaziPickerPoll]: (input) => yaziPicker.poll(currentSessionId, input),
-        [WS_METHODS.yaziPickerWrite]: (input) => yaziPicker.write(currentSessionId, input),
-        [WS_METHODS.yaziPickerResize]: (input) => yaziPicker.resize(currentSessionId, input),
-        [WS_METHODS.yaziPickerRead]: (input) => yaziPicker.read(currentSessionId, input),
-        [WS_METHODS.yaziPickerClose]: (input) => yaziPicker.close(currentSessionId, input),
         [WS_METHODS.terminalOpen]: (input) => terminalManager.open(input),
         [WS_METHODS.terminalAttach]: (input) =>
           Stream.callback<TerminalAttachStreamEvent, TerminalError>((queue) =>
@@ -3221,6 +3224,27 @@ const layerWsRpc = (
       });
       return handlers;
     }),
+  );
+
+// Keep the attachment handlers separate from the large core handler map so
+// Effect's handler-service inference stays below TypeScript's recursion limit.
+const layerWsRpc = (...args: Parameters<typeof layerCoreWsRpc>) =>
+  Layer.merge(
+    layerCoreWsRpc(...args),
+    YaziWsRpcGroup.toLayer(
+      Effect.gen(function* () {
+        const picker = yield* YaziPicker.YaziPicker;
+        const owner = args[0].sessionId;
+        return YaziWsRpcGroup.of({
+          [WS_METHODS.yaziPickerOpen]: (input) => picker.open(owner, input),
+          [WS_METHODS.yaziPickerPoll]: (input) => picker.poll(owner, input),
+          [WS_METHODS.yaziPickerWrite]: (input) => picker.write(owner, input),
+          [WS_METHODS.yaziPickerResize]: (input) => picker.resize(owner, input),
+          [WS_METHODS.yaziPickerRead]: (input) => picker.read(owner, input),
+          [WS_METHODS.yaziPickerClose]: (input) => picker.close(owner, input),
+        });
+      }),
+    ),
   );
 
 // RpcServer's default sends a socket-level Defect frame instead, and the client

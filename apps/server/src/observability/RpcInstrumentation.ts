@@ -222,6 +222,12 @@ const RPC_AGGREGATES = {
   [WS_METHODS.agentObservatorySubscribe]: "observatory",
   [WS_METHODS.agentObservatoryReadNativeRoster]: "observatory",
   [WS_METHODS.agentObservatorySubscribeNativeRoster]: "observatory",
+  [WS_METHODS.yaziPickerOpen]: "attachments",
+  [WS_METHODS.yaziPickerPoll]: "attachments",
+  [WS_METHODS.yaziPickerWrite]: "attachments",
+  [WS_METHODS.yaziPickerResize]: "attachments",
+  [WS_METHODS.yaziPickerRead]: "attachments",
+  [WS_METHODS.yaziPickerClose]: "attachments",
 } as const satisfies Readonly<Record<WsRpcMethod, string>>;
 
 const RPC_SPAN_PREFIX = "ws.rpc";

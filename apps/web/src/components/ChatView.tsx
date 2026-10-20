@@ -5633,7 +5633,7 @@ export default function ChatView(props: ChatViewProps) {
         focusWorkbenchRegion("[data-right-panel-surface-content]");
       },
       "project.scripts": () => {
-        if (!activeProject || !canOperateTerminal) return false;
+        if (!activeProject || !canOperateTerminal || activeThreadKey === null) return false;
         setWorkbenchPicker({
           threadKey: activeThreadKey,
           title: "Run project script",
@@ -5648,6 +5648,7 @@ export default function ChatView(props: ChatViewProps) {
         });
       },
       "workspace.actions": () => {
+        if (activeThreadKey === null) return false;
         setWorkbenchPicker({
           threadKey: activeThreadKey,
           title: "Workspace actions",
