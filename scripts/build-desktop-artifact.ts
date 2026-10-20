@@ -2987,6 +2987,19 @@ export const stageWslRuntimeArchive = Effect.fn("stageWslRuntimeArchive")(functi
 // Mirrors cliArchiveStem in scripts/build-cli-archive.ts (which imports from
 // this module, so it cannot be imported here). WSL runs the same CPU arch as
 // the Windows host.
+// Windows-only releases may reuse this published server only while the workflow
+// proves its server/dependency source unchanged. Opt-in never accepts another archive.
+export const resolveWindowsWslRuntimeVersion = (
+  appVersion: string,
+  archiveSha256: string,
+  reusePublishedRuntime = false,
+): string | null =>
+  !reusePublishedRuntime
+    ? appVersion
+    : archiveSha256 === "a469af45aaf05af7ad1103b327e83a1824984c2ed5a5534d8c2e32a4b5440d6d"
+      ? "0.1.2-nightly.20261020.61"
+      : null;
+
 export const wslRuntimeArchiveStem = (version: string, arch: typeof BuildArch.Type): string =>
   `t3-${version}-linux-${arch}`;
 
@@ -3261,6 +3274,7 @@ export const validateWindowsPackagedPayload = Effect.fn(
   readonly targetArch: typeof BuildArch.Type;
   readonly appVersion: string;
   readonly expectWslRuntime?: boolean;
+  readonly reusePublishedWslRuntime?: boolean;
   readonly fileLimit?: number;
   readonly verbose?: boolean;
 }) {
@@ -3422,7 +3436,17 @@ export const validateWindowsPackagedPayload = Effect.fn(
     const members = parseWslRuntimeArchiveMembers(listing.stdout);
     // A release archive unpacks to one directory named after its stem; the
     // desktop app's WSL install script relies on that layout to find `t3`.
-    const stem = wslRuntimeArchiveStem(input.appVersion, input.targetArch);
+    const runtimeVersion = resolveWindowsWslRuntimeVersion(
+      input.appVersion,
+      actualHash,
+      input.reusePublishedWslRuntime,
+    );
+    if (runtimeVersion === null) {
+      return yield* invalidWslRuntime(
+        new Error("Published WSL runtime reuse requires the exact verified .61 archive."),
+      );
+    }
+    const stem = wslRuntimeArchiveStem(runtimeVersion, input.targetArch);
     const topLevel = new Set(members.map((member) => member.split("/")[0]));
     if (topLevel.size !== 1 || !topLevel.has(stem)) {
       return yield* invalidWslRuntime(
@@ -3979,6 +4003,9 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       appExecutableName: `${resolveWindowsExecutableName(appVersion)}.exe`,
       targetArch: options.arch,
       appVersion,
+      reusePublishedWslRuntime: yield* Config.Boolean(
+        "T3CODE_DESKTOP_REUSE_PUBLISHED_WSL_RUNTIME",
+      ).pipe(Config.withDefault(false)),
       expectWslRuntime: bundlesWslRuntime({
         platform: options.platform,
         runtimeArchivePath: options.wslRuntime,

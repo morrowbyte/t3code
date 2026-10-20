@@ -30,6 +30,9 @@ function assertRuntimeSourceUnchanged(paths) {
       path.startsWith("apps/desktop/") ||
         [
           ".github/workflows/weasel-release.yml",
+          "scripts/build-desktop-artifact.ts",
+          "scripts/windows-wsl-runtime.test.ts",
+          "scripts/weasel/check.sh",
           "scripts/weasel/windows-only-release.cjs",
           "scripts/weasel/nightly-after-ci.test.cjs",
         ].includes(path),

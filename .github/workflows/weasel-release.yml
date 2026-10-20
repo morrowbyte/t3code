@@ -973,6 +973,7 @@ jobs:
 
       - name: Build Windows x64 installer and updater metadata
         env:
+          T3CODE_DESKTOP_REUSE_PUBLISHED_WSL_RUNTIME: ${{ inputs.windows_only }}
           T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ vars.WEASEL_RELEASE_REPOSITORY || 'EvilWeasel/t3code' }}
           T3CODE_DESKTOP_APP_ID: com.evilweasel.t3code
           T3CODE_DESKTOP_PRODUCT_NAME: T3 Code (Weasel Nightly)
