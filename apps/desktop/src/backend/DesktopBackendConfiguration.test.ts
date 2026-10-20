@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off - Tests execute the generated Linux env boundary without starting WSL.
+import * as NodeChildProcess from "node:child_process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { currentDesktopBootstrapToken } from "@t3tools/shared/desktopBootstrapToken";
@@ -582,6 +584,22 @@ describe("DesktopBackendConfiguration", () => {
             assert.equal(first.bootstrap.t3Home, "/home/test user/.t3-weasel");
             assert.equal(restarted.bootstrap.t3Home, first.bootstrap.t3Home);
             assert.equal(first.env.T3CODE_HOME, undefined);
+            const envStart = first.args.indexOf("env") + 1;
+            const runtimeEntry = "/home/test user/.t3-weasel/wsl-runtime/cache/t3";
+            const commandStart = first.args.indexOf(runtimeEntry);
+            assert.isAbove(commandStart, envStart);
+            const inherited = NodeChildProcess.spawnSync(
+              "env",
+              [
+                ...first.args.slice(envStart, commandStart),
+                process.execPath,
+                "-p",
+                "process.env.T3CODE_HOME ?? 'unset'",
+              ],
+              { env: { ...process.env, T3CODE_HOME: "/foreign/upstream/.t3" }, encoding: "utf8" },
+            );
+            assert.equal(inherited.status, 0, inherited.stderr);
+            assert.equal(inherited.stdout.trim(), "unset");
             assert.equal(first.extendEnv, false);
             assert.isTrue(Option.isNone(first.preflightFailure));
             assert.include(first.args, "/home/test user/.t3-weasel/wsl-runtime/cache/t3");

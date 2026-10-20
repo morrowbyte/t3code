@@ -767,6 +767,7 @@ const resolveWslStartConfig = Effect.fn("desktop.backendConfiguration.resolveWsl
       ...distroArgs,
       "--exec",
       "env",
+      ...(preflight.t3Home === undefined ? [] : ["-u", "T3CODE_HOME"]),
       `PATH=${launchPath}`,
       ...command,
       "--bootstrap-fd",
