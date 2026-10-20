@@ -61,6 +61,7 @@ type LeaseRow = {
   status: LiveVoiceSession["status"];
   native_started: number;
   native_sdp_received: number;
+  updated_at: string;
 };
 
 const leaseKey = (leaseId: string, generation: number) => `${leaseId}:${generation}`;
@@ -782,18 +783,15 @@ export const layer: Layer.Layer<
           ORDER BY updated_at DESC LIMIT 1
         `.pipe(Effect.map((rows) => rows[0]));
             if (previousLease !== undefined) {
-              if (
-                previousLease.principal_session_id !== session.sessionId ||
-                previousLease.principal_subject !== session.subject
-              ) {
+              if (previousLease.principal_subject !== session.subject) {
                 return yield* liveError("dispatch_conflict");
               }
               let currentPreviousLease: LeaseRow | undefined = previousLease;
               if (previousLease.status === "preparing") {
-                // A failed binding never reached the planner. Wait for that prepare's
-                // request lock before reconciling it, so an in-flight prepare stays owned.
+                // A previous client can leave an empty reservation. Its original
+                // request must finish before checking whether anything was bound.
                 currentPreviousLease = yield* leaseLocks.withLock(
-                  `request:${session.sessionId}:${previousLease.client_request_id}`,
+                  `request:${previousLease.principal_session_id}:${previousLease.client_request_id}`,
                   Effect.gen(function* () {
                     const pending = yield* getLease(
                       previousLease.lease_id,
@@ -801,16 +799,42 @@ export const layer: Layer.Layer<
                     );
                     if (
                       pending?.status === "preparing" &&
-                      pending.principal_session_id === session.sessionId &&
+                      pending.principal_session_id === previousLease.principal_session_id &&
                       pending.principal_subject === session.subject &&
+                      pending.environment_id === environmentId &&
+                      pending.thread_id === input.threadId &&
                       pending.provider_session_id === null &&
                       pending.planner_native_thread_id === null &&
                       pending.start_client_request_id === null &&
+                      pending.stop_client_request_id === null &&
                       pending.native_started === 0 &&
                       pending.native_sdp_received === 0 &&
                       !active.has(leaseKey(pending.lease_id, pending.generation))
                     ) {
-                      yield* updateStatus(pending, "unknown");
+                      const retired = yield* sql<LeaseRow>`
+                        UPDATE codex_live_voice_leases
+                        SET status = 'failed', updated_at = ${DateTime.formatIso(yield* DateTime.now)}
+                        WHERE lease_id = ${pending.lease_id} AND generation = ${pending.generation}
+                          AND environment_id = ${environmentId} AND thread_id = ${input.threadId}
+                          AND principal_session_id = ${pending.principal_session_id}
+                          AND principal_subject = ${session.subject}
+                          AND client_request_id = ${pending.client_request_id}
+                          AND updated_at = ${pending.updated_at} AND status = 'preparing'
+                          AND provider_session_id IS NULL AND planner_native_thread_id IS NULL
+                          AND start_client_request_id IS NULL AND stop_client_request_id IS NULL
+                          AND native_started = 0 AND native_sdp_received = 0
+                          AND NOT EXISTS (
+                            SELECT 1 FROM codex_live_voice_intents
+                            WHERE lease_id = ${pending.lease_id} AND generation = ${pending.generation}
+                          )
+                        RETURNING *
+                      `.pipe(Effect.map((rows) => rows[0]));
+                      if (retired !== undefined) {
+                        yield* eventHub.publish({
+                          type: "status",
+                          session: sessionFromRow(retired),
+                        });
+                      }
                     }
                     // The old prepare can fail while this request waits for its lock.
                     return yield* getLease(previousLease.lease_id, previousLease.generation);
@@ -821,6 +845,12 @@ export const layer: Layer.Layer<
                 currentPreviousLease !== undefined &&
                 !["closed", "failed"].includes(currentPreviousLease.status)
               ) {
+                if (
+                  currentPreviousLease.principal_session_id !== session.sessionId ||
+                  currentPreviousLease.principal_subject !== session.subject
+                ) {
+                  return yield* liveError("dispatch_conflict");
+                }
                 const retired = yield* stopLease(
                   session,
                   {
