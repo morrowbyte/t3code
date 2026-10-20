@@ -289,6 +289,8 @@ export function DevicePanel(props: {
                         {group.devices.map((device) => (
                           <DiscoveryListRow
                             key={deviceKey(device)}
+                            data-keyboard-object="Device"
+                            data-keyboard-primary
                             icon={
                               <span className="grid size-8 shrink-0 place-items-center rounded-md border border-border/60">
                                 <Smartphone className="size-4" />

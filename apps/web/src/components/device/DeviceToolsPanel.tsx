@@ -1,7 +1,7 @@
 import type { DeviceHubAccess } from "@t3tools/client-runtime/state/deviceHubAccess";
 import type { DevicePermission, DeviceSummary, DeviceTextSize } from "@t3tools/contracts";
 import { ChevronDown, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { Button } from "~/components/ui/button";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "~/components/ui/collapsible";
@@ -89,10 +89,38 @@ export function DeviceToolsPanel(props: {
   const { detail, pending, error, foregroundApp, disabled, act } = controls;
   const settings = detail?.settings;
   const isIos = device.platform === "ios";
+  const panel = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const origin = document.activeElement;
+    panel.current?.querySelector<HTMLButtonElement>('button[aria-label="Close tools"]')?.focus();
+    return () => {
+      if (origin instanceof HTMLElement && origin.isConnected)
+        origin.focus({ preventScroll: true });
+    };
+  }, []);
 
   return (
     <div
+      ref={panel}
       className={cn("flex min-h-0 flex-col border-border bg-background text-sm", props.className)}
+      data-keyboard-object="Device tools"
+      tabIndex={-1}
+      aria-label="Device tools"
+      onKeyDown={(event) => {
+        if (
+          event.key === "Escape" &&
+          !event.defaultPrevented &&
+          !event.nativeEvent.isComposing &&
+          !(
+            event.target instanceof Element &&
+            event.target.closest('[role="listbox"],[role="menu"]')
+          )
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          props.onClose();
+        }
+      }}
     >
       <div className="flex h-9 shrink-0 items-center gap-2 border-b px-3">
         <span className="font-medium">Tools</span>
@@ -328,7 +356,12 @@ export function DeviceToolsPanel(props: {
 
 function Section(props: { readonly title: string; readonly children: React.ReactNode }) {
   return (
-    <section className="flex flex-col gap-2 border-b px-3 py-2.5 last:border-b-0">
+    <section
+      className="flex flex-col gap-2 border-b px-3 py-2.5 last:border-b-0"
+      data-keyboard-object="Device setting group"
+      tabIndex={-1}
+      aria-label={props.title}
+    >
       <h3 className="text-xs font-medium text-muted-foreground">{props.title}</h3>
       {props.children}
     </section>

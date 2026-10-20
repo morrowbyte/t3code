@@ -201,6 +201,33 @@ describe("right panel new-tab shortcut", () => {
     expect(document.querySelector('[role="menu"]')).toBeNull();
   });
 
+  it("switches tabs with arrows and Home/End, and reorders with Alt arrows", async () => {
+    const activate = vi.fn();
+    const move = vi.fn();
+    const files = { id: "files", kind: "files" } as const;
+    const diff = { id: "diff", kind: "diff" } as const;
+    await renderPanel({
+      surfaces: [files, diff],
+      activeSurfaceId: "files",
+      onActivate: activate,
+      onMoveSurface: move,
+    });
+    container
+      .querySelector<HTMLElement>('[data-surface-id="files"] [data-keyboard-primary]')!
+      .focus();
+    await press("ArrowRight");
+    expect(activate).toHaveBeenLastCalledWith(diff);
+    expect(
+      document.activeElement?.closest<HTMLElement>("[data-surface-id]")?.dataset.surfaceId,
+    ).toBe("diff");
+    await press("Home");
+    expect(activate).toHaveBeenLastCalledWith(files);
+    await press("End");
+    expect(activate).toHaveBeenLastCalledWith(diff);
+    await press("ArrowLeft", { altKey: true });
+    expect(move).toHaveBeenLastCalledWith("diff", 0);
+  });
+
   it("supports arrow keys with an existing tab in sheet mode and clears the menu on close", async () => {
     const panel = {
       mode: "sheet" as const,

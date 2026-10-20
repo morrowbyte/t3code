@@ -4,7 +4,13 @@ import type {
   ContextMenuOpenContext as TreeContextMenuOpenContext,
 } from "@pierre/trees";
 import type { EnvironmentId, ProjectEntry } from "@t3tools/contracts";
-import { FileTree, useFileTree, useFileTreeSearch, useFileTreeSelector } from "@pierre/trees/react";
+import {
+  FileTree,
+  useFileTree,
+  useFileTreeSearch,
+  useFileTreeSelector,
+  useFileTreeSelection,
+} from "@pierre/trees/react";
 import { settlePromise } from "@t3tools/client-runtime/state/runtime";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
@@ -34,6 +40,7 @@ import { buildFileTreePathUpdates } from "./fileTreePathReconciliation";
 import { loadFileAncestors } from "./loadFileAncestors";
 import { useDirectoryEntries } from "./useDirectoryEntries";
 import { useProjectPathSearch } from "~/state/queries";
+import { treeNavigationKey } from "./panelTreeKeyboard";
 
 interface FileBrowserPanelProps {
   environmentId: EnvironmentId;
@@ -97,7 +104,9 @@ function FileSearchField(props: {
         spellCheck={false}
         onChange={(event) => props.onValueChange(event.target.value)}
         onKeyDown={(event) => {
-          if (event.key !== "Escape") return;
+          if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
+          event.preventDefault();
+          event.stopPropagation();
           props.onClose();
           event.currentTarget.blur();
         }}
@@ -331,6 +340,27 @@ export default function FileBrowserPanel({
   const closeSearch = () => {
     setQuery("");
     search.close();
+    requestAnimationFrame(() => {
+      const tree = panelRef.current?.querySelector("file-tree-container");
+      tree?.shadowRoot
+        ?.querySelector<HTMLElement>('[data-item-path][tabindex="0"],[data-item-path]')
+        ?.focus();
+    });
+  };
+  const selectedPaths = useFileTreeSelection(model);
+  const addSelectedToChat = () => {
+    const paths = model.getSelectedPaths();
+    if (!paths.length) return;
+    const mentions = paths.map((path) =>
+      serializeComposerFileLink(panelPath(path.replace(/\/$/, ""))),
+    );
+    if (
+      !composerRef?.current?.insertTextAtEnd(`${mentions.join(" ")} `, {
+        ensureLeadingBoundary: true,
+      })
+    ) {
+      toastManager.add({ type: "error", title: "Unable to add selected files to chat" });
+    }
   };
   const expandedPathsRef = useRef(new Set<string>());
   useEffect(() => {
@@ -505,6 +535,38 @@ export default function FileBrowserPanel({
       ref={panelRef}
       className="flex min-h-0 flex-1 flex-col bg-background"
       data-file-browser-panel={`${environmentId}:${cwd}`}
+      data-keyboard-object="File browser"
+      data-keyboard-local="true"
+      data-keyboard-help="J/K or arrows: files · H/L: folders · /: search · A: add selected files to chat · Esc: leave search"
+      onKeyDownCapture={(event) => {
+        if (treeNavigationKey(event)) return;
+        if (
+          event.nativeEvent.isComposing ||
+          event.ctrlKey ||
+          event.metaKey ||
+          event.altKey ||
+          event.shiftKey
+        )
+          return;
+        if (
+          event.nativeEvent
+            .composedPath()
+            .some(
+              (node) =>
+                node instanceof Element && node.matches('input,textarea,[contenteditable="true"]'),
+            )
+        )
+          return;
+        if (event.key === "/") {
+          event.preventDefault();
+          event.stopPropagation();
+          panelRef.current?.querySelector<HTMLInputElement>('input[type="search"]')?.focus();
+        } else if (event.key === "a" && model.getSelectedPaths().length) {
+          event.preventDefault();
+          event.stopPropagation();
+          addSelectedToChat();
+        }
+      }}
     >
       <div
         className="flex h-10 min-h-10 shrink-0 items-center gap-1 border-b border-border/60 bg-background px-2 in-data-[preview-panel-mode=inline]:mb-1 in-data-[preview-panel-mode=inline]:h-9 in-data-[preview-panel-mode=inline]:min-h-9 in-data-[preview-panel-mode=inline]:border-b-transparent"
@@ -518,6 +580,15 @@ export default function FileBrowserPanel({
           onValueChange={handleSearchValueChange}
           onClose={closeSearch}
         />
+        <Button
+          size="xs"
+          variant="ghost"
+          disabled={!selectedPaths.length || !composerRef}
+          aria-label="Add selected files to chat"
+          onClick={addSelectedToChat}
+        >
+          Add to chat
+        </Button>
         {directoryPaths.length > 0 && !hostFolder ? (
           <Tooltip>
             <TooltipTrigger

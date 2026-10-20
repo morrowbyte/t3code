@@ -13,10 +13,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import { page, userEvent } from "vite-plus/test/browser";
 
 import "~/index.css";
+import { dispatchKeyboardCommand } from "../keyboard/keyboardCommands";
 
 import type { PreviewableServer } from "./useDiscoveredLocalServers";
 
 const mocks = vi.hoisted(() => ({
+  goBack: vi.fn(async (_tabId: string) => undefined),
+  goForward: vi.fn(async (_tabId: string) => undefined),
+  refresh: vi.fn(async (_tabId: string) => undefined),
+  canGoBack: false,
+  canGoForward: false,
   navigate: vi.fn(async (_tabId: string, _url: string): Promise<void> => undefined),
   rememberPreviewUrl: vi.fn(),
   readPreparedConnection: vi.fn(() => ({ httpBaseUrl: "http://172.25.85.75:3773" })),
@@ -56,9 +62,9 @@ vi.mock(import("./previewBridge"), async (original) => ({
     pickElement: mocks.pickElement,
     setAnnotationSendEnabled: mocks.setAnnotationSendEnabled,
     cancelPickElement: mocks.cancelPickElement,
-    refresh: vi.fn(async () => undefined),
-    goBack: vi.fn(async () => undefined),
-    goForward: vi.fn(async () => undefined),
+    refresh: mocks.refresh,
+    goBack: mocks.goBack,
+    goForward: mocks.goForward,
     hardReload: vi.fn(async () => undefined),
     openDevTools: vi.fn(async () => undefined),
     setColorScheme: vi.fn(async () => undefined),
@@ -97,8 +103,8 @@ vi.mock(import("~/previewStateStore"), async (original) => ({
     desktopByTabId: {
       "tab-1": {
         hasWebContents: true,
-        canGoBack: false,
-        canGoForward: false,
+        canGoBack: mocks.canGoBack,
+        canGoForward: mocks.canGoForward,
         loading: mocks.loading,
         zoomFactor: 1,
         pictureInPicture: mocks.pictureInPicture,
@@ -116,8 +122,8 @@ vi.mock(import("~/previewStateStore"), async (original) => ({
             threadId: "thread-1",
             tabId: "tab-1",
             navStatus: { _tag: "Success", url: "http://example.com/", title: "Example" },
-            canGoBack: false,
-            canGoForward: false,
+            canGoBack: mocks.canGoBack,
+            canGoForward: mocks.canGoForward,
             updatedAt: "2026-07-13T00:00:00.000Z",
           },
         },
@@ -212,6 +218,8 @@ describe("PreviewView", () => {
     mocks.pictureInPicture = false;
     mocks.showEmptyState = false;
     mocks.loading = false;
+    mocks.canGoBack = false;
+    mocks.canGoForward = false;
     mocks.serverEpoch = null;
     mocks.servers = [];
     mocks.recordingTabIds = new Set();
@@ -232,6 +240,82 @@ describe("PreviewView", () => {
     for (const each of roots.splice(0)) await act(async () => each.unmount());
     document.body.replaceChildren();
     vi.useRealTimers();
+  });
+
+  it("uses the visible browser for keyboard history, reload and URL focus while respecting history availability", async () => {
+    await render(view());
+    expect(dispatchKeyboardCommand("preview.back")).toBe(false);
+    expect(mocks.goBack).not.toHaveBeenCalled();
+    mocks.canGoBack = true;
+    mocks.canGoForward = true;
+    await render(view());
+    await act(async () => {
+      dispatchKeyboardCommand("preview.back");
+      dispatchKeyboardCommand("preview.forward");
+      dispatchKeyboardCommand("preview.refresh");
+      dispatchKeyboardCommand("preview.focusUrl");
+    });
+    expect(mocks.goBack).toHaveBeenCalledWith(TEST_RUNTIME_TAB_ID);
+    expect(mocks.goForward).toHaveBeenCalledWith(TEST_RUNTIME_TAB_ID);
+    expect(mocks.refresh).toHaveBeenCalledWith(TEST_RUNTIME_TAB_ID);
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("Browser URL");
+    await render(<PreviewView threadRef={TEST_THREAD_REF} tabId="tab-1" visible={false} />);
+    expect(dispatchKeyboardCommand("preview.back")).toBe(false);
+  });
+
+  it("keeps browser keyboard commands in the focused browser when two views are visible", async () => {
+    await render(
+      <>
+        {view()}
+        {view()}
+      </>,
+    );
+    const inputs = [...document.querySelectorAll<HTMLInputElement>('[aria-label="Browser URL"]')];
+    expect(inputs).toHaveLength(2);
+    await act(async () => inputs[1]!.focus());
+    await act(async () => {
+      dispatchKeyboardCommand("preview.focusUrl");
+    });
+    expect(document.activeElement).toBe(inputs[1]);
+  });
+
+  it("preserves address editing during IME and restores the displayed URL on Escape", async () => {
+    await render(view());
+    const input = document.querySelector<HTMLInputElement>('[aria-label="Browser URL"]')!;
+    await act(async () => input.focus());
+    await userEvent.fill(
+      page.getByRole("textbox", { name: "Browser URL" }),
+      "https://new.example/",
+    );
+    await act(async () =>
+      input.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          isComposing: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      ),
+    );
+    expect(mocks.navigate).not.toHaveBeenCalled();
+    await act(async () =>
+      input.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          isComposing: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      ),
+    );
+    expect(document.activeElement).toBe(input);
+    await act(async () =>
+      input.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+      ),
+    );
+    expect(document.activeElement).not.toBe(input);
+    expect(input.value).toBe("http://example.com/");
   });
 
   it("shows the cursor in a replacement browser while the old instance still records", async () => {

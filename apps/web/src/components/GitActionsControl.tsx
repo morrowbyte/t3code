@@ -1,5 +1,7 @@
 import { ThreadDetailsControl } from "./chat/ThreadDetailsControl";
 import { useAtomValue } from "@effect/atom-react";
+import { useKeyboardCommands } from "./keyboard/keyboardCommands";
+import { WorkbenchCommandPicker } from "./keyboard/WorkbenchCommandPicker";
 import {
   AuthOrchestrationOperateScope,
   AuthSourceControlWriteScope,
@@ -1001,6 +1003,7 @@ export default function GitActionsControl({
   const canChangeThreadBranch = canWriteSourceControl && (isLocalDraftThread || canOperateThread);
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
   const [isCommitDialogOpen, setIsCommitDialogOpen] = useState(false);
+  const [keyboardActionsOpen, setKeyboardActionsOpen] = useState(false);
   const [dialogCommitMessage, setDialogCommitMessage] = useState("");
   const [excludedFiles, setExcludedFiles] = useState<ReadonlySet<string>>(new Set());
   const [isEditingFiles, setIsEditingFiles] = useState(false);
@@ -1630,10 +1633,32 @@ export default function GitActionsControl({
     </>
   );
 
+  useKeyboardCommands({
+    "git.actions": () => {
+      if (!gitCwd) return false;
+      setKeyboardActionsOpen(true);
+      requestVcsStatusRefresh(refreshVcsStatus, activeEnvironmentId, gitCwd);
+      return true;
+    },
+  });
+
   if (!gitCwd) return null;
 
   return (
     <>
+      {keyboardActionsOpen ? (
+        <WorkbenchCommandPicker
+          title="Git actions"
+          onClose={() => setKeyboardActionsOpen(false)}
+          commands={gitActionMenuItems
+            .filter((item) => canWriteSourceControl && !item.disabled)
+            .map((item) => ({
+              id: item.id,
+              label: item.label,
+              run: () => openDialogForMenuItem(item),
+            }))}
+        />
+      ) : null}
       {presentation === "menu" ? (
         !isRepo ? (
           <MenuItem

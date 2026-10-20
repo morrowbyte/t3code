@@ -82,6 +82,9 @@ export function PendingReviewCommentCard({
   return (
     <div
       className={cn(CARD_CLASS, "border-dashed")}
+      data-keyboard-object="Pending review comment"
+      tabIndex={-1}
+      aria-label={comment.body.slice(0, 120)}
       contentEditable={false}
       onPointerDown={(event) => event.stopPropagation()}
     >
@@ -216,6 +219,9 @@ export function ReviewThreadCard({
   return (
     <div
       className={CARD_CLASS}
+      data-keyboard-object="Review thread"
+      tabIndex={-1}
+      aria-label={`${thread.path ?? "Review"}: ${thread.line ?? "comment"}`}
       contentEditable={false}
       onPointerDown={(event) => event.stopPropagation()}
     >
@@ -226,6 +232,7 @@ export function ReviewThreadCard({
         />
         <button
           type="button"
+          data-keyboard-primary
           className="hover:text-foreground"
           aria-expanded={expanded}
           onClick={() => setExpanded((current) => !current)}

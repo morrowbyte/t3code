@@ -24,6 +24,7 @@ import {
 } from "./timelineMinimapItems";
 import {
   COMPOSER_CONTEXT_KINDS,
+  ASSISTANT_CITATION_MAX_TEXT_LENGTH,
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   type AssistantCitation,
   type EnvironmentId,
@@ -192,6 +193,8 @@ import {
   timelineContentOverflowsViewport,
 } from "./timelineScrollAnchoring";
 import { MessageCopyButton } from "./MessageCopyButton";
+import { handleObjectActionKey } from "./objectKeyboardActions";
+import { toastManager } from "../ui/toast";
 import { AgentMessageRow } from "./AgentMessageRow";
 import { AgentIdentityLabel } from "../agent-identity/AgentIdentityLabel";
 import { readAgentSend } from "./agentMessagePresentation";
@@ -200,7 +203,10 @@ import { promptLinkFor } from "../promptLinks/copyPromptLink";
 import { PierreEntryIcon } from "./PierreEntryIcon";
 import { WorkspaceEntryIcon, WorkspaceEntryTooltip } from "./WorkspaceEntryIcon";
 import { AssistantSelectionToolbar } from "./AssistantSelectionToolbar";
-import type { AssistantCitationSourceAnchor } from "~/lib/assistantTextSelection";
+import {
+  captureAssistantTextSelection,
+  type AssistantCitationSourceAnchor,
+} from "~/lib/assistantTextSelection";
 import {
   AssistantCitationSource,
   type AssistantCitationRequest,
@@ -317,6 +323,7 @@ import {
 } from "../../reviewCommentContext";
 
 interface TimelineRowSharedState {
+  onCiteAssistantText: MessagesTimelineProps["onCiteAssistantText"];
   citationRequest: AssistantCitationTarget | null;
   listRef: React.RefObject<LegendListRef | null>;
   timestampFormat: TimestampFormat;
@@ -1231,6 +1238,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   }, [timelineViewportElement, rows.length, reportContentOverflow, chatWidth]);
 
   const sharedState: TimelineRowSharedState = {
+    onCiteAssistantText,
     citationRequest: readyCitationRequest,
     listRef,
     timestampFormat,
@@ -2325,6 +2333,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                   type="button"
                   className="block h-full w-full cursor-zoom-in"
                   aria-label={`Preview ${image.name}`}
+                  data-keyboard-action="attachment"
                   onClick={() => {
                     const preview = buildExpandedImagePreview(regularImages, image.id);
                     if (!preview) return;
@@ -2369,6 +2378,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                   <button
                     type="button"
                     aria-label={`Preview ${file.name}`}
+                    data-keyboard-action="attachment"
                     onClick={() => ctx.onFileOpen(file)}
                     className="focus-visible:ring-ring/70 flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md py-1 text-left text-sm hover:underline focus-visible:ring-2 focus-visible:ring-inset focus-visible:outline-none"
                   >
@@ -2462,7 +2472,15 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   }
 
   return (
-    <div className="group flex flex-col items-end gap-1">
+    <div
+      className="group flex flex-col items-end gap-1 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      data-keyboard-object="Message"
+      tabIndex={-1}
+      aria-label={`Your message: ${plainText.slice(0, 120)}`}
+      onKeyDown={(event) =>
+        handleObjectActionKey(event, { c: "copy", e: "edit", o: "attachment", d: "details" })
+      }
+    >
       {userMessage.attribution === "automation" ? (
         <p
           className="me-1 text-2xs text-muted-foreground/70"
@@ -2627,6 +2645,8 @@ function RevertUserMessageButton({
             disabled={activity.isRevertingCheckpoint || activity.isWorking}
             onClick={() => ctx.onRevertToTurnCount(turnCount, messageId)}
             aria-label="Edit from here"
+            data-keyboard-action="edit"
+            aria-keyshortcuts="E"
           />
         }
       >
@@ -2720,7 +2740,21 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
 
   return (
     <>
-      <div className="relative min-w-0 px-1 py-0.5">
+      <div
+        className="relative min-w-0 rounded-md px-1 py-0.5 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        data-keyboard-object="Message"
+        tabIndex={-1}
+        aria-label={`Assistant message: ${messageText.slice(0, 120)}`}
+        onKeyDown={(event) =>
+          handleObjectActionKey(event, {
+            c: "copy",
+            q: "quote",
+            s: "select-text",
+            o: "attachment",
+            d: "details",
+          })
+        }
+      >
         <h3 className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground select-none">
           {ctx.threadRef ? (
             <AgentIdentityLabel threadRef={ctx.threadRef} />
@@ -2760,6 +2794,83 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
           resolvedTheme={ctx.resolvedTheme}
           onOpenTurnDiff={ctx.onOpenTurnDiff}
         />
+        <div className="flex items-center gap-1">
+          {!row.showAssistantMeta && !row.message.streaming ? (
+            <MessageCopyButton text={messageText} variant="ghost" />
+          ) : null}
+          {ctx.onCiteAssistantText && ctx.threadRef && !row.message.streaming ? (
+            <Button
+              type="button"
+              size="xs"
+              variant="ghost-muted"
+              data-keyboard-action="select-text"
+              aria-keyshortcuts="S"
+              onPointerDown={(event) => event.preventDefault()}
+              onClick={(event) => {
+                const object = event.currentTarget.closest<HTMLElement>(
+                  '[data-keyboard-object="Message"]',
+                );
+                const source = object?.querySelector<HTMLElement>(
+                  "[data-assistant-citation-source]",
+                );
+                const selection = document.getSelection();
+                if (!object || !source || !selection) return;
+                object.focus({ preventScroll: true });
+                const range = document.createRange();
+                range.selectNodeContents(source);
+                selection.removeAllRanges();
+                selection.addRange(range);
+              }}
+            >
+              Select response text
+            </Button>
+          ) : null}
+          {ctx.onCiteAssistantText && ctx.threadRef && !row.message.streaming ? (
+            <Button
+              type="button"
+              size="xs"
+              variant="ghost-muted"
+              data-keyboard-action="quote"
+              aria-keyshortcuts="Q"
+              onPointerDown={(event) => event.preventDefault()}
+              onClick={(event) => {
+                const source = event.currentTarget
+                  .closest('[data-keyboard-object="Message"]')
+                  ?.querySelector<HTMLElement>("[data-assistant-citation-source]");
+                const viewport = source?.closest<HTMLElement>("[data-assistant-citation-viewport]");
+                const selection = document.getSelection();
+                if (!source || !viewport || !selection || !ctx.threadRef) return;
+                let captured = captureAssistantTextSelection(viewport, selection);
+                if (captured?.source !== source) {
+                  const previous = Array.from({ length: selection.rangeCount }, (_, index) =>
+                    selection.getRangeAt(index).cloneRange(),
+                  );
+                  const range = document.createRange();
+                  range.selectNodeContents(source);
+                  selection.removeAllRanges();
+                  selection.addRange(range);
+                  captured = captureAssistantTextSelection(viewport, selection);
+                  selection.removeAllRanges();
+                  for (const saved of previous) selection.addRange(saved);
+                }
+                if (!captured) return;
+                if (captured.selector.text.length > ASSISTANT_CITATION_MAX_TEXT_LENGTH) {
+                  toastManager.add({
+                    type: "info",
+                    title: "Select a shorter excerpt to quote this response.",
+                  });
+                  return;
+                }
+                ctx.onCiteAssistantText?.(
+                  { version: 1, ...ctx.threadRef, messageId: row.message.id, ...captured.selector },
+                  { ...captured, viewport },
+                );
+              }}
+            >
+              Quote response
+            </Button>
+          ) : null}
+        </div>
         {row.showAssistantMeta ? (
           <AssistantMessageMeta
             className="mt-1.5"
@@ -4702,6 +4813,8 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
               size="xs"
               variant="ghost-muted"
               aria-expanded={expanded}
+              data-keyboard-action="details"
+              aria-keyshortcuts="D"
               data-scroll-anchor-ignore
               onClick={() => setExpanded((value) => !value)}
               className="-ml-1"

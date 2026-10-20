@@ -9,6 +9,7 @@ import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { composerFloatingLayerProps } from "./composerEventScope";
+import { handleObjectActionKey } from "./objectKeyboardActions";
 
 interface ComposerPendingApprovalActionsProps {
   requestId: RuntimeRequestId;
@@ -114,7 +115,16 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
   );
 
   return (
-    <>
+    <div
+      data-keyboard-object="Approval"
+      role="group"
+      tabIndex={-1}
+      aria-label="Approval decisions"
+      className="flex flex-wrap items-center gap-1"
+      onKeyDown={(event) =>
+        handleObjectActionKey(event, { a: "approve", d: "decline", m: "scope" })
+      }
+    >
       {primaryOptions.map((option) => {
         const button = (
           <Button
@@ -123,6 +133,9 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
             variant={option.decision === "accept" ? "default" : "outline"}
             disabled={responseDisabled}
             aria-description={option.warning}
+            data-keyboard-action={option.decision === "accept" ? "approve" : "decline"}
+            data-keyboard-primary={option.decision === "accept" ? true : undefined}
+            aria-keyshortcuts={option.decision === "accept" ? "A" : "D"}
             onClick={() => {
               void respond(option.decision);
             }}
@@ -144,7 +157,15 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
         <Menu>
           <MenuTrigger
             disabled={responseDisabled}
-            render={<Button size="icon-xs" variant="outline" aria-label="More approval options" />}
+            render={
+              <Button
+                size="icon-xs"
+                variant="outline"
+                aria-label="More approval options"
+                data-keyboard-action="scope"
+                aria-keyshortcuts="M"
+              />
+            }
           >
             <EllipsisIcon />
           </MenuTrigger>
@@ -182,6 +203,6 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
           Could not send this decision. The request is still pending.
         </span>
       ) : null}
-    </>
+    </div>
   );
 });

@@ -22,6 +22,16 @@ afterEach(() => {
 });
 
 describe("shouldTypeToFocusComposer", () => {
+  it("keeps local panel navigation and shadow-tree keys out of the composer", () => {
+    const panel = document.createElement("div");
+    panel.dataset.keyboardLocal = "true";
+    const tree = panel.attachShadow({ mode: "open" });
+    const row = document.createElement("div");
+    tree.append(row);
+    document.body.append(panel);
+    expect(typeOn(row, "j")).toBe(false);
+    expect(typeOn(row, "/")).toBe(false);
+  });
   it("keeps printable keys in explicit navigation until compose is requested", () => {
     const chat = document.createElement("div");
     document.body.append(chat);

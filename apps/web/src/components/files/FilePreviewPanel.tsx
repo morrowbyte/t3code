@@ -100,6 +100,7 @@ import {
   FileSurfaceLoading,
 } from "./fileSurfaceChrome";
 import SourceFilePreview from "./ReadOnlySourcePreview";
+import { FileSelectionActions } from "./FileSelectionActions";
 import { resolveCenteredFileLineScrollTop } from "./fileLineReveal";
 import { DiffCommentAnnotation } from "../diffs/DiffCommentAnnotation";
 import { projectFileCacheKey } from "./fileContentRevision";
@@ -1414,14 +1415,28 @@ export default function FilePreviewPanel({
                 delimiter={tableDelimiter}
               />
             ) : file.data.truncated || isHostFile || !canWriteFiles ? (
-              <SourceFilePreview
-                name={relativePath}
-                text={file.data.contents}
-                cacheKey={projectFileCacheKey(cwd, relativePath, file.data.contents)}
-                onPostRender={onFilePostRender}
-              />
+              <>
+                <FileSelectionActions
+                  key={relativePath}
+                  filePath={relativePath}
+                  contents={file.data.contents}
+                  composerDraftTarget={composerDraftTarget}
+                />
+                <SourceFilePreview
+                  name={relativePath}
+                  text={file.data.contents}
+                  cacheKey={projectFileCacheKey(cwd, relativePath, file.data.contents)}
+                  onPostRender={onFilePostRender}
+                />
+              </>
             ) : (
               <DiffWorkerPoolProvider>
+                <FileSelectionActions
+                  key={relativePath}
+                  filePath={relativePath}
+                  contents={file.data.contents}
+                  composerDraftTarget={composerDraftTarget}
+                />
                 <EditableFileSurface
                   key={`${relativePath}:${resolvedTheme}`}
                   environmentId={environmentId}

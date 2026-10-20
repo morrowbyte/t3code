@@ -5640,7 +5640,7 @@ export default function ChatView(props: ChatViewProps) {
           commands: activeProjectScripts.map((script) => ({
             id: script.id,
             label: script.name,
-            detail: script.command,
+            detail: `${script.command} · ${gitCwd ?? activeProject.workspaceRoot}`,
             run: () => {
               void runProjectScriptStable(script);
             },
@@ -5653,6 +5653,13 @@ export default function ChatView(props: ChatViewProps) {
           threadKey: activeThreadKey,
           title: "Workspace actions",
           commands: [
+            {
+              id: "git-actions",
+              label: "Git actions: commit, push and pull requests",
+              run: () => {
+                dispatchKeyboardCommand("git.actions");
+              },
+            },
             {
               id: "branch",
               label: "Choose branch or worktree",

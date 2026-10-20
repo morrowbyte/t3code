@@ -1,6 +1,6 @@
 "use client";
 
-import { useKeyboardCommands } from "./keyboard/keyboardCommands";
+import { dispatchKeyboardCommand, useKeyboardCommands } from "./keyboard/keyboardCommands";
 
 import { threadPullRequestLinkMode } from "@t3tools/client-runtime/thread-pull-request-compatibility";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
@@ -48,6 +48,7 @@ import {
   type DesktopWslState,
   type ClientSettings,
   type EnvironmentId,
+  type KeybindingCommand,
   type EnvironmentMachineKind,
   type FilesystemBrowseResult,
   type ProjectId,
@@ -1595,6 +1596,43 @@ function OpenCommandPaletteDialog(props: {
       requestLeaderNavigation();
     },
   });
+
+  const workbenchActions: ReadonlyArray<readonly [KeybindingCommand, string]> = [
+    ["modelPicker.toggle", "Composer: Choose model"],
+    ["composer.effort", "Composer: Choose reasoning"],
+    ["composer.serviceTier", "Composer: Choose service tier"],
+    ["composer.access", "Composer: Choose access"],
+    ["composer.attachFiles", "Attach files with Yazi"],
+    ["voice.dictation", "Voice: Start or finish dictation"],
+    ["voice.call", "Voice: Start or end call"],
+    ["voice.mute", "Voice: Mute or unmute microphone"],
+    ["project.scripts", "Run project script"],
+    ["workspace.actions", "Workspace actions"],
+    ["git.actions", "Git actions: commit, push and pull requests"],
+    ["navigation.contextActions", "Selected object actions"],
+    ["navigation.hints", "Show keyboard focus hints"],
+    ["terminal.find", "Find in terminal output"],
+    ["rightPanel.files", "Right panel: Files"],
+    ["rightPanel.diff", "Right panel: Diff"],
+    ["rightPanel.browser", "Right panel: Browser"],
+    ["rightPanel.terminal", "Right panel: Terminal"],
+    ["rightPanel.device", "Right panel: Device"],
+    ["rightPanel.execution", "Right panel: Execution code"],
+  ];
+  for (const [command, title] of workbenchActions)
+    actionItems.push({
+      kind: "action",
+      value: `action:workbench:${command}`,
+      title,
+      searchTerms: [title, command, "keyboard"],
+      shortcutCommand: command,
+      icon: <ChevronRightIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        if (!dispatchKeyboardCommand(command))
+          toastManager.add({ type: "info", title: `${title} is unavailable in this context` });
+      },
+    });
 
   if (projects.length > 0) {
     const activeProjectTitle =

@@ -58,6 +58,7 @@ export function ConnectionStatusDot({
     <button
       type="button"
       aria-label={tooltipText}
+      data-connection-status
       className="relative flex size-3 shrink-0 cursor-help items-center justify-center rounded-full outline-hidden"
     >
       {dotContent}

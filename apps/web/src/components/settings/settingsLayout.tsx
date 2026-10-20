@@ -278,6 +278,7 @@ export function SettingsRow({
   serverScoped?: boolean;
   settingKeys?: readonly (keyof ServerSettings)[];
   mixed?: boolean;
+  "data-keyboard-object"?: string;
   children?: ReactNode;
 }) {
   const targetRef = useSettingsSearchTarget<HTMLDivElement>(rowProps.id);
@@ -417,8 +418,10 @@ export function SettingsRow({
     <div
       {...rowProps}
       ref={targetRef}
-      tabIndex={rowProps.id ? -1 : rowProps.tabIndex}
+      tabIndex={rowProps.tabIndex ?? -1}
       data-slot="settings-row"
+      data-keyboard-object={rowProps["data-keyboard-object"] ?? "Setting"}
+      aria-label={rowProps["aria-label"] ?? (typeof title === "string" ? title : undefined)}
       className={cn(
         "@container/settings-row rounded-xl px-3 sm:px-4 aria-disabled:opacity-64 aria-disabled:[&_*]:text-muted-foreground",
         children ? "pt-3 pb-1" : "py-3",
@@ -448,7 +451,23 @@ export function SettingsRow({
           ) : null}
         </div>
         {renderedControl ? (
-          <div className="flex w-full min-w-0 shrink-0 items-center gap-2 @min-[32rem]/settings-row:w-auto @min-[32rem]/settings-row:justify-end">
+          <div
+            className="flex w-full min-w-0 shrink-0 items-center gap-2 @min-[32rem]/settings-row:w-auto @min-[32rem]/settings-row:justify-end"
+            data-keyboard-primary={rowProps["data-keyboard-object"] ? undefined : ""}
+            tabIndex={-1}
+            onClick={(event) => {
+              if (event.target !== event.currentTarget) return;
+              const control = [
+                ...event.currentTarget.querySelectorAll<HTMLElement>(
+                  "button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[role=switch],[role=checkbox]",
+                ),
+              ].find((element) => !element.closest('[inert],[aria-disabled="true"]'));
+              if (!control) return;
+              control.focus();
+              if (!control.matches("input:not([type=checkbox]):not([type=radio]),textarea,select"))
+                control.click();
+            }}
+          >
             {renderedControl}
           </div>
         ) : null}
@@ -502,9 +521,8 @@ export function SettingsPageContainer({
   children,
   className,
   width = "readable",
-}: {
-  children: ReactNode;
-  className?: string;
+  ...containerProps
+}: ComponentPropsWithoutRef<"div"> & {
   width?: WorkspacePageWidth;
 }) {
   const navigate = useNavigate();
@@ -531,7 +549,11 @@ export function SettingsPageContainer({
     >
       <div
         className="topbar-scroll-fade scrollbar-gutter-both flex-1 overflow-y-auto"
+        {...containerProps}
         data-settings-page-scroll
+        data-keyboard-region="settings"
+        tabIndex={containerProps.tabIndex ?? -1}
+        aria-label={containerProps["aria-label"] ?? "Settings"}
       >
         <WorkspacePageContainer width={width} className={cn("gap-8", className)}>
           <SettingsScopeSentence />

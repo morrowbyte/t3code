@@ -2,6 +2,7 @@ import { EnvironmentId, RuntimeRequestId, ThreadId } from "@t3tools/contracts";
 import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import { userEvent } from "vite-plus/test/browser";
 
 import {
   togglePendingUserInputOptionSelection,
@@ -130,4 +131,57 @@ it("still auto-advances once after the answer draft rerenders the same question"
   expect(activeIndex()).toBe("1");
   await act(async () => vi.advanceTimersByTime(200));
   expect(activeIndex()).toBe("1");
+});
+
+it("answers a multi-select question using keyboard focus, Space and Ctrl+Enter", async () => {
+  vi.useRealTimers();
+  const advance = vi.fn();
+  const multiPrompt = {
+    ...prompt,
+    questions: [
+      { ...prompt.questions[0]!, multiSelect: true, options: [{ label: "One" }, { label: "Two" }] },
+    ],
+  };
+  function MultiQuestion() {
+    const [answers, setAnswers] = useState<Record<string, PendingUserInputDraftAnswer>>({});
+    return (
+      <ComposerPendingUserInputPanel
+        pendingUserInputs={[multiPrompt]}
+        cwd="/repo"
+        threadRef={threadRef}
+        respondingRequestIds={[]}
+        answers={answers}
+        questionIndex={0}
+        onAdvance={advance}
+        onDismiss={() => {}}
+        onToggleOption={(id, value) =>
+          setAnswers((current) => ({
+            ...current,
+            [id]: togglePendingUserInputOptionSelection(
+              multiPrompt.questions[0]!,
+              current[id],
+              value,
+            ),
+          }))
+        }
+      />
+    );
+  }
+  await act(async () => root.render(<MultiQuestion />));
+  const object = container.querySelector<HTMLElement>('[data-keyboard-object="Question"]')!;
+  await act(async () => {
+    object.focus();
+  });
+  await act(async () => {
+    await userEvent.keyboard("{ArrowDown} {ArrowDown} ");
+  });
+  expect(
+    [...container.querySelectorAll('[role="checkbox"]')].map((option) =>
+      option.getAttribute("aria-checked"),
+    ),
+  ).toEqual(["true", "true"]);
+  await act(async () => {
+    await userEvent.keyboard("{Control>}{Enter}{/Control}");
+  });
+  expect(advance).toHaveBeenCalledOnce();
 });

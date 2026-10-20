@@ -37,6 +37,8 @@ import {
 } from "react";
 
 import { useLocalStorage } from "~/hooks/useLocalStorage";
+import { useComposerHandleContext } from "~/composerHandleContext";
+import { firstDiffSelection, moveDiffSelection } from "../diffs/diffKeyboardSelection";
 import { useClientSettings, updateClientSettings } from "~/hooks/useSettings";
 import { useTheme } from "~/hooks/useTheme";
 import { areAllDiffFilesCollapsed } from "~/lib/diffCollapse";
@@ -59,6 +61,7 @@ import { cn } from "~/lib/utils";
 import { createPullRequestDiffFileContentsLoader } from "~/lib/diffFileContents";
 import {
   buildDiffReviewComment,
+  formatReviewCommentFence,
   resolveDiffReviewPosition,
   type ReviewCommentContext,
 } from "~/reviewCommentContext";
@@ -269,6 +272,7 @@ function PullRequestCodeTab({
   revealRequest?: { readonly path: string; readonly nonce: number } | null;
 }) {
   const { resolvedTheme } = useTheme();
+  const composer = useComposerHandleContext();
   const settings = useClientSettings((settings) => ({
     diffFilesCollapsed: settings.diffFilesCollapsed,
     diffIgnoreWhitespace: settings.diffIgnoreWhitespace,
@@ -1397,6 +1401,80 @@ function PullRequestCodeTab({
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <div
           className="relative min-h-0 min-w-0 flex-1"
+          role="region"
+          tabIndex={0}
+          aria-label="Pull request diff code"
+          data-keyboard-local="true"
+          data-keyboard-object="Pull request diff"
+          data-keyboard-help={`J/K: lines · Shift J/K: select range · H/L: old/new side · [ / ]: hunks · { / }: files${canCommentOnLines ? " · C: review comment" : ""}${composer ? " · Y: quote in chat" : ""}`}
+          onKeyDownCapture={(event) => {
+            if (
+              event.defaultPrevented ||
+              event.nativeEvent.isComposing ||
+              event.nativeEvent.keyCode === 229 ||
+              event.ctrlKey ||
+              event.metaKey ||
+              event.altKey ||
+              draft
+            )
+              return;
+            if (
+              event.nativeEvent
+                .composedPath()
+                .some(
+                  (node) =>
+                    node instanceof Element &&
+                    node.matches('input,textarea,[contenteditable="true"]'),
+                )
+            )
+              return;
+            const keyboardFiles = annotatedFiles.map((file) => ({
+              fileKey: file.fileKey,
+              fileDiff: file.fileDiff,
+            }));
+            const selection = selectedLines ?? firstDiffSelection(keyboardFiles[0]);
+            if (!selection) return;
+            const key = event.key.toLowerCase();
+            const item = items.find((entry) => entry.id === selection.id);
+            if (key === "c" && item) {
+              if (!canCommentOnLines) return;
+              setToggledFiles((current) =>
+                toggleFileDiffFoldForViewed(item.id, false, effectiveFoldOverride, current),
+              );
+              viewer?.scrollTo({
+                type: "range",
+                id: item.id,
+                range: selection.range,
+                align: "nearest",
+              });
+              beginComment(selection.range, { item });
+            } else if (key === "y" && item) {
+              if (!composer) return;
+              const quote = buildDiffReviewComment({
+                id: "keyboard-quote",
+                sectionId: `pull-request:${detail.number}`,
+                sectionTitle: `PR #${detail.number}`,
+                filePath: resolveFileDiffPath(item.fileDiff),
+                fileDiff: item.fileDiff,
+                range: selection.range,
+                text: "",
+              });
+              if (quote)
+                composer?.current?.insertTextAtEnd(
+                  `\n${quote.filePath}:${quote.rangeLabel}\n${formatReviewCommentFence("diff", quote.diff)}\n`,
+                );
+            } else {
+              const next = moveDiffSelection(keyboardFiles, selection, key, event.shiftKey);
+              if (!next) return;
+              setSelectedLines(next);
+              setToggledFiles((current) =>
+                toggleFileDiffFoldForViewed(next.id, false, effectiveFoldOverride, current),
+              );
+              viewer?.scrollTo({ type: "range", id: next.id, range: next.range, align: "nearest" });
+            }
+            event.preventDefault();
+            event.stopPropagation();
+          }}
           // The header lives in the viewer's shadow tree, so the capture listener walks
           // `composedPath` — the only way to see through the shadow boundary.
           onClickCapture={(event) => {

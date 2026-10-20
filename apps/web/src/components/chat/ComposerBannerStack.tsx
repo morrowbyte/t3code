@@ -344,6 +344,11 @@ function ComposerBannerStackAlert({
   return (
     <ComposerBanner.Root
       role="alert"
+      tabIndex={-1}
+      data-keyboard-object={
+        item.id.startsWith("environment-unavailable:") ? "Connection" : "Notice"
+      }
+      aria-label={typeof item.title === "string" ? item.title : "Notice"}
       placement={attached ? "attached" : "floating"}
       variant={item.variant}
       density="comfortable"

@@ -1,12 +1,15 @@
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, ResolvedKeybindingsConfig } from "@t3tools/contracts";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { userEvent } from "vite-plus/test/browser";
+import { parseKeybindingShortcut } from "@t3tools/shared/keybindings";
 
 const state = vi.hoisted(() => ({
   canOperate: false,
   canWriteSettings: true,
   connected: true,
+  keybindings: [] as ResolvedKeybindingsConfig,
   openEditor: vi.fn(),
 }));
 
@@ -20,7 +23,7 @@ vi.mock(import("./SettingsScopeContext"), async (original) => ({
     const environment = {
       environmentId: "primary-settings",
       serverConfig: {
-        keybindings: [],
+        keybindings: state.keybindings,
         keybindingsConfigPath: "/fixture/keybindings.json",
         availableEditors: [],
       },
@@ -71,6 +74,7 @@ beforeEach(() => {
   state.canOperate = false;
   state.canWriteSettings = true;
   state.connected = true;
+  state.keybindings = [];
   state.openEditor.mockReset().mockResolvedValue({ _tag: "Success", value: undefined });
   container = document.createElement("div");
   document.body.append(container);
@@ -131,5 +135,68 @@ describe("KeybindingsSettings write notice", () => {
     expect(container.textContent).toContain(
       "This connection can view keybindings but cannot change them.",
     );
+  });
+});
+
+describe("keyboard binding editing", () => {
+  it("moves from the scoped binding search into results and keeps recorder Escape local", async () => {
+    await render();
+    const panel = container.querySelector<HTMLElement>('[data-keyboard-object="Keybindings"]')!;
+    const search = container.querySelector<HTMLInputElement>('[aria-label="Search keybindings"]')!;
+    await act(async () =>
+      panel.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "f", ctrlKey: true, bubbles: true, cancelable: true }),
+      ),
+    );
+    expect(document.activeElement).toBe(search);
+    await act(async () =>
+      search.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }),
+      ),
+    );
+    const row = container.querySelector<HTMLElement>('[data-keyboard-object="Keybinding"]')!;
+    expect(document.activeElement).toBe(row);
+    const edit = row.querySelector<HTMLButtonElement>("button[data-keyboard-primary]")!;
+    await act(async () => edit.focus());
+    await act(() => userEvent.keyboard("{Enter}"));
+    const recorder = row.querySelector<HTMLInputElement>("[data-keybinding-capture]")!;
+    expect(document.activeElement).toBe(recorder);
+    await act(async () =>
+      recorder.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          isComposing: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      ),
+    );
+    expect(row.querySelector("[data-keybinding-capture]")).not.toBeNull();
+    const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    await act(async () => recorder.dispatchEvent(escape));
+    expect(escape.defaultPrevented).toBe(true);
+    expect(row.querySelector("[data-keybinding-capture]")).toBeNull();
+  });
+
+  it("filters to real conflicting bindings and retains searchable command names", async () => {
+    const shortcut = parseKeybindingShortcut("ctrl+shift+9")!;
+    state.keybindings = [
+      { command: "navigation.activate", shortcut },
+      { command: "navigation.hints", shortcut },
+    ];
+    await render();
+    await act(() =>
+      userEvent.click(
+        container.querySelector<HTMLButtonElement>('[aria-label="Show conflicting keybindings"]')!,
+      ),
+    );
+    const rows = [
+      ...container.querySelectorAll<HTMLElement>('[data-keyboard-object="Keybinding"]'),
+    ];
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual(
+      expect.arrayContaining(["Navigation: Activate", "Navigation: Focus Hints"]),
+    );
+    expect(container.textContent).not.toContain("No keybindings match");
   });
 });

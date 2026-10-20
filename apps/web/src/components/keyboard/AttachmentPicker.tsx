@@ -7,6 +7,11 @@ import { openYaziPicker, yaziPickerApi } from "../../rpc/yaziPicker";
 import { GhosttyTerminalSurface } from "../../terminal/ghostty/surface";
 import { terminalThemeFromApp } from "../ThreadTerminalDrawer";
 import { readYaziAttachment } from "./yaziAttachment";
+import {
+  BrowserAttachmentExplorer,
+  browserAttachmentDirectory,
+  type BrowserDirectoryHandle,
+} from "./BrowserAttachmentExplorer";
 import { Button } from "../ui/button";
 import { Dialog, DialogHeader, DialogTitle, DialogPopup } from "../ui/dialog";
 
@@ -158,6 +163,8 @@ export function AttachmentPicker(props: {
   const { environments } = useEnvironments();
   const [source, setSource] = useState<"device" | "environment">("device");
   const input = useRef<HTMLInputElement>(null);
+  const directoryInput = useRef<HTMLInputElement>(null);
+  const [directory, setDirectory] = useState<BrowserDirectoryHandle | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const localBootstraps = window.desktopBridge?.getLocalEnvironmentBootstraps() ?? [];
@@ -176,7 +183,9 @@ export function AttachmentPicker(props: {
         if (
           !open &&
           details.reason === "escape-key" &&
-          document.activeElement?.closest('[aria-label="Yazi file picker"]')
+          document.activeElement?.closest(
+            '[aria-label="Yazi file picker"],[aria-label="Granted local folder"]',
+          )
         ) {
           details.cancel();
           return;
@@ -207,7 +216,10 @@ export function AttachmentPicker(props: {
               size="sm"
               variant={source === "device" ? "secondary" : "ghost"}
               aria-pressed={source === "device"}
-              onClick={() => setSource("device")}
+              onClick={() => {
+                setDirectory(null);
+                setSource("device");
+              }}
             >
               This device
             </Button>
@@ -215,7 +227,10 @@ export function AttachmentPicker(props: {
               size="sm"
               variant={source === "environment" ? "secondary" : "ghost"}
               aria-pressed={source === "environment"}
-              onClick={() => setSource("environment")}
+              onClick={() => {
+                setDirectory(null);
+                setSource("environment");
+              }}
             >
               Thread environment
             </Button>
@@ -223,7 +238,25 @@ export function AttachmentPicker(props: {
             <Button size="sm" variant="outline" onClick={() => input.current?.click()}>
               System file picker
             </Button>
+            {!window.desktopBridge && source === "device" ? (
+              <Button size="sm" variant="outline" onClick={() => directoryInput.current?.click()}>
+                Choose folder
+              </Button>
+            ) : null}
           </div>
+          <input
+            ref={directoryInput}
+            type="file"
+            multiple
+            {...{ webkitdirectory: "" }}
+            aria-label="Choose local attachment folder"
+            className="hidden"
+            onChange={(event) => {
+              const root = browserAttachmentDirectory(Array.from(event.currentTarget.files ?? []));
+              event.currentTarget.value = "";
+              if (root) setDirectory(root);
+            }}
+          />
           <input
             ref={input}
             type="file"
@@ -242,7 +275,13 @@ export function AttachmentPicker(props: {
                 .catch(() => setError("The selected files could not be attached."));
             }}
           />
-          {target ? (
+          {directory && source === "device" ? (
+            <BrowserAttachmentExplorer
+              root={directory}
+              onFiles={props.onFiles}
+              onClose={props.onClose}
+            />
+          ) : target ? (
             <YaziTerminal
               key={`${props.targetKey}:${source}:${target}:${attempt}`}
               environmentId={target}
@@ -254,7 +293,7 @@ export function AttachmentPicker(props: {
             <div role="status" className="px-4 pb-6 text-sm text-muted-foreground">
               {window.desktopBridge
                 ? "Enable this device’s local environment in Connections to use Yazi here."
-                : "The browser needs a system file selection to access this device. Yazi is available in the thread environment."}
+                : "Choose a local folder to browse its files, or use the system file picker. Yazi is available in the thread environment."}
             </div>
           )}
           {error ? (

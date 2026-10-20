@@ -140,6 +140,18 @@ describe("execution code panel", () => {
       search.dispatchEvent(new Event("input", { bubbles: true }));
     });
     expect(host.textContent).toContain("Matches on lines 2");
+    act(() =>
+      search.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+      ),
+    );
+    expect(window.getSelection()?.toString()).toBe("🦦");
+    act(() =>
+      search.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+      ),
+    );
+    expect(document.activeElement).toBe(host.querySelector('[aria-label="Recorded input"]'));
     await act(async () =>
       [...host.querySelectorAll("button")]
         .find((button) => button.textContent === "Copy input")!

@@ -11,6 +11,7 @@ import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collaps
 import { cn } from "~/lib/utils";
 import { ComposerBanner } from "./ComposerBanner";
 import ChatMarkdown from "../ChatMarkdown";
+import { Button } from "../ui/button";
 
 interface PendingUserInputPanelProps {
   pendingUserInputs: PendingUserInput[];
@@ -123,12 +124,12 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
         autoAdvanceTimerRef.current = null;
       }
     };
-    if (disabled || activeQuestion?.id === undefined) clearAutoAdvance();
+    if (responseDisabled || activeQuestion?.id === undefined) clearAutoAdvance();
     return clearAutoAdvance;
-  }, [activeQuestion?.id, disabled]);
+  }, [activeQuestion?.id, responseDisabled]);
 
   const handleOptionSelection = (questionId: string, optionValue: string) => {
-    if (disabled || isResponding) return;
+    if (responseDisabled) return;
     if (activeQuestion?.multiSelect) {
       onToggleOption(questionId, optionValue);
       return;
@@ -179,6 +180,42 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
 
   return (
     <Collapsible
+      data-keyboard-object="Question"
+      role="group"
+      tabIndex={-1}
+      aria-label={activeQuestion.header}
+      onKeyDown={(event) => {
+        if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+        if (event.ctrlKey && event.key === "Enter" && progress.canAdvance && !responseDisabled) {
+          event.preventDefault();
+          event.stopPropagation();
+          if (!event.repeat) advance();
+          return;
+        }
+        if (
+          event.target === event.currentTarget &&
+          ["ArrowDown", "ArrowUp", "j", "k", "Enter"].includes(event.key)
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          if (
+            event.key === "Enter" &&
+            activeQuestion.multiSelect &&
+            progress.canAdvance &&
+            !responseDisabled
+          ) {
+            if (!event.repeat) advance();
+          } else if (isCollapsed) setCollapsedQuestionId(null);
+          else {
+            const options = [
+              ...event.currentTarget.querySelectorAll<HTMLButtonElement>(
+                "[data-question-option]:not(:disabled)",
+              ),
+            ];
+            (event.key === "ArrowUp" || event.key === "k" ? options.at(-1) : options[0])?.focus();
+          }
+        }
+      }}
       open={!isCollapsed}
       onOpenChange={(open) => {
         setCollapsedQuestionId(open ? null : activeQuestion.id);
@@ -214,7 +251,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
               render={<span role="button" tabIndex={0} />}
               aria-label="Dismiss question without answering"
               title="Dismiss question without answering"
-              disabled={isResponding}
+              disabled={disabled || isResponding}
               data-pending-user-input-dismiss
               onClick={(event) => {
                 event.preventDefault();
@@ -243,7 +280,11 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
             {activeQuestion.multiSelect ? (
               <p className="mt-1 text-secondary-label text-xs">Select one or more options.</p>
             ) : null}
-            <div className="mt-2 space-y-0.5">
+            <div
+              className="mt-2 space-y-0.5"
+              role={activeQuestion.multiSelect ? "group" : "radiogroup"}
+              aria-label={activeQuestion.question}
+            >
               {activeQuestion.options.map((option, index) => {
                 const optionValue = option.value ?? option.label;
                 const isOptimisticallySelected =
@@ -285,7 +326,43 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
                   <button
                     key={`${activeQuestion.id}:${optionValue}`}
                     type="button"
-                    disabled={disabled || isResponding}
+                    role={activeQuestion.multiSelect ? "checkbox" : "radio"}
+                    aria-checked={isSelected}
+                    disabled={responseDisabled}
+                    data-question-option
+                    aria-keyshortcuts="ArrowUp ArrowDown J K Control+N Control+P Space"
+                    onKeyDown={(event) => {
+                      if (event.nativeEvent.isComposing || event.altKey || event.metaKey) return;
+                      if (event.ctrlKey && event.key !== "n" && event.key !== "p") return;
+                      const offset =
+                        event.key === "ArrowDown" ||
+                        event.key === "j" ||
+                        (event.ctrlKey && event.key === "n")
+                          ? 1
+                          : event.key === "ArrowUp" ||
+                              event.key === "k" ||
+                              (event.ctrlKey && event.key === "p")
+                            ? -1
+                            : 0;
+                      if (offset === 0 && event.key !== "Home" && event.key !== "End") return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      const options = [
+                        ...event.currentTarget
+                          .closest('[data-keyboard-object="Question"]')!
+                          .querySelectorAll<HTMLButtonElement>(
+                            "[data-question-option]:not(:disabled)",
+                          ),
+                      ];
+                      const next =
+                        event.key === "Home"
+                          ? 0
+                          : event.key === "End"
+                            ? options.length - 1
+                            : (options.indexOf(event.currentTarget) + offset + options.length) %
+                              options.length;
+                      options[next]?.focus();
+                    }}
                     onClick={() => {
                       handleOptionSelection(activeQuestion.id, optionValue);
                     }}
@@ -296,6 +373,21 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
                 );
               })}
             </div>
+            {activeQuestion.multiSelect ? (
+              <div className="mt-2 flex justify-end">
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="default"
+                  data-keyboard-primary
+                  aria-keyshortcuts="Control+Enter"
+                  disabled={responseDisabled || !progress.canAdvance}
+                  onClick={() => advance()}
+                >
+                  {progress.isLastQuestion ? "Send answer" : "Next question"}
+                </Button>
+              </div>
+            ) : null}
           </ComposerBanner.Body>
         </ComposerBanner.Scroll>
       </CollapsiblePanel>

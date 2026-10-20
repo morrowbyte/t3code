@@ -15,9 +15,17 @@ import {
   NAVIGATION_MODE_EVENT,
   requestNavigationMode,
 } from "./navigationMode";
-import { useKeyboardCommands } from "./keyboardCommands";
+import { dispatchKeyboardCommand, useKeyboardCommands } from "./keyboardCommands";
 import { WorkbenchCommandPicker, type WorkbenchCommand } from "./WorkbenchCommandPicker";
-import { contextControls, cycleWorkbenchRegion } from "./regionNavigation";
+import {
+  activateKeyboardObject,
+  contextControls,
+  cycleWorkbenchRegion,
+  hasLocalKeyboardNavigation,
+  keyboardContextName,
+  moveKeyboardObject,
+} from "./regionNavigation";
+import { KeyboardContextHelp } from "./KeyboardContextHelp";
 import {
   createMessageNavigation,
   composerElement,
@@ -45,24 +53,34 @@ export interface LeaderNavigationGroup {
 
 const noSidebarTransition = async () => {};
 const noActivationShortcut = () => false;
+const noNavigationShortcut = (): "navigation.contextActions" | "navigation.hints" | null => null;
 
 export function LeaderNavigation({
   groups,
   isClaimed,
   isActivationShortcut = noActivationShortcut,
+  resolveNavigationShortcut = noNavigationShortcut,
   showSidebar,
   leaveSidebar = noSidebarTransition,
 }: {
   readonly groups: readonly LeaderNavigationGroup[];
   readonly isClaimed: (event: KeyboardEvent) => boolean;
   readonly isActivationShortcut?: (event: KeyboardEvent) => boolean;
+  readonly resolveNavigationShortcut?: (
+    event: KeyboardEvent,
+  ) => "navigation.contextActions" | "navigation.hints" | null;
   readonly showSidebar: () => void;
   readonly leaveSidebar?: () => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const [navigation, setNavigation] = useState(isNavigationMode);
+  const [regionName, setRegionName] = useState("App");
   const [controls, setControls] = useState<readonly WorkbenchCommand[] | null>(null);
+  const [controlsName, setControlsName] = useState("App");
+  const [help, setHelp] = useState<{ target: HTMLElement | null } | null>(null);
   const [group, setGroup] = useState<string | null>(null);
+  const groupState = useRef<string | null>(null);
+  const openState = useRef(false);
   const [mode, setMode] = useState<"messages" | "sidebar" | null>(null);
   const [messageAvailable, setMessageAvailable] = useState(false);
   const [messages] = useState(createMessageNavigation);
@@ -107,9 +125,17 @@ export function LeaderNavigation({
     returnFocus.current =
       origin ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     setGroup(null);
+    groupState.current = null;
+    openState.current = true;
     setOpen(true);
   };
   const select = (action: () => void) => {
+    openState.current = false;
+    if (!popup.current) {
+      setOpen(false);
+      action();
+      return;
+    }
     pendingAction.current = action;
     setOpen(false);
   };
@@ -140,6 +166,7 @@ export function LeaderNavigation({
     entries[(current + direction + entries.length) % entries.length]?.focus();
   };
   const changeGroup = (key: string | null) => {
+    groupState.current = key;
     setGroup(key);
     requestAnimationFrame(() =>
       popup.current?.querySelector<HTMLButtonElement>("[data-leader-key]")?.focus(),
@@ -151,6 +178,8 @@ export function LeaderNavigation({
   };
 
   const handleKey = useEffectEvent((event: KeyboardEvent) => {
+    const group = groupState.current;
+    const selectedGroup = groups.find((item) => item.key === group);
     if (pendingFocus.current && isEditableFocused(event.target)) focusGeneration.current++;
     if (!isNavigationKeyEvent(event)) return;
     if (
@@ -179,8 +208,24 @@ export function LeaderNavigation({
       enter();
       return;
     }
+    const navigationCommand = resolveNavigationShortcut(event);
+    if (
+      navigationCommand &&
+      !isEditableFocused(event.target) &&
+      !hasLocalKeyboardNavigation(event)
+    ) {
+      consume(event);
+      if (event.repeat) return;
+      returnFocus.current =
+        document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      if (navigationCommand === "navigation.contextActions") {
+        setControlsName(keyboardContextName(returnFocus.current));
+        setControls(contextControls(returnFocus.current));
+      } else dispatchKeyboardCommand(navigationCommand);
+      return;
+    }
     const controlDirection = menuControlDirection(event);
-    if (open) {
+    if (openState.current) {
       if (event.key === "Escape" && group !== null) {
         consume(event);
         changeGroup(null);
@@ -238,12 +283,43 @@ export function LeaderNavigation({
       return;
     }
     const context = leaderTargetContext(event.target);
-    if (isNavigationMode() && !context.editable && !context.blocked && !isClaimed(event)) {
-      if (event.key === "?" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    if (
+      isNavigationMode() &&
+      !context.editable &&
+      !isClaimed(event) &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey
+    ) {
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      if (event.key === "?") {
         consume(event);
-        enter();
+        setHelp({ target });
         return;
       }
+      if (event.key === "F10" && event.shiftKey) {
+        if (hasLocalKeyboardNavigation(event)) return;
+        consume(event);
+        returnFocus.current = target;
+        setControlsName(keyboardContextName(target));
+        setControls(contextControls(target));
+        return;
+      }
+      if (!context.blocked && !hasLocalKeyboardNavigation(event) && !mode && !event.shiftKey) {
+        if (
+          (event.key === "j" || event.key === "k") &&
+          moveKeyboardObject(target, event.key === "j" ? 1 : -1)
+        ) {
+          consume(event);
+          return;
+        }
+        if (event.key === "Enter" && activateKeyboardObject(target)) {
+          consume(event);
+          return;
+        }
+      }
+    }
+    if (isNavigationMode() && !context.editable && !context.blocked && !isClaimed(event)) {
       if (event.key.toLowerCase() === "i" && !event.ctrlKey && !event.metaKey && !event.altKey) {
         consume(event);
         finishMode();
@@ -320,6 +396,11 @@ export function LeaderNavigation({
     } else enter();
   });
   const focusChanged = useEffectEvent((event: FocusEvent) => {
+    if (
+      event.target instanceof HTMLElement &&
+      !event.target.closest('[data-slot="dialog-popup"],[aria-label="App navigation"]')
+    )
+      setRegionName(keyboardContextName(event.target));
     if (event.target === composerElement()) leaveNavigationMode();
     if (mode && isEditableFocused(event.target)) finishMode();
   });
@@ -330,6 +411,7 @@ export function LeaderNavigation({
     observer.current = null;
     pendingAction.current = null;
     setOpen(false);
+    openState.current = false;
     finishMode();
   });
   // Claim explicit navigation before the chat's passive type-to-focus listener.
@@ -362,7 +444,10 @@ export function LeaderNavigation({
     };
   }, [messages]);
   useKeyboardCommands({
-    "navigation.contextActions": () => setControls(contextControls(returnFocus.current)),
+    "navigation.contextActions": () => {
+      setControlsName(keyboardContextName(returnFocus.current));
+      setControls(contextControls(returnFocus.current));
+    },
     "navigation.activate": () => {
       if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
       enter();
@@ -371,16 +456,30 @@ export function LeaderNavigation({
 
   return (
     <>
+      {help ? (
+        <KeyboardContextHelp
+          target={help.target}
+          onClose={() => setHelp(null)}
+          onActions={() => {
+            setHelp(null);
+            returnFocus.current = help.target;
+            requestAnimationFrame(() => {
+              setControlsName(keyboardContextName(help.target));
+              setControls(contextControls(help.target));
+            });
+          }}
+        />
+      ) : null}
       {controls ? (
         <WorkbenchCommandPicker
-          title="Context controls"
+          title={`${controlsName} actions`}
           commands={controls}
           onClose={() => setControls(null)}
         />
       ) : null}
       <style>
         {
-          "[data-leader-message-focus] { outline: 2px solid var(--ring); outline-offset: 4px; border-radius: var(--radius); }"
+          "[data-leader-message-focus], [data-keyboard-object]:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; border-radius: var(--radius); }"
         }
       </style>
       {mode || navigation ? (
@@ -392,13 +491,16 @@ export function LeaderNavigation({
             className="flex flex-wrap items-center justify-center gap-1.5 rounded-md border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-sm"
           >
             <span role="status">
-              NAV{mode ? ` · ${mode === "messages" ? "Messages" : "Sidebar"}` : ""}
+              NAV · {mode ? (mode === "messages" ? "Messages" : "Sidebar") : regionName}
             </span>
             <span className="inline-flex items-center gap-1">
               <Kbd>Space</Kbd>actions
             </span>
             <span className="inline-flex items-center gap-1">
               <Kbd>F6</Kbd>regions
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <Kbd>?</Kbd>help
             </span>
             {mode ? (
               <>
@@ -433,7 +535,10 @@ export function LeaderNavigation({
       ) : null}
       <Dialog
         open={open}
-        onOpenChange={setOpen}
+        onOpenChange={(value) => {
+          openState.current = value;
+          setOpen(value);
+        }}
         onOpenChangeComplete={(isOpen) => {
           if (!isOpen && !pendingAction.current && isNavigationMode()) {
             requestAnimationFrame(() => navigationStatus.current?.focus({ preventScroll: true }));

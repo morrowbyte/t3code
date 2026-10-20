@@ -13,6 +13,7 @@ const files = vi.hoisted(() => ({
   loadingDirectories: new Set<string>() as ReadonlySet<string>,
   load: vi.fn(async () => {}),
   refresh: vi.fn(),
+  insert: vi.fn(() => true),
 }));
 
 vi.mock("./useDirectoryEntries", () => ({
@@ -37,7 +38,9 @@ vi.mock("~/state/queries", () => ({
 }));
 vi.mock("~/hooks/useTheme", () => ({ useTheme: () => ({ resolvedTheme: "dark" }) }));
 vi.mock("~/hooks/useWorkspaceMutationRefresh", () => ({ useWorkspaceMutationRefresh: vi.fn() }));
-vi.mock("~/composerHandleContext", () => ({ useComposerHandleContext: () => null }));
+vi.mock("~/composerHandleContext", () => ({
+  useComposerHandleContext: () => ({ current: { insertTextAtEnd: files.insert } }),
+}));
 vi.mock("~/fileContextMenu", () => ({ useFileContextMenu: () => ({}) }));
 vi.mock("~/localApi", () => ({ readLocalApi: () => undefined }));
 vi.mock("~/components/ui/toast", () => ({ toastManager: { add: vi.fn() } }));
@@ -111,6 +114,7 @@ describe("Files panel search", () => {
     files.searchEntries = [];
     files.searchPending = false;
     files.searchError = null;
+    files.insert.mockClear();
   });
 
   afterEach(async () => {
@@ -135,6 +139,42 @@ describe("Files panel search", () => {
 
     await search("");
     expect(visiblePaths()).toEqual(["src/", "package.json"]);
+  });
+
+  it("moves through the tree with j/k and attaches a selected path without a context menu", async () => {
+    await render();
+    const tree = container!.querySelector("file-tree-container")!;
+    const row = tree.shadowRoot!.querySelector<HTMLElement>('[data-item-path="package.json"]')!;
+    await act(async () => {
+      row.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, composed: true, button: 0, detail: 1 }),
+      );
+      row.focus();
+      row.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "a", bubbles: true, composed: true, cancelable: true }),
+      );
+    });
+    expect(files.insert).toHaveBeenCalledWith(expect.stringContaining("package.json"), {
+      ensureLeadingBoundary: true,
+    });
+    await act(async () =>
+      row.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "k", bubbles: true, composed: true, cancelable: true }),
+      ),
+    );
+    expect(tree.shadowRoot!.activeElement?.getAttribute("data-item-path")).toBe("src/");
+    await act(async () =>
+      tree.shadowRoot!.activeElement!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "/", bubbles: true, composed: true, cancelable: true }),
+      ),
+    );
+    expect(document.activeElement).toBe(searchInput());
+    await act(async () =>
+      searchInput().dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+      ),
+    );
+    await vi.waitFor(() => expect(document.activeElement).toBe(tree));
   });
 
   it("still finds ignored files already loaded from a directory", async () => {

@@ -74,6 +74,36 @@ describe("GhosttyTerminalCore snapshots", () => {
     return core;
   }
 
+  it("finds rendered scrollback text, follows wraps, and cycles without sending PTY input", async () => {
+    const onData = vi.fn();
+    const core = await createCore(onData);
+    core.write("first hit\r\nsecond line\r\nthird hit\r\nlast line\r\n");
+    expect(core.findText("first hit").count).toBe(1);
+    expect(core.selectionText()).toBe("first hit");
+    const found = core.findText("hit");
+    expect(found.count).toBe(2);
+    expect(found.index).toBe(1);
+    expect(core.selectionText()).toBe("hit");
+    expect(core.findText("hit").index).toBe(2);
+    expect(core.findText("hit").index).toBe(1);
+    expect(core.findText("hit", -1).index).toBe(2);
+    expect(core.findText("missing").count).toBe(0);
+    core.write("more hit\r\n");
+    expect(core.findText("hit").count).toBe(3);
+    expect(onData).not.toHaveBeenCalled();
+  });
+
+  it("selects literal Unicode text spanning a terminal wrap", async () => {
+    const core = await createCore();
+    core.write("1234567890🙂needle");
+    expect(core.findText("🙂needle").count).toBe(1);
+    expect(core.selectionText()).toBe("🙂needle");
+    expect(core.findText("[not a regex]").count).toBe(0);
+    core.write("\r\n[not a regex]");
+    expect(core.findText("[not a regex]").count).toBe(1);
+    expect(core.selectionText()).toBe("[not a regex]");
+  });
+
   function createSession(history: string) {
     return applyTerminalAttachStreamEvent(nextTerminalAttachSeedState(), {
       type: "snapshot",

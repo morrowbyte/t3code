@@ -77,7 +77,13 @@ function ChecksBody({
         <ul className="flex flex-col gap-1">
           {}
           {visibleChecks.map((check, index) => (
-            <li key={`${index}:${check.name}`} className="flex items-center gap-2 text-xs">
+            <li
+              key={`${index}:${check.name}`}
+              className="flex items-center gap-2 text-xs"
+              data-keyboard-object="Check"
+              tabIndex={-1}
+              aria-label={`${check.name}: ${pullRequestCheckStatusLabel(check)}`}
+            >
               <PullRequestCheckStatusIcon status={check.status} />
               <Tooltip>
                 <TooltipTrigger
@@ -91,6 +97,8 @@ function ChecksBody({
               {check.url === null ? null : (
                 <button
                   type="button"
+                  data-keyboard-primary
+                  aria-label={`Open details for ${check.name}`}
                   className="shrink-0 text-primary hover:underline"
                   onClick={() => {
                     if (!check.url) return;

@@ -363,11 +363,28 @@ fi
 focused_tests+=("$mobile_composer_test")
 focused_tests+=(apps/server/src/attachments/YaziPicker.test.ts apps/web/src/components/chat/TraitsPicker.test.ts)
 focused_tests+=(
+  apps/web/src/components/diffs/diffKeyboardSelection.test.ts
+  apps/web/src/terminal/ghostty/core.test.ts
+)
+focused_tests+=(
   apps/mobile/src/features/keyboard/commandPaletteItems.test.ts
   apps/mobile/src/features/keyboard/composerPaletteItems.test.ts
   apps/mobile/src/features/keyboard/hardwareKeyboardCommands.test.ts
 )
 renderer_tests=(
+  apps/web/src/components/keyboard/KeyboardContext.browser.test.tsx
+  apps/web/src/components/chat/MessagesTimeline.browser.test.tsx
+  apps/web/src/components/chat/QueuedRunsControl.browser.test.tsx
+  apps/web/src/components/chat/ComposerPendingApprovalActions.browser.test.tsx
+  apps/web/src/components/chat/ComposerPendingUserInputPanel.navigation.browser.test.tsx
+  apps/web/src/components/diffs/AnnotatableCodeView.browser.test.tsx
+  apps/web/src/components/files/FileSelectionActions.browser.test.tsx
+  apps/web/src/components/files/FileBrowserPanel.browser.test.tsx
+  apps/web/src/components/device/DeviceControlsRail.browser.test.tsx
+  apps/web/src/components/RightPanelTabs.keyboard.browser.test.tsx
+  apps/web/src/components/preview/PreviewView.browser.test.tsx
+  apps/web/src/components/settings/KeybindingsSettings.environment.browser.test.tsx
+  apps/web/src/components/GitActionsControl.browser.test.tsx
   apps/web/src/components/keyboard/LeaderNavigation.browser.test.tsx
   apps/web/src/components/keyboard/KeyboardHints.browser.test.tsx
   apps/web/src/components/keyboard/yaziAttachment.browser.test.ts
