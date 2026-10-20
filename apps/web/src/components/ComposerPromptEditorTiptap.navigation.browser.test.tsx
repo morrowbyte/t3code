@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 
 import { serializeEditorDoc } from "~/composer-rich-text-doc";
 import { ComposerPromptEditor, type ComposerPromptEditorHandle } from "./ComposerPromptEditor";
+import { LeaderNavigation } from "./keyboard/LeaderNavigation";
 
 const draft =
   "> **Assistant and reasoning text still save intermediate full snapshots**, using the existing 50 ms batching. Compaction still preserves their `turn-item.updated` events. [Code](/Users/yashsingh/p/projects/t3code/apps/server/src/orchestration-v2/ProjectionMaintenance.ts:235)";
@@ -26,27 +27,104 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-async function mountEditor(value: string, richTextEnabled = true) {
+async function mountEditor(
+  value: string,
+  richTextEnabled = true,
+  onCommandKeyDown?: (key: string, event: KeyboardEvent) => boolean,
+) {
   await act(async () =>
     root.render(
-      <ComposerPromptEditor
-        editorRef={createRef<ComposerPromptEditorHandle>()}
-        value={value}
-        cursor={0}
-        richTextEnabled={richTextEnabled}
-        contextRecords={new Map()}
-        skills={[]}
-        disabled={false}
-        placeholder=""
-        onChange={() => {}}
-        onPaste={() => {}}
-      />,
+      <div data-chat-composer-main-surface="true">
+        <ComposerPromptEditor
+          editorRef={createRef<ComposerPromptEditorHandle>()}
+          value={value}
+          cursor={0}
+          richTextEnabled={richTextEnabled}
+          contextRecords={new Map()}
+          skills={[]}
+          disabled={false}
+          placeholder=""
+          onChange={() => {}}
+          onPaste={() => {}}
+          onCommandKeyDown={onCommandKeyDown}
+        />
+      </div>,
     ),
   );
   const element = container.querySelector<HTMLElement & { editor: Editor }>(".tiptap");
   if (!element) throw new Error("Composer did not mount");
   return element.editor;
 }
+
+it("leaves the composer with Escape, opens navigation with Space and returns with i", async () => {
+  const editor = await mountEditor("Keep my draft");
+  const navigationHost = document.createElement("div");
+  container.append(navigationHost);
+  const navigationRoot = createRoot(navigationHost);
+  try {
+    await act(async () =>
+      navigationRoot.render(
+        <LeaderNavigation groups={[]} isClaimed={() => false} showSidebar={() => {}} />,
+      ),
+    );
+    await act(async () => {
+      editor.view.focus();
+      editor.view.dom.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+      );
+    });
+    expect(document.activeElement).not.toBe(editor.view.dom);
+    await act(async () => {
+      document.body.dispatchEvent(
+        new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }),
+      );
+    });
+    await vi.waitFor(() =>
+      expect(
+        document.querySelector('[role="dialog"][aria-label="Keyboard navigation"]'),
+      ).not.toBeNull(),
+    );
+    await act(async () => {
+      document.activeElement!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "i", bubbles: true, cancelable: true }),
+      );
+    });
+    await vi.waitFor(() => expect(document.activeElement).toBe(editor.view.dom));
+    expect(serializeEditorDoc(editor.state.doc).value).toBe("Keep my draft");
+  } finally {
+    await act(async () => navigationRoot.unmount());
+  }
+});
+
+it("lets suggestions consume Escape before leaving the composer", async () => {
+  const handler = vi.fn().mockReturnValueOnce(true).mockReturnValue(false);
+  const editor = await mountEditor("@file", true, handler);
+  await act(async () => {
+    editor.view.focus();
+    expect(press(editor, "Escape")).toBe(true);
+  });
+  expect(document.activeElement).toBe(editor.view.dom);
+  await act(async () => expect(press(editor, "Escape")).toBe(true));
+  expect(document.activeElement).not.toBe(editor.view.dom);
+  expect(serializeEditorDoc(editor.state.doc).value).toBe("@file");
+});
+
+it.each([
+  { isComposing: true },
+  { keyCode: 229 },
+  { repeat: true },
+  { ctrlKey: true },
+  { metaKey: true },
+  { altKey: true },
+  { shiftKey: true },
+])("keeps composer focus for composing, repeated or modified Escape: %j", async (options) => {
+  const editor = await mountEditor("Keep my draft");
+  await act(async () => {
+    editor.view.focus();
+    expect(press(editor, "Escape", options)).toBe(false);
+  });
+  expect(document.activeElement).toBe(editor.view.dom);
+});
 
 function press(editor: Editor, key: string, options: KeyboardEventInit = {}) {
   const event = new KeyboardEvent("keydown", { key, cancelable: true, ...options });

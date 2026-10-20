@@ -362,6 +362,7 @@ if [[ ! -f "$mobile_composer_test" ]]; then
 fi
 focused_tests+=("$mobile_composer_test")
 renderer_tests=(
+  apps/web/src/components/ComposerPromptEditorTiptap.navigation.browser.test.tsx
   apps/web/src/components/ServerUpdateAction.browser.test.tsx
   apps/web/src/components/chat/ComposerPendingApprovalPanel.browser.test.tsx
   apps/web/src/components/ChatMarkdown.browser.test.tsx

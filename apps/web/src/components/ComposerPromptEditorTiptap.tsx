@@ -1287,13 +1287,30 @@ function ComposerPromptEditorTiptapInner(props: ComposerPromptEditorProps) {
               view.dispatch(tr.scrollIntoView());
             });
           }
-          if (!handler) return false;
-          const handled = handler(event.key, event);
+          const handled = handler?.(event.key, event) ?? false;
           if (handled) {
             event.preventDefault();
             event.stopPropagation();
+            return true;
           }
-          return handled;
+          if (
+            event.key === "Escape" &&
+            !event.repeat &&
+            !event.isComposing &&
+            event.keyCode !== 229 &&
+            !view.composing &&
+            !event.altKey &&
+            !event.ctrlKey &&
+            !event.metaKey &&
+            !event.shiftKey
+          ) {
+            // Suggestions get first refusal; the next Escape leaves the composer for navigation.
+            event.preventDefault();
+            event.stopPropagation();
+            view.dom.blur();
+            return true;
+          }
+          return false;
         },
         handleTextInput: (view, from, to, text) => {
           if (literalText || view.composing || text.length !== 1) return false;
