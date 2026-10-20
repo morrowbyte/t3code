@@ -1038,37 +1038,15 @@ const getDistroIpImpl = (
 const getUserHomeImpl = (
   distro: string | null,
 ): Effect.Effect<Option.Option<string>, never, ChildProcessSpawner.ChildProcessSpawner> =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const command = ChildProcess.make(
-        "wsl.exe",
-        [
-          ...buildDistroArgs(distro),
-          "--",
-          "sh",
-          "-c",
-          'printf "%s" "$(getent passwd "$(id -un)" | cut -d: -f6)"',
-        ],
-        {
-          stdin: "ignore",
-          stdout: "pipe",
-          stderr: "ignore",
-          killSignal: "SIGTERM",
-          forceKillAfter: PROCESS_TERMINATE_GRACE,
-        },
-      );
-      const handle = yield* spawner.spawn(command);
-      const stdoutBytes = yield* Stream.runCollect(handle.stdout);
-      const exitCode = yield* handle.exitCode;
-      if ((exitCode as unknown as number) !== 0) return Option.none<string>();
-      const home = decodeUtf8(concatChunks(stdoutBytes)).trim();
-      return home.startsWith("/") ? Option.some(home) : Option.none<string>();
+  runWslShell(distro, 'getent passwd "$(id -un)" | cut -d: -f6', USER_HOME_TIMEOUT, {
+    resolveNode: false,
+  }).pipe(
+    Effect.map((result) => {
+      const home = result.stdout.trim();
+      return result.exitCode === 0 && home.startsWith("/")
+        ? Option.some(home)
+        : Option.none<string>();
     }),
-  ).pipe(
-    Effect.timeoutOption(USER_HOME_TIMEOUT),
-    Effect.map(Option.flatten),
-    Effect.orElseSucceed(() => Option.none<string>()),
   );
 
 const makeIsAvailable = (
