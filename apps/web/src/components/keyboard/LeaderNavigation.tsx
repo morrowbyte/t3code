@@ -10,6 +10,15 @@ import { Button } from "../ui/button";
 import { Dialog, DialogHeader, DialogPanel, DialogPopup, DialogTitle } from "../ui/dialog";
 import { Kbd } from "../ui/kbd";
 import {
+  isNavigationMode,
+  leaveNavigationMode,
+  NAVIGATION_MODE_EVENT,
+  requestNavigationMode,
+} from "./navigationMode";
+import { useKeyboardCommands } from "./keyboardCommands";
+import { WorkbenchCommandPicker, type WorkbenchCommand } from "./WorkbenchCommandPicker";
+import { contextControls, cycleWorkbenchRegion } from "./regionNavigation";
+import {
   createMessageNavigation,
   composerElement,
   discloseSidebar,
@@ -35,24 +44,30 @@ export interface LeaderNavigationGroup {
 }
 
 const noSidebarTransition = async () => {};
+const noActivationShortcut = () => false;
 
 export function LeaderNavigation({
   groups,
   isClaimed,
+  isActivationShortcut = noActivationShortcut,
   showSidebar,
   leaveSidebar = noSidebarTransition,
 }: {
   readonly groups: readonly LeaderNavigationGroup[];
   readonly isClaimed: (event: KeyboardEvent) => boolean;
+  readonly isActivationShortcut?: (event: KeyboardEvent) => boolean;
   readonly showSidebar: () => void;
   readonly leaveSidebar?: () => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
+  const [navigation, setNavigation] = useState(isNavigationMode);
+  const [controls, setControls] = useState<readonly WorkbenchCommand[] | null>(null);
   const [group, setGroup] = useState<string | null>(null);
   const [mode, setMode] = useState<"messages" | "sidebar" | null>(null);
   const [messageAvailable, setMessageAvailable] = useState(false);
   const [messages] = useState(createMessageNavigation);
   const returnFocus = useRef<HTMLElement | null>(null);
+  const navigationStatus = useRef<HTMLDivElement | null>(null);
   const popup = useRef<HTMLDivElement | null>(null);
   const pendingAction = useRef<(() => void) | null>(null);
   const observer = useRef<MutationObserver | null>(null);
@@ -74,6 +89,10 @@ export function LeaderNavigation({
     });
   };
   const restoreModeFocus = () => {
+    if (isNavigationMode()) {
+      navigationStatus.current?.focus({ preventScroll: true });
+      return;
+    }
     const target = returnFocus.current;
     void afterSidebar(() => {
       if (target === composerElement() || target === document.body || !target?.isConnected)
@@ -82,6 +101,7 @@ export function LeaderNavigation({
     });
   };
   const enter = (origin?: HTMLElement | null) => {
+    requestNavigationMode();
     finishMode();
     setMessageAvailable(document.querySelector("[data-message-id][data-message-role]") !== null);
     returnFocus.current =
@@ -100,6 +120,7 @@ export function LeaderNavigation({
     });
   };
   const enterComposer = () => {
+    leaveNavigationMode();
     void afterSidebar(() => {
       focusComposer();
     });
@@ -132,9 +153,33 @@ export function LeaderNavigation({
   const handleKey = useEffectEvent((event: KeyboardEvent) => {
     if (pendingFocus.current && isEditableFocused(event.target)) focusGeneration.current++;
     if (!isNavigationKeyEvent(event)) return;
+    if (
+      event.key === "F6" &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey &&
+      !document.querySelector('[role="dialog"],[role="menu"],[role="listbox"]')
+    ) {
+      if (cycleWorkbenchRegion(event.shiftKey ? -1 : 1)) consume(event);
+      return;
+    }
+    if (isActivationShortcut(event)) {
+      consume(event);
+      if (event.repeat) return;
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+      enter();
+      return;
+    }
     const controlDirection = menuControlDirection(event);
     if (open) {
-      if (controlDirection !== null || event.key === "ArrowDown" || event.key === "ArrowUp") {
+      if (event.key === "Escape" && group !== null) {
+        consume(event);
+        changeGroup(null);
+      } else if (
+        controlDirection !== null ||
+        event.key === "ArrowDown" ||
+        event.key === "ArrowUp"
+      ) {
         consume(event);
         focusEntry(controlDirection ?? (event.key === "ArrowDown" ? 1 : -1));
       } else if ((event.key === "Backspace" || event.key === "ArrowLeft") && group !== null) {
@@ -184,6 +229,19 @@ export function LeaderNavigation({
       return;
     }
     const context = leaderTargetContext(event.target);
+    if (isNavigationMode() && !context.editable && !context.blocked && !isClaimed(event)) {
+      if (event.key === "?" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        consume(event);
+        enter();
+        return;
+      }
+      if (event.key.toLowerCase() === "i" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        consume(event);
+        finishMode();
+        enterComposer();
+        return;
+      }
+    }
     const inSidebar =
       mode === "sidebar" &&
       event.target instanceof Element &&
@@ -223,7 +281,13 @@ export function LeaderNavigation({
         }
       }
     }
-    if (isLeaderNavigationShortcut(event, { ...context, claimed: isClaimed(event) })) {
+    if (
+      isLeaderNavigationShortcut(event, {
+        ...context,
+        interactive: isNavigationMode() ? false : context.interactive,
+        claimed: isClaimed(event),
+      })
+    ) {
       consume(event);
       enter();
     }
@@ -247,6 +311,7 @@ export function LeaderNavigation({
     } else enter();
   });
   const focusChanged = useEffectEvent((event: FocusEvent) => {
+    if (event.target === composerElement()) leaveNavigationMode();
     if (mode && isEditableFocused(event.target)) finishMode();
   });
   const lostFocus = useEffectEvent(() => {
@@ -264,17 +329,20 @@ export function LeaderNavigation({
     const request = () => requestOpen();
     const focus = (event: FocusEvent) => focusChanged(event);
     const blur = () => lostFocus();
+    const navigationChanged = () => setNavigation(isNavigationMode());
     const pointer = () => {
       if (pendingFocus.current) focusGeneration.current++;
     };
     window.addEventListener("keydown", key, true);
     window.addEventListener(LEADER_OPEN_EVENT, request);
+    window.addEventListener(NAVIGATION_MODE_EVENT, navigationChanged);
     document.addEventListener("focusin", focus);
     window.addEventListener("blur", blur);
     document.addEventListener("pointerdown", pointer, true);
     return () => {
       window.removeEventListener("keydown", key, true);
       window.removeEventListener(LEADER_OPEN_EVENT, request);
+      window.removeEventListener(NAVIGATION_MODE_EVENT, navigationChanged);
       document.removeEventListener("focusin", focus);
       window.removeEventListener("blur", blur);
       document.removeEventListener("pointerdown", pointer, true);
@@ -284,26 +352,57 @@ export function LeaderNavigation({
       messages.clear();
     };
   }, [messages]);
+  useKeyboardCommands({
+    "navigation.contextActions": () => setControls(contextControls(returnFocus.current)),
+    "navigation.activate": () => {
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+      enter();
+    },
+  });
 
   return (
     <>
+      {controls ? (
+        <WorkbenchCommandPicker
+          title="Context controls"
+          commands={controls}
+          onClose={() => setControls(null)}
+        />
+      ) : null}
       <style>
         {
           "[data-leader-message-focus] { outline: 2px solid var(--ring); outline-offset: 4px; border-radius: var(--radius); }"
         }
       </style>
-      {mode ? (
+      {mode || navigation ? (
         <div className="fixed bottom-4 left-1/2 z-40 w-max max-w-[calc(100vw_-_2rem)] -translate-x-1/2">
-          <div className="flex flex-wrap items-center justify-center gap-1.5 rounded-md border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-sm">
-            <span role="status">{mode === "messages" ? "Messages" : "Sidebar"}</span>
-            <span className="inline-flex items-center gap-1">
-              <Kbd>J/K</Kbd>
-              {mode === "messages" ? "messages" : "rows"}
+          <div
+            ref={navigationStatus}
+            tabIndex={-1}
+            aria-label="App navigation"
+            className="flex flex-wrap items-center justify-center gap-1.5 rounded-md border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-sm"
+          >
+            <span role="status">
+              NAV{mode ? ` · ${mode === "messages" ? "Messages" : "Sidebar"}` : ""}
             </span>
             <span className="inline-flex items-center gap-1">
-              <Kbd>H/L</Kbd>
-              {mode === "messages" ? "actions" : "fold"}
+              <Kbd>Space</Kbd>actions
             </span>
+            <span className="inline-flex items-center gap-1">
+              <Kbd>F6</Kbd>regions
+            </span>
+            {mode ? (
+              <>
+                <span className="inline-flex items-center gap-1">
+                  <Kbd>J/K</Kbd>
+                  {mode === "messages" ? "messages" : "rows"}
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <Kbd>H/L</Kbd>
+                  {mode === "messages" ? "actions" : "fold"}
+                </span>
+              </>
+            ) : null}
             <span className="inline-flex items-center gap-1">
               <Kbd>I</Kbd>compose
             </span>
@@ -313,9 +412,10 @@ export function LeaderNavigation({
               variant="ghost"
               onClick={() => {
                 finishMode();
+                leaveNavigationMode();
                 restoreModeFocus();
               }}
-              aria-label={`Exit ${mode} navigation`}
+              aria-label={mode ? `Exit ${mode} navigation` : "Return to composer"}
             >
               <span aria-hidden>×</span>
             </Button>
@@ -326,6 +426,9 @@ export function LeaderNavigation({
         open={open}
         onOpenChange={setOpen}
         onOpenChangeComplete={(isOpen) => {
+          if (!isOpen && !pendingAction.current && isNavigationMode()) {
+            requestAnimationFrame(() => navigationStatus.current?.focus({ preventScroll: true }));
+          }
           if (!isOpen && pendingAction.current) {
             const action = pendingAction.current;
             requestAnimationFrame(() => {
@@ -345,9 +448,11 @@ export function LeaderNavigation({
           finalFocus={() =>
             pendingAction.current || document.visibilityState === "hidden"
               ? false
-              : returnFocus.current?.isConnected
-                ? returnFocus.current
-                : false
+              : isNavigationMode()
+                ? navigationStatus.current
+                : returnFocus.current?.isConnected
+                  ? returnFocus.current
+                  : false
           }
         >
           <DialogHeader>

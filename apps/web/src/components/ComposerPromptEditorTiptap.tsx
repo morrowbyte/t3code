@@ -1,4 +1,5 @@
 import { formatProviderSkillDisplayName } from "@t3tools/shared/inlineSkills";
+import { requestNavigationMode } from "./keyboard/navigationMode";
 import {
   Extension,
   findChildren,
@@ -1308,6 +1309,7 @@ function ComposerPromptEditorTiptapInner(props: ComposerPromptEditorProps) {
             event.preventDefault();
             event.stopPropagation();
             view.dom.blur();
+            requestNavigationMode();
             return true;
           }
           return false;

@@ -44,6 +44,7 @@ vi.mock("~/components/ui/popover", () => ({
   PopoverTitle: ({ children }: { children: import("react").ReactNode }) => <h2>{children}</h2>,
 }));
 import { VoiceDictationControl } from "./VoiceDictationControl";
+import { dispatchKeyboardCommand } from "~/components/keyboard/keyboardCommands";
 
 let renderer: ReactTestRenderer | undefined;
 beforeEach(() => {
@@ -222,6 +223,38 @@ function action(label: string) {
     .findAllByType("button")
     .find((button) => button.props["aria-label"] === label || button.children.includes(label))!;
 }
+
+it("keyboard dictation captures once and inserts its transcript without sending", async () => {
+  vi.stubGlobal("window", new EventTarget());
+  const getUserMedia = installSyntheticCapture();
+  const targetKey = "control:keyboard-dictation";
+  const transcribe = vi.fn(async () => "keyboard transcript");
+  const insert = vi.fn(() => true);
+  const send = vi.fn(async () => true);
+  await act(async () => {
+    renderer = create(
+      <VoiceDictationControl
+        targetKey={targetKey}
+        currentTargetKey={() => targetKey}
+        transcribe={transcribe}
+        onTranscript={insert}
+        onSend={send}
+      />,
+    );
+  });
+  await act(async () => {
+    expect(dispatchKeyboardCommand("voice.dictation")).toBe(true);
+    dispatchKeyboardCommand("voice.dictation");
+  });
+  expect(getUserMedia).toHaveBeenCalledOnce();
+  expect(action("Stop recording")).toBeDefined();
+  await act(async () => {
+    dispatchKeyboardCommand("voice.dictation");
+  });
+  expect(transcribe).toHaveBeenCalledOnce();
+  expect(insert).toHaveBeenCalledExactlyOnceWith("keyboard transcript", targetKey);
+  expect(send).not.toHaveBeenCalled();
+});
 
 it("retries the same retained Blob after a missing callback becomes available", async () => {
   const getUserMedia = installSyntheticCapture();

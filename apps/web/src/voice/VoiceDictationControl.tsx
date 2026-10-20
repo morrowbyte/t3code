@@ -16,6 +16,7 @@ import {
 import { Button } from "~/components/ui/button";
 import { Popover, PopoverPopup, PopoverTrigger, PopoverTitle } from "~/components/ui/popover";
 import { useEffect, useRef } from "react";
+import { useKeyboardCommands } from "~/components/keyboard/keyboardCommands";
 
 export function VoiceDictationControl(props: {
   readonly environmentId?: EnvironmentId;
@@ -66,6 +67,30 @@ export function VoiceDictationControl(props: {
     },
   });
   const state = dictation.state;
+  const keyboardActionPending = useRef(false);
+  useKeyboardCommands({
+    "voice.dictation": () => {
+      if (keyboardActionPending.current || currentTargetKey() !== props.targetKey) return true;
+      if (state.phase === "recording") {
+        dictation.stop("insert");
+      } else if (state.phase === "idle" || (state.phase === "error" && !state.audioUrl)) {
+        recordedTargetKey.current = props.targetKey;
+        recordingTranscriber.current = props.transcribe;
+        keyboardActionPending.current = true;
+        void Promise.resolve(dictation.start()).finally(() => {
+          keyboardActionPending.current = false;
+        });
+      } else if (state.phase === "review" || state.phase === "error") {
+        if (!props.transcribe || recordedTargetKey.current !== props.targetKey) return true;
+        recordingTranscriber.current = props.transcribe;
+        keyboardActionPending.current = true;
+        void Promise.resolve(dictation.transcribe("insert")).finally(() => {
+          keyboardActionPending.current = false;
+        });
+      }
+      return true;
+    },
+  });
   const settingsLink = props.environmentId ? (
     <Button
       variant="ghost"

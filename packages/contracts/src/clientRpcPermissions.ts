@@ -5,6 +5,7 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthSettingsWriteScope,
+  AuthTerminalOperateScope,
   AuthSourceControlWriteScope,
   type AuthEnvironmentScope,
 } from "./auth.ts";
@@ -13,6 +14,13 @@ import { WS_METHODS } from "./rpc.ts";
 
 /** Incremental client enforcement; the server still authorizes every request. */
 export const CLIENT_GUARDED_RPC_SCOPES = {
+  [WS_METHODS.yaziPickerOpen]: AuthTerminalOperateScope,
+  [WS_METHODS.yaziPickerPoll]: AuthTerminalOperateScope,
+  [WS_METHODS.yaziPickerWrite]: AuthTerminalOperateScope,
+  [WS_METHODS.yaziPickerResize]: AuthTerminalOperateScope,
+  [WS_METHODS.yaziPickerRead]: AuthTerminalOperateScope,
+  [WS_METHODS.yaziPickerClose]: AuthTerminalOperateScope,
+
   [WS_METHODS.nativeAuthorRead]: AuthOrchestrationReadScope,
   [WS_METHODS.nativeAuthorWrite]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverDeleteUpdateHistory]: AuthEnvironmentMaintainScope,

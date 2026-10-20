@@ -121,6 +121,7 @@ type WhenToken =
   | { type: "rparen" };
 
 export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
+  { key: "ctrl+shift+space", command: "navigation.activate" },
   { key: "mod+b", command: "sidebar.toggle" },
   { key: "mod+[", command: "navigation.back", when: "!terminalFocus" },
   { key: "mod+]", command: "navigation.forward", when: "!terminalFocus" },

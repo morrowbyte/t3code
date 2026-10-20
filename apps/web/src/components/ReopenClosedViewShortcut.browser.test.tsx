@@ -326,6 +326,7 @@ describe("root reopen shortcut", () => {
   it("always forwards the layout toggles out of a focused desktop browser", async () => {
     await render();
     expect(state.setShortcuts).toHaveBeenLastCalledWith([
+      expect.objectContaining({ command: "navigation.activate" }),
       expect.objectContaining({ command: "sidebar.toggle" }),
       expect.objectContaining({ command: "rightPanel.toggle" }),
     ]);

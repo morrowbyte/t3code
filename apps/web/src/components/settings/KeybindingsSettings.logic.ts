@@ -357,6 +357,27 @@ export function buildKeybindingCommandOptions(
 }
 
 export function commandLabel(command: KeybindingCommand): string {
+  const workbenchLabels: Partial<Record<KeybindingCommand, string>> = {
+    "navigation.activate": "Navigation: Activate",
+    "navigation.contextActions": "Navigation: Context Actions",
+    "navigation.hints": "Navigation: Focus Hints",
+    "composer.serviceTier": "Composer: Service Tier or Speed",
+    "composer.access": "Composer: Access",
+    "composer.attachFiles": "Composer: Attach Files with Yazi",
+    "voice.dictation": "Voice: Start or Finish Dictation",
+    "voice.call": "Voice: Start or End Call",
+    "voice.mute": "Voice: Mute or Unmute Microphone",
+    "rightPanel.files": "Right Panel: Files",
+    "rightPanel.diff": "Right Panel: Changes",
+    "rightPanel.browser": "Right Panel: Browser",
+    "rightPanel.terminal": "Right Panel: Terminal",
+    "rightPanel.pullRequests": "Right Panel: Pull Requests",
+    "rightPanel.device": "Right Panel: Device",
+    "rightPanel.execution": "Right Panel: Execution Code",
+    "project.scripts": "Project: Run Action",
+    "workspace.actions": "Workspace: Actions",
+  };
+  if (workbenchLabels[command]) return workbenchLabels[command]!;
   if (command === "composer.sendAlternate") return "Composer: Opposite Queue or Steer Action";
   if (command === "composer.sendBackground") return "Composer: Start in Background";
   if (command === "composer.sendAndNewThread") return "Composer: Send and Start New Thread";

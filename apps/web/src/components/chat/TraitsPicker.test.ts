@@ -4,7 +4,11 @@ import {
   ProviderDriverKind,
   type ProviderOptionDescriptor,
 } from "@t3tools/contracts";
-import { buildTraitsTriggerDisplay, buildUnavailableModelOptionDescriptors } from "./TraitsPicker";
+import {
+  buildTraitsTriggerDisplay,
+  buildUnavailableModelOptionDescriptors,
+  getKeyboardTraitOptions,
+} from "./TraitsPicker";
 
 function selectDescriptor(
   id: string,
@@ -55,6 +59,85 @@ const CONTEXT_WINDOW = selectDescriptor(
 );
 
 const CODEX = ProviderDriverKind.make("codex");
+
+describe("keyboard trait selection", () => {
+  const input = {
+    provider: CODEX,
+    instanceId: ProviderInstanceId.make("codex"),
+    model: "keyboard-model",
+    models: [
+      {
+        slug: "keyboard-model",
+        name: "Keyboard model",
+        isCustom: true,
+        capabilities: { optionDescriptors: [EFFORT, serviceTierDescriptor("default")] },
+      },
+    ],
+    prompt: "Keep this draft",
+    modelOptions: [
+      { id: "reasoningEffort", value: "max" },
+      { id: "serviceTier", value: "priority" },
+    ],
+    planModeEnabled: true,
+  };
+
+  it("shows the saved tier and changes only the selected trait", () => {
+    const choices = getKeyboardTraitOptions(input, "serviceTier");
+    expect(choices.map((choice) => [choice.label, choice.selected])).toEqual([
+      ["Standard", false],
+      ["Fast", true],
+      ["Ultrafast", false],
+      ["Flex", false],
+    ]);
+    const change = choices.find((choice) => choice.id === "flex")!.change;
+    expect(change.prompt).toBe("Keep this draft");
+    expect("modelOptions" in change && change.modelOptions).toEqual(
+      expect.arrayContaining([
+        { id: "reasoningEffort", value: "max" },
+        { id: "serviceTier", value: "flex" },
+      ]),
+    );
+  });
+
+  it("does not invent reasoning or tier options for unsupported models", () => {
+    const withoutOptions = {
+      ...input,
+      models: [{ ...input.models[0]!, capabilities: {} }],
+      modelOptions: [],
+    };
+    expect(getKeyboardTraitOptions(withoutOptions, "reasoning")).toEqual([]);
+    expect(getKeyboardTraitOptions(withoutOptions, "serviceTier")).toEqual([]);
+  });
+
+  it("uses a provider's fast-mode toggle when no service tier is offered", () => {
+    const choices = getKeyboardTraitOptions(
+      {
+        ...input,
+        models: [
+          {
+            ...input.models[0]!,
+            capabilities: { optionDescriptors: [EFFORT, fastModeDescriptor(false)] },
+          },
+        ],
+        modelOptions: [
+          { id: "reasoningEffort", value: "high" },
+          { id: "fastMode", value: false },
+        ],
+      },
+      "serviceTier",
+    );
+    expect(choices.map((choice) => [choice.label, choice.selected])).toEqual([
+      ["Fast", false],
+      ["Standard", true],
+    ]);
+    expect("modelOptions" in choices[0]!.change && choices[0]!.change.modelOptions).toEqual(
+      expect.arrayContaining([
+        { id: "reasoningEffort", value: "high" },
+        { id: "fastMode", value: true },
+      ]),
+    );
+  });
+});
 
 function display(descriptors: ReadonlyArray<ProviderOptionDescriptor>) {
   return buildTraitsTriggerDisplay({

@@ -16,6 +16,7 @@ import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { dispatchKeyboardCommand } from "~/components/keyboard/keyboardCommands";
 
 const showToast = vi.hoisted(() => vi.fn());
 vi.mock("~/components/ui/toast", () => ({ toastManager: { add: showToast } }));
@@ -498,6 +499,47 @@ function expectPassive() {
   expect(getUserMedia).not.toHaveBeenCalled();
   expect(peer).not.toHaveBeenCalled();
 }
+
+it("keyboard call and mute respect the current permission gate without microphone capture", async () => {
+  await render({ ...loaded, canOperate: false });
+  await act(async () => {
+    expect(dispatchKeyboardCommand("voice.call")).toBe(true);
+    expect(dispatchKeyboardCommand("voice.mute")).toBe(true);
+  });
+  expectPassive();
+  expect(showToast).toHaveBeenCalledWith(
+    expect.objectContaining({
+      title: "You need permission to operate this thread.",
+    }),
+  );
+});
+
+it("keyboard call can cancel a pending preparation", async () => {
+  let finishPrepare!: (value: Awaited<ReturnType<typeof commands.prepare>>) => void;
+  commands.prepare.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finishPrepare = resolve;
+      }),
+  );
+  await render(loaded);
+  await act(async () => {
+    dispatchKeyboardCommand("voice.call");
+  });
+  expect(commands.prepare).toHaveBeenCalledOnce();
+  expect(container.querySelector('[data-live-voice-phase="preparing"]')).not.toBeNull();
+  await act(async () => {
+    dispatchKeyboardCommand("voice.call");
+  });
+  expect(container.querySelector('[data-live-voice-phase="ended"]')).not.toBeNull();
+  await act(async () => {
+    finishPrepare(
+      AsyncResult.failure(Cause.fail(new LiveVoiceError({ code: "managed_account_required" }))),
+    );
+  });
+  expect(commands.start).not.toHaveBeenCalled();
+  expect(getUserMedia).not.toHaveBeenCalled();
+});
 
 function gateFor(
   input: AvailabilityInput,

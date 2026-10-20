@@ -8,6 +8,8 @@ import { requestLeaderNavigation } from "./LeaderNavigation.dom";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { shouldTypeToFocusComposer } from "../chat/composerFocusRedirect";
 import { dismissContextMenu, showContextMenuFallback } from "../../contextMenuFallback";
+import { isNavigationMode, leaveNavigationMode, requestNavigationMode } from "./navigationMode";
+import { useKeyboardCommands } from "./keyboardCommands";
 
 let root: Root;
 let host: HTMLDivElement;
@@ -33,6 +35,7 @@ const groups = [
 ];
 
 beforeEach(async () => {
+  leaveNavigationMode();
   vi.useFakeTimers();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.spyOn(Element.prototype, "getAnimations").mockReturnValue([]);
@@ -67,6 +70,7 @@ beforeEach(async () => {
   );
 });
 afterEach(async () => {
+  leaveNavigationMode();
   dismissContextMenu();
   await act(() => root.unmount());
   host.remove();
@@ -93,6 +97,87 @@ async function open() {
 }
 
 describe("LeaderNavigation", () => {
+  it("keeps navigation active after leaving the composer until i explicitly returns", async () => {
+    const composer = fixture.querySelector("textarea")!;
+    composer.focus();
+    composer.blur();
+    await act(() => requestNavigationMode());
+    await press("x");
+    expect(redirected).not.toHaveBeenCalled();
+    expect(document.activeElement).not.toBe(composer);
+    await press(" ");
+    await press("Escape");
+    expect(isNavigationMode()).toBe(true);
+    await press("i");
+    expect(document.activeElement).toBe(composer);
+    expect(isNavigationMode()).toBe(false);
+  });
+
+  it("runs composer commands through the leader without typing into the draft", async () => {
+    const model = vi.fn();
+    function Commands() {
+      useKeyboardCommands({ "modelPicker.toggle": model });
+      return (
+        <SidebarProvider>
+          <LeaderNavigationHost />
+        </SidebarProvider>
+      );
+    }
+    await act(() => root.render(<Commands />));
+    await act(() => requestNavigationMode());
+    await press(" ");
+    await press("c");
+    await press("m");
+    expect(model).toHaveBeenCalledOnce();
+    expect(fixture.querySelector("textarea")!.value).toBe("");
+  });
+
+  it("returns from a desktop browser through the forwarded navigation command", async () => {
+    let menuAction: ((action: string) => void) | undefined;
+    vi.stubGlobal("desktopBridge", {
+      onMenuAction: (listener: (action: string) => void) => {
+        menuAction = listener;
+        return () => {};
+      },
+    });
+    await act(() =>
+      root.render(
+        <SidebarProvider>
+          <LeaderNavigationHost />
+        </SidebarProvider>,
+      ),
+    );
+    await act(() => menuAction?.("navigation.activate"));
+    await flush();
+    expect(
+      document.querySelector('[role="dialog"][aria-label="Keyboard navigation"]'),
+    ).not.toBeNull();
+    expect(isNavigationMode()).toBe(true);
+  });
+
+  it("uses the configured app prefix from an editable without consuming ordinary terminal keys", async () => {
+    const terminal = document.createElement("div");
+    terminal.className = "xterm";
+    terminal.tabIndex = 0;
+    fixture.append(terminal);
+    await act(() =>
+      root.render(
+        <LeaderNavigation
+          groups={groups}
+          showSidebar={() => {}}
+          isClaimed={() => false}
+          isActivationShortcut={(event) => event.ctrlKey && event.key === "g"}
+        />,
+      ),
+    );
+    terminal.focus();
+    expect((await press(" ")).defaultPrevented).toBe(false);
+    expect((await press("g", { ctrlKey: true })).defaultPrevented).toBe(true);
+    expect(
+      document.querySelector('[role="dialog"][aria-label="Keyboard navigation"]'),
+    ).not.toBeNull();
+  });
+
   it("opens the existing project filter after a project has already been selected", async () => {
     const filter = fixture.querySelector<HTMLButtonElement>("nav > button")!;
     filter.setAttribute("aria-label", "Filter threads by project: Example project");
@@ -166,7 +251,7 @@ describe("LeaderNavigation", () => {
     expect(document.activeElement?.getAttribute("data-message-id")).toBe("two");
   });
 
-  it("preserves composer Space, j/k and IME while explicit entry returns focus on Escape", async () => {
+  it("preserves composer Space, j/k and IME while Escape returns to navigation", async () => {
     const composer = fixture.querySelector("textarea")!;
     composer.focus();
     expect((await press(" ")).defaultPrevented).toBe(false);
@@ -178,6 +263,9 @@ describe("LeaderNavigation", () => {
       document.querySelector('[role="dialog"][aria-label="Keyboard navigation"]'),
     ).not.toBeNull();
     await press("Escape");
+    expect(isNavigationMode()).toBe(true);
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("App navigation");
+    await press("i");
     expect(document.activeElement).toBe(composer);
   });
 
@@ -191,7 +279,21 @@ describe("LeaderNavigation", () => {
     expect(document.querySelector('[role="dialog"][aria-label="Keyboard navigation"]')).toBeNull();
   });
 
-  it("navigates messages and their own controls only after opt-in, then restores composer", async () => {
+  it("backs out one leader group at a time while keeping navigation active", async () => {
+    await open();
+    await press("t");
+    expect(document.activeElement?.textContent).toContain("Next thread");
+    await press("Escape");
+    expect(document.querySelector('[data-leader-key="t"]')).not.toBeNull();
+    expect(
+      document.querySelector('[role="dialog"][aria-label="Keyboard navigation"]'),
+    ).not.toBeNull();
+    await press("Escape");
+    expect(document.querySelector('[role="dialog"][aria-label="Keyboard navigation"]')).toBeNull();
+    expect(isNavigationMode()).toBe(true);
+  });
+
+  it("navigates messages and controls then returns through navigation to the composer", async () => {
     const composer = fixture.querySelector("textarea")!;
     composer.focus();
     await open();
@@ -208,7 +310,7 @@ describe("LeaderNavigation", () => {
     await press("h");
     expect(document.activeElement?.textContent).toBe("Copy second");
     await press("Escape");
-    expect(document.activeElement).toBe(composer);
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("App navigation");
     expect(document.querySelector("[data-leader-message-focus]")).toBeNull();
     expect(fixture.querySelector('[data-message-id="one"]')?.hasAttribute("tabindex")).toBe(false);
     composer.blur();
@@ -216,6 +318,7 @@ describe("LeaderNavigation", () => {
     await press("m");
     await press("l");
     await press("Escape");
+    await press("i");
     expect(document.activeElement).toBe(composer);
   });
 
@@ -279,6 +382,8 @@ describe("LeaderNavigation", () => {
     });
     main.append(expand);
     await press("Escape");
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("App navigation");
+    await press("i");
     expect(document.activeElement).toBe(composer);
     expect(expand.isConnected).toBe(false);
   });

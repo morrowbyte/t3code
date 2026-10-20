@@ -875,6 +875,17 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                 setSearchQuery(e.target.value);
               }}
               onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
+                if (e.ctrlKey && !e.altKey && !e.metaKey && (e.key === "n" || e.key === "p")) {
+                  e.preventDefault();
+                  e.currentTarget.dispatchEvent(
+                    new KeyboardEvent("keydown", {
+                      key: e.key === "n" ? "ArrowDown" : "ArrowUp",
+                      bubbles: true,
+                    }),
+                  );
+                  return;
+                }
                 if (
                   showSidebar &&
                   !e.altKey &&

@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { useKeyboardCommands } from "./keyboard/keyboardCommands";
 import {
   scopeProjectRef,
   scopedThreadKey,
@@ -44,6 +45,7 @@ import {
 import { toastManager } from "./ui/toast";
 
 const PREVIEW_FORWARDED_LAYOUT_COMMANDS = [
+  "navigation.activate",
   "sidebar.toggle",
   "rightPanel.toggle",
   "rightPanel.toggleMaximized",
@@ -143,6 +145,8 @@ export function ReopenClosedViewShortcut() {
         });
       });
   });
+
+  useKeyboardCommands({ "view.reopenClosed": () => enqueueReopen() });
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

@@ -289,6 +289,83 @@ function getTraitSelectChange(
   };
 }
 
+export function getKeyboardTraitOptions(
+  input: Pick<
+    TraitsMenuContentProps,
+    | "provider"
+    | "models"
+    | "model"
+    | "prompt"
+    | "modelOptions"
+    | "instanceId"
+    | "reportedModelSelection"
+    | "planModeEnabled"
+  >,
+  kind: "reasoning" | "serviceTier",
+) {
+  const selected = getSelectedTraits(
+    input.provider,
+    input.models,
+    input.model,
+    input.prompt,
+    input.modelOptions,
+    true,
+    input.planModeEnabled,
+  );
+  if (selected.modelIsUnavailable) return [];
+  const descriptor =
+    kind === "reasoning"
+      ? (selected.selectDescriptors.find((entry) =>
+          REASONING_SELECT_DESCRIPTOR_IDS.has(entry.id),
+        ) ?? selected.thinkingDescriptor)
+      : (selected.selectDescriptors.find((entry) => entry.id === "serviceTier") ??
+        selected.fastModeDescriptor);
+  if (!descriptor) return [];
+  const selection =
+    input.instanceId && input.model
+      ? { instanceId: input.instanceId, model: input.model, options: input.modelOptions ?? [] }
+      : null;
+  const current =
+    selected.ultrathinkPromptControlled && descriptor.id === selected.primarySelectDescriptor?.id
+      ? "ultrathink"
+      : getProviderOptionCurrentValue(descriptor, selection, input.reportedModelSelection);
+  const choices =
+    descriptor.type === "select"
+      ? descriptor.options
+      : [
+          { id: "on", label: kind === "serviceTier" ? "Fast" : "On" },
+          { id: "off", label: kind === "serviceTier" ? "Standard" : "Off" },
+        ];
+  return choices.flatMap((option) => {
+    const change =
+      descriptor.type === "select"
+        ? getTraitSelectChange(selected, descriptor, input.prompt, option.id)
+        : {
+            prompt: input.prompt,
+            modelOptions: buildProviderOptionSelectionsFromDescriptors(
+              replaceDescriptorCurrentValue(
+                selected.descriptors,
+                descriptor.id,
+                option.id === "on",
+              ),
+            ),
+          };
+    if (!change) return [];
+    return [
+      {
+        id: option.id,
+        label: option.label,
+        description:
+          "description" in option && typeof option.description === "string"
+            ? option.description
+            : undefined,
+        selected: current === (descriptor.type === "boolean" ? option.id === "on" : option.id),
+        change,
+      },
+    ];
+  });
+}
+
 /**
  * `modelOptions` must already carry the composer's implicit defaults (see
  * `withImplicitFastModeDefault`) so the persisted selection matches what the

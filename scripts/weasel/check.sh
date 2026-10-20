@@ -361,7 +361,13 @@ if [[ ! -f "$mobile_composer_test" ]]; then
   exit 1
 fi
 focused_tests+=("$mobile_composer_test")
+focused_tests+=(apps/server/src/attachments/YaziPicker.test.ts apps/web/src/components/chat/TraitsPicker.test.ts)
 renderer_tests=(
+  apps/web/src/components/keyboard/LeaderNavigation.browser.test.tsx
+  apps/web/src/components/keyboard/KeyboardHints.browser.test.tsx
+  apps/web/src/components/keyboard/yaziAttachment.browser.test.ts
+  apps/web/src/components/chat/ComposerChoiceDialog.browser.test.tsx
+  apps/web/src/components/chat/composerFocusRedirect.browser.test.ts
   apps/web/src/components/ComposerPromptEditorTiptap.navigation.browser.test.tsx
   apps/web/src/components/ServerUpdateAction.browser.test.tsx
   apps/web/src/components/chat/ComposerPendingApprovalPanel.browser.test.tsx

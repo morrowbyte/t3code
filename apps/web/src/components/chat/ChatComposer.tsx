@@ -282,6 +282,11 @@ import {
 import { useEnvironmentQuery } from "~/state/query";
 import { useDebouncedValue } from "~/state/queries";
 import { ProviderModelPicker } from "./ProviderModelPicker";
+import { getKeyboardTraitOptions } from "./TraitsPicker";
+import { ComposerChoiceDialog, type ComposerChoice } from "./ComposerChoiceDialog";
+import { AttachmentPicker } from "../keyboard/AttachmentPicker";
+import { useKeyboardCommands } from "../keyboard/keyboardCommands";
+import { isNavigationMode, requestNavigationMode } from "../keyboard/navigationMode";
 import { resolveModelPickerSelectedModel } from "./ModelPickerContent";
 import {
   type ComposerCommandItem,
@@ -3121,17 +3126,27 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       : "No matching command.";
   })();
 
-  const setPromptFromTraits = (nextPrompt: string) => {
+  const setPromptFromTraits = (nextPrompt: string, options?: { preserveFocus: boolean }) => {
     if (nextPrompt === promptRef.current) {
-      scheduleComposerFocus();
+      if (!options?.preserveFocus) scheduleComposerFocus();
       return;
     }
+    const expandedCursor = expandCollapsedComposerCursor(promptRef.current, composerCursor);
+    const cursorAfterPrefixChange = Math.max(
+      0,
+      Math.min(nextPrompt.length, expandedCursor + nextPrompt.length - promptRef.current.length),
+    );
     promptRef.current = nextPrompt;
     setComposerDraftPrompt(composerDraftTarget, nextPrompt, { edit: true });
-    const nextCursor = collapseExpandedComposerCursor(nextPrompt, nextPrompt.length);
+    const nextCursor = collapseExpandedComposerCursor(
+      nextPrompt,
+      options?.preserveFocus ? cursorAfterPrefixChange : nextPrompt.length,
+    );
     setComposerCursor(nextCursor);
-    setComposerTrigger(detectComposerTrigger(nextPrompt, nextPrompt.length));
-    scheduleComposerFocus();
+    setComposerTrigger(
+      options?.preserveFocus ? null : detectComposerTrigger(nextPrompt, nextPrompt.length),
+    );
+    if (!options?.preserveFocus) scheduleComposerFocus();
   };
   const setPromptFromTraitsStable = useStableCallback(setPromptFromTraits);
 
@@ -5507,7 +5522,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         getModelDisabledReason={getModelDisabledReason}
         onInstanceModelChange={(instanceId, model) => {
           setMultipleModelSelections(null);
-          onProviderModelSelect(instanceId, model);
+          onProviderModelSelect(instanceId, model, { focusComposer: !isNavigationMode() });
         }}
         onOpenProviderSetup={onOpenProviderSetup}
       />
@@ -6322,6 +6337,102 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   };
   const openModelPickerStable = useStableCallback(openModelPicker);
 
+  const [keyboardPicker, setKeyboardPicker] = useState<{
+    kind: "reasoning" | "serviceTier" | "access";
+    targetKey: string;
+    model: string;
+    restoreFocus: () => void;
+  } | null>(null);
+  const [attachmentPicker, setAttachmentPicker] = useState<{
+    targetKey: string;
+    onFiles: (files: File[]) => Promise<boolean>;
+  } | null>(null);
+  const openKeyboardControl = useStableCallback((command: KeybindingCommand) => {
+    const kind =
+      command === "composer.effort"
+        ? "reasoning"
+        : command === "composer.serviceTier"
+          ? "serviceTier"
+          : command === "composer.access" || command === "composer.mode"
+            ? "access"
+            : null;
+    if (!kind) return false;
+    if (
+      noProviderAvailable ||
+      isComposerApprovalState ||
+      pendingUserInputs.length > 0 ||
+      isEditingQueuedMessage
+    )
+      return true;
+    const previousFocus =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const fromNavigation = isNavigationMode();
+    setKeyboardPicker({
+      kind,
+      targetKey: composerDraftTargetKey,
+      model: `${selectedInstanceId}:${selectedModel}`,
+      restoreFocus: () => {
+        if (composerDraftTargetKeyRef.current !== composerDraftTargetKey) return;
+        if (fromNavigation) requestNavigationMode();
+        else if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+      },
+    });
+    return true;
+  });
+  useKeyboardCommands({
+    "composer.effort": () => openKeyboardControl("composer.effort"),
+    "composer.serviceTier": () => openKeyboardControl("composer.serviceTier"),
+    "composer.access": () => openKeyboardControl("composer.access"),
+    "composer.attachFiles": () => {
+      if (!showComposerAttachAction || !canOperateThread) return true;
+      setAttachmentPicker({
+        targetKey: attachmentTargetKey,
+        onFiles: async (files) => {
+          if (attachmentTargetKeyRef.current !== attachmentTargetKey) return false;
+          return addComposerAttachments(files);
+        },
+      });
+      return true;
+    },
+  });
+  if (
+    keyboardPicker &&
+    (keyboardPicker.targetKey !== composerDraftTargetKey ||
+      keyboardPicker.model !== `${selectedInstanceId}:${selectedModel}`)
+  )
+    setKeyboardPicker(null);
+  if (attachmentPicker && attachmentPicker.targetKey !== attachmentTargetKey)
+    setAttachmentPicker(null);
+  const keyboardChoices: ReadonlyArray<ComposerChoice> =
+    keyboardPicker?.kind === "access"
+      ? compatibleRuntimeModeOptions.map((option) => ({
+          id: option.mode,
+          label: option.label,
+          description: option.description,
+          selected: option.mode === compatibleRuntimeMode,
+          onSelect: () => handleRuntimeModeChange(option.mode),
+        }))
+      : keyboardPicker
+        ? getKeyboardTraitOptions(providerTraitsPickerInput, keyboardPicker.kind).map((option) => ({
+            ...option,
+            onSelect: () => {
+              if ("modelOptions" in option.change) {
+                useComposerDraftStore
+                  .getState()
+                  .setProviderModelOptions(
+                    composerDraftTarget,
+                    selectedProvider,
+                    option.change.modelOptions,
+                    { instanceId: selectedInstanceId, model: selectedModel, persistSticky: true },
+                  );
+              }
+              if (option.change.prompt !== promptRef.current) {
+                setPromptFromTraitsStable(option.change.prompt, { preserveFocus: true });
+              }
+            },
+          }))
+        : [];
+
   useImperativeHandle(
     composerRef,
     () => ({
@@ -6454,6 +6565,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         }
       },
       openControl: (command) => {
+        if (openKeyboardControl(command)) return;
         if (composerBlurFrameRef.current !== null) {
           window.cancelAnimationFrame(composerBlurFrameRef.current);
           composerBlurFrameRef.current = null;
@@ -6618,6 +6730,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       applyPromptReplacementStable,
       isComposerModelPickerOpen,
       openModelPickerStable,
+      openKeyboardControl,
       readComposerSnapshotStable,
       resetComposerTrigger,
       setComposerTrigger,
@@ -6718,6 +6831,37 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       data-chat-composer-form="true"
       {...threadContextDropTargetProps()}
     >
+      {keyboardPicker && keyboardPicker.targetKey === composerDraftTargetKey ? (
+        <ComposerChoiceDialog
+          key={`${keyboardPicker.kind}:${keyboardPicker.targetKey}`}
+          title={
+            keyboardPicker.kind === "reasoning"
+              ? "Reasoning"
+              : keyboardPicker.kind === "serviceTier"
+                ? "Service tier / speed"
+                : "Access"
+          }
+          choices={keyboardChoices}
+          emptyMessage={
+            keyboardPicker.kind === "reasoning"
+              ? "This model does not offer reasoning options."
+              : "This model does not offer service tier or speed options."
+          }
+          onClose={() => setKeyboardPicker(null)}
+          restoreFocus={keyboardPicker.restoreFocus}
+        />
+      ) : null}
+      {attachmentPicker && attachmentPicker.targetKey === attachmentTargetKey ? (
+        <AttachmentPicker
+          environmentId={environmentId}
+          targetKey={attachmentPicker.targetKey}
+          onFiles={attachmentPicker.onFiles}
+          onClose={() => {
+            setAttachmentPicker(null);
+            if (attachmentTargetKeyRef.current === attachmentPicker.targetKey) focusComposer();
+          }}
+        />
+      ) : null}
       {composerControlsCollapsed && restingControlsHost
         ? createPortal(
             <div

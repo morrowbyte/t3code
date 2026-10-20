@@ -55,6 +55,9 @@ import { feedbackBannerItem } from "./chat/ComposerFeedback";
 import { useUsageLimitsPanel } from "./chat/useUsageLimitsPanel";
 import { useWorktreeSetup } from "./chat/useWorktreeSetup";
 import { useChatShortcuts, type ChatShortcutHandler } from "./chat/useChatShortcuts";
+import { WorkbenchCommandPicker, type WorkbenchCommand } from "./keyboard/WorkbenchCommandPicker";
+import { dispatchKeyboardCommand } from "./keyboard/keyboardCommands";
+import { focusWorkbenchRegion } from "./keyboard/regionNavigation";
 import {
   eventPathContainsSelector,
   pasteTextToFocusComposer,
@@ -3879,6 +3882,7 @@ export default function ChatView(props: ChatViewProps) {
   const toggleThreadPanel = () => {
     if (!activeThreadRef) return;
     useRightPanelStore.getState().toggleThreadPanel(activeThreadRef, threadPanelPresentation);
+    if (!threadPanelOpen) focusWorkbenchRegion("[data-thread-details-panel]");
   };
   const toggleThreadPanelStable = useStableCallback(toggleThreadPanel);
   useEffect(() => {
@@ -5568,6 +5572,11 @@ export default function ChatView(props: ChatViewProps) {
     (({ event }) => {
       if (!event.repeat) composerRef.current?.openControl(command);
     }) satisfies ChatShortcutHandler;
+  const [workbenchPicker, setWorkbenchPicker] = useState<{
+    threadKey: string;
+    title: string;
+    commands: readonly WorkbenchCommand[];
+  } | null>(null);
   useChatShortcuts({
     enabled: activeThreadId !== null,
     keybindings,
@@ -5580,6 +5589,100 @@ export default function ChatView(props: ChatViewProps) {
       focusComposerStable();
     },
     commands: {
+      "rightPanel.files": () => {
+        if (!activeProject) return false;
+        addFilesSurfaceStable();
+        focusWorkbenchRegion("[data-right-panel-surface-content]");
+      },
+      "rightPanel.diff": () => {
+        if (!isServerThread || !isGitRepo) return false;
+        addDiffSurfaceStable();
+        focusWorkbenchRegion("[data-right-panel-surface-content]");
+      },
+      "rightPanel.browser": () => {
+        if (!canOperatePreview) return false;
+        createBrowserSurfaceStable();
+        focusWorkbenchRegion("[data-right-panel-surface-content]");
+      },
+      "rightPanel.terminal": () => {
+        if (!canOperateTerminal) return false;
+        addTerminalSurfaceStable();
+        focusWorkbenchRegion("[data-right-panel-surface-content]");
+      },
+      "rightPanel.pullRequests": () => {
+        if (pullRequestsSurfaceAvailable) addPullRequestsSurfaceStable();
+        else addPullRequestSurfaceStable();
+        focusWorkbenchRegion("[data-right-panel-surface-content]");
+      },
+      "rightPanel.device": () => {
+        addDeviceSurfaceStable();
+        focusWorkbenchRegion("[data-right-panel-surface-content]");
+      },
+      "rightPanel.execution": () => {
+        if (!activeThreadRef) return false;
+        const item = serverProjection?.turnItems.findLast(
+          (entry) => entry.type === "command_execution" || entry.type === "dynamic_tool",
+        );
+        if (!item) return false;
+        useRightPanelStore.getState().openExecution(activeThreadRef, {
+          environmentId,
+          threadId: item.threadId,
+          itemId: item.id,
+          runId: item.runId,
+        });
+        focusWorkbenchRegion("[data-right-panel-surface-content]");
+      },
+      "project.scripts": () => {
+        if (!activeProject || !canOperateTerminal) return false;
+        setWorkbenchPicker({
+          threadKey: activeThreadKey,
+          title: "Run project script",
+          commands: activeProjectScripts.map((script) => ({
+            id: script.id,
+            label: script.name,
+            detail: script.command,
+            run: () => {
+              void runProjectScriptStable(script);
+            },
+          })),
+        });
+      },
+      "workspace.actions": () => {
+        setWorkbenchPicker({
+          threadKey: activeThreadKey,
+          title: "Workspace actions",
+          commands: [
+            {
+              id: "branch",
+              label: "Choose branch or worktree",
+              run: () => {
+                dispatchKeyboardCommand("composer.branch");
+              },
+            },
+            {
+              id: "previous-worktree",
+              label: "Previous worktree",
+              run: () => {
+                dispatchKeyboardCommand("composer.previousWorktree");
+              },
+            },
+            {
+              id: "changes",
+              label: "Review changes",
+              run: () => {
+                dispatchKeyboardCommand("rightPanel.diff");
+              },
+            },
+            {
+              id: "details",
+              label: "Workspace card",
+              run: () => {
+                dispatchKeyboardCommand("threadPanel.toggle");
+              },
+            },
+          ],
+        });
+      },
       "thread.copyReference": ({ event }) => {
         if (!event.repeat) copyActiveThreadReferenceStable();
       },
@@ -8832,6 +8935,13 @@ export default function ChatView(props: ChatViewProps) {
       checkpoints={serverProjection?.checkpoints}
     >
       {content}
+      {workbenchPicker?.threadKey === activeThreadKey ? (
+        <WorkbenchCommandPicker
+          title={workbenchPicker.title}
+          commands={workbenchPicker.commands}
+          onClose={() => setWorkbenchPicker(null)}
+        />
+      ) : null}
     </FileMetadataThreadProvider>
   );
 }

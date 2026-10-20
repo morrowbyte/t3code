@@ -796,6 +796,7 @@ describe("PreviewManager", () => {
   );
 
   effectIt.effect.each([
+    ["ctrl+shift+space", "navigation.activate"],
     ["mod+shift+t", "view.reopenClosed"],
     ["ctrl+alt+u", "sidebar.toggle"],
   ] as const)(

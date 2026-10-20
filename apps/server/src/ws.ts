@@ -201,6 +201,7 @@ import * as ServerSettings from "./serverSettings.ts";
 import * as DatabaseStorage from "./persistence/DatabaseStorage.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
+import * as YaziPicker from "./attachments/YaziPicker.ts";
 import { withTerminalOutputWindow } from "./terminal/OutputProtocol.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as ServerBrowser from "./preview/ServerBrowser.ts";
@@ -1320,6 +1321,7 @@ const layerWsRpc = (
       const vcsProvisioning = yield* VcsProvisioningService.VcsProvisioningService;
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
       const terminalManager = yield* TerminalManager.TerminalManager;
+      const yaziPicker = yield* YaziPicker.YaziPicker;
       const previewManager = yield* PreviewManager.PreviewManager;
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
@@ -2959,6 +2961,12 @@ const layerWsRpc = (
           vcsProvisioning.initRepository(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
         [WS_METHODS.reviewGetDiffPreview]: (input) => review.getDiffPreview(input),
         [WS_METHODS.reviewGetDiffFileContents]: (input) => review.getDiffFileContents(input),
+        [WS_METHODS.yaziPickerOpen]: (input) => yaziPicker.open(currentSessionId, input),
+        [WS_METHODS.yaziPickerPoll]: (input) => yaziPicker.poll(currentSessionId, input),
+        [WS_METHODS.yaziPickerWrite]: (input) => yaziPicker.write(currentSessionId, input),
+        [WS_METHODS.yaziPickerResize]: (input) => yaziPicker.resize(currentSessionId, input),
+        [WS_METHODS.yaziPickerRead]: (input) => yaziPicker.read(currentSessionId, input),
+        [WS_METHODS.yaziPickerClose]: (input) => yaziPicker.close(currentSessionId, input),
         [WS_METHODS.terminalOpen]: (input) => terminalManager.open(input),
         [WS_METHODS.terminalAttach]: (input) =>
           Stream.callback<TerminalAttachStreamEvent, TerminalError>((queue) =>

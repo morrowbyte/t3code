@@ -7,7 +7,7 @@ export const requestLeaderNavigation = () => window.dispatchEvent(new Event(LEAD
 const INTERACTIVE =
   "button,a[href],input,textarea,select,summary,video,audio,[role=button],[role=combobox],[role=menuitem],[role=option],[role=tab],[role=slider],[role=switch],[role=checkbox],[role=radio],[role=treeitem]";
 const BLOCKED =
-  "[role=dialog],[role=menu],[role=listbox],[data-keybinding-capture],.xterm,.monaco-editor,.cm-editor,iframe";
+  "[role=dialog],[role=menu],[role=listbox],[role=application],[data-keybinding-capture],.xterm,.monaco-editor,.cm-editor,iframe";
 const MESSAGE = "[data-message-id][data-message-role]";
 const THREAD = "[data-thread-item] [data-testid^=sidebar-row]";
 

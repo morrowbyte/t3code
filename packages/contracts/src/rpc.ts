@@ -1,4 +1,15 @@
 import {
+  YaziPickerOpenInput,
+  YaziPickerSessionInput,
+  YaziPickerWriteInput,
+  YaziPickerResizeInput,
+  YaziPickerReadInput,
+  YaziPickerOpened,
+  YaziPickerPollResult,
+  YaziPickerReadResult,
+  YaziPickerError,
+} from "./yaziPicker.ts";
+import {
   HostUpdateHistory,
   HostUpdateHistoryError,
   DeleteHostUpdateInput,
@@ -484,6 +495,12 @@ export const WS_METHODS = {
   reviewGetDiffPreview: "review.getDiffPreview",
   reviewGetDiffFileContents: "review.getDiffFileContents",
 
+  yaziPickerOpen: "yaziPicker.open",
+  yaziPickerPoll: "yaziPicker.poll",
+  yaziPickerWrite: "yaziPicker.write",
+  yaziPickerResize: "yaziPicker.resize",
+  yaziPickerRead: "yaziPicker.read",
+  yaziPickerClose: "yaziPicker.close",
   terminalOpen: "terminal.open",
   terminalAttach: "terminal.attach",
   terminalObserve: "terminal.observe",
@@ -1508,6 +1525,39 @@ const WsReviewGetDiffFileContentsRpc = Rpc.make(WS_METHODS.reviewGetDiffFileCont
   error: Schema.Union([ReviewDiffPreviewError, EnvironmentAuthorizationError]),
 });
 
+const WsYaziPickerOpenRpc = Rpc.make(WS_METHODS.yaziPickerOpen, {
+  payload: YaziPickerOpenInput,
+  success: YaziPickerOpened,
+  error: Schema.Union([YaziPickerError, EnvironmentAuthorizationError]),
+});
+
+const WsYaziPickerPollRpc = Rpc.make(WS_METHODS.yaziPickerPoll, {
+  payload: YaziPickerSessionInput,
+  success: YaziPickerPollResult,
+  error: Schema.Union([YaziPickerError, EnvironmentAuthorizationError]),
+});
+
+const WsYaziPickerWriteRpc = Rpc.make(WS_METHODS.yaziPickerWrite, {
+  payload: YaziPickerWriteInput,
+  error: Schema.Union([YaziPickerError, EnvironmentAuthorizationError]),
+});
+
+const WsYaziPickerResizeRpc = Rpc.make(WS_METHODS.yaziPickerResize, {
+  payload: YaziPickerResizeInput,
+  error: Schema.Union([YaziPickerError, EnvironmentAuthorizationError]),
+});
+
+const WsYaziPickerReadRpc = Rpc.make(WS_METHODS.yaziPickerRead, {
+  payload: YaziPickerReadInput,
+  success: YaziPickerReadResult,
+  error: Schema.Union([YaziPickerError, EnvironmentAuthorizationError]),
+});
+
+const WsYaziPickerCloseRpc = Rpc.make(WS_METHODS.yaziPickerClose, {
+  payload: YaziPickerSessionInput,
+  error: Schema.Union([YaziPickerError, EnvironmentAuthorizationError]),
+});
+
 const WsTerminalOpenRpc = Rpc.make(WS_METHODS.terminalOpen, {
   payload: TerminalOpenInput,
   success: TerminalSessionSnapshot,
@@ -2199,6 +2249,12 @@ export const WsRpcGroup = RpcGroup.make(
   WsVcsInitRpc,
   WsReviewGetDiffPreviewRpc,
   WsReviewGetDiffFileContentsRpc,
+  WsYaziPickerOpenRpc,
+  WsYaziPickerPollRpc,
+  WsYaziPickerWriteRpc,
+  WsYaziPickerResizeRpc,
+  WsYaziPickerReadRpc,
+  WsYaziPickerCloseRpc,
   WsTerminalOpenRpc,
   WsTerminalAttachRpc,
   WsTerminalObserveRpc,

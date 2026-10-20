@@ -50,6 +50,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { randomUUID } from "~/lib/utils";
 import { LiveVoiceTranscript } from "./LiveVoiceTranscript";
 import { unwrapLiveVoiceCommand } from "./LiveVoiceCommands";
+import { useKeyboardCommands } from "~/components/keyboard/keyboardCommands";
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
@@ -866,6 +867,27 @@ export function LiveVoiceControl(props: {
       void controller.start(target);
     }
   };
+
+  useKeyboardCommands({
+    "voice.call": () => {
+      const phase = controller.currentState.phase;
+      if (phase === "stopping") return true;
+      if (active || busy || ["preparing", "prepared", "connecting"].includes(phase)) {
+        void controller.end();
+      } else if (canStart && target) {
+        setPrepareFailure(null);
+        stateObserver.resetError();
+        void controller.start(target);
+      } else if (unavailableNotice) {
+        toastManager.add({ type: "info", title: unavailableNotice });
+      }
+      return true;
+    },
+    "voice.mute": () => {
+      if (active) toggleMicrophone();
+      return true;
+    },
+  });
 
   return (
     <div

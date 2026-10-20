@@ -1,5 +1,7 @@
 "use client";
 
+import { useKeyboardCommands } from "./keyboard/keyboardCommands";
+
 import { threadPullRequestLinkMode } from "@t3tools/client-runtime/thread-pull-request-compatibility";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 
@@ -490,6 +492,10 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   });
   const setOpen = (open: boolean) => dispatch({ _tag: "SetOpen", open });
   const toggleMode = (mode: SearchOverlayMode) => dispatch({ _tag: "ToggleMode", mode });
+  useKeyboardCommands({
+    "filePicker.toggle": () => toggleMode("files"),
+    "projectSearch.toggle": () => toggleMode("content"),
+  });
   const openAddProject = () => dispatch({ _tag: "OpenAddProject" });
   const openNewThreadIn = () => dispatch({ _tag: "OpenNewThreadIn" });
   const clearOpenIntent = () => dispatch({ _tag: "ClearOpenIntent" });

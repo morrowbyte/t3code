@@ -4,6 +4,7 @@ import {
   AuthOrchestrationReadScope,
   AuthOrchestrationOperateScope,
   AuthSettingsWriteScope,
+  AuthTerminalOperateScope,
 } from "./auth.ts";
 import { CLIENT_GUARDED_RPC_SCOPES, clientRpcRequiredScopes } from "./clientRpcPermissions.ts";
 import { WS_METHODS } from "./rpc.ts";
@@ -64,4 +65,17 @@ it("requires read permission for timing on the selected project destination", ()
   expect(
     clientRpcRequiredScopes(WS_METHODS.projectsFeatureTiming, { projectId: "project:timing" }),
   ).toEqual([AuthOrchestrationReadScope]);
+});
+
+it("guards the Yazi chooser, including file reads, with terminal operation authority", () => {
+  for (const method of [
+    WS_METHODS.yaziPickerOpen,
+    WS_METHODS.yaziPickerPoll,
+    WS_METHODS.yaziPickerWrite,
+    WS_METHODS.yaziPickerResize,
+    WS_METHODS.yaziPickerRead,
+    WS_METHODS.yaziPickerClose,
+  ]) {
+    expect(clientRpcRequiredScopes(method, {})).toEqual([AuthTerminalOperateScope]);
+  }
 });

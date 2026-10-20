@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { shouldTypeToFocusComposer } from "./composerFocusRedirect";
+import { leaveNavigationMode, requestNavigationMode } from "../keyboard/navigationMode";
 
 // composedPath() is only populated while the event is dispatching, so decide
 // inside a window capture listener the way the chat view does.
@@ -16,10 +17,19 @@ function typeOn(target: Element, key: string): boolean {
 }
 
 afterEach(() => {
+  leaveNavigationMode();
   document.body.replaceChildren();
 });
 
 describe("shouldTypeToFocusComposer", () => {
+  it("keeps printable keys in explicit navigation until compose is requested", () => {
+    const chat = document.createElement("div");
+    document.body.append(chat);
+    requestNavigationMode();
+    expect(typeOn(chat, "a")).toBe(false);
+    leaveNavigationMode();
+    expect(typeOn(chat, "a")).toBe(true);
+  });
   it("sends letters typed on the chat to the composer", () => {
     const chat = document.createElement("div");
     document.body.append(chat);

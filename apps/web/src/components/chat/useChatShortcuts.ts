@@ -9,6 +9,7 @@ import {
 } from "../../lib/terminalCloseShortcut";
 import { getTerminalFocusOwner, type TerminalFocusOwner } from "../../lib/terminalFocus";
 import { shouldTypeToFocusComposer } from "./composerFocusRedirect";
+import { dispatchKeyboardCommand, useKeyboardCommands } from "../keyboard/keyboardCommands";
 
 /** Runs a command. Returning false lets the key event through untouched. */
 export type ChatShortcutHandler = (context: {
@@ -38,6 +39,19 @@ export interface ChatShortcutsInput {
  * act on the current render without re-registering on every change.
  */
 export function useChatShortcuts(input: ChatShortcutsInput) {
+  useKeyboardCommands(
+    Object.fromEntries(
+      Object.entries(input.commands).map(([command, run]) => [
+        command,
+        () =>
+          input.enabled &&
+          run?.({
+            event: new KeyboardEvent("keydown"),
+            terminalFocusOwner: getTerminalFocusOwner(),
+          }),
+      ]),
+    ),
+  );
   const latest = useRef(input);
   useLayoutEffect(() => {
     latest.current = input;
@@ -76,7 +90,8 @@ export function useChatShortcuts(input: ChatShortcutsInput) {
       });
       if (!command) return;
       const run = current.commands[command] ?? current.fallback(command);
-      if (!run || run({ event, terminalFocusOwner }) === false) return;
+      if (run ? run({ event, terminalFocusOwner }) === false : !dispatchKeyboardCommand(command))
+        return;
       event.preventDefault();
       event.stopPropagation();
     };

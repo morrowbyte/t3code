@@ -1,5 +1,6 @@
 // Type-to-focus: printable keys and pastes that land on no editable target go to
 // the composer, so the user can start typing anywhere in the chat.
+import { isNavigationMode } from "../keyboard/navigationMode";
 
 export const TYPE_TO_FOCUS_EDITABLE_SELECTOR = [
   "input",
@@ -49,6 +50,7 @@ export function eventPathContainsSelector(event: Event, selector: string): boole
 const SECRET_REQUEST_SELECTOR = '[data-v2-item-type="secret_request"]';
 
 export function shouldRedirectInputToComposer(event: Event): boolean {
+  if (isNavigationMode()) return false;
   if (event.defaultPrevented) return false;
   // Near a pending secret request, input is meant for its private field: it
   // must never land in the composer draft, which is persisted and sent.

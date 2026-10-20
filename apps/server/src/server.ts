@@ -38,6 +38,7 @@ import * as CodexLiveSessionService from "./voice/CodexLiveSessionService.ts";
 import * as AgentScopeLive from "./process/agentScope.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as NodePtyAdapter from "./terminal/NodePtyAdapter.ts";
+import * as YaziPicker from "./attachments/YaziPicker.ts";
 import * as PullRequestHttp from "./pullRequest/http.ts";
 import * as VoiceHttp from "./voice/http.ts";
 import * as LinearHttp from "./integrations/linear/http.ts";
@@ -421,6 +422,8 @@ const layerCheckpointStore = CheckpointStore.layer.pipe(Layer.provide(layerVcsDr
 
 const layerPortScanner = PortScanner.layer.pipe(Layer.provide(ProcessRunner.layer));
 
+const layerYaziPicker = YaziPicker.layer.pipe(Layer.provide(layerPtyAdapter));
+
 const layerTerminal = TerminalManager.layer.pipe(
   Layer.provide(layerPtyAdapter),
   Layer.provide(layerPortScanner),
@@ -609,7 +612,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.provideMerge(layerSourceControlProviderRegistry),
   Layer.provideMerge(layerGit),
   Layer.provideMerge(layerVcs),
-  Layer.provideMerge(Layer.mergeAll(layerTerminal, layerPreview, layerDevice)),
+  Layer.provideMerge(Layer.mergeAll(layerTerminal, layerYaziPicker, layerPreview, layerDevice)),
   Layer.provideMerge(layerPersistence),
   Layer.provideMerge(
     Layer.mergeAll(Keybindings.layer, EnvironmentTheme.layer, UsageLimitSources.layer),

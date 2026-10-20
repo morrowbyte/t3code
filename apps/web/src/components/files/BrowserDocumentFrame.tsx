@@ -40,6 +40,7 @@ import { primaryServerKeybindingsAtom, serverEnvironment } from "~/state/server"
  * changes a thread.
  */
 const HTML_RENDER_SHORTCUT_COMMANDS: ReadonlySet<KeybindingCommand> = new Set([
+  "navigation.activate",
   "commandPalette.toggle",
   "filePicker.toggle",
   "projectSearch.toggle",
