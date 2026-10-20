@@ -159,6 +159,7 @@ interface PackagedWslHarnessContext {
 const withPackagedWslHarness = <A, E, R>(
   input: {
     readonly archiveHash: string;
+    readonly wslOnly?: boolean;
     readonly profileId?: string;
     readonly wsl: (
       context: PackagedWslHarnessContext,
@@ -217,7 +218,13 @@ const withPackagedWslHarness = <A, E, R>(
       Effect.provide(
         layerBackendConfiguration().pipe(
           Layer.provideMerge(layerServerExposure),
-          Layer.provideMerge(DesktopAppSettings.layerTest()),
+          Layer.provideMerge(
+            DesktopAppSettings.layerTest({
+              ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
+              wslBackendEnabled: true,
+              wslOnly: input.wslOnly ?? false,
+            }),
+          ),
           Layer.provideMerge(layerServerTree),
           Layer.provideMerge(
             DesktopWslEnvironment.layerTest({
@@ -543,21 +550,60 @@ describe("DesktopBackendConfiguration", () => {
     );
   });
 
-  it.effect(
-    "blocks Weasel WSL before staging the upstream runtime or forwarding Windows home",
-    () => {
+  it.effect.each([false, true])(
+    "isolates the Weasel WSL bootstrap from Windows and upstream homes (wslOnly=%s)",
+    (wslOnly) => {
       const previousT3Home = process.env.T3CODE_HOME;
-      process.env.T3CODE_HOME = "C:\\Users\\Tester\\.t3-weasel";
-      let prepareRuntimeCount = 0;
+      process.env.T3CODE_HOME = "C:\\Users\\Tester\\.t3-morrowbyte-windows";
       return withPackagedWslHarness(
         {
           archiveHash: "a".repeat(64),
           profileId: "weasel",
-          forbidFallback: "Weasel WSL must not write the upstream mounted runtime tree",
+          wslOnly,
+          forbidFallback: "must use packaged runtime",
+          wsl: () => ({
+            getUserHome: () => Option.some("/home/test user"),
+            prepareRuntime: () => ({
+              ok: true,
+              linuxAppRoot: "/home/test user/.t3-weasel/wsl-runtime/cache",
+            }),
+          }),
+        },
+        () =>
+          Effect.gen(function* () {
+            const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+            const resolve = () =>
+              wslOnly
+                ? configuration.resolvePrimary
+                : configuration.resolveWsl({ port: 5000, distro: "Ubuntu" });
+            const first = yield* resolve();
+            const restarted = yield* resolve();
+            assert.equal(first.executablePath, "wsl.exe");
+            assert.equal(first.bootstrap.t3Home, "/home/test user/.t3-weasel");
+            assert.equal(restarted.bootstrap.t3Home, first.bootstrap.t3Home);
+            assert.equal(first.env.T3CODE_HOME, undefined);
+            assert.equal(first.extendEnv, false);
+            assert.isTrue(Option.isNone(first.preflightFailure));
+            assert.include(first.args, "/home/test user/.t3-weasel/wsl-runtime/cache/t3");
+            if (wslOnly) assert.equal(yield* configuration.resolvePrimaryLabel, "WSL");
+          }),
+      ).pipe(Effect.ensuring(Effect.sync(() => restoreEnv("T3CODE_HOME", previousT3Home))));
+    },
+  );
+
+  it.effect(
+    "fails closed before runtime writes when the isolated Linux home cannot be resolved",
+    () => {
+      let preparations = 0;
+      return withPackagedWslHarness(
+        {
+          archiveHash: "a".repeat(64),
+          profileId: "weasel",
+          forbidFallback: "must not stage without home",
           wsl: () => ({
             prepareRuntime: () => {
-              prepareRuntimeCount += 1;
-              return { ok: false, reason: "must not prepare before Weasel WSL isolation exists" };
+              preparations += 1;
+              return { ok: false, reason: "unexpected" };
             },
           }),
         },
@@ -565,20 +611,10 @@ describe("DesktopBackendConfiguration", () => {
           Effect.gen(function* () {
             const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
             const config = yield* configuration.resolveWsl({ port: 5000, distro: "Ubuntu" });
-            const preflightFailure = Option.getOrUndefined(config.preflightFailure);
-
-            assert.equal(prepareRuntimeCount, 0);
-            assert.equal(config.env.T3CODE_HOME, undefined);
-            assert.isTrue(preflightFailure?.fatal);
-            assert.match(preflightFailure?.reason ?? "", /Weasel WSL is disabled/u);
-            assert.match(preflightFailure?.reason ?? "", /Linux T3 home/u);
+            assert.equal(preparations, 0);
+            assert.isTrue(Option.getOrThrow(config.preflightFailure).fatal);
+            assert.match(Option.getOrThrow(config.preflightFailure).reason, /isolated Linux home/u);
           }),
-      ).pipe(
-        Effect.ensuring(
-          Effect.sync(() => {
-            restoreEnv("T3CODE_HOME", previousT3Home);
-          }),
-        ),
       );
     },
   );
@@ -1281,47 +1317,6 @@ describe("DesktopBackendConfiguration", () => {
               Layer.provideMerge(DesktopWslServerTree.layerTest()),
               Layer.provideMerge(DesktopWslEnvironment.layerTest({ isAvailable: false })),
               Layer.provideMerge(layerEnvironment(baseDir, { platform: "win32" })),
-            ),
-          ),
-        );
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-  );
-
-  it.effect(
-    "resolvePrimary keeps the Weasel profile on Windows without probing WSL when wsl-only is persisted",
-    () =>
-      Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const baseDir = yield* fileSystem.makeTempDirectoryScoped({
-          prefix: "t3-desktop-backend-config-test-",
-        });
-
-        yield* Effect.gen(function* () {
-          const environment = yield* DesktopEnvironment.DesktopEnvironment;
-          const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
-          const config = yield* configuration.resolvePrimary;
-          const label = yield* configuration.resolvePrimaryLabel;
-
-          assert.equal(config.executablePath, process.execPath);
-          assert.equal(config.bootstrap.t3Home, environment.baseDir);
-          assert.equal(label, "Windows");
-          assert.isTrue(Option.isNone(config.preflightFailure));
-        }).pipe(
-          Effect.provide(
-            layerBackendConfiguration().pipe(
-              Layer.provideMerge(layerServerExposure),
-              Layer.provideMerge(
-                DesktopAppSettings.layerTest({
-                  ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
-                  wslBackendEnabled: true,
-                  wslOnly: true,
-                }),
-              ),
-              Layer.provideMerge(DesktopWslServerTree.layerTest()),
-              Layer.provideMerge(DesktopWslEnvironment.layerTest({ isAvailable: true })),
-              Layer.provideMerge(
-                layerEnvironment(baseDir, { platform: "win32", profileId: "weasel" }),
-              ),
             ),
           ),
         );

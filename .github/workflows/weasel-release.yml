@@ -1,5 +1,5 @@
 name: Weasel desktop nightly
-run-name: Weasel ${{ inputs.android_only && 'Android' || 'desktop' }} release ${{ inputs.source_sha }}
+run-name: Weasel ${{ inputs.windows_only && 'Windows' || inputs.android_only && 'Android' || 'desktop' }} release ${{ inputs.source_sha }}
 
 on:
   workflow_dispatch:
@@ -14,6 +14,10 @@ on:
         type: string
       desktop_only:
         description: Build and publish only Windows, Linux and NixOS desktop assets
+        type: boolean
+        default: false
+      windows_only:
+        description: Build only Windows; reuse the unchanged published .61 WSL runtime and preserve other platform feeds
         type: boolean
         default: false
       android_only:
@@ -80,11 +84,19 @@ jobs:
         env:
           DESKTOP_ONLY: ${{ inputs.desktop_only }}
           ANDROID_ONLY: ${{ inputs.android_only }}
+          WINDOWS_ONLY: ${{ inputs.windows_only }}
           RECOVERY_RUN_ID: ${{ inputs.recover_desktop_run_id }}
           WINDOWS_RECOVERY_RUN_ID: ${{ inputs.recover_windows_run_id }}
           ANDROID_SOURCE_SHA: ${{ inputs.android_source_sha }}
         run: |
           set -euo pipefail
+          if [[ "${WINDOWS_ONLY:-false}" == true ]]; then
+            test "$ANDROID_ONLY" != true
+            test "$DESKTOP_ONLY" != true
+            test -z "$RECOVERY_RUN_ID"
+            test -z "$WINDOWS_RECOVERY_RUN_ID"
+            test -z "$ANDROID_SOURCE_SHA"
+          fi
           if [[ "$ANDROID_ONLY" == true ]]; then
             test "$DESKTOP_ONLY" != true
             test -z "$RECOVERY_RUN_ID"
@@ -724,7 +736,7 @@ jobs:
           retention-days: 1
 
   build_linux:
-    if: inputs.android_only != true && inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == ''
+    if: inputs.windows_only != true && inputs.android_only != true && inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == ''
     needs: [preflight, build_bundle]
     runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 80
@@ -837,7 +849,7 @@ jobs:
           retention-days: 1
 
   build_nixos:
-    if: inputs.android_only != true && inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == ''
+    if: inputs.windows_only != true && inputs.android_only != true && inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == ''
     needs: [preflight, build_linux]
     runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 40
@@ -868,7 +880,7 @@ jobs:
   build_windows:
     if: >-
       ${{ !cancelled() && !inputs.android_only && needs.preflight.result == 'success' && inputs.recover_desktop_run_id == '' &&
-          ((inputs.recover_windows_run_id == '' && needs.build_bundle.result == 'success' && needs.build_linux.result == 'success') ||
+          ((inputs.recover_windows_run_id == '' && needs.build_bundle.result == 'success' && ((inputs.windows_only && needs.build_linux.result == 'skipped') || (!inputs.windows_only && needs.build_linux.result == 'success'))) ||
            (inputs.recover_windows_run_id == '39182028263' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'skipped')) }}
     needs: [preflight, build_bundle, build_linux]
     runs-on: ${{ vars.WEASEL_WINDOWS_RUNNER || 'blacksmith-8vcpu-windows-2025' }}
@@ -940,10 +952,18 @@ jobs:
         run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
 
       - name: Download same-build Linux CLI runtime for WSL
+        if: inputs.windows_only != true
         uses: actions/download-artifact@v4
         with:
           name: weasel-release-cli-linux
           path: wsl-runtime
+
+      - name: Reuse the published unchanged WSL runtime for Windows-only packaging
+        if: inputs.windows_only
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/weasel/windows-only-release.cjs runtime wsl-runtime
 
       - name: Build Windows CLI executable
         env:
@@ -999,7 +1019,7 @@ jobs:
 
   build_android_apk:
     name: Build Morrowbyte Android APK
-    if: ${{ !inputs.desktop_only && inputs.recover_windows_run_id == '' }}
+    if: ${{ !inputs.windows_only && !inputs.desktop_only && inputs.recover_windows_run_id == '' }}
     needs: [preflight]
     runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 60
@@ -1226,7 +1246,7 @@ jobs:
 
   publish:
     if: >-
-      ${{ !cancelled() && inputs.publish && !inputs.android_only && needs.preflight.result == 'success' &&
+      ${{ !cancelled() && inputs.publish && !inputs.windows_only && !inputs.android_only && needs.preflight.result == 'success' &&
           ((inputs.desktop_only && needs.build_android_apk.result == 'skipped') || (!inputs.desktop_only && needs.build_android_apk.result == 'success') || (inputs.recover_windows_run_id == '39182028263' && !inputs.desktop_only && needs.build_android_apk.result == 'skipped')) &&
           ((inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && needs.build_bundle.result == 'success' && needs.build_linux.result == 'success' && needs.build_nixos.result == 'success' && needs.build_windows.result == 'success') ||
            (inputs.recover_desktop_run_id == '39093205395' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'skipped' && needs.build_nixos.result == 'skipped' && needs.build_windows.result == 'skipped') ||
@@ -1626,3 +1646,40 @@ jobs:
           gh release upload "$RELEASE_TAG" release-assets/RELEASE-RECEIPT.txt --clobber
           gh release edit "$RELEASE_TAG" --draft=false --latest=false --prerelease=false
           bash scripts/weasel/verify-published-release.sh --android-only "$RELEASE_TAG" "$SOURCE_SHA" "$VERSION" release-assets
+
+  publish_windows:
+    if: >-
+      ${{ !cancelled() && inputs.publish && inputs.windows_only &&
+          needs.preflight.result == 'success' && needs.build_bundle.result == 'success' &&
+          needs.build_windows.result == 'success' && needs.build_linux.result == 'skipped' &&
+          needs.build_nixos.result == 'skipped' && needs.build_android_apk.result == 'skipped' }}
+    needs: [preflight, build_bundle, build_linux, build_nixos, build_windows, build_android_apk]
+    runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout promoted source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.source_sha }}
+          fetch-depth: 0
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: false
+      - name: Install release metadata tools
+        run: vp install --frozen-lockfile --filter=@t3tools/shared...
+      - name: Download qualified Windows bytes
+        uses: actions/download-artifact@v4
+        with:
+          name: weasel-release-windows
+          path: release-assets
+      - name: Publish Windows-only payload with preserved Linux feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+        run: node scripts/weasel/windows-only-release.cjs publish release-assets
