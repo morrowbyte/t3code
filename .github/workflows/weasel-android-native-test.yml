@@ -245,7 +245,7 @@ jobs:
                   defined.update(strings[types[struct.unpack_from('<I', data, classes_offset + index * 32)[0]]] for index in range(classes_count))
               assert {'Lorg/jni_zero/JniZero;', 'Lorg/jni_zero/CommonApis;', 'Lcom/morrowbyte/t3code/MainActivity;'} <= defined
               bundle_sha = hashlib.sha256(archive.read(bundle)).hexdigest()
-          generated_bundle = Path('apps/mobile/android/app/build/generated/assets/createBundleReleaseJsAndAssets/index.android.bundle')
+          generated_bundle = Path('apps/mobile/android/app/build/generated/assets/react/release/index.android.bundle')
           assert generated_bundle.is_file() and digest(generated_bundle) == bundle_sha, 'APK must embed the bundle generated from the pinned updater source.'
           mapping = Path('apps/mobile/android/app/build/outputs/mapping/release/mapping.txt')
           assert mapping.is_file() and mapping.stat().st_size > 0, 'Minified release mapping is missing.'

@@ -1174,6 +1174,8 @@ jobs:
                       assert alignment >= 16384 and file_offset % 16384 == address % 16384, name
                   assert loads > 0, name
               bundle_sha = hashlib.sha256(archive.read(bundle)).hexdigest()
+          generated_bundle = Path('apps/mobile/android/app/build/generated/assets/react/release/index.android.bundle')
+          assert generated_bundle.is_file() and digest(generated_bundle) == bundle_sha, 'APK must embed the bundle generated from the pinned source.'
           output = Path('release-android')
           output.mkdir()
           name = f'Morrowbyte-{version}-android-arm64.apk'
