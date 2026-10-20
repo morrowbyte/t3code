@@ -81,8 +81,8 @@ export function BrowserAttachmentExplorer({
     selection.current = selected;
   }, [selected]);
   const moveTo = (index: number) => {
-    activeIndex.current = index;
-    setActive(index);
+    activeIndex.current = Math.max(0, index);
+    setActive(activeIndex.current);
   };
   const selectFiles = (files: Map<string, BrowserFileHandle>) => {
     selection.current = files;
@@ -133,7 +133,10 @@ export function BrowserAttachmentExplorer({
       (hidden || !entry.name.startsWith(".")) &&
       entry.name.toLowerCase().includes(filter.toLowerCase()),
   );
-  const index = Math.min(active, Math.max(0, visible.length - 1));
+  const index = Math.max(0, Math.min(active, visible.length - 1));
+  useLayoutEffect(() => {
+    activeIndex.current = index;
+  });
   const current = visible[index];
   const path = (name: string) => [...folders.map((folder) => folder.name), name].join("/");
   const enter = (folder: BrowserDirectoryHandle) => {

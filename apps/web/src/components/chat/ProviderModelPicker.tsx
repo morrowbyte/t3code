@@ -50,6 +50,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   triggerLabel?: string;
   triggerAriaLabel?: string;
   onOpenChange?: (open: boolean) => void;
+  restoreKeyboardFocus?: () => HTMLElement | false | undefined;
   onOpenProviderSetup?: (instanceId: ProviderInstanceId) => void;
   getModelDisabledReason?: (instanceId: ProviderInstanceId, model: string) => string | null;
   onInstanceModelChange: (instanceId: ProviderInstanceId, model: string) => void;
@@ -275,6 +276,14 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       </PopoverTrigger>
       <PopoverPopup
         {...(props.isComposerOwned ? composerFloatingLayerProps : {})}
+        finalFocus={() => {
+          const target = props.restoreKeyboardFocus?.();
+          return target !== undefined
+            ? target
+            : props.isComposerOwned
+              ? (composerFloatingLayerProps.finalFocus?.() ?? true)
+              : true;
+        }}
         align="start"
         className="before:hidden"
         padding="none"

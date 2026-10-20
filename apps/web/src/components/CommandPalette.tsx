@@ -1,6 +1,7 @@
 "use client";
 
 import { dispatchKeyboardCommand, useKeyboardCommands } from "./keyboard/keyboardCommands";
+import { captureKeyboardFocus, restoreKeyboardFocus } from "./keyboard/keyboardFocus";
 
 import { threadPullRequestLinkMode } from "@t3tools/client-runtime/thread-pull-request-compatibility";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
@@ -491,14 +492,30 @@ export function CommandPalette({ children }: { children: ReactNode }) {
     mode: "command",
     openIntent: null,
   });
-  const setOpen = (open: boolean) => dispatch({ _tag: "SetOpen", open });
-  const toggleMode = (mode: SearchOverlayMode) => dispatch({ _tag: "ToggleMode", mode });
+  const origin = useRef<ReturnType<typeof captureKeyboardFocus> | null>(null);
+  const rememberOrigin = () => {
+    if (!state.open) origin.current = captureKeyboardFocus();
+  };
+  const setOpen = (open: boolean) => {
+    if (open) rememberOrigin();
+    dispatch({ _tag: "SetOpen", open });
+  };
+  const toggleMode = (mode: SearchOverlayMode) => {
+    rememberOrigin();
+    dispatch({ _tag: "ToggleMode", mode });
+  };
   useKeyboardCommands({
     "filePicker.toggle": () => toggleMode("files"),
     "projectSearch.toggle": () => toggleMode("content"),
   });
-  const openAddProject = () => dispatch({ _tag: "OpenAddProject" });
-  const openNewThreadIn = () => dispatch({ _tag: "OpenNewThreadIn" });
+  const openAddProject = () => {
+    rememberOrigin();
+    dispatch({ _tag: "OpenAddProject" });
+  };
+  const openNewThreadIn = () => {
+    rememberOrigin();
+    dispatch({ _tag: "OpenNewThreadIn" });
+  };
   const clearOpenIntent = () => dispatch({ _tag: "ClearOpenIntent" });
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const { theme, themeHalves, resolvedTheme, appearanceMode, setAppearanceMode } = useTheme();
@@ -561,6 +578,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
         event.preventDefault();
         event.stopPropagation();
         if (event.repeat) return;
+        rememberOrigin();
         dispatch({ _tag: "OpenChangeTheme" });
         return;
       }
@@ -596,6 +614,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
     keybindings,
     navigate,
     previewOpen,
+    rememberOrigin,
     resolvedTheme,
     setAppearanceMode,
     setOpen,
@@ -613,6 +632,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
         } else if (detail.open === "add-project") {
           openAddProject();
         } else if (detail.query !== undefined) {
+          rememberOrigin();
           dispatch({
             _tag: "OpenSearch",
             query: detail.query,
@@ -622,7 +642,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
           setOpen(true);
         }
       }),
-    [openAddProject, openNewThreadIn, setOpen],
+    [openAddProject, openNewThreadIn, rememberOrigin, setOpen],
   );
 
   return (
@@ -647,6 +667,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
           setOpen={setOpen}
           openOverlayMode={toggleMode}
           clearOpenIntent={clearOpenIntent}
+          origin={origin}
         />
       </CommandDialog>
     </ComposerHandleContext>
@@ -659,6 +680,7 @@ function CommandPaletteDialog(props: {
   readonly setOpen: (open: boolean) => void;
   readonly openOverlayMode: (mode: SearchOverlayMode) => void;
   readonly clearOpenIntent: () => void;
+  readonly origin: { readonly current: ReturnType<typeof captureKeyboardFocus> | null };
 }) {
   const composerHandleRef = useComposerHandleContext();
 
@@ -676,6 +698,13 @@ function CommandPaletteDialog(props: {
       data-palette-mode={props.mode}
       data-testid="command-palette"
       finalFocus={() => {
+        const snapshot = props.origin.current;
+        if (snapshot?.element?.isConnected) {
+          requestAnimationFrame(() => {
+            if (document.activeElement === snapshot.element) restoreKeyboardFocus(snapshot);
+          });
+          return snapshot.element;
+        }
         const composer = composerHandleRef?.current;
         if (!composer) return true;
         composer.focusAtEnd();
@@ -695,6 +724,7 @@ function CommandPaletteDialog(props: {
           setOpen={props.setOpen}
           openOverlayMode={props.openOverlayMode}
           clearOpenIntent={props.clearOpenIntent}
+          origin={props.origin}
         />
       )}
     </CommandDialogPopup>
@@ -706,6 +736,7 @@ function OpenCommandPaletteDialog(props: {
   readonly setOpen: (open: boolean) => void;
   readonly openOverlayMode: (mode: SearchOverlayMode) => void;
   readonly clearOpenIntent: () => void;
+  readonly origin: { readonly current: ReturnType<typeof captureKeyboardFocus> | null };
 }) {
   const navigate = useNavigate();
   const pathname = useLocation({ select: (location) => location.pathname });
@@ -1629,7 +1660,7 @@ function OpenCommandPaletteDialog(props: {
       icon: <ChevronRightIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-        if (!dispatchKeyboardCommand(command))
+        if (!dispatchKeyboardCommand(command, props.origin.current?.element))
           toastManager.add({ type: "info", title: `${title} is unavailable in this context` });
       },
     });

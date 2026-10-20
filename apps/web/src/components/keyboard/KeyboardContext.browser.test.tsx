@@ -27,6 +27,69 @@ const press = (keys: string) =>
     await userEvent.keyboard(keys);
   });
 
+it("cycles out of a terminal nested inside the right-panel region in either direction", async () => {
+  await act(() =>
+    root.render(
+      <>
+        <main>
+          <nav data-app-sidebar>
+            <button>Threads</button>
+          </nav>
+          <div data-right-panel-surface-content>
+            <aside data-keyboard-region="terminal">
+              <button>Terminal session</button>
+            </aside>
+          </div>
+          <div data-chat-composer-main-surface>
+            <textarea aria-label="Draft" />
+          </div>
+        </main>
+        <LeaderNavigation groups={[]} isClaimed={() => false} showSidebar={() => {}} />
+      </>,
+    ),
+  );
+  const terminal = host.querySelector<HTMLButtonElement>("aside button")!;
+  await act(() => terminal.focus());
+  await press("{F6}");
+  expect.soft(document.activeElement).toBe(host.querySelector("textarea"));
+  await act(() => terminal.focus());
+  await press("{Shift>}{F6}{/Shift}");
+  expect(document.activeElement).toBe(host.querySelector("nav button"));
+});
+
+it.each([" ", "{Enter}"])(
+  "attaches the highlighted file after hiding entries with %s",
+  async (key) => {
+    const files = [".hidden.txt", "a.txt", "b.txt"].map((name) => new File([name], name));
+    const directory = browserAttachmentDirectory(files)!;
+    const received: File[] = [];
+    await act(() =>
+      root.render(
+        <BrowserAttachmentExplorer
+          root={directory}
+          onFiles={async (selected) => {
+            received.push(...selected);
+            return true;
+          }}
+          onClose={() => {}}
+        />,
+      ),
+    );
+    await vi.waitFor(() =>
+      expect(document.activeElement?.getAttribute("aria-label")).toBe("Local files"),
+    );
+    await press(".{ArrowDown}{ArrowDown}.");
+    expect(host.querySelector('[aria-current="true"]')?.textContent).toContain("b.txt");
+    await press(key);
+    if (key === " ") {
+      expect(host.textContent).toContain("1 selected");
+      await press("{Enter}");
+    }
+    await vi.waitFor(() => expect(received.map((file) => file.name)).toEqual(["b.txt"]));
+    expect(await received[0]!.text()).toBe("b.txt");
+  },
+);
+
 it("shows the focused object's help and executes only its selected action", async () => {
   const first = vi.fn();
   const second = vi.fn();

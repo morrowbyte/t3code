@@ -1817,7 +1817,7 @@ export interface ChatComposerProps {
   onOpenProviderSetup: (instanceId: ProviderInstanceId) => void;
   getModelDisabledReason: (instanceId: ProviderInstanceId, model: string) => string | null;
   toggleInteractionMode: () => void;
-  handleRuntimeModeChange: (mode: RuntimeMode) => void;
+  handleRuntimeModeChange: (mode: RuntimeMode, options?: { focusComposer?: boolean }) => void;
   handleInteractionModeChange: (mode: ProviderInteractionMode) => void;
 
   focusComposer: () => void;
@@ -2685,6 +2685,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const configurationCurrent = configuration.targetKey === configurationTargetKey;
   const isMobileConfigurationOpen = configurationCurrent && configuration.open;
   const isComposerModelPickerOpen = configurationCurrent && configuration.modelPickerOpen;
+  const modelPickerKeyboardFocusRef = useRef<(() => HTMLElement | false) | null>(null);
   const setIsMobileConfigurationOpen = (open: boolean) =>
     setConfiguration((previous) => ({
       targetKey: configurationTargetKey,
@@ -5518,11 +5519,21 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               ),
             }
           : {})}
-        onOpenChange={setIsComposerModelPickerOpen}
+        onOpenChange={(open) => {
+          if (open) modelPickerKeyboardFocusRef.current = null;
+          setIsComposerModelPickerOpen(open);
+        }}
+        restoreKeyboardFocus={() => {
+          const restore = modelPickerKeyboardFocusRef.current;
+          modelPickerKeyboardFocusRef.current = null;
+          return restore?.();
+        }}
         getModelDisabledReason={getModelDisabledReason}
         onInstanceModelChange={(instanceId, model) => {
           setMultipleModelSelections(null);
-          onProviderModelSelect(instanceId, model, { focusComposer: !isNavigationMode() });
+          onProviderModelSelect(instanceId, model, {
+            focusComposer: modelPickerKeyboardFocusRef.current === null,
+          });
         }}
         onOpenProviderSetup={onOpenProviderSetup}
       />
@@ -6325,6 +6336,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   }, []);
 
   const openModelPicker = () => {
+    const previousFocus =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const targetKey = composerDraftTargetKey;
+    const fromNavigation = isNavigationMode();
+    modelPickerKeyboardFocusRef.current = () => {
+      if (composerDraftTargetKeyRef.current !== targetKey) return false;
+      if (fromNavigation) requestNavigationMode();
+      return previousFocus?.isConnected ? previousFocus : false;
+    };
     if (composerControlsHidden) {
       if (composerBlurFrameRef.current !== null) {
         window.cancelAnimationFrame(composerBlurFrameRef.current);
@@ -6341,7 +6361,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     kind: "reasoning" | "serviceTier" | "access";
     targetKey: string;
     model: string;
-    restoreFocus: () => void;
+    restoreFocus: () => HTMLElement | false;
   } | null>(null);
   const [attachmentPicker, setAttachmentPicker] = useState<{
     targetKey: string;
@@ -6372,9 +6392,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       targetKey: composerDraftTargetKey,
       model: `${selectedInstanceId}:${selectedModel}`,
       restoreFocus: () => {
-        if (composerDraftTargetKeyRef.current !== composerDraftTargetKey) return;
+        if (composerDraftTargetKeyRef.current !== composerDraftTargetKey) return false;
         if (fromNavigation) requestNavigationMode();
-        else if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+        return previousFocus?.isConnected ? previousFocus : false;
       },
     });
     return true;
@@ -6410,7 +6430,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           label: option.label,
           description: option.description,
           selected: option.mode === compatibleRuntimeMode,
-          onSelect: () => handleRuntimeModeChange(option.mode),
+          onSelect: () => handleRuntimeModeChange(option.mode, { focusComposer: false }),
         }))
       : keyboardPicker
         ? getKeyboardTraitOptions(providerTraitsPickerInput, keyboardPicker.kind).map((option) => ({

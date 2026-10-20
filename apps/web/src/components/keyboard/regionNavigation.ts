@@ -13,7 +13,7 @@ function visible(element: HTMLElement): boolean {
   return (
     !element.closest("[hidden],[inert],[aria-hidden=true]") &&
     element.getClientRects().length > 0 &&
-    getComputedStyle(element).visibility !== "hidden"
+    element.checkVisibility({ visibilityProperty: true })
   );
 }
 
@@ -31,7 +31,12 @@ export function focusWorkbenchRegion(selector: string): void {
 }
 
 export function cycleWorkbenchRegion(direction: -1 | 1): boolean {
-  const regions = [...document.querySelectorAll<HTMLElement>(REGION_SELECTOR)].filter(visible);
+  const visibleRegions = [...document.querySelectorAll<HTMLElement>(REGION_SELECTOR)].filter(
+    visible,
+  );
+  const regions = visibleRegions.filter(
+    (region) => !visibleRegions.some((other) => other !== region && region.contains(other)),
+  );
   if (!regions.length) return false;
   const current = regions.findIndex((region) => region.contains(document.activeElement));
   const next =

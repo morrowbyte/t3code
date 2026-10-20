@@ -21,6 +21,8 @@ import { Tooltip, TooltipPopup, TooltipScrollDismissArea, TooltipTrigger } from 
 import { MessagesTimeline } from "./MessagesTimeline";
 import { readTimelinePosition } from "./timelineScrollAnchoring";
 import { useComposerFocusState } from "./useComposerFocusState";
+import { LeaderNavigation } from "../keyboard/LeaderNavigation";
+import { leaveNavigationMode } from "../keyboard/navigationMode";
 
 const pullRequestQuery = vi.hoisted(() => ({ error: "Pull request not found" }));
 vi.mock(import("~/state/query"), async (original) => ({
@@ -152,6 +154,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  leaveNavigationMode();
   for (const root of roots.splice(0)) await act(async () => root.unmount());
   document.body.replaceChildren();
   vi.unstubAllGlobals();
@@ -252,20 +255,35 @@ it("quotes the selected excerpt from the focused response through the existing c
   expect(cite.mock.calls[0]![1].source).toBe(source);
 });
 
-it("selects response text and refines its quote entirely from the keyboard", async () => {
+it("enters the actual nested timeline message with Space m, selects text and refines its quote", async () => {
   const cite = vi.fn<NonNullable<TimelineProps["onCiteAssistantText"]>>(() => true);
-  await renderTimeline([message("Second response", { role: "assistant" }, "keyboard-selection")], {
-    onCiteAssistantText: cite,
-  });
+  await renderElement(
+    <>
+      <LeaderNavigation groups={[]} isClaimed={() => false} showSidebar={() => {}} />
+      <MessagesTimeline
+        {...baseProps()}
+        timelineEntries={[message("Second response", { role: "assistant" }, "keyboard-selection")]}
+        onCiteAssistantText={cite}
+      />
+    </>,
+  );
   const object = await vi.waitFor(() => {
     const element = container.querySelector<HTMLElement>('[data-keyboard-object="Message"]');
     if (!element) throw new Error("Response is not rendered");
     return element;
   });
-  await act(async () => {
-    object.focus();
-    await userEvent.keyboard("s");
-  });
+  await act(async () => userEvent.keyboard(" "));
+  await vi.waitFor(() =>
+    expect(document.querySelector('[aria-label="Keyboard navigation"]')).not.toBeNull(),
+  );
+  await act(async () => userEvent.keyboard("m"));
+  await vi.waitFor(() => expect(document.activeElement).toBe(object));
+  const outer = object.closest(
+    '[data-message-id="keyboard-selection"][data-message-role="assistant"]',
+  );
+  expect(outer).not.toBe(object);
+  expect(outer?.getAttribute("data-leader-message-focus")).toBe("true");
+  await act(async () => userEvent.keyboard("s"));
   expect(document.getSelection()?.toString()).toBe("Second response");
   await act(async () => {
     await userEvent.keyboard("{Shift>}{ArrowLeft}{/Shift}");

@@ -444,7 +444,8 @@ export function LeaderNavigation({
     };
   }, [messages]);
   useKeyboardCommands({
-    "navigation.contextActions": () => {
+    "navigation.contextActions": (origin) => {
+      if (origin !== undefined) returnFocus.current = origin;
       setControlsName(keyboardContextName(returnFocus.current));
       setControls(contextControls(returnFocus.current));
     },

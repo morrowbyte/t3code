@@ -107,9 +107,10 @@ export function DiffCommentAnnotation({
             event.preventDefault();
             onCancel();
           }
-          if (isCommentSubmitShortcut(event, trimmedText, pending)) {
+          const currentText = event.currentTarget.value.trim();
+          if (isCommentSubmitShortcut(event, currentText, pending)) {
             event.preventDefault();
-            onComment(trimmedText);
+            onComment(currentText);
           }
         }}
       />

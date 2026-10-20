@@ -67,8 +67,8 @@ it("selects diff lines with the keyboard and creates a real comment draft", asyn
       textarea,
       "Keyboard review",
     );
-    await act(async () => textarea.dispatchEvent(new Event("input", { bubbles: true })));
-    await act(async () =>
+    await act(async () => {
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
       textarea.dispatchEvent(
         new KeyboardEvent("keydown", {
           key: "Enter",
@@ -76,8 +76,8 @@ it("selects diff lines with the keyboard and creates a real comment draft", asyn
           bubbles: true,
           cancelable: true,
         }),
-      ),
-    );
+      );
+    });
     expect(
       useComposerDraftStore.getState().getComposerDraft(target)?.reviewComments.at(-1),
     ).toMatchObject({ text: "Keyboard review", filePath: "a.ts" });

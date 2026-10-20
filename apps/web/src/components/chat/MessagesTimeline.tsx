@@ -2477,6 +2477,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
       data-keyboard-object="Message"
       tabIndex={-1}
       aria-label={`Your message: ${plainText.slice(0, 120)}`}
+      data-keyboard-help="C: copy this message · E: edit where available · O: open attachment · J/K: messages · H/L: actions"
       onKeyDown={(event) =>
         handleObjectActionKey(event, { c: "copy", e: "edit", o: "attachment", d: "details" })
       }
@@ -2745,6 +2746,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
         data-keyboard-object="Message"
         tabIndex={-1}
         aria-label={`Assistant message: ${messageText.slice(0, 120)}`}
+        data-keyboard-help={`C: copy this response${ctx.onCiteAssistantText && ctx.threadRef && !row.message.streaming ? " · S: select response text · Shift arrows: refine selection · Q: quote selected text" : ""} · J/K: messages · H/L: actions`}
         onKeyDown={(event) =>
           handleObjectActionKey(event, {
             c: "copy",

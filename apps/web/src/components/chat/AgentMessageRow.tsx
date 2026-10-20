@@ -107,6 +107,7 @@ export function AgentMessageRow({
       data-keyboard-object="Message"
       tabIndex={-1}
       aria-label={`Agent message: ${summary}`}
+      data-keyboard-help="C: copy this message · D: toggle details · J/K: messages · H/L: actions"
       onKeyDown={(event) => handleObjectActionKey(event, { c: "copy", d: "details" })}
       className={`min-w-0 rounded-lg border px-3.5 py-3 sm:px-4 ${outgoing ? "border-dashed border-border bg-background" : "border-border/70 bg-muted/20"}`}
       data-agent-message={messageId}

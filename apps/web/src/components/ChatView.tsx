@@ -3584,13 +3584,13 @@ export default function ChatView(props: ChatViewProps) {
     settings,
   });
 
-  const handleRuntimeModeChange = (mode: RuntimeMode) => {
+  const handleRuntimeModeChange = (mode: RuntimeMode, options?: { focusComposer?: boolean }) => {
     if (mode === runtimeMode) return;
     setComposerDraftRuntimeMode(composerDraftTarget, mode);
     if (isLocalDraftThread) {
       setDraftThreadContext(composerDraftTarget, { runtimeMode: mode });
     }
-    scheduleComposerFocus();
+    if (options?.focusComposer !== false) scheduleComposerFocus();
   };
   const handleRuntimeModeChangeStable = useStableCallback(handleRuntimeModeChange);
 

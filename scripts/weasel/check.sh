@@ -364,7 +364,6 @@ focused_tests+=("$mobile_composer_test")
 focused_tests+=(apps/server/src/attachments/YaziPicker.test.ts apps/web/src/components/chat/TraitsPicker.test.ts)
 focused_tests+=(
   apps/web/src/components/diffs/diffKeyboardSelection.test.ts
-  apps/web/src/terminal/ghostty/core.test.ts
 )
 focused_tests+=(
   apps/mobile/src/features/keyboard/commandPaletteItems.test.ts
@@ -372,6 +371,7 @@ focused_tests+=(
   apps/mobile/src/features/keyboard/hardwareKeyboardCommands.test.ts
 )
 renderer_tests=(
+  apps/web/src/components/CommandPalette.focus.browser.test.tsx
   apps/web/src/components/keyboard/KeyboardContext.browser.test.tsx
   apps/web/src/components/chat/MessagesTimeline.browser.test.tsx
   apps/web/src/components/chat/QueuedRunsControl.browser.test.tsx
@@ -389,6 +389,7 @@ renderer_tests=(
   apps/web/src/components/keyboard/KeyboardHints.browser.test.tsx
   apps/web/src/components/keyboard/yaziAttachment.browser.test.ts
   apps/web/src/components/chat/ComposerChoiceDialog.browser.test.tsx
+  apps/web/src/components/chat/ProviderModelPicker.focus.browser.test.tsx
   apps/web/src/components/chat/composerFocusRedirect.browser.test.ts
   apps/web/src/components/ComposerPromptEditorTiptap.navigation.browser.test.tsx
   apps/web/src/components/ServerUpdateAction.browser.test.tsx
@@ -403,5 +404,6 @@ for renderer_test in "${renderer_tests[@]}"; do
 done
 vp_cmd lint --report-unused-disable-directives "$mobile_composer_test"
 vp_cmd test run --config vite.config.ts "${focused_tests[@]}"
+(cd apps/web && vp_cmd test run --project unit src/terminal/ghostty/core.test.ts)
 (cd apps/web && vp_cmd test run --project browser "${renderer_tests[@]#apps/web/}")
 (cd scripts && vp_cmd test run --config ../vite.config.ts build-desktop-artifact.test.ts lib/morrowbyte-branding.test.ts)
