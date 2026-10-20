@@ -139,7 +139,14 @@ it("answers a multi-select question using keyboard focus, Space and Ctrl+Enter",
   const multiPrompt = {
     ...prompt,
     questions: [
-      { ...prompt.questions[0]!, multiSelect: true, options: [{ label: "One" }, { label: "Two" }] },
+      {
+        ...prompt.questions[0]!,
+        multiSelect: true,
+        options: [
+          { label: "One", description: "First option" },
+          { label: "Two", description: "Second option" },
+        ],
+      },
     ],
   };
   function MultiQuestion() {
