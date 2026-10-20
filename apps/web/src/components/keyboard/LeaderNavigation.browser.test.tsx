@@ -10,6 +10,7 @@ import { shouldTypeToFocusComposer } from "../chat/composerFocusRedirect";
 import { dismissContextMenu, showContextMenuFallback } from "../../contextMenuFallback";
 import { isNavigationMode, leaveNavigationMode, requestNavigationMode } from "./navigationMode";
 import { useKeyboardCommands } from "./keyboardCommands";
+import { WorkbenchCommandPicker } from "./WorkbenchCommandPicker";
 
 let root: Root;
 let host: HTMLDivElement;
@@ -97,6 +98,56 @@ async function open() {
 }
 
 describe("LeaderNavigation", () => {
+  it("keeps a keyboard-selected context action visible in a long picker", async () => {
+    await act(() =>
+      root.render(
+        <WorkbenchCommandPicker
+          title="Context controls"
+          onClose={() => {}}
+          commands={Array.from({ length: 18 }, (_, index) => ({
+            id: String(index),
+            label: `Action ${index + 1}`,
+            run: () => {},
+          }))}
+        />,
+      ),
+    );
+    const list = document.querySelector<HTMLElement>('[role="listbox"]')!;
+    list.style.height = "80px";
+    list.style.overflow = "auto";
+    for (const option of list.querySelectorAll<HTMLElement>('[role="option"]')) {
+      option.style.display = "block";
+      option.style.height = "30px";
+    }
+    document.querySelector<HTMLInputElement>('[role="combobox"]')!.focus();
+    for (let index = 0; index < 12; index++) await press("ArrowDown");
+    const selected = list.querySelector<HTMLElement>('[aria-selected="true"]')!;
+    expect(selected.textContent).toContain("Action 13");
+    expect(selected.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+      list.getBoundingClientRect().top,
+    );
+    expect(selected.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      list.getBoundingClientRect().bottom,
+    );
+    expect(list.scrollTop).toBeGreaterThan(0);
+  });
+  it("cycles regions with F6 while a non-modal update notification is visible", async () => {
+    const notification = document.createElement("div");
+    notification.setAttribute("role", "dialog");
+    notification.setAttribute("aria-modal", "false");
+    notification.innerHTML = "Update available<button>Update now</button>";
+    fixture.append(notification);
+    const composer = fixture.querySelector("textarea")!;
+    composer.focus();
+    expect((await press("F6")).defaultPrevented).toBe(true);
+    expect(fixture.querySelector("nav")!.contains(document.activeElement)).toBe(true);
+    expect((await press("F6", { shiftKey: true })).defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(composer);
+    notification.removeAttribute("aria-modal");
+    notification.setAttribute("data-slot", "dialog-popup");
+    expect((await press("F6")).defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(composer);
+  });
   it("keeps navigation active after leaving the composer until i explicitly returns", async () => {
     const composer = fixture.querySelector("textarea")!;
     composer.focus();

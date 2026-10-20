@@ -41,12 +41,19 @@ export function KeyboardHints() {
   };
   useKeyboardCommands({
     "navigation.hints": () => {
-      const dialogs = document.querySelectorAll<HTMLElement>(
-        '[role="dialog"][aria-modal="true"],[role="alertdialog"][aria-modal="true"]',
+      const dialog = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '[role="dialog"]:not([aria-modal="false"]),[role="alertdialog"]:not([aria-modal="false"])',
+        ),
+      ).findLast(
+        (element) =>
+          !element.closest('[inert],[aria-hidden="true"]') &&
+          element.getClientRects().length > 0 &&
+          getComputedStyle(element).visibility === "visible",
       );
       origin.current =
         document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      setTargets(keyboardHintTargets(dialogs.item(dialogs.length - 1) ?? document));
+      setTargets(keyboardHintTargets(dialog ?? document));
       setPrefix("");
     },
   });

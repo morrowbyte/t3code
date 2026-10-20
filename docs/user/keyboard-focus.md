@@ -25,6 +25,11 @@ See [Keybindings](./keybindings.md) to customize these shortcuts.
 If you return to typing while a terminal is starting, the composer keeps focus when the terminal
 becomes ready. Opening or switching to a terminal explicitly still focuses it.
 
+On mobile with a hardware keyboard, use Cmd+K on iOS or Ctrl+K on Android to
+open the command palette. Its composer actions include model, provider options,
+access, and local attachments. Escape closes suggestions before leaving the
+composer; Space outside text fields opens the palette, and `i` returns to writing.
+
 ## Attach files with Yazi
 
 Use Space, then `f a`, to open Yazi in file-selection mode. On desktop,

@@ -158,7 +158,16 @@ export function LeaderNavigation({
       !event.ctrlKey &&
       !event.metaKey &&
       !event.altKey &&
-      !document.querySelector('[role="dialog"],[role="menu"],[role="listbox"]')
+      ![
+        ...document.querySelectorAll<HTMLElement>(
+          '[role="dialog"][aria-modal="true"],[role="alertdialog"],[data-slot="dialog-popup"],[data-slot="sheet-popup"],[role="menu"],[role="listbox"]',
+        ),
+      ].some(
+        (element) =>
+          !element.closest('[inert],[aria-hidden="true"]') &&
+          element.getClientRects().length > 0 &&
+          getComputedStyle(element).visibility !== "hidden",
+      )
     ) {
       if (cycleWorkbenchRegion(event.shiftKey ? -1 : 1)) consume(event);
       return;

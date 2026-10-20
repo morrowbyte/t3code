@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Button } from "../ui/button";
 import { Dialog, DialogHeader, DialogPanel, DialogPopup, DialogTitle } from "../ui/dialog";
 
@@ -20,10 +20,18 @@ export function WorkbenchCommandPicker({
 }) {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(0);
+  const list = useRef<HTMLDivElement>(null);
   const filtered = commands.filter((command) =>
     `${command.label} ${command.detail ?? ""}`.toLowerCase().includes(query.toLowerCase()),
   );
   const active = Math.min(selected, Math.max(0, filtered.length - 1));
+  const activeCommandId = filtered[active]?.id;
+  useLayoutEffect(() => {
+    if (activeCommandId === undefined) return;
+    list.current
+      ?.querySelector<HTMLElement>(`#workbench-command-${active}`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [active, activeCommandId]);
   const select = (command: WorkbenchCommand | undefined) => {
     if (!command) return;
     onClose();
@@ -73,6 +81,7 @@ export function WorkbenchCommandPicker({
             }}
           />
           <div
+            ref={list}
             id="workbench-commands"
             role="listbox"
             aria-label={title}

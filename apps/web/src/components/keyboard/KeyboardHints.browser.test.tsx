@@ -16,6 +16,7 @@ it("focuses the hinted visible control without activating it and restores focus 
   hidden.textContent = "Hidden";
   const toast = document.createElement("div");
   toast.setAttribute("role", "dialog");
+  toast.setAttribute("aria-modal", "false");
   toast.textContent = "Non-modal notification";
   container.append(first, second, hidden, toast);
   document.body.append(container);
