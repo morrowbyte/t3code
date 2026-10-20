@@ -1,11 +1,11 @@
 name: Weasel desktop nightly
-run-name: Weasel desktop release ${{ inputs.source_sha }}
+run-name: Weasel ${{ inputs.android_only && 'Android' || 'desktop' }} release ${{ inputs.source_sha }}
 
 on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish the built prerelease (false keeps artifacts only)
+        description: Publish the built release (false keeps artifacts only)
         type: boolean
         default: true
       source_sha:
@@ -14,6 +14,10 @@ on:
         type: string
       desktop_only:
         description: Build and publish only Windows, Linux and NixOS desktop assets
+        type: boolean
+        default: false
+      android_only:
+        description: Build and publish only the signed Android ARM64 APK, leaving desktop feeds unchanged
         type: boolean
         default: false
       recover_desktop_run_id:
@@ -55,6 +59,7 @@ jobs:
       desktop_context_sha: ${{ steps.windows_recovery.outputs.desktop_context_sha || steps.recovery.outputs.desktop_context_sha || github.sha }}
       desktop_workflow_sha: ${{ steps.windows_recovery.outputs.desktop_workflow_sha || steps.recovery.outputs.desktop_workflow_sha || github.workflow_sha }}
       desktop_workflow_ref: ${{ steps.windows_recovery.outputs.desktop_workflow_ref || steps.recovery.outputs.desktop_workflow_ref || github.workflow_ref }}
+      source_ci_run_id: ${{ steps.android_ci.outputs.run_id }}
       recovery_artifact_attempt: ${{ steps.windows_recovery.outputs.recovery_artifact_attempt || steps.recovery.outputs.recovery_artifact_attempt }}
       recovery_receipt_sha256: ${{ steps.recovery.outputs.recovery_receipt_sha256 }}
       recovery_workflow_sha256: ${{ steps.windows_recovery.outputs.recovery_workflow_sha256 || steps.recovery.outputs.recovery_workflow_sha256 }}
@@ -74,11 +79,18 @@ jobs:
       - name: Validate platform selection
         env:
           DESKTOP_ONLY: ${{ inputs.desktop_only }}
+          ANDROID_ONLY: ${{ inputs.android_only }}
           RECOVERY_RUN_ID: ${{ inputs.recover_desktop_run_id }}
           WINDOWS_RECOVERY_RUN_ID: ${{ inputs.recover_windows_run_id }}
           ANDROID_SOURCE_SHA: ${{ inputs.android_source_sha }}
         run: |
           set -euo pipefail
+          if [[ "$ANDROID_ONLY" == true ]]; then
+            test "$DESKTOP_ONLY" != true
+            test -z "$RECOVERY_RUN_ID"
+            test -z "$WINDOWS_RECOVERY_RUN_ID"
+            test -z "$ANDROID_SOURCE_SHA"
+          fi
           if [[ "$DESKTOP_ONLY" == true ]]; then
             test -z "$RECOVERY_RUN_ID"
             test -z "$WINDOWS_RECOVERY_RUN_ID"
@@ -482,17 +494,22 @@ jobs:
           run-install: false
       - name: Install dependencies
         if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == ''
-        run: vp install --frozen-lockfile
+        run: |
+          if [[ '${{ inputs.android_only }}' == true && '${{ inputs.publish }}' == true ]]; then
+            vp install --frozen-lockfile --filter=@t3tools/mobile... --filter=@t3tools/scripts...
+          else
+            vp install --frozen-lockfile
+          fi
       - name: Prepare pinned Electron runtime before desktop imports
-        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == ''
+        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && (inputs.android_only != true || inputs.publish != true)
         run: node apps/desktop/scripts/ensure-electron-runtime.mjs
 
       - name: Install pinned Chromium for focused renderer gates
-        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == ''
+        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && (inputs.android_only != true || inputs.publish != true)
         run: node apps/server/node_modules/playwright-core/cli.js install --with-deps --only-shell chromium
 
       - name: Check source before release
-        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == ''
+        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && (inputs.android_only != true || inputs.publish != true)
         env:
           EFFECTIVE_SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
@@ -501,9 +518,32 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EFFECTIVE_SOURCE_SHA"
           bash scripts/weasel/check.sh
 
+      - id: android_ci
+        name: Reuse exact main source CI before Android-only release
+        if: inputs.android_only && inputs.publish
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/weasel-ci.yml/runs?head_sha=$SOURCE_SHA&event=push&per_page=20" > "$RUNNER_TEMP/android-source-ci.json"
+          python3 - <<'PYCI'
+          import json, os, pathlib
+          runs = json.loads((pathlib.Path(os.environ['RUNNER_TEMP']) / 'android-source-ci.json').read_bytes())['workflow_runs']
+          matching = [run for run in runs if run['head_sha'] == os.environ['SOURCE_SHA']
+                      and run['head_branch'] == 'main' and run['event'] == 'push'
+                      and run['path'] == '.github/workflows/weasel-ci.yml'
+                      and run['head_repository']['full_name'] == os.environ['GITHUB_REPOSITORY']]
+          assert matching, 'Exact main source CI is required before Android-only compilation.'
+          latest = max(matching, key=lambda run: run['id'])
+          assert latest['status'] == 'completed' and latest['conclusion'] == 'success', 'Latest exact main CI did not pass.'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f"run_id={latest['id']}\n")
+          PYCI
+
       - id: route
         name: Verify reviewed Observatory preflight route
-        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == ''
+        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && (inputs.android_only != true || inputs.publish != true)
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
@@ -538,7 +578,7 @@ jobs:
           PYROUTE
 
       - name: Preserve release Observatory preflight route evidence
-        if: always() && hashFiles('apps/web/src/routes/observatory.tsx') != '' && ((inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '') || steps.recovery.outcome == 'success' || steps.windows_recovery.outcome == 'success')
+        if: always() && hashFiles('apps/web/src/routes/observatory.tsx') != '' && ((inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '') || steps.recovery.outcome == 'success' || steps.windows_recovery.outcome == 'success') && (inputs.android_only != true || inputs.publish != true)
         uses: actions/upload-artifact@v4
         with:
           name: weasel-observatory-preflight-${{ inputs.source_sha }}-${{ github.run_attempt }}
@@ -555,6 +595,7 @@ jobs:
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
           RELEASE_RUN: ${{ github.run_number }}
+          ANDROID_ONLY: ${{ inputs.android_only }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ vars.WEASEL_RELEASE_REPOSITORY || 'EvilWeasel/t3code' }}
         run: |
@@ -581,11 +622,15 @@ jobs:
             echo "source_sha=$SOURCE_SHA"
             echo "version=$fork_version"
             echo "android_version_code=$RELEASE_RUN"
-            echo "tag=v$fork_version"
+            if [[ "$ANDROID_ONLY" == true ]]; then
+              echo "tag=android/v$fork_version"
+            else
+              echo "tag=v$fork_version"
+            fi
           } >> "$GITHUB_OUTPUT"
 
   build_bundle:
-    if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == ''
+    if: inputs.android_only != true && inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == ''
     needs: [preflight]
     runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 30
@@ -679,7 +724,7 @@ jobs:
           retention-days: 1
 
   build_linux:
-    if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == ''
+    if: inputs.android_only != true && inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == ''
     needs: [preflight, build_bundle]
     runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 80
@@ -792,7 +837,7 @@ jobs:
           retention-days: 1
 
   build_nixos:
-    if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == ''
+    if: inputs.android_only != true && inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == ''
     needs: [preflight, build_linux]
     runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 40
@@ -822,7 +867,7 @@ jobs:
 
   build_windows:
     if: >-
-      ${{ !cancelled() && needs.preflight.result == 'success' && inputs.recover_desktop_run_id == '' &&
+      ${{ !cancelled() && !inputs.android_only && needs.preflight.result == 'success' && inputs.recover_desktop_run_id == '' &&
           ((inputs.recover_windows_run_id == '' && needs.build_bundle.result == 'success' && needs.build_linux.result == 'success') ||
            (inputs.recover_windows_run_id == '39182028263' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'skipped')) }}
     needs: [preflight, build_bundle, build_linux]
@@ -1129,6 +1174,8 @@ jobs:
                       assert alignment >= 16384 and file_offset % 16384 == address % 16384, name
                   assert loads > 0, name
               bundle_sha = hashlib.sha256(archive.read(bundle)).hexdigest()
+          generated_bundle = Path('apps/mobile/android/app/build/generated/assets/react/release/index.android.bundle')
+          assert generated_bundle.is_file() and digest(generated_bundle) == bundle_sha, 'APK must embed the bundle generated from the pinned source.'
           output = Path('release-android')
           output.mkdir()
           name = f'Morrowbyte-{version}-android-arm64.apk'
@@ -1179,7 +1226,7 @@ jobs:
 
   publish:
     if: >-
-      ${{ !cancelled() && inputs.publish && needs.preflight.result == 'success' &&
+      ${{ !cancelled() && inputs.publish && !inputs.android_only && needs.preflight.result == 'success' &&
           ((inputs.desktop_only && needs.build_android_apk.result == 'skipped') || (!inputs.desktop_only && needs.build_android_apk.result == 'success') || (inputs.recover_windows_run_id == '39182028263' && !inputs.desktop_only && needs.build_android_apk.result == 'skipped')) &&
           ((inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && needs.build_bundle.result == 'success' && needs.build_linux.result == 'success' && needs.build_nixos.result == 'success' && needs.build_windows.result == 'success') ||
            (inputs.recover_desktop_run_id == '39093205395' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'skipped' && needs.build_nixos.result == 'skipped' && needs.build_windows.result == 'skipped') ||
@@ -1475,3 +1522,107 @@ jobs:
           assert_draft_release
           gh release upload "$tag" release-assets/RELEASE-RECEIPT.txt --clobber
           gh release edit "$tag" --draft=false
+
+  publish_android:
+    if: inputs.android_only && inputs.publish
+    needs: [preflight, build_android_apk]
+    runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+      VERSION: ${{ needs.preflight.outputs.version }}
+      RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+      SOURCE_CI_RUN: ${{ needs.preflight.outputs.source_ci_run_id }}
+      APK_SHA256: ${{ needs.build_android_apk.outputs.apk_sha256 }}
+      APK_RECEIPT_SHA256: ${{ needs.build_android_apk.outputs.receipt_sha256 }}
+    steps:
+      - name: Checkout exact Android release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.source_sha }}
+          fetch-depth: 1
+
+      - name: Download only the verified Android payload
+        uses: actions/download-artifact@v4
+        with:
+          name: weasel-release-android
+          path: release-assets
+
+      - name: Bind APK to this source, build and signing proof
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$RELEASE_TAG" = "android/v$VERSION"
+          test -n "$SOURCE_CI_RUN"
+          python3 - <<'PYANDROID'
+          import hashlib, json, os, pathlib
+          root = pathlib.Path('release-assets')
+          apk = root / f'Morrowbyte-{os.environ["VERSION"]}-android-arm64.apk'
+          receipt = apk.with_name(apk.name + '.json')
+          digest = lambda p: hashlib.file_digest(p.open('rb'), 'sha256').hexdigest()
+          assert digest(apk) == os.environ['APK_SHA256']
+          assert digest(receipt) == os.environ['APK_RECEIPT_SHA256']
+          proof = json.loads(receipt.read_bytes())
+          assert proof['source'] == os.environ['SOURCE_SHA']
+          assert proof['run'] == os.environ['GITHUB_RUN_ID'] and str(proof['attempt']) == os.environ['GITHUB_RUN_ATTEMPT']
+          assert proof['trustedContextSha'] == os.environ['GITHUB_SHA']
+          assert proof['trustedWorkflowSha'] == os.environ['GITHUB_WORKFLOW_SHA']
+          assert proof['trustedWorkflowRef'] == os.environ['GITHUB_WORKFLOW_REF']
+          PYANDROID
+          bash scripts/weasel/verify-published-release.sh --android-only --write-checksums "$VERSION" release-assets
+
+      - name: Publish the same Android bytes without changing desktop feeds
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --json isDraft,targetCommitish > "$RUNNER_TEMP/android-release-state.json" 2> "$RUNNER_TEMP/android-release-view.err"; then
+            if [[ "$(jq -r .isDraft "$RUNNER_TEMP/android-release-state.json")" == false ]]; then
+              bash scripts/weasel/verify-published-release.sh --android-only "$RELEASE_TAG" "$SOURCE_SHA" "$VERSION" release-assets
+              exit 0
+            fi
+            test "$(jq -r .targetCommitish "$RUNNER_TEMP/android-release-state.json")" = "$SOURCE_SHA"
+          else
+            cat > "$RUNNER_TEMP/android-release-notes.md" <<'NOTES'
+          Android-Update für Morrowbyte:
+          - Ein bewusst gestartetes Voicegespräch bleibt beim Wechsel in den Hintergrund und beim Sperren des Bildschirms aktiv. Ende gibt Mikrofon, Audio und Sitzung wieder frei.
+          - Das Transkript öffnet am neuesten Ende und folgt neuen Inhalten. Beim manuellen Zurückscrollen bleibt die Position erhalten; einzelne Beiträge lassen sich vollständig kopieren.
+          - Kurze Statusaktualisierungen beim Zurückkehren beenden das laufende Gespräch nicht mehr.
+
+          Die APK normal über die bestehende App installieren, ohne vorherige Deinstallation. Paket und Produktionssignatur bleiben gleich; Profile und Verbindungen werden erhalten. Dieses Release enthält ausschließlich Android. Die bisherigen Desktop-Updates und deren Assets bleiben bestehen.
+
+          Die Entwicklungsabnahme erfolgt im vorhandenen Emulator. Eine physische S24-, Mikrofon- oder ASR-Abnahme wird damit nicht behauptet. APK-Quellstand, Signatur, ARM64, eingebettetes Bundle und Ausrichtung sind in den beigefügten Belegen ausgewiesen.
+          NOTES
+            # A namespaced, non-latest release also stays out of private electron-updater's unfiltered prerelease list.
+            gh release create "$RELEASE_TAG" --target "$SOURCE_SHA" --title "Morrowbyte Android Nightly $VERSION" --notes-file "$RUNNER_TEMP/android-release-notes.md" --draft --latest=false
+          fi
+          assert_draft() {
+            gh release view "$RELEASE_TAG" --json isDraft,targetCommitish |
+              jq -e --arg source "$SOURCE_SHA" '.isDraft == true and .targetCommitish == $source' >/dev/null
+          }
+          assert_draft
+          gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          assets="$(bash scripts/weasel/read-draft-release-assets.sh "$RELEASE_TAG" "$SOURCE_SHA")"
+          expected="$(find release-assets -maxdepth 1 -type f -printf '%f\n' | jq -Rsc 'split("\n") | map(select(length > 0)) | sort')"
+          jq -e --argjson expected "$expected" '([.[].name] | sort) == $expected and all(.[]; (.digest | type == "string") and (.digest | startswith("sha256:")))' <<< "$assets" >/dev/null
+          printf '%s\n' "$assets" > "$RUNNER_TEMP/android-draft-assets.json"
+          python3 - <<'PYDIGESTS'
+          import hashlib, json, os, pathlib
+          assets = json.loads((pathlib.Path(os.environ['RUNNER_TEMP']) / 'android-draft-assets.json').read_bytes())
+          for asset in assets:
+              path = pathlib.Path('release-assets') / asset['name']
+              assert asset['digest'] == 'sha256:' + hashlib.file_digest(path.open('rb'), 'sha256').hexdigest(), asset['name']
+          PYDIGESTS
+          {
+            printf 'fork_release=%s\nsource_sha=%s\nrelease_platforms=android-arm64\n' "$RELEASE_TAG" "$SOURCE_SHA"
+            printf 'version=%s\nsource_ci_run_id=%s\npublication_run_id=%s\npublication_run_attempt=%s\n' "$VERSION" "$SOURCE_CI_RUN" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+            printf 'publication_context_sha=%s\npublication_workflow_sha=%s\npublication_workflow_ref=%s\n' "$GITHUB_SHA" "$GITHUB_WORKFLOW_SHA" "$GITHUB_WORKFLOW_REF"
+            printf 'github_asset_digests=%s\nartifact_sha256:\n' "$(jq -c '[.[] | {name, digest}]' <<< "$assets")"
+            cat release-assets/SHA256SUMS
+          } > release-assets/RELEASE-RECEIPT.txt
+          assert_draft
+          gh release upload "$RELEASE_TAG" release-assets/RELEASE-RECEIPT.txt --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest=false --prerelease=false
+          bash scripts/weasel/verify-published-release.sh --android-only "$RELEASE_TAG" "$SOURCE_SHA" "$VERSION" release-assets

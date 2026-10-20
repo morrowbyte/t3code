@@ -41,6 +41,8 @@ import * as NodePtyAdapter from "./terminal/NodePtyAdapter.ts";
 import * as PullRequestHttp from "./pullRequest/http.ts";
 import * as VoiceHttp from "./voice/http.ts";
 import * as LinearHttp from "./integrations/linear/http.ts";
+import * as AndroidAppUpdatesHttp from "./appUpdates/http.ts";
+import * as AndroidAppUpdates from "./appUpdates/AndroidAppUpdates.ts";
 import * as LinearIntegration from "./integrations/linear/LinearIntegration.ts";
 import * as LinearApi from "./integrations/linear/LinearApi.ts";
 import * as Scheduler from "./scheduling/Scheduler.ts";
@@ -691,6 +693,7 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(AuthHttp.layer),
       Layer.provide(McpOAuthHttp.layer.pipe(Layer.provide(McpOAuth.layer))),
       Layer.provide(CloudHttp.layer),
+      Layer.provide(AndroidAppUpdatesHttp.layer.pipe(Layer.provide(AndroidAppUpdates.layer))),
       Layer.provide(OrchestrationHttp.layer),
       Layer.provide(PullRequestHttp.layer),
       Layer.provide(VoiceHttp.layer.pipe(Layer.provide(VoiceTranscriptionService.layer))),

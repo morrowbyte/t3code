@@ -37,7 +37,7 @@ const {spawnSync}=require('node:child_process');
 const {parse}=createRequire(resolve(__dirname,'../../packages/shared/package.json'))('yaml');
 const releaseWorkflow=parse(readFileSync(resolve(__dirname,'../../.github/workflows/weasel-release.yml'),'utf8'));
 const expression=(value,inputs,needs,cancelled=false)=>Function('inputs','needs','cancelled',`return (${value.trim().replace(/^\$\{\{/, '').replace(/\}\}$/, '')})`)(inputs,needs,()=>cancelled);
-const platformInputs=(desktop_only=false)=>({desktop_only,publish:true,recover_desktop_run_id:'',recover_windows_run_id:'',android_source_sha:''});
+const platformInputs=(desktop_only=false)=>({desktop_only,android_only:false,publish:true,recover_desktop_run_id:'',recover_windows_run_id:'',android_source_sha:''});
 const desktopJobs=['preflight','build_bundle','build_linux','build_nixos','build_windows'];
 const releaseNeeds=(android)=>Object.fromEntries([...desktopJobs.map(name=>[name,{result:'success'}]),['build_android_apk',{result:android}]]);
 test('desktop-only release skips Android while the default still requires it',()=>{
@@ -64,7 +64,7 @@ test('every desktop package and cancellation gate remains required in either mod
 test('desktop-only cannot enter Android recovery or publish mobile assets',()=>{
   const steps=releaseWorkflow.jobs.preflight.steps;
   const validation=steps.find(step=>step.name==='Validate platform selection');
-  const run=(desktop,recovery,windows='',android='')=>spawnSync('bash',['-c',validation.run],{env:{...process.env,DESKTOP_ONLY:String(desktop),RECOVERY_RUN_ID:recovery,WINDOWS_RECOVERY_RUN_ID:windows,ANDROID_SOURCE_SHA:android}}).status;
+  const run=(desktop,recovery,windows='',android='',androidOnly=false)=>spawnSync('bash',['-c',validation.run],{env:{...process.env,DESKTOP_ONLY:String(desktop),ANDROID_ONLY:String(androidOnly),RECOVERY_RUN_ID:recovery,WINDOWS_RECOVERY_RUN_ID:windows,ANDROID_SOURCE_SHA:android}}).status;
   assert.equal(run(true,''),0);
   assert.equal(run(false,'39093205395'),0);
   assert.notEqual(run(true,'39093205395'),0);
@@ -72,6 +72,11 @@ test('desktop-only cannot enter Android recovery or publish mobile assets',()=>{
   assert.notEqual(run(true,'','39182028263'),0);
   assert.notEqual(run(false,'39093205395','39182028263'),0);
   assert.notEqual(run(false,'','39182028263',source),0);
+  assert.equal(run(false,'','','',true),0);
+  assert.notEqual(run(true,'','','',true),0);
+  assert.notEqual(run(false,'39093205395','','',true),0);
+  assert.notEqual(run(false,'','39182028263','',true),0);
+  assert.notEqual(run(false,'','',source,true),0);
   const publishSteps=releaseWorkflow.jobs.publish.steps;
   const androidProof=publishSteps.find(step=>step.name==='Verify Android bytes from this build before publication');
   assert.equal(expression(androidProof.if,platformInputs(true),{}),false);
@@ -79,6 +84,23 @@ test('desktop-only cannot enter Android recovery or publish mobile assets',()=>{
   assert.match(payload.run,/DESKTOP_ONLY/);
   assert.match(payload.run,/\*\.apk/);
   assert.equal(Object.keys(releaseWorkflow.jobs).some(name=>/mac/i.test(name)),false);
+});
+test('Android artifacts retain normal source checks without requiring main publication CI',()=>{
+  const steps=releaseWorkflow.jobs.preflight.steps;
+  const inputs={...platformInputs(),android_only:true,publish:false};
+  assert.equal(expression(steps.find(step=>step.id==='android_ci').if,inputs,{}),false);
+  for(const name of ['Prepare pinned Electron runtime before desktop imports','Install pinned Chromium for focused renderer gates','Check source before release','Verify reviewed Observatory preflight route'])assert.equal(expression(steps.find(step=>step.name===name).if,inputs,{}),true,name);
+  const publishing={...inputs,publish:true};
+  assert.equal(expression(steps.find(step=>step.id==='android_ci').if,publishing,{}),true);
+  assert.equal(expression(steps.find(step=>step.name==='Check source before release').if,publishing,{}),false);
+});
+test('Android-only publication never schedules desktop packages',()=>{
+  const inputs={...platformInputs(),android_only:true};
+  const needs=releaseNeeds('success');
+  for(const name of ['build_bundle','build_linux','build_nixos','build_windows','publish'])assert.equal(expression(releaseWorkflow.jobs[name].if,inputs,needs),false,name);
+  assert.equal(expression(releaseWorkflow.jobs.build_android_apk.if,inputs,needs),true);
+  assert.equal(expression(releaseWorkflow.jobs.publish_android.if,inputs,needs),true);
+  assert.equal(expression(releaseWorkflow.jobs.publish_android.if,{...inputs,publish:false},needs),false);
 });
 test('pinned Windows recovery reuses successful platforms but still requires Windows and original preflight',()=>{
   const inputs={...platformInputs(),recover_windows_run_id:'39182028263'};

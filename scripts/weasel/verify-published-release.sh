@@ -2,6 +2,34 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
+android_only=false
+if [[ "${1:-}" == --android-only ]]; then
+  android_only=true
+  shift
+fi
+
+verify_android_payload() {
+  python3 - "$1" "$2" "${3:-}" <<'PYANDROID'
+import hashlib, json, pathlib, re, sys
+version, directory, source = sys.argv[1:]
+assert re.fullmatch(r'[0-9A-Za-z][0-9A-Za-z.+-]*', version)
+root = pathlib.Path(directory)
+name = f'Morrowbyte-{version}-android-arm64.apk'
+expected = {name, name + '.json', name + '.sha256'}
+actual = {p.name for p in root.iterdir() if p.is_file()} - {'SHA256SUMS', 'RELEASE-RECEIPT.txt'}
+assert actual == expected, 'Android-only release must contain exactly one APK and its two proofs.'
+digest = hashlib.file_digest((root / name).open('rb'), 'sha256').hexdigest()
+receipt = json.loads((root / (name + '.json')).read_bytes())
+assert receipt['apk'] == name and receipt['apkSha256'] == digest
+assert receipt['version'] == version and receipt['package'] == 'com.morrowbyte.t3code'
+assert receipt['abis'] == ['arm64-v8a'] and 0 < receipt['versionCode'] <= 2100000000
+assert receipt['certificateSha256'] == '34a33c2541544bc4a96e359a33e9f71aaa449ee9a0cd725c2469b65b057aa2b2'
+assert all(receipt.get(key) is True for key in ['signatureVerified', 'zip16KB', 'elf16KB'])
+assert not source or receipt['source'] == source
+assert (root / (name + '.sha256')).read_text() == f'{digest}  {name}\n'
+PYANDROID
+}
+
 verify_cli_checksums() {
   node --experimental-strip-types --input-type=module - \
     "$script_dir/../../packages/shared/src/cliRelease.ts" "$1" "$2" <<'NODE'
@@ -28,19 +56,24 @@ if [[ "${1:-}" == --write-checksums ]]; then
   [[ $# -eq 3 && -d "$3" ]] || exit 2
   version="$2"
   assets_dir="$(cd "$3" && pwd)"
+  if [[ "$android_only" == true ]]; then
+    verify_android_payload "$version" "$assets_dir"
+  fi
   mapfile -d '' -t payload < <(find "$assets_dir" -maxdepth 1 -type f \
     ! -name SHA256SUMS ! -name RELEASE-RECEIPT.txt -printf '%f\0' | LC_ALL=C sort -z)
   [[ ${#payload[@]} -gt 0 ]] || exit 1
   checksum_tmp="$(mktemp)"
   trap 'rm -f "$checksum_tmp"' EXIT
   (cd "$assets_dir" && sha256sum -- "${payload[@]}") > "$checksum_tmp"
-  verify_cli_checksums "$version" "$checksum_tmp"
+  if [[ "$android_only" != true ]]; then
+    verify_cli_checksums "$version" "$checksum_tmp"
+  fi
   mv -f "$checksum_tmp" "$assets_dir/SHA256SUMS"
   exit 0
 fi
 
 if [[ $# -ne 4 ]]; then
-  echo "Usage: $0 <tag> <source-sha> <version> <expected-assets-dir>" >&2
+  echo "Usage: $0 [--android-only] <tag> <source-sha> <version> <expected-assets-dir>" >&2
   exit 2
 fi
 
@@ -64,8 +97,16 @@ resolved_sha="$(git rev-parse 'refs/weasel-verify/published-tag^{commit}')"
   fail "tag $tag resolves to $resolved_sha instead of source $source_sha"
 
 release_json="$(gh api "repos/$repo/releases/tags/$tag")"
-jq -e --arg tag "$tag" '.tag_name == $tag and .draft == false and .prerelease == true' \
-  <<<"$release_json" >/dev/null || fail "release metadata does not identify a published prerelease for $tag"
+if [[ "$android_only" == true ]]; then
+  [[ "$tag" == "android/v$version" ]] || fail 'Android-only tag must use its separate namespace'
+  # Private electron-updater selects the first GitHub prerelease regardless of channel.
+  # Android uses a namespaced, non-latest release so desktop feeds keep their last complete payload.
+  jq -e --arg tag "$tag" '.tag_name == $tag and .draft == false and .prerelease == false' \
+    <<<"$release_json" >/dev/null || fail 'Android-only release entered the desktop prerelease feed'
+else
+  jq -e --arg tag "$tag" '.tag_name == $tag and .draft == false and .prerelease == true' \
+    <<<"$release_json" >/dev/null || fail "release metadata does not identify a published prerelease for $tag"
+fi
 
 assets_json="$(jq -c '[.assets[] | {name, digest}]' <<<"$release_json")"
 jq -e 'length > 0 and all(.[]; (.digest | type == "string") and (.digest | startswith("sha256:")))' \
@@ -75,7 +116,11 @@ download_dir="$(mktemp -d)"
 trap 'rm -rf "$download_dir"' EXIT
 gh release download "$tag" --dir "$download_dir" --repo "$repo"
 
-for required in \
+if [[ "$android_only" == true ]]; then
+  verify_android_payload "$version" "$download_dir" "$source_sha" || fail 'Android payload proof does not match'
+  required_assets=("Morrowbyte-$version-android-arm64.apk" "Morrowbyte-$version-android-arm64.apk.json" "Morrowbyte-$version-android-arm64.apk.sha256" SHA256SUMS RELEASE-RECEIPT.txt)
+else
+  required_assets=(
   nightly-linux.yml \
   nightly.yml \
   weasel-linux-x64.tar.gz \
@@ -86,7 +131,9 @@ for required in \
   "t3-$version-linux-x64.tar.gz" \
   "t3-$version-win32-x64.zip" \
   SHA256SUMS \
-  RELEASE-RECEIPT.txt; do
+  RELEASE-RECEIPT.txt)
+fi
+for required in "${required_assets[@]}"; do
   [[ -s "$download_dir/$required" ]] || fail "required asset is missing: $required"
 done
 
@@ -98,8 +145,10 @@ actual_names="$(find "$download_dir" -maxdepth 1 -type f -printf '%f\n' | sort)"
 
 cmp -s "$expected_dir/SHA256SUMS" "$download_dir/SHA256SUMS" ||
   fail "published SHA256SUMS differs from this run's assets"
-verify_cli_checksums "$version" "$download_dir/SHA256SUMS" ||
-  fail "published checksums are incompatible with the legacy CLI installer"
+if [[ "$android_only" != true ]]; then
+  verify_cli_checksums "$version" "$download_dir/SHA256SUMS" ||
+    fail "published checksums are incompatible with the legacy CLI installer"
+fi
 (cd "$download_dir" && sha256sum --check --strict SHA256SUMS >/dev/null) ||
   fail "published payload checksum verification failed"
 

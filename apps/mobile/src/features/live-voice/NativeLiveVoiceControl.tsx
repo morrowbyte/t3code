@@ -12,7 +12,7 @@ import { AsyncResult } from "effect/reactivity";
 import { randomUUID } from "expo-crypto";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AppState, Linking, ScrollView, View } from "react-native";
+import { AppState, Linking, Platform, View } from "react-native";
 
 import { AppText } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
@@ -22,6 +22,8 @@ import { useGlobalVoiceInput } from "../voice-input/VoiceInputProvider";
 import { unwrapLiveVoiceCommand } from "./liveVoiceCommands";
 import { createVoiceEventBridge } from "./liveVoiceEvents";
 import { nativeVoiceMedia } from "./nativeVoiceMedia";
+import { subscribeNativeVoiceStopped } from "./nativeVoiceBackground";
+import { VoiceTranscript } from "./VoiceTranscript";
 
 type VoiceProps = {
   readonly environmentId: EnvironmentId;
@@ -129,17 +131,15 @@ function LiveVoiceSession(props: VoiceProps) {
   const current = observed?.controller === controller ? observed.state : controller.currentState;
   const busy = !["idle", "ended", "error"].includes(current.phase);
   const canMute = ["live", "reconnecting", "playback-blocked"].includes(current.phase);
-  const target = useMemo<LiveVoiceTarget | null>(
-    () =>
-      props.eligible
-        ? {
-            environmentId: props.environmentId,
-            threadId: props.threadId,
-            provider: "codex",
-            providerInstanceId: props.providerInstanceId,
-          }
-        : null,
-    [props.eligible, props.environmentId, props.providerInstanceId, props.threadId],
+  // Start availability may refresh on resume; it is not the active call's identity.
+  const target = useMemo<LiveVoiceTarget>(
+    () => ({
+      environmentId: props.environmentId,
+      threadId: props.threadId,
+      provider: "codex",
+      providerInstanceId: props.providerInstanceId,
+    }),
+    [props.environmentId, props.providerInstanceId, props.threadId],
   );
   const focused = useRef(false);
   const dictation = useGlobalVoiceInput();
@@ -172,12 +172,12 @@ function LiveVoiceSession(props: VoiceProps) {
   );
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (next) => {
-      if (next === "background") void controller.end();
+      if (next === "background" && Platform.OS !== "android") void controller.end();
     });
     return () => subscription.remove();
   }, [controller]);
   useEffect(() => {
-    if (!busy) return;
+    if (!busy || Platform.OS === "android") return;
     const tag = `live-voice:${keepAwakeId}`;
     const activation = activateKeepAwakeAsync(tag);
     void activation.catch(() => {});
@@ -185,6 +185,14 @@ function LiveVoiceSession(props: VoiceProps) {
       void activation.then(() => deactivateKeepAwake(tag)).catch(() => {});
     };
   }, [busy, keepAwakeId]);
+
+  useEffect(
+    () =>
+      subscribeNativeVoiceStopped(() => {
+        void controller.end();
+      }),
+    [controller],
+  );
 
   if (!props.eligible && !busy && !current.error) return null;
   return (
@@ -218,9 +226,9 @@ function LiveVoiceSession(props: VoiceProps) {
         ) : (
           <Button
             label="Voice chat"
-            disabled={!target || dictation.isBusy}
+            disabled={!props.eligible || dictation.isBusy}
             onPress={() => {
-              if (target && focused.current && AppState.currentState === "active")
+              if (props.eligible && focused.current && AppState.currentState === "active")
                 void controller.start(target);
             }}
           />
@@ -261,19 +269,7 @@ function LiveVoiceSession(props: VoiceProps) {
         </View>
       ) : null}
       {showTranscript && current.transcript.length ? (
-        <ScrollView nestedScrollEnabled style={{ maxHeight: 160 }}>
-          {current.transcript.map((entry, index) => (
-            <View key={index} className="pb-2">
-              <AppText className="text-xs font-t3-medium text-foreground-muted">
-                {entry.speaker === "user" ? "You" : "Assistant"}
-                {entry.final ? "" : "…"}
-              </AppText>
-              <AppText selectable className="text-sm text-foreground">
-                {entry.text}
-              </AppText>
-            </View>
-          ))}
-        </ScrollView>
+        <VoiceTranscript entries={current.transcript} />
       ) : null}
     </View>
   );

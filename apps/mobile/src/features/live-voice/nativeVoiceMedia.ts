@@ -10,15 +10,24 @@ import type {
   LiveVoicePeer,
 } from "@t3tools/client-runtime/live-voice";
 import { createNativeAudioSink, releaseNativeStreamOnStop } from "./nativeVoiceAudio";
+import { beginNativeVoiceBackground } from "./nativeVoiceBackground";
 
 export const nativeVoiceMedia = {
   getUserMedia: async () => {
     const current = await getRecordingPermissionsAsync();
     const permission = current.granted ? current : await requestRecordingPermissionsAsync();
     if (!permission.granted) throw new Error("Microphone permission is required.");
-    const stream = await mediaDevices.getUserMedia({ audio: true, video: false });
-    releaseNativeStreamOnStop(stream);
-    return stream as unknown as MediaStream;
+    const endBackground = await beginNativeVoiceBackground();
+    try {
+      const stream = await mediaDevices.getUserMedia({ audio: true, video: false });
+      releaseNativeStreamOnStop(stream, () => {
+        void endBackground().catch(() => {});
+      });
+      return stream as unknown as MediaStream;
+    } catch (error) {
+      await endBackground();
+      throw error;
+    }
   },
   createPeer: () => new NativePeer() as unknown as LiveVoicePeer,
   createRemoteStream: (track) =>

@@ -9,6 +9,7 @@ import * as HttpApiSchema from "effect/http-api/HttpApiSchema";
 import * as HttpServerRespondable from "effect/http/HttpServerRespondable";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Multipart from "effect/http/Multipart";
+import { AndroidAppReleaseIndex, AndroidAppUpdateHttpError } from "./androidAppUpdates.ts";
 import {
   LinearSettings,
   LinearAction,
@@ -947,7 +948,33 @@ class EnvironmentLinearIngressHttpApi extends HttpApiGroup.make("linearIngress")
     }),
   ) {}
 
+class EnvironmentAndroidAppUpdatesHttpApi extends HttpApiGroup.make("androidAppUpdates")
+  .add(
+    HttpApiEndpoint.get("releases", "/api/app-updates/android/releases", {
+      headers: OptionalBearerHeaders,
+      success: AndroidAppReleaseIndex,
+      error: [
+        EnvironmentAuthInvalidError,
+        EnvironmentScopeRequiredError,
+        AndroidAppUpdateHttpError,
+      ],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("asset", "/api/app-updates/android/releases/:releaseId/assets/:assetId", {
+      headers: OptionalBearerHeaders,
+      params: Schema.Struct({ releaseId: Schema.String, assetId: Schema.String }),
+      success: HttpApiSchema.StreamUint8Array(),
+      error: [
+        EnvironmentAuthInvalidError,
+        EnvironmentScopeRequiredError,
+        AndroidAppUpdateHttpError,
+      ],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
 export class EnvironmentHttpApi extends HttpApi.make("environment")
+  .add(EnvironmentAndroidAppUpdatesHttpApi)
   .add(EnvironmentLinearHttpApi)
   .add(EnvironmentLinearIngressHttpApi)
   .add(EnvironmentMetadataHttpApi)

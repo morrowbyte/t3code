@@ -133,3 +133,59 @@ if bash "$repo_root/scripts/weasel/verify-published-release.sh" \
   echo "Verifier accepted an asset set that differs from the published release." >&2
   exit 1
 fi
+
+# Android publication must not replace a complete desktop updater release.
+tag="android/v$version"
+git -c tag.gpgSign=false tag "$tag" "$source_sha"
+git push origin "refs/tags/$tag" >/dev/null
+fixture_assets="$test_root/android-assets"
+mkdir -p "$fixture_assets"
+export WEASEL_FIXTURE_ASSETS="$fixture_assets"
+apk_name="Morrowbyte-$version-android-arm64.apk"
+printf 'fixture APK bytes, not a signature test\n' > "$fixture_assets/$apk_name"
+apk_sha="$(sha256sum "$fixture_assets/$apk_name" | cut -d ' ' -f 1)"
+printf '%s  %s\n' "$apk_sha" "$apk_name" > "$fixture_assets/$apk_name.sha256"
+jq -n --arg name "$apk_name" --arg digest "$apk_sha" --arg version "$version" --arg source "$source_sha" \
+  '{apk: $name, apkSha256: $digest, version: $version, versionCode: 61, source: $source,
+    package: "com.morrowbyte.t3code", abis: ["arm64-v8a"],
+    certificateSha256: "34a33c2541544bc4a96e359a33e9f71aaa449ee9a0cd725c2469b65b057aa2b2",
+    signatureVerified: true, zip16KB: true, elf16KB: true}' > "$fixture_assets/$apk_name.json"
+bash "$repo_root/scripts/weasel/verify-published-release.sh" --android-only --write-checksums "$version" "$fixture_assets"
+
+payload_digests='[]'
+for file in "$fixture_assets"/*; do
+  name="$(basename "$file")"
+  digest="sha256:$(sha256sum "$file" | cut -d ' ' -f 1)"
+  payload_digests="$(jq -c --arg name "$name" --arg digest "$digest" '. + [{name: $name, digest: $digest}]' <<<"$payload_digests")"
+done
+{
+  printf 'fork_release=%s\nsource_sha=%s\nrelease_platforms=android-arm64\n' "$tag" "$source_sha"
+  printf 'github_asset_digests=%s\nartifact_sha256:\n' "$payload_digests"
+  cat "$fixture_assets/SHA256SUMS"
+} > "$fixture_assets/RELEASE-RECEIPT.txt"
+receipt_digest="sha256:$(sha256sum "$fixture_assets/RELEASE-RECEIPT.txt" | cut -d ' ' -f 1)"
+all_asset_digests="$(jq -c --arg digest "$receipt_digest" '. + [{name: "RELEASE-RECEIPT.txt", digest: $digest}]' <<<"$payload_digests")"
+jq -n --arg tag "$tag" --argjson assets "$all_asset_digests" \
+  '{tag_name: $tag, draft: false, prerelease: false, assets: $assets}' > "$fixture_api"
+bash "$repo_root/scripts/weasel/verify-published-release.sh" --android-only \
+  "$tag" "$source_sha" "$version" "$fixture_assets" >/dev/null
+
+cp "$fixture_api" "$test_root/android.good.json"
+jq '.prerelease = true' "$fixture_api" > "$test_root/android.bad-feed.json"
+mv "$test_root/android.bad-feed.json" "$fixture_api"
+if bash "$repo_root/scripts/weasel/verify-published-release.sh" --android-only \
+  "$tag" "$source_sha" "$version" "$fixture_assets" >/dev/null 2>&1; then
+  echo 'Android verifier accepted the desktop prerelease feed.' >&2
+  exit 1
+fi
+mv "$test_root/android.good.json" "$fixture_api"
+
+printf 'desktop feed must not be mixed into Android\n' > "$fixture_assets/nightly.yml"
+if bash "$repo_root/scripts/weasel/verify-published-release.sh" --android-only --write-checksums \
+  "$version" "$fixture_assets" >/dev/null 2>&1; then
+  echo 'Android checksum writer accepted a desktop asset.' >&2
+  exit 1
+fi
+rm "$fixture_assets/nightly.yml"
+
+echo 'Desktop and Android-only publication fixtures passed.'
