@@ -1,5 +1,8 @@
 import type { AgentObservatoryIntent, AgentObservatoryInvocationResult } from "@t3tools/contracts";
-import type { OrchestrationV2HistoricalMessage } from "@t3tools/contracts";
+import type {
+  LiveVoiceTranscriptSegment,
+  OrchestrationV2HistoricalMessage,
+} from "@t3tools/contracts";
 import {
   ChatAttachment,
   CheckpointId,
@@ -688,6 +691,10 @@ export interface ProviderAdapterV2LiveVoiceRuntime {
     readonly plannerNativeThreadId: string;
     readonly text: string;
   }) => Effect.Effect<void, ProviderAdapterV2Error>;
+  readonly appendContext?: (input: {
+    readonly plannerNativeThreadId: string;
+    readonly text: string;
+  }) => Effect.Effect<void, ProviderAdapterV2Error>;
 }
 
 export type ProviderAdapterV2LiveVoiceEvent =
@@ -704,6 +711,8 @@ export type ProviderAdapterV2LiveVoiceEvent =
       readonly plannerNativeThreadId: string;
       readonly role: "user" | "assistant";
       readonly text: string;
+      readonly realtimeSessionId?: string;
+      readonly segment?: Omit<LiveVoiceTranscriptSegment, "partIndex" | "partCount">;
     };
 
 export class ProviderAdapterV2 extends Context.Service<

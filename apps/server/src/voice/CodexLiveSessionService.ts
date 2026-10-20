@@ -70,6 +70,16 @@ const encodeRuntimePolicy = Schema.encodeSync(
 );
 const encodeReceipt = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeReceipt = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown));
+const readbackContextMatches = (
+  row: LeaseRow,
+  projection: OrchestrationV2ThreadProjection,
+  policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
+) =>
+  projection.thread.id === row.thread_id &&
+  projection.thread.archivedAt === null &&
+  projection.thread.providerInstanceId === row.provider_instance_id &&
+  encodeModelSelection(projection.thread.modelSelection) === row.model_selection_json &&
+  encodeRuntimePolicy(policy) === row.runtime_policy_json;
 const sessionFromRow = (row: LeaseRow): LiveVoiceSession => ({
   leaseId: row.lease_id,
   generation: row.generation,
@@ -136,6 +146,7 @@ export const layer: Layer.Layer<
     const leaseLocks = yield* KeyedLock.make<string>();
     const readbackWorkers = new Map<string, Fiber.Fiber<void, never>>();
     const nativeEventRuntimes = new Set<ProviderAdapter.ProviderAdapterV2SessionRuntime>();
+    let transcriptSequence = 0;
     const active = new Map<
       string,
       {
@@ -278,6 +289,100 @@ export const layer: Layer.Layer<
       };
     };
 
+    const publicReadbackResults = (projection: OrchestrationV2ThreadProjection, runId: string) => {
+      const run = projection.runs.find((candidate) => candidate.id === runId);
+      if (!run || !["running", "waiting"].includes(run.status) || run.rootNodeId === null)
+        return [];
+      const attempt = projection.attempts.find(
+        (candidate) =>
+          candidate.id === run.activeAttemptId &&
+          candidate.rootNodeId === run.rootNodeId &&
+          candidate.runId === runId,
+      );
+      if (!attempt) return [];
+      const latestTurn = latestProviderTurnForAttempt(projection.providerTurns, attempt.id);
+      if (!latestTurn) return [];
+      const turns = new Map(
+        projection.providerTurns
+          .filter(
+            (turn) =>
+              turn.runAttemptId === attempt.id &&
+              (turn.status === "completed" ||
+                (turn.id === latestTurn.id && turn.status === "running")),
+          )
+          .map((turn) => [turn.id, turn]),
+      );
+      const items = projection.turnItems
+        .filter(
+          (item) =>
+            item.threadId === projection.thread.id &&
+            item.runId === runId &&
+            item.providerTurnId !== null &&
+            turns.has(item.providerTurnId),
+        )
+        .sort(
+          (a, b) =>
+            turns.get(a.providerTurnId!)!.ordinal - turns.get(b.providerTurnId!)!.ordinal ||
+            a.ordinal - b.ordinal,
+        );
+      const lastOrdinals = new Map<string, number>();
+      for (const item of items) {
+        if (
+          [
+            "assistant_message",
+            "command_execution",
+            "dynamic_tool",
+            "web_search",
+            "file_search",
+            "file_change",
+            "user_input_request",
+            "approval_request",
+          ].includes(item.type)
+        )
+          lastOrdinals.set(
+            item.providerTurnId!,
+            Math.max(lastOrdinals.get(item.providerTurnId!) ?? -1, item.ordinal),
+          );
+      }
+      return items.flatMap((item) => {
+        const turn = turns.get(item.providerTurnId!)!;
+        // A later native turn also proves the previous completed turn's last answer is
+        // intermediate. The latest turn's last answer still belongs to the final path.
+        if (
+          item.type !== "assistant_message" ||
+          item.streaming ||
+          item.status !== "completed" ||
+          (turn.ordinal === latestTurn.ordinal &&
+            item.ordinal >= (lastOrdinals.get(turn.id) ?? -1)) ||
+          !item.text.trim() ||
+          item.text.length > 16_384
+        )
+          return [];
+        const node = projection.nodes.find((candidate) => candidate.id === item.nodeId);
+        if (
+          !node ||
+          node.kind !== "assistant_message" ||
+          node.status !== "completed" ||
+          node.rootNodeId !== run.rootNodeId ||
+          node.providerTurnId !== turn.id
+        )
+          return [];
+        const message = projection.messages.find(
+          (candidate) =>
+            candidate.id === item.messageId &&
+            candidate.threadId === projection.thread.id &&
+            candidate.runId === runId &&
+            candidate.nodeId === node.id &&
+            candidate.role === "assistant" &&
+            !candidate.streaming &&
+            candidate.text === item.text,
+        );
+        return message
+          ? [{ attemptId: attempt.id, messageId: message.id, text: message.text }]
+          : [];
+      });
+    };
+
     const inspectReadback = (projection: OrchestrationV2ThreadProjection, runId: string) => {
       const run = projection.runs.find((candidate) => candidate.id === runId);
       if (
@@ -317,12 +422,21 @@ export const layer: Layer.Layer<
           const afterSequence = yield* threads.getThreadEventSequence(input.threadId);
           const readProjection = () =>
             threads.getProjectThread({ projectId: input.projectId, threadId: input.threadId });
-          const first = inspectReadback(yield* readProjection(), input.runId);
+          const appendPublic = (projection: OrchestrationV2ThreadProjection) =>
+            Effect.forEach(
+              publicReadbackResults(projection, input.runId),
+              (update) => appendDurableOutput({ ...input, ...update, kind: "context" }),
+              { discard: true },
+            );
+          const initial = yield* readProjection();
+          yield* appendPublic(initial);
+          const first = inspectReadback(initial, input.runId);
           if (first.type === "ready") {
-            yield* appendDurableFinal({
+            yield* appendDurableOutput({
               ...input,
+              kind: "final",
               attemptId: first.attemptId,
-              finalMessageId: first.finalMessageId,
+              messageId: first.finalMessageId,
               text: first.text,
             });
             return;
@@ -333,6 +447,7 @@ export const layer: Layer.Layer<
             "subagent.updated",
             "checkpoint.captured",
             "message.updated",
+            "turn-item.updated",
           ] as const;
           const result = yield* Stream.mergeAll(
             eventTypes.map((eventType) =>
@@ -351,6 +466,7 @@ export const layer: Layer.Layer<
                   return event.payload.id === input.runId;
                 case "checkpoint.captured":
                 case "message.updated":
+                case "turn-item.updated":
                 case "subagent.updated":
                   return event.payload.runId === input.runId;
                 default:
@@ -359,6 +475,7 @@ export const layer: Layer.Layer<
             }),
             Stream.mapEffect(() =>
               readProjection().pipe(
+                Effect.tap(appendPublic),
                 Effect.map((projection) => inspectReadback(projection, input.runId)),
               ),
             ),
@@ -366,10 +483,11 @@ export const layer: Layer.Layer<
             Stream.runHead,
           );
           if (Option.isNone(result) || result.value.type !== "ready") return;
-          yield* appendDurableFinal({
+          yield* appendDurableOutput({
             ...input,
+            kind: "final",
             attemptId: result.value.attemptId,
-            finalMessageId: result.value.finalMessageId,
+            messageId: result.value.finalMessageId,
             text: result.value.text,
           });
         }).pipe(Effect.catchCause(() => Effect.void));
@@ -400,7 +518,7 @@ export const layer: Layer.Layer<
         { discard: true },
       );
 
-    const appendDurableFinal = (input: {
+    const appendDurableOutput = (input: {
       readonly leaseId: string;
       readonly generation: number;
       readonly threadId: LiveVoiceSession["threadId"];
@@ -409,7 +527,8 @@ export const layer: Layer.Layer<
       readonly plannerTurnId: string;
       readonly runId: string;
       readonly attemptId: string;
-      readonly finalMessageId: string;
+      readonly messageId: string;
+      readonly kind: "final" | "context";
       readonly text: string;
     }) =>
       leaseLocks.withLock(
@@ -428,6 +547,40 @@ export const layer: Layer.Layer<
             lease.runtime.providerSessionId !== row.provider_session_id
           )
             return;
+          const intents = yield* sql<{ receipt_json: string | null }>`
+            SELECT receipt_json FROM codex_live_voice_intents
+            WHERE lease_id = ${input.leaseId} AND generation = ${input.generation}
+              AND planner_native_thread_id = ${input.plannerNativeThreadId}
+              AND planner_turn_id = ${input.plannerTurnId} AND dispatch_state = 'admitted'
+          `;
+          const stored = intents[0]?.receipt_json;
+          if (stored === undefined || stored === null) return;
+          const receipt = decodeReceipt(stored) as Record<string, unknown>;
+          if (receipt.runId !== input.runId) return;
+          const publicReadbacks =
+            typeof receipt.publicReadbacks === "object" &&
+            receipt.publicReadbacks !== null &&
+            !Array.isArray(receipt.publicReadbacks)
+              ? (receipt.publicReadbacks as Record<string, unknown>)
+              : {};
+          if (
+            input.kind === "final"
+              ? receipt.readback !== undefined
+              : Object.hasOwn(publicReadbacks, input.messageId) ||
+                lease.runtime.liveVoice.appendContext === undefined
+          )
+            return;
+          const receiptWithState = (state: "claimed" | "refused" | "sent" | "unknown") => {
+            const delivery = { state, runId: input.runId, attemptId: input.attemptId };
+            return encodeReceipt(
+              input.kind === "final"
+                ? { ...receipt, readback: { ...delivery, finalMessageId: input.messageId } }
+                : {
+                    ...receipt,
+                    publicReadbacks: { ...publicReadbacks, [input.messageId]: delivery },
+                  },
+            );
+          };
           const activePrincipals = yield* authSessions
             .listActive()
             .pipe(Effect.mapError(() => liveError("runtime_unavailable")));
@@ -444,24 +597,25 @@ export const layer: Layer.Layer<
             projectId: input.projectId,
             threadId: input.threadId,
           });
-          const latestFinal = readbackResult(latestProjection, input.runId);
+          const policy = yield* runtimePolicies.resolve({
+            thread: latestProjection.thread,
+            modelSelection: latestProjection.thread.modelSelection,
+          });
+          if (!readbackContextMatches(row, latestProjection, policy)) return;
+          const finalResult = readbackResult(latestProjection, input.runId);
+          const latestFinal =
+            input.kind === "final"
+              ? finalResult && { ...finalResult, messageId: finalResult.finalMessageId }
+              : publicReadbackResults(latestProjection, input.runId).find(
+                  (message) => message.messageId === input.messageId,
+                );
           if (
             latestFinal === undefined ||
             latestFinal.attemptId !== input.attemptId ||
-            latestFinal.finalMessageId !== input.finalMessageId ||
+            latestFinal.messageId !== input.messageId ||
             latestFinal.text !== input.text
           )
             return;
-          const intents = yield* sql<{ receipt_json: string | null }>`
-            SELECT receipt_json FROM codex_live_voice_intents
-            WHERE lease_id = ${input.leaseId} AND generation = ${input.generation}
-              AND planner_native_thread_id = ${input.plannerNativeThreadId}
-              AND planner_turn_id = ${input.plannerTurnId} AND dispatch_state = 'admitted'
-          `;
-          const stored = intents[0]?.receipt_json;
-          if (stored === undefined || stored === null) return;
-          const receipt = decodeReceipt(stored) as Record<string, unknown>;
-          if (receipt.runId !== input.runId || receipt.readback !== undefined) return;
           const beforeClaim = yield* getLease(input.leaseId, input.generation);
           const leaseBeforeClaim = active.get(leaseKey(input.leaseId, input.generation));
           if (
@@ -475,15 +629,7 @@ export const layer: Layer.Layer<
             leaseBeforeClaim.runtime.providerSessionId !== beforeClaim.provider_session_id
           )
             return;
-          const claimed = encodeReceipt({
-            ...receipt,
-            readback: {
-              state: "claimed",
-              runId: input.runId,
-              attemptId: input.attemptId,
-              finalMessageId: input.finalMessageId,
-            },
-          });
+          const claimed = receiptWithState("claimed");
           const now = DateTime.formatIso(yield* DateTime.now);
           yield* sql`
             UPDATE codex_live_voice_intents SET receipt_json = ${claimed}, updated_at = ${now}
@@ -504,14 +650,36 @@ export const layer: Layer.Layer<
             .pipe(Effect.mapError(() => liveError("runtime_unavailable")));
           // Refresh after the principal lookup: native error/closed events can
           // commit while that lookup is suspended, without taking this lease lock.
+          let stillPublic = true;
+          if (input.kind === "context") {
+            const currentProjection = yield* threads.getProjectThread({
+              projectId: input.projectId,
+              threadId: input.threadId,
+            });
+            const currentPolicy = yield* runtimePolicies.resolve({
+              thread: currentProjection.thread,
+              modelSelection: currentProjection.thread.modelSelection,
+            });
+            stillPublic =
+              readbackContextMatches(row, currentProjection, currentPolicy) &&
+              publicReadbackResults(currentProjection, input.runId).some(
+                (message) =>
+                  message.messageId === input.messageId &&
+                  message.attemptId === input.attemptId &&
+                  message.text === input.text,
+              );
+          }
           const beforeDispatch = yield* getLease(input.leaseId, input.generation);
           const currentLease = active.get(leaseKey(input.leaseId, input.generation));
           if (
+            !stillPublic ||
             beforeDispatch === undefined ||
             beforeDispatch.status !== "active" ||
             beforeDispatch.planner_native_thread_id !== input.plannerNativeThreadId ||
             currentLease?.plannerNativeThreadId !== input.plannerNativeThreadId ||
             currentLease.runtime.liveVoice === undefined ||
+            (input.kind === "context" &&
+              currentLease.runtime.liveVoice.appendContext === undefined) ||
             currentLease.runtime.driver !== "codex" ||
             currentLease.runtime.instanceId !== beforeDispatch.provider_instance_id ||
             currentLease.runtime.providerSessionId !== beforeDispatch.provider_session_id ||
@@ -522,15 +690,7 @@ export const layer: Layer.Layer<
                 principal.scopes.includes(AuthOrchestrationOperateScope),
             )
           ) {
-            const refused = encodeReceipt({
-              ...receipt,
-              readback: {
-                state: "refused",
-                runId: input.runId,
-                attemptId: input.attemptId,
-                finalMessageId: input.finalMessageId,
-              },
-            });
+            const refused = receiptWithState("refused");
             yield* sql`
               UPDATE codex_live_voice_intents SET receipt_json = ${refused}, updated_at = ${now}
               WHERE lease_id = ${input.leaseId} AND generation = ${input.generation}
@@ -540,21 +700,16 @@ export const layer: Layer.Layer<
             return;
           }
           const state = yield* Effect.exit(
-            currentLease.runtime.liveVoice.appendSpeech({
+            (input.kind === "final"
+              ? currentLease.runtime.liveVoice.appendSpeech
+              : currentLease.runtime.liveVoice.appendContext!)({
               plannerNativeThreadId: input.plannerNativeThreadId,
               text: input.text,
             }),
           );
-          // appendSpeech has no idempotency key: any outcome after claim is terminal.
-          const settled = encodeReceipt({
-            ...receipt,
-            readback: {
-              state: Exit.isSuccess(state) ? "sent" : "unknown",
-              runId: input.runId,
-              attemptId: input.attemptId,
-              finalMessageId: input.finalMessageId,
-            },
-          });
+          // Neither append has an idempotency key. This records transport acceptance,
+          // not audible playback, and ambiguous outcomes are never blindly replayed.
+          const settled = receiptWithState(Exit.isSuccess(state) ? "sent" : "unknown");
           yield* sql`
             UPDATE codex_live_voice_intents SET receipt_json = ${settled}, updated_at = ${now}
             WHERE lease_id = ${input.leaseId} AND generation = ${input.generation}
@@ -1454,15 +1609,45 @@ export const layer: Layer.Layer<
             yield* stopReadbackWorkers(leaseId, generation);
             active.delete(leaseKey(leaseId, generation));
             return;
-          case "transcript":
-            yield* eventHub.publish({
-              type: "transcript",
-              leaseId,
-              generation,
-              role: event.role,
-              text: event.text.slice(0, 16_384),
-            });
+          case "transcript": {
+            if (
+              (row.status !== "active" && row.status !== "starting") ||
+              (event.realtimeSessionId !== undefined &&
+                event.realtimeSessionId !== `${leaseId}:${generation}`)
+            )
+              return;
+            const partCount = Math.max(1, Math.ceil(event.text.length / 16_384));
+            if (partCount > 256) {
+              yield* eventHub.publish({
+                type: "error",
+                leaseId,
+                generation,
+                code: "runtime_unavailable",
+              });
+              return;
+            }
+            const segment =
+              event.segment ??
+              (partCount > 1
+                ? {
+                    id: `legacy:${leaseId}:${++transcriptSequence}`,
+                    revision: 1,
+                    kind: "snapshot" as const,
+                    final: true,
+                  }
+                : undefined);
+            for (let partIndex = 0; partIndex < partCount; partIndex += 1) {
+              yield* eventHub.publish({
+                type: "transcript",
+                leaseId,
+                generation,
+                role: event.role,
+                text: event.text.slice(partIndex * 16_384, (partIndex + 1) * 16_384),
+                ...(segment === undefined ? {} : { segment: { ...segment, partIndex, partCount } }),
+              });
+            }
             return;
+          }
         }
       }).pipe(Effect.catchCause(() => markUnknown(leaseId, generation).pipe(Effect.orDie)));
     }
