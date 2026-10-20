@@ -23,6 +23,7 @@ import {
   dispatchHardwareKeyboardCommand,
   getHardwareKeyboardCommandRegistrationVersion,
   getRegisteredHardwareKeyboardCommands,
+  getRegisteredHardwareKeyboardPaletteItems,
   parseActiveThreadPath,
   subscribeToHardwareKeyboardCommandRegistrations,
   type HardwareKeyboardCommand,
@@ -100,6 +101,9 @@ export function HardwareKeyboardCommandProvider({
     const commands = new Set<HardwareKeyboardCommand>(getRegisteredHardwareKeyboardCommands());
     commands.add("newTask");
     commands.add("commandPalette");
+    if (commands.has("composerFocus") || commands.has("composerEscape")) {
+      commands.add("keyboardNavigation");
+    }
     if (pathname !== "/" && !pathname.startsWith("/threads/")) {
       for (const command of commands) {
         if (command.startsWith("thread.jump.")) commands.delete(command);
@@ -117,7 +121,7 @@ export function HardwareKeyboardCommandProvider({
 
   const onCommand = useCallback(
     (command: HardwareKeyboardCommand) => {
-      if (command === "commandPalette") {
+      if (command === "commandPalette" || command === "keyboardNavigation") {
         setPaletteOpen(true);
         return;
       }
@@ -175,12 +179,23 @@ export function HardwareKeyboardCommandProvider({
     [copyTarget, navigation, pathname, showCopyFeedback],
   );
 
+  const contextActions = useSyncExternalStore(
+    subscribeToHardwareKeyboardCommandRegistrations,
+    getRegisteredHardwareKeyboardPaletteItems,
+    getRegisteredHardwareKeyboardPaletteItems,
+  );
+
   const palette = useMemo(
     () =>
       paletteOpen ? (
-        <CommandPalette pathname={pathname} onClose={closePalette} onCommand={onCommand} />
+        <CommandPalette
+          pathname={pathname}
+          onClose={closePalette}
+          onCommand={onCommand}
+          contextActions={contextActions}
+        />
       ) : null,
-    [closePalette, onCommand, paletteOpen, pathname],
+    [closePalette, contextActions, onCommand, paletteOpen, pathname],
   );
 
   return (

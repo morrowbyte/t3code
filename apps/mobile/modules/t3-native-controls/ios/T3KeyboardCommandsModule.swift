@@ -25,7 +25,11 @@ public final class T3KeyboardCommandsView: ExpoView {
   public override var inputView: UIView? { shortcutInputView }
 
   public override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
-    if action == #selector(openCommandPalette) || action == #selector(paletteNext) || action == #selector(palettePrevious) || action == #selector(paletteDismiss),
+    if (action == #selector(openKeyboardNavigation) || action == #selector(focusComposer)),
+       window?.t3FirstResponder is UITextInput {
+      return false
+    }
+    if action == #selector(escapeComposer) || action == #selector(openCommandPalette) || action == #selector(paletteNext) || action == #selector(palettePrevious) || action == #selector(paletteDismiss),
        let input = window?.t3FirstResponder as? UITextInput,
        input.markedTextRange != nil {
       return false
@@ -38,12 +42,15 @@ public final class T3KeyboardCommandsView: ExpoView {
     var commands = [
       enabledCommand("newTask", input: "n", modifiers: .command, action: #selector(newTask), title: "New Task"),
       enabledCommand("focusSearch", input: "f", modifiers: .command, action: #selector(focusSearch), title: "Find"),
-      isPad
-        ? enabledCommand("commandPalette", input: "k", modifiers: .command, action: #selector(openCommandPalette), title: "Command Palette")
-        : enabledCommand("focusSearch", input: "k", modifiers: .command, action: #selector(focusSearch), title: "Focus Search"),
+      enabledCommand("commandPalette", input: "k", modifiers: .command, action: #selector(openCommandPalette), title: "Command Palette"),
       enabledCommand("paletteNext", input: UIKeyCommand.inputDownArrow, modifiers: [], action: #selector(paletteNext), title: "Next Result"),
       enabledCommand("palettePrevious", input: UIKeyCommand.inputUpArrow, modifiers: [], action: #selector(palettePrevious), title: "Previous Result"),
+      enabledCommand("paletteNext", input: "n", modifiers: .control, action: #selector(paletteNext), title: "Next Result"),
+      enabledCommand("palettePrevious", input: "p", modifiers: .control, action: #selector(palettePrevious), title: "Previous Result"),
       enabledCommand("paletteDismiss", input: UIKeyCommand.inputEscape, modifiers: [], action: #selector(paletteDismiss), title: "Close Command Palette"),
+      enabledCommand("composerEscape", input: UIKeyCommand.inputEscape, modifiers: [], action: #selector(escapeComposer), title: "Leave Composer"),
+      enabledCommand("keyboardNavigation", input: " ", modifiers: [], action: #selector(openKeyboardNavigation), title: "Keyboard Navigation"),
+      enabledCommand("composerFocus", input: "i", modifiers: [], action: #selector(focusComposer), title: "Write in Composer"),
       enabledCommand("back", input: "[", modifiers: .command, action: #selector(goBack), title: "Back"),
       enabledCommand("files", input: "f", modifiers: [.command, .shift], action: #selector(openFiles), title: "Open Files"),
       enabledCommand("terminal", input: "t", modifiers: [.command, .shift], action: #selector(openTerminal), title: "Open Terminal"),
@@ -142,6 +149,9 @@ public final class T3KeyboardCommandsView: ExpoView {
   }
 
   @objc private func newTask() { emit("newTask") }
+  @objc private func openKeyboardNavigation() { emit("keyboardNavigation") }
+  @objc private func focusComposer() { emit("composerFocus") }
+  @objc private func escapeComposer() { emit("composerEscape") }
   @objc private func openCommandPalette() { emit("commandPalette") }
   @objc private func paletteNext() { emit("paletteNext") }
   @objc private func palettePrevious() { emit("palettePrevious") }

@@ -25,9 +25,22 @@ import {
   hasProviderUsageLimits,
   isUsageLimitsCommand,
 } from "@t3tools/shared/usageLimits";
-import { StackActions, useFocusEffect, useNavigation } from "@react-navigation/native";
+import {
+  StackActions,
+  useFocusEffect,
+  useIsFocused,
+  useNavigation,
+} from "@react-navigation/native";
 import type { ReactNode } from "react";
-import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
 import { Keyboard, Platform, Pressable, View, type ViewStyle } from "react-native";
 import { composerImageGallery } from "../../lib/composerImageGallery";
 import { filePreviewGallery } from "../../lib/filePreviewGallery";
@@ -126,6 +139,13 @@ import {
   useThreadSettingsSheetPresentation,
   type NavigationWithFinishTransitioning,
 } from "./use-thread-settings-sheet-presentation";
+
+import {
+  useHardwareKeyboardCommand,
+  useHardwareKeyboardPaletteItems,
+  type HardwareKeyboardCommand,
+} from "../keyboard/hardwareKeyboardCommands";
+import { composerPaletteItems } from "../keyboard/composerPaletteItems";
 
 export const COMPOSER_COLLAPSED_CHROME = 60;
 
@@ -334,6 +354,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
   const { themeVariables: materialTheme } = useAppearancePreferences();
   const composerPanel = materialTheme["--color-composer-panel"];
   const navigation = useNavigation();
+  const screenIsFocused = useIsFocused();
   const foregroundColor = useUniwindTheme()["--color-foreground"];
   const bodyText = useScaledTextRole("body");
   const fallbackInputRef = useRef<ComposerEditorHandle>(null);
@@ -585,11 +606,20 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
   const lockedProviderInstanceId = props.canSwitchProvider
     ? undefined
     : currentModelSelection.instanceId;
-  const modelOptions = buildModelOptions(
-    props.serverConfig,
-    currentModelSelection,
-    lockedProviderInstanceId,
-    props.selectedThread.projectId,
+  const modelOptions = useMemo(
+    () =>
+      buildModelOptions(
+        props.serverConfig,
+        currentModelSelection,
+        lockedProviderInstanceId,
+        props.selectedThread.projectId,
+      ),
+    [
+      props.serverConfig,
+      currentModelSelection,
+      lockedProviderInstanceId,
+      props.selectedThread.projectId,
+    ],
   );
   const threadProviderGroups = groupByProvider(modelOptions);
   const currentModelOption =
@@ -598,10 +628,32 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
         option.selection.instanceId === currentModelSelection.instanceId &&
         option.selection.model === currentModelSelection.model,
     ) ?? null;
-  const providerOptionDescriptors = resolveProviderOptionDescriptors({
-    capabilities: currentModelOption?.capabilities,
-    selections: currentModelSelection.options,
-  });
+  const providerOptionDescriptors = useMemo(
+    () =>
+      resolveProviderOptionDescriptors({
+        capabilities: currentModelOption?.capabilities,
+        selections: currentModelSelection.options,
+      }),
+    [currentModelOption?.capabilities, currentModelSelection.options],
+  );
+  const updateModelSelection = props.onUpdateModelSelection;
+  const selectSettingsModel = useCallback<ExistingThreadSettingsRouteSession["onSelectModel"]>(
+    (option) => updateModelSelection(withRememberedModelOptions(option.selection)),
+    [updateModelSelection],
+  );
+  const updateSettingsOptions = useCallback<
+    ExistingThreadSettingsRouteSession["onUpdateOptionSelections"]
+  >(
+    (options) => {
+      rememberModelOptions(
+        currentModelSelection.instanceId,
+        currentModelSelection.model,
+        options ?? [],
+      );
+      updateModelSelection({ ...currentModelSelection, options });
+    },
+    [currentModelSelection, updateModelSelection],
+  );
   const settingsOwnerId = composerOwnerKey;
   const settingsRouteSession = {
     ownerId: settingsOwnerId,
@@ -612,20 +664,83 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     providerGroups: threadProviderGroups,
     selectedModel: currentModelSelection,
     reportedModelSelection: props.reportedModelSelection,
-    onSelectModel: (option) =>
-      props.onUpdateModelSelection(withRememberedModelOptions(option.selection)),
+    onSelectModel: selectSettingsModel,
     optionDescriptors: providerOptionDescriptors,
-    onUpdateOptionSelections: (options) => {
-      rememberModelOptions(
-        currentModelSelection.instanceId,
-        currentModelSelection.model,
-        options ?? [],
-      );
-      props.onUpdateModelSelection({ ...currentModelSelection, options });
-    },
+    onUpdateOptionSelections: updateSettingsOptions,
     runtimeMode: currentRuntimeMode,
     onUpdateRuntimeMode: props.onUpdateRuntimeMode,
   } satisfies ExistingThreadSettingsRouteSession;
+  const keyboardSupportsFiles = Boolean(
+    props.serverConfig?.environment.capabilities.fileAttachments,
+  );
+  const {
+    reportedModelSelection,
+    canOperateThread,
+    onUpdateRuntimeMode,
+    onPickDraftMedia,
+    onPickDraftFiles,
+  } = props;
+  const keyboardActions = useMemo(
+    () =>
+      composerPaletteItems({
+        modelOptions,
+        selectedModel: currentModelSelection,
+        reportedModelSelection,
+        optionDescriptors: providerOptionDescriptors,
+        runtimeMode: currentRuntimeMode,
+        canConfigure: canOperateThread,
+        supportsFiles: keyboardSupportsFiles,
+        onSelectModel: selectSettingsModel,
+        onUpdateOptionSelections: updateSettingsOptions,
+        onUpdateRuntimeMode,
+        onPickMedia: () => {
+          void onPickDraftMedia();
+        },
+        onPickFiles: () => {
+          void onPickDraftFiles();
+        },
+      }),
+    [
+      modelOptions,
+      currentModelSelection,
+      reportedModelSelection,
+      providerOptionDescriptors,
+      currentRuntimeMode,
+      canOperateThread,
+      keyboardSupportsFiles,
+      selectSettingsModel,
+      updateSettingsOptions,
+      onUpdateRuntimeMode,
+      onPickDraftMedia,
+      onPickDraftFiles,
+    ],
+  );
+  useHardwareKeyboardPaletteItems(keyboardActions, screenIsFocused && !voiceInput.freezesEditor);
+  const keyboardCommands = useMemo<ReadonlyArray<HardwareKeyboardCommand>>(
+    () =>
+      !screenIsFocused || voiceInput.freezesEditor
+        ? []
+        : isFocused
+          ? ["composerEscape"]
+          : ["composerFocus"],
+    [screenIsFocused, voiceInput.freezesEditor, isFocused],
+  );
+  const handleKeyboardCommand = (command: HardwareKeyboardCommand) => {
+    if (command === "composerFocus") {
+      inputRef.current?.focus();
+    } else if (command === "composerEscape") {
+      if (
+        composerMenu.trigger &&
+        (composerMenu.items.length > 0 || composerMenu.trigger.kind === "pull-request")
+      ) {
+        composerMenu.dismiss();
+      } else {
+        inputRef.current?.blur();
+      }
+    }
+  };
+  useHardwareKeyboardCommand(keyboardCommands, handleKeyboardCommand);
+
   const openSettings = () => {
     settingsRoutePresentation.present(settingsRouteSession);
     settingsSheetPresentation.open();

@@ -7,6 +7,7 @@ import {
   FlatList,
   KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   Text as NativeText,
   TextInput,
@@ -121,11 +122,15 @@ function PaletteRow(props: {
           </Text>
         ) : null}
       </View>
+      {props.item.children ? (
+        <SymbolView name="chevron.right" size={12} tintColorClassName="accent-foreground-muted" />
+      ) : null}
       {props.index < 9 ? (
         <NativeText
           className={cn("w-8 shrink-0 text-right text-sm tabular-nums", mutedForegroundClassName)}
         >
-          ⌘{props.index + 1}
+          {Platform.OS === "android" ? "Ctrl+" : "⌘"}
+          {props.index + 1}
         </NativeText>
       ) : null}
     </RowPressable>
@@ -137,6 +142,7 @@ export function CommandPalette(props: {
   readonly pathname: string;
   readonly onClose: () => void;
   readonly onCommand: (command: HardwareKeyboardCommand) => void;
+  readonly contextActions: ReadonlyArray<CommandPaletteItem>;
 }) {
   const navigation = useNavigation();
   const { themeVariables } = useAppearancePreferences();
@@ -149,6 +155,8 @@ export function CommandPalette(props: {
   const environments = useWorkspaceEnvironments();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const [query, setQuery] = useState("");
+  const [actionGroupKey, setActionGroupKey] = useState<string | null>(null);
+  const actionGroup = props.contextActions.find((item) => item.key === actionGroupKey) ?? null;
   const [selection, setSelection] = useState<string | null>(null);
   const [visible, setVisible] = useState(true);
   const pendingAction = useRef<(() => void) | null>(null);
@@ -163,7 +171,10 @@ export function CommandPalette(props: {
         .map((environment) => environment.environmentId),
     [environments],
   );
-  const search = useThreadSearch(searchEnvironmentIds, query.startsWith(">") ? "" : query);
+  const search = useThreadSearch(
+    searchEnvironmentIds,
+    actionGroup || query.startsWith(">") ? "" : query,
+  );
   const matchedThreadKeys = useMemo(
     () =>
       new Set(search.matches.map((match) => scopedThreadKey(match.environmentId, match.threadId))),
@@ -180,6 +191,7 @@ export function CommandPalette(props: {
   );
   const items = useMemo(() => {
     const actions: CommandPaletteItem[] = [
+      ...props.contextActions,
       {
         key: "newTask",
         kind: "action",
@@ -348,14 +360,20 @@ export function CommandPalette(props: {
     activeThreadRef,
     navigation,
     projects,
+    props.contextActions,
     runCommand,
     savedConnectionsById,
     selectThread,
     threads,
   ]);
   const results = useMemo(
-    () => filterCommandPaletteItems(items, query, matchedThreadKeys),
-    [items, matchedThreadKeys, query],
+    () =>
+      filterCommandPaletteItems(
+        actionGroup?.children ?? items,
+        query,
+        actionGroup ? new Set() : matchedThreadKeys,
+      ),
+    [actionGroup, items, matchedThreadKeys, query],
   );
   const selectedIndex = Math.max(
     0,
@@ -396,9 +414,25 @@ export function CommandPalette(props: {
     setVisible(false);
   }
 
+  function selectItem(item: CommandPaletteItem) {
+    if (item.children) {
+      setActionGroupKey(item.key);
+      setQuery("");
+      setSelection(null);
+      listRef.current?.scrollToOffset({ offset: 0, animated: false });
+      inputRef.current?.focus();
+    } else {
+      close(item.run);
+    }
+  }
+
   function onCommand(command: HardwareKeyboardCommand) {
     if (command === "commandPalette" || command === "paletteDismiss") {
-      close();
+      if (command === "paletteDismiss" && actionGroup) {
+        setActionGroupKey(null);
+        setQuery("");
+        setSelection(null);
+      } else close();
     } else if (command === "paletteNext" || command === "palettePrevious") {
       setSelection(
         results[nextPaletteIndex(selectedIndex, command === "paletteNext" ? 1 : -1, results.length)]
@@ -406,7 +440,7 @@ export function CommandPalette(props: {
       );
     } else {
       const item = results[threadJumpIndex(command)];
-      if (item) close(item.run);
+      if (item) selectItem(item);
     }
   }
 
@@ -442,6 +476,21 @@ export function CommandPalette(props: {
               }}
             >
               <View className="px-3 pb-2.5 pt-3.5">
+                {actionGroup ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Back to commands"
+                    onPress={() => {
+                      setActionGroupKey(null);
+                      setQuery("");
+                      setSelection(null);
+                    }}
+                  >
+                    <Text className="px-3 pb-2 text-sm text-foreground-muted">
+                      ‹ {actionGroup.title}
+                    </Text>
+                  </Pressable>
+                ) : null}
                 <View className="h-[38px] flex-row items-center gap-1.5 pr-2.5 pl-[11px]">
                   <SymbolView
                     name="magnifyingglass"
@@ -451,8 +500,16 @@ export function CommandPalette(props: {
                   />
                   <TextInput
                     ref={inputRef}
-                    accessibilityLabel="Search commands, projects, and threads"
-                    placeholder="Search commands, projects, and threads…"
+                    accessibilityLabel={
+                      actionGroup
+                        ? `Search ${actionGroup.title}`
+                        : "Search commands, projects, and threads"
+                    }
+                    placeholder={
+                      actionGroup
+                        ? `${actionGroup.title}…`
+                        : "Search commands, projects, and threads…"
+                    }
                     placeholderTextColorClassName="accent-placeholder"
                     autoCorrect={false}
                     autoCapitalize="none"
@@ -468,7 +525,7 @@ export function CommandPalette(props: {
                     submitBehavior="submit"
                     onSubmitEditing={() => {
                       const item = results[selectedIndex];
-                      if (item) close(item.run);
+                      if (item) selectItem(item);
                     }}
                   />
                 </View>
@@ -499,7 +556,7 @@ export function CommandPalette(props: {
                       item.kind === "thread" ? contentMatchByKey.get(item.key) : undefined
                     }
                     searchQuery={query}
-                    onSelect={() => close(item.run)}
+                    onSelect={() => selectItem(item)}
                   />
                 )}
               />

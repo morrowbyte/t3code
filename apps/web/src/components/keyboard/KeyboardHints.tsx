@@ -42,7 +42,7 @@ export function KeyboardHints() {
   useKeyboardCommands({
     "navigation.hints": () => {
       const dialogs = document.querySelectorAll<HTMLElement>(
-        '[role="dialog"],[role="alertdialog"]',
+        '[role="dialog"][aria-modal="true"],[role="alertdialog"][aria-modal="true"]',
       );
       origin.current =
         document.activeElement instanceof HTMLElement ? document.activeElement : null;

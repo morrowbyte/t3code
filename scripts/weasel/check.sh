@@ -362,6 +362,11 @@ if [[ ! -f "$mobile_composer_test" ]]; then
 fi
 focused_tests+=("$mobile_composer_test")
 focused_tests+=(apps/server/src/attachments/YaziPicker.test.ts apps/web/src/components/chat/TraitsPicker.test.ts)
+focused_tests+=(
+  apps/mobile/src/features/keyboard/commandPaletteItems.test.ts
+  apps/mobile/src/features/keyboard/composerPaletteItems.test.ts
+  apps/mobile/src/features/keyboard/hardwareKeyboardCommands.test.ts
+)
 renderer_tests=(
   apps/web/src/components/keyboard/LeaderNavigation.browser.test.tsx
   apps/web/src/components/keyboard/KeyboardHints.browser.test.tsx

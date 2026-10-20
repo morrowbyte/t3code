@@ -1,9 +1,13 @@
 import { EnvironmentId, ThreadId, type ThreadJumpKeybindingCommand } from "@t3tools/contracts";
 import { useEffect } from "react";
+import type { CommandPaletteItem } from "./commandPaletteItems";
 
 export type HardwareKeyboardCommand =
   | ThreadJumpKeybindingCommand
   | "commandPalette"
+  | "keyboardNavigation"
+  | "composerFocus"
+  | "composerEscape"
   | "paletteNext"
   | "palettePrevious"
   | "paletteDismiss"
@@ -20,6 +24,8 @@ export type HardwareKeyboardCommand =
 type CommandHandler = (command: HardwareKeyboardCommand) => boolean | void;
 
 const handlers = new Map<HardwareKeyboardCommand, Set<CommandHandler>>();
+const paletteItems = new Map<symbol, ReadonlyArray<CommandPaletteItem>>();
+let paletteSnapshot: ReadonlyArray<CommandPaletteItem> = [];
 const registrationListeners = new Set<() => void>();
 let registrationVersion = 0;
 
@@ -46,6 +52,30 @@ export function useHardwareKeyboardCommand(
       registrationListeners.forEach((listener) => listener());
     };
   }, [command, handler]);
+}
+
+export function useHardwareKeyboardPaletteItems(
+  items: ReadonlyArray<CommandPaletteItem>,
+  enabled: boolean,
+): void {
+  useEffect(() => {
+    if (!enabled) return;
+    const owner = Symbol();
+    paletteItems.set(owner, items);
+    paletteSnapshot = [...paletteItems.values()].flat();
+    registrationVersion += 1;
+    registrationListeners.forEach((listener) => listener());
+    return () => {
+      paletteItems.delete(owner);
+      paletteSnapshot = [...paletteItems.values()].flat();
+      registrationVersion += 1;
+      registrationListeners.forEach((listener) => listener());
+    };
+  }, [items, enabled]);
+}
+
+export function getRegisteredHardwareKeyboardPaletteItems(): ReadonlyArray<CommandPaletteItem> {
+  return paletteSnapshot;
 }
 
 export function getRegisteredHardwareKeyboardCommands(): ReadonlySet<HardwareKeyboardCommand> {

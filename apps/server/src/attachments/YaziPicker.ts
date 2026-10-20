@@ -1,4 +1,3 @@
-import * as NodeCrypto from "node:crypto";
 import * as NodeBuffer from "node:buffer";
 import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
@@ -20,11 +19,13 @@ import * as PtyAdapter from "@t3tools/shared/PtyAdapter";
 import { hostPreviewMimeTypeFromExtension } from "@t3tools/shared/filePreview";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Semaphore from "effect/Semaphore";
+import * as Schema from "effect/Schema";
 
 const MAX_OUTPUT_CHARS = 1024 * 1024;
 const MAX_CHOOSER_BYTES = 1024 * 1024;
@@ -82,6 +83,7 @@ export class YaziPicker extends Context.Service<
 
 const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
+  const crypto = yield* Crypto.Crypto;
   const path = yield* Path.Path;
   const pty = yield* PtyAdapter.PtyAdapter;
   const home = yield* HostProcess.HomeDirectory;
@@ -161,7 +163,7 @@ const make = Effect.gen(function* () {
       selected.push({
         path: canonicalPath,
         metadata: {
-          id: NodeCrypto.randomUUID(),
+          id: yield* crypto.randomUUIDv4().pipe(Effect.orDie),
           name: path.basename(selectedPath),
           mimeType,
           sizeBytes: Number(info.size),
@@ -198,7 +200,7 @@ const make = Effect.gen(function* () {
               rows: input.rows,
               env: { ...environment, TERM: "xterm-256color", COLORTERM: "truecolor" },
             });
-            const sessionId = NodeCrypto.randomUUID();
+            const sessionId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
             const session: Session = {
               owner,
               directory,
@@ -248,10 +250,9 @@ const make = Effect.gen(function* () {
             Effect.catch((cause) =>
               Effect.sync(() => {
                 session.state = "failed";
-                session.error =
-                  cause instanceof YaziPickerError
-                    ? cause.message
-                    : new YaziPickerError({ reason: "selection" }).message;
+                session.error = Schema.is(YaziPickerError)(cause)
+                  ? cause.message
+                  : new YaziPickerError({ reason: "selection" }).message;
               }),
             ),
           );
@@ -317,7 +318,7 @@ const make = Effect.gen(function* () {
             }),
           ).pipe(
             Effect.mapError((cause) =>
-              cause instanceof YaziPickerError
+              Schema.is(YaziPickerError)(cause)
                 ? cause
                 : new YaziPickerError({ reason: "read", cause }),
             ),

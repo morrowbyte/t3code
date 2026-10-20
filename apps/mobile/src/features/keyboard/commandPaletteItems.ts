@@ -5,6 +5,7 @@ export interface CommandPaletteItem {
   readonly detail?: string;
   readonly searchTerms: ReadonlyArray<string>;
   readonly run: () => void;
+  readonly children?: ReadonlyArray<CommandPaletteItem>;
 }
 
 export function filterCommandPaletteItems(

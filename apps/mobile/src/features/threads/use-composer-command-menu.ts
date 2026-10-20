@@ -205,6 +205,11 @@ export function useComposerCommandMenu({
   readonly onUsageLimits?: () => void;
 }) {
   const [selection, setSelection] = useState(() => composerSelectionAtEnd(draftMessage));
+  const [dismissedSnapshot, setDismissedSnapshot] = useState<{
+    readonly ownerKey: string | null;
+    readonly text: string;
+    readonly selection: ComposerEditorSelection;
+  } | null>(null);
   const previousOwnerKeyRef = useRef(ownerKey);
   const onSelectionChange = (nextSelection: ComposerEditorSelection) => {
     setSelection(nextSelection);
@@ -333,7 +338,14 @@ export function useComposerCommandMenu({
   ]);
 
   const trigger = (() => {
-    if (!enabled || selection.start !== selection.end) {
+    if (
+      !enabled ||
+      selection.start !== selection.end ||
+      (dismissedSnapshot?.ownerKey === ownerKey &&
+        dismissedSnapshot.text === draftMessage &&
+        dismissedSnapshot.selection.start === selection.start &&
+        dismissedSnapshot.selection.end === selection.end)
+    ) {
       return null;
     }
     return detectComposerTrigger(draftMessage, selection.end);
@@ -616,6 +628,7 @@ export function useComposerCommandMenu({
   return {
     selection,
     onSelectionChange,
+    dismiss: () => setDismissedSnapshot({ ownerKey, text: draftMessage, selection }),
     trigger,
     items,
     skills,

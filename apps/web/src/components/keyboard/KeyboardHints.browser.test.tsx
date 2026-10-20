@@ -14,7 +14,10 @@ it("focuses the hinted visible control without activating it and restores focus 
   const hidden = document.createElement("button");
   hidden.hidden = true;
   hidden.textContent = "Hidden";
-  container.append(first, second, hidden);
+  const toast = document.createElement("div");
+  toast.setAttribute("role", "dialog");
+  toast.textContent = "Non-modal notification";
+  container.append(first, second, hidden, toast);
   document.body.append(container);
   const host = document.createElement("div");
   document.body.append(host);
