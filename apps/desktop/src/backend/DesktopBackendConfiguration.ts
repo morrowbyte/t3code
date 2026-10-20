@@ -268,6 +268,7 @@ interface WslPreflightSuccess {
   readonly runtime: WslPreflightRuntime;
   readonly resolvedPath: string;
   readonly runtimeId?: string;
+  readonly t3Home?: string;
 }
 
 interface WslPreflightFailure {
@@ -280,8 +281,6 @@ interface WslPreflightFailure {
 const WSL_TRANSIENT_PREFLIGHT_RETRY_LIMIT = 12;
 const WSL_RUNTIME_ARCHIVE_NAME = "wsl-runtime.tar.gz";
 const WSL_RUNTIME_ARCHIVE_HASH_NAME = `${WSL_RUNTIME_ARCHIVE_NAME}.sha256`;
-const WEASEL_WSL_ISOLATION_UNAVAILABLE =
-  "Weasel WSL is disabled until its Linux T3 home and WSL runtime cache are isolated from the upstream profile. Use the Windows backend for this build.";
 const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/i;
 
 const parseWslRuntimeArchiveHash = (value: string): string | null => {
@@ -307,16 +306,6 @@ const runWslPreflight = Effect.fn("desktop.backendConfiguration.wslPreflight")(f
   | FileSystem.FileSystem
 > {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
-  if (Option.getOrUndefined(environment.profileId) === "weasel") {
-    // This guard runs before the mounted-tree fallback or runtime installer can
-    // write into ~/.t3. The fork must stay isolated until WSL gets its own Linux
-    // home and runtime-cache root.
-    return {
-      _tag: "Failed",
-      reason: WEASEL_WSL_ISOLATION_UNAVAILABLE,
-      fatal: true,
-    } as const;
-  }
 
   const wslEnv = yield* DesktopWslEnvironment.DesktopWslEnvironment;
   const wslServerTree = yield* DesktopWslServerTree.DesktopWslServerTree;
@@ -360,6 +349,28 @@ const runWslPreflight = Effect.fn("desktop.backendConfiguration.wslPreflight")(f
       fatal: true,
     } as const;
   }
+
+  const t3Home =
+    Option.getOrUndefined(environment.profileId) === "weasel"
+      ? yield* wslEnv
+          .getUserHome(runningDistro)
+          .pipe(
+            Effect.map(
+              Option.map(
+                (home) =>
+                  `${home.replace(/\/+$/u, "")}/${DesktopWslEnvironment.resolveWslHomeName("weasel")}`,
+              ),
+            ),
+          )
+      : Option.none<string>();
+  if (Option.getOrUndefined(environment.profileId) === "weasel" && Option.isNone(t3Home)) {
+    return {
+      _tag: "Failed",
+      reason: "Unable to resolve the isolated Linux home for Morrowbyte WSL.",
+      fatal: true,
+    } as const;
+  }
+  const profileBootstrap = Option.isSome(t3Home) ? { t3Home: t3Home.value } : {};
 
   const nodePtyOptions = {
     allowBuild: input.allowBuild,
@@ -417,6 +428,7 @@ const runWslPreflight = Effect.fn("desktop.backendConfiguration.wslPreflight")(f
         yield* wslServerTree.cleanupLegacy;
         return {
           _tag: "Ready",
+          ...profileBootstrap,
           runningDistro,
           windowsEntryPath: environment.backendEntryPath,
           runtime: { kind: "executable", entryPath: `${runtime.linuxAppRoot}/t3` },
@@ -465,6 +477,7 @@ const runWslPreflight = Effect.fn("desktop.backendConfiguration.wslPreflight")(f
 
   return {
     _tag: "Ready",
+    ...profileBootstrap,
     runningDistro,
     windowsEntryPath: mounted.windowsEntryPath,
     runtime: {
@@ -606,23 +619,6 @@ const resolveWslStartConfig = Effect.fn("desktop.backendConfiguration.resolveWsl
   // dependency.
   const wslBindHost = "0.0.0.0";
 
-  const bootstrap = {
-    mode: "desktop" as const,
-    noBrowser: true,
-    port: input.port,
-    // Omit t3Home so the Linux backend uses its own home dir instead of
-    // the Windows-side baseDir (which would be a /mnt/c path and share
-    // the SQLite file with the primary).
-    host: wslBindHost,
-    desktopBootstrapToken: input.bootstrapToken,
-    desktopBootstrapSecret: input.bootstrapSecret,
-    // PortSchema rejects 0, so when tailscale serve is disabled we still need a
-    // valid number in this slot.
-    tailscaleServeEnabled: false,
-    tailscaleServePort: 443,
-    ...buildObservabilityFragment(input.observabilitySettings),
-  };
-
   const archivePath = environment.path.join(environment.resourcesPath, WSL_RUNTIME_ARCHIVE_NAME);
   const archiveHashPath = environment.path.join(
     environment.resourcesPath,
@@ -657,6 +653,23 @@ const resolveWslStartConfig = Effect.fn("desktop.backendConfiguration.resolveWsl
           },
     allowBuild: !environment.isPackaged,
   });
+
+  const bootstrap = {
+    mode: "desktop" as const,
+    noBrowser: true,
+    port: input.port,
+    host: wslBindHost,
+    ...(preflight._tag === "Ready" && preflight.t3Home !== undefined
+      ? { t3Home: preflight.t3Home }
+      : {}),
+    desktopBootstrapToken: input.bootstrapToken,
+    desktopBootstrapSecret: input.bootstrapSecret,
+    // PortSchema rejects 0, so when tailscale serve is disabled we still need a
+    // valid number in this slot.
+    tailscaleServeEnabled: false,
+    tailscaleServePort: 443,
+    ...buildObservabilityFragment(input.observabilitySettings),
+  };
 
   // Every operation after preflight uses the same concrete distro. In
   // default-tracking mode this closes the race where the system default
@@ -754,6 +767,7 @@ const resolveWslStartConfig = Effect.fn("desktop.backendConfiguration.resolveWsl
       ...distroArgs,
       "--exec",
       "env",
+      ...(preflight.t3Home === undefined ? [] : ["-u", "T3CODE_HOME"]),
       `PATH=${launchPath}`,
       ...command,
       "--bootstrap-fd",
@@ -857,17 +871,14 @@ export const make = Effect.gen(function* () {
   const describePrimary = Effect.gen(function* () {
     const persistedSettings = yield* settings.get;
     const wslRequested = persistedSettings.wslOnly && persistedSettings.wslBackendEnabled;
-    const weaselProfile = Option.getOrUndefined(environment.profileId) === "weasel";
     // Only honor wsl-only when WSL is actually usable. If the user
     // persisted wsl-only but WSL has since become unavailable (wsl.exe
     // removed, no distro), fall back to the Windows primary instead of
     // looping forever on preflight failures: the Connections backend
     // control is hidden while WSL is unavailable, so a stuck WSL primary
-    // would otherwise leave no in-app way back to Windows. The Weasel profile
-    // always starts its native Windows primary; its WSL path is blocked before
-    // any distro prewarm or runtime staging can run.
-    const useWsl = wslRequested && !weaselProfile && (yield* wslEnvironment.isAvailable);
-    return { useWsl, wslRequested, weaselProfile, distro: persistedSettings.wslDistro };
+    // would otherwise leave no in-app way back to Windows.
+    const useWsl = wslRequested && (yield* wslEnvironment.isAvailable);
+    return { useWsl, wslRequested, distro: persistedSettings.wslDistro };
   });
 
   const currentBootstrapToken = Effect.gen(function* () {
@@ -878,15 +889,13 @@ export const make = Effect.gen(function* () {
   return DesktopBackendConfiguration.of({
     currentBootstrapToken,
     resolvePrimary: Effect.gen(function* () {
-      const { useWsl, wslRequested, weaselProfile } = yield* describePrimary;
+      const { useWsl, wslRequested } = yield* describePrimary;
       if (useWsl) {
         return yield* buildWslPrimaryConfig;
       }
       if (wslRequested) {
         yield* Effect.logWarning(
-          weaselProfile
-            ? "WSL-only backend requested for the Weasel profile; starting the Windows primary instead."
-            : "WSL-only backend requested but WSL is unavailable; starting the Windows primary instead.",
+          "WSL-only backend requested but WSL is unavailable; starting the Windows primary instead.",
         );
       }
       return yield* buildWindowsPrimaryConfig;

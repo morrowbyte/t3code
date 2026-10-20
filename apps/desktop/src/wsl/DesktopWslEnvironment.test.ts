@@ -417,6 +417,43 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
     };
   };
 
+  it("isolates Morrowbyte install, selection, prune and invalidation from upstream data", () => {
+    const fixture = createFixture();
+    const home = `${fixture.work}/home space's`;
+    const result = runShell(
+      [
+        "set -eu",
+        `export HOME=${sh(home)}`,
+        'mkdir -p "$HOME/.t3/userdata"',
+        'printf upstream-state > "$HOME/.t3/userdata/statev2.sqlite"',
+        buildWslRuntimeInstallScript(fixture.archivePath, fixture.runtimeId, fixture.archiveSha),
+        buildWslRuntimeInstallScript(
+          fixture.archivePath,
+          fixture.runtimeId,
+          fixture.archiveSha,
+          "weasel",
+        ),
+        `test -f "$HOME/.t3/wsl-runtime/${fixture.runtimeId}/.t3code-wsl-runtime-ready"`,
+        `test -f "$HOME/.t3-weasel/wsl-runtime/${fixture.runtimeId}/.t3code-wsl-runtime-selected"`,
+        'mkdir -p "$HOME/.t3-weasel/wsl-runtime/sha256-obsolete"',
+        buildWslRuntimePruneScript(fixture.runtimeId, "weasel"),
+        'test ! -d "$HOME/.t3-weasel/wsl-runtime/sha256-obsolete"',
+        buildWslRuntimeInvalidateScript(fixture.runtimeId, "weasel"),
+        `test ! -f "$HOME/.t3-weasel/wsl-runtime/${fixture.runtimeId}/.t3code-wsl-runtime-ready"`,
+        `test -f "$HOME/.t3/wsl-runtime/${fixture.runtimeId}/.t3code-wsl-runtime-ready"`,
+        'test "$(cat "$HOME/.t3/userdata/statev2.sqlite")" = upstream-state',
+        buildWslRuntimeInstallScript(
+          fixture.archivePath,
+          fixture.runtimeId,
+          fixture.archiveSha,
+          "weasel",
+        ),
+        `test -f "$HOME/.t3-weasel/wsl-runtime/${fixture.runtimeId}/.t3code-wsl-runtime-ready"`,
+      ].join("\n"),
+    );
+    expect(result.status, result.stderr).toBe(0);
+  });
+
   const probeFixture = (fixture: ReturnType<typeof createFixture>) =>
     runShell(
       [

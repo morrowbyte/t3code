@@ -131,44 +131,6 @@ describe("DesktopWslBackend", () => {
       ),
     ),
   );
-  it.effect("does not probe or prewarm WSL for the Weasel profile", () => {
-    const layerPool = Layer.succeed(DesktopBackendPool.DesktopBackendPool, {
-      get: () => Effect.die("unexpected get"),
-      list: Effect.succeed([]),
-      primary: Effect.die("unexpected primary"),
-      register: () => Effect.die("Weasel must not register WSL"),
-      unregister: () => Effect.die("unexpected unregister"),
-    } satisfies DesktopBackendPool.DesktopBackendPool["Service"]);
-
-    return Effect.gen(function* () {
-      const backend = yield* DesktopWslBackend.DesktopWslBackend;
-      yield* backend.reconcile;
-      assert.deepEqual(
-        yield* backend.lastPreflightError,
-        Option.some(
-          "Weasel WSL is disabled until its Linux T3 home and WSL runtime cache are isolated from the upstream profile.",
-        ),
-      );
-    }).pipe(
-      Effect.provide(
-        DesktopWslBackend.layer.pipe(
-          Layer.provideMerge(layerPool),
-          Layer.provideMerge(layerBackendConfiguration),
-          Layer.provideMerge(layerServerExposure),
-          Layer.provideMerge(layerNet),
-          Layer.provideMerge(layerEnvironment("weasel")),
-          Layer.provideMerge(
-            DesktopAppSettings.layerTest({
-              ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
-              wslBackendEnabled: true,
-              wslOnly: false,
-            }),
-          ),
-          Layer.provideMerge(Layer.mock(DesktopWslEnvironment.DesktopWslEnvironment, {})),
-        ),
-      ),
-    );
-  });
   it.effect("clears the stored preflight error when a registered WSL backend becomes ready", () => {
     let registeredSpec: DesktopBackendPool.BackendInstanceSpec | undefined;
     let registeredWsl: DesktopBackendPool.DesktopBackendInstance | undefined;
@@ -259,7 +221,7 @@ describe("DesktopWslBackend", () => {
     }).pipe(
       Effect.provide(
         DesktopWslBackend.layer.pipe(
-          Layer.provideMerge(layerEnvironment()),
+          Layer.provideMerge(layerEnvironment("weasel")),
           Layer.provideMerge(layerPool),
           Layer.provideMerge(layerBackendConfiguration),
           Layer.provideMerge(layerServerExposure),
