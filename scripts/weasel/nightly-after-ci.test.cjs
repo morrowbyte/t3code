@@ -369,3 +369,50 @@ test("Windows-only feed keeps the published Linux version and original bytes rea
     false,
   );
 });
+
+test("Windows-only publication assembles the actual producer artifacts before validation", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const root = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "t3-windows-payload-"));
+  const version = "0.1.2-nightly.20261020.62";
+  try {
+    const producers = new Map();
+    const assets = path.join(root, "release-assets");
+    fs.mkdirSync(assets);
+    fs.writeFileSync(path.join(assets, "WINDOWS-ONLY.json"), "{}\n");
+    fs.writeFileSync(
+      path.join(assets, "nightly-linux.yml"),
+      "version: 0.1.2-nightly.20261020.61\nfiles:\n  - url: https://github.com/morrowbyte/t3code/releases/download/v0.1.2-nightly.20261020.61/retained.AppImage\n",
+    );
+    const payloads = {
+      "release-windows": {
+        [`T3-Code-${version}-x64.exe`]: "installer-fixture",
+        [`T3-Code-${version}-x64.exe.blockmap`]: "blockmap-fixture",
+        "nightly.yml": `version: ${version}\n`,
+      },
+      "release-cli": { [`t3-${version}-win32-x64.zip`]: "cli-archive-fixture" },
+    };
+    for (const step of releaseWorkflow.jobs.build_windows.steps) {
+      if (!step.uses?.startsWith("actions/upload-artifact@")) continue;
+      const directory = step.with.path.replace(/\/\*$/, "");
+      if (!(directory in payloads)) continue;
+      const producer = path.join(root, "producer", directory);
+      fs.mkdirSync(producer, { recursive: true });
+      for (const [name, bytes] of Object.entries(payloads[directory]))
+        fs.writeFileSync(path.join(producer, name), bytes);
+      producers.set(step.with.name, producer);
+    }
+    for (const step of releaseWorkflow.jobs.publish_windows.steps) {
+      if (!step.uses?.startsWith("actions/download-artifact@")) continue;
+      const producer = producers.get(step.with.name);
+      assert(producer, `No Windows producer for ${step.with.name}`);
+      const destination = path.join(root, step.with.path);
+      fs.mkdirSync(destination, { recursive: true });
+      for (const name of fs.readdirSync(producer))
+        fs.copyFileSync(path.join(producer, name), path.join(destination, name));
+    }
+    assert(windowsOnly.validatePayload(assets, version).includes(`t3-${version}-win32-x64.zip`));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
