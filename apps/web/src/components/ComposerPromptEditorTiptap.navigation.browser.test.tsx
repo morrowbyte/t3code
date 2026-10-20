@@ -30,7 +30,7 @@ afterEach(async () => {
 async function mountEditor(
   value: string,
   richTextEnabled = true,
-  onCommandKeyDown?: (key: string, event: KeyboardEvent) => boolean,
+  onCommandKeyDown: (key: string, event: KeyboardEvent) => boolean = () => false,
 ) {
   await act(async () =>
     root.render(
