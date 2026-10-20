@@ -256,6 +256,10 @@ it.effect.each([false, true])(
         method: "browser-session-cookie" as const,
         scopes: [AuthOrchestrationOperateScope],
       };
+      const previousClient = {
+        ...session,
+        sessionId: AuthSessionId.make("previous-browser-client"),
+      };
       const threadId = "thread-live-test" as never;
       const projectId = "project-live-test" as never;
       const providerInstanceId = ProviderInstanceId.make("codex-test");
@@ -309,13 +313,9 @@ it.effect.each([false, true])(
             if (gate?.callNumber === activePrincipalLookups) {
               principalLookupGate = undefined;
               gate.markStarted();
-              return Effect.promise(() => gate.wait).pipe(
-                Effect.as([{ sessionId, subject: session.subject, scopes: session.scopes }]),
-              );
+              return Effect.promise(() => gate.wait).pipe(Effect.as([session, previousClient]));
             }
-            return Effect.succeed([
-              { sessionId, subject: session.subject, scopes: session.scopes },
-            ]);
+            return Effect.succeed([session, previousClient]);
           },
         } as unknown as SessionStore.SessionStore["Service"]),
         Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
@@ -1737,9 +1737,9 @@ it.effect.each([false, true])(
         yield* sql`UPDATE codex_live_voice_leases SET status = 'prepared',
           planner_native_thread_id = ${retry.plannerNativeThreadId} WHERE lease_id = ${retry.leaseId}`;
 
-        const endPrepared = (lease: LiveVoiceSession) =>
+        const endPrepared = (lease: LiveVoiceSession, principal = session) =>
           Effect.gen(function* () {
-            yield* service.stop(session, {
+            yield* service.stop(principal, {
               leaseId: lease.leaseId,
               generation: lease.generation,
               clientRequestId: `end-${lease.leaseId}`,
@@ -1748,7 +1748,7 @@ it.effect.each([false, true])(
               type: "closed",
               plannerNativeThreadId: lease.plannerNativeThreadId!,
             });
-            yield* service.subscribe(session, lease).pipe(
+            yield* service.subscribe(principal, lease).pipe(
               Stream.filter(
                 (event) => event.type === "status" && event.session.status === "closed",
               ),
@@ -1827,8 +1827,68 @@ it.effect.each([false, true])(
         yield* sql.unsafe("DROP TRIGGER reject_voice_binding");
 
         // This is the persisted .57 failure: binding failed before cleanup existed.
-        yield* sql`UPDATE codex_live_voice_leases SET status = 'preparing'
+        yield* sql`UPDATE codex_live_voice_leases SET status = 'preparing',
+          principal_session_id = 'previous-browser-client'
           WHERE client_request_id = 'prepare-binding-failure'`;
+        for (const unsafe of [
+          { reason: "subject", subject: "another-subject" },
+          { reason: "provider", providerSessionId: "unresolved-provider" },
+          { reason: "planner", plannerNativeThreadId: "unresolved-planner" },
+          { reason: "start", startRequestId: "uncertain-start" },
+          { reason: "stop", stopRequestId: "uncertain-stop" },
+          { reason: "native-started", nativeStarted: 1 },
+          { reason: "native-sdp", nativeSdpReceived: 1 },
+          { reason: "unknown", status: "unknown" },
+        ]) {
+          yield* sql`UPDATE codex_live_voice_leases SET
+            status = ${unsafe.status ?? "preparing"},
+            principal_subject = ${unsafe.subject ?? session.subject},
+            provider_session_id = ${unsafe.providerSessionId ?? null},
+            planner_native_thread_id = ${unsafe.plannerNativeThreadId ?? null},
+            start_client_request_id = ${unsafe.startRequestId ?? null},
+            stop_client_request_id = ${unsafe.stopRequestId ?? null},
+            native_started = ${unsafe.nativeStarted ?? 0},
+            native_sdp_received = ${unsafe.nativeSdpReceived ?? 0}
+            WHERE client_request_id = 'prepare-binding-failure'`;
+          const before = yield* sql`SELECT * FROM codex_live_voice_leases
+            WHERE client_request_id = 'prepare-binding-failure'`;
+          const refused = yield* Effect.flip(
+            service.prepare(session, {
+              threadId,
+              clientRequestId: `cross-client-${unsafe.reason}`,
+            }),
+          );
+          assert.equal(refused.code, "dispatch_conflict", unsafe.reason);
+          assert.deepEqual(
+            yield* sql`SELECT * FROM codex_live_voice_leases
+              WHERE client_request_id = 'prepare-binding-failure'`,
+            before,
+            "a different client leaves ambiguous or foreign leases byte-for-byte unchanged",
+          );
+        }
+        yield* sql`UPDATE codex_live_voice_leases SET status = 'preparing',
+          principal_subject = ${session.subject}, provider_session_id = NULL,
+          planner_native_thread_id = NULL, start_client_request_id = NULL,
+          stop_client_request_id = NULL, native_started = 0, native_sdp_received = 0
+          WHERE client_request_id = 'prepare-binding-failure'`;
+        yield* sql`INSERT INTO codex_live_voice_intents (
+          lease_id, generation, planner_native_thread_id, planner_turn_id, submit_slot,
+          call_id, message, command_id, message_id, dispatch_state, updated_at
+        ) SELECT lease_id, generation, 'unresolved-intent-planner', 'unresolved-intent-turn', 0,
+          'orphan-intent-call', 'Pending work must be preserved', 'orphan-intent-command',
+          'orphan-intent-message', 'reserved', updated_at
+          FROM codex_live_voice_leases WHERE client_request_id = 'prepare-binding-failure'`;
+        const intentConflict = yield* Effect.flip(
+          service.prepare(session, { threadId, clientRequestId: "cross-client-pending-intent" }),
+        );
+        assert.equal(intentConflict.code, "dispatch_conflict");
+        assert.equal(
+          (yield* sql<{ status: string }>`SELECT status FROM codex_live_voice_leases
+            WHERE client_request_id = 'prepare-binding-failure'`)[0]!.status,
+          "preparing",
+          "an empty-looking lease with durable work remains protected",
+        );
+        yield* sql`DELETE FROM codex_live_voice_intents WHERE call_id = 'orphan-intent-call'`;
         const stopsBeforeLegacy = stops;
         const recovered = yield* service.prepare(session, {
           threadId,
@@ -1836,12 +1896,47 @@ it.effect.each([false, true])(
         });
         assert.equal(recovered.status, "prepared");
         assert.equal(stops, stopsBeforeLegacy);
-        const retiredBinding = yield* sql<{ status: string }>`
-          SELECT status FROM codex_live_voice_leases
+        const retiredBinding = yield* sql<{ status: string; principal_session_id: string }>`
+          SELECT status, principal_session_id FROM codex_live_voice_leases
           WHERE client_request_id = 'prepare-binding-failure'
         `;
         assert.equal(retiredBinding[0]!.status, "failed");
+        assert.equal(retiredBinding[0]!.principal_session_id, previousClient.sessionId);
+        const attemptsBeforeReplay = plannerAttempts;
+        const replay = yield* service.prepare(previousClient, {
+          threadId,
+          clientRequestId: "prepare-binding-failure",
+        });
+        assert.equal(
+          replay.status,
+          "failed",
+          "the prior client's request keeps its original receipt",
+        );
+        assert.equal(
+          plannerAttempts,
+          attemptsBeforeReplay,
+          "replay cannot create a second planner",
+        );
         yield* endPrepared(recovered);
+
+        yield* sql`UPDATE codex_live_voice_leases SET status = 'preparing'
+          WHERE client_request_id = 'prepare-binding-failure'`;
+        const racingPrincipals = [session, previousClient];
+        const attemptsBeforeRace = plannerAttempts;
+        const racing = yield* Effect.all(
+          racingPrincipals.map((principal, index) =>
+            service
+              .prepare(principal, { threadId, clientRequestId: `orphan-race-${index}` })
+              .pipe(Effect.exit),
+          ),
+          { concurrency: "unbounded" },
+        );
+        assert.equal(racing.filter(Exit.isSuccess).length, 1, "only one new lease wins admission");
+        assert.equal(racing.filter(Exit.isFailure).length, 1);
+        assert.equal(plannerAttempts, attemptsBeforeRace + 1);
+        for (const [index, result] of racing.entries()) {
+          if (Exit.isSuccess(result)) yield* endPrepared(result.value, racingPrincipals[index]!);
+        }
 
         if (!reuseRuntime) {
           const gate = {
@@ -1909,7 +2004,7 @@ it.effect.each([false, true])(
             },
           });
           const next = yield* service
-            .prepare(session, {
+            .prepare(previousClient, {
               threadId,
               clientRequestId: "prepare-after-in-flight-planner-failure",
             })
@@ -1929,7 +2024,7 @@ it.effect.each([false, true])(
             );
           }
           assert.equal(result.value.status, "prepared");
-          yield* endPrepared(result.value);
+          yield* endPrepared(result.value, previousClient);
         }
       });
       yield* program.pipe(
