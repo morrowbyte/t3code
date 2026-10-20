@@ -890,7 +890,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.preflight.outputs.source_sha }}
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Apply only the reviewed .59 Windows packaging validation fix
         if: inputs.recover_windows_run_id != ''

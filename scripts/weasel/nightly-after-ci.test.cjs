@@ -340,6 +340,55 @@ test("published WSL runtime reuse rejects backend and dependency changes", () =>
   ])
     assert.throws(() => windowsOnly.assertRuntimeSourceUnchanged([path]));
 });
+test("Windows checkout retains the pinned runtime ancestor for the source comparison", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const root = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "t3-windows-history-"));
+  const origin = path.join(root, "origin");
+  const checkout = path.join(root, "checkout");
+  const git = (cwd, args) => spawnSync("git", args, { cwd, encoding: "utf8" });
+  const checked = (cwd, args) => {
+    const result = git(cwd, args);
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  try {
+    fs.mkdirSync(origin);
+    checked(origin, ["init", "--initial-branch=main"]);
+    const commit = (message) =>
+      checked(origin, [
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--allow-empty",
+        "-m",
+        message,
+      ]);
+    commit("Published runtime source");
+    const runtimeSource = checked(origin, ["rev-parse", "HEAD"]);
+    commit("Desktop-only source change");
+    const step = releaseWorkflow.jobs.build_windows.steps.find((entry) =>
+      entry.uses?.startsWith("actions/checkout@"),
+    );
+    const depth = Number(step.with["fetch-depth"]);
+    assert(Number.isInteger(depth) && depth >= 0);
+    checked(root, [
+      "clone",
+      "--no-tags",
+      ...(depth === 0 ? [] : ["--depth", String(depth)]),
+      require("node:url").pathToFileURL(origin).href,
+      checkout,
+    ]);
+    const comparison = git(checkout, ["merge-base", "--is-ancestor", runtimeSource, "HEAD"]);
+    assert.equal(comparison.status, 0, comparison.stderr);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 test("Windows-only feed keeps the published Linux version and original bytes reachable", () => {
   const original = Buffer.from(
     "version: 0.1.2-nightly.20261020.61\nfiles:\n  - url: T3-Code-0.1.2-nightly.20261020.61-x86_64.AppImage\n    sha512: e2ZXNaeB8j3TiIaDmbLReMvxtoQ98FGMjZLGRx2WuyHxfnktGEkOdVxIqEbj1oq6zMZWMhBZSIBF9DUJ+XA+QQ==\n    size: 165406392\n    blockMapSize: 175292\npath: T3-Code-0.1.2-nightly.20261020.61-x86_64.AppImage\nsha512: e2ZXNaeB8j3TiIaDmbLReMvxtoQ98FGMjZLGRx2WuyHxfnktGEkOdVxIqEbj1oq6zMZWMhBZSIBF9DUJ+XA+QQ==\nreleaseDate: '2026-10-20T06:09:34.482Z'\n",
