@@ -6622,6 +6622,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               // Resume reuses a loaded thread's MCP connections. Unload it first
               // so a revoked attachment cannot survive the configuration change.
               yield* client.request("thread/unsubscribe", { threadId });
+              observatoryRegisteredThreads.delete(threadId);
               // Rebind only after an explicit new turn, never replay an interrupted action.
               yield* client.raw.request("thread/resume", {
                 threadId,
