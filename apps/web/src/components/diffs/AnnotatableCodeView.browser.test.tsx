@@ -1,4 +1,4 @@
-import type { CodeViewDiffItem, FileDiffMetadata, SelectedLineRange } from "@pierre/diffs";
+import type { FileDiffMetadata, SelectedLineRange } from "@pierre/diffs";
 import { parsePatchFiles } from "@pierre/diffs/utils/parsePatchFiles";
 import { StrictMode, type ComponentProps } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -12,19 +12,10 @@ import "~/index.css";
 import { DraftId, useComposerDraftStore } from "~/composerDraftStore";
 import { buildFileDiffIdentityKey } from "~/lib/diffRendering";
 
-type ViewerProps = Omit<
-  Extract<ComponentProps<typeof StyledDiffCodeView<unknown>>, { items: readonly unknown[] }>,
-  "options"
-> & {
-  options: {
-    enableLineSelection: boolean;
-    enableGutterUtility: boolean;
-    onGutterUtilityClick: (
-      range: SelectedLineRange,
-      context: { item: CodeViewDiffItem<unknown> },
-    ) => void;
-  };
-};
+type ViewerProps = Extract<
+  ComponentProps<typeof StyledDiffCodeView<unknown>>,
+  { items: readonly unknown[] }
+>;
 
 const viewerMode = vi.hoisted(() => ({ fake: true }));
 
