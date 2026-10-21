@@ -6,7 +6,7 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
-import { act, memo } from "react";
+import { act, memo, StrictMode, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
@@ -133,9 +133,20 @@ vi.mock(import("~/components/ui/toast"), async (original) => {
     },
   };
 });
+vi.mock(import("~/hooks/useT3ProjectFileScripts"), () => ({ useT3ProjectFileScripts: () => [] }));
+vi.mock(import("./BranchToolbar"), () => ({ BranchToolbar: () => null }));
+vi.mock(import("./chat/ThreadAutomationsPanel"), () => ({ ThreadAutomationsPanel: () => null }));
+vi.mock(import("./chat/ThreadRelationshipsControl"), () => ({
+  ThreadRelationshipsPanel: () => null,
+}));
 
 import { useComposerDraftStore } from "~/composerDraftStore";
 import GitActionsControl from "./GitActionsControl";
+import { ThreadDetailsPanel } from "./chat/ThreadDetailsPanel";
+import { PopoverCreateHandle, PopoverTrigger } from "./ui/popover";
+import { dispatchKeyboardCommand } from "./keyboard/keyboardCommands";
+import { WorkbenchCommandPicker } from "./keyboard/WorkbenchCommandPicker";
+import { useRightPanelStore } from "~/rightPanelStore";
 
 // ThreadDetailsPanel keeps this component mounted behind React.memo when threads change.
 const MemoGitActionsControl = memo(GitActionsControl);
@@ -180,6 +191,7 @@ beforeEach(() => {
   state.metadataRequests = [];
   state.toasts = [];
   state.afterGitAction = undefined;
+  useRightPanelStore.setState({ threadPanelVisibilityByThreadKey: {} });
   useComposerDraftStore.setState({
     getDraftSession: () => state.draft as never,
     getDraftThreadByRef: () => state.draft as never,
@@ -191,6 +203,101 @@ beforeEach(() => {
   document.body.append(container);
   root = createRoot(container);
 });
+
+it.each(["direct", "workspace picker"])(
+  "opens Git actions from a closed workspace card via %s and keeps its commit dialog mounted",
+  async (entry) => {
+    function ClosedWorkspace() {
+      const anchor = useRef<HTMLButtonElement>(null);
+      const [handle] = useState(PopoverCreateHandle);
+      const [workspaceActionsOpen, setWorkspaceActionsOpen] = useState(
+        entry === "workspace picker",
+      );
+      return (
+        <>
+          <PopoverTrigger handle={handle} render={<button ref={anchor}>Workspace</button>} />
+          {workspaceActionsOpen ? (
+            <WorkbenchCommandPicker
+              title="Workspace actions"
+              onClose={() => setWorkspaceActionsOpen(false)}
+              commands={[
+                {
+                  id: "git-actions",
+                  label: "Git actions: commit, push and pull requests",
+                  run: () => {
+                    dispatchKeyboardCommand("git.actions");
+                  },
+                },
+              ]}
+            />
+          ) : null}
+          <ThreadDetailsPanel
+            anchor={anchor}
+            handle={handle}
+            onPresentationChange={() => {}}
+            environmentId={EnvironmentId.make("environment")}
+            threadId={ThreadId.make("thread")}
+            activeProjectName="Project"
+            activeProjectScripts={undefined}
+            preferredScriptId={null}
+            keybindings={[]}
+            availableEditors={[]}
+            showOpenInPicker={false}
+            gitCwd="/repo"
+            isGitRepo
+            envLocked={false}
+            availableEnvironments={[]}
+            onEnvironmentChange={() => {}}
+            onEnvModeChange={() => {}}
+            envMode="local"
+            startFromOrigin={false}
+            onStartFromOriginChange={() => {}}
+            onComposerFocusRequest={() => {}}
+            onRunProjectScript={() => {}}
+            onAddProjectScript={async () => {
+              throw new Error("Unexpected script mutation");
+            }}
+            onUpdateProjectScript={async () => {
+              throw new Error("Unexpected script mutation");
+            }}
+            onDeleteProjectScript={async () => {
+              throw new Error("Unexpected script mutation");
+            }}
+          />
+        </>
+      );
+    }
+    await act(() =>
+      root.render(
+        <StrictMode>
+          <ClosedWorkspace />
+        </StrictMode>,
+      ),
+    );
+    expect(document.querySelector("[data-thread-details-card]")).toBeNull();
+    if (entry === "workspace picker") {
+      await vi.waitFor(() =>
+        expect(document.activeElement?.getAttribute("aria-label")).toBe("Search workspace actions"),
+      );
+      await act(async () => {
+        await userEvent.keyboard("{Enter}");
+      });
+    } else await act(() => expect(dispatchKeyboardCommand("git.actions")).toBe(true));
+    await expect
+      .element(page.getByRole("dialog", { name: "Git actions", exact: true }))
+      .toBeVisible();
+    await vi.waitFor(() =>
+      expect(document.activeElement?.getAttribute("aria-label")).toBe("Search git actions"),
+    );
+    expect(document.querySelector("[data-thread-details-card]")).not.toBeNull();
+    await act(async () => {
+      await userEvent.keyboard("Commit{Enter}");
+    });
+    await expect.element(page.getByRole("dialog", { name: "Commit changes" })).toBeVisible();
+    expect(document.querySelector("[data-thread-details-card]")).not.toBeNull();
+    expect(commits()).toBe(0);
+  },
+);
 
 afterEach(async () => {
   await act(async () => root.unmount());
