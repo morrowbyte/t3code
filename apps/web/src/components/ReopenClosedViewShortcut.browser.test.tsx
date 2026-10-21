@@ -281,12 +281,14 @@ describe("root reopen shortcut", () => {
     expect(forwardedCommands()).not.toContain("view.reopenClosed");
   });
 
-  it("always forwards the layout toggles out of a focused desktop browser", async () => {
+  it("always forwards layout toggles and history navigation out of a focused desktop browser", async () => {
     await using _view = await renderShortcut();
     expect(state.setShortcuts).toHaveBeenLastCalledWith([
       expect.objectContaining({ command: "navigation.activate" }),
       expect.objectContaining({ command: "sidebar.toggle" }),
       expect.objectContaining({ command: "rightPanel.toggle" }),
+      expect.objectContaining({ command: "preview.back" }),
+      expect.objectContaining({ command: "preview.forward" }),
     ]);
   });
 });

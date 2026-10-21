@@ -1,3 +1,8 @@
+import * as AgentObservatory from "./observatory/AgentObservatoryService.ts";
+import * as CodexLiveSessionService from "./voice/CodexLiveSessionService.ts";
+import * as DesktopTelemetryReceiver from "./resourceTelemetry/DesktopTelemetryReceiver.ts";
+import * as NativeAuthorService from "./orchestration-v2/NativeAuthorService.ts";
+import * as YaziPicker from "./attachments/YaziPicker.ts";
 import { readMainRendererDiagnosticsForTarget } from "./ws.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -491,6 +496,12 @@ it.effect(
 
 // Build the production RPC layer; unrelated capabilities fail if this test calls them.
 const layerUnusedConfigRpcServices = Layer.mergeAll(
+  Layer.mock(AgentObservatory.AgentObservatoryService)({}),
+  Layer.mock(CodexLiveSessionService.CodexLiveSessionService)({}),
+  Layer.mock(DesktopTelemetryReceiver.DesktopTelemetryReceiver)({}),
+  Layer.mock(NativeAuthorService.NativeAuthorService)({}),
+  Layer.mock(YaziPicker.YaziPicker)({}),
+
   Layer.mock(ServerSecretStore.ServerSecretStore)({}),
   Layer.mock(WorkspacePaths.WorkspacePaths)({}),
   Layer.mock(TraceDiagnostics.TraceDiagnostics)({}),

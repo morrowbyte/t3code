@@ -1656,6 +1656,18 @@ export function IntegrationsSettingsPanel() {
   );
 }
 
+async function runWindowsCuaUpdate(
+  update: () => Promise<unknown>,
+  setPending: (pending: boolean) => void,
+) {
+  setPending(true);
+  try {
+    await update();
+  } finally {
+    setPending(false);
+  }
+}
+
 function WindowsCuaSetting() {
   const { scope, environment } = useSettingsScope();
   const target = scope.kind === "environment" ? environment : null;
@@ -1704,7 +1716,7 @@ function WindowsCuaSetting() {
             aria-label="Windows computer control"
             checked={enabled}
             disabled={!connected || (!supported && !enabled) || !canConfigure || pending}
-            onCheckedChange={async (checked) => {
+            onCheckedChange={(checked) => {
               if (
                 environmentId === null ||
                 !connected ||
@@ -1713,15 +1725,14 @@ function WindowsCuaSetting() {
                 pending
               )
                 return;
-              setPending(true);
-              try {
-                await update({
-                  environmentId,
-                  input: { patch: { enableWindowsCua: Boolean(checked) } },
-                });
-              } finally {
-                setPending(false);
-              }
+              return runWindowsCuaUpdate(
+                () =>
+                  update({
+                    environmentId,
+                    input: { patch: { enableWindowsCua: Boolean(checked) } },
+                  }),
+                setPending,
+              );
             }}
           />
         }

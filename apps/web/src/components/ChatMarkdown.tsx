@@ -107,7 +107,7 @@ import type {
 import ReactMarkdown from "react-markdown";
 import { toHtml } from "hast-util-to-html";
 import { createIncrementalMarkdownPlugin } from "../markdown-incremental";
-import { mathSourceIsClosed } from "../markdown-math";
+import { mathSourceIsClosed, remarkChatMath } from "../markdown-math";
 import { defaultUrlTransform } from "react-markdown";
 import { parseAssistantCitationHref } from "@t3tools/shared/assistantCitations";
 import { parseComposerContextHref } from "@t3tools/shared/composerContextReferences";
@@ -116,7 +116,6 @@ import { AssistantCitationChip } from "./chat/AssistantCitationChip";
 import { handleObjectActionKey } from "./chat/objectKeyboardActions";
 import { MarkdownThreadLink } from "./chat/MarkdownThreadLink";
 import { mathKind } from "@t3tools/shared/markdownMath";
-import remarkMath from "remark-math";
 import {
   artifactTemplateFromHastProperties,
   renderCodexInlineDirectivesAsMarkdown,
@@ -3289,7 +3288,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
           raw={raw}
           display={math === "display"}
           focusable={!inline}
-          closed={!isStreaming || mathSourceIsClosed(raw, math === "display")}
+          closed={mathSourceIsClosed(raw, math === "display")}
           isStreaming={isStreaming}
         />
       );
@@ -3571,8 +3570,7 @@ function ChatMarkdown({
     ...extraRemarkPlugins,
     ...(incrementalParsing ? [createIncrementalMarkdownPlugin()] : []),
   ];
-  if (componentState.mathEnabled)
-    remarkPlugins.unshift([remarkMath, { singleDollarTextMath: true }]);
+  if (componentState.mathEnabled) remarkPlugins.unshift(remarkChatMath);
 
   return (
     <Root

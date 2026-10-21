@@ -69,7 +69,7 @@ export const remarkChatMath: Plugin<[], Root> = function () {
                 position,
                 data: {
                   hName: "code",
-                  hProperties: { className: ["language-math"] },
+                  hProperties: { className: ["language-math", "math-inline"] },
                   hChildren: [{ type: "text" as const, value: match[1]! }],
                 },
               },

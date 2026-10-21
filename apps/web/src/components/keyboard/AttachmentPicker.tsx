@@ -63,35 +63,41 @@ function YaziTerminal(props: {
     };
     const attachRemaining = async () => {
       if (disposed || attachmentInFlight || !sessionId || !selectedFiles) return;
+      const files = selectedFiles;
+      const activeSessionId = sessionId;
       attachmentInFlight = true;
       setAttaching(true);
       setError(null);
-      try {
-        while (nextFileIndex < selectedFiles.length) {
+      await (async () => {
+        while (nextFileIndex < files.length) {
           if (disposed) return;
-          const selected = selectedFiles[nextFileIndex]!;
-          setStatus(`Attaching ${nextFileIndex + 1}/${selectedFiles.length}: ${selected.name}`);
+          const selected = files[nextFileIndex]!;
+          setStatus(`Attaching ${nextFileIndex + 1}/${files.length}: ${selected.name}`);
           const file = await readYaziAttachment(
             selected,
-            (offset) => api.read(sessionId!, selected.id, offset),
+            (offset) => api.read(activeSessionId, selected.id, offset),
             () => disposed,
           );
           if (!file || disposed) return;
           const accepted = await latest.current.onFiles([file]);
           if (disposed) return;
-          if (!accepted)
-            throw new Error(
-              `Could not attach ${selected.name}. The remaining files have not been attached.`,
+          if (!accepted) {
+            fail(
+              new Error(
+                `Could not attach ${selected.name}. The remaining files have not been attached.`,
+              ),
             );
+            return;
+          }
           nextFileIndex += 1;
         }
         if (!disposed) latest.current.onClose();
-      } catch (cause) {
-        fail(cause);
-      } finally {
-        attachmentInFlight = false;
-        if (!disposed) setAttaching(false);
-      }
+      })()
+        .catch(fail)
+        .finally(() => {
+          attachmentInFlight = false;
+          if (!disposed) setAttaching(false);
+        });
     };
     const retry = () => {
       void attachRemaining();

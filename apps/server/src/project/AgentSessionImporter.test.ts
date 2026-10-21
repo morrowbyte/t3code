@@ -153,7 +153,7 @@ it.effect("imports messages once and preserves the provider native resume bindin
             Effect.sync(() => {
               writes.push(input.events);
               imported = true;
-              return [];
+              return input.events.map((event, sequence) => ({ sequence, commandId: null, event }));
             }),
         }),
         Layer.mock(ProviderSessionRuntime.ProviderSessionRuntimeRepository)({
@@ -226,13 +226,14 @@ it.effect("imports messages once and preserves the provider native resume bindin
         ?.filter((event) => event.type === "message.updated")
         .map((event) => event.payload.text),
     ).toEqual(["Fix it", "Fixed"]);
-    expect(upserts).toEqual([
-      expect.objectContaining({
+    expect(upserts).toHaveLength(2);
+    for (const upsert of upserts) {
+      expect(upsert).toMatchObject({
         threadId,
         providerInstanceId,
         resumeCursor: { threadId: providerSessionId },
-      }),
-    ]);
+      });
+    }
     expect(recorded).toHaveLength(2);
   }).pipe(Effect.provide(layerTest));
 });

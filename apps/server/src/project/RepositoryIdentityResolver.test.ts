@@ -170,8 +170,9 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
       run: (input) =>
         Effect.sync(() => {
           calls.push(input.args);
-          const rootLookup = input.args.includes("rev-parse");
-          const failed = rootLookup && rootAttempts++ === 0;
+          const bareLookup = input.args.includes("--is-bare-repository");
+          const rootLookup = input.args.includes("--show-toplevel");
+          const failed = bareLookup || (rootLookup && rootAttempts++ === 0);
           return {
             stdout: rootLookup
               ? failed
@@ -203,6 +204,22 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
       expect(recovered?.rootPath).toBe("/repo");
       expect(calls).toEqual([
         ["-C", "/repo/packages/web", "rev-parse", "--show-toplevel"],
+        [
+          "-C",
+          "/repo/packages/web",
+          "--git-dir=.",
+          "rev-parse",
+          "--is-bare-repository",
+          "--absolute-git-dir",
+        ],
+        [
+          "-C",
+          "/repo/packages/web",
+          "--git-dir=.git",
+          "rev-parse",
+          "--is-bare-repository",
+          "--absolute-git-dir",
+        ],
         ["-C", "/repo/packages/web", "rev-parse", "--show-toplevel"],
         ["-C", "/repo", "remote", "-v"],
       ]);

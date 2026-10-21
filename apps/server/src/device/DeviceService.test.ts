@@ -449,12 +449,10 @@ describe("device setup consent", () => {
             deviceId: DeviceId.make("emulator-5554"),
           });
         expect(yield* service.agentReadinessIfSupported()).toBeNull();
-        expect(yield* target(allowed)).toEqual([
-          "--config",
-          "/test-agent-config.json",
-          "--session",
-          expect.any(String),
-        ]);
+        expect(yield* target(allowed)).toEqual({
+          agentDeviceId: "emulator-5554",
+          args: ["--config", "/test-agent-config.json", "--session", expect.any(String)],
+        });
         expect(agentStarts).toHaveLength(1);
         for (const thread of [denied, ThreadId.make("unknown-thread")]) {
           expect(yield* target(thread).pipe(Effect.result)).toMatchObject({ _tag: "Failure" });

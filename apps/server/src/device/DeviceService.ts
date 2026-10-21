@@ -1229,7 +1229,7 @@ export const make = Effect.gen(function* () {
                   "--platform",
                   session.platform,
                   session.platform === "ios" ? "--udid" : "--serial",
-                  target.agentDeviceId,
+                  target.agentDeviceId === input.deviceId ? session.deviceId : target.agentDeviceId,
                   ...target.args,
                 ],
               },

@@ -32,11 +32,12 @@ export function KeyboardHints() {
   const [prefix, setPrefix] = useState("");
   const layer = useRef<HTMLDivElement>(null);
   const origin = useRef<HTMLElement | null>(null);
-  const close = (target = origin.current) => {
+  const close = (target?: HTMLElement | null) => {
+    const focusTarget = target === undefined ? origin.current : target;
     setTargets([]);
     setPrefix("");
     requestAnimationFrame(() => {
-      if (target?.isConnected) target.focus({ preventScroll: true });
+      if (focusTarget?.isConnected) focusTarget.focus({ preventScroll: true });
     });
   };
   useKeyboardCommands({

@@ -2701,7 +2701,10 @@ describe("parseAgentSessionTranscript", () => {
 function opaqueFixtureAtWorkspace(contents: string, workspace: string) {
   const lines = contents.trim().split("\n");
   const metadata = JSON.parse(lines[0]!) as { type: string; payload: { id: string; cwd: string } };
-  lines[0] = JSON.stringify({ ...metadata, payload: { ...metadata.payload, cwd: workspace } });
+  lines[0] = JSON.stringify({
+    ...metadata,
+    payload: { ...metadata.payload, cwd: workspace, source: "cli" },
+  });
   return { contents: lines.join("\n"), providerSessionId: metadata.payload.id };
 }
 

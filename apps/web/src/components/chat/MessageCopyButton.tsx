@@ -19,7 +19,7 @@ export const MessageCopyButton = memo(function MessageCopyButton({
   size = "xs",
   variant = "outline",
   className,
-  keyboardAction = label === "Copy message" ? "copy" : undefined,
+  keyboardAction: keyboardActionProp,
 }: {
   text: string;
   label?: string;
@@ -30,6 +30,8 @@ export const MessageCopyButton = memo(function MessageCopyButton({
   className?: string;
   keyboardAction?: string | undefined;
 }) {
+  const keyboardAction =
+    keyboardActionProp === undefined && label === "Copy message" ? "copy" : keyboardActionProp;
   const ref = useRef<HTMLButtonElement>(null);
   const { copyToClipboard, isCopied } = useCopyToClipboard<void>({
     onCopy: () => showAnchoredCopySuccessToast(ref),

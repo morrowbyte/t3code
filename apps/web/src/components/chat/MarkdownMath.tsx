@@ -21,7 +21,11 @@ export const MarkdownMath = memo(function MarkdownMath(props: {
   const tex = (props.tex ?? props.source ?? "").trim();
   const pending = props.closed === false && props.isStreaming === true;
   const source = props.raw ?? (props.display ? `\\[\n${tex}\n\\]` : `\\(${tex}\\)`);
-  const fallback = <span className="whitespace-pre-wrap">{source}</span>;
+  const fallback = (
+    <span className="whitespace-pre-wrap" data-math-state="source">
+      {source}
+    </span>
+  );
   return (
     <span
       className={
@@ -31,7 +35,7 @@ export const MarkdownMath = memo(function MarkdownMath(props: {
       }
       data-markdown-math={props.display ? "display" : "inline"}
       data-markdown-copy={props.display ? `${source}\n\n` : source}
-      data-math-state={pending ? "pending" : "ready"}
+      data-math-state={pending ? "pending" : props.closed === false ? "source" : "ready"}
       aria-busy={pending || undefined}
       role={props.focusable === false ? undefined : "group"}
       aria-label={
@@ -58,6 +62,8 @@ export const MarkdownMath = memo(function MarkdownMath(props: {
             <Suspense fallback={fallback}>
               {pending ? (
                 <span role="status">Formel…</span>
+              ) : props.closed === false ? (
+                fallback
               ) : (
                 <MathTypeset tex={tex} display={props.display} fallback={fallback} />
               )}

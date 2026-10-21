@@ -178,7 +178,7 @@ export function BrowserAttachmentExplorer({
     setBusy(true);
     setError(null);
     const generation = ++attachGeneration.current;
-    try {
+    await (async () => {
       for (const [key, handle] of files) {
         const opened = await handle.getFile();
         if (generation !== attachGeneration.current) return;
@@ -193,17 +193,19 @@ export function BrowserAttachmentExplorer({
         selectFiles(remaining);
       }
       if (!selection.current.size) onClose();
-    } catch {
-      if (generation === attachGeneration.current)
-        setError(
-          "A selected file could not be read or attached. Your remaining selection is preserved.",
-        );
-    } finally {
-      if (generation === attachGeneration.current) {
-        submitting.current = false;
-        setBusy(false);
-      }
-    }
+    })()
+      .catch(() => {
+        if (generation === attachGeneration.current)
+          setError(
+            "A selected file could not be read or attached. Your remaining selection is preserved.",
+          );
+      })
+      .finally(() => {
+        if (generation === attachGeneration.current) {
+          submitting.current = false;
+          setBusy(false);
+        }
+      });
   };
   const showPreview = async () => {
     const entry = visible[activeIndex.current];

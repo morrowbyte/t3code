@@ -296,7 +296,7 @@ const resolveDiscoveryForConfig = <A, E, R>(
     Effect.map(Option.getOrElse(onTimeout)),
   );
 
-const resolveAvailableEditorsForConfig = <A, E, R>(
+export const resolveAvailableEditorsForConfig = <A, E, R>(
   discovery: Effect.Effect<ReadonlyArray<A>, E, R>,
 ) => resolveDiscoveryForConfig(discovery, () => []);
 
@@ -912,7 +912,7 @@ export function hasCompatibleOrchestrationProtocol(url: URL): boolean {
   );
 }
 
-function shouldUseBoundedThreadSnapshot(input: {
+export function shouldUseBoundedThreadSnapshot(input: {
   readonly acceptBoundedSnapshot?: boolean;
 }): boolean {
   return input.acceptBoundedSnapshot === true;

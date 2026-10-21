@@ -33,6 +33,24 @@ interface ExpandedImageDialogProps {
     | undefined;
 }
 
+async function sendImageAnnotation(
+  onSend: NonNullable<ExpandedImageDialogProps["onSendAnnotation"]>,
+  onClose: () => void,
+  setSending: (sending: boolean) => void,
+  file: File,
+  text: string,
+  signal: AbortSignal,
+): Promise<boolean> {
+  setSending(true);
+  try {
+    const accepted = await onSend(file, text, signal);
+    if (accepted && !signal.aborted) onClose();
+    return accepted;
+  } finally {
+    setSending(false);
+  }
+}
+
 const EXPANDED_MEDIA_STATE_CLASS_NAME =
   "flex aspect-auto h-48 min-h-0 w-[min(var(--media-width),32rem)] flex-col items-center justify-center gap-3 rounded-lg border border-border/70 bg-black p-6 text-center text-sm text-white shadow-2xl";
 
@@ -239,16 +257,16 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
                     reservedHeight={340}
                   />
                 )}
-                onSend={async (file, text, signal) => {
-                  setSendingAnnotation(true);
-                  try {
-                    const accepted = await onSendAnnotation(file, text, signal);
-                    if (accepted && !signal.aborted) onClose();
-                    return accepted;
-                  } finally {
-                    setSendingAnnotation(false);
-                  }
-                }}
+                onSend={(file, text, signal) =>
+                  sendImageAnnotation(
+                    onSendAnnotation,
+                    onClose,
+                    setSendingAnnotation,
+                    file,
+                    text,
+                    signal,
+                  )
+                }
               />
             ) : item.type === "video" ? (
               <ExpandedVideo key={index} item={item} />

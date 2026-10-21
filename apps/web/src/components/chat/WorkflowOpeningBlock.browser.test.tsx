@@ -111,6 +111,6 @@ it("finds the workflow's name and opens a folded script on a match below the fol
   expect(foldToggle(host)?.getAttribute("aria-expanded")).toBe("false");
 
   await screen.rerender(view(LONG_SCRIPT, "TAILONLY", host));
-  expect(CSS.highlights.get("t3-thread-find-active")?.size).toBe(1);
+  await expect.poll(() => CSS.highlights.get("t3-thread-find-active")?.size).toBe(1);
   expect(foldToggle(host)?.getAttribute("aria-expanded")).toBe("true");
 });

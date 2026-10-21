@@ -105,8 +105,28 @@ function fileOptions(container: HTMLElement) {
     .filter((label) => label?.startsWith("File options for "));
 }
 
+function setupMath(): Disposable {
+  setup();
+  settingsOverrides.mathRenderingEnabled = true;
+  return {
+    [Symbol.dispose]: () => {
+      settingsOverrides.mathRenderingEnabled = false;
+    },
+  };
+}
+
 describe("ChatMarkdown math", () => {
+  it("keeps authored equations literal when math rendering is disabled", async () => {
+    using _math = setupMath();
+    settingsOverrides.mathRenderingEnabled = false;
+    await using screen = await renderText("Inline $x^2$ and display:\n\n$$\nx^2\n$$");
+    expect(screen.container.querySelectorAll("math, [data-markdown-math]")).toHaveLength(0);
+    expect(screen.container.textContent).toContain("$x^2$");
+    expect(screen.container.textContent).toContain("$$\nx^2\n$$");
+  });
+
   it("recognizes closed equations inside quotes and indented math fences while text keeps streaming", async () => {
+    using _math = setupMath();
     await using containerScreen = await renderText(
       "> $$\n> x^2\n> $$\n\n   ```math\n   y^2\n   ```\n\nStill streaming.",
       { isStreaming: true },
@@ -116,6 +136,7 @@ describe("ChatMarkdown math", () => {
     expect(container.querySelectorAll('[data-math-state="pending"]')).toHaveLength(0);
   });
   it("renders completed inline and display equations and preserves their Markdown for copying", async () => {
+    using _math = setupMath();
     const inline = "$x^2$";
     const display = "$$\n\\frac{1}{2} + x = 3\n$$";
     await using containerScreen = await renderText(`Before ${inline}.\n\n${display}\n\nAfter.`);
@@ -127,12 +148,13 @@ describe("ChatMarkdown math", () => {
       [...container.querySelectorAll("[data-markdown-copy]")].map((node) =>
         node.getAttribute("data-markdown-copy"),
       ),
-    ).toEqual([inline, display]);
+    ).toEqual([inline, `${display}\n\n`]);
     expect(container.querySelectorAll("pre, [data-markdown-math] code")).toHaveLength(0);
     expect(container.textContent).toContain("After.");
   });
 
   it("waits for the closing delimiter, keeps cancellation readable, and rehydrates a completed formula", async () => {
+    using _math = setupMath();
     const message = (text: string, isStreaming: boolean) => (
       <ChatMarkdown cwd={undefined} text={text} isStreaming={isStreaming} />
     );
@@ -156,6 +178,7 @@ describe("ChatMarkdown math", () => {
   });
 
   it("keeps an unfinished inline equation stable without interpreting prices and shell variables", async () => {
+    using _math = setupMath();
     await using screen = await render(
       <ChatMarkdown cwd={undefined} text={"Result $x=\\frac{"} isStreaming />,
     );
@@ -175,6 +198,7 @@ describe("ChatMarkdown math", () => {
   });
 
   it("keeps invalid TeX readable and disables active links and HTML commands", async () => {
+    using _math = setupMath();
     const raw = "$\\notARealCommand{x}$";
     await using containerScreen = await renderText(raw);
     const container = containerScreen.container;
@@ -190,6 +214,7 @@ describe("ChatMarkdown math", () => {
   });
 
   it("retains correct math offsets after an incrementally cached visual fence", async () => {
+    using _math = setupMath();
     const prefix = '```t3-ui\n{"type":"metric","id":"m","label":"Count","value":"2"}\n```\n\n';
     await using screen = await render(
       <ChatMarkdown cwd={undefined} text={prefix + "$$\nx^"} streamableUi isStreaming />,
@@ -201,7 +226,7 @@ describe("ChatMarkdown math", () => {
     await expect.poll(() => container.querySelectorAll("msup").length).toBe(1);
     expect(
       container.querySelector("[data-markdown-math]")?.getAttribute("data-markdown-copy"),
-    ).toBe("$$\nx^2\n$$");
+    ).toBe("$$\nx^2\n$$\n\n");
     expect(container.textContent).toContain("Count");
     expect(container.textContent).toContain("After.");
   });

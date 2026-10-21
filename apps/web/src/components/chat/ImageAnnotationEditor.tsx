@@ -34,6 +34,14 @@ export interface ImageAnnotationEditorProps {
   readonly onSend: (file: File, text: string, signal: AbortSignal) => Promise<boolean>;
 }
 
+async function withAnnotationSendCleanup(send: () => Promise<void>, cleanup: () => void) {
+  try {
+    await send();
+  } finally {
+    cleanup();
+  }
+}
+
 export function ImageAnnotationEditor({
   src,
   name,
@@ -105,24 +113,32 @@ export function ImageAnnotationEditor({
   };
   const send = async () => {
     if (locked.current || !decoded.current || !strokes.length || active.current) return;
+    const image = decoded.current.image;
     locked.current = true;
     setSending(true);
     setError(null);
     const controller = new AbortController();
     attempt.current = controller;
-    try {
-      const file = await exportAnnotatedImage(decoded.current.image, strokes, name);
-      controller.signal.throwIfAborted();
-      const accepted = await onSend(file, message, controller.signal);
-      if (!accepted && !controller.signal.aborted)
-        setError("The image was not sent. Your marks and message are still here.");
-    } catch (cause) {
-      if (!controller.signal.aborted)
-        setError(cause instanceof Error ? cause.message : "The annotated image could not be sent.");
-    } finally {
-      locked.current = false;
-      if (!controller.signal.aborted) setSending(false);
-    }
+    await withAnnotationSendCleanup(
+      async () => {
+        try {
+          const file = await exportAnnotatedImage(image, strokes, name);
+          controller.signal.throwIfAborted();
+          const accepted = await onSend(file, message, controller.signal);
+          if (!accepted && !controller.signal.aborted)
+            setError("The image was not sent. Your marks and message are still here.");
+        } catch (cause) {
+          if (!controller.signal.aborted)
+            setError(
+              cause instanceof Error ? cause.message : "The annotated image could not be sent.",
+            );
+        }
+      },
+      () => {
+        locked.current = false;
+        if (!controller.signal.aborted) setSending(false);
+      },
+    );
   };
 
   const overlay = (

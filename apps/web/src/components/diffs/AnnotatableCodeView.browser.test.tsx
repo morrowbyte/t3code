@@ -212,11 +212,9 @@ it("selects diff lines with the keyboard and creates a real comment draft", asyn
     />,
     { container: host },
   );
-  await vi.waitFor(() =>
-    expect(viewer).toHaveBeenCalledWith(
-      expect.objectContaining({ scrollTo: expect.any(Function) }),
-    ),
-  );
+  await expect
+    .poll(() => viewer.mock.calls.some(([handle]) => typeof handle?.scrollTo === "function"))
+    .toBe(true);
   const region = host.querySelector<HTMLElement>('[aria-label="Test diff code"]')!;
   region.focus();
   await act(async () =>

@@ -267,7 +267,7 @@ describe("DesktopLinuxUrlHandler", () => {
         assert.include(
           firstEntry,
           [
-            'Exec="/usr/bin/env"',
+            "Exec=/usr/bin/env",
             '"T3CODE_DESKTOP_LINUX_URL_HANDLER_LAUNCHER=/tmp/t3code-fixture/bin/t3code-weasel"',
             '"T3CODE_HOME=/tmp/t3code-fixture/home/t3code-weasel"',
             '"T3CODE_DESKTOP_PROFILE=weasel"',
@@ -320,7 +320,7 @@ describe("DesktopLinuxUrlHandler", () => {
     });
     assert.include(
       entry,
-      'Exec="/usr/bin/env" "T3CODE_HOME=/tmp/t3 fixture/home \\\\"profile\\\\" 100%%" "/tmp/t3 fixture/bin/launch \\\\"quoted\\\\" 50%%.sh" %U',
+      'Exec=/usr/bin/env "T3CODE_HOME=/tmp/t3 fixture/home \\\\"profile\\\\" 100%%" "/tmp/t3 fixture/bin/launch \\\\"quoted\\\\" 50%%.sh" %U',
     );
   });
 

@@ -65,7 +65,6 @@ let history: ReturnType<typeof createHashHistory>;
 let listener: ((url: string) => void) | undefined;
 let pending: string[];
 const setReady = vi.fn(async (ready: boolean) => {
-  using _state = setup();
   if (ready) for (const url of pending.splice(0)) listener?.(url);
 });
 

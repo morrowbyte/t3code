@@ -31,7 +31,10 @@ it.effect("authenticates each release page until the requested channel is found"
             {
               tag_name,
               draft: false,
-              assets: [{ name: "t3-linux-x64.tar.gz" }, { name: "checksums.txt" }],
+              assets: [
+                { name: `t3-${tag_name.slice(1)}-linux-x64.tar.gz` },
+                { name: "SHA256SUMS" },
+              ],
             },
           ]),
         ),
