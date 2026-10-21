@@ -11,22 +11,23 @@ import {
   isNavigationMode,
 } from "../keyboard/navigationMode";
 
-vi.mock(import("./ModelPickerContent"), async (original) => ({
-  ...(await original()),
-  ModelPickerContent: (
-    props: Pick<
-      ComponentProps<typeof import("./ModelPickerContent").ModelPickerContent>,
-      "onInstanceModelChange" | "activeInstanceId"
-    >,
-  ) => (
-    <button
-      autoFocus
-      onClick={() => props.onInstanceModelChange(props.activeInstanceId, "test-model")}
-    >
-      Choose current model
-    </button>
-  ),
-}));
+vi.mock(import("./ModelPickerContent"), async (original) => {
+  const actual = await original();
+  const { memo } = await import("react");
+  return {
+    ...actual,
+    ModelPickerContent: memo<typeof actual.ModelPickerContent.type>(
+      (props: ComponentProps<typeof actual.ModelPickerContent>) => (
+        <button
+          autoFocus
+          onClick={() => props.onInstanceModelChange(props.activeInstanceId, "test-model")}
+        >
+          Choose current model
+        </button>
+      ),
+    ),
+  };
+});
 import { ProviderModelPicker } from "./ProviderModelPicker";
 
 it.each([true, false])(
@@ -42,7 +43,36 @@ it.each([true, false])(
       draft.focus();
       leaveNavigationMode();
     });
-    const composer = { current: { focusAtEnd: focusComposer } } as ComposerHandleRef;
+    const unexpected = (): never => {
+      throw new Error("Unexpected composer operation in focus test");
+    };
+    const composer: ComposerHandleRef = {
+      current: {
+        focusAtEnd: focusComposer,
+        focusAt: unexpected,
+        restoreAfterTimelineReachedEnd: unexpected,
+        collapseForTimelineScrollKey: unexpected,
+        addDroppedFiles: unexpected,
+        addDroppedFolders: unexpected,
+        hasPendingAttachments: unexpected,
+        insertTextAtEnd: unexpected,
+        pasteTextAtEnd: unexpected,
+        citeAssistantText: unexpected,
+        openModelPicker: unexpected,
+        stepReasoningEffort: unexpected,
+        toggleModelPicker: unexpected,
+        openControl: unexpected,
+        isModelPickerOpen: unexpected,
+        isCaretAtStart: unexpected,
+        compactContext: unexpected,
+        readSnapshot: unexpected,
+        resetCursorState: unexpected,
+        addTerminalContext: unexpected,
+        getSendContext: unexpected,
+        validateProviderInput: unexpected,
+        setMultipleModelSelections: unexpected,
+      },
+    };
     const instanceId = ProviderInstanceId.make("keyboard-model-test");
     const entry = deriveProviderInstanceEntries([
       {
