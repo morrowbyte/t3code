@@ -44,7 +44,13 @@ function RestoreDeviceDefaultsButton({ onRestored }: { onRestored: () => void })
   );
 }
 
-function SettingsScopeBoundary({ pathname, children }: { pathname: string; children: ReactNode }) {
+export function SettingsScopeBoundary({
+  pathname,
+  children,
+}: {
+  pathname: string;
+  children: ReactNode;
+}) {
   const { scope, connectedEnvironments } = useSettingsScope();
   const { environments } = useEnvironments();
   const hash = useLocation({ select: (location) => location.hash });

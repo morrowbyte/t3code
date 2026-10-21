@@ -43,6 +43,7 @@ import {
 } from "./settingsScopeAxis";
 
 export const SETTINGS_DEVICE_ONLY_PATHS: ReadonlySet<string> = new Set([
+  "/settings/general",
   "/settings/appearance",
   "/settings/snap-shot",
   "/settings/connections",
