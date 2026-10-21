@@ -110,7 +110,9 @@ export class ElectronWindowOperationError extends Schema.TaggedError<ElectronWin
 export class ElectronWindow extends Context.Service<
   ElectronWindow,
   {
-    readonly updateInventory?: Effect.Effect<ReadonlyArray<{ readonly id: number; readonly generation: string; readonly audible: boolean }>>;
+    readonly updateInventory?: Effect.Effect<
+      ReadonlyArray<{ readonly id: number; readonly generation: string; readonly audible: boolean }>
+    >;
     readonly withUpdateRenderers?: <A, E, R>(use: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
     readonly create: (
       options: Electron.BrowserWindowConstructorOptions,
@@ -213,11 +215,15 @@ export const make = Effect.gen(function* () {
 
   return ElectronWindow.of({
     withUpdateRenderers: (use) => updateCreationLane.withPermits(1)(use),
-    updateInventory: listWindows.pipe(Effect.map((windows) => windows.map((window) => ({
-      id: window.webContents.id,
-      generation: `${window.webContents.mainFrame.processId}:${window.webContents.mainFrame.routingId}`,
-      audible: window.webContents.isCurrentlyAudible(),
-    })))),
+    updateInventory: listWindows.pipe(
+      Effect.map((windows) =>
+        windows.map((window) => ({
+          id: window.webContents.id,
+          generation: `${window.webContents.mainFrame.processId}:${window.webContents.mainFrame.routingId}`,
+          audible: window.webContents.isCurrentlyAudible(),
+        })),
+      ),
+    ),
     create: (options) => {
       const webPreferences = options.webPreferences;
       const diagnosticOptions = {
@@ -242,10 +248,12 @@ export const make = Effect.gen(function* () {
         },
       } satisfies typeof ElectronWindowCreateOptions.Type;
 
-      return updateCreationLane.withPermits(1)(Effect.try({
-        try: () => new Electron.BrowserWindow(options),
-        catch: (cause) => new ElectronWindowCreateError({ options: diagnosticOptions, cause }),
-      }));
+      return updateCreationLane.withPermits(1)(
+        Effect.try({
+          try: () => new Electron.BrowserWindow(options),
+          catch: (cause) => new ElectronWindowCreateError({ options: diagnosticOptions, cause }),
+        }),
+      );
     },
     main: liveMain,
     currentMainOrFirst,
@@ -334,8 +342,9 @@ export const make = Effect.gen(function* () {
             cause,
           }),
       }).pipe(Effect.orDie),
-    sendAll: (channel, ...args) =>
-      Effect.gen(function* () {
+    sendAll:
+      /* Window broadcasts run for streamed updates; avoid a span per broadcast. */
+      Effect.fnUntraced(function* (channel, ...args) {
         for (const window of yield* listWindows) {
           if (yield* isWindowDestroyed(window)) {
             continue;

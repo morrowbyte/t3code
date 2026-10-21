@@ -1,6 +1,5 @@
 import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
-import { act, useState, type ComponentProps } from "react";
-import { createRoot } from "react-dom/client";
+import { useState, type ComponentProps } from "react";
 import { expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
 import { ComposerHandleContext, type ComposerHandleRef } from "../../composerHandleContext";
@@ -29,15 +28,18 @@ vi.mock(import("./ModelPickerContent"), async (original) => {
   };
 });
 import { ProviderModelPicker } from "./ProviderModelPicker";
+import { render } from "../../../test/render";
 
 it.each([true, false])(
   "restores keyboard NAV only for keyboard-originated model selection: %s",
   async (keyboard) => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    const container = document.body.appendChild(document.createElement("div"));
+    using resources = new DisposableStack();
+    resources.defer(leaveNavigationMode);
     const target = document.body.appendChild(document.createElement("button"));
+    resources.defer(() => target.remove());
     target.textContent = "Navigation target";
     const draft = document.body.appendChild(document.createElement("textarea"));
+    resources.defer(() => draft.remove());
     draft.value = "Unchanged draft";
     const focusComposer = vi.fn(() => {
       draft.focus();
@@ -119,29 +121,17 @@ it.each([true, false])(
         </ComposerHandleContext>
       );
     }
-    const root = createRoot(container);
-    try {
-      target.focus();
-      requestNavigationMode();
-      await act(async () => root.render(<Picker />));
-      await vi.waitFor(() =>
-        expect(document.activeElement?.textContent).toBe("Choose current model"),
-      );
-      await act(async () => {
-        await userEvent.keyboard("{Enter}");
-      });
-      expect(chosen).toHaveBeenCalledExactlyOnceWith(instanceId, "test-model");
-      await vi.waitFor(() => expect(document.activeElement).toBe(keyboard ? target : draft));
-      expect(isNavigationMode()).toBe(keyboard);
-      expect(focusComposer).toHaveBeenCalledTimes(keyboard ? 0 : 1);
-      expect(draft.value).toBe("Unchanged draft");
-    } finally {
-      await act(async () => root.unmount());
-      container.remove();
-      target.remove();
-      draft.remove();
-      leaveNavigationMode();
-      vi.unstubAllGlobals();
-    }
+    target.focus();
+    requestNavigationMode();
+    await using _screen = await render(<Picker />);
+    await vi.waitFor(() =>
+      expect(document.activeElement?.textContent).toBe("Choose current model"),
+    );
+    await userEvent.keyboard("{Enter}");
+    expect(chosen).toHaveBeenCalledExactlyOnceWith(instanceId, "test-model");
+    await vi.waitFor(() => expect(document.activeElement).toBe(keyboard ? target : draft));
+    expect(isNavigationMode()).toBe(keyboard);
+    expect(focusComposer).toHaveBeenCalledTimes(keyboard ? 0 : 1);
+    expect(draft.value).toBe("Unchanged draft");
   },
 );

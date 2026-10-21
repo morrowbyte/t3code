@@ -51,103 +51,111 @@ export interface DesktopPrivateEntryHandler {
 const keyOf = ({ threadId, tabId }: DesktopTabKey) => `${threadId}\u0000${tabId}`;
 
 /** Routes only bound control metadata; SessionControl remains the authority. */
-export const makePrivateEntryRouter = (
-  write: (response: DesktopBrowserPrivateEntryResponse) => Effect.Effect<boolean>,
-) =>
-  Effect.gen(function* () {
-    const attachments = new Map<string, DesktopPrivateEntryTarget>();
-    let handler: DesktopPrivateEntryHandler | undefined;
-    let closed = false;
-    const matches = (left: DesktopPrivateEntryTarget, right: DesktopPrivateEntryTarget) =>
-      keyOf(left) === keyOf(right) &&
-      left.channelEpoch === right.channelEpoch &&
-      left.attachmentId === right.attachmentId;
-    const isCurrent = (target: DesktopPrivateEntryTarget) =>
-      !closed && attachments.has(keyOf(target)) && matches(attachments.get(keyOf(target))!, target);
-    const invalidate = (target: DesktopPrivateEntryTarget) =>
-      handler?.invalidate(target) ?? Effect.void;
-    const sendPrivateEntry = (response: DesktopBrowserPrivateEntryResponse) =>
-      Effect.suspend(() => {
-        if (
-          closed ||
-          ((response.type === "private-entry-granted" ||
-            response.type === "private-entry-released") &&
-            !isCurrent(response))
-        )
-          return Effect.succeed(false);
-        return write(response);
-      });
-    const close = Effect.gen(function* () {
-      closed = true;
-      const previous = [...attachments.values()];
-      attachments.clear();
-      yield* Effect.forEach(previous, invalidate, { discard: true });
-    });
-    yield* Effect.addFinalizer(() => close);
-    return {
-      attach: (key: DesktopTabKey, capability?: DesktopBrowserPrivateEntryAttachment) =>
-        Effect.gen(function* () {
-          if (closed) return;
-          const previous = attachments.get(keyOf(key));
-          const next = capability ? { ...key, ...capability } : undefined;
-          if (previous && next && matches(previous, next)) return;
-          attachments.delete(keyOf(key));
-          if (previous) yield* invalidate(previous);
-          if (next) attachments.set(keyOf(key), next);
-        }),
-      detach: (key: DesktopTabKey, capability?: DesktopBrowserPrivateEntryAttachment) =>
-        Effect.gen(function* () {
-          const previous = attachments.get(keyOf(key));
-          if (!previous || (capability && !matches(previous, { ...key, ...capability }))) return;
-          attachments.delete(keyOf(key));
-          yield* invalidate(previous);
-        }),
-      receive: (request: DesktopBrowserPrivateEntryRequest) =>
+export const makePrivateEntryRouter = Effect.fn("DesktopBrowserChannel.makePrivateEntryRouter")(
+  (write: (response: DesktopBrowserPrivateEntryResponse) => Effect.Effect<boolean>) =>
+    Effect.gen(function* () {
+      const attachments = new Map<string, DesktopPrivateEntryTarget>();
+      let handler: DesktopPrivateEntryHandler | undefined;
+      let closed = false;
+      const matches = (left: DesktopPrivateEntryTarget, right: DesktopPrivateEntryTarget) =>
+        keyOf(left) === keyOf(right) &&
+        left.channelEpoch === right.channelEpoch &&
+        left.attachmentId === right.attachmentId;
+      const isCurrent = (target: DesktopPrivateEntryTarget) =>
+        !closed &&
+        attachments.has(keyOf(target)) &&
+        matches(attachments.get(keyOf(target))!, target);
+      const invalidate = (target: DesktopPrivateEntryTarget) =>
+        handler?.invalidate(target) ?? Effect.void;
+      const sendPrivateEntry = (response: DesktopBrowserPrivateEntryResponse) =>
         Effect.suspend(() => {
-          const binding = {
-            threadId: request.threadId,
-            tabId: request.tabId,
-            channelEpoch: request.channelEpoch,
-            attachmentId: request.attachmentId,
-            requestId: request.requestId,
-          };
-          if (!isCurrent(request))
-            return sendPrivateEntry({
-              ...binding,
-              type: "private-entry-refused",
-              reason: "stale",
-            }).pipe(Effect.asVoid);
-          return handler
-            ? handler.request(request)
-            : sendPrivateEntry({
+          if (
+            closed ||
+            ((response.type === "private-entry-granted" ||
+              response.type === "private-entry-released") &&
+              !isCurrent(response))
+          )
+            return Effect.succeed(false);
+          return write(response);
+        });
+      const close = Effect.gen(function* () {
+        closed = true;
+        const previous = [...attachments.values()];
+        attachments.clear();
+        yield* Effect.forEach(previous, invalidate, { discard: true });
+      });
+      yield* Effect.addFinalizer(() => close);
+      return {
+        attach: Effect.fn("DesktopBrowserChannel.attach")(
+          (key: DesktopTabKey, capability?: DesktopBrowserPrivateEntryAttachment) =>
+            Effect.gen(function* () {
+              if (closed) return;
+              const previous = attachments.get(keyOf(key));
+              const next = capability ? { ...key, ...capability } : undefined;
+              if (previous && next && matches(previous, next)) return;
+              attachments.delete(keyOf(key));
+              if (previous) yield* invalidate(previous);
+              if (next) attachments.set(keyOf(key), next);
+            }),
+        ),
+        detach: Effect.fn("DesktopBrowserChannel.detach")(
+          (key: DesktopTabKey, capability?: DesktopBrowserPrivateEntryAttachment) =>
+            Effect.gen(function* () {
+              const previous = attachments.get(keyOf(key));
+              if (!previous || (capability && !matches(previous, { ...key, ...capability })))
+                return;
+              attachments.delete(keyOf(key));
+              yield* invalidate(previous);
+            }),
+        ),
+        receive: (request: DesktopBrowserPrivateEntryRequest) =>
+          Effect.suspend(() => {
+            const binding = {
+              threadId: request.threadId,
+              tabId: request.tabId,
+              channelEpoch: request.channelEpoch,
+              attachmentId: request.attachmentId,
+              requestId: request.requestId,
+            };
+            if (!isCurrent(request))
+              return sendPrivateEntry({
                 ...binding,
                 type: "private-entry-refused",
-                reason: "unavailable",
+                reason: "stale",
               }).pipe(Effect.asVoid);
-        }),
-      registerPrivateEntryHandler: (next: DesktopPrivateEntryHandler) =>
-        Effect.acquireRelease(
-          Effect.sync(() => {
-            if (handler) throw new Error("Desktop private-entry authority is already registered.");
-            handler = next;
+            return handler
+              ? handler.request(request)
+              : sendPrivateEntry({
+                  ...binding,
+                  type: "private-entry-refused",
+                  reason: "unavailable",
+                }).pipe(Effect.asVoid);
           }),
-          () =>
-            Effect.gen(function* () {
-              if (handler !== next) return;
-              yield* Effect.forEach(
-                [...attachments.values()],
-                (target) => next.invalidate(target),
-                { discard: true },
-              );
-              handler = undefined;
+        registerPrivateEntryHandler: (next: DesktopPrivateEntryHandler) =>
+          Effect.acquireRelease(
+            Effect.sync(() => {
+              if (handler)
+                throw new Error("Desktop private-entry authority is already registered.");
+              handler = next;
             }),
-        ).pipe(Effect.asVoid),
-      isCurrentPrivateEntryAttachment: (target: DesktopPrivateEntryTarget) =>
-        Effect.sync(() => isCurrent(target)),
-      sendPrivateEntry,
-      close,
-    };
-  });
+            () =>
+              Effect.gen(function* () {
+                if (handler !== next) return;
+                yield* Effect.forEach(
+                  [...attachments.values()],
+                  (target) => next.invalidate(target),
+                  { discard: true },
+                );
+                handler = undefined;
+              }),
+          ).pipe(Effect.asVoid),
+        isCurrentPrivateEntryAttachment: (target: DesktopPrivateEntryTarget) =>
+          Effect.sync(() => isCurrent(target)),
+        sendPrivateEntry,
+        close,
+      };
+    }),
+);
 
 export class DesktopBrowserChannel extends Context.Service<
   DesktopBrowserChannel,
@@ -279,65 +287,64 @@ const make = Effect.gen(function* () {
     Effect.forkScoped,
   );
 
-  const endpoint = (key: DesktopTabKey) =>
-    Effect.gen(function* () {
-      const id = keyOf(key);
-      const secret = NodeCrypto.randomBytes(24).toString("base64url");
-      const server = yield* NodeSocketServer.makeWebSocket({
-        host: "127.0.0.1",
-        port: 0,
-        path: `/${secret}`,
-      }).pipe(Effect.orDie);
-      const queue = yield* Queue.unbounded<string>();
-      inbound.set(id, queue);
-      // A detach before this registration shut down no queue, so check again.
-      if (!attachedTabs.has(id)) {
-        inbound.delete(id);
-        return yield* Effect.die("The desktop tab detached before the server connected.");
-      }
-      yield* Effect.addFinalizer(() =>
+  const endpoint = Effect.fn("DesktopBrowserChannel.endpoint")(function* (key: DesktopTabKey) {
+    const id = keyOf(key);
+    const secret = NodeCrypto.randomBytes(24).toString("base64url");
+    const server = yield* NodeSocketServer.makeWebSocket({
+      host: "127.0.0.1",
+      port: 0,
+      path: `/${secret}`,
+    }).pipe(Effect.orDie);
+    const queue = yield* Queue.unbounded<string>();
+    inbound.set(id, queue);
+    // A detach before this registration shut down no queue, so check again.
+    if (!attachedTabs.has(id)) {
+      inbound.delete(id);
+      return yield* Effect.die("The desktop tab detached before the server connected.");
+    }
+    yield* Effect.addFinalizer(() =>
+      Effect.gen(function* () {
+        if (inbound.get(id) === queue) inbound.delete(id);
+        yield* Queue.shutdown(queue);
+        yield* command({ type: "release", ...key });
+      }),
+    );
+    // The relay serves one Playwright connection; a second would see the first's sessions.
+    let connected = false;
+    yield* server
+      .run((socket) =>
         Effect.gen(function* () {
-          if (inbound.get(id) === queue) inbound.delete(id);
-          yield* Queue.shutdown(queue);
-          yield* command({ type: "release", ...key });
-        }),
-      );
-      // The relay serves one Playwright connection; a second would see the first's sessions.
-      let connected = false;
-      yield* server
-        .run((socket) =>
-          Effect.gen(function* () {
-            if (connected) return;
-            connected = true;
-            const writer = yield* socket.writer;
-            const reader = yield* socket.reader;
-            yield* Stream.fromQueue(queue).pipe(
-              Stream.runForEach((message) => writer.write(message)),
-              Effect.forkScoped,
-            );
-            const decoder = new TextDecoder();
-            return yield* reader.pull.pipe(
-              Effect.flatMap((frames) =>
-                Effect.forEach(
-                  frames,
-                  (frame) =>
-                    command({
-                      type: "cdp",
-                      ...key,
-                      message: typeof frame === "string" ? frame : decoder.decode(frame),
-                    }),
-                  { discard: true },
-                ),
+          if (connected) return;
+          connected = true;
+          const writer = yield* socket.writer;
+          const reader = yield* socket.reader;
+          yield* Stream.fromQueue(queue).pipe(
+            Stream.runForEach((message) => writer.write(message)),
+            Effect.forkScoped,
+          );
+          const decoder = new TextDecoder();
+          return yield* reader.pull.pipe(
+            Effect.flatMap((frames) =>
+              Effect.forEach(
+                frames,
+                (frame) =>
+                  command({
+                    type: "cdp",
+                    ...key,
+                    message: typeof frame === "string" ? frame : decoder.decode(frame),
+                  }),
+                { discard: true },
               ),
-              Effect.forever,
-            );
-          }).pipe(Effect.scoped, Effect.ignore),
-        )
-        .pipe(Effect.forkScoped);
-      const address = server.address;
-      if (address._tag !== "InetAddressV4") return yield* Effect.die("Unexpected relay address.");
-      return `ws://127.0.0.1:${address.port}/${secret}`;
-    });
+            ),
+            Effect.forever,
+          );
+        }).pipe(Effect.scoped, Effect.ignore),
+      )
+      .pipe(Effect.forkScoped);
+    const address = server.address;
+    if (address._tag !== "InetAddressV4") return yield* Effect.die("Unexpected relay address.");
+    return `ws://127.0.0.1:${address.port}/${secret}`;
+  });
 
   return DesktopBrowserChannel.of({
     available: true,

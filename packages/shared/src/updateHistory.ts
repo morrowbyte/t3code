@@ -51,7 +51,7 @@ export const makeUpdateHistory = Effect.fn("updates.history.make")(function* (fi
       failure("Could not read update history. The saved file may be damaged or inaccessible."),
     ),
   );
-  const write = (journal: typeof Journal.Type) =>
+  const write = Effect.fn("updateHistory.write")((journal: typeof Journal.Type) =>
     Effect.gen(function* () {
       const text = yield* encode(journal);
       yield* fs.makeDirectory(path.dirname(file), { recursive: true });
@@ -64,7 +64,8 @@ export const makeUpdateHistory = Effect.fn("updates.history.make")(function* (fi
           "Could not save update history. Check free disk space and access to the T3 data directory.",
         ),
       ),
-    );
+    ),
+  );
   const modify = <A>(
     f: (entries: ReadonlyArray<HostUpdateRecord>) => readonly [A, ReadonlyArray<HostUpdateRecord>],
   ) =>
@@ -92,53 +93,57 @@ export const makeUpdateHistory = Effect.fn("updates.history.make")(function* (fi
   return {
     list: mutex.withPermits(1)(read.pipe(Effect.map((journal) => journal.entries))),
     add,
-    start: (
-      component: HostUpdateRecord["component"],
-      fromVersion: string | null,
-      targetVersion: string | null,
-    ) =>
-      Effect.gen(function* () {
-        const id = yield* updateHistoryUuid(crypto).pipe(
-          Effect.mapError(() => failure("Could not create an update receipt.")),
-        );
-        const now = DateTime.formatIso(yield* DateTime.now);
-        return yield* add({
-          id,
-          component,
-          fromVersion,
-          targetVersion,
-          observedVersion: null,
-          startedAt: now,
-          updatedAt: now,
-          completedAt: null,
-          status: "downloading",
-          error: null,
-        });
-      }),
-    patch: (
-      id: string,
-      status: HostUpdateStatus,
-      details: Partial<
-        Pick<HostUpdateRecord, "error" | "observedVersion" | "receiptId" | "targetVersion">
-      > = {},
-    ) =>
-      Effect.gen(function* () {
-        const now = DateTime.formatIso(yield* DateTime.now);
-        yield* modify((entries) => [
-          undefined,
-          entries.map((entry) =>
-            entry.id !== id || isHostUpdateTerminal(entry.status)
-              ? entry
-              : {
-                  ...entry,
-                  ...details,
-                  status,
-                  updatedAt: now,
-                  completedAt: isHostUpdateTerminal(status) ? now : null,
-                },
-          ),
-        ]);
-      }),
+    start: Effect.fn("updateHistory.start")(
+      (
+        component: HostUpdateRecord["component"],
+        fromVersion: string | null,
+        targetVersion: string | null,
+      ) =>
+        Effect.gen(function* () {
+          const id = yield* updateHistoryUuid(crypto).pipe(
+            Effect.mapError(() => failure("Could not create an update receipt.")),
+          );
+          const now = DateTime.formatIso(yield* DateTime.now);
+          return yield* add({
+            id,
+            component,
+            fromVersion,
+            targetVersion,
+            observedVersion: null,
+            startedAt: now,
+            updatedAt: now,
+            completedAt: null,
+            status: "downloading",
+            error: null,
+          });
+        }),
+    ),
+    patch: Effect.fn("updateHistory.patch")(
+      (
+        id: string,
+        status: HostUpdateStatus,
+        details: Partial<
+          Pick<HostUpdateRecord, "error" | "observedVersion" | "receiptId" | "targetVersion">
+        > = {},
+      ) =>
+        Effect.gen(function* () {
+          const now = DateTime.formatIso(yield* DateTime.now);
+          yield* modify((entries) => [
+            undefined,
+            entries.map((entry) =>
+              entry.id !== id || isHostUpdateTerminal(entry.status)
+                ? entry
+                : {
+                    ...entry,
+                    ...details,
+                    status,
+                    updatedAt: now,
+                    completedAt: isHostUpdateTerminal(status) ? now : null,
+                  },
+            ),
+          ]);
+        }),
+    ),
     remove: (id: string) =>
       mutex.withPermits(1)(
         Effect.gen(function* () {

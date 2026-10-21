@@ -196,28 +196,30 @@ export const layer: Layer.Layer<
       }
     });
 
-    const updateStatus = (
-      row: LeaseRow,
-      status: LiveVoiceSession["status"],
-      additionalSql?: (now: string) => Effect.Effect<unknown, SqlError.SqlError>,
-    ) =>
-      Effect.gen(function* () {
-        const now = DateTime.formatIso(yield* DateTime.now);
-        const next = yield* sql.withTransaction(
-          Effect.gen(function* () {
-            yield* sql`
+    const updateStatus = Effect.fn("CodexLiveSessionService.updateStatus")(
+      (
+        row: LeaseRow,
+        status: LiveVoiceSession["status"],
+        additionalSql?: (now: string) => Effect.Effect<unknown, SqlError.SqlError>,
+      ) =>
+        Effect.gen(function* () {
+          const now = DateTime.formatIso(yield* DateTime.now);
+          const next = yield* sql.withTransaction(
+            Effect.gen(function* () {
+              yield* sql`
               UPDATE codex_live_voice_leases SET status = ${status}, updated_at = ${now}
               WHERE lease_id = ${row.lease_id} AND generation = ${row.generation}
             `;
-            if (additionalSql !== undefined) yield* additionalSql(now);
-            return yield* getLease(row.lease_id, row.generation);
-          }),
-        );
-        if (next === undefined) return yield* liveError("session_not_found");
-        const session = sessionFromRow(next);
-        yield* eventHub.publish({ type: "status", session });
-        return { row: next, session };
-      });
+              if (additionalSql !== undefined) yield* additionalSql(now);
+              return yield* getLease(row.lease_id, row.generation);
+            }),
+          );
+          if (next === undefined) return yield* liveError("session_not_found");
+          const session = sessionFromRow(next);
+          yield* eventHub.publish({ type: "status", session });
+          return { row: next, session };
+        }),
+    );
 
     const readbackWorkerKey = (leaseId: string, generation: number, plannerTurnId: string) =>
       `${leaseId}:${generation}:${plannerTurnId}`;
@@ -407,7 +409,7 @@ export const layer: Layer.Layer<
       return { type: "ready", ...result } as const;
     };
 
-    function startReadbackWorker(input: {
+    const startReadbackWorker = Effect.fn("CodexLiveSessionService.startReadbackWorker")((input: {
       readonly leaseId: string;
       readonly generation: number;
       readonly threadId: LiveVoiceSession["threadId"];
@@ -415,7 +417,7 @@ export const layer: Layer.Layer<
       readonly plannerNativeThreadId: string;
       readonly plannerTurnId: string;
       readonly runId: string;
-    }): Effect.Effect<void> {
+    }): Effect.Effect<void> => {
       return Effect.gen(function* () {
         const key = readbackWorkerKey(input.leaseId, input.generation, input.plannerTurnId);
         if (readbackWorkers.has(key)) return;
@@ -505,7 +507,7 @@ export const layer: Layer.Layer<
           serviceScope,
         );
       });
-    }
+    });
 
     const stopReadbackWorkers = (leaseId: string, generation: number) =>
       Effect.forEach(
@@ -720,11 +722,13 @@ export const layer: Layer.Layer<
         }),
       );
 
-    const markUnknown = (leaseId: string, generation: number) =>
-      Effect.gen(function* () {
-        const row = yield* getLease(leaseId, generation);
-        if (row !== undefined) yield* updateStatus(row, "unknown");
-      });
+    const markUnknown = Effect.fn("CodexLiveSessionService.markUnknown")(
+      (leaseId: string, generation: number) =>
+        Effect.gen(function* () {
+          const row = yield* getLease(leaseId, generation);
+          if (row !== undefined) yield* updateStatus(row, "unknown");
+        }),
+    );
 
     const toLiveError = (error: unknown) =>
       Schema.is(LiveVoiceError)(error) ? error : liveError("runtime_unavailable");
@@ -1222,7 +1226,9 @@ export const layer: Layer.Layer<
     const stop: CodexLiveSessionService["Service"]["stop"] = (session, input) =>
       stopLease(session, input);
 
-    const status: CodexLiveSessionService["Service"]["status"] = (session, input) =>
+    const status: CodexLiveSessionService["Service"]["status"] = Effect.fn(
+      "CodexLiveSessionService.status",
+    )((session, input) =>
       Effect.gen(function* () {
         yield* ensurePrincipal(session);
         let row = yield* getOwnedLease(session.sessionId, input.leaseId, input.generation);
@@ -1235,7 +1241,8 @@ export const layer: Layer.Layer<
           return (yield* updateStatus(row, "unknown")).session;
         }
         return sessionFromRow(row);
-      }).pipe(Effect.mapError(toLiveError));
+      }).pipe(Effect.mapError(toLiveError)),
+    );
 
     const subscribe: CodexLiveSessionService["Service"]["subscribe"] = (session, input) =>
       Stream.unwrap(
@@ -1574,11 +1581,11 @@ export const layer: Layer.Layer<
       );
     }
 
-    function handleNativeEvent(
+    const handleNativeEvent = Effect.fn("CodexLiveSessionService.handleNativeEvent")((
       leaseId: string,
       generation: number,
       event: ProviderAdapter.ProviderAdapterV2LiveVoiceEvent,
-    ): Effect.Effect<void> {
+    ): Effect.Effect<void> => {
       return Effect.gen(function* () {
         const row = yield* getLease(leaseId, generation);
         if (
@@ -1680,9 +1687,12 @@ export const layer: Layer.Layer<
           }
         }
       }).pipe(Effect.catchCause(() => markUnknown(leaseId, generation).pipe(Effect.orDie)));
-    }
+    });
 
-    function recoverPendingIntents(leaseId: string, generation: number) {
+    const recoverPendingIntents = Effect.fn("CodexLiveSessionService.recoverPendingIntents")((
+      leaseId: string,
+      generation: number,
+    ) => {
       return Effect.gen(function* () {
         const pendingIntents = yield* sql<{
           planner_native_thread_id: string;
@@ -1714,7 +1724,7 @@ export const layer: Layer.Layer<
           { concurrency: 1, discard: true },
         );
       });
-    }
+    });
 
     return CodexLiveSessionService.of({ prepare, start, stop, status, subscribe });
   }),

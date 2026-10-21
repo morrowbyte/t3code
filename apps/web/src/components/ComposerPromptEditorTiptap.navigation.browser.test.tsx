@@ -1,39 +1,26 @@
 import type { Editor } from "@tiptap/core";
 import { TextSelection } from "@tiptap/pm/state";
-import { act, createRef } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import { createRef } from "react";
+import { expect, it, vi } from "vite-plus/test";
 
 import { serializeEditorDoc } from "~/composer-rich-text-doc";
 import { ComposerPromptEditor, type ComposerPromptEditorHandle } from "./ComposerPromptEditor";
 import { LeaderNavigation } from "./keyboard/LeaderNavigation";
+import { act, render } from "../../test/render";
+import { leaveNavigationMode } from "./keyboard/navigationMode";
 
 const draft =
   "> **Assistant and reasoning text still save intermediate full snapshots**, using the existing 50 ms batching. Compaction still preserves their `turn-item.updated` events. [Code](/Users/yashsingh/p/projects/t3code/apps/server/src/orchestration-v2/ProjectionMaintenance.ts:235)";
-
-let root: Root;
-let container: HTMLDivElement;
-
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
-
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
 
 async function mountEditor(
   value: string,
   richTextEnabled = true,
   onCommandKeyDown: (key: string, event: KeyboardEvent) => boolean = () => false,
 ) {
-  await act(async () =>
-    root.render(
+  await using resources = new AsyncDisposableStack();
+  resources.defer(leaveNavigationMode);
+  const screen = resources.use(
+    await render(
       <div data-chat-composer-main-surface="true">
         <ComposerPromptEditor
           editorRef={createRef<ComposerPromptEditorHandle>()}
@@ -51,54 +38,52 @@ async function mountEditor(
       </div>,
     ),
   );
-  const element = container.querySelector<HTMLElement & { editor: Editor }>(".tiptap");
+  const element = screen.container.querySelector<HTMLElement & { editor: Editor }>(".tiptap");
   if (!element) throw new Error("Composer did not mount");
-  return element.editor;
+  const cleanup = resources.move();
+  return {
+    editor: element.editor,
+    container: screen.container,
+    [Symbol.asyncDispose]: () => cleanup[Symbol.asyncDispose](),
+  };
 }
 
 it("leaves the composer with Escape, opens navigation with Space and returns with i", async () => {
-  const editor = await mountEditor("Keep my draft");
-  const navigationHost = document.createElement("div");
-  container.append(navigationHost);
-  const navigationRoot = createRoot(navigationHost);
-  try {
-    await act(async () =>
-      navigationRoot.render(
-        <LeaderNavigation groups={[]} isClaimed={() => false} showSidebar={() => {}} />,
-      ),
+  await using screen = await mountEditor("Keep my draft");
+  const { editor } = screen;
+  await using _navigation = await render(
+    <LeaderNavigation groups={[]} isClaimed={() => false} showSidebar={() => {}} />,
+  );
+  await act(async () => {
+    editor.view.focus();
+    editor.view.dom.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
     );
-    await act(async () => {
-      editor.view.focus();
-      editor.view.dom.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
-      );
-    });
-    expect(document.activeElement).not.toBe(editor.view.dom);
-    await act(async () => {
-      document.body.dispatchEvent(
-        new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }),
-      );
-    });
-    await vi.waitFor(() =>
-      expect(
-        document.querySelector('[role="dialog"][aria-label="Keyboard navigation"]'),
-      ).not.toBeNull(),
+  });
+  expect(document.activeElement).not.toBe(editor.view.dom);
+  await act(async () => {
+    document.body.dispatchEvent(
+      new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }),
     );
-    await act(async () => {
-      document.activeElement!.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "i", bubbles: true, cancelable: true }),
-      );
-    });
-    await vi.waitFor(() => expect(document.activeElement).toBe(editor.view.dom));
-    expect(serializeEditorDoc(editor.state.doc).value).toBe("Keep my draft");
-  } finally {
-    await act(async () => navigationRoot.unmount());
-  }
+  });
+  await vi.waitFor(() =>
+    expect(
+      document.querySelector('[role="dialog"][aria-label="Keyboard navigation"]'),
+    ).not.toBeNull(),
+  );
+  await act(async () => {
+    document.activeElement!.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "i", bubbles: true, cancelable: true }),
+    );
+  });
+  await vi.waitFor(() => expect(document.activeElement).toBe(editor.view.dom));
+  expect(serializeEditorDoc(editor.state.doc).value).toBe("Keep my draft");
 });
 
 it("lets suggestions consume Escape before leaving the composer", async () => {
   const handler = vi.fn().mockReturnValueOnce(true).mockReturnValue(false);
-  const editor = await mountEditor("@file", true, handler);
+  await using screen = await mountEditor("@file", true, handler);
+  const { editor } = screen;
   await act(async () => {
     editor.view.focus();
     expect(press(editor, "Escape")).toBe(true);
@@ -118,7 +103,8 @@ it.each([
   { altKey: true },
   { shiftKey: true },
 ])("keeps composer focus for composing, repeated or modified Escape: %j", async (options) => {
-  const editor = await mountEditor("Keep my draft");
+  await using screen = await mountEditor("Keep my draft");
+  const { editor } = screen;
   await act(async () => {
     editor.view.focus();
     expect(press(editor, "Escape", options)).toBe(false);
@@ -134,7 +120,8 @@ function press(editor: Editor, key: string, options: KeyboardEventInit = {}) {
 }
 
 it("keeps Up before the opening bold marker in a quote, including while typing", async () => {
-  const editor = await mountEditor(draft);
+  await using screen = await mountEditor(draft);
+  const { editor } = screen;
   const position = editor.state.selection.from;
   await act(async () => {
     editor.view.focus();
@@ -154,7 +141,8 @@ it("keeps Up before the opening bold marker in a quote, including while typing",
 });
 
 it("keeps Down after a closing marker, including while typing", async () => {
-  const editor = await mountEditor("> **bold**");
+  await using screen = await mountEditor("> **bold**");
+  const { editor } = screen;
   await act(async () => {
     editor.view.dispatch(editor.state.tr.setSelection(TextSelection.atEnd(editor.state.doc)));
     expect(press(editor, "ArrowDown")).toBe(true);
@@ -165,7 +153,8 @@ it("keeps Down after a closing marker, including while typing", async () => {
 });
 
 it("leaves vertical navigation between paragraphs to the browser", async () => {
-  const editor = await mountEditor("**first**\n**second**");
+  await using screen = await mountEditor("**first**\n**second**");
+  const { editor } = screen;
   await act(async () => {
     const first = editor.state.doc.child(0);
     editor.commands.setTextSelection(first.nodeSize + 1);
@@ -182,7 +171,8 @@ it.each([
   { ctrlKey: true },
   { isComposing: true },
 ])("preserves modified Up behavior for %j", async (options) => {
-  const editor = await mountEditor(draft);
+  await using screen = await mountEditor(draft);
+  const { editor } = screen;
   await act(async () => {
     expect(press(editor, "ArrowUp", options)).toBe(false);
     editor.commands.insertContent("x");
@@ -191,7 +181,8 @@ it.each([
 });
 
 it("leaves literal Markdown navigation to the browser in plain mode", async () => {
-  const editor = await mountEditor(draft, false);
+  await using screen = await mountEditor(draft, false);
+  const { editor } = screen;
   await act(async () => {
     editor.commands.setTextSelection(5);
     expect(press(editor, "ArrowUp")).toBe(false);

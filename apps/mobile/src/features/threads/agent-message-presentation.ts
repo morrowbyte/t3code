@@ -259,22 +259,19 @@ export function readAgentSend(item: Extract<OrchestrationV2TurnItem, { type: "dy
   };
 }
 
-const sentenceSegmenter =
-  typeof Intl.Segmenter === "function"
-    ? new Intl.Segmenter(undefined, { granularity: "sentence" })
-    : null;
-
 export function agentMessageParts(text: string): { lead: string; body: string } {
   // Display-only breaks must not reinterpret authored Markdown or alter raw/copy text.
-  if (/[\r\n]|[`#*]|\[[^\]]*\]\(/.test(text) || sentenceSegmenter === null) {
+  if (/[\r\n]|[`#*]|\[[^\]]*\]\(/.test(text)) {
     return { lead: text.split(/\r?\n/, 1)[0] ?? text, body: text };
   }
   const sentences: string[] = [];
   let pending = "";
   let germanQuoteOpen = false;
-  for (const part of sentenceSegmenter.segment(text)) {
-    pending += part.segment;
-    for (const character of part.segment) {
+  // Hermes has no Intl sentence segmentation; retain authored bytes with a display-only split.
+  const segments = text.match(/[\s\S]*?[.!?…](?:["'»”’“)]*)(?:\s+|$)|[\s\S]+$/gu) ?? [text];
+  for (const part of segments) {
+    pending += part;
+    for (const character of part) {
       if (character === "„") germanQuoteOpen = true;
       else if (character === "“") germanQuoteOpen = false;
     }

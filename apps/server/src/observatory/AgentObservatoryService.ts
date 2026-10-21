@@ -62,37 +62,35 @@ const make = Effect.gen(function* () {
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const sql = yield* SqlClient.SqlClient;
   const messageId = (threadId: ThreadId) => MessageId.make(`message:observatory:${threadId}`);
-  const fromStored = (
-    stored: OrchestrationV2StoredEvent,
-    environmentId: EnvironmentId,
-    threadId: ThreadId,
-  ) =>
-    Effect.gen(function* () {
-      const event = stored.event;
-      if (
-        event.type !== "message.updated" ||
-        event.threadId !== threadId ||
-        event.payload.id !== messageId(threadId)
-      )
-        return yield* unavailable();
-      const metadata = event.payload.observatory;
-      if (
-        !metadata ||
-        metadata.eventId !== event.id ||
-        metadata.requestId !== stored.commandId ||
-        metadata.owner.environmentId !== environmentId ||
-        metadata.owner.threadId !== threadId ||
-        metadata.owner.runId !== event.payload.runId ||
-        metadata.owner.rootNodeId !== event.payload.nodeId ||
-        metadata.nativeFrontier.sequence >= stored.sequence
-      )
-        return yield* unavailable();
-      return yield* Schema.decodeUnknownEffect(AgentObservatorySnapshot)({
-        ...metadata,
-        sequence: stored.sequence,
-      });
-    });
-  const read = (threadId: ThreadId) =>
+  const fromStored = Effect.fn("AgentObservatoryService.fromStored")(
+    (stored: OrchestrationV2StoredEvent, environmentId: EnvironmentId, threadId: ThreadId) =>
+      Effect.gen(function* () {
+        const event = stored.event;
+        if (
+          event.type !== "message.updated" ||
+          event.threadId !== threadId ||
+          event.payload.id !== messageId(threadId)
+        )
+          return yield* unavailable();
+        const metadata = event.payload.observatory;
+        if (
+          !metadata ||
+          metadata.eventId !== event.id ||
+          metadata.requestId !== stored.commandId ||
+          metadata.owner.environmentId !== environmentId ||
+          metadata.owner.threadId !== threadId ||
+          metadata.owner.runId !== event.payload.runId ||
+          metadata.owner.rootNodeId !== event.payload.nodeId ||
+          metadata.nativeFrontier.sequence >= stored.sequence
+        )
+          return yield* unavailable();
+        return yield* Schema.decodeUnknownEffect(AgentObservatorySnapshot)({
+          ...metadata,
+          sequence: stored.sequence,
+        });
+      }),
+  );
+  const read = Effect.fn("AgentObservatoryService.read")((threadId: ThreadId) =>
     Effect.gen(function* () {
       const environmentId = yield* environment.getEnvironmentId;
       const records = yield* projections.getThreadRecords(threadId, ["messages"], {
@@ -118,7 +116,8 @@ const make = Effect.gen(function* () {
       )
         return yield* unavailable();
       return snapshot;
-    }).pipe(Effect.mapError(unavailable));
+    }).pipe(Effect.mapError(unavailable)),
+  );
   const bootstrap = (threadId: ThreadId) =>
     sql
       .withTransaction(
@@ -140,38 +139,40 @@ const make = Effect.gen(function* () {
         }),
       )
       .pipe(Effect.mapError(unavailable));
-  const readNativeRoster = (submitted: AgentObservatoryReadNativeRosterInput) =>
-    Effect.gen(function* () {
-      const input = yield* Schema.decodeUnknownEffect(AgentObservatoryReadNativeRosterInput)(
-        submitted,
-      );
-      const environmentId = yield* environment.getEnvironmentId;
-      const threadIds = [...input.threadIds].sort();
-      if (input.cursor && input.cursor.environmentId !== environmentId)
-        return AgentObservatoryNativeRosterPage.make({
+  const readNativeRoster = Effect.fn("AgentObservatoryService.readNativeRoster")(
+    (submitted: AgentObservatoryReadNativeRosterInput) =>
+      Effect.gen(function* () {
+        const input = yield* Schema.decodeUnknownEffect(AgentObservatoryReadNativeRosterInput)(
+          submitted,
+        );
+        const environmentId = yield* environment.getEnvironmentId;
+        const threadIds = [...input.threadIds].sort();
+        if (input.cursor && input.cursor.environmentId !== environmentId)
+          return AgentObservatoryNativeRosterPage.make({
+            environmentId,
+            threadIds,
+            source: "canonical-subagent-index",
+            coverage: "recorded-current-only",
+            throughSequence: 0,
+            status: "stale",
+            agents: [],
+            nextCursor: null,
+          });
+        const page = yield* projections.getCurrentNativeAgentRoster({
+          threadIds,
+          limit: input.limit,
+          ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+        });
+        return yield* Schema.decodeUnknownEffect(AgentObservatoryNativeRosterPage)({
+          ...page,
           environmentId,
           threadIds,
-          source: "canonical-subagent-index",
-          coverage: "recorded-current-only",
-          throughSequence: 0,
-          status: "stale",
-          agents: [],
-          nextCursor: null,
+          nextCursor: page.nextCursor ? { ...page.nextCursor, environmentId } : null,
         });
-      const page = yield* projections.getCurrentNativeAgentRoster({
-        threadIds,
-        limit: input.limit,
-        ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
-      });
-      return yield* Schema.decodeUnknownEffect(AgentObservatoryNativeRosterPage)({
-        ...page,
-        environmentId,
-        threadIds,
-        nextCursor: page.nextCursor ? { ...page.nextCursor, environmentId } : null,
-      });
-    }).pipe(Effect.mapError(unavailable));
+      }).pipe(Effect.mapError(unavailable)),
+  );
   return AgentObservatoryService.of({
-    update: (submitted) =>
+    update: Effect.fn("AgentObservatoryService.update")((submitted) =>
       Effect.gen(function* () {
         // Decode/detach before yielding to the trusted host operation.
         const codec = Schema.fromJsonString(AgentObservatoryUpdate);
@@ -189,6 +190,7 @@ const make = Effect.gen(function* () {
           Schema.is(AgentObservatoryRefusal)(cause) ? cause : unavailable(),
         ),
       ),
+    ),
     read,
     subscribe: ({ threadId }) =>
       Stream.unwrap(

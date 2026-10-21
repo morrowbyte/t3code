@@ -3,9 +3,8 @@ import {
   type YaziPickerPollResult,
   type YaziPickerReadResult,
 } from "@t3tools/contracts";
-import { act, useState } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import { useState } from "react";
+import { expect, it, vi } from "vite-plus/test";
 
 const api = vi.hoisted(() => ({
   open: vi.fn<() => Promise<{ sessionId: string; homePath: string }>>(),
@@ -37,33 +36,27 @@ vi.mock("../../terminal/ghostty/surface", () => ({
 }));
 
 import { AttachmentPicker } from "./AttachmentPicker";
+import { act, render } from "../../../test/render";
 import { userEvent } from "vite-plus/test/browser";
 import { isNavigationMode, leaveNavigationMode, requestNavigationMode } from "./navigationMode";
 
-let root: Root | null;
-let container: HTMLDivElement;
 const files = ["first", "second", "third"].map((id) => ({
   id,
   name: `${id}.txt`,
   mimeType: "text/plain",
   sizeBytes: id.length,
 }));
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  vi.clearAllMocks();
+function setup(): Disposable {
+  for (const mock of Object.values(api)) mock.mockReset();
   api.open.mockResolvedValue({ sessionId: "retained-session", homePath: "/home/test" });
   api.poll.mockResolvedValue({ state: "completed", output: "", files });
   api.read.mockImplementation(async (_sessionId, id) => ({ dataBase64: btoa(id), eof: true }));
-  container = document.body.appendChild(document.createElement("div"));
-  root = createRoot(container);
-});
-afterEach(async () => {
-  await act(async () => root?.unmount());
-  root = null;
-  container.remove();
+  api.write.mockResolvedValue(undefined);
+  api.resize.mockResolvedValue(undefined);
+  api.close.mockResolvedValue(undefined);
   leaveNavigationMode();
-  vi.unstubAllGlobals();
-});
+  return { [Symbol.dispose]: leaveNavigationMode };
+}
 function button(label: string) {
   const result = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
     (element) => element.textContent?.trim() === label,
@@ -71,9 +64,10 @@ function button(label: string) {
   if (!result) throw new Error(`Missing ${label} button`);
   return result;
 }
-async function render(onFiles: (files: File[]) => Promise<boolean>, onClose = vi.fn()) {
-  await act(async () =>
-    root!.render(
+async function mountPicker(onFiles: (files: File[]) => Promise<boolean>, onClose = vi.fn()) {
+  await using resources = new AsyncDisposableStack();
+  const screen = resources.use(
+    await render(
       <AttachmentPicker
         environmentId={EnvironmentId.make("retry-environment")}
         targetKey="original-thread"
@@ -83,7 +77,12 @@ async function render(onFiles: (files: File[]) => Promise<boolean>, onClose = vi
     ),
   );
   await act(async () => button("Thread environment").click());
-  return onClose;
+  const cleanup = resources.move();
+  return {
+    onClose,
+    unmount: screen.unmount,
+    [Symbol.asyncDispose]: () => cleanup[Symbol.asyncDispose](),
+  };
 }
 async function waitForRetry() {
   await vi.waitFor(() =>
@@ -93,6 +92,7 @@ async function waitForRetry() {
 }
 
 it("retains the completed selection and retries only failed and remaining files, once per Retry", async () => {
+  using _setup = setup();
   let retryAllowed = false;
   const confirmed: string[] = [];
   const onFiles = vi.fn(async ([file]: File[]) => {
@@ -100,7 +100,8 @@ it("retains the completed selection and retries only failed and remaining files,
     confirmed.push(await file!.text());
     return true;
   });
-  const onClose = await render(onFiles);
+  await using screen = await mountPicker(onFiles);
+  const { onClose } = screen;
   const retry = await waitForRetry();
   expect(confirmed).toEqual(["first"]);
   expect(api.close).not.toHaveBeenCalled();
@@ -125,8 +126,10 @@ it("retains the completed selection and retries only failed and remaining files,
 it.each(["unmount", "source change"])(
   "does not attach a retry response arriving after %s",
   async (exit) => {
+    using _setup = setup();
     const onFiles = vi.fn(async ([file]: File[]) => file!.name !== "second.txt");
-    const onClose = await render(onFiles);
+    await using screen = await mountPicker(onFiles);
+    const { onClose } = screen;
     const retry = await waitForRetry();
     let finishRead!: (value: YaziPickerReadResult) => void;
     api.read.mockImplementationOnce(
@@ -137,12 +140,8 @@ it.each(["unmount", "source change"])(
     );
     await act(async () => retry.click());
     expect(api.read).toHaveBeenCalledTimes(3);
-    await act(async () => {
-      if (exit === "unmount") {
-        root!.unmount();
-        root = null;
-      } else button("This device").click();
-    });
+    if (exit === "unmount") await screen.unmount();
+    else await act(async () => button("This device").click());
     await act(async () => finishRead({ dataBase64: btoa("second"), eof: true }));
     expect(onFiles).toHaveBeenCalledTimes(2);
     expect(onClose).not.toHaveBeenCalled();
@@ -151,9 +150,11 @@ it.each(["unmount", "source change"])(
 );
 
 it("can restart Yazi when startup failed before any selection existed", async () => {
+  using _setup = setup();
   api.open.mockRejectedValueOnce(new Error("Yazi not ready"));
   const onFiles = vi.fn(async () => true);
-  const onClose = await render(onFiles);
+  await using screen = await mountPicker(onFiles);
+  const { onClose } = screen;
   await vi.waitFor(() =>
     expect(document.querySelector('[role="alert"]')?.textContent).toContain("Yazi not ready"),
   );
@@ -164,6 +165,7 @@ it("can restart Yazi when startup failed before any selection existed", async ()
 });
 
 it("keeps a partial browser selection in the dialog, replaces the failed file by keyboard, and restores NAV", async () => {
+  using _setup = setup();
   const submitted = vi.fn();
   const confirmed: string[] = [];
   const onFiles = vi.fn(async ([file]: File[]) => {
@@ -171,9 +173,11 @@ it("keeps a partial browser selection in the dialog, replaces the failed file by
     confirmed.push(file!.name);
     return true;
   });
+  using resources = new DisposableStack();
   const opener = document.createElement("button");
+  resources.defer(() => opener.remove());
   opener.textContent = "Selected message";
-  container.append(opener);
+  document.body.append(opener);
   opener.focus();
   requestNavigationMode();
   function Harness() {
@@ -204,9 +208,7 @@ it("keeps a partial browser selection in the dialog, replaces the failed file by
       </>
     );
   }
-  // Keep the captured opener outside React's managed subtree.
-  container.before(opener);
-  await act(async () => root!.render(<Harness />));
+  await using _screen = await render(<Harness />);
   const chosen = [
     new File(["ok"], "a-ok.txt"),
     new File([], "b-empty.txt"),
@@ -228,13 +230,13 @@ it("keeps a partial browser selection in the dialog, replaces the failed file by
     expect(document.activeElement).toBe(element);
     return element!;
   });
-  await act(async () => userEvent.keyboard("  {Control>}{Enter}{/Control}"));
+  await userEvent.keyboard("  {Control>}{Enter}{/Control}");
   await vi.waitFor(() =>
     expect(document.querySelector('[role="alert"]')?.textContent).toContain("remaining selection"),
   );
   expect(confirmed).toEqual(["a-ok.txt"]);
   expect(document.activeElement).toBe(list);
-  await act(async () => userEvent.keyboard("{ArrowUp}  {Control>}{Enter}{/Control}"));
+  await userEvent.keyboard("{ArrowUp}  {Control>}{Enter}{/Control}");
   await vi.waitFor(() => expect(document.activeElement).toBe(opener));
   expect(confirmed).toEqual(["a-ok.txt", "c-ok.txt"]);
   expect(onFiles.mock.calls.map(([batch]) => batch[0]!.name)).toEqual([
@@ -247,13 +249,15 @@ it("keeps a partial browser selection in the dialog, replaces the failed file by
     "Keep this unsent draft",
   );
   expect(isNavigationMode()).toBe(true);
-  opener.remove();
 });
 
 it("restores the original draft caret on cancellation after the dialog releases inert", async () => {
+  using _setup = setup();
+  using resources = new DisposableStack();
   const draft = document.createElement("textarea");
+  resources.defer(() => draft.remove());
   draft.value = "Keep my original draft";
-  container.before(draft);
+  document.body.append(draft);
   draft.focus();
   draft.setSelectionRange(5, 7);
   function Harness() {
@@ -268,11 +272,10 @@ it("restores the original draft caret on cancellation after the dialog releases 
       />
     ) : null;
   }
-  await act(async () => root!.render(<Harness />));
+  await using _screen = await render(<Harness />);
   await vi.waitFor(() => expect(document.activeElement).not.toBe(draft));
-  await act(async () => userEvent.keyboard("{Escape}"));
+  await userEvent.keyboard("{Escape}");
   await vi.waitFor(() => expect(document.activeElement).toBe(draft));
   expect([draft.selectionStart, draft.selectionEnd]).toEqual([5, 7]);
   expect(draft.value).toBe("Keep my original draft");
-  draft.remove();
 });

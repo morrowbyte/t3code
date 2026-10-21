@@ -57,15 +57,16 @@ export const layer = HttpApiBuilder.group(
             .transcribe({ bytes, contentType: file.contentType, fileName: file.name })
             .pipe(
               traceLocalHandlerWork,
-              Effect.catchTag("VoiceTranscriptionError", (error) =>
-                Effect.fail(
-                  new VoiceTranscriptionHttpError({
-                    code: "voice_transcription_failed",
-                    reason: error.reason,
-                    detail: error.detail.slice(0, 180),
-                  }),
-                ),
-              ),
+              Effect.catchTags({
+                VoiceTranscriptionError: (error) =>
+                  Effect.fail(
+                    new VoiceTranscriptionHttpError({
+                      code: "voice_transcription_failed",
+                      reason: error.reason,
+                      detail: error.detail.slice(0, 180),
+                    }),
+                  ),
+              }),
               Effect.catchIf(
                 (error) => !Schema.is(VoiceTranscriptionHttpError)(error),
                 (error) => failEnvironmentInternal("internal_error", error),

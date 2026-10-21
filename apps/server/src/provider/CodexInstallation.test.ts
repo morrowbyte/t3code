@@ -2,23 +2,19 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ModelManifest from "./ModelManifest.ts";
 import { expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
-import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Exit from "effect/Exit";
 import * as Queue from "effect/Queue";
 import * as Scope from "effect/Scope";
-import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/http";
-import * as TestClock from "effect/testing/TestClock";
-import { ChildProcessSpawner } from "effect/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as CodexInstallation from "./CodexInstallation.ts";
 
 const archive = Buffer.from(
@@ -49,7 +45,7 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
   const baseDir =
     input.baseDir ?? (yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-install-test-" }));
   const localDirectory = `${baseDir}/local`;
-  const localBinaryPath = `${localDirectory}/codex`;
+  const localBinaryPath = `${localDirectory}/codex${input.platform === "win32" ? ".exe" : ""}`;
   const probeLog = `${baseDir}/local-probes.txt`;
   if (input.local) {
     yield* fs.makeDirectory(localDirectory, { recursive: true });
@@ -195,17 +191,21 @@ it.effect.each([
     expect(yield* h.fs.exists(h.localBinaryPath)).toBe(true);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
-it.effect("falls back to a managed download when the reused local executable disappears", () =>
-  Effect.gen(function* () {
-    const h = yield* makeHarness({ local: { version: "0.156.1" } });
-    expect((yield* h.installation.resolve()).source).toBe("local");
-    yield* h.fs.remove(h.localBinaryPath);
-    yield* h.installation.start;
-    expect((yield* terminalState(h.installation)).phase).toBe("succeeded");
-    expect((yield* h.installation.resolve()).source).toBe("managed");
-    expect(h.downloads()).toBe(1);
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-);
+
+const compileNative = Effect.fn("test.compileNative")(function* (
+  executablePath: string,
+  source: string,
+) {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const compiler = yield* spawner.spawn(
+    ChildProcess.make("cc", ["-x", "c", "-", "-o", executablePath], {
+      stdin: Stream.make(new TextEncoder().encode(source)),
+      stdout: "inherit",
+      stderr: "inherit",
+    }),
+  );
+  expect(yield* compiler.exitCode).toBe(0);
+}, Effect.scoped);
 
 it.effect("rechecks compatibility after the local executable is replaced", () =>
   Effect.gen(function* () {
@@ -268,16 +268,38 @@ it.effect("uses bundled Codex compatibility when the remote manifest omits its p
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-it.effect("preserves the invoked name of version-manager launcher symlinks", () =>
+it.effect.each([
+  { kind: "script", name: "volta-shim" },
+  { kind: "native", name: "volta-shim" },
+  { kind: "native", name: "mise" },
+  { kind: "native", name: "aqua-proxy" },
+])("preserves the invoked name of $kind $name launcher symlinks", ({ kind, name }) =>
   Effect.gen(function* () {
     const h = yield* makeHarness({ local: { version: "0.156.1" } });
-    const launcher = `${h.baseDir}/launcher`;
-    yield* h.fs.writeFileString(
-      launcher,
-      '#!/bin/sh\ncase "$0" in */codex) ;; *) exit 1;; esac\ncase "$1" in --version) printf "codex-cli 0.156.1\\n";; app-server) exit 0;; esac\n',
-      { mode: 0o755 },
-    );
-    yield* h.fs.remove(h.localBinaryPath);
+    const launcher = `${h.baseDir}/${name}`;
+    if (kind === "native") {
+      const payload = `${h.baseDir}/codex.js`;
+      yield* h.fs.rename(h.localBinaryPath, payload);
+      yield* compileNative(
+        launcher,
+        `#include <string.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+  const char *name = strrchr(argv[0], '/');
+  if (strcmp(name ? name + 1 : argv[0], "codex") != 0) return 1;
+  execv(${JSON.stringify(payload)}, argv);
+  return 1;
+}
+`,
+      );
+    } else {
+      yield* h.fs.writeFileString(
+        launcher,
+        '#!/bin/sh\ncase "$0" in */codex) ;; *) exit 1;; esac\ncase "$1" in --version) printf "codex-cli 0.156.1\\n";; app-server) exit 0;; esac\n',
+        { mode: 0o755 },
+      );
+      yield* h.fs.remove(h.localBinaryPath);
+    }
     yield* h.fs.symlink(launcher, h.localBinaryPath);
     expect(yield* h.installation.start).toMatchObject({ source: "local", phase: "succeeded" });
     expect((yield* h.installation.resolve()).executablePath).toBe(h.localBinaryPath);

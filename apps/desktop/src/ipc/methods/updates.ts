@@ -20,10 +20,21 @@ export const acknowledgeUpdateReadiness = DesktopIpc.makeIpcMethod({
   handler: Effect.fn("desktop.ipc.updates.readiness")(function* (readiness, event) {
     const updates = yield* DesktopUpdates.DesktopUpdates;
     const windows = yield* ElectronWindow.ElectronWindow;
-    if (event?.senderFrame?.parent !== null || updates.acknowledgeReadiness === undefined || windows.updateInventory === undefined) return false;
+    if (
+      event?.senderFrame?.parent !== null ||
+      updates.acknowledgeReadiness === undefined ||
+      windows.updateInventory === undefined
+    )
+      return false;
     const frame = event.senderFrame;
-    if (!(yield* windows.updateInventory).some((window) => window.id === event.sender.id &&
-      window.generation === `${frame.processId}:${frame.routingId}`)) return false;
+    if (
+      !(yield* windows.updateInventory).some(
+        (window) =>
+          window.id === event.sender.id &&
+          window.generation === `${frame.processId}:${frame.routingId}`,
+      )
+    )
+      return false;
     return yield* updates.acknowledgeReadiness(event.sender.id, readiness);
   }),
 });

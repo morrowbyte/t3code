@@ -1,6 +1,6 @@
-import { act, useImperativeHandle, useRef } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { useImperativeHandle, useRef } from "react";
+import { act, fakeTimers, render } from "../../test/render";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import { CommandPalette } from "./CommandPalette";
 import { useComposerHandleContext } from "../composerHandleContext";
@@ -9,7 +9,8 @@ import { primaryServerKeybindingsAtom } from "../state/server";
 import { LeaderNavigation } from "./keyboard/LeaderNavigation";
 import { leaveNavigationMode } from "./keyboard/navigationMode";
 
-vi.mock("@tanstack/react-router", () => ({
+vi.mock("@tanstack/react-router", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   useNavigate: () => vi.fn(),
   useParams: () => null,
   useLocation: () => "/settings",
@@ -67,27 +68,15 @@ vi.mock("./settings/useAvailableSettingsSearchItems", () => ({
   useAvailableSettingsSearchItems: () => [],
 }));
 
-let root: Root;
-let container: HTMLDivElement;
-
-beforeEach(() => {
-  vi.useFakeTimers();
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
-
-afterEach(async () => {
-  await act(async () => {
-    root.unmount();
-    await vi.runOnlyPendingTimersAsync();
+function setup() {
+  const resources = new AsyncDisposableStack();
+  resources.use(fakeTimers());
+  resources.defer(async () => {
+    await act(() => vi.runOnlyPendingTimersAsync());
+    leaveNavigationMode();
   });
-  container.remove();
-  leaveNavigationMode();
-  vi.unstubAllGlobals();
-  vi.useRealTimers();
-});
+  return resources.move();
+}
 
 async function flushFocus() {
   await act(() => vi.advanceTimersByTimeAsync(0));
@@ -122,13 +111,17 @@ function Composer() {
 
 describe("command palette focus restoration", () => {
   it("returns to the previously focused Settings field when no composer is mounted", async () => {
-    await act(() =>
-      root.render(
-        <CommandPalette>
-          <input aria-label="Settings field" />
-        </CommandPalette>,
-      ),
+    await using _setup = setup();
+    await using screen = await render(
+      <CommandPalette>
+        <input aria-label="Settings field" />
+      </CommandPalette>,
+      {
+        // Standalone keyboard fixture; route navigation is outside this scenario.
+        router: false,
+      },
     );
+    const container = screen.container;
     const field = container.querySelector("input")!;
     await act(() => field.focus());
     await act(() => openCommandPalette());
@@ -139,13 +132,17 @@ describe("command palette focus restoration", () => {
   });
 
   it("focuses the replacement command input after leaving the file picker", async () => {
-    await act(() =>
-      root.render(
-        <CommandPalette>
-          <input aria-label="Settings field" />
-        </CommandPalette>,
-      ),
+    await using _setup = setup();
+    await using screen = await render(
+      <CommandPalette>
+        <input aria-label="Settings field" />
+      </CommandPalette>,
+      {
+        // Standalone keyboard fixture; route navigation is outside this scenario.
+        router: false,
+      },
     );
+    const container = screen.container;
     const field = container.querySelector("input")!;
     await act(() => field.focus());
     await act(() =>
@@ -177,14 +174,18 @@ describe("command palette focus restoration", () => {
   });
 
   it("restores the previous field even when a composer is mounted", async () => {
-    await act(() =>
-      root.render(
-        <CommandPalette>
-          <input aria-label="Previous field" />
-          <Composer />
-        </CommandPalette>,
-      ),
+    await using _setup = setup();
+    await using screen = await render(
+      <CommandPalette>
+        <input aria-label="Previous field" />
+        <Composer />
+      </CommandPalette>,
+      {
+        // Standalone keyboard fixture; route navigation is outside this scenario.
+        router: false,
+      },
     );
+    const container = screen.container;
     await act(() => container.querySelector("input")!.focus());
     await act(() => openCommandPalette());
     await flushFocus();
@@ -194,13 +195,17 @@ describe("command palette focus restoration", () => {
   });
 
   it("restores the original composer selection when canceled", async () => {
-    await act(() =>
-      root.render(
-        <CommandPalette>
-          <Composer />
-        </CommandPalette>,
-      ),
+    await using _setup = setup();
+    await using screen = await render(
+      <CommandPalette>
+        <Composer />
+      </CommandPalette>,
+      {
+        // Standalone keyboard fixture; route navigation is outside this scenario.
+        router: false,
+      },
     );
+    const container = screen.container;
     const composer = container.querySelector("textarea")!;
     await act(() => {
       composer.focus();
@@ -216,22 +221,26 @@ describe("command palette focus restoration", () => {
   });
 
   it("runs an action on the object that opened the command palette", async () => {
+    await using _setup = setup();
     const first = vi.fn();
     const second = vi.fn();
-    await act(() =>
-      root.render(
-        <CommandPalette>
-          <div data-keyboard-object="Message" tabIndex={-1}>
-            <button onClick={first}>Copy first response</button>
-          </div>
-          <div data-keyboard-object="Message" tabIndex={-1}>
-            <button onClick={second}>Copy second response</button>
-          </div>
-          <Composer />
-          <LeaderNavigation groups={[]} isClaimed={() => false} showSidebar={() => {}} />
-        </CommandPalette>,
-      ),
+    await using screen = await render(
+      <CommandPalette>
+        <div data-keyboard-object="Message" tabIndex={-1}>
+          <button onClick={first}>Copy first response</button>
+        </div>
+        <div data-keyboard-object="Message" tabIndex={-1}>
+          <button onClick={second}>Copy second response</button>
+        </div>
+        <Composer />
+        <LeaderNavigation groups={[]} isClaimed={() => false} showSidebar={() => {}} />
+      </CommandPalette>,
+      {
+        // Standalone keyboard fixture; route navigation is outside this scenario.
+        router: false,
+      },
     );
+    const container = screen.container;
     const message = container.querySelectorAll<HTMLElement>("[data-keyboard-object]")[1]!;
     await act(() => {
       message.focus();

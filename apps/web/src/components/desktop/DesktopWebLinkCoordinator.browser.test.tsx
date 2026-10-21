@@ -8,9 +8,9 @@ import {
   Outlet,
   RouterProvider,
 } from "@tanstack/react-router";
-import { act, StrictMode } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { StrictMode } from "react";
+import { act, render } from "../../../test/render";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 const mocks = vi.hoisted(() => ({
   connected: ["primary", "24efa85c-862c-4de4-9b5e-aaaa041e28a4"],
@@ -61,17 +61,15 @@ const threadId =
   "thread:delegated-task:command%3Amcp%3A474c7d68-6293-4de4-9859-011aec7f079b%3Adelegate-task%3At3-iui-rich-components-e2e-20261018-bootstrap-v1";
 const encodedLink = `t3code://threads/${environmentId}/${encodeURIComponent(threadId)}`;
 const threadRef = scopeThreadRef(EnvironmentId.make(environmentId), ThreadId.make(threadId));
-let root: Root;
-let container: HTMLDivElement;
 let history: ReturnType<typeof createHashHistory>;
 let listener: ((url: string) => void) | undefined;
 let pending: string[];
 const setReady = vi.fn(async (ready: boolean) => {
+  using _state = setup();
   if (ready) for (const url of pending.splice(0)) listener?.(url);
 });
 
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+function setup() {
   vi.clearAllMocks();
   mocks.connected = ["primary", environmentId];
   useComposerDraftStore.getState().setPrompt(threadRef, "");
@@ -90,17 +88,14 @@ beforeEach(() => {
   });
   window.history.replaceState(null, "", "/#/primary/current");
   history = createHashHistory();
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
-
-afterEach(async () => {
-  await act(async () => root.unmount());
-  history.destroy();
-  container.remove();
-  vi.unstubAllGlobals();
-});
+  return {
+    [Symbol.dispose]() {
+      history.destroy();
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+    },
+  };
+}
 
 async function openApp() {
   const rootRoute = createRootRoute({
@@ -122,15 +117,18 @@ async function openApp() {
     history,
   });
   await router.load();
-  await act(async () =>
-    root.render(
+  await using stack = new AsyncDisposableStack();
+  const screen = stack.use(
+    await render(
       <StrictMode>
         <RouterProvider router={router} />
       </StrictMode>,
+      { router: false }, // This case owns hash history to exercise desktop deep links.
     ),
   );
   await vi.waitFor(() => expect(setReady).toHaveBeenCalledWith(true));
-  return router;
+  const owned = stack.move();
+  return { router, screen, [Symbol.asyncDispose]: () => owned[Symbol.asyncDispose]() };
 }
 
 function expectNoCreation() {
@@ -141,8 +139,13 @@ function expectNoCreation() {
 
 describe("desktop existing thread links", () => {
   it("opens a queued encoded child in its connected remote environment using desktop hash history", async () => {
+    using _state = setup();
     pending.push(encodedLink);
-    const router = await openApp();
+    await using app = await openApp();
+    const {
+      router,
+      screen: { container },
+    } = app;
     await vi.waitFor(() =>
       expect(container.textContent).toBe(JSON.stringify({ environmentId, threadId })),
     );
@@ -163,8 +166,13 @@ describe("desktop existing thread links", () => {
   });
 
   it("leaves the current thread in place when the destination environment is not connected", async () => {
+    using _state = setup();
     mocks.connected = ["primary"];
-    const router = await openApp();
+    await using app = await openApp();
+    const {
+      router,
+      screen: { container },
+    } = app;
     await act(async () => listener!(encodedLink));
     await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalled());
     expect(router.state.location.pathname).toBe("/primary/current");
@@ -175,7 +183,12 @@ describe("desktop existing thread links", () => {
   it.each(['"fix"', "true", "123", '{ "fix": true }', "[1, 2]"])(
     "preserves the raw linked prompt %s through existing-thread navigation",
     async (prompt) => {
-      const router = await openApp();
+      using _state = setup();
+      await using app = await openApp();
+      const {
+        router,
+        screen: { container },
+      } = app;
       const search = `?prompt=${encodeURIComponent(prompt)}&panel=diff`;
       await act(async () => listener!(`${encodedLink}${search}`));
       await vi.waitFor(() =>
@@ -193,8 +206,9 @@ describe("desktop existing thread links", () => {
   );
 
   it("keeps an existing draft until the linked prompt is explicitly accepted", async () => {
+    using _state = setup();
     useComposerDraftStore.getState().setPrompt(threadRef, "Keep my draft");
-    await openApp();
+    await using _app = await openApp();
     await act(async () => listener!(`${encodedLink}?prompt=%22fix%22`));
     await vi.waitFor(() =>
       expect(mocks.toast).toHaveBeenCalledWith(
@@ -212,7 +226,12 @@ describe("desktop existing thread links", () => {
     "threads/primary/child",
     "t3code://threads/primary/child/extra",
   ])("does not turn an invalid app destination into a browser tab: %s", async (link) => {
-    const router = await openApp();
+    using _state = setup();
+    await using app = await openApp();
+    const {
+      router,
+      screen: { container },
+    } = app;
     await act(async () => listener!(link));
     await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalled());
     expect(router.state.location.pathname).toBe("/primary/current");
@@ -220,14 +239,24 @@ describe("desktop existing thread links", () => {
   });
 
   it("preserves the existing new-prompt path", async () => {
-    const router = await openApp();
+    using _state = setup();
+    await using app = await openApp();
+    const {
+      router,
+      screen: { container },
+    } = app;
     await act(async () => listener!("t3code://new?prompt=hello"));
     await vi.waitFor(() => expect(router.state.location.href).toBe("/new?prompt=hello"));
     expectNoCreation();
   });
 
   it("reports failed navigation and keeps receiving subsequent links", async () => {
-    const router = await openApp();
+    using _state = setup();
+    await using app = await openApp();
+    const {
+      router,
+      screen: { container },
+    } = app;
     vi.spyOn(router, "navigate").mockRejectedValueOnce(new Error("Navigation failed"));
     await act(async () => listener!(encodedLink));
     await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalled());

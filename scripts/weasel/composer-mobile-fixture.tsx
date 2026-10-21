@@ -92,34 +92,29 @@ function Fixture() {
   const promptRef = useRef("");
   const images = useRef<ComposerImageAttachment[]>([]);
   const files = useRef<ComposerFileAttachment[]>([]);
-  const terminals = useRef<
-    ChatComposerProps["composerTerminalContextsRef"]["current"]
-  >([]);
+  const terminals = useRef<ChatComposerProps["composerTerminalContextsRef"]["current"]>([]);
   const composerRef = useRef<ChatComposerHandle | null>(null);
   const [selection, setSelection] = useState(() =>
     createModelSelection(provider.instanceId, "gpt-6.1-sol"),
   );
   const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>("full-access");
-  const [interactionMode, setInteractionMode] =
-    useState<ProviderInteractionMode>("default");
-  const onProviderModelSelect = useCallback<
-    ChatComposerProps["onProviderModelSelect"]
-  >((instanceId, model, options) => {
-    observation.modelChoices.push({ instanceId, model });
-    setSelection(createModelSelection(instanceId, model));
-    if (options?.focusComposer !== false) composerRef.current?.focusAtEnd();
-  }, []);
+  const [interactionMode, setInteractionMode] = useState<ProviderInteractionMode>("default");
+  const onProviderModelSelect = useCallback<ChatComposerProps["onProviderModelSelect"]>(
+    (instanceId, model, options) => {
+      observation.modelChoices.push({ instanceId, model });
+      setSelection(createModelSelection(instanceId, model));
+      if (options?.focusComposer !== false) composerRef.current?.focusAtEnd();
+    },
+    [],
+  );
   const handleRuntimeModeChange = useCallback((mode: RuntimeMode) => {
     observation.runtimeChoices.push(mode);
     setRuntimeMode(mode);
   }, []);
-  const handleInteractionModeChange = useCallback(
-    (mode: ProviderInteractionMode) => {
-      observation.interactionChoices.push(mode);
-      setInteractionMode(mode);
-    },
-    [],
-  );
+  const handleInteractionModeChange = useCallback((mode: ProviderInteractionMode) => {
+    observation.interactionChoices.push(mode);
+    setInteractionMode(mode);
+  }, []);
   const toggleInteractionMode = useCallback(() => {
     observation.interactionToggles++;
     setInteractionMode((current) => (current === "plan" ? "default" : "plan"));
@@ -128,18 +123,13 @@ function Fixture() {
     const context = composerRef.current?.getSendContext();
     if (!context) throw new Error("Synthetic composer context unavailable");
     const options = context.selectedModelOptionsForDispatch;
-    if (
-      options !== undefined &&
-      !Schema.is(Schema.Array(ProviderOptionSelection))(options)
-    )
+    if (options !== undefined && !Schema.is(Schema.Array(ProviderOptionSelection))(options))
       throw new Error("Unexpected synthetic option shape");
     return {
       model: context.selectedModel,
       interactionMode: context.interactionMode,
       runtimeMode,
-      reasoning:
-        options?.find((option) => option.id === "reasoningEffort")?.value ??
-        null,
+      reasoning: options?.find((option) => option.id === "reasoningEffort")?.value ?? null,
       selectedInstance: selection.instanceId,
       selectedModel: selection.model,
     };
@@ -207,10 +197,7 @@ function Fixture() {
     lockedProvider: null,
     providerStatuses: [provider],
     providerCatalogKnown: true,
-    activeProjectDefaultModelSelection: createModelSelection(
-      provider.instanceId,
-      "gpt-6.1-sol",
-    ),
+    activeProjectDefaultModelSelection: createModelSelection(provider.instanceId, "gpt-6.1-sol"),
     activeThreadModelSelection: selection,
     activeProjectId: null,
     activeContextWindow: {
@@ -240,7 +227,11 @@ function Fixture() {
     compactDisabled: false,
     compactDisabledReason: null,
     resolvedTheme: "dark",
-    settings: { ...DEFAULT_UNIFIED_SETTINGS, contextWindowMeterEnabled: true, planModeEnabled: true },
+    settings: {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      contextWindowMeterEnabled: true,
+      planModeEnabled: true,
+    },
     keybindings: [],
     terminalOpen: false,
     gitCwd: null,

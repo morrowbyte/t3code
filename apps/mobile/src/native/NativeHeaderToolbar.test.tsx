@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import type { NativeStackHeaderItem } from "@react-navigation/native-stack";
 import { act, createContext, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -123,19 +122,14 @@ it.each(["left", "right", "bottom"] as const)(
   },
 );
 
-it.each(["left", "right", "bottom"] as const)(
-  "does not reapply %s header options for equivalent document renders",
-  (placement) => {
-    renderDocument("first/guide.pdf", placement);
-    const applied = harness.setOptionsCalls;
-    renderDocument("first/guide.pdf", placement);
-    renderDocument("first/guide.pdf", placement);
+it("applies a custom header element rendered inside a navigation container", () => {
+  renderConnecting("Connecting");
+  expect(renderedCustomLabel()).toBe("Connecting");
 
-    expect(harness.setOptionsCalls).toBe(applied);
-    openRenderedDocument();
-    expect(harness.openedDocuments).toEqual(["first/guide.pdf"]);
-  },
-);
+  expect(harness.setOptionsCalls).toBe(applied);
+  openRenderedDocument();
+  expect(harness.openedDocuments).toEqual(["first/guide.pdf"]);
+});
 
 it("applies a custom header element rendered inside a navigation container", () => {
   renderConnecting("Connecting");

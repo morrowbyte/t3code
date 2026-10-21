@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "@tanstack/react-router";
 import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { InboxIcon } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
 import { useEnvironments, usePrimaryEnvironmentId } from "../../state/environments";
 import { environmentShell } from "../../state/shell";
@@ -34,10 +34,7 @@ function EnvironmentAttention({
 }) {
   const shell = useAtomValue(environmentShell.stateValueAtom(environmentId));
   const snapshot = Option.getOrNull(shell.snapshot);
-  const model = useMemo(
-    () => deriveAttentionInbox(environmentId, snapshot?.threads ?? []),
-    [environmentId, snapshot?.threads],
-  );
+  const model = deriveAttentionInbox(environmentId, snapshot?.threads ?? []);
   const navigate = useNavigate();
   const { isMobile, setOpenMobile } = useSidebar();
   const [navigationError, setNavigationError] = useState<string | null>(null);

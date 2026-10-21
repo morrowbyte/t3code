@@ -1,5 +1,4 @@
 import { assert, describe, it } from "@effect/vitest";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -21,29 +20,7 @@ import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as DesktopWslEnvironment from "../wsl/DesktopWslEnvironment.ts";
 import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
 import * as DesktopBackendPool from "./DesktopBackendPool.ts";
-import type { DesktopBackendSnapshot, DesktopBackendStartConfig } from "./DesktopBackendManager.ts";
-
-function makeStubInstance(
-  id: DesktopBackendPool.BackendInstanceId,
-  label: string,
-): DesktopBackendPool.DesktopBackendInstance {
-  const snapshot: DesktopBackendSnapshot = {
-    desiredRunning: false,
-    ready: false,
-    activePid: Option.none(),
-    restartAttempt: 0,
-    restartScheduled: false,
-  };
-  return {
-    id,
-    label: Effect.succeed(label),
-    start: Effect.void,
-    stop: () => Effect.void,
-    currentConfig: Effect.succeed(Option.none<DesktopBackendStartConfig>()),
-    snapshot: Effect.succeed(snapshot),
-    waitForReady: (_timeout: Duration.Duration) => Effect.succeed(false),
-  };
-}
+import type { DesktopBackendStartConfig } from "./DesktopBackendManager.ts";
 
 function layerPool(labelRef: Ref.Ref<string>): Layer.Layer<DesktopBackendPool.DesktopBackendPool> {
   return DesktopBackendPool.layer.pipe(

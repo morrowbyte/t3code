@@ -54,7 +54,10 @@ async function request<A, E>(
   return result.success;
 }
 
-function readReceipt(response: HttpClientResponse.HttpClientResponse, limit: number) {
+const readReceipt = Effect.fn("android-apk-transport.readReceipt")((
+  response: HttpClientResponse.HttpClientResponse,
+  limit: number,
+) => {
   return Effect.gen(function* () {
     const chunks: Uint8Array[] = [];
     let length = 0;
@@ -83,7 +86,7 @@ function readReceipt(response: HttpClientResponse.HttpClientResponse, limit: num
       };
     });
   });
-}
+});
 
 export function createAndroidApkTransport(environmentId: EnvironmentId): AndroidApkTransport {
   return {

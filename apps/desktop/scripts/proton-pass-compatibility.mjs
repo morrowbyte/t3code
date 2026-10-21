@@ -142,9 +142,7 @@ export function persistProbeReceipt(output, serialized, preservePartial = false)
 export async function runProbe() {
   // Starting this script on a workstation must fail before Electron app readiness.
   if (process.env.GITHUB_ACTIONS !== "true" || process.env.MORROWBYTE_CI_PROBE !== "1")
-    throw new Error(
-      "Run only in the integration-owned CI Actions job with MORROWBYTE_CI_PROBE=1",
-    );
+    throw new Error("Run only in the integration-owned CI Actions job with MORROWBYTE_CI_PROBE=1");
   const output = NodePath.resolve(process.argv[process.argv.indexOf("--output") + 1] ?? "");
   if (!process.argv.includes("--output") || output === process.cwd())
     throw new Error("Provide --output <artifact directory>");

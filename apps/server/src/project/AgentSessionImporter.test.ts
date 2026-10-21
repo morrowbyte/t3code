@@ -24,45 +24,74 @@ const providerInstanceId = ProviderInstanceId.make("codex");
 const providerSessionId = "native-codex-thread";
 const threadId = ThreadId.make(`import:${providerInstanceId}:${providerSessionId}`);
 
-it.effect("reports six opaque skips and preserves skipped-file counts without thread/runtime/resume writes", () => {
-  const opaqueOutcomes: Array<AgentSessionImportOutcome> = Array.from({ length: 6 }, (_, index) => ({
-    providerInstanceId,
-    providerSessionId: `synthetic-native-session-${index}`,
-    status: "skipped",
-    recoverability: "compaction-context",
-    reason: "opaque-context",
-    nativeContinuationEligible: false,
-  }));
-  const duplicate: AgentSessionImportOutcome = { ...opaqueOutcomes[0]!, status: "duplicate", reason: "duplicate" };
-  const expected = [...opaqueOutcomes, duplicate];
-  const scanner = AgentSessionScanner.AgentSessionScanner.of({
-    scan: Effect.die("unused"),
-    recentThreads: () => Stream.fromIterable(expected.map((outcome) => ({ _tag: "Skipped" as const, outcome }))),
-  });
-  const layerTest = AgentSessionImporter.layer.pipe(Layer.provide(Layer.mergeAll(
-    Layer.succeed(AgentSessionScanner.AgentSessionScanner, scanner),
-    Layer.mock(ProjectService.ProjectService)({
-      getById: () => Effect.succeed(Option.some({ id: projectId, workspaceRoot: "/workspace/project" } as never)),
-    }),
-    Layer.mock(Orchestrator.OrchestratorV2)({ getThreadRecords: () => Effect.die("Skipped context must not inspect or create a thread") }),
-    Layer.mock(EventSink.EventSinkV2)({ write: () => Effect.die("Skipped context must not fabricate events") }),
-    Layer.mock(ProviderSessionRuntime.ProviderSessionRuntimeRepository)({
-      list: () => Effect.succeed([]),
-      upsert: () => Effect.die("Skipped context must not create a resume binding"),
-      recordImportedTranscript: () => Effect.die("Skipped context must not be marked imported"),
-    }),
-    IdAllocator.layer,
-  )));
-  return Effect.gen(function* () {
-    const importer = yield* AgentSessionImporter.AgentSessionImporter;
-    const result = yield* importer.importRecentAgentThreads({ projectId });
-    expect(result).toEqual({ importedCount: 0, skippedCount: 7, outcomes: expected });
-    expect(result.outcomes?.every((outcome) => !outcome.nativeContinuationEligible)).toBe(true);
-    expect(Object.keys(result.outcomes![0]!)).toEqual([
-      "providerInstanceId", "providerSessionId", "status", "recoverability", "reason", "nativeContinuationEligible",
-    ]);
-  }).pipe(Effect.provide(layerTest));
-});
+it.effect(
+  "reports six opaque skips and preserves skipped-file counts without thread/runtime/resume writes",
+  () => {
+    const opaqueOutcomes: Array<AgentSessionImportOutcome> = Array.from(
+      { length: 6 },
+      (_, index) => ({
+        providerInstanceId,
+        providerSessionId: `synthetic-native-session-${index}`,
+        status: "skipped",
+        recoverability: "compaction-context",
+        reason: "opaque-context",
+        nativeContinuationEligible: false,
+      }),
+    );
+    const duplicate: AgentSessionImportOutcome = {
+      ...opaqueOutcomes[0]!,
+      status: "duplicate",
+      reason: "duplicate",
+    };
+    const expected = [...opaqueOutcomes, duplicate];
+    const scanner = AgentSessionScanner.AgentSessionScanner.of({
+      scan: Effect.die("unused"),
+      recentThreads: () =>
+        Stream.fromIterable(expected.map((outcome) => ({ _tag: "Skipped" as const, outcome }))),
+    });
+    const layerTest = AgentSessionImporter.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(AgentSessionScanner.AgentSessionScanner, scanner),
+          Layer.mock(ProjectService.ProjectService)({
+            getById: () =>
+              Effect.succeed(
+                Option.some({ id: projectId, workspaceRoot: "/workspace/project" } as never),
+              ),
+          }),
+          Layer.mock(Orchestrator.OrchestratorV2)({
+            getThreadRecords: () =>
+              Effect.die("Skipped context must not inspect or create a thread"),
+          }),
+          Layer.mock(EventSink.EventSinkV2)({
+            write: () => Effect.die("Skipped context must not fabricate events"),
+          }),
+          Layer.mock(ProviderSessionRuntime.ProviderSessionRuntimeRepository)({
+            list: () => Effect.succeed([]),
+            upsert: () => Effect.die("Skipped context must not create a resume binding"),
+            recordImportedTranscript: () =>
+              Effect.die("Skipped context must not be marked imported"),
+          }),
+          IdAllocator.layer,
+        ),
+      ),
+    );
+    return Effect.gen(function* () {
+      const importer = yield* AgentSessionImporter.AgentSessionImporter;
+      const result = yield* importer.importRecentAgentThreads({ projectId });
+      expect(result).toEqual({ importedCount: 0, skippedCount: 7, outcomes: expected });
+      expect(result.outcomes?.every((outcome) => !outcome.nativeContinuationEligible)).toBe(true);
+      expect(Object.keys(result.outcomes![0]!)).toEqual([
+        "providerInstanceId",
+        "providerSessionId",
+        "status",
+        "recoverability",
+        "reason",
+        "nativeContinuationEligible",
+      ]);
+    }).pipe(Effect.provide(layerTest));
+  },
+);
 
 it.effect("imports messages once and preserves the provider native resume binding", () => {
   const writes: Array<ReadonlyArray<OrchestrationV2DomainEvent>> = [];
@@ -142,18 +171,30 @@ it.effect("imports messages once and preserves the provider native resume bindin
     expect(yield* importer.importRecentAgentThreads({ projectId })).toEqual({
       importedCount: 1,
       skippedCount: 0,
-      outcomes: [{
-        providerInstanceId, providerSessionId, status: "imported", recoverability: "conversation",
-        reason: "imported", nativeContinuationEligible: true,
-      }],
+      outcomes: [
+        {
+          providerInstanceId,
+          providerSessionId,
+          status: "imported",
+          recoverability: "conversation",
+          reason: "imported",
+          nativeContinuationEligible: true,
+        },
+      ],
     });
     expect(yield* importer.importRecentAgentThreads({ projectId })).toEqual({
       importedCount: 1,
       skippedCount: 0,
-      outcomes: [{
-        providerInstanceId, providerSessionId, status: "already-imported", recoverability: "conversation",
-        reason: "already-imported", nativeContinuationEligible: true,
-      }],
+      outcomes: [
+        {
+          providerInstanceId,
+          providerSessionId,
+          status: "already-imported",
+          recoverability: "conversation",
+          reason: "already-imported",
+          nativeContinuationEligible: true,
+        },
+      ],
     });
 
     expect(writes).toHaveLength(1);

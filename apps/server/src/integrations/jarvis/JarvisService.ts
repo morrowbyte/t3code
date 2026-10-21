@@ -76,7 +76,7 @@ const make = Effect.gen(function* () {
 
   // Every field comes from authenticated scope and canonical projections.
   // In particular, task.id/DelegateTaskResult.childNodeId is never a child root.
-  const bindingFor = (scope: McpInvocationScope) =>
+  const bindingFor = Effect.fn("JarvisService.bindingFor")((scope: McpInvocationScope) =>
     Effect.gen(function* () {
       if (
         !scope.capabilities.has("orchestration") ||
@@ -153,41 +153,41 @@ const make = Effect.gen(function* () {
         } satisfies JarvisNativeBinding,
         interactionMode: child.thread.interactionMode,
       };
-    });
+    }),
+  );
 
-  const recheck = (scope: McpInvocationScope, binding: JarvisNativeBinding) =>
-    Effect.gen(function* () {
-      const current = yield* bindingFor(scope).pipe(Effect.mapError(unknownOutcome));
-      const before = yield* Schema.encodeEffect(bindingCodec)(binding).pipe(
-        Effect.mapError(unknownOutcome),
-      );
-      const after = yield* Schema.encodeEffect(bindingCodec)(current.binding).pipe(
-        Effect.mapError(unknownOutcome),
-      );
-      if (before !== after) return yield* unknownOutcome();
-    });
-  const requestId = (
-    scope: McpInvocationScope,
-    binding: JarvisNativeBinding,
-    operation: string,
-    key: string,
-  ) =>
-    Effect.gen(function* () {
-      if (key.trim().length === 0 || key.length > 256)
-        return yield* failure("invalid_request", "Use one bounded stable request key.");
-      const encoded = yield* Schema.encodeEffect(jsonCodec)([
-        scope.requestNamespace,
-        binding.origin.taskId,
-        binding.origin.childRunId,
-        operation,
-        key,
-      ]).pipe(Effect.mapError(unavailable));
-      const digest = yield* crypto
-        .digest("SHA-256", new TextEncoder().encode(encoded))
-        .pipe(Effect.mapError(unavailable));
-      return `morrowbyte:${Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
-    });
-  const resultFrom = (response: JarvisNativeResponse) =>
+  const recheck = Effect.fn("JarvisService.recheck")(
+    (scope: McpInvocationScope, binding: JarvisNativeBinding) =>
+      Effect.gen(function* () {
+        const current = yield* bindingFor(scope).pipe(Effect.mapError(unknownOutcome));
+        const before = yield* Schema.encodeEffect(bindingCodec)(binding).pipe(
+          Effect.mapError(unknownOutcome),
+        );
+        const after = yield* Schema.encodeEffect(bindingCodec)(current.binding).pipe(
+          Effect.mapError(unknownOutcome),
+        );
+        if (before !== after) return yield* unknownOutcome();
+      }),
+  );
+  const requestId = Effect.fn("JarvisService.requestId")(
+    (scope: McpInvocationScope, binding: JarvisNativeBinding, operation: string, key: string) =>
+      Effect.gen(function* () {
+        if (key.trim().length === 0 || key.length > 256)
+          return yield* failure("invalid_request", "Use one bounded stable request key.");
+        const encoded = yield* Schema.encodeEffect(jsonCodec)([
+          scope.requestNamespace,
+          binding.origin.taskId,
+          binding.origin.childRunId,
+          operation,
+          key,
+        ]).pipe(Effect.mapError(unavailable));
+        const digest = yield* crypto
+          .digest("SHA-256", new TextEncoder().encode(encoded))
+          .pipe(Effect.mapError(unavailable));
+        return `morrowbyte:${Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+      }),
+  );
+  const resultFrom = Effect.fn("JarvisService.resultFrom")((response: JarvisNativeResponse) =>
     Effect.gen(function* () {
       if ("error" in response) {
         const detail = response.error.data;
@@ -196,53 +196,60 @@ const make = Effect.gen(function* () {
         return yield* failure("host_error", response.error.message);
       }
       return response.result;
-    });
-  const call = (
-    scope: McpInvocationScope,
-    method: JarvisNativeRequest["method"],
-    fields: Schema.JsonObject = {},
-    write = false,
-    expectedBinding?: JarvisNativeBinding,
-  ) =>
-    Effect.gen(function* () {
-      const { binding, interactionMode } = yield* bindingFor(scope);
-      if (expectedBinding !== undefined) yield* recheck(scope, expectedBinding);
-      if (write && interactionMode === "plan")
-        return yield* failure(
-          "capability_denied",
-          "The caller's configured plan mode does not submit capability work.",
+    }),
+  );
+  const call = Effect.fn("JarvisService.call")(
+    (
+      scope: McpInvocationScope,
+      method: JarvisNativeRequest["method"],
+      fields: Schema.JsonObject = {},
+      write = false,
+      expectedBinding?: JarvisNativeBinding,
+    ) =>
+      Effect.gen(function* () {
+        const { binding, interactionMode } = yield* bindingFor(scope);
+        if (expectedBinding !== undefined) yield* recheck(scope, expectedBinding);
+        if (write && interactionMode === "plan")
+          return yield* failure(
+            "capability_denied",
+            "The caller's configured plan mode does not submit capability work.",
+          );
+        const id = yield* crypto.randomUUIDv4().pipe(Effect.mapError(unavailable));
+        const request = yield* Schema.decodeUnknownEffect(JarvisNativeRequest)({
+          jsonrpc: "2.0",
+          id,
+          method,
+          params: { binding, ...fields },
+        }).pipe(
+          Effect.mapError(() =>
+            failure("invalid_request", "Invalid canonical capability request."),
+          ),
         );
-      const id = yield* crypto.randomUUIDv4().pipe(Effect.mapError(unavailable));
-      const request = yield* Schema.decodeUnknownEffect(JarvisNativeRequest)({
-        jsonrpc: "2.0",
-        id,
-        method,
-        params: { binding, ...fields },
-      }).pipe(
-        Effect.mapError(() => failure("invalid_request", "Invalid canonical capability request.")),
-      );
-      const response = yield* client.call(request).pipe(Effect.mapError(mapTransportFailure));
-      yield* recheck(scope, binding);
-      const result = yield* resultFrom(response);
-      if (
-        Schema.is(Schema.JsonObject)(result) &&
-        "engineSessionId" in result &&
-        result.engineSessionId !== binding.engineSessionId
-      )
-        return yield* unknownOutcome();
-      return { engineSessionId: binding.engineSessionId, origin: binding.origin, result };
-    });
-  const invocationFields = (invocation: JarvisCapabilityJobRequest) =>
-    Effect.gen(function* () {
-      if (invocation.engineSessionId !== client.engineSessionId)
-        return yield* failure(
-          "invalid_request",
-          "Invocation belongs to another configured engine.",
-        );
-      return yield* Schema.encodeEffect(Schema.toCodecJson(JarvisCapabilityJobRequest))(
-        invocation,
-      ).pipe(Effect.mapError(() => failure("invalid_request", "Invalid canonical invocation.")));
-    });
+        const response = yield* client.call(request).pipe(Effect.mapError(mapTransportFailure));
+        yield* recheck(scope, binding);
+        const result = yield* resultFrom(response);
+        if (
+          Schema.is(Schema.JsonObject)(result) &&
+          "engineSessionId" in result &&
+          result.engineSessionId !== binding.engineSessionId
+        )
+          return yield* unknownOutcome();
+        return { engineSessionId: binding.engineSessionId, origin: binding.origin, result };
+      }),
+  );
+  const invocationFields = Effect.fn("JarvisService.invocationFields")(
+    (invocation: JarvisCapabilityJobRequest) =>
+      Effect.gen(function* () {
+        if (invocation.engineSessionId !== client.engineSessionId)
+          return yield* failure(
+            "invalid_request",
+            "Invocation belongs to another configured engine.",
+          );
+        return yield* Schema.encodeEffect(Schema.toCodecJson(JarvisCapabilityJobRequest))(
+          invocation,
+        ).pipe(Effect.mapError(() => failure("invalid_request", "Invalid canonical invocation.")));
+      }),
+  );
 
   return JarvisService.of({
     catalog: (scope) => call(scope, "jarvis.catalog"),
@@ -257,7 +264,7 @@ const make = Effect.gen(function* () {
       invocationFields(invocation).pipe(
         Effect.flatMap((encoded) => call(scope, "jarvis.prepare", { invocation: encoded })),
       ),
-    submit: (scope, input) =>
+    submit: Effect.fn("JarvisService.submit")((scope, input) =>
       Effect.gen(function* () {
         const { binding } = yield* bindingFor(scope);
         const key = yield* requestId(scope, binding, "submit", input.clientRequestId);
@@ -271,8 +278,9 @@ const make = Effect.gen(function* () {
           binding,
         );
       }),
+    ),
     status: (scope, input) => call(scope, "jarvis.status", { jobId: input.jobId }),
-    cancel: (scope, input) =>
+    cancel: Effect.fn("JarvisService.cancel")((scope, input) =>
       Effect.gen(function* () {
         const { binding } = yield* bindingFor(scope);
         const key = yield* requestId(scope, binding, "cancel", input.clientRequestId);
@@ -284,6 +292,7 @@ const make = Effect.gen(function* () {
           binding,
         );
       }),
+    ),
     events: (scope, input) =>
       Effect.scoped(
         Effect.gen(function* () {

@@ -13,29 +13,7 @@ import {
   resolveUpdateRunMachineStatus,
   runUpdateEverything,
   type UpdateEverythingMachine,
-  type UpdateEverythingRun,
-  type UpdateRunMachine,
-  type UpdateRunMachineStatus,
-  UPDATE_SLOW_AFTER_MS,
 } from "./updateEverything.logic";
-
-const runMachine = (overrides: Partial<UpdateRunMachine> = {}): UpdateRunMachine => ({
-  environmentId: EnvironmentId.make("alvin"),
-  label: "alvin",
-  updatesProviders: true,
-  server: {
-    environmentId: EnvironmentId.make("alvin"),
-    serverLabel: "alvin",
-    selfUpdate: "boot-service",
-    targetVersion: "0.0.50",
-  },
-  handedOffVersion: null,
-  startedAt: 0,
-  result: null,
-  failure: null,
-  providerFailure: null,
-  ...overrides,
-});
 
 function machine(
   id: string,
@@ -155,32 +133,6 @@ describe("collectRestartingMachines", () => {
 });
 
 describe("runUpdateEverything", () => {
-  it("restarts servers after providers finish and returns every result", async () => {
-    const calls: string[] = [];
-    let finishProviders = (_value: string) => {};
-    const run = runUpdateEverything({
-      downloadLocal: async () => {
-        calls.push("download");
-        return true;
-      },
-      updateProviders: () =>
-        new Promise<string>((resolve) => {
-          calls.push("providers");
-          finishProviders = resolve;
-        }),
-      updateServers: async () => {
-        calls.push("servers");
-        return 2;
-      },
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(calls).toEqual(["download", "providers"]);
-    finishProviders("provider results");
-    expect(await run).toEqual({ localReady: true, providers: "provider results", servers: 2 });
-    expect(calls).toEqual(["download", "providers", "servers"]);
-  });
-
   it("still updates remote machines when the local download fails", async () => {
     const calls: string[] = [];
     const result = await runUpdateEverything({

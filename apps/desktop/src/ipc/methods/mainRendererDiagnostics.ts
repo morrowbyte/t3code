@@ -144,7 +144,7 @@ export const make = Effect.fn("desktop.mainRendererDiagnostics.make")(function* 
   );
 
   return MainRendererDiagnostics.of({
-    read: (source, alive, input) =>
+    read: Effect.fn("mainRendererDiagnostics.read")((source, alive, input) =>
       Effect.gen(function* () {
         const startedAtMs = DateTime.toEpochMillis(yield* DateTime.now);
         if (Option.isNone(sessionNonce)) return unavailable("unsupported");
@@ -219,11 +219,12 @@ export const make = Effect.fn("desktop.mainRendererDiagnostics.make")(function* 
           ),
         );
       }),
+    ),
     cancelSource: (source) =>
       Effect.sync(() => {
         if (pending?.source === source) stop("source-closed");
       }),
-    respond: (response, event) =>
+    respond: Effect.fn("mainRendererDiagnostics.respond")((response, event) =>
       Effect.gen(function* () {
         const p = pending;
         if (
@@ -266,7 +267,8 @@ export const make = Effect.fn("desktop.mainRendererDiagnostics.make")(function* 
         yield* Deferred.succeed(p.deferred, cache);
         return true;
       }),
-    invalidate: (input, event) =>
+    ),
+    invalidate: Effect.fn("mainRendererDiagnostics.invalidate")((input, event) =>
       Effect.gen(function* () {
         const p = pending;
         if (
@@ -287,6 +289,7 @@ export const make = Effect.fn("desktop.mainRendererDiagnostics.make")(function* 
         stop("context-changed", p);
         return true;
       }),
+    ),
   });
 });
 export const layer = Layer.effect(MainRendererDiagnostics, make());

@@ -101,86 +101,90 @@ const make = Effect.gen(function* () {
     Schema.is(TrustedAppControlInvocationError)(error)
       ? error
       : new TrustedAppControlInvocationError({ reason: "unavailable" });
-  const checkUnderLock = (
-    execution: CapturedAppControlExecution,
-    native: ProviderAdapter.ProviderAdapterV2NativeInvocation,
-  ) =>
-    Effect.gen(function* () {
-      if (
-        [native.callId, native.nativeThreadId, native.nativeTurnId].some(
-          (value) => !value.trim() || value.length > 512,
+  const checkUnderLock = Effect.fn("TrustedAppControlInvocation.checkUnderLock")(
+    (
+      execution: CapturedAppControlExecution,
+      native: ProviderAdapter.ProviderAdapterV2NativeInvocation,
+    ) =>
+      Effect.gen(function* () {
+        if (
+          [native.callId, native.nativeThreadId, native.nativeTurnId].some(
+            (value) => !value.trim() || value.length > 512,
+          )
         )
-      )
-        return yield* new TrustedAppControlInvocationError({ reason: "unbound" });
-      const read = () =>
-        projections.getThreadRecords(execution.threadId, [
-          "runs",
-          "attempts",
-          "providerThreads",
-          "providerTurns",
-        ]);
-      // A native/runtime lookup can yield. Never return an owner based only on
-      // the projection captured before that await (especially across rollover).
-      yield* read();
-      const runtime = yield* sessions.get(execution.runtime.providerSessionId);
-      const projection = yield* read();
-      const run = projection.runs.find((candidate) => candidate.id === execution.runId);
-      const attempt = projection.attempts.find((candidate) => candidate.id === execution.attemptId);
-      const thread = projection.providerThreads.find(
-        (candidate) => candidate.id === execution.providerThreadId,
-      );
-      const turn = projection.providerTurns.find(
-        (candidate) => candidate.id === native.providerTurnId,
-      );
-      if (
-        projection.thread.deletedAt !== null ||
-        projection.thread.archivedAt !== null ||
-        projection.thread.providerInstanceId !== execution.providerInstanceId ||
-        !run ||
-        run.status !== "running" ||
-        run.activeAttemptId !== execution.attemptId ||
-        run.rootNodeId !== execution.rootNodeId ||
-        run.providerThreadId !== execution.providerThreadId ||
-        run.providerInstanceId !== execution.providerInstanceId ||
-        projection.runs.some(
-          (candidate) => candidate.ordinal > run.ordinal && candidate.status !== "queued",
-        ) ||
-        !attempt ||
-        attempt.runId !== run.id ||
-        attempt.status !== "running" ||
-        attempt.rootNodeId !== execution.rootNodeId ||
-        attempt.providerThreadId !== execution.providerThreadId ||
-        attempt.providerInstanceId !== execution.providerInstanceId ||
-        !thread ||
-        thread.appThreadId !== execution.threadId ||
-        thread.ownerNodeId !== null ||
-        thread.status !== "active" ||
-        thread.driver !== execution.runtime.driver ||
-        execution.runtime.instanceId !== execution.providerInstanceId ||
-        thread.providerSessionId !== execution.runtime.providerSessionId ||
-        thread.providerInstanceId !== execution.providerInstanceId ||
-        thread.nativeThreadRef?.strength !== "strong" ||
-        thread.nativeThreadRef.driver !== execution.runtime.driver ||
-        thread.nativeThreadRef.nativeId !== native.nativeThreadId ||
-        !turn ||
-        turn.runAttemptId !== execution.attemptId ||
-        turn.nodeId !== execution.rootNodeId ||
-        turn.providerThreadId !== execution.providerThreadId ||
-        turn.status !== "running" ||
-        turn.nativeTurnRef?.strength !== "strong" ||
-        turn.nativeTurnRef.driver !== execution.runtime.driver ||
-        turn.nativeTurnRef.nativeId !== native.nativeTurnId ||
-        Option.isNone(runtime) ||
-        runtime.value !== execution.runtime
-      )
-        return yield* new TrustedAppControlInvocationError({ reason: "stale_owner" });
-    }).pipe(Effect.mapError(normalize));
+          return yield* new TrustedAppControlInvocationError({ reason: "unbound" });
+        const read = () =>
+          projections.getThreadRecords(execution.threadId, [
+            "runs",
+            "attempts",
+            "providerThreads",
+            "providerTurns",
+          ]);
+        // A native/runtime lookup can yield. Never return an owner based only on
+        // the projection captured before that await (especially across rollover).
+        yield* read();
+        const runtime = yield* sessions.get(execution.runtime.providerSessionId);
+        const projection = yield* read();
+        const run = projection.runs.find((candidate) => candidate.id === execution.runId);
+        const attempt = projection.attempts.find(
+          (candidate) => candidate.id === execution.attemptId,
+        );
+        const thread = projection.providerThreads.find(
+          (candidate) => candidate.id === execution.providerThreadId,
+        );
+        const turn = projection.providerTurns.find(
+          (candidate) => candidate.id === native.providerTurnId,
+        );
+        if (
+          projection.thread.deletedAt !== null ||
+          projection.thread.archivedAt !== null ||
+          projection.thread.providerInstanceId !== execution.providerInstanceId ||
+          !run ||
+          run.status !== "running" ||
+          run.activeAttemptId !== execution.attemptId ||
+          run.rootNodeId !== execution.rootNodeId ||
+          run.providerThreadId !== execution.providerThreadId ||
+          run.providerInstanceId !== execution.providerInstanceId ||
+          projection.runs.some(
+            (candidate) => candidate.ordinal > run.ordinal && candidate.status !== "queued",
+          ) ||
+          !attempt ||
+          attempt.runId !== run.id ||
+          attempt.status !== "running" ||
+          attempt.rootNodeId !== execution.rootNodeId ||
+          attempt.providerThreadId !== execution.providerThreadId ||
+          attempt.providerInstanceId !== execution.providerInstanceId ||
+          !thread ||
+          thread.appThreadId !== execution.threadId ||
+          thread.ownerNodeId !== null ||
+          thread.status !== "active" ||
+          thread.driver !== execution.runtime.driver ||
+          execution.runtime.instanceId !== execution.providerInstanceId ||
+          thread.providerSessionId !== execution.runtime.providerSessionId ||
+          thread.providerInstanceId !== execution.providerInstanceId ||
+          thread.nativeThreadRef?.strength !== "strong" ||
+          thread.nativeThreadRef.driver !== execution.runtime.driver ||
+          thread.nativeThreadRef.nativeId !== native.nativeThreadId ||
+          !turn ||
+          turn.runAttemptId !== execution.attemptId ||
+          turn.nodeId !== execution.rootNodeId ||
+          turn.providerThreadId !== execution.providerThreadId ||
+          turn.status !== "running" ||
+          turn.nativeTurnRef?.strength !== "strong" ||
+          turn.nativeTurnRef.driver !== execution.runtime.driver ||
+          turn.nativeTurnRef.nativeId !== native.nativeTurnId ||
+          Option.isNone(runtime) ||
+          runtime.value !== execution.runtime
+        )
+          return yield* new TrustedAppControlInvocationError({ reason: "stale_owner" });
+      }).pipe(Effect.mapError(normalize)),
+  );
   const check = (
     execution: CapturedAppControlExecution,
     native: ProviderAdapter.ProviderAdapterV2NativeInvocation,
   ) => executor.withLock(execution.threadId, checkUnderLock(execution, native));
   return TrustedAppControlInvocation.of({
-    capture: (input, envelope) =>
+    capture: Effect.fn("TrustedAppControlInvocation.capture")((input, envelope) =>
       Effect.gen(function* () {
         const execution = Object.freeze({ ...input });
         const native = Object.freeze({ ...envelope });
@@ -208,6 +212,7 @@ const make = Effect.gen(function* () {
         owners.set(owner, { execution, native });
         return owner;
       }).pipe(Effect.mapError(normalize)),
+    ),
     withValidatedOwner: (owner, use) =>
       Effect.suspend(() => {
         const binding = owners.get(owner);

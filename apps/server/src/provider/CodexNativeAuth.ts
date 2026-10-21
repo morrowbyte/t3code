@@ -49,7 +49,7 @@ export const makeCodexNativeAuth = Effect.fn("makeCodexNativeAuth")(function* (o
         { id: "chatgpt", name: "ChatGPT (Codex device sign-in)", type: "agent", description: null },
       ]),
     ),
-    authenticate: (_method, context) =>
+    authenticate: Effect.fn("CodexNativeAuth.authenticate")((_method, context) =>
       Effect.gen(function* () {
         yield* options.checkRuntime;
         const { client } = yield* options.connect;
@@ -113,6 +113,7 @@ export const makeCodexNativeAuth = Effect.fn("makeCodexNativeAuth")(function* (o
         if (account.account?.type !== "chatgpt") return yield* failure("verify")(undefined);
         verified = true;
       }).pipe(Effect.mapError((cause) => (isSetupError(cause) ? cause : failure("start")(cause)))),
+    ),
     logout: Effect.gen(function* () {
       const { client } = yield* options.connect;
       yield* client.request("account/logout", undefined);

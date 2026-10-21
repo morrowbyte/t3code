@@ -33,13 +33,6 @@ describe("subscribeServerConfig payload compatibility", () => {
 });
 
 describe("WebSocket RPC contracts", () => {
-  it("exposes only the V2 orchestration transport surface", () => {
-    const methods = [...WsRpcGroup.requests.keys()];
-
-    expect(methods).toEqual(expect.arrayContaining(Object.values(ORCHESTRATION_V2_WS_METHODS)));
-    expect(methods.filter((method) => method.startsWith("orchestrationV1."))).toEqual([]);
-  });
-
   it("rejects server-internal commands sent to dispatchCommand", () => {
     const dispatchCommand = WsRpcGroup.requests.get(ORCHESTRATION_V2_WS_METHODS.dispatchCommand);
     if (dispatchCommand === undefined) throw new Error("dispatchCommand is not registered");

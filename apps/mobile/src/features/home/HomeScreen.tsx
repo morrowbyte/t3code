@@ -161,7 +161,7 @@ const THREAD_FAMILY_LAYOUT_TRANSITION = LinearTransition.duration(180).reduceMot
   ReduceMotion.System,
 );
 const ESTIMATED_THREAD_LIST_V2_ROW_HEIGHT = 72;
-// Rows away from the viewport are cheap dormant frames (see
+// Rows away from the viewport skip their swipe actions (see
 // swipe-row-activation), so render further ahead: a fast fling then reaches
 // rows that are already built instead of rows still being rebuilt.
 const THREAD_LIST_V2_DRAW_DISTANCE = 1_000;
@@ -762,6 +762,7 @@ export function HomeScreen(props: HomeScreenProps) {
         hasQueuedMessages={item.hasQueuedMessages}
         snoozed={item.item.snoozed}
         pinned={item.item.pinned}
+        wokeAt={item.item.wokeAt}
         snoozePresetMinute={item.snoozePresetMinute ?? ""}
         snoozeWakeLabelText={item.snoozeWakeLabelText}
         timeLabel={item.timeLabel}

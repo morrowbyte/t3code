@@ -1,15 +1,15 @@
 import { compareSemverVersions } from "@t3tools/shared/semver";
-import { EventEmitter } from "node:events";
+import * as NodeEvents from "node:events";
 // This imperative adapter implements electron-updater's EventEmitter/Promise
 // interface at the Electron boundary, outside an Effect runtime.
 // @effect-diagnostics-next-line nodeBuiltinImport:off
-import { execFile } from "node:child_process";
+import * as NodeChildProcess from "node:child_process";
 // @effect-diagnostics-next-line nodeBuiltinImport:off
-import { access } from "node:fs/promises";
+import * as NodeFSP from "node:fs/promises";
 // @effect-diagnostics-next-line nodeBuiltinImport:off
-import { constants } from "node:fs";
+import * as NodeFS from "node:fs";
 // @effect-diagnostics-next-line nodeBuiltinImport:off
-import { isAbsolute } from "node:path";
+import * as NodePath from "node:path";
 
 export interface NixUpdaterOptions {
   command: string;
@@ -21,7 +21,7 @@ export interface NixUpdaterOptions {
 
 /** Adapter for immutable Store installs. The helper imports a CI-built closure;
  * preparation never switches the running version and activation never builds. */
-export class NixManagedUpdater extends EventEmitter {
+export class NixManagedUpdater extends NodeEvents.EventEmitter {
   channel = "nightly";
   allowDowngrade = false;
   allowPrerelease = true;
@@ -37,14 +37,14 @@ export class NixManagedUpdater extends EventEmitter {
   constructor(options: NixUpdaterOptions) {
     super();
     this.options = options;
-    if (!isAbsolute(options.command) || !isAbsolute(options.launcher)) {
+    if (!NodePath.isAbsolute(options.command) || !NodePath.isAbsolute(options.launcher)) {
       throw new Error("Nix updater and stable launcher must be absolute paths");
     }
     this.run =
       options.run ??
       ((args, channel) =>
         new Promise((resolve, reject) => {
-          execFile(
+          NodeChildProcess.execFile(
             options.command,
             [...args],
             {
@@ -102,7 +102,7 @@ export class NixManagedUpdater extends EventEmitter {
     if (!this.prepared) throw new Error("No verified Nix update is prepared");
     // Check before changing current: never strand the user on an unusable launcher.
     if (!isForceRunAfter) throw new Error("Nix desktop updates require relaunch");
-    await access(this.options.launcher, constants.X_OK);
+    await NodeFSP.access(this.options.launcher, NodeFS.constants.X_OK);
     await this.run(["--activate", this.prepared], this.releaseChannel);
     this.options.relaunch(this.options.launcher);
   }

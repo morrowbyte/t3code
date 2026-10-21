@@ -20,7 +20,7 @@ import {
   formatWorkingDurationLabel,
   getFallbackThreadIdAfterDelete,
   getProjectSortTimestamp,
-  getSidebarForkParentThreadId,
+  resolveSidebarRowThreadId,
   getSidebarThreadIdsToPrewarm,
   hasUnseenCompletion,
   isContextMenuPointerDown,
@@ -827,30 +827,6 @@ describe("sidebar thread lineage helpers", () => {
 
     expect(isSidebarSubagentThread(subagent)).toBe(true);
     expect(isSidebarSubagentThread(makeThreadFixture())).toBe(false);
-  });
-
-  it("resolves the parent thread for fork sidebar affordances", () => {
-    const parentId = ThreadId.make("thread-parent");
-    const fallbackParentId = ThreadId.make("thread-fallback-parent");
-    const runFork = makeThreadFixture({
-      forkedFrom: { type: "run", threadId: parentId, runId: "run-1" as never },
-      lineage: {
-        rootThreadId: parentId,
-        parentThreadId: fallbackParentId,
-        relationshipToParent: "fork",
-      },
-    });
-    const lineageFork = makeThreadFixture({
-      lineage: {
-        rootThreadId: parentId,
-        parentThreadId: fallbackParentId,
-        relationshipToParent: "fork",
-      },
-    });
-
-    expect(getSidebarForkParentThreadId(runFork)).toBe(parentId);
-    expect(getSidebarForkParentThreadId(lineageFork)).toBe(fallbackParentId);
-    expect(getSidebarForkParentThreadId(makeThreadFixture())).toBeNull();
   });
 });
 
@@ -2799,4 +2775,44 @@ describe("Working shelf (beta)", () => {
       });
     });
   });
+});
+
+it("maps an open subagent to its nearest visible ancestor's sidebar row", () => {
+  const environmentId = EnvironmentId.make("environment-row");
+  const otherEnvironmentId = EnvironmentId.make("environment-other");
+  const subagentOf = (id: string, parentId: ThreadId, environment = environmentId) =>
+    makeThreadFixture({
+      id: ThreadId.make(id),
+      environmentId: environment,
+      lineage: {
+        rootThreadId: parentId,
+        parentThreadId: parentId,
+        relationshipToParent: "subagent",
+      },
+    });
+  const root = makeThreadFixture({ id: ThreadId.make("thread-root"), environmentId });
+  const fork = makeThreadFixture({
+    id: ThreadId.make("thread-fork"),
+    environmentId,
+    lineage: {
+      rootThreadId: root.id,
+      parentThreadId: root.id,
+      relationshipToParent: "fork",
+    },
+  });
+  const child = subagentOf("thread-child", root.id);
+  const grandchild = subagentOf("thread-grandchild", child.id);
+  const forkChild = subagentOf("thread-fork-child", fork.id);
+  const orphan = subagentOf("thread-orphan", ThreadId.make("thread-missing"));
+  const elsewhere = subagentOf("thread-elsewhere", root.id, otherEnvironmentId);
+  const threads = [root, fork, child, grandchild, forkChild, orphan, elsewhere];
+
+  expect(resolveSidebarRowThreadId(child.id, environmentId, threads)).toBe(root.id);
+  expect(resolveSidebarRowThreadId(grandchild.id, environmentId, threads)).toBe(root.id);
+  expect(resolveSidebarRowThreadId(forkChild.id, environmentId, threads)).toBe(fork.id);
+  expect(resolveSidebarRowThreadId(elsewhere.id, otherEnvironmentId, threads)).toBe(elsewhere.id);
+  expect(resolveSidebarRowThreadId(orphan.id, environmentId, threads)).toBe(orphan.id);
+  const loopA = subagentOf("thread-loop-a", ThreadId.make("thread-loop-b"));
+  const loopB = subagentOf("thread-loop-b", loopA.id);
+  expect(resolveSidebarRowThreadId(loopA.id, environmentId, [loopA, loopB])).toBe(loopA.id);
 });

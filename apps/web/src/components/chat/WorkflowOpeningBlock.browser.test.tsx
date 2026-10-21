@@ -1,8 +1,7 @@
 import type { WorkflowOpening } from "@t3tools/client-runtime/state/subagentRuntime";
 import { EnvironmentId } from "@t3tools/contracts";
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import { act, render } from "../../../test/render";
+import { expect, it, vi } from "vite-plus/test";
 
 import "~/index.css";
 
@@ -53,76 +52,65 @@ function Find(props: { readonly container: HTMLElement | null; readonly query: s
   return null;
 }
 
-let root: Root;
-let host: HTMLElement;
-
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  host = document.createElement("div");
-  host.style.width = "720px";
-  document.body.append(host);
-  root = createRoot(host);
-});
-
-afterEach(async () => {
-  await act(async () => root.unmount());
-  host.remove();
-  CSS.highlights.clear();
-  vi.unstubAllGlobals();
-});
-
-async function render(script: string, query = "") {
-  await act(async () =>
-    root.render(
-      <AppAtomRegistryProvider>
-        <MarkdownFindContext value={query.length > 0}>
-          <div data-timeline-row-id="opening">
-            <WorkflowOpeningBlock
-              opening={opening(script)}
-              environmentId={EnvironmentId.make("environment-local")}
-              onOpenThread={() => undefined}
-            />
-          </div>
-        </MarkdownFindContext>
-        <Find container={host} query={query} />
-      </AppAtomRegistryProvider>,
-    ),
+function view(script: string, query: string, host: HTMLElement | null) {
+  return (
+    <AppAtomRegistryProvider>
+      <MarkdownFindContext value={query.length > 0}>
+        <div data-timeline-row-id="opening">
+          <WorkflowOpeningBlock
+            opening={opening(script)}
+            environmentId={EnvironmentId.make("environment-local")}
+            onOpenThread={() => undefined}
+          />
+        </div>
+      </MarkdownFindContext>
+      <Find container={host} query={query} />
+    </AppAtomRegistryProvider>
   );
-  await act(async () => {
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-  });
 }
 
-const foldToggle = () =>
+const foldToggle = (host: HTMLElement) =>
   [...host.querySelectorAll("button")].find((button) =>
     /Show full script|Show less/.test(button.textContent ?? ""),
   );
 
 it("shows a short script as highlighted code with nothing to open", async () => {
-  await render(SHORT_SCRIPT);
+  using _highlights = { [Symbol.dispose]: () => CSS.highlights.clear() };
+  await using screen = await render(view(SHORT_SCRIPT, "", null));
+  const host = screen.container;
+  host.style.width = "720px";
+  await screen.rerender(view(SHORT_SCRIPT, "", host));
   expect(host.querySelector('[data-language="javascript"]')?.textContent).toContain("SCRIPTONLY");
   await act(async () => {
     await getSyntaxHighlighterPromise("javascript");
   });
   expect(host.querySelector(".chat-markdown-shiki")).not.toBeNull();
-  expect(foldToggle()).toBeUndefined();
+  expect(foldToggle(host)).toBeUndefined();
 });
 
 it("folds a long script until it is opened", async () => {
-  await render(LONG_SCRIPT);
-  expect(foldToggle()?.getAttribute("aria-expanded")).toBe("false");
+  using _highlights = { [Symbol.dispose]: () => CSS.highlights.clear() };
+  await using screen = await render(view(LONG_SCRIPT, "", null));
+  const host = screen.container;
+  host.style.width = "720px";
+  await screen.rerender(view(LONG_SCRIPT, "", host));
+  expect(foldToggle(host)?.getAttribute("aria-expanded")).toBe("false");
   expect(host.querySelector("[data-thread-find-fold]")).not.toBeNull();
-  await act(async () => foldToggle()?.click());
-  expect(foldToggle()?.getAttribute("aria-expanded")).toBe("true");
+  await act(async () => foldToggle(host)?.click());
+  expect(foldToggle(host)?.getAttribute("aria-expanded")).toBe("true");
   expect(host.querySelector("[data-thread-find-fold]")).toBeNull();
 });
 
 it("finds the workflow's name and opens a folded script on a match below the fold", async () => {
-  await render(LONG_SCRIPT, "repo-check");
+  using _highlights = { [Symbol.dispose]: () => CSS.highlights.clear() };
+  await using screen = await render(view(LONG_SCRIPT, "repo-check", null));
+  const host = screen.container;
+  host.style.width = "720px";
+  await screen.rerender(view(LONG_SCRIPT, "repo-check", host));
   expect(CSS.highlights.get("t3-thread-find-active")?.size).toBe(1);
-  expect(foldToggle()?.getAttribute("aria-expanded")).toBe("false");
+  expect(foldToggle(host)?.getAttribute("aria-expanded")).toBe("false");
 
-  await render(LONG_SCRIPT, "TAILONLY");
+  await screen.rerender(view(LONG_SCRIPT, "TAILONLY", host));
   expect(CSS.highlights.get("t3-thread-find-active")?.size).toBe(1);
-  expect(foldToggle()?.getAttribute("aria-expanded")).toBe("true");
+  expect(foldToggle(host)?.getAttribute("aria-expanded")).toBe("true");
 });
