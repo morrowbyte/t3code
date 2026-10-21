@@ -373,6 +373,7 @@ focused_tests+=(
 renderer_tests=(
   apps/web/src/components/CommandPalette.focus.browser.test.tsx
   apps/web/src/components/keyboard/KeyboardContext.browser.test.tsx
+  apps/web/src/components/keyboard/AttachmentPicker.retry.browser.test.tsx
   apps/web/src/components/chat/MessagesTimeline.browser.test.tsx
   apps/web/src/components/chat/QueuedRunsControl.browser.test.tsx
   apps/web/src/components/chat/ComposerPendingApprovalActions.browser.test.tsx

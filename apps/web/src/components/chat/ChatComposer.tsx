@@ -5685,6 +5685,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       readonly source?: ChatFileAttachment["source"];
       readonly selection?: { start: number; end: number };
       readonly skipImageInlineChip?: boolean;
+      readonly focusEditorAfterReplace?: boolean;
     },
   ): Promise<boolean> => {
     if (!activeThreadId || files.length === 0 || isRevertingCheckpointRef.current) return false;
@@ -5798,6 +5799,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         insertedAny = insertAttachmentReferences(
           storedFiles.map(fileContextReference),
           options?.selection,
+          options?.focusEditorAfterReplace,
         );
       }
       if (options?.source?._tag === "pasted-text" && storedFiles.length > 0) {
@@ -5864,7 +5866,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       const storedImages = nextImages.filter((image) => storedImageIds.has(image.id));
       if (storedImages.length > 0 && imageAttachmentsGetChips) {
         insertedAny =
-          insertAttachmentReferences(storedImages.map(imageContextReference)) || insertedAny;
+          insertAttachmentReferences(
+            storedImages.map(imageContextReference),
+            undefined,
+            options?.focusEditorAfterReplace,
+          ) || insertedAny;
       }
       // Only failures are reported here. Success must not pass `null`: by
       // now other work (a failed send, an overlapping paste) may have set a
@@ -5891,6 +5897,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const insertAttachmentReferences = (
     references: ReadonlyArray<ComposerContextReference>,
     selection?: { start: number; end: number },
+    focusEditorAfterReplace?: boolean,
   ): boolean => {
     if (references.length === 0) return false;
     // Question answers carry attachments beside the answer, never as chips. Falling back to
@@ -5903,10 +5910,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       insertReferences: () => {
         if (selection) {
           const edit = inlineContextReferenceReplacement(promptRef.current, selection, references);
-          return applyPromptReplacement(edit.start, edit.end, edit.text);
+          return applyPromptReplacement(edit.start, edit.end, edit.text, {
+            focusEditorAfterReplace,
+          });
         }
         const text = references.map(formatInlineContextReference).join(" ");
-        const inserted = insertComposerText(`${text} `, "cursor", { ensureLeadingBoundary: true });
+        const inserted = insertComposerText(`${text} `, "cursor", {
+          ensureLeadingBoundary: true,
+          focusEditorAfterReplace,
+        });
         if (!inserted) {
           setPrompt(ensureInlineContextReferences(promptRef.current, references));
         }
@@ -6054,6 +6066,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     options?: {
       ensureLeadingBoundary?: boolean;
       citationCommentAnchor?: AssistantCitationSourceAnchor;
+      focusEditorAfterReplace?: boolean;
       clipboardData?: DataTransfer;
     },
   ): boolean => {
@@ -6090,7 +6103,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             },
             focusEditorAfterReplace: false,
           }
-        : undefined,
+        : { focusEditorAfterReplace: options?.focusEditorAfterReplace },
     );
   };
   const insertComposerTextStable = useStableCallback(insertComposerText);
@@ -6366,6 +6379,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const [attachmentPicker, setAttachmentPicker] = useState<{
     targetKey: string;
     onFiles: (files: File[]) => Promise<boolean>;
+    restoreFocus: () => HTMLElement | false;
   } | null>(null);
   const openKeyboardControl = useStableCallback((command: KeybindingCommand) => {
     const kind =
@@ -6405,11 +6419,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     "composer.access": () => openKeyboardControl("composer.access"),
     "composer.attachFiles": () => {
       if (!showComposerAttachAction || !canOperateThread) return true;
+      const previousFocus =
+        document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      const fromNavigation = isNavigationMode();
       setAttachmentPicker({
         targetKey: attachmentTargetKey,
         onFiles: async (files) => {
           if (attachmentTargetKeyRef.current !== attachmentTargetKey) return false;
-          return addComposerAttachments(files);
+          return addComposerAttachments(files, { focusEditorAfterReplace: false });
+        },
+        restoreFocus: () => {
+          if (attachmentTargetKeyRef.current !== attachmentTargetKey) return false;
+          if (fromNavigation) requestNavigationMode();
+          return previousFocus?.isConnected ? previousFocus : false;
         },
       });
       return true;
@@ -6876,10 +6898,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           environmentId={environmentId}
           targetKey={attachmentPicker.targetKey}
           onFiles={attachmentPicker.onFiles}
-          onClose={() => {
-            setAttachmentPicker(null);
-            if (attachmentTargetKeyRef.current === attachmentPicker.targetKey) focusComposer();
-          }}
+          onClose={() => setAttachmentPicker(null)}
+          restoreFocus={attachmentPicker.restoreFocus}
         />
       ) : null}
       {composerControlsCollapsed && restingControlsHost

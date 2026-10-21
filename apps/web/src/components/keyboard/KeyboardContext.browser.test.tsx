@@ -215,3 +215,63 @@ it("keeps three local selections across two folders, removes one, and attaches t
   expect(received.map((file) => file.name)).toEqual(["one.txt", "three.txt"]);
   expect(await Promise.all(received.map((file) => file.text()))).toEqual(["one", "three"]);
 });
+
+it.each(["rejected", "throws"])(
+  "retries only the remaining local file after the second attachment %s",
+  async (failure) => {
+    const directory = browserAttachmentDirectory([
+      new File(["first bytes"], "one.txt"),
+      new File(["second bytes"], "two.txt"),
+    ])!;
+    const attempted: File[][] = [];
+    const accepted: File[] = [];
+    const close = vi.fn();
+    let retry = false;
+    await act(() =>
+      root.render(
+        <BrowserAttachmentExplorer
+          root={directory}
+          onFiles={async (files) => {
+            attempted.push(files);
+            if (files[0]?.name === "two.txt" && !retry) {
+              if (failure === "throws") throw new Error("Attachment failed");
+              return false;
+            }
+            accepted.push(...files);
+            return true;
+          }}
+          onClose={close}
+        />,
+      ),
+    );
+    await vi.waitFor(() =>
+      expect(document.activeElement?.getAttribute("aria-label")).toBe("Local files"),
+    );
+    await press("  {Enter}");
+    await vi.waitFor(() => expect(host.querySelector('[role="alert"]')).not.toBeNull());
+    expect(close).not.toHaveBeenCalled();
+    expect(attempted.map((files) => files.map((file) => file.name))).toEqual([
+      ["one.txt"],
+      ["two.txt"],
+    ]);
+    const selected = host.querySelector('[aria-label="Selected local files"]')!;
+    expect(selected.textContent).toContain("two.txt");
+    expect(selected.textContent).not.toContain("one.txt");
+    expect(host.textContent).toContain("1 selected");
+    expect(await accepted[0]!.text()).toBe("first bytes");
+
+    retry = true;
+    await press("{Enter}");
+    await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+    expect(attempted.map((files) => files.map((file) => file.name))).toEqual([
+      ["one.txt"],
+      ["two.txt"],
+      ["two.txt"],
+    ]);
+    expect(accepted.map((file) => file.name)).toEqual(["one.txt", "two.txt"]);
+    expect(await Promise.all(accepted.map((file) => file.text()))).toEqual([
+      "first bytes",
+      "second bytes",
+    ]);
+  },
+);

@@ -170,23 +170,34 @@ export function BrowserAttachmentExplorer({
   const attach = async () => {
     if (submitting.current) return;
     const entry = visible[activeIndex.current];
-    const files = selection.current.size
-      ? [...selection.current.values()]
-      : entry?.kind === "file"
-        ? [entry]
-        : [];
-    if (!files.length) return;
+    const files = new Map(selection.current);
+    if (!files.size && entry?.kind === "file") files.set(path(entry.name), entry);
+    if (!files.size) return;
+    selectFiles(files);
     submitting.current = true;
     setBusy(true);
+    setError(null);
     const generation = ++attachGeneration.current;
     try {
-      const opened = await Promise.all(files.map((handle) => handle.getFile()));
-      if (generation !== attachGeneration.current) return;
-      if (await onFiles(opened)) onClose();
-      else setError("The selected files could not be attached. Your selection is preserved.");
+      for (const [key, handle] of files) {
+        const opened = await handle.getFile();
+        if (generation !== attachGeneration.current) return;
+        const attached = await onFiles([opened]);
+        if (generation !== attachGeneration.current) return;
+        if (!attached) {
+          setError("A selected file could not be attached. Your remaining selection is preserved.");
+          return;
+        }
+        const remaining = new Map(selection.current);
+        if (remaining.get(key) === handle) remaining.delete(key);
+        selectFiles(remaining);
+      }
+      if (!selection.current.size) onClose();
     } catch {
       if (generation === attachGeneration.current)
-        setError("A selected file could not be read. Remove it or choose the folder again.");
+        setError(
+          "A selected file could not be read or attached. Your remaining selection is preserved.",
+        );
     } finally {
       if (generation === attachGeneration.current) {
         submitting.current = false;
