@@ -38,7 +38,19 @@ vi.mock("./StyledDiffCodeView", async (original) => {
                 }
                 onClick={() => {
                   props.onSelectedLinesChange?.({ id: item.id, range });
-                  props.options?.onGutterUtilityClick?.(range, { item });
+                  props.options?.onGutterUtilityClick?.(range, {
+                    type: "diff",
+                    item,
+                    index: 0,
+                    top: 0,
+                    height: 0,
+                    element: undefined,
+                    version: undefined,
+                    renderedOptionsRevision: 0,
+                    get instance(): never {
+                      throw new Error("The fake viewer has no virtualized instance");
+                    },
+                  });
                 }}
               >
                 Comment on {item.fileDiff.name}
