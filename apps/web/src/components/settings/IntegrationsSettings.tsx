@@ -1,5 +1,4 @@
 import { DeviceHostUpdates } from "../device/DeviceHostUpdates";
-import { VoiceTranscriptionSettingsPanel } from "./VoiceTranscriptionSettings";
 import { LinearSettingsPanel } from "./LinearSettings";
 import { DeviceToolVersions } from "../device/DeviceToolVersions";
 import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
@@ -1599,7 +1598,7 @@ function BrowserProfilesSetting({ disabled }: { readonly disabled: boolean }) {
   );
 }
 
-export function IntegrationsSettingsPanel() {
+export function BrowserSettingsPanel() {
   const previewDefaultsDisabled = !isElectron;
   const previewDefaults = (
     <>
@@ -1616,8 +1615,6 @@ export function IntegrationsSettingsPanel() {
 
   return (
     <SettingsPageContainer>
-      <VoiceTranscriptionSettingsPanel />
-      <LinearSettingsPanel />
       <SettingsSection id="browser" title="Browser">
         <AgentBrowserAccessSetting />
         {previewDefaultsDisabled ? (
@@ -1631,6 +1628,21 @@ export function IntegrationsSettingsPanel() {
         <BrowserSearchEngineSetting />
         <PullRequestLinksOpenInAppSetting />
       </SettingsSection>
+    </SettingsPageContainer>
+  );
+}
+
+export function IntegrationsSettingsPanel() {
+  return (
+    <SettingsPageContainer>
+      <LinearSettingsPanel />
+    </SettingsPageContainer>
+  );
+}
+
+export function DevicesSettingsPanel() {
+  return (
+    <SettingsPageContainer>
       <DeviceIntegrationSettings />
     </SettingsPageContainer>
   );

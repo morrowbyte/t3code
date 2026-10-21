@@ -41,7 +41,7 @@ below.
 Server updates restart the connection and can interrupt active agents and
 terminal commands. Saved threads, settings, and project files remain.
 
-**Settings → General → Continue threads after restarts** is on by default.
+**Settings → Background activity → Continue threads after restarts** is on by default.
 It resumes supported active threads after an update, crash, or machine
 restart. Changes are saved to connected environments that support this setting;
 update older servers first. If a supported environment was offline or has a
@@ -100,7 +100,7 @@ nothing to update on the host: stop the server and relaunch it as
 
 ## Find a previous update result
 
-Open **Settings → General → Update history** to see current and previous desktop
+Open **Settings → Updates → Update history** to see current and previous desktop
 and background-service updates for your connected hosts. Each record shows the
 versions, when the attempt was observed, and any error or rollback reason.
 A restart is confirmed only after the host runs the expected version with a

@@ -18,6 +18,9 @@ import { Route as ConnectAgentRouteImport } from './routes/connect-agent'
 import { Route as ConnectRouteImport } from './routes/connect'
 import { Route as ChatRouteImport } from './routes/_chat'
 import { Route as ChatIndexRouteImport } from './routes/_chat.index'
+import { Route as SettingsVoiceRouteImport } from './routes/settings.voice'
+import { Route as SettingsUpdatesRouteImport } from './routes/settings.updates'
+import { Route as SettingsThreadsRouteImport } from './routes/settings.threads'
 import { Route as SettingsStorageRouteImport } from './routes/settings.storage'
 import { Route as SettingsSourceControlRouteImport } from './routes/settings.source-control'
 import { Route as SettingsSnapShotRouteImport } from './routes/settings.snap-shot'
@@ -29,9 +32,14 @@ import { Route as SettingsKeybindingsRouteImport } from './routes/settings.keybi
 import { Route as SettingsIntegrationsRouteImport } from './routes/settings.integrations'
 import { Route as SettingsGeneralRouteImport } from './routes/settings.general'
 import { Route as SettingsDiagnosticsRouteImport } from './routes/settings.diagnostics'
+import { Route as SettingsDevicesRouteImport } from './routes/settings.devices'
 import { Route as SettingsConnectionsRouteImport } from './routes/settings.connections'
+import { Route as SettingsChatRouteImport } from './routes/settings.chat'
+import { Route as SettingsBrowserRouteImport } from './routes/settings.browser'
+import { Route as SettingsBackgroundRouteImport } from './routes/settings.background'
 import { Route as SettingsArchivedRouteImport } from './routes/settings.archived'
 import { Route as SettingsAppearanceRouteImport } from './routes/settings.appearance'
+import { Route as SettingsAgentDefaultsRouteImport } from './routes/settings.agent-defaults'
 import { Route as ProjectsProjectKeyRouteImport } from './routes/projects.$projectKey'
 import { Route as ChatPullRequestsRouteImport } from './routes/_chat.pull-requests'
 import { Route as ChatNewRouteImport } from './routes/_chat.new'
@@ -81,6 +89,21 @@ const ChatIndexRoute = ChatIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => ChatRoute,
+} as any)
+const SettingsVoiceRoute = SettingsVoiceRouteImport.update({
+  id: '/voice',
+  path: '/voice',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsUpdatesRoute = SettingsUpdatesRouteImport.update({
+  id: '/updates',
+  path: '/updates',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsThreadsRoute = SettingsThreadsRouteImport.update({
+  id: '/threads',
+  path: '/threads',
+  getParentRoute: () => SettingsRoute,
 } as any)
 const SettingsStorageRoute = SettingsStorageRouteImport.update({
   id: '/storage',
@@ -138,9 +161,29 @@ const SettingsDiagnosticsRoute = SettingsDiagnosticsRouteImport.update({
   path: '/diagnostics',
   getParentRoute: () => SettingsRoute,
 } as any)
+const SettingsDevicesRoute = SettingsDevicesRouteImport.update({
+  id: '/devices',
+  path: '/devices',
+  getParentRoute: () => SettingsRoute,
+} as any)
 const SettingsConnectionsRoute = SettingsConnectionsRouteImport.update({
   id: '/connections',
   path: '/connections',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsChatRoute = SettingsChatRouteImport.update({
+  id: '/chat',
+  path: '/chat',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsBrowserRoute = SettingsBrowserRouteImport.update({
+  id: '/browser',
+  path: '/browser',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsBackgroundRoute = SettingsBackgroundRouteImport.update({
+  id: '/background',
+  path: '/background',
   getParentRoute: () => SettingsRoute,
 } as any)
 const SettingsArchivedRoute = SettingsArchivedRouteImport.update({
@@ -151,6 +194,11 @@ const SettingsArchivedRoute = SettingsArchivedRouteImport.update({
 const SettingsAppearanceRoute = SettingsAppearanceRouteImport.update({
   id: '/appearance',
   path: '/appearance',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsAgentDefaultsRoute = SettingsAgentDefaultsRouteImport.update({
+  id: '/agent-defaults',
+  path: '/agent-defaults',
   getParentRoute: () => SettingsRoute,
 } as any)
 const ProjectsProjectKeyRoute = ProjectsProjectKeyRouteImport.update({
@@ -192,9 +240,14 @@ export interface FileRoutesByFullPath {
   '/new': typeof ChatNewRoute
   '/pull-requests': typeof ChatPullRequestsRoute
   '/projects/$projectKey': typeof ProjectsProjectKeyRoute
+  '/settings/agent-defaults': typeof SettingsAgentDefaultsRoute
   '/settings/appearance': typeof SettingsAppearanceRoute
   '/settings/archived': typeof SettingsArchivedRoute
+  '/settings/background': typeof SettingsBackgroundRoute
+  '/settings/browser': typeof SettingsBrowserRoute
+  '/settings/chat': typeof SettingsChatRoute
   '/settings/connections': typeof SettingsConnectionsRoute
+  '/settings/devices': typeof SettingsDevicesRoute
   '/settings/diagnostics': typeof SettingsDiagnosticsRoute
   '/settings/general': typeof SettingsGeneralRoute
   '/settings/integrations': typeof SettingsIntegrationsRoute
@@ -206,6 +259,9 @@ export interface FileRoutesByFullPath {
   '/settings/snap-shot': typeof SettingsSnapShotRoute
   '/settings/source-control': typeof SettingsSourceControlRoute
   '/settings/storage': typeof SettingsStorageRoute
+  '/settings/threads': typeof SettingsThreadsRoute
+  '/settings/updates': typeof SettingsUpdatesRoute
+  '/settings/voice': typeof SettingsVoiceRoute
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/draft/$draftId': typeof ChatDraftDraftIdRoute
 }
@@ -220,9 +276,14 @@ export interface FileRoutesByTo {
   '/new': typeof ChatNewRoute
   '/pull-requests': typeof ChatPullRequestsRoute
   '/projects/$projectKey': typeof ProjectsProjectKeyRoute
+  '/settings/agent-defaults': typeof SettingsAgentDefaultsRoute
   '/settings/appearance': typeof SettingsAppearanceRoute
   '/settings/archived': typeof SettingsArchivedRoute
+  '/settings/background': typeof SettingsBackgroundRoute
+  '/settings/browser': typeof SettingsBrowserRoute
+  '/settings/chat': typeof SettingsChatRoute
   '/settings/connections': typeof SettingsConnectionsRoute
+  '/settings/devices': typeof SettingsDevicesRoute
   '/settings/diagnostics': typeof SettingsDiagnosticsRoute
   '/settings/general': typeof SettingsGeneralRoute
   '/settings/integrations': typeof SettingsIntegrationsRoute
@@ -234,6 +295,9 @@ export interface FileRoutesByTo {
   '/settings/snap-shot': typeof SettingsSnapShotRoute
   '/settings/source-control': typeof SettingsSourceControlRoute
   '/settings/storage': typeof SettingsStorageRoute
+  '/settings/threads': typeof SettingsThreadsRoute
+  '/settings/updates': typeof SettingsUpdatesRoute
+  '/settings/voice': typeof SettingsVoiceRoute
   '/': typeof ChatIndexRoute
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/draft/$draftId': typeof ChatDraftDraftIdRoute
@@ -251,9 +315,14 @@ export interface FileRoutesById {
   '/_chat/new': typeof ChatNewRoute
   '/_chat/pull-requests': typeof ChatPullRequestsRoute
   '/projects/$projectKey': typeof ProjectsProjectKeyRoute
+  '/settings/agent-defaults': typeof SettingsAgentDefaultsRoute
   '/settings/appearance': typeof SettingsAppearanceRoute
   '/settings/archived': typeof SettingsArchivedRoute
+  '/settings/background': typeof SettingsBackgroundRoute
+  '/settings/browser': typeof SettingsBrowserRoute
+  '/settings/chat': typeof SettingsChatRoute
   '/settings/connections': typeof SettingsConnectionsRoute
+  '/settings/devices': typeof SettingsDevicesRoute
   '/settings/diagnostics': typeof SettingsDiagnosticsRoute
   '/settings/general': typeof SettingsGeneralRoute
   '/settings/integrations': typeof SettingsIntegrationsRoute
@@ -265,6 +334,9 @@ export interface FileRoutesById {
   '/settings/snap-shot': typeof SettingsSnapShotRoute
   '/settings/source-control': typeof SettingsSourceControlRoute
   '/settings/storage': typeof SettingsStorageRoute
+  '/settings/threads': typeof SettingsThreadsRoute
+  '/settings/updates': typeof SettingsUpdatesRoute
+  '/settings/voice': typeof SettingsVoiceRoute
   '/_chat/': typeof ChatIndexRoute
   '/_chat/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/_chat/draft/$draftId': typeof ChatDraftDraftIdRoute
@@ -283,9 +355,14 @@ export interface FileRouteTypes {
     | '/new'
     | '/pull-requests'
     | '/projects/$projectKey'
+    | '/settings/agent-defaults'
     | '/settings/appearance'
     | '/settings/archived'
+    | '/settings/background'
+    | '/settings/browser'
+    | '/settings/chat'
     | '/settings/connections'
+    | '/settings/devices'
     | '/settings/diagnostics'
     | '/settings/general'
     | '/settings/integrations'
@@ -297,6 +374,9 @@ export interface FileRouteTypes {
     | '/settings/snap-shot'
     | '/settings/source-control'
     | '/settings/storage'
+    | '/settings/threads'
+    | '/settings/updates'
+    | '/settings/voice'
     | '/$environmentId/$threadId'
     | '/draft/$draftId'
   fileRoutesByTo: FileRoutesByTo
@@ -311,9 +391,14 @@ export interface FileRouteTypes {
     | '/new'
     | '/pull-requests'
     | '/projects/$projectKey'
+    | '/settings/agent-defaults'
     | '/settings/appearance'
     | '/settings/archived'
+    | '/settings/background'
+    | '/settings/browser'
+    | '/settings/chat'
     | '/settings/connections'
+    | '/settings/devices'
     | '/settings/diagnostics'
     | '/settings/general'
     | '/settings/integrations'
@@ -325,6 +410,9 @@ export interface FileRouteTypes {
     | '/settings/snap-shot'
     | '/settings/source-control'
     | '/settings/storage'
+    | '/settings/threads'
+    | '/settings/updates'
+    | '/settings/voice'
     | '/'
     | '/$environmentId/$threadId'
     | '/draft/$draftId'
@@ -341,9 +429,14 @@ export interface FileRouteTypes {
     | '/_chat/new'
     | '/_chat/pull-requests'
     | '/projects/$projectKey'
+    | '/settings/agent-defaults'
     | '/settings/appearance'
     | '/settings/archived'
+    | '/settings/background'
+    | '/settings/browser'
+    | '/settings/chat'
     | '/settings/connections'
+    | '/settings/devices'
     | '/settings/diagnostics'
     | '/settings/general'
     | '/settings/integrations'
@@ -355,6 +448,9 @@ export interface FileRouteTypes {
     | '/settings/snap-shot'
     | '/settings/source-control'
     | '/settings/storage'
+    | '/settings/threads'
+    | '/settings/updates'
+    | '/settings/voice'
     | '/_chat/'
     | '/_chat/$environmentId/$threadId'
     | '/_chat/draft/$draftId'
@@ -437,6 +533,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatIndexRouteImport
       parentRoute: typeof ChatRoute
     }
+    '/settings/voice': {
+      id: '/settings/voice'
+      path: '/voice'
+      fullPath: '/settings/voice'
+      preLoaderRoute: typeof SettingsVoiceRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/updates': {
+      id: '/settings/updates'
+      path: '/updates'
+      fullPath: '/settings/updates'
+      preLoaderRoute: typeof SettingsUpdatesRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/threads': {
+      id: '/settings/threads'
+      path: '/threads'
+      fullPath: '/settings/threads'
+      preLoaderRoute: typeof SettingsThreadsRouteImport
+      parentRoute: typeof SettingsRoute
+    }
     '/settings/storage': {
       id: '/settings/storage'
       path: '/storage'
@@ -514,11 +631,39 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsDiagnosticsRouteImport
       parentRoute: typeof SettingsRoute
     }
+    '/settings/devices': {
+      id: '/settings/devices'
+      path: '/devices'
+      fullPath: '/settings/devices'
+      preLoaderRoute: typeof SettingsDevicesRouteImport
+      parentRoute: typeof SettingsRoute
+    }
     '/settings/connections': {
       id: '/settings/connections'
       path: '/connections'
       fullPath: '/settings/connections'
       preLoaderRoute: typeof SettingsConnectionsRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/chat': {
+      id: '/settings/chat'
+      path: '/chat'
+      fullPath: '/settings/chat'
+      preLoaderRoute: typeof SettingsChatRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/browser': {
+      id: '/settings/browser'
+      path: '/browser'
+      fullPath: '/settings/browser'
+      preLoaderRoute: typeof SettingsBrowserRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/background': {
+      id: '/settings/background'
+      path: '/background'
+      fullPath: '/settings/background'
+      preLoaderRoute: typeof SettingsBackgroundRouteImport
       parentRoute: typeof SettingsRoute
     }
     '/settings/archived': {
@@ -533,6 +678,13 @@ declare module '@tanstack/react-router' {
       path: '/appearance'
       fullPath: '/settings/appearance'
       preLoaderRoute: typeof SettingsAppearanceRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/agent-defaults': {
+      id: '/settings/agent-defaults'
+      path: '/agent-defaults'
+      fullPath: '/settings/agent-defaults'
+      preLoaderRoute: typeof SettingsAgentDefaultsRouteImport
       parentRoute: typeof SettingsRoute
     }
     '/projects/$projectKey': {
@@ -592,9 +744,14 @@ const ChatRouteChildren: ChatRouteChildren = {
 const ChatRouteWithChildren = ChatRoute._addFileChildren(ChatRouteChildren)
 
 interface SettingsRouteChildren {
+  SettingsAgentDefaultsRoute: typeof SettingsAgentDefaultsRoute
   SettingsAppearanceRoute: typeof SettingsAppearanceRoute
   SettingsArchivedRoute: typeof SettingsArchivedRoute
+  SettingsBackgroundRoute: typeof SettingsBackgroundRoute
+  SettingsBrowserRoute: typeof SettingsBrowserRoute
+  SettingsChatRoute: typeof SettingsChatRoute
   SettingsConnectionsRoute: typeof SettingsConnectionsRoute
+  SettingsDevicesRoute: typeof SettingsDevicesRoute
   SettingsDiagnosticsRoute: typeof SettingsDiagnosticsRoute
   SettingsGeneralRoute: typeof SettingsGeneralRoute
   SettingsIntegrationsRoute: typeof SettingsIntegrationsRoute
@@ -606,12 +763,20 @@ interface SettingsRouteChildren {
   SettingsSnapShotRoute: typeof SettingsSnapShotRoute
   SettingsSourceControlRoute: typeof SettingsSourceControlRoute
   SettingsStorageRoute: typeof SettingsStorageRoute
+  SettingsThreadsRoute: typeof SettingsThreadsRoute
+  SettingsUpdatesRoute: typeof SettingsUpdatesRoute
+  SettingsVoiceRoute: typeof SettingsVoiceRoute
 }
 
 const SettingsRouteChildren: SettingsRouteChildren = {
+  SettingsAgentDefaultsRoute: SettingsAgentDefaultsRoute,
   SettingsAppearanceRoute: SettingsAppearanceRoute,
   SettingsArchivedRoute: SettingsArchivedRoute,
+  SettingsBackgroundRoute: SettingsBackgroundRoute,
+  SettingsBrowserRoute: SettingsBrowserRoute,
+  SettingsChatRoute: SettingsChatRoute,
   SettingsConnectionsRoute: SettingsConnectionsRoute,
+  SettingsDevicesRoute: SettingsDevicesRoute,
   SettingsDiagnosticsRoute: SettingsDiagnosticsRoute,
   SettingsGeneralRoute: SettingsGeneralRoute,
   SettingsIntegrationsRoute: SettingsIntegrationsRoute,
@@ -623,6 +788,9 @@ const SettingsRouteChildren: SettingsRouteChildren = {
   SettingsSnapShotRoute: SettingsSnapShotRoute,
   SettingsSourceControlRoute: SettingsSourceControlRoute,
   SettingsStorageRoute: SettingsStorageRoute,
+  SettingsThreadsRoute: SettingsThreadsRoute,
+  SettingsUpdatesRoute: SettingsUpdatesRoute,
+  SettingsVoiceRoute: SettingsVoiceRoute,
 }
 
 const SettingsRouteWithChildren = SettingsRoute._addFileChildren(

@@ -24,6 +24,7 @@ import {
 } from "../components/settings/settingsScopeNavigation";
 import {
   getSettingsSearchTargetScope,
+  getLegacySettingsDestination,
   getThreadAutoSettlementSearchAvailability,
   isSettingsSearchScopeAvailable,
 } from "../components/settings/settingsSearch";
@@ -38,7 +39,7 @@ function RestoreDeviceDefaultsButton({ onRestored }: { onRestored: () => void })
       onClick={() => void restoreDefaults()}
     >
       <RotateCcwIcon className="mx-1 size-3.5" />
-      Restore device defaults
+      <span className="sr-only sm:not-sr-only">Restore device defaults</span>
     </Button>
   );
 }
@@ -122,7 +123,7 @@ function SettingsContentLayout() {
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none isolate">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
         <WorkspacePageHeader electron={isElectron}>
-          <div className="flex w-full items-center gap-3">
+          <div className="flex min-w-0 w-full items-center gap-3">
             <SettingsBreadcrumb pathname={location.pathname} />
             {location.pathname === "/settings/general" ? (
               <div className="ms-auto flex shrink-0 items-center">
@@ -185,6 +186,15 @@ export const Route = createFileRoute("/settings")({
 
     if (location.pathname === "/settings") {
       throw redirect({ to: "/settings/general", replace: true });
+    }
+    const destination = getLegacySettingsDestination(location.pathname, location.hash);
+    if (destination) {
+      throw redirect({
+        to: destination,
+        search: validateSettingsRouteSearch(location.search),
+        hash: location.hash,
+        replace: true,
+      });
     }
   },
   component: SettingsRouteLayout,

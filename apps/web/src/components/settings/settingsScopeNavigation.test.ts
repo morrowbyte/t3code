@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-router";
 import { describe, expect, it } from "vite-plus/test";
 
+import { getLegacySettingsDestination } from "./settingsSearch";
 import { resolveSettingsScope } from "./settingsScope";
 import { retainSettingsScope, validateSettingsRouteSearch } from "./settingsScopeNavigation";
 
@@ -27,6 +28,14 @@ function createSettingsRouter(initialEntry = "/settings/general") {
     validateSearch: validateSettingsRouteSearch,
     search: { middlewares: [retainSettingsScope] },
     beforeLoad: ({ location }) => {
+      const destination = getLegacySettingsDestination(location.pathname, location.hash);
+      if (destination)
+        throw redirect({
+          to: destination,
+          search: validateSettingsRouteSearch(location.search),
+          hash: location.hash,
+          replace: true,
+        });
       if (location.pathname === "/settings") {
         throw redirect({ to: "/settings/general", replace: true });
       }
@@ -67,6 +76,16 @@ function createSettingsRouter(initialEntry = "/settings/general") {
   return createRouter({
     routeTree: root.addChildren([
       settings.addChildren([
+        ...[
+          "voice",
+          "updates",
+          "threads",
+          "chat",
+          "agent-defaults",
+          "background",
+          "browser",
+          "devices",
+        ].map((path) => createRoute({ getParentRoute: () => settings, path })),
         general,
         projects,
         integrations,
@@ -292,5 +311,23 @@ describe("scheduled task scope navigation", () => {
     await router.navigate({ to: "/settings/projects", search: checkoutSearch });
     await router.navigate({ to: "/settings/scheduled-tasks" });
     expect(router.state.matches.at(-1)?.search).toEqual(checkoutSearch);
+  });
+});
+
+describe("moved settings bookmarks", () => {
+  it.each([
+    ["general", "update-history", "updates"],
+    ["integrations", "voice", "voice"],
+    ["integrations", "browser-default-zoom", "browser"],
+  ])("preserves checkout scope for %s#%s", async (from, hash, to) => {
+    const params = new URLSearchParams(checkoutSearch);
+    const router = createSettingsRouter(`/settings/${from}?${params}#${hash}`);
+    await router.load();
+    expect(router.state.redirect).not.toBeUndefined();
+    await router.navigate(router.state.redirect!.options);
+    expect(router.state.location.pathname).toBe(`/settings/${to}`);
+    expect(router.state.location.hash).toBe(hash);
+    expect(router.state.location.search).toMatchObject(checkoutSearch);
+    expect(router.state.statusCode).toBe(200);
   });
 });

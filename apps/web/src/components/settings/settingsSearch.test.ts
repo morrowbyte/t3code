@@ -4,6 +4,7 @@ import { EnvironmentId } from "@t3tools/contracts";
 import {
   filterAvailableSettingsSearchItems,
   getSettingsSearchTargetScope,
+  getLegacySettingsDestination,
   getThreadAutoSettlementSearchAvailability,
   isSettingsOverviewVisible,
   isSettingsSearchScopeAvailable,
@@ -148,7 +149,7 @@ describe("searchSettings", () => {
     expect(searchSettings("check for updates").map((item) => item.id)).toContain("app-version");
     expect(SETTINGS_SEARCH_ITEMS.find((item) => item.id === "update-track")).toMatchObject({
       title: "Update track",
-      to: "/settings/general",
+      to: "/settings/updates",
       releaseChannelOnly: true,
     });
   });
@@ -158,7 +159,7 @@ describe("searchSettings", () => {
     (query) => {
       expect(searchSettings(query)[0]).toMatchObject({
         id: "update-history",
-        to: "/settings/general",
+        to: "/settings/updates",
         targetId: "update-history",
       });
     },
@@ -370,19 +371,19 @@ describe("searchSettings", () => {
     ]);
   });
 
-  it("routes browser recording quality to integrations", () => {
+  it("routes browser recording quality to Browser", () => {
     const result = searchSettings("recording frame rate")[0];
     expect(result).toMatchObject({
       id: "browser-recording-frame-rate",
-      to: "/settings/integrations",
+      to: "/settings/browser",
     });
     expect(result).not.toHaveProperty("targetId");
   });
 
-  it("routes where links open to integrations", () => {
+  it("routes where links open to Browser", () => {
     expect(searchSettings("open links in")[0]).toMatchObject({
       id: "browser-link-target",
-      to: "/settings/integrations",
+      to: "/settings/browser",
     });
     expect(searchSettings("external links")[0]).toMatchObject({ id: "browser-link-target" });
   });
@@ -390,15 +391,15 @@ describe("searchSettings", () => {
   it("finds the default browser profile action in the profiles list", () => {
     expect(searchSettings("default profile")[0]).toMatchObject({
       id: "browser-default-profile",
-      to: "/settings/integrations",
+      to: "/settings/browser",
       targetId: "browser-profiles",
     });
   });
 
   it.each([
-    ["default model", "default-model", "/settings/general"],
-    ["new threads", "new-threads", "/settings/general"],
-    ["agent browser access", "agent-browser-access", "/settings/integrations"],
+    ["default model", "default-model", "/settings/agent-defaults"],
+    ["new threads", "new-threads", "/settings/agent-defaults"],
+    ["agent browser access", "agent-browser-access", "/settings/browser"],
     ["automatically pull", "automatic-pull", "/settings/source-control"],
     ["actions", "project-actions", "/settings/projects"],
     ["project overview", "project-overview", "/settings/projects"],
@@ -594,5 +595,39 @@ describe("settings sidebar scope", () => {
     expect(isSettingsOverviewVisible({ machine: "remote" })).toBe(false);
     expect(isSettingsOverviewVisible({ project: "project" })).toBe(true);
     expect(isSettingsOverviewVisible({ project: "project", checkout: "checkout" })).toBe(true);
+  });
+});
+
+describe("settings category migration", () => {
+  it.each([
+    ["voice", "voice-transcription", "/settings/voice"],
+    ["Linear setup", "linear-setup", "/settings/integrations"],
+    ["device hosts", "device-hosts", "/settings/devices"],
+    ["project grouping", "project-grouping", "/settings/threads"],
+    ["send shortcut", "send-shortcut", "/settings/chat"],
+    ["background activity", "background-activity", "/settings/background"],
+  ])("finds %s on its new page", (query, id, to) => {
+    expect(searchSettings(query)).toContainEqual(expect.objectContaining({ id, to }));
+  });
+
+  it.each([
+    ["/settings/general", "update-history", "/settings/updates"],
+    ["/settings/general", "app-version", "/settings/updates"],
+    ["/settings/general", "organization", "/settings/threads"],
+    ["/settings/general", "send-shortcut", "/settings/chat"],
+    ["/settings/general", "default-model", "/settings/agent-defaults"],
+    ["/settings/integrations", "voice", "/settings/voice"],
+    ["/settings/integrations", "voice-transcription", "/settings/voice"],
+    ["/settings/integrations", "browser-default-zoom", "/settings/browser"],
+    ["/settings/integrations", "devices", "/settings/devices"],
+  ])("redirects the bookmarked row %s#%s", (pathname, hash, to) => {
+    expect(getLegacySettingsDestination(pathname, hash)).toBe(to);
+  });
+
+  it("keeps current categories and unchanged General rows in place", () => {
+    expect(getLegacySettingsDestination("/settings/general", "time-format")).toBeNull();
+    expect(getLegacySettingsDestination("/settings/updates", "update-history")).toBeNull();
+    expect(getLegacySettingsDestination("/settings/integrations", "linear")).toBeNull();
+    expect(getLegacySettingsDestination("/settings/general", "unknown")).toBeNull();
   });
 });

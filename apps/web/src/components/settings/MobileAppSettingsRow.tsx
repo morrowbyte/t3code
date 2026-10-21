@@ -26,7 +26,7 @@ export function MobileAppSettingsRow() {
       {...searchableSetting("mobile-app")}
       description="Connect to your server from your phone or tablet."
       control={
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {stores.map(({ label, store, url, Icon }) => (
             <Popover key={store}>
               <PopoverTrigger render={<Button size="sm" variant="outline" />}>

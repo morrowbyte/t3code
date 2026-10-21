@@ -18,7 +18,7 @@ environment uses its own configured transcription provider and login. Changing
 the thread or environment cancels the current operation and ignores late
 results, preserving reviewed audio on the original draft. Recordings are limited to 25 MiB.
 
-Open **Settings → Integrations → Voice transcription** to see the selected
+Open **Settings → Voice → Voice transcription** to see the selected
 environment's provider status, choose a Codex account, or explicitly configure
 OpenAI API transcription. The default uses the enabled Codex instance, including
 the built-in instance on a fresh profile. Existing sign-in is reused; no API key

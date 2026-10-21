@@ -53,7 +53,7 @@ vi.mock(import("./SettingsScopeContext"), async (original) => ({
   useOptionalSettingsScope: () => null,
 }));
 
-import { IntegrationsSettingsPanel } from "./IntegrationsSettings";
+import { BrowserSettingsPanel } from "./IntegrationsSettings";
 
 let root: Root;
 let container: HTMLDivElement;
@@ -74,7 +74,7 @@ afterEach(async () => {
 
 async function openSettings() {
   const router = createRouter({
-    routeTree: createRootRoute({ component: IntegrationsSettingsPanel }),
+    routeTree: createRootRoute({ component: BrowserSettingsPanel }),
     history: createMemoryHistory(),
   });
   await router.load();
