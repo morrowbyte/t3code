@@ -16,5 +16,12 @@ export const codexCuaConfig = (
         args: [...connection.mcp.args],
         env: Object.fromEntries(connection.mcp.environment.map(({ name, value }) => [name, value])),
       }
-    : { enabled: false },
+    : {
+        // Codex validates the transport even when disabled. Replace saved routing
+        // as well as revoking it, so resume cannot retain a previous attachment.
+        enabled: false,
+        command: "t3-windows-cua-disabled",
+        args: [],
+        env: {},
+      },
 });

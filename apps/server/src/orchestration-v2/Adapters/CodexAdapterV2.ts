@@ -6619,6 +6619,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const cuaConnection = yield* readCuaConnection(turnInput.threadId);
             const generation = cuaConnection?.generation ?? null;
             if ((cuaGenerations.get(turnInput.threadId) ?? null) !== generation) {
+              // Resume reuses a loaded thread's MCP connections. Unload it first
+              // so a revoked attachment cannot survive the configuration change.
+              yield* client.request("thread/unsubscribe", { threadId });
               // Rebind only after an explicit new turn, never replay an interrupted action.
               yield* client.raw.request("thread/resume", {
                 threadId,

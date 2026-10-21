@@ -970,7 +970,12 @@ describe("CodexAdapterV2 process spawning", () => {
             tool_timeout_sec: 3_900,
             http_headers: { Authorization: "Bearer secret-codex-token" },
           },
-          "mcp_servers.t3-windows-cua": { enabled: false },
+          "mcp_servers.t3-windows-cua": {
+            enabled: false,
+            command: "t3-windows-cua-disabled",
+            args: [],
+            env: {},
+          },
         },
       },
     );
