@@ -3,6 +3,11 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
 import { ComposerChoiceDialog } from "./ComposerChoiceDialog";
+import {
+  requestNavigationMode,
+  isNavigationMode,
+  leaveNavigationMode,
+} from "../keyboard/navigationMode";
 
 let root: Root;
 let container: HTMLDivElement;
@@ -21,6 +26,7 @@ afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
   draft.remove();
+  leaveNavigationMode();
   vi.unstubAllGlobals();
 });
 
@@ -39,7 +45,7 @@ async function mountPicker() {
         }))}
         emptyMessage="Unavailable"
         onClose={() => setOpen(false)}
-        restoreFocus={() => draft.focus()}
+        restoreFocus={() => draft}
       />
     ) : null;
   }
@@ -83,4 +89,65 @@ it("navigates with Ctrl+N/P and cancels without changing the selection", async (
   });
   expect(selected).not.toHaveBeenCalled();
   await vi.waitFor(() => expect(document.activeElement).toBe(draft));
+});
+
+it("returns to navigation through successive settings choices without inserting leader keys", async () => {
+  const target = document.createElement("button");
+  target.textContent = "Selected message";
+  container.before(target);
+  target.focus();
+  requestNavigationMode();
+  const changes = vi.fn();
+  const settings = ["Model", "Reasoning", "Service tier", "Access"];
+  function Settings() {
+    const [index, setIndex] = useState(0);
+    const [open, setOpen] = useState(false);
+    return (
+      <>
+        <button onClick={() => setOpen(true)}>Open settings</button>
+        {!open ? null : (
+          <ComposerChoiceDialog
+            title={settings[index]!}
+            choices={[
+              {
+                id: "current",
+                label: "Current choice",
+                selected: true,
+                onSelect: () => {
+                  changes(settings[index]);
+                  setIndex(index + 1);
+                },
+              },
+            ]}
+            emptyMessage="Unavailable"
+            onClose={() => setOpen(false)}
+            restoreFocus={() => {
+              requestNavigationMode();
+              return target;
+            }}
+          />
+        )}
+      </>
+    );
+  }
+  try {
+    await act(async () => root.render(<Settings />));
+    for (let index = 0; index < settings.length; index += 1) {
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>("button")!.click();
+      });
+      await vi.waitFor(() =>
+        expect(document.activeElement?.getAttribute("aria-label")).toBe(settings[index]),
+      );
+      await act(async () => {
+        await userEvent.keyboard("{Enter}");
+      });
+      await vi.waitFor(() => expect(document.activeElement).toBe(target));
+      expect(isNavigationMode()).toBe(true);
+      expect(draft.value).toBe("Keep my draft and caret");
+    }
+    expect(changes).toHaveBeenCalledTimes(4);
+  } finally {
+    target.remove();
+  }
 });

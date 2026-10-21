@@ -210,7 +210,12 @@ function ConversationCard({
   };
 
   return (
-    <article className="group py-2">
+    <article
+      className="group py-2"
+      data-keyboard-object="PR activity"
+      tabIndex={-1}
+      aria-label={`${event.title}${event.path ? `: ${event.path}` : ""}`}
+    >
       <div className="px-2">
         <div className="flex min-w-0 flex-wrap items-start gap-2">
           <div className="min-w-0 flex-1">

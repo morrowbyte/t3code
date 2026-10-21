@@ -12,6 +12,10 @@ import {
 } from "@t3tools/client-runtime/state/terminal";
 import {
   Plus,
+  Search,
+  ArrowUp,
+  ArrowDown,
+  X,
   Square,
   SquareSplitHorizontal,
   SquareSplitVertical,
@@ -42,6 +46,8 @@ import {
 } from "react";
 import { Popover, PopoverPopup, PopoverTrigger } from "~/components/ui/popover";
 import { Button } from "~/components/ui/button";
+import { Input } from "~/components/ui/input";
+import { dispatchKeyboardCommand, useKeyboardCommands } from "./keyboard/keyboardCommands";
 import { PanelTabCloseButton } from "~/components/ui/panel-tab-close-button";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { readTextFromClipboard, writeTextToClipboard } from "~/hooks/useCopyToClipboard";
@@ -61,6 +67,8 @@ import { useOpenInPreferredEditor } from "../editorPreferences";
 import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
 import { isTerminalUrl } from "../terminal-links";
 import {
+  resolveShortcutCommand,
+  shortcutLabelForCommand,
   isDiffToggleShortcut,
   isTerminalClearShortcut,
   isTerminalNewShortcut,
@@ -443,6 +451,32 @@ function TerminalSessionViewport({
 }: TerminalViewportProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<GhosttyTerminalSurface | null>(null);
+  const findShortcutLabel = shortcutLabelForCommand(keybindings, "terminal.find", {
+    context: { terminalFocus: true, terminalOpen: true },
+  });
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResult, setSearchResult] = useState<{ index: number; count: number } | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const findOutput = useEffectEvent((direction: -1 | 1) => {
+    if (!searchQuery) return;
+    setSearchResult(terminalRef.current?.findText(searchQuery, direction) ?? null);
+  });
+  useEffect(() => {
+    if (searchOpen) {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    }
+  }, [searchOpen]);
+  useKeyboardCommands({
+    "terminal.find": () => {
+      const focused = document.activeElement?.closest("[data-terminal-session-root]");
+      if (!visible || !autoFocus || (focused && !focused.contains(containerRef.current)))
+        return false;
+      setSearchOpen(true);
+      queueMicrotask(() => searchInputRef.current?.focus());
+    },
+  });
   const visibleRef = useRef(visible);
   const environmentId = threadRef.environmentId;
   const canOperateTerminal = useEnvironmentScope(environmentId, AuthTerminalOperateScope);
@@ -867,7 +901,34 @@ function TerminalSessionViewport({
       };
 
       function handleBeforeKey(event: KeyboardEvent): boolean {
+        if (event.isComposing || event.keyCode === 229) return true;
         const currentKeybindings = readKeybindings();
+        const command = resolveShortcutCommand(event, currentKeybindings, {
+          context: { terminalFocus: true, terminalOpen: true },
+        });
+        if (command === "navigation.activate") {
+          event.preventDefault();
+          event.stopPropagation();
+          dispatchKeyboardCommand("navigation.activate");
+          return false;
+        }
+        if (
+          command === "terminal.find" ||
+          command === "terminal.previous" ||
+          command === "terminal.next"
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          dispatchKeyboardCommand(command);
+          return false;
+        }
+        if (event.key === "F3" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+          event.preventDefault();
+          event.stopPropagation();
+          setSearchOpen(true);
+          findOutput(event.shiftKey ? -1 : 1);
+          return false;
+        }
         const options = { context: { terminalFocus: true, terminalOpen: true } };
         if (preventTerminalCloseShortcut(event, currentKeybindings)) {
           return false;
@@ -1107,10 +1168,136 @@ function TerminalSessionViewport({
   }, [layoutRevision]);
   return (
     <div
-      ref={containerRef}
+      className="relative h-full w-full"
+      data-keyboard-object="Terminal output"
+      data-terminal-session-root
+      aria-label={terminalLabel}
       tabIndex={-1}
-      className="relative h-full w-full overflow-hidden bg-(--terminal-background)"
-    />
+    >
+      <div
+        ref={containerRef}
+        tabIndex={-1}
+        className="relative h-full w-full overflow-hidden bg-(--terminal-background)"
+      />
+      {!searchOpen ? (
+        <div className="absolute right-2 bottom-2 z-20">
+          <Button
+            size="icon-xs"
+            variant="outline"
+            aria-label={
+              findShortcutLabel
+                ? `Find terminal output (${findShortcutLabel})`
+                : "Find terminal output"
+            }
+            onClick={() => setSearchOpen(true)}
+          >
+            <Search />
+          </Button>
+        </div>
+      ) : (
+        <div
+          role="search"
+          aria-label="Find terminal output"
+          data-keyboard-object="Terminal search"
+          className="absolute top-2 right-2 z-30 flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-1 rounded-md border bg-popover p-1 shadow-md"
+        >
+          <Input
+            ref={searchInputRef}
+            value={searchQuery}
+            aria-label="Find terminal output"
+            placeholder="Find output"
+            size="sm"
+            className="w-40"
+            onChange={(event) => {
+              setSearchQuery(event.currentTarget.value);
+              setSearchResult(null);
+            }}
+            onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing) return;
+              if (event.key === "Enter") {
+                event.preventDefault();
+                event.stopPropagation();
+                findOutput(event.shiftKey ? -1 : 1);
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopPropagation();
+                setSearchOpen(false);
+                terminalRef.current?.focus();
+              }
+            }}
+          />
+          <span role="status" className="px-1 text-xs tabular-nums text-muted-foreground">
+            {searchResult
+              ? searchResult.count
+                ? `${searchResult.index}/${searchResult.count}${searchResult.count >= 10000 ? "+" : ""}`
+                : "No matches"
+              : ""}
+          </span>
+          <Button
+            size="icon-xs"
+            variant="ghost"
+            aria-label="Previous terminal match"
+            disabled={!searchQuery}
+            onClick={() => findOutput(-1)}
+          >
+            <ArrowUp />
+          </Button>
+          <Button
+            size="icon-xs"
+            variant="ghost"
+            aria-label="Next terminal match"
+            disabled={!searchQuery}
+            onClick={() => findOutput(1)}
+          >
+            <ArrowDown />
+          </Button>
+          <Button
+            size="xs"
+            variant="ghost"
+            disabled={!searchResult?.count}
+            onClick={() => {
+              const value = terminalRef.current?.getSelection();
+              if (value) void writeTextToClipboard(value);
+            }}
+          >
+            Copy match
+          </Button>
+          {onAddTerminalContext ? (
+            <Button
+              size="xs"
+              variant="ghost"
+              disabled={!searchResult?.count}
+              onClick={() => {
+                const terminal = terminalRef.current;
+                const position = terminal?.getSelectionPosition();
+                const text = terminal?.getSelection();
+                if (position && text)
+                  handleAddTerminalContext({
+                    terminalId,
+                    terminalLabel,
+                    text,
+                    ...terminalSelectionLineRange(position),
+                  });
+              }}
+            >
+              Add match to chat
+            </Button>
+          ) : null}
+          <Button
+            size="icon-xs"
+            variant="ghost"
+            aria-label="Close terminal search"
+            onClick={() => {
+              setSearchOpen(false);
+              terminalRef.current?.focus();
+            }}
+          >
+            <X />
+          </Button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1347,6 +1534,9 @@ function TerminalSidebarGroup({
           return (
             <div
               key={terminalId}
+              data-keyboard-object="Terminal session"
+              aria-label={terminalLabel}
+              tabIndex={-1}
               className={cn(
                 "group/tab flex h-6 w-full items-center gap-0.5 rounded-md pr-2 pl-1.5 text-xs",
                 isActive
@@ -1368,6 +1558,8 @@ function TerminalSidebarGroup({
               <button
                 type="button"
                 className="flex min-w-0 flex-1 cursor-pointer items-center gap-1 text-left"
+                data-keyboard-primary
+                aria-label={`Focus ${terminalLabel}`}
                 onClick={() => onActiveTerminalChange(terminalId)}
               >
                 <span className="truncate">{terminalLabel}</span>
@@ -1411,6 +1603,7 @@ export default function ThreadTerminalDrawer({
 }: ThreadTerminalDrawerProps) {
   const canOperateTerminal = useEnvironmentScope(threadRef.environmentId, AuthTerminalOperateScope);
   const isPanel = mode === "panel";
+  const drawerRef = useRef<HTMLElement>(null);
   const [advancedTypography] = useLocalStorage(
     TYPOGRAPHY_ADVANCED_STORAGE_KEY,
     false,
@@ -1570,6 +1763,21 @@ export default function ThreadTerminalDrawer({
     (normalizedTerminalIds.length > 0 ? [resolvedActiveTerminalId] : []);
   const splitDirection =
     resolvedTerminalGroups[resolvedActiveGroupIndex]?.splitDirection ?? "horizontal";
+  const activateAdjacentTerminal = (direction: -1 | 1) => {
+    const focused = document.activeElement?.closest("[data-thread-terminal-drawer]");
+    if (!visible || normalizedTerminalIds.length < 2 || (focused && focused !== drawerRef.current))
+      return false;
+    const index = normalizedTerminalIds.indexOf(resolvedActiveTerminalId);
+    const next =
+      normalizedTerminalIds[
+        (index + direction + normalizedTerminalIds.length) % normalizedTerminalIds.length
+      ];
+    if (next) onActiveTerminalChange(next);
+  };
+  useKeyboardCommands({
+    "terminal.previous": () => activateAdjacentTerminal(-1),
+    "terminal.next": () => activateAdjacentTerminal(1),
+  });
   const hasTerminalSidebar = normalizedTerminalIds.length > 1;
   const isSplitView = visibleTerminalIds.length > 1;
   const showGroupHeaders =
@@ -1717,7 +1925,11 @@ export default function ThreadTerminalDrawer({
   if (normalizedTerminalIds.length === 0) {
     return (
       <aside
+        ref={drawerRef}
         data-thread-terminal-drawer
+        data-keyboard-object="Terminal"
+        aria-label="Terminal"
+        tabIndex={-1}
         data-terminal-owner={isPanel ? "right-panel" : "drawer"}
         className={cn(
           "relative flex min-w-0 flex-col overflow-hidden bg-background",
@@ -1754,7 +1966,12 @@ export default function ThreadTerminalDrawer({
 
   return (
     <aside
+      ref={drawerRef}
       data-thread-terminal-drawer
+      data-keyboard-object="Terminal"
+      data-keyboard-region="terminal"
+      aria-label="Terminal"
+      tabIndex={-1}
       data-terminal-owner={isPanel ? "right-panel" : "drawer"}
       className={cn(
         "relative flex min-w-0 flex-col overflow-hidden bg-background",
@@ -1777,7 +1994,7 @@ export default function ThreadTerminalDrawer({
         <div className="pointer-events-none absolute right-2 top-2 z-20">
           <div className="pointer-events-auto inline-flex items-center overflow-hidden rounded-md border border-border/80 bg-background shadow-xs">
             <TerminalActionButton
-              disabled={!canOperateTerminal}
+              disabled={!canOperateTerminal || hasReachedSplitLimit}
               className={`p-1 text-foreground/90 transition-colors ${
                 hasReachedSplitLimit
                   ? "cursor-not-allowed opacity-64 hover:bg-transparent"
@@ -1790,7 +2007,7 @@ export default function ThreadTerminalDrawer({
             </TerminalActionButton>
             <div className="h-4 w-px bg-border/80" />
             <TerminalActionButton
-              disabled={!canOperateTerminal}
+              disabled={!canOperateTerminal || hasReachedSplitLimit}
               className={`p-1 text-foreground/90 transition-colors ${
                 hasReachedSplitLimit
                   ? "cursor-not-allowed opacity-64 hover:bg-transparent"
@@ -1884,7 +2101,7 @@ export default function ThreadTerminalDrawer({
               <div className="flex h-[22px] items-stretch justify-end border-b border-border/70">
                 <div className="inline-flex h-full items-stretch">
                   <TerminalActionButton
-                    disabled={!canOperateTerminal}
+                    disabled={!canOperateTerminal || hasReachedSplitLimit}
                     className={`inline-flex h-full items-center px-1 text-foreground/90 transition-colors ${
                       hasReachedSplitLimit
                         ? "cursor-not-allowed opacity-64 hover:bg-transparent"
@@ -1896,7 +2113,7 @@ export default function ThreadTerminalDrawer({
                     <SquareSplitHorizontal className="size-3.25" />
                   </TerminalActionButton>
                   <TerminalActionButton
-                    disabled={!canOperateTerminal}
+                    disabled={!canOperateTerminal || hasReachedSplitLimit}
                     className={`inline-flex h-full items-center border-l border-border/70 px-1 text-foreground/90 transition-colors ${
                       hasReachedSplitLimit
                         ? "cursor-not-allowed opacity-64 hover:bg-transparent"

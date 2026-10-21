@@ -19,6 +19,7 @@ export const MessageCopyButton = memo(function MessageCopyButton({
   size = "xs",
   variant = "outline",
   className,
+  keyboardAction = label === "Copy message" ? "copy" : undefined,
 }: {
   text: string;
   label?: string;
@@ -27,6 +28,7 @@ export const MessageCopyButton = memo(function MessageCopyButton({
   size?: "xs" | "icon-xs";
   variant?: "outline" | "ghost";
   className?: string;
+  keyboardAction?: string | undefined;
 }) {
   const ref = useRef<HTMLButtonElement>(null);
   const { copyToClipboard, isCopied } = useCopyToClipboard<void>({
@@ -42,6 +44,9 @@ export const MessageCopyButton = memo(function MessageCopyButton({
         render={
           <Button
             aria-label={label}
+            data-keyboard-action={keyboardAction}
+            data-keyboard-primary={keyboardAction === "copy" ? true : undefined}
+            aria-keyshortcuts={keyboardAction === "copy" ? "C" : undefined}
             disabled={isCopied}
             onClick={() => copyToClipboard(text)}
             ref={ref}

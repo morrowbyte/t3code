@@ -10,6 +10,7 @@ import { T3_PIERRE_ICONS } from "~/pierre-icons";
 import { PIERRE_TREE_UNSAFE_CSS, pierreTreeStyle } from "~/pierre-tree-theme";
 
 import { areAllDirectoriesExpanded, setAllDirectoriesExpanded } from "../files/fileTreeExpansion";
+import { treeNavigationKey } from "../files/panelTreeKeyboard";
 import { Button } from "../ui/button";
 import { MorphIcon } from "~/components/MorphIcon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -150,7 +151,13 @@ export function DiffFileTree({
   ]);
 
   return (
-    <div className={cn("flex min-h-0 flex-1 flex-col bg-background", className)}>
+    <div
+      className={cn("flex min-h-0 flex-1 flex-col bg-background", className)}
+      data-keyboard-object="Changed files"
+      data-keyboard-local="true"
+      data-keyboard-help="J/K or arrows: files · H/L: folders · Enter: select file"
+      onKeyDownCapture={treeNavigationKey}
+    >
       <div
         className="flex h-10 min-h-10 shrink-0 items-center gap-1 border-b border-border/60 bg-background px-2 text-xs text-muted-foreground in-data-[preview-panel-mode=inline]:mb-3 in-data-[preview-panel-mode=inline]:h-7 in-data-[preview-panel-mode=inline]:min-h-7 in-data-[preview-panel-mode=inline]:border-b-transparent"
         data-surface-subheader

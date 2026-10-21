@@ -80,6 +80,7 @@ import {
   CircleDotDashedIcon,
   CircleStopIcon,
   ClockIcon,
+  EllipsisIcon,
   FolderIcon,
   GitBranchIcon,
   ListFilterIcon,
@@ -1480,6 +1481,8 @@ const SidebarDraftRow = memo(function SidebarDraftRow(props: {
         aria-label={accessibility.label}
         aria-current={accessibility.current}
         data-testid="sidebar-draft-row"
+        data-keyboard-object="Thread"
+        data-keyboard-primary
         className={cn(
           "group/sidebar-row relative w-full cursor-pointer overflow-hidden rounded-md text-left text-sidebar-foreground outline-none select-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
           props.isActive ? "bg-sidebar-row-active" : draftSurfaceClassName,
@@ -1913,6 +1916,61 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   };
   const handleKeyDown = (event: ReactKeyboardEvent) => {
     if (event.target !== event.currentTarget) return;
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+    if (
+      event.key === "ContextMenu" ||
+      (event.shiftKey && event.key === "F10") ||
+      (!event.ctrlKey && !event.metaKey && !event.altKey && event.key === "m")
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!event.repeat) {
+        const rect = event.currentTarget.getBoundingClientRect();
+        onContextMenu(threadRef, { x: rect.left, y: rect.bottom });
+      }
+      return;
+    }
+    if (
+      event.key === "F2" &&
+      readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope)
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      onStartRename(threadRef, thread.title);
+      return;
+    }
+    if (props.familyRow && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+      const disclosure = event.currentTarget.querySelector<HTMLButtonElement>(
+        "[data-thread-family-disclosure]",
+      );
+      const expanded = disclosure?.getAttribute("aria-expanded") === "true";
+      event.preventDefault();
+      event.stopPropagation();
+      if (
+        disclosure &&
+        ((event.key === "ArrowLeft" && expanded) || (event.key === "ArrowRight" && !expanded))
+      ) {
+        disclosure.click();
+      } else {
+        const row = event.currentTarget.closest<HTMLElement>("[data-sidebar-family-row]");
+        const depth = Number(row?.dataset.familyDepth ?? 0);
+        const rows = [
+          ...document.querySelectorAll<HTMLElement>("[data-sidebar-family-row]"),
+        ].filter((element) => element.checkVisibility({ visibilityProperty: true }));
+        const index = rows.indexOf(row!);
+        const target =
+          event.key === "ArrowRight"
+            ? rows[index + 1]?.dataset.familyDepth === String(depth + 1)
+              ? rows[index + 1]
+              : null
+            : rows
+                .slice(0, index)
+                .toReversed()
+                .find((element) => Number(element.dataset.familyDepth) < depth);
+        target?.querySelector<HTMLElement>('[data-keyboard-object="Thread"]')?.focus();
+      }
+      return;
+    }
     if (event.key !== "Enter" && event.key !== " ") return;
     event.preventDefault();
     onThreadActivate(threadRef);
@@ -2308,6 +2366,23 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     </span>
   ) : null;
   const familyChild = props.familyRow && !props.familyRoot;
+  const threadActions = (
+    <Button
+      type="button"
+      size="icon-xs"
+      variant="ghost-muted"
+      aria-label="Thread actions"
+      aria-keyshortcuts="M Shift+F10"
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const rect = event.currentTarget.getBoundingClientRect();
+        onContextMenu(threadRef, { x: rect.left, y: rect.bottom });
+      }}
+    >
+      <EllipsisIcon />
+    </Button>
+  );
 
   if (variant === "slim") {
     return (
@@ -2330,6 +2405,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 aria-label={accessibility.label}
                 aria-current={accessibility.current}
                 data-testid="sidebar-row-slim"
+                data-keyboard-object="Thread"
+                data-keyboard-primary
                 aria-busy={isRegeneratingTitle || undefined}
                 className={cn(
                   rowSurfaceClassName,
@@ -2367,6 +2444,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               </span>
             ) : null}
             {prBadge}
+            {threadActions}
             {sortable?.isDragging ? (
               dragDestination
             ) : (
@@ -2502,6 +2580,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               aria-label={accessibility.label}
               aria-current={accessibility.current}
               data-testid="sidebar-row-card"
+              data-keyboard-object="Thread"
+              data-keyboard-primary
               aria-busy={isRegeneratingTitle || undefined}
               className={rowSurfaceClassName}
               onClick={handleClick}
@@ -2667,6 +2747,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             ) : null}
             <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-1.5 text-secondary-label text-xs">
               {props.familyDisclosure}
+              {threadActions}
               {thread.branch ? (
                 <>
                   <ThreadWorktreeIndicator thread={thread} />
@@ -5055,6 +5136,7 @@ export default function Sidebar() {
                                   <button
                                     type="button"
                                     data-thread-selection-safe
+                                    data-thread-family-disclosure
                                     aria-label={`${family.expanded ? "Collapse" : "Expand"} ${thread.title} agents`}
                                     aria-expanded={family.expanded}
                                     onClick={(event) => {

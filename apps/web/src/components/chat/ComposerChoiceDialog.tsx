@@ -16,7 +16,7 @@ export function ComposerChoiceDialog(props: {
   readonly choices: ReadonlyArray<ComposerChoice>;
   readonly emptyMessage: string;
   readonly onClose: () => void;
-  readonly restoreFocus: () => void;
+  readonly restoreFocus: () => HTMLElement | false;
 }) {
   const [query, setQuery] = useState("");
   const choices = props.choices.filter((choice) =>
@@ -35,13 +35,7 @@ export function ComposerChoiceDialog(props: {
         if (!open) props.onClose();
       }}
     >
-      <CommandDialogPopup
-        aria-label={props.title}
-        finalFocus={() => {
-          props.restoreFocus();
-          return false;
-        }}
-      >
+      <CommandDialogPopup aria-label={props.title} finalFocus={props.restoreFocus}>
         <CommandPaletteContent
           mode="none"
           items={choices.map((choice) => choice.id)}

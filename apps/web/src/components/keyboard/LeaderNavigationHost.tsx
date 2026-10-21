@@ -100,6 +100,7 @@ export function LeaderNavigationHost() {
       key: "w",
       label: "Workspace",
       actions: [
+        command("b", "Choose branch or worktree", "composer.branch"),
         command("w", "Toggle workspace card", "threadPanel.toggle"),
         command("s", "Run project script", "project.scripts"),
         command("g", "Git and workspace actions", "workspace.actions"),
@@ -226,6 +227,12 @@ export function LeaderNavigationHost() {
         isActivationShortcut={(event) =>
           resolveShortcutCommand(event, keybindings) === "navigation.activate"
         }
+        resolveNavigationShortcut={(event) => {
+          const command = resolveShortcutCommand(event, keybindings);
+          return command === "navigation.contextActions" || command === "navigation.hints"
+            ? command
+            : null;
+        }}
       />
     </>
   );

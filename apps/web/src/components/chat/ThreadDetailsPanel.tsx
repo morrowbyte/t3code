@@ -10,17 +10,21 @@ import type { DraftId } from "../../composerDraftStore";
 import { useT3ProjectFileScripts } from "../../hooks/useT3ProjectFileScripts";
 import { type EnvMode, type EnvironmentOption } from "../BranchToolbar.logic";
 import { BranchToolbar } from "../BranchToolbar";
-import BaseGitActionsControl from "../GitActionsControl";
+import BaseGitActionsControl, { type GitActionsControlHandle } from "../GitActionsControl";
 import ProjectScriptsControl, {
   type NewProjectScriptInput,
   type ProjectScriptActionResult,
 } from "../ProjectScriptsControl";
-import { memo, type ComponentProps } from "react";
+import { memo, useRef, type ComponentProps } from "react";
 import { ThreadDetailsCard } from "./ThreadDetailsCard";
 import { OpenInPicker } from "./OpenInPicker";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { ThreadAutomationsPanel } from "./ThreadAutomationsPanel";
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
+import { useKeyboardCommands } from "../keyboard/keyboardCommands";
+import { useRightPanelStore } from "../../rightPanelStore";
+import type { ThreadPanelPresentation } from "../../rightPanelLayout";
+import { useStableCallback } from "../../hooks/useStableCallback";
 
 const GitActionsControl = memo(BaseGitActionsControl);
 
@@ -64,6 +68,46 @@ export interface ThreadDetailsPanelProps extends Pick<
 }
 
 export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
+  const presentation = useRef<ThreadPanelPresentation>("popover");
+  const gitActionsControl = useRef<GitActionsControlHandle | null>(null);
+  const pendingGitActions = useRef<{ environmentId: EnvironmentId; threadId: ThreadId } | null>(
+    null,
+  );
+  const attachGitActionsControl = useStableCallback((control: GitActionsControlHandle | null) => {
+    gitActionsControl.current = control;
+    if (!control) return;
+    const pending = pendingGitActions.current;
+    if (pending?.environmentId !== props.environmentId || pending.threadId !== props.threadId) {
+      pendingGitActions.current = null;
+      return;
+    }
+    // Let the newly mounted workspace popover finish its initial focus first.
+    requestAnimationFrame(() => {
+      if (gitActionsControl.current !== control || pendingGitActions.current !== pending) return;
+      pendingGitActions.current = null;
+      control.openKeyboardActions();
+    });
+  });
+  useKeyboardCommands({
+    "git.actions": () => {
+      if (!props.gitCwd || !props.activeProjectName) return false;
+      const control = gitActionsControl.current;
+      if (!control)
+        pendingGitActions.current = {
+          environmentId: props.environmentId,
+          threadId: props.threadId,
+        };
+      useRightPanelStore
+        .getState()
+        .setThreadPanelOpen(
+          { environmentId: props.environmentId, threadId: props.threadId },
+          presentation.current,
+          true,
+        );
+      if (control) return control.openKeyboardActions();
+      return true;
+    },
+  });
   const fileScripts = useT3ProjectFileScripts(
     props.environmentId,
     props.activeProjectScripts ? props.gitCwd : null,
@@ -97,7 +141,10 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
       threadRef={{ environmentId: props.environmentId, threadId: props.threadId }}
       anchor={props.anchor}
       handle={props.handle}
-      onPresentationChange={props.onPresentationChange}
+      onPresentationChange={(nextPresentation) => {
+        presentation.current = nextPresentation;
+        props.onPresentationChange(nextPresentation);
+      }}
     >
       {(density) => (
         <>
@@ -159,6 +206,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                 ) : null}
                 {props.activeProjectName ? (
                   <GitActionsControl
+                    keyboardActionsRef={attachGitActionsControl}
                     displayMode="panel"
                     compact={density !== "full"}
                     gitCwd={props.gitCwd}

@@ -111,6 +111,9 @@ function PullRequestRowImpl({
       ref={statsRef}
       data-pull-request-stats-key={statsKey}
       data-pull-request-key={statsKey}
+      data-keyboard-object="Pull request"
+      tabIndex={-1}
+      aria-label={`PR ${entry.number}: ${entry.title}`}
       className={cn(
         "flex items-center rounded-md [content-visibility:auto] [contain-intrinsic-block-size:56.5px]",
         selected ? "bg-accent" : "hover:bg-accent/60",
@@ -118,6 +121,7 @@ function PullRequestRowImpl({
     >
       <button
         type="button"
+        data-keyboard-primary
         aria-current={selected ? "true" : undefined}
         onClick={() => onSelect(entry)}
         className={cn(

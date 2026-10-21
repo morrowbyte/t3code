@@ -1,5 +1,7 @@
 import { ThreadDetailsControl } from "./chat/ThreadDetailsControl";
 import { useAtomValue } from "@effect/atom-react";
+import { useKeyboardCommands } from "./keyboard/keyboardCommands";
+import { WorkbenchCommandPicker } from "./keyboard/WorkbenchCommandPicker";
 import {
   AuthOrchestrationOperateScope,
   AuthSourceControlWriteScope,
@@ -21,7 +23,15 @@ import type {
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import * as Option from "effect/Option";
-import { type MouseEvent, useEffect, useEffectEvent, useRef, useState } from "react";
+import {
+  type MouseEvent,
+  type Ref,
+  useEffect,
+  useEffectEvent,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react";
 import { flushSync } from "react-dom";
 import {
   CheckIcon,
@@ -120,6 +130,11 @@ import { getSourceControlPresentation, sourceControlIcon } from "~/sourceControl
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { formatDiffCount } from "@t3tools/client-runtime/diff-count";
 import { useOpenLink } from "~/browser/useOpenLink";
+import { useStableCallback } from "~/hooks/useStableCallback";
+
+export interface GitActionsControlHandle {
+  openKeyboardActions: () => boolean;
+}
 
 interface GitActionsControlProps {
   presentation?: "toolbar" | "menu";
@@ -130,6 +145,7 @@ interface GitActionsControlProps {
   displayMode?: "toolbar" | "panel";
   compact?: boolean;
   onOpenChanges?: () => void;
+  keyboardActionsRef?: Ref<GitActionsControlHandle>;
 }
 
 interface PendingDefaultBranchAction {
@@ -962,6 +978,7 @@ export default function GitActionsControl({
   displayMode = "toolbar",
   compact = false,
   onOpenChanges,
+  keyboardActionsRef,
 }: GitActionsControlProps) {
   const isPanel = displayMode === "panel";
   const ActionGroup = isPanel ? "div" : Group;
@@ -1001,6 +1018,7 @@ export default function GitActionsControl({
   const canChangeThreadBranch = canWriteSourceControl && (isLocalDraftThread || canOperateThread);
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
   const [isCommitDialogOpen, setIsCommitDialogOpen] = useState(false);
+  const [keyboardActionsOpen, setKeyboardActionsOpen] = useState(false);
   const [dialogCommitMessage, setDialogCommitMessage] = useState("");
   const [excludedFiles, setExcludedFiles] = useState<ReadonlySet<string>>(new Set());
   const [isEditingFiles, setIsEditingFiles] = useState(false);
@@ -1630,10 +1648,32 @@ export default function GitActionsControl({
     </>
   );
 
+  const openKeyboardActions = useStableCallback(() => {
+    if (!gitCwd) return false;
+    setKeyboardActionsOpen(true);
+    requestVcsStatusRefresh(refreshVcsStatus, activeEnvironmentId, gitCwd);
+    return true;
+  });
+  useImperativeHandle(keyboardActionsRef, () => ({ openKeyboardActions }), [openKeyboardActions]);
+  useKeyboardCommands({ "git.actions": openKeyboardActions });
+
   if (!gitCwd) return null;
 
   return (
     <>
+      {keyboardActionsOpen ? (
+        <WorkbenchCommandPicker
+          title="Git actions"
+          onClose={() => setKeyboardActionsOpen(false)}
+          commands={gitActionMenuItems
+            .filter((item) => canWriteSourceControl && !item.disabled)
+            .map((item) => ({
+              id: item.id,
+              label: item.label,
+              run: () => openDialogForMenuItem(item),
+            }))}
+        />
+      ) : null}
       {presentation === "menu" ? (
         !isRepo ? (
           <MenuItem

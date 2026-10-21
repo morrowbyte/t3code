@@ -110,6 +110,7 @@ import { parseAssistantCitationHref } from "@t3tools/shared/assistantCitations";
 import { parseComposerContextHref } from "@t3tools/shared/composerContextReferences";
 import { parseThreadLinkHref } from "@t3tools/shared/threadLinks";
 import { AssistantCitationChip } from "./chat/AssistantCitationChip";
+import { handleObjectActionKey } from "./chat/objectKeyboardActions";
 import { MarkdownThreadLink } from "./chat/MarkdownThreadLink";
 import {
   artifactTemplateFromHastProperties,
@@ -801,6 +802,12 @@ export function MarkdownCodeBlockFrame({
       className="chat-markdown-codeblock my-[0.65rem] overflow-hidden rounded-lg border border-border/70 bg-secondary leading-snug dark:border-transparent dark:bg-input/32"
       data-language={language}
       data-wrap={wrapped ? "true" : "false"}
+      data-keyboard-object="Code block"
+      tabIndex={-1}
+      aria-label={`${fenceTitle ?? language} code block`}
+      onKeyDown={(event: React.KeyboardEvent<HTMLElement>) =>
+        handleObjectActionKey(event, { c: "copy", w: "wrap", r: "run" })
+      }
     >
       <div
         {...headerProps}
@@ -949,6 +956,9 @@ function MarkdownCodeBlock({
             size="icon-xs"
             onClick={handleCopy}
             aria-label={copyLabel}
+            data-keyboard-action="copy"
+            data-keyboard-primary
+            aria-keyshortcuts="C"
           />
         }
       >
@@ -960,7 +970,14 @@ function MarkdownCodeBlock({
 
   if (diagram) {
     return (
-      <div className="my-[0.65rem] border border-transparent" data-language={language}>
+      <div
+        className="my-[0.65rem] border border-transparent"
+        data-language={language}
+        data-keyboard-object="Code block"
+        tabIndex={-1}
+        aria-label={`${language} diagram`}
+        onKeyDown={(event) => handleObjectActionKey(event, { c: "copy" })}
+      >
         <div className="flex items-center justify-end gap-0.5 pt-1.5 pr-1.5 select-none">
           {viewToggle}
           {copyButton}
@@ -990,6 +1007,8 @@ function MarkdownCodeBlock({
                     aria-pressed={wrapped}
                     onClick={() => setWrapped((value) => !value)}
                     aria-label={wrapLabel}
+                    data-keyboard-action="wrap"
+                    aria-keyshortcuts="W"
                   />
                 }
               >
@@ -1008,6 +1027,8 @@ function MarkdownCodeBlock({
                     size="icon-xs"
                     onClick={() => onRunShellCommand(command)}
                     aria-label="Run in terminal"
+                    data-keyboard-action="run"
+                    aria-keyshortcuts="R"
                   />
                 }
               >

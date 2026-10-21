@@ -6,6 +6,8 @@ import { CommandPalette } from "./CommandPalette";
 import { useComposerHandleContext } from "../composerHandleContext";
 import { openCommandPalette } from "../commandPaletteBus";
 import { primaryServerKeybindingsAtom } from "../state/server";
+import { LeaderNavigation } from "./keyboard/LeaderNavigation";
+import { leaveNavigationMode } from "./keyboard/navigationMode";
 
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => vi.fn(),
@@ -82,6 +84,7 @@ afterEach(async () => {
     await vi.runOnlyPendingTimersAsync();
   });
   container.remove();
+  leaveNavigationMode();
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
@@ -173,7 +176,7 @@ describe("command palette focus restoration", () => {
     expect(document.activeElement).toBe(field);
   });
 
-  it("focuses the mounted composer at the end instead of the previous field", async () => {
+  it("restores the previous field even when a composer is mounted", async () => {
     await act(() =>
       root.render(
         <CommandPalette>
@@ -187,8 +190,73 @@ describe("command palette focus restoration", () => {
     await flushFocus();
     expect(document.activeElement?.closest("[data-command-palette]")).not.toBeNull();
     await dismissPalette();
+    expect(document.activeElement).toBe(container.querySelector("input"));
+  });
+
+  it("restores the original composer selection when canceled", async () => {
+    await act(() =>
+      root.render(
+        <CommandPalette>
+          <Composer />
+        </CommandPalette>,
+      ),
+    );
     const composer = container.querySelector("textarea")!;
+    await act(() => {
+      composer.focus();
+      composer.setSelectionRange(2, 7, "backward");
+      openCommandPalette();
+    });
+    await flushFocus();
+    await dismissPalette();
     expect(document.activeElement).toBe(composer);
-    expect(composer.selectionStart).toBe(composer.value.length);
+    expect(composer.selectionStart).toBe(2);
+    expect(composer.selectionEnd).toBe(7);
+    expect(composer.selectionDirection).toBe("backward");
+  });
+
+  it("runs an action on the object that opened the command palette", async () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    await act(() =>
+      root.render(
+        <CommandPalette>
+          <div data-keyboard-object="Message" tabIndex={-1}>
+            <button onClick={first}>Copy first response</button>
+          </div>
+          <div data-keyboard-object="Message" tabIndex={-1}>
+            <button onClick={second}>Copy second response</button>
+          </div>
+          <Composer />
+          <LeaderNavigation groups={[]} isClaimed={() => false} showSidebar={() => {}} />
+        </CommandPalette>,
+      ),
+    );
+    const message = container.querySelectorAll<HTMLElement>("[data-keyboard-object]")[1]!;
+    await act(() => {
+      message.focus();
+      openCommandPalette({ query: "Selected object actions" });
+    });
+    await flushFocus();
+    await act(() =>
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+        }),
+      ),
+    );
+    await flushFocus();
+    await act(() => vi.advanceTimersByTimeAsync(300));
+    const action = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+      (element) =>
+        element.textContent?.includes("Copy second response") && element.closest('[role="dialog"]'),
+    );
+    expect(action).toBeDefined();
+    await act(() => action!.click());
+    await flushFocus();
+    expect(second).toHaveBeenCalledTimes(1);
+    expect(first).not.toHaveBeenCalled();
   });
 });

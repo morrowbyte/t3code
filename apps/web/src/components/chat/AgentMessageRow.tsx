@@ -10,6 +10,7 @@ import { MessageCopyButton } from "./MessageCopyButton";
 import { findRevealRef } from "./markdownFindContext";
 import { parseAgentMessage } from "./agentMessagePresentation";
 import { AgentIdentityLabel } from "../agent-identity/AgentIdentityLabel";
+import { handleObjectActionKey } from "./objectKeyboardActions";
 
 const STATUS = {
   info: { label: "Info", variant: "secondary" },
@@ -103,6 +104,11 @@ export function AgentMessageRow({
 
   return (
     <article
+      data-keyboard-object="Message"
+      tabIndex={-1}
+      aria-label={`Agent message: ${summary}`}
+      data-keyboard-help="C: copy this message · D: toggle details · J/K: messages · H/L: actions"
+      onKeyDown={(event) => handleObjectActionKey(event, { c: "copy", d: "details" })}
       className={`min-w-0 rounded-lg border px-3.5 py-3 sm:px-4 ${outgoing ? "border-dashed border-border bg-background" : "border-border/70 bg-muted/20"}`}
       data-agent-message={messageId}
       data-agent-message-direction={direction}
@@ -141,6 +147,7 @@ export function AgentMessageRow({
             <TooltipPopup>{timestampTitle}</TooltipPopup>
           </Tooltip>
         </span>
+        {text && !streaming ? <MessageCopyButton text={text} variant="ghost" /> : null}
       </div>
       <Collapsible
         open={expanded}
@@ -154,6 +161,8 @@ export function AgentMessageRow({
           ref={trigger}
           className="flex w-full items-start gap-2.5 rounded-sm text-left focus-visible:outline-2 focus-visible:outline-ring pointer-coarse:min-h-11"
           aria-label={`${expanded ? "Zuklappen" : "Details öffnen"}: Agentennachricht`}
+          data-keyboard-action="details"
+          aria-keyshortcuts="D"
         >
           <span className="min-w-0 flex-1">
             {parsed?.kind === "legacy" ? (

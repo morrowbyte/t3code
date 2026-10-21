@@ -650,6 +650,8 @@ export class GhosttyTerminalSurface {
     const input = document.createElement("textarea");
     input.className = "t3-ghostty-input";
     input.setAttribute("aria-label", "Terminal input");
+    input.setAttribute("data-keyboard-local", "");
+    input.setAttribute("data-keyboard-primary", "");
     input.autocapitalize = "off";
     input.autocomplete = "off";
     input.spellcheck = false;
@@ -995,6 +997,23 @@ export class GhosttyTerminalSurface {
     // Selection highlights span rows Ghostty may not mark dirty for this change.
     this.forceFullRender = true;
     this.requestRender();
+  }
+
+  findText(query: string, direction: -1 | 1 = 1): { index: number; count: number } {
+    const result = this.core.findText(query, direction);
+    if (result.match) {
+      this.selectionAnchorScreen = result.match.start;
+      this.selectionEndScreen = result.match.end;
+      this.selectionEnd = this.core.screenPointToViewport(result.match.end.x, result.match.end.y);
+    } else {
+      this.selectionAnchorScreen = null;
+      this.selectionEndScreen = null;
+      this.selectionEnd = null;
+    }
+    this.forceFullRender = true;
+    this.scrollbarDirty = true;
+    this.requestRender();
+    return { index: result.index, count: result.count };
   }
 
   scrollToBottom(): void {

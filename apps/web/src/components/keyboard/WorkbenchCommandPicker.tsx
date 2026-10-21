@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { Button } from "../ui/button";
 import { Dialog, DialogHeader, DialogPanel, DialogPopup, DialogTitle } from "../ui/dialog";
+import { captureKeyboardFocus, restoreKeyboardFocus } from "./keyboardFocus";
 
 export interface WorkbenchCommand {
   readonly id: string;
@@ -19,6 +20,8 @@ export function WorkbenchCommandPicker({
   readonly onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
+  const [origin] = useState(captureKeyboardFocus);
+  const executing = useRef(false);
   const [selected, setSelected] = useState(0);
   const list = useRef<HTMLDivElement>(null);
   const filtered = commands.filter((command) =>
@@ -34,6 +37,7 @@ export function WorkbenchCommandPicker({
   }, [active, activeCommandId]);
   const select = (command: WorkbenchCommand | undefined) => {
     if (!command) return;
+    executing.current = true;
     onClose();
     // Wait until the dialog releases its modal focus scope.
     requestAnimationFrame(() => command.run());
@@ -45,7 +49,13 @@ export function WorkbenchCommandPicker({
         if (!open) onClose();
       }}
     >
-      <DialogPopup aria-label={title} finalFocus={false}>
+      <DialogPopup
+        aria-label={title}
+        finalFocus={() => {
+          if (!executing.current) restoreKeyboardFocus(origin);
+          return false;
+        }}
+      >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>

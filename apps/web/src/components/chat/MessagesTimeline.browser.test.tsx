@@ -21,6 +21,8 @@ import { Tooltip, TooltipPopup, TooltipScrollDismissArea, TooltipTrigger } from 
 import { MessagesTimeline } from "./MessagesTimeline";
 import { readTimelinePosition } from "./timelineScrollAnchoring";
 import { useComposerFocusState } from "./useComposerFocusState";
+import { LeaderNavigation } from "../keyboard/LeaderNavigation";
+import { leaveNavigationMode } from "../keyboard/navigationMode";
 
 const pullRequestQuery = vi.hoisted(() => ({ error: "Pull request not found" }));
 vi.mock(import("~/state/query"), async (original) => ({
@@ -152,6 +154,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  leaveNavigationMode();
   for (const root of roots.splice(0)) await act(async () => root.unmount());
   document.body.replaceChildren();
   vi.unstubAllGlobals();
@@ -192,6 +195,109 @@ function button(name: string | RegExp) {
 async function click(element: HTMLElement) {
   await act(async () => element.click());
 }
+
+it("copies only the keyboard-focused message, not another response or the whole transcript", async () => {
+  const copy = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+  try {
+    await renderTimeline([
+      message("First response", { role: "assistant" }, "first-keyboard"),
+      message("Second response", { role: "assistant" }, "second-keyboard"),
+    ]);
+    const selected = await vi.waitFor(() => {
+      const element = container.querySelector<HTMLElement>(
+        '[data-keyboard-object="Message"][aria-label="Assistant message: Second response"]',
+      );
+      if (!element) throw new Error("Second response is not rendered");
+      return element;
+    });
+    await act(async () => {
+      selected.focus();
+      selected.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "c", bubbles: true, cancelable: true }),
+      );
+    });
+    expect(copy).toHaveBeenCalledExactlyOnceWith("Second response");
+  } finally {
+    copy.mockRestore();
+  }
+});
+
+it("quotes the selected excerpt from the focused response through the existing citation path", async () => {
+  const cite = vi.fn<NonNullable<TimelineProps["onCiteAssistantText"]>>(() => true);
+  await renderTimeline([message("Second response", { role: "assistant" }, "quoted-keyboard")], {
+    onCiteAssistantText: cite,
+  });
+  const object = await vi.waitFor(() => {
+    const element = container.querySelector<HTMLElement>('[data-keyboard-object="Message"]');
+    if (!element) throw new Error("Response is not rendered");
+    return element;
+  });
+  const source = object.querySelector<HTMLElement>("[data-assistant-citation-source]")!;
+  const text = source.querySelector("p")!.firstChild!;
+  const range = document.createRange();
+  range.setStart(text, 7);
+  range.setEnd(text, 15);
+  await act(async () => {
+    object.focus();
+    document.getSelection()!.removeAllRanges();
+    document.getSelection()!.addRange(range);
+    object.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "q", bubbles: true, cancelable: true }),
+    );
+  });
+  expect(cite).toHaveBeenCalledOnce();
+  expect(cite.mock.calls[0]![0]).toMatchObject({
+    messageId: "quoted-keyboard",
+    text: "response",
+    start: 7,
+    end: 15,
+  });
+  expect(cite.mock.calls[0]![1].source).toBe(source);
+});
+
+it("enters the actual nested timeline message with Space m, selects text and refines its quote", async () => {
+  const cite = vi.fn<NonNullable<TimelineProps["onCiteAssistantText"]>>(() => true);
+  await renderElement(
+    <>
+      <LeaderNavigation groups={[]} isClaimed={() => false} showSidebar={() => {}} />
+      <MessagesTimeline
+        {...baseProps()}
+        timelineEntries={[message("Second response", { role: "assistant" }, "keyboard-selection")]}
+        onCiteAssistantText={cite}
+      />
+    </>,
+  );
+  const object = await vi.waitFor(() => {
+    const element = container.querySelector<HTMLElement>('[data-keyboard-object="Message"]');
+    if (!element) throw new Error("Response is not rendered");
+    return element;
+  });
+  await act(async () => userEvent.keyboard(" "));
+  await vi.waitFor(() =>
+    expect(document.querySelector('[aria-label="Keyboard navigation"]')).not.toBeNull(),
+  );
+  await act(async () => userEvent.keyboard("m"));
+  await vi.waitFor(() => expect(document.activeElement).toBe(object));
+  const outer = object.closest(
+    '[data-message-id="keyboard-selection"][data-message-role="assistant"]',
+  );
+  expect(outer).not.toBe(object);
+  expect(outer?.getAttribute("data-leader-message-focus")).toBe("true");
+  await act(async () => userEvent.keyboard("s"));
+  expect(document.getSelection()?.toString()).toBe("Second response");
+  await act(async () => {
+    await userEvent.keyboard("{Shift>}{ArrowLeft}{/Shift}");
+  });
+  expect(document.getSelection()?.toString()).toBe("Second respons");
+  await act(async () => {
+    await userEvent.keyboard("q");
+  });
+  expect(cite).toHaveBeenCalledOnce();
+  expect(cite.mock.calls[0]![0]).toMatchObject({
+    messageId: "keyboard-selection",
+    text: "Second respons",
+  });
+});
 
 describe("MessagesTimeline work rows", () => {
   it("shows dynamic tool input without cached output when the row is expanded", async () => {

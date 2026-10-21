@@ -50,6 +50,25 @@ async function openMore() {
 }
 
 describe("ComposerPendingApprovalActions", () => {
+  it("opens approval scope choices with the object's keyboard action", async () => {
+    await render();
+    const object = container.querySelector<HTMLElement>('[data-keyboard-object="Approval"]')!;
+    await act(async () => {
+      object.focus();
+      object.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "m", bubbles: true, cancelable: true }),
+      );
+    });
+    const choice = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+      (item) => item.textContent?.trim() === "Always allow this session",
+    )!;
+    await act(async () => choice.click());
+    expect(onRespond).toHaveBeenCalledExactlyOnceWith(
+      RuntimeRequestId.make("approval-1"),
+      "acceptForSession",
+    );
+  });
+
   it("keeps the main decisions in the row and sends a secondary decision from the menu", async () => {
     await render();
     expect(rowLabels()).toEqual(["Decline", "Approve"]);

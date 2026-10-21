@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 const state = vi.hoisted(() => ({
   projection: null as unknown,
   workflow: null as unknown,
+  mutations: [] as unknown[],
 }));
 
 vi.mock(import("@t3tools/client-runtime/state/thread-workflows"), async (importOriginal) => ({
@@ -19,7 +20,9 @@ vi.mock(import("../../state/entities"), async (importOriginal) => ({
 
 vi.mock(import("../../state/use-atom-command"), async (importOriginal) => ({
   ...(await importOriginal()),
-  useAtomCommand: (() => async () => undefined) as never,
+  useAtomCommand: (() => async (input: unknown) => {
+    state.mutations.push(input);
+  }) as never,
 }));
 
 vi.mock(import("../../assets/assetUrls"), async (importOriginal) => ({
@@ -63,6 +66,60 @@ const labels = (container: HTMLElement) =>
   [...container.querySelectorAll("[aria-label]")].map((element) =>
     element.getAttribute("aria-label"),
   );
+
+it("edits, reorders and removes the focused queued message instead of its neighbours", async () => {
+  state.mutations = [];
+  state.projection = { projection: { messages: [] } };
+  state.workflow = {
+    activeRun: { id: "run:active" },
+    canPromoteToSteer: true,
+    canReorder: true,
+    queuedRuns: ["first", "second", "third"].map((id) => ({
+      run: { id: `run:${id}`, userMessageId: `message:${id}` },
+      text: id,
+      attachments: [],
+    })),
+  };
+  const edit = vi.fn();
+  const view = await render({ onEditQueuedRun: edit });
+  const middle = [
+    ...view.querySelectorAll<HTMLElement>('[data-keyboard-object="Queued message"]'),
+  ][1]!;
+  await act(async () => {
+    middle.focus();
+    middle.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "ArrowUp",
+        altKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  });
+  expect(state.mutations).toEqual([
+    {
+      environmentId: baseProps.environmentId,
+      input: { threadId: baseProps.threadId, runId: "run:second", beforeRunId: "run:first" },
+    },
+  ]);
+  await act(async () => {
+    middle.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "e", bubbles: true, cancelable: true }),
+    );
+  });
+  expect(edit).toHaveBeenCalledWith(
+    expect.objectContaining({ runId: "run:second", text: "second" }),
+  );
+  await act(async () => {
+    middle.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true }),
+    );
+  });
+  expect(state.mutations.at(-1)).toEqual({
+    environmentId: baseProps.environmentId,
+    input: { threadId: baseProps.threadId, runId: "run:second" },
+  });
+});
 
 describe("QueuedRunsControl automatic completion delivery", () => {
   it("does not render a queue control when only hidden delivery remains", async () => {
