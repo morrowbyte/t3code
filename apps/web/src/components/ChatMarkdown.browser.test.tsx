@@ -1,4 +1,8 @@
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { searchableMessageSegments } from "@t3tools/shared/threadFindText";
+import { countThreadSearchOccurrences } from "@t3tools/shared/threadSearch";
+import { MarkdownFindContext } from "./chat/markdownFindContext";
+import { useThreadFindHighlights } from "./chat/threadFindHighlights";
 import { AsyncResult } from "effect/reactivity";
 import { type ReactElement } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -85,6 +89,10 @@ function renderText(text: string, props: Partial<Parameters<typeof ChatMarkdown>
   return render(<ChatMarkdown cwd="/tmp/project" text={text} {...props} />);
 }
 
+function linkTexts(container: HTMLElement) {
+  return [...container.querySelectorAll("a")].map((link) => link.textContent);
+}
+
 function buttonsLabelled(container: HTMLElement, label: string) {
   return [...container.querySelectorAll<HTMLButtonElement>("button")].filter(
     (button) => button.getAttribute("aria-label") === label,
@@ -99,17 +107,19 @@ function fileOptions(container: HTMLElement) {
 
 describe("ChatMarkdown math", () => {
   it("recognizes closed equations inside quotes and indented math fences while text keeps streaming", async () => {
-    const container = await renderText(
+    await using containerScreen = await renderText(
       "> $$\n> x^2\n> $$\n\n   ```math\n   y^2\n   ```\n\nStill streaming.",
       { isStreaming: true },
     );
+    const container = containerScreen.container;
     await expect.poll(() => container.querySelectorAll("msup").length).toBe(2);
     expect(container.querySelectorAll('[data-math-state="pending"]')).toHaveLength(0);
   });
   it("renders completed inline and display equations and preserves their Markdown for copying", async () => {
     const inline = "$x^2$";
     const display = "$$\n\\frac{1}{2} + x = 3\n$$";
-    const container = await renderText(`Before ${inline}.\n\n${display}\n\nAfter.`);
+    await using containerScreen = await renderText(`Before ${inline}.\n\n${display}\n\nAfter.`);
+    const container = containerScreen.container;
     await expect.poll(() => container.querySelectorAll("math").length).toBe(2);
     expect(container.querySelector("msup")).not.toBeNull();
     expect(container.querySelector("mfrac")).not.toBeNull();
@@ -126,7 +136,8 @@ describe("ChatMarkdown math", () => {
     const message = (text: string, isStreaming: boolean) => (
       <ChatMarkdown cwd={undefined} text={text} isStreaming={isStreaming} />
     );
-    const { container, rerender } = await render(message("$$\n\\frac{", true));
+    await using screen = await render(message("$$\n\\frac{", true));
+    const { container, rerender } = screen;
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Formel…");
     expect(container.querySelector("math")).toBeNull();
     await rerender(message("$$\n\\frac{1}{2}", true));
@@ -139,14 +150,16 @@ describe("ChatMarkdown math", () => {
     await expect.poll(() => container.querySelectorAll("mfrac").length).toBe(1);
     await rerender(message(closed, false));
     expect(container.querySelectorAll("math")).toHaveLength(1);
-    const history = await renderText(closed);
+    await using historyScreen = await renderText(closed);
+    const history = historyScreen.container;
     await expect.poll(() => history.querySelectorAll("mfrac").length).toBe(1);
   });
 
   it("keeps an unfinished inline equation stable without interpreting prices and shell variables", async () => {
-    const { container, rerender } = await render(
+    await using screen = await render(
       <ChatMarkdown cwd={undefined} text={"Result $x=\\frac{"} isStreaming />,
     );
+    const { container, rerender } = screen;
     expect(container.querySelector('[data-math-state="pending"]')).not.toBeNull();
     await rerender(
       <ChatMarkdown cwd={undefined} text={"Result $x=\\frac{1}{2}$ done"} isStreaming />,
@@ -163,22 +176,25 @@ describe("ChatMarkdown math", () => {
 
   it("keeps invalid TeX readable and disables active links and HTML commands", async () => {
     const raw = "$\\notARealCommand{x}$";
-    const container = await renderText(raw);
+    await using containerScreen = await renderText(raw);
+    const container = containerScreen.container;
     await expect
       .poll(() => container.querySelector('[data-math-state="source"]')?.textContent)
       .toBe(raw);
-    const unsafe = await renderText(
+    await using unsafeScreen = await renderText(
       "$\\href{javascript:alert(1)}{click}$ and $\\htmlClass{injected}{x}$",
     );
+    const unsafe = unsafeScreen.container;
     await expect.poll(() => unsafe.querySelectorAll('[data-math-state="pending"]').length).toBe(0);
     expect(unsafe.querySelectorAll("a, script, img, .injected")).toHaveLength(0);
   });
 
   it("retains correct math offsets after an incrementally cached visual fence", async () => {
     const prefix = '```t3-ui\n{"type":"metric","id":"m","label":"Count","value":"2"}\n```\n\n';
-    const { container, rerender } = await render(
+    await using screen = await render(
       <ChatMarkdown cwd={undefined} text={prefix + "$$\nx^"} streamableUi isStreaming />,
     );
+    const { container, rerender } = screen;
     await rerender(
       <ChatMarkdown cwd={undefined} text={prefix + "$$\nx^2\n$$\n\nAfter."} streamableUi />,
     );
@@ -195,9 +211,10 @@ describe("ChatMarkdown bare anchor placeholders", () => {
   it.each(["<A>", "<a>", "<a >", "<a/>", "<A/>", "<a />"])(
     "preserves unmatched %s without linking later blocks",
     async (token) => {
-      const container = await renderText(
+      await using containerScreen = await renderText(
         `- **"From ${token}"** appears in the header.\n\n- **Tests:** cover inheritance.\n\nThe deferred move continues on B.\n\nSee <a href="https://example.com">the link</a>.`,
       );
+      const container = containerScreen.container;
       expect(container.querySelector("strong")?.textContent).toBe(`"From ${token}"`);
       expect(linkTexts(container)).toEqual(["the link"]);
       expect(container.querySelectorAll("li")).toHaveLength(2);
@@ -210,29 +227,33 @@ describe("ChatMarkdown bare anchor placeholders", () => {
   it.each(["</a>  ", "<div>more</div>\n</a>"])(
     "preserves a paired anchor closing in the raw block %s",
     async (closing) => {
-      const container = await renderText(`See <a>label\n\n${closing}\n\nfinish`);
+      await using containerScreen = await renderText(`See <a>label\n\n${closing}\n\nfinish`);
+      const container = containerScreen.container;
       expect(container.querySelector("p")?.textContent).toBe("See label");
     },
   );
 
   it("preserves a paired anchor after comment-looking raw text", async () => {
-    const container = await renderText("See <a>label<script><!-- </script> --></a>");
+    await using containerScreen = await renderText("See <a>label<script><!-- </script> --></a>");
+    const container = containerScreen.container;
     expect(container.querySelector("p")?.textContent).toBe("See label -->");
   });
 
   it.each(["<!-- </a> -->", '<div title="</a>">more</div>', '<script>"</a>"</script>'])(
     "ignores apparent closing anchors inside %s",
     async (html) => {
-      const container = await renderText(`Before <A>.\n\n${html}\n\nAfter.`);
+      await using containerScreen = await renderText(`Before <A>.\n\n${html}\n\nAfter.`);
+      const container = containerScreen.container;
       expect(container.querySelector("p")?.textContent).toBe("Before <A>.");
       expect(container.querySelectorAll("a")).toHaveLength(0);
     },
   );
 
   it("preserves paired HTML anchors, details, markdown links, and inline code", async () => {
-    const container = await renderText(
+    await using containerScreen = await renderText(
       'Bare <a>label</a>, <a id="section"></a>, `<A>`, and [docs](https://example.com).\n\n<details><summary>More</summary>Details</details>',
     );
+    const container = containerScreen.container;
     expect(linkTexts(container)).toEqual(["label", "", "docs"]);
     expect(container.querySelector("code")?.textContent).toBe("<A>");
     expect(container.querySelector("[data-markdown-details]")?.textContent).toContain("More");
@@ -243,7 +264,7 @@ describe("ChatMarkdown context references", () => {
   it("renders text and image references through the chip renderer, with readable fallback", async () => {
     const text =
       "See [Terminal output](t3-context://v1/terminal/term-1) and ![Error image](t3-context://v1/image/img-1).";
-    const { container, rerender } = await render(
+    await using screen = await render(
       <ChatMarkdown
         cwd={undefined}
         text={text}
@@ -254,6 +275,7 @@ describe("ChatMarkdown context references", () => {
         )}
       />,
     );
+    const { container, rerender } = screen;
     expect([...container.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
       "terminal: Terminal output",
       "image: Error image",
@@ -266,7 +288,7 @@ describe("ChatMarkdown context references", () => {
 
   it("reads formatted context labels through nested markup instead of the context id", async () => {
     const seen: Array<string> = [];
-    await render(
+    await using _screen = await render(
       <ChatMarkdown
         cwd={undefined}
         text="See [**Bold** `code`](t3-context://v1/terminal/term-1)."
@@ -475,10 +497,11 @@ describe("ChatMarkdown in-page links", () => {
         .spyOn(HTMLElement.prototype, "scrollIntoView")
         .mockImplementation(() => {});
       const href = window.location.href;
-      const container = await renderText(
+      await using containerScreen = await renderText(
         "- [Operating model](#1-operating-model)\n- [Missing](#nowhere)\n\n## 1. Operating model\n\n## 1. Operating model",
         { parseRawHtml },
       );
+      const container = containerScreen.container;
       const headings = [...container.querySelectorAll("h2")];
       expect(headings.map((heading) => heading.id)).toEqual([
         "user-content-1-operating-model",
@@ -493,6 +516,9 @@ describe("ChatMarkdown in-page links", () => {
     },
   );
 });
+
+const ARTIFACT_TEMPLATE_DIRECTIVE =
+  '::artifact-template{skill_name="artifact-template-hello-world" skill_directory="/Users/test/.codex/skills/artifact-template-hello-world" display_name="Hello World" artifact_kind="document"}';
 
 describe("ChatMarkdown thread find", () => {
   function FindProbe(props: {

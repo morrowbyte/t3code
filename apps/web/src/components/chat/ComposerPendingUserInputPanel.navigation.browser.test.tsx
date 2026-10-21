@@ -14,6 +14,11 @@ vi.mock(import("../ChatMarkdown"), async (importOriginal) => ({
 import { act, fakeTimers, render } from "../../../test/render";
 import { makeThreadProjectionFixture } from "../../test-fixtures";
 import { usePendingThreadRequests } from "./usePendingThreadRequests";
+import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
+import {
+  togglePendingUserInputOptionSelection,
+  type PendingUserInputDraftAnswer,
+} from "../../pendingUserInput";
 
 const threadRef = { environmentId: EnvironmentId.make("env"), threadId: ThreadId.make("thread") };
 

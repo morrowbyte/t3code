@@ -12,7 +12,10 @@ import "~/index.css";
 import { DraftId, useComposerDraftStore } from "~/composerDraftStore";
 import { buildFileDiffIdentityKey } from "~/lib/diffRendering";
 
-type ViewerProps = Omit<ComponentProps<typeof StyledDiffCodeView<unknown>>, "options"> & {
+type ViewerProps = Omit<
+  Extract<ComponentProps<typeof StyledDiffCodeView<unknown>>, { items: readonly unknown[] }>,
+  "options"
+> & {
   options: {
     enableLineSelection: boolean;
     enableGutterUtility: boolean;

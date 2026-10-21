@@ -33,8 +33,11 @@ async function openMore(container: HTMLElement) {
 
 describe("ComposerPendingApprovalActions", () => {
   it("opens approval scope choices with the object's keyboard action", async () => {
-    await render();
-    const object = container.querySelector<HTMLElement>('[data-keyboard-object="Approval"]')!;
+    const onRespond = vi.fn(async () => undefined);
+    await using screen = await renderActions(onRespond);
+    const object = screen.container.querySelector<HTMLElement>(
+      '[data-keyboard-object="Approval"]',
+    )!;
     await act(async () => {
       object.focus();
       object.dispatchEvent(

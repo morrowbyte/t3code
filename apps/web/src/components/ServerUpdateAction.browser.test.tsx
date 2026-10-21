@@ -1,4 +1,3 @@
-import { ServerUpdateProgress } from "./ServerUpdateProgress";
 import { RegistryContext } from "@effect/atom-react";
 import { AuthSessionState, type EnvironmentId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -66,6 +65,7 @@ import {
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import {
   ServerUpdateAction,
+  ServerUpdateProgress,
   ServerUpdatesAction,
   type ServerUpdateTarget,
 } from "./ServerUpdateAction";

@@ -272,7 +272,7 @@ describe("root reopen shortcut", () => {
     useClosedViewStore
       .getState()
       .remember({ kind: "panel-tab", threadRef: ref, surface: { kind: "diff", id: "diff" } });
-    await render();
+    await using _view = await renderShortcut();
     expect(forwardedCommands()).toContain("view.reopenClosed");
     await act(() => {
       menuAction?.("view.reopenClosed");
@@ -282,7 +282,7 @@ describe("root reopen shortcut", () => {
   });
 
   it("always forwards the layout toggles out of a focused desktop browser", async () => {
-    await render();
+    await using _view = await renderShortcut();
     expect(state.setShortcuts).toHaveBeenLastCalledWith([
       expect.objectContaining({ command: "navigation.activate" }),
       expect.objectContaining({ command: "sidebar.toggle" }),

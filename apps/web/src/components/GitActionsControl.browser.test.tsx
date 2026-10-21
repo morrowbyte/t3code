@@ -7,7 +7,7 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
-import { memo, StrictMode, useRef, useState } from "react";
+import { type ComponentProps, memo, StrictMode, useRef, useState } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
@@ -164,7 +164,11 @@ vi.mock(import("~/components/ui/toast"), async (original) => {
 });
 
 vi.mock(import("~/hooks/useT3ProjectFileScripts"), () => ({ useT3ProjectFileScripts: () => [] }));
-vi.mock(import("./BranchToolbar"), () => ({ BranchToolbar: () => null }));
+vi.mock(import("./BranchToolbar"), () => ({
+  BranchToolbar: memo<typeof import("./BranchToolbar").BranchToolbar.type>(
+    (_props: ComponentProps<typeof import("./BranchToolbar").BranchToolbar>) => <></>,
+  ),
+}));
 vi.mock(import("./chat/ThreadAutomationsPanel"), () => ({ ThreadAutomationsPanel: () => null }));
 vi.mock(import("./chat/ThreadRelationshipsControl"), () => ({
   ThreadRelationshipsPanel: () => null,
