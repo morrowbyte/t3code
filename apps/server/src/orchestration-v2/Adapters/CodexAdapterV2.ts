@@ -2100,6 +2100,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         );
         const activeTurns = yield* Ref.make(new Map<string, ActiveCodexTurnContext>());
         const observatoryRegisteredThreads = new Set<string>();
+        const cuaUnloadWaiters = new Map<string, Deferred.Deferred<void>>();
         const observatoryCalls = new WeakMap<
           ActiveCodexTurnContext,
           Map<
@@ -4971,6 +4972,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         // their command items, while the shared provider session stays alive.
         yield* client.handleServerNotification("thread/closed", (payload) =>
           Effect.gen(function* () {
+            const unloaded = cuaUnloadWaiters.get(payload.threadId);
+            if (unloaded !== undefined) yield* Deferred.succeed(unloaded, undefined);
             const completedAt = yield* DateTime.now;
             for (const context of (yield* Ref.get(settledTurns)).values()) {
               if (context.providerThread.nativeThreadRef?.nativeId !== payload.threadId) continue;
@@ -6619,19 +6622,40 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const cuaConnection = yield* readCuaConnection(turnInput.threadId);
             const generation = cuaConnection?.generation ?? null;
             if ((cuaGenerations.get(turnInput.threadId) ?? null) !== generation) {
+              // Unsubscribe only schedules an idle unload. Resuming before thread/closed
+              // would cancel it and retain the old MCP connections. Fail closed if another
+              // subscriber or an active turn prevents unloading; never replay an action.
+              const unloaded = yield* Deferred.make<void>();
+              cuaUnloadWaiters.set(threadId, unloaded);
+              yield* Effect.gen(function* () {
+                const result = yield* client.request("thread/unsubscribe", { threadId });
+                if (result.status !== "notLoaded") {
+                  yield* Deferred.await(unloaded).pipe(Effect.timeout("90 seconds"));
+                }
+              }).pipe(
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    if (cuaUnloadWaiters.get(threadId) === unloaded)
+                      cuaUnloadWaiters.delete(threadId);
+                  }),
+                ),
+              );
+              const reboundConnection = yield* readCuaConnection(turnInput.threadId);
+              // This same session registered the dynamic tool. Codex persists its
+              // definition in the rollout and restores it during the cold resume.
               // Rebind only after an explicit new turn, never replay an interrupted action.
               yield* client.raw.request("thread/resume", {
                 threadId,
                 excludeTurns: true,
                 ...codexThreadRuntimeParams({
                   mcpSession,
-                  cuaConnection,
+                  cuaConnection: reboundConnection,
                   modelSelection: turnInput.modelSelection,
                   runtimePolicy: turnInput.runtimePolicy,
                   ...(resolvedRuntime?.nativeSubagents === false ? { nativeSubagents: false } : {}),
                 }),
               });
-              cuaGenerations.set(turnInput.threadId, generation);
+              cuaGenerations.set(turnInput.threadId, reboundConnection?.generation ?? null);
             }
 
             const turnStartParams = yield* buildCodexTurnStartParams({

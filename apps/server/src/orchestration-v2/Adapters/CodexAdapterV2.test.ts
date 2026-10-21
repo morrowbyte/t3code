@@ -1,3 +1,4 @@
+import * as CuaControl from "../../cua/CuaControl.ts";
 import { AgentObservatoryInvocationResult } from "@t3tools/contracts";
 import * as NodeOS from "node:os";
 
@@ -970,7 +971,12 @@ describe("CodexAdapterV2 process spawning", () => {
             tool_timeout_sec: 3_900,
             http_headers: { Authorization: "Bearer secret-codex-token" },
           },
-          "mcp_servers.t3-windows-cua": { enabled: false },
+          "mcp_servers.t3-windows-cua": {
+            enabled: false,
+            command: "t3-windows-cua-disabled",
+            args: [],
+            env: {},
+          },
         },
       },
     );
@@ -2540,8 +2546,13 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     readChildMetadata?: Parameters<typeof withCodexReplayChildMetadata>[2],
     observatoryAvailable?: boolean,
     effectiveRuntime?: CodexEffectiveRuntime,
+    beforeEmitInbound?: CodexReplay.CodexAppServerReplayDriver["beforeEmitInbound"],
   ) =>
     Effect.gen(function* () {
+      const driver = yield* CodexReplay.makeReplayDriver(
+        transcript,
+        beforeEmitInbound === undefined ? {} : { beforeEmitInbound },
+      );
       const fileSystem = yield* FileSystem.FileSystem;
       const idAllocator = yield* IdAllocator.IdAllocatorV2;
       const serverConfig = yield* makeReplayServerConfig(transcript.scenario).pipe(Effect.orDie);
@@ -2549,7 +2560,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         [];
       const clientFactory: CodexAdapterV2.CodexAppServerClientFactoryShape = {
         open: (openInput) =>
-          Layer.build(CodexReplay.layerReplay(transcript)).pipe(
+          Layer.build(CodexReplay.layerReplayWithDriver(driver)).pipe(
             Effect.mapError(
               (cause) =>
                 new ProviderAdapter.ProviderAdapterOpenSessionError({
@@ -4710,14 +4721,48 @@ describe("CodexAdapterV2 post-settle continuation", () => {
   );
 
   it.effect.each([
-    { registered: true, callback: true },
-    { registered: false, callback: true },
-    { registered: true, callback: false },
+    { registered: true, callback: true, rebind: undefined },
+    { registered: false, callback: true, rebind: undefined },
+    { registered: true, callback: false, rebind: undefined },
+    { registered: true, callback: true, rebind: "unsubscribed" as const },
+    { registered: true, callback: true, rebind: "notLoaded" as const },
   ])(
-    "normal native observatory registration/instruction/read-publish protocol $registered/$callback",
-    ({ registered, callback }) =>
+    "normal native observatory registration/instruction/read-publish protocol $registered/$callback/$rebind",
+    ({ registered, callback, rebind }) =>
       Effect.gen(function* () {
-        const scenario = `observatory-protocol-${registered}-${callback}`;
+        const scenario = `observatory-protocol-${registered}-${callback}-${rebind}`;
+        let revoked = false;
+        let closedDelivered = false;
+        const unsubscribed = yield* Deferred.make<void>();
+        const allowClosed = yield* Deferred.make<void>();
+        let resumeRequest: unknown;
+        const rebindOffset = rebind === undefined ? 0 : 2;
+        const control = CuaControl.CuaControl.of({
+          status: Effect.succeed({
+            environmentId: EnvironmentId.make("env:protocol"),
+            supported: true,
+            enabled: true,
+            phase: "ready",
+            owner: null,
+          }),
+          changes: Stream.empty,
+          subscribe: () => Stream.empty,
+          setEnabled: () => Effect.void,
+          attach: () =>
+            Effect.suspend(() =>
+              rebind !== undefined && !revoked
+                ? Effect.succeed({
+                    generation: "generation-one",
+                    driverVersion: "0.37.0",
+                    contractVersion: "0.8.0",
+                    mcpProtocolVersion: "2025-06-18",
+                    mcp: { command: "unused-fixture", args: [], environment: [] },
+                  })
+                : Effect.fail(new CuaControl.CuaUnavailableError({ reason: "disabled" })),
+            ),
+          release: () => Effect.void,
+          stop: () => Effect.void,
+        });
         const nativeThreadId = `native-${scenario}`;
         const nativeTurnId = `turn-${scenario}`;
         let startRequest: unknown;
@@ -4782,13 +4827,46 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               },
             },
             ...preamble.slice(4, 5),
+            ...(rebind === undefined
+              ? []
+              : ([
+                  {
+                    type: "expect_outbound",
+                    frame: {
+                      id: 3,
+                      method: "thread/unsubscribe",
+                      params: { threadId: nativeThreadId },
+                    },
+                  },
+                  { type: "emit_inbound", frame: { id: 3, result: { status: rebind } } },
+                  ...(rebind === "unsubscribed"
+                    ? ([
+                        {
+                          type: "emit_inbound",
+                          label: "delayed-close",
+                          frame: { method: "thread/closed", params: { threadId: nativeThreadId } },
+                        },
+                      ] satisfies Array<CodexReplay.CodexAppServerReplayEntry>)
+                    : []),
+                  {
+                    type: "expect_outbound",
+                    get frame() {
+                      return { id: 4, method: "thread/resume", params: resumeRequest };
+                    },
+                  },
+                  ...preamble.slice(4, 5).map((entry) => withReplayRequestId(entry, 4)),
+                ] satisfies Array<CodexReplay.CodexAppServerReplayEntry>)),
             {
               type: "expect_outbound",
               get frame() {
-                return { id: 3, method: "turn/start", params: turnRequest };
+                return { id: 3 + rebindOffset, method: "turn/start", params: turnRequest };
               },
             },
-            ...preamble.slice(6),
+            ...preamble
+              .slice(6)
+              .map((entry, index) =>
+                index === 0 ? withReplayRequestId(entry, 3 + rebindOffset) : entry,
+              ),
             call(10, "read-own", { action: "read", threadId: "model-forged-thread" }),
             response(10, () => (active ? '{"action":"read","snapshot":null}' : refusal), active),
             call(11, "read-own", { action: "read" }),
@@ -4843,10 +4921,32 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             Effect.sync(() => {
               if (method === "thread/start") startRequest = params;
               if (method === "turn/start") turnRequest = params;
-            }),
+              if (method === "thread/resume") {
+                if (rebind === "unsubscribed") assert.isTrue(closedDelivered);
+                resumeRequest = params;
+              }
+            }).pipe(
+              Effect.andThen(
+                method === "thread/unsubscribe"
+                  ? Deferred.succeed(unsubscribed, undefined).pipe(Effect.asVoid)
+                  : Effect.void,
+              ),
+            ),
           undefined,
           registered,
-        );
+          undefined,
+          (entry) =>
+            entry.label === "delayed-close"
+              ? Deferred.await(allowClosed).pipe(
+                  Effect.tap(() =>
+                    Effect.sync(() => {
+                      closedDelivered = true;
+                    }),
+                  ),
+                )
+              : Effect.void,
+        ).pipe(Effect.provideService(CuaControl.CuaControl, control));
+        revoked = true;
         const now = yield* DateTime.now;
         const turnInput = makeCodexTestTurnInput({
           threadId: harness.threadId,
@@ -4893,10 +4993,21 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             )(result).pipe(Effect.orDie);
             return result;
           });
-        yield* harness.runtime.startTurn({
+        const startingTurn = harness.runtime.startTurn({
           ...turnInput,
           ...(callback ? { onObservatoryInvocation } : {}),
         });
+        if (rebind === "unsubscribed") {
+          const starting = yield* startingTurn.pipe(Effect.forkScoped);
+          yield* Deferred.await(unsubscribed);
+          yield* Effect.yieldNow;
+          assert.isUndefined(resumeRequest);
+          assert.isUndefined(turnRequest);
+          yield* Deferred.succeed(allowClosed, undefined);
+          yield* Fiber.join(starting);
+        } else {
+          yield* startingTurn;
+        }
         yield* harness.firstTerminal;
         const start = yield* Schema.decodeUnknownEffect(
           Schema.Struct({
