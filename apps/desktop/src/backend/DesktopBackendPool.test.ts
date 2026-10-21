@@ -21,6 +21,29 @@ import * as DesktopWslEnvironment from "../wsl/DesktopWslEnvironment.ts";
 import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
 import * as DesktopBackendPool from "./DesktopBackendPool.ts";
 import type { DesktopBackendStartConfig } from "./DesktopBackendManager.ts";
+import { type DesktopBackendSnapshot } from "./DesktopBackendManager.ts";
+import * as Duration from "effect/Duration";
+function makeStubInstance(
+  id: DesktopBackendPool.BackendInstanceId,
+  label: string,
+): DesktopBackendPool.DesktopBackendInstance {
+  const snapshot: DesktopBackendSnapshot = {
+    desiredRunning: false,
+    ready: false,
+    activePid: Option.none(),
+    restartAttempt: 0,
+    restartScheduled: false,
+  };
+  return {
+    id,
+    label: Effect.succeed(label),
+    start: Effect.void,
+    stop: () => Effect.void,
+    currentConfig: Effect.succeed(Option.none<DesktopBackendStartConfig>()),
+    snapshot: Effect.succeed(snapshot),
+    waitForReady: (_timeout: Duration.Duration) => Effect.succeed(false),
+  };
+}
 
 function layerPool(labelRef: Ref.Ref<string>): Layer.Layer<DesktopBackendPool.DesktopBackendPool> {
   return DesktopBackendPool.layer.pipe(

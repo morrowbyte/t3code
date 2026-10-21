@@ -221,6 +221,7 @@ const fixture = Effect.fn("fixture")(function* (
     );
   });
   const service = yield* factory.pipe(
+    Effect.provideService(HttpClient.HttpClient, http),
     Effect.provide(NodeCrypto.layer),
     Effect.provideService(DeviceHost.DeviceHost, host),
     Effect.provideService(

@@ -26,6 +26,8 @@ import {
   resolveDesktopTelemetrySnapshotStaleAfterMs,
   writeAllToFileDescriptor,
 } from "./DesktopTelemetryReceiver.ts";
+import * as DateTime from "effect/DateTime";
+import { assert } from "vite-plus/test";
 
 describe("DesktopTelemetryReceiver", () => {
   it.effect("models a zero-byte control write as a stalled descriptor", () =>

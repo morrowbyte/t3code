@@ -1,3 +1,4 @@
+import * as Option from "effect/Option";
 import * as NodePath from "@effect/platform-node/NodePath";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";

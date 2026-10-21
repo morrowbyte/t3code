@@ -6,7 +6,9 @@ import {
   getSettingsSearchTargetScope,
   getLegacySettingsDestination,
   getThreadAutoSettlementSearchAvailability,
+  isSettingsOverviewVisible,
   isSettingsSearchScopeAvailable,
+  searchableSetting,
   searchSettings,
   SETTINGS_SEARCH_ITEMS,
   type SettingsSearchItem,
@@ -509,6 +511,7 @@ describe("settings category migration", () => {
   });
 
   it("keeps current categories and unchanged General rows in place", () => {
+    expect(getLegacySettingsDestination("/settings/general", "about")).toBeNull();
     expect(getLegacySettingsDestination("/settings/general", "time-format")).toBeNull();
     expect(getLegacySettingsDestination("/settings/updates", "update-history")).toBeNull();
     expect(getLegacySettingsDestination("/settings/integrations", "linear")).toBeNull();

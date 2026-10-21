@@ -83,6 +83,22 @@ import {
 } from "./update-release-package-versions.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
+import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
+import { createStageWorkspaceConfig } from "./build-desktop-artifact.ts";
+import { DESKTOP_ELECTRON_LANGUAGES } from "./build-desktop-artifact.ts";
+import { WSL_RUNTIME_EXTRA_RESOURCES } from "./build-desktop-artifact.ts";
+import { LINUX_BROWSER_SECRET_EXTRA_RESOURCES } from "./build-desktop-artifact.ts";
+import { WINDOWS_SERVER_RESOURCE_SOURCE_DIR } from "./build-desktop-artifact.ts";
+import { WINDOWS_SERVER_EXTRA_RESOURCES } from "./build-desktop-artifact.ts";
+import { WINDOWS_NATIVE_ASAR_UNPACK_GLOB } from "./build-desktop-artifact.ts";
+import { DESKTOP_EXTRA_RESOURCES } from "./build-desktop-artifact.ts";
+import { LINUX_CAPTURE_EXTRA_RESOURCES } from "./build-desktop-artifact.ts";
+import { MAC_FILE_EXCLUSIONS } from "./build-desktop-artifact.ts";
+import { LINUX_FILE_EXCLUSIONS } from "./build-desktop-artifact.ts";
+const stagePackageExtensions = {
+  "electron-webauthn": { peerDependenciesMeta: { typescript: { optional: true } } },
+  "@electron-webauthn/macos": { peerDependenciesMeta: { typescript: { optional: true } } },
+};
 
 const encodeModuleUrl = Schema.encodeEffect(Schema.fromJsonString(Schema.String));
 const decodePackageVersion = Schema.decodeUnknownEffect(

@@ -126,15 +126,6 @@ it("applies a custom header element rendered inside a navigation container", () 
   renderConnecting("Connecting");
   expect(renderedCustomLabel()).toBe("Connecting");
 
-  expect(harness.setOptionsCalls).toBe(applied);
-  openRenderedDocument();
-  expect(harness.openedDocuments).toEqual(["first/guide.pdf"]);
-});
-
-it("applies a custom header element rendered inside a navigation container", () => {
-  renderConnecting("Connecting");
-  expect(renderedCustomLabel()).toBe("Connecting");
-
   const applied = harness.setOptionsCalls;
   renderConnecting("Connecting");
   expect(harness.setOptionsCalls).toBe(applied);

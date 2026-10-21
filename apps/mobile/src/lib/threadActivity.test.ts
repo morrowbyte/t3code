@@ -29,6 +29,8 @@ import {
   isPendingUserInputOptionSelected,
   buildPendingUserInputAnswers,
 } from "./threadActivity";
+import { type ThreadFeedActivity } from "./threadActivity";
+import { workEntryRowLabel } from "./threadActivity";
 
 const threadId = ThreadId.make("thread-1");
 const sourceThreadId = ThreadId.make("thread-source");

@@ -171,7 +171,7 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
           This connection cannot respond to approvals.
         </Text>
       ) : null}
-      <RequestActionButton
+      <Button
         label={detailsFor === key ? "Hide provider details" : "Show provider details"}
         tone="secondary"
         onPress={() => setDetailsFor((current) => (current === key ? null : key))}

@@ -13,7 +13,28 @@ import {
   resolveUpdateRunMachineStatus,
   runUpdateEverything,
   type UpdateEverythingMachine,
+  type UpdateEverythingRun,
+  type UpdateRunMachine,
+  type UpdateRunMachineStatus,
 } from "./updateEverything.logic";
+
+const runMachine = (overrides: Partial<UpdateRunMachine> = {}): UpdateRunMachine => ({
+  environmentId: EnvironmentId.make("alvin"),
+  label: "alvin",
+  updatesProviders: true,
+  server: {
+    environmentId: EnvironmentId.make("alvin"),
+    serverLabel: "alvin",
+    selfUpdate: "boot-service",
+    targetVersion: "0.0.50",
+  },
+  handedOffVersion: null,
+  startedAt: 0,
+  result: null,
+  failure: null,
+  providerFailure: null,
+  ...overrides,
+});
 
 function machine(
   id: string,
@@ -223,14 +244,12 @@ describe("update capsule", () => {
       label: "1 of 3 updated",
       action: null,
     });
-    expect(describeUpdateCapsule(run(), machines, null, UPDATE_SLOW_AFTER_MS + 6 * 60_000)).toEqual(
-      {
-        tone: "slow",
-        label: "alvin",
-        slow: { status: "restarting", elapsed: "9m" },
-        action: null,
-      },
-    );
+    expect(describeUpdateCapsule(run(), machines, null, 9 * 60_000)).toEqual({
+      tone: "slow",
+      label: "alvin",
+      slow: { status: "restarting", elapsed: "9m" },
+      action: null,
+    });
   });
 
   it("offers a retry only for failed servers it can update again", () => {

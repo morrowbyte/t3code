@@ -100,7 +100,7 @@ const RELEASES: Readonly<Record<string, CodexReleaseAsset>> = {
     archiveBytes: 162230206,
   },
 };
-const resolveCodexReleaseAsset = (platform: NodeJS.Platform, arch: string) =>
+export const resolveCodexReleaseAsset = (platform: NodeJS.Platform, arch: string) =>
   RELEASES[`${platform}-${arch}`] ?? null;
 export class CodexInstallationError extends Schema.TaggedError<CodexInstallationError>()(
   "CodexInstallationError",

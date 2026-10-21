@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { act, type ComponentType, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
@@ -171,7 +170,6 @@ const textStyle: NativeMarkdownTextStyle = {
   codeBackgroundColor: "white",
   codeBlockBackgroundColor: "white",
   fileTextColor: "black",
-  skillTextColor: "black",
   quoteMarkerColor: "grey",
   dividerColor: "grey",
   fontSize: 16,

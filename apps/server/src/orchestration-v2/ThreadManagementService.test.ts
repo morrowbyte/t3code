@@ -25,6 +25,8 @@ import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
+import * as TestClock from "effect/testing/TestClock";
+import * as Duration from "effect/Duration";
 
 const layerReceiptsTest = CommandReceiptStore.layer.pipe(
   Layer.provide(SqlitePersistence.layerMemory),

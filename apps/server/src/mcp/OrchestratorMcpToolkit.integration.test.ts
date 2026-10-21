@@ -62,6 +62,364 @@ import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
+import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
+import { type OrchestrationV2ProviderCapabilities } from "@t3tools/contracts";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as Deferred from "effect/Deferred";
+import * as DateTime from "effect/DateTime";
+import { type OrchestrationV2ProviderSession } from "@t3tools/contracts";
+import { type OrchestrationV2ProviderThread } from "@t3tools/contracts";
+import { TurnItemId } from "@t3tools/contracts";
+import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
+import * as ThreadSearch from "../orchestration-v2/ThreadSearch.ts";
+import * as Fiber from "effect/Fiber";
+import { EventId } from "@t3tools/contracts";
+import { ClaudeProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
+import { IsoDateTime } from "@t3tools/contracts";
+import { type OrchestrationV2ThreadProjection } from "@t3tools/contracts";
+import { OrchestratorMcpThreadWaitResult } from "@t3tools/contracts";
+import { OrchestratorMcpThreadReadResult } from "@t3tools/contracts";
+import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
+import { type JsonSchemaType } from "@modelcontextprotocol/sdk/validation";
+import { threadShellFromProjection } from "../orchestration-v2/ProjectionStore.ts";
+import { delegatedTaskRun } from "./OrchestratorMcpService.ts";
+import { hasPendingChildRuns } from "./OrchestratorMcpService.ts";
+import { OrchestratorMcpCreateThreadsResult } from "@t3tools/contracts";
+import { ThreadMetadataMcpUpdateResult } from "@t3tools/contracts";
+import { OrchestratorMcpThreadListResult } from "@t3tools/contracts";
+import { type OrchestrationV2DelegatedCompletionDelivery } from "@t3tools/contracts";
+interface CapturedTurn {
+  readonly instanceId: ProviderInstanceId;
+  readonly threadId: ThreadId;
+  readonly text: string;
+}
+
+function unsupported(driver: ProviderDriverKind, detail: string) {
+  return Effect.fail(new ProviderAdapter.ProviderAdapterProtocolError({ driver, detail }));
+}
+
+function makeDeterministicAdapter(input: {
+  readonly instanceId: ProviderInstanceId;
+  readonly driver: ProviderDriverKind;
+  readonly capabilities: OrchestrationV2ProviderCapabilities;
+  readonly capturedTurns: Ref.Ref<ReadonlyArray<CapturedTurn>>;
+  readonly shouldComplete: (turn: ProviderAdapter.ProviderAdapterV2TurnInput) => boolean;
+  readonly terminalGate?: (
+    turn: ProviderAdapter.ProviderAdapterV2TurnInput,
+  ) => Deferred.Deferred<void> | undefined;
+  readonly response: (turn: ProviderAdapter.ProviderAdapterV2TurnInput) => string;
+  readonly steerReceived?: (
+    steer: ProviderAdapter.ProviderAdapterV2SteerInput,
+  ) => Deferred.Deferred<void> | undefined;
+}): ProviderAdapter.ProviderAdapterV2["Service"] {
+  return {
+    instanceId: input.instanceId,
+    driver: input.driver,
+    getCapabilities: () => Effect.succeed(input.capabilities),
+    planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
+    openSession: (sessionInput) =>
+      Effect.gen(function* () {
+        const events = yield* PubSub.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
+        const now = yield* DateTime.now;
+        const providerSession: OrchestrationV2ProviderSession = {
+          id: sessionInput.providerSessionId,
+          driver: input.driver,
+          providerInstanceId: input.instanceId,
+          status: "ready",
+          cwd: sessionInput.runtimePolicy.cwd ?? process.cwd(),
+          model: sessionInput.modelSelection.model,
+          capabilities: input.capabilities,
+          createdAt: now,
+          updatedAt: now,
+          lastError: null,
+        };
+
+        const publish = (providerEvents: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>) =>
+          Effect.forEach(providerEvents, (event) => PubSub.publish(events, event), {
+            discard: true,
+          });
+        const runOrdinals = new Map<ProviderTurnId, number>();
+        const turnInputs = new Map<ProviderTurnId, ProviderAdapter.ProviderAdapterV2TurnInput>();
+
+        return {
+          instanceId: input.instanceId,
+          driver: input.driver,
+          providerSessionId: sessionInput.providerSessionId,
+          providerSession,
+          events: Stream.fromPubSub(events),
+          ensureThread: (threadInput) =>
+            Effect.gen(function* () {
+              const createdAt = yield* DateTime.now;
+              const nativeThreadId = `${input.driver}:${threadInput.threadId}`;
+              return {
+                id: ProviderThreadId.make(`provider-thread:${nativeThreadId}`),
+                driver: input.driver,
+                providerInstanceId: input.instanceId,
+                providerSessionId: sessionInput.providerSessionId,
+                appThreadId: threadInput.threadId,
+                ownerNodeId: null,
+                nativeThreadRef: {
+                  driver: input.driver,
+                  nativeId: nativeThreadId,
+                  strength: "strong",
+                },
+                nativeConversationHeadRef: null,
+                status: "idle",
+                firstRunOrdinal: null,
+                lastRunOrdinal: null,
+                handoffIds: [],
+                forkedFrom: null,
+                createdAt,
+                updatedAt: createdAt,
+              } satisfies OrchestrationV2ProviderThread;
+            }),
+          resumeThread: ({ providerThread }) => Effect.succeed(providerThread),
+          startTurn: (turnInput) =>
+            Effect.gen(function* () {
+              yield* Ref.update(input.capturedTurns, (turns) => [
+                ...turns,
+                {
+                  instanceId: input.instanceId,
+                  threadId: turnInput.threadId,
+                  text: turnInput.message.text,
+                },
+              ]);
+              const eventTime = yield* DateTime.now;
+              const providerTurnId = ProviderTurnId.make(
+                `provider-turn:${input.instanceId}:${turnInput.threadId}:${turnInput.runOrdinal}`,
+              );
+              runOrdinals.set(providerTurnId, turnInput.runOrdinal);
+              turnInputs.set(providerTurnId, turnInput);
+              yield* publish([
+                {
+                  type: "provider_turn.updated",
+                  driver: input.driver,
+                  providerTurn: {
+                    id: providerTurnId,
+                    providerThreadId: turnInput.providerThread.id,
+                    nodeId: turnInput.rootNodeId,
+                    runAttemptId: turnInput.attemptId,
+                    nativeTurnRef: {
+                      driver: input.driver,
+                      nativeId: `native-turn:${turnInput.threadId}:${turnInput.runOrdinal}`,
+                      strength: "strong",
+                    },
+                    ordinal: turnInput.providerTurnOrdinal,
+                    status: "running",
+                    startedAt: eventTime,
+                    completedAt: null,
+                  },
+                },
+              ]);
+              const terminalGate = input.terminalGate?.(turnInput);
+              if (terminalGate !== undefined) {
+                yield* Deferred.await(terminalGate);
+              } else if (!input.shouldComplete(turnInput)) {
+                return;
+              }
+              const response = input.response(turnInput);
+              yield* publish([
+                {
+                  type: "provider_turn.updated",
+                  driver: input.driver,
+                  providerTurn: {
+                    id: providerTurnId,
+                    providerThreadId: turnInput.providerThread.id,
+                    nodeId: turnInput.rootNodeId,
+                    runAttemptId: turnInput.attemptId,
+                    nativeTurnRef: {
+                      driver: input.driver,
+                      nativeId: `native-turn:${turnInput.threadId}:${turnInput.runOrdinal}`,
+                      strength: "strong",
+                    },
+                    ordinal: turnInput.providerTurnOrdinal,
+                    status: "completed",
+                    startedAt: eventTime,
+                    completedAt: eventTime,
+                  },
+                },
+                {
+                  type: "turn_item.updated",
+                  driver: input.driver,
+                  turnItem: {
+                    id: TurnItemId.make(
+                      `turn-item:${input.instanceId}:${turnInput.threadId}:${turnInput.runOrdinal}:assistant`,
+                    ),
+                    threadId: turnInput.threadId,
+                    runId: turnInput.runId,
+                    nodeId: turnInput.rootNodeId,
+                    providerThreadId: turnInput.providerThread.id,
+                    providerTurnId,
+                    nativeItemRef: null,
+                    parentItemId: null,
+                    ordinal: turnInput.runOrdinal * 100 + 1,
+                    status: "completed",
+                    title: null,
+                    startedAt: eventTime,
+                    completedAt: eventTime,
+                    updatedAt: eventTime,
+                    type: "assistant_message",
+                    messageId: MessageId.make(
+                      `message:${input.instanceId}:${turnInput.threadId}:${turnInput.runOrdinal}:assistant`,
+                    ),
+                    text: response,
+                    streaming: false,
+                  },
+                },
+                {
+                  type: "turn.terminal",
+                  driver: input.driver,
+                  providerThreadId: turnInput.providerThread.id,
+                  providerTurnId,
+                  runOrdinal: turnInput.runOrdinal,
+                  status: "completed",
+                  failure: null,
+                  threadDisposition: "reusable",
+                },
+              ]);
+            }),
+          steerTurn: (steer) => {
+            const received = input.steerReceived?.(steer);
+            return received === undefined
+              ? Effect.void
+              : Deferred.succeed(received, undefined).pipe(Effect.asVoid);
+          },
+          interruptTurn: ({ providerThread, providerTurnId }) =>
+            Effect.gen(function* () {
+              const turnInput = turnInputs.get(providerTurnId);
+              const completedAt = yield* DateTime.now;
+              if (turnInput !== undefined) {
+                yield* publish([
+                  {
+                    type: "provider_turn.updated",
+                    driver: input.driver,
+                    providerTurn: {
+                      id: providerTurnId,
+                      providerThreadId: providerThread.id,
+                      nodeId: turnInput.rootNodeId,
+                      runAttemptId: turnInput.attemptId,
+                      nativeTurnRef: {
+                        driver: input.driver,
+                        nativeId: `native-turn:${turnInput.threadId}:${turnInput.runOrdinal}`,
+                        strength: "strong",
+                      },
+                      ordinal: turnInput.providerTurnOrdinal,
+                      status: "interrupted",
+                      startedAt: completedAt,
+                      completedAt,
+                    },
+                  },
+                ]);
+              }
+              yield* publish([
+                {
+                  type: "turn.terminal",
+                  driver: input.driver,
+                  providerThreadId: providerThread.id,
+                  providerTurnId,
+                  runOrdinal: runOrdinals.get(providerTurnId) ?? 1,
+                  status: "interrupted",
+                  failure: null,
+                  threadDisposition: "reusable",
+                },
+              ]);
+            }),
+          respondToRuntimeRequest: () => Effect.void,
+          readThreadSnapshot: () =>
+            unsupported(input.driver, "readThreadSnapshot is unused in this test"),
+          rollbackThread: () => unsupported(input.driver, "rollbackThread is unused in this test"),
+          forkThread: () => unsupported(input.driver, "forkThread is unused in this test"),
+        };
+      }),
+  };
+}
+
+const declaredFailure = (result: McpSchema.CallToolResult) => {
+  const text = result.content[0];
+  return result.isError === true && text?.type === "text" ? JSON.parse(text.text) : undefined;
+};
+
+const claudeInstanceId = ProviderInstanceId.make("claudeAgent");
+
+const claudeModel = "claude-sonnet-4-6";
+
+function scheduledTaskFromUpsert(input: ScheduledTaskUpsertInput): ScheduledTask {
+  const timestamp = IsoDateTime.make("2026-07-01T09:00:00.000Z");
+  return {
+    id: input.id ?? ScheduledTaskId.make(`scheduled-task:${input.commandId ?? "stub"}`),
+    title: input.title,
+    prompt: input.prompt,
+    enabled: input.enabled,
+    schedule:
+      input.schedule.type === "webhook"
+        ? {
+            type: "webhook",
+            signature:
+              input.schedule.signature == null
+                ? null
+                : {
+                    header: input.schedule.signature.header,
+                    encoding: input.schedule.signature.encoding,
+                    prefix: input.schedule.signature.prefix,
+                  },
+          }
+        : input.schedule,
+    projectId: input.projectId,
+    threadId: input.threadId ?? null,
+    workspaceStrategy: input.workspaceStrategy,
+    modelSelection: input.modelSelection,
+    runtimeMode: input.runtimeMode,
+    interactionMode: input.interactionMode,
+    createdBy: input.createdBy ?? "user",
+    creationSource: input.creationSource ?? "web",
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    nextRunAt: null,
+    lastRunAt: null,
+    lastRunStatus: "never",
+    lastRunError: null,
+    runCount: 0,
+  };
+}
+
+function waitForProjection(
+  orchestrator: Orchestrator.OrchestratorV2Shape,
+  threadId: ThreadId,
+  predicate: (projection: OrchestrationV2ThreadProjection) => boolean,
+) {
+  return Effect.gen(function* () {
+    for (let attempt = 0; attempt < 1_000; attempt += 1) {
+      const projection = yield* orchestrator.getThreadProjection(threadId);
+      if (predicate(projection)) {
+        return projection;
+      }
+      yield* Effect.sleep("5 millis");
+    }
+    return yield* Effect.die(
+      new Error(`Timed out waiting for orchestration projection ${threadId}.`),
+    );
+  });
+}
+
+const claudeSelection = {
+  instanceId: claudeInstanceId,
+  model: claudeModel,
+} satisfies ModelSelection;
+
+const decodeThreadWaitResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadWaitResult);
+
+const decodeThreadReadResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadReadResult);
+
+const decodeTaskCancelResult = Schema.decodeUnknownEffect(OrchestratorMcpTaskCancelResult);
+
+const createdThreadPrompt = "Complete the newly created ordinary thread.";
+
+const decodeCreateThreadsResult = Schema.decodeUnknownEffect(OrchestratorMcpCreateThreadsResult);
+
+const decodeThreadUpdateResult = Schema.decodeUnknownEffect(ThreadMetadataMcpUpdateResult);
+
+const decodeThreadListResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadListResult);
 
 const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
@@ -913,6 +1271,7 @@ describe("orchestrator MCP toolkit", () => {
                 Ref.update(scheduledStore, (all) =>
                   all.filter((candidate) => candidate.id !== input.id),
                 ).pipe(Effect.as({ id: input.id })),
+              deleteForThread: () => Effect.die("unused in this test"),
               runNow: () => Effect.die("ScheduledTaskService.runNow is unused in this test"),
               rotateWebhookToken: () => Effect.die("unused in this test"),
               listWebhookDeliveries: () => Effect.die("unused in this test"),
@@ -4296,7 +4655,10 @@ describe("orchestrator MCP toolkit", () => {
       ),
   );
 
-  it.live("reports running and queued child follow-ups from a Codex replay transcript", () =>
+  it.live.each([
+    { label: "distinct", result: queuedFollowupResult, latestSummary: queuedFollowupResult },
+    { label: "identical", result: delegatedResult, latestSummary: null },
+  ])("reports $label child results", ({ result, latestSummary }) =>
     Effect.scoped(
       Effect.gen(function* () {
         const cwd = yield* checkpointWorkspace("delegated-task-status");

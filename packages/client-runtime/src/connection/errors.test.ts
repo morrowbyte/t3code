@@ -11,6 +11,7 @@ import { DPOP_UNKNOWN_HINT } from "../relay/errorPresentation.ts";
 import { ManagedRelayRequestFailedError } from "../relay/managedRelay.ts";
 import { NETWORK_BLOCKING_HINT } from "../errors/network.ts";
 import { RemoteEnvironmentAuthFetchError, RemoteEnvironmentAuthTimeoutError } from "../rpc/http.ts";
+import { mapRemoteEnvironmentError } from "./errors.ts";
 
 describe("mapManagedRelayError", () => {
   it("keeps a timeout reported by the relay distinct from a local network failure", () => {

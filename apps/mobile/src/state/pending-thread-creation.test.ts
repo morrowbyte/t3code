@@ -14,6 +14,7 @@ import {
   type PendingThreadCreation,
 } from "./pending-thread-creation";
 import type { QueuedThreadMessage } from "./thread-outbox-model";
+import { pendingThreadCreationShell } from "./pending-thread-creation";
 
 const creation: QueuedThreadMessage = {
   environmentId: EnvironmentId.make("environment-1"),

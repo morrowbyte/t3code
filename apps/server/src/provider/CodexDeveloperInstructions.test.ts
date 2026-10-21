@@ -8,6 +8,7 @@ import {
   buildCodexAdditionalContext,
   CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES,
 } from "./CodexDeveloperInstructions.ts";
+import { buildCodexDeveloperInstructions } from "./CodexDeveloperInstructions.ts";
 
 describe("buildCodexAdditionalContext", () => {
   describe.each([

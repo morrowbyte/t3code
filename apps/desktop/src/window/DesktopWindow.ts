@@ -238,7 +238,7 @@ function isRetryableDevelopmentRendererLoadFailure(input: {
   );
 }
 
-function concealPendingQuitWindow(
+export function concealPendingQuitWindow(
   window: Pick<
     Electron.BrowserWindow,
     "isDestroyed" | "isFullScreen" | "setFullScreen" | "setOpacity"

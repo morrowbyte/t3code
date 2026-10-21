@@ -19,6 +19,7 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopState from "../app/DesktopState.ts";
 import * as DesktopUpdates from "./DesktopUpdates.ts";
 import { flushCallbacks, makeHarness } from "./updatesTestHarness.ts";
+import * as Duration from "effect/Duration";
 
 describe("DesktopUpdates", () => {
   it.effect(

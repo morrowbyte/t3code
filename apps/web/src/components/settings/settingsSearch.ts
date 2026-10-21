@@ -1064,7 +1064,6 @@ export function getLegacySettingsDestination(pathname: string, hash: string): Se
     "projects-and-threads": "/settings/threads",
     "project-defaults": "/settings/agent-defaults",
     "text-generation": "/settings/agent-defaults",
-    about: "/settings/updates",
     voice: "/settings/voice",
     browser: "/settings/browser",
     devices: "/settings/devices",

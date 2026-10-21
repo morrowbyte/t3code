@@ -152,6 +152,7 @@ import {
   removeAcknowledgedExistingThreadMessage,
   restoreRejectedQueuedMessage,
 } from "./use-thread-outbox-drain";
+import { clearPendingThreadCreationOutcome } from "./pending-thread-creation";
 
 function queuedMessage(input: {
   readonly messageId: string;

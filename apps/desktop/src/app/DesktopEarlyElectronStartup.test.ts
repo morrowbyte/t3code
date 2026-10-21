@@ -7,6 +7,7 @@ import {
   resolveEarlyLinuxPasswordStorePreference,
   resolveLinuxDisableFeaturesSwitch,
 } from "./DesktopEarlyElectronStartup.ts";
+import { resolveEarlyLinuxElectronOptions } from "./DesktopEarlyElectronStartup.ts";
 
 describe("DesktopEarlyElectronStartup", () => {
   const joinPath = NodePath.posix.join;

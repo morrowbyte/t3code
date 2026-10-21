@@ -902,7 +902,7 @@ const MAX_CLIENT_APP_VERSION_LENGTH = 64;
 const MAX_CLIENT_BROWSER_LENGTH = 64;
 const MAX_CLIENT_DEVICE_MODEL_LENGTH = 80;
 
-function hasCompatibleOrchestrationProtocol(url: URL): boolean {
+export function hasCompatibleOrchestrationProtocol(url: URL): boolean {
   return (
     url.searchParams.get(ORCHESTRATION_PROTOCOL_QUERY_PARAM) ===
     String(ORCHESTRATION_PROTOCOL_VERSION)

@@ -56,6 +56,8 @@ import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
 import * as PreviewManager from "../preview/Manager.ts";
 import * as PreviewPasskeys from "../preview/Passkeys.ts";
+import * as NodeEvents from "node:events";
+import * as Queue from "effect/Queue";
 
 const environmentInput = {
   dirname: "/repo/apps/desktop/dist-electron",
