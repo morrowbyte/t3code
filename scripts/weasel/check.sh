@@ -373,6 +373,10 @@ focused_tests+=(
   packages/client-runtime/src/state/threadCoordination.test.ts
   apps/web/src/components/settings/settingsSearch.test.ts
   apps/web/src/components/settings/settingsScopeNavigation.test.ts
+  apps/web/src/components/settings/SettingsPanels.logic.test.ts
+  apps/web/src/components/settings/IntegrationsSettings.logic.test.ts
+  apps/web/src/components/settings/VoiceTranscriptionSettings.test.tsx
+  apps/web/src/components/settings/UpdateHistoryPanel.test.tsx
 )
 renderer_tests=(
   apps/web/src/components/CommandPalette.focus.browser.test.tsx
