@@ -12,6 +12,10 @@ import {
 } from "@t3tools/client-runtime/state/terminal";
 import {
   Plus,
+  Search,
+  ArrowUp,
+  ArrowDown,
+  X,
   Square,
   SquareSplitHorizontal,
   SquareSplitVertical,
@@ -42,6 +46,8 @@ import {
 } from "react";
 import { Popover, PopoverPopup, PopoverTrigger } from "~/components/ui/popover";
 import { Button } from "~/components/ui/button";
+import { Input } from "~/components/ui/input";
+import { dispatchKeyboardCommand, useKeyboardCommands } from "./keyboard/keyboardCommands";
 import { PanelTabCloseButton } from "~/components/ui/panel-tab-close-button";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { readTextFromClipboard, writeTextToClipboard } from "~/hooks/useCopyToClipboard";
@@ -61,6 +67,8 @@ import { useOpenInPreferredEditor } from "../editorPreferences";
 import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
 import { isTerminalUrl } from "../terminal-links";
 import {
+  resolveShortcutCommand,
+  shortcutLabelForCommand,
   isDiffToggleShortcut,
   isTerminalClearShortcut,
   isTerminalNewShortcut,
@@ -88,6 +96,7 @@ import { useEnvironmentScope } from "../state/session";
 import { openTerminalLinkInPreview } from "./preview/openTerminalLinkInPreview";
 import { useAtomCommand } from "../state/use-atom-command";
 import { preventTerminalCloseShortcut } from "../lib/terminalCloseShortcut";
+import { observeResize } from "../lib/observeResize";
 import {
   resolveTerminalFontPreference,
   resolveTerminalFontSizePreference,
@@ -97,14 +106,44 @@ import {
 const MIN_DRAWER_HEIGHT = 180;
 const MAX_DRAWER_HEIGHT_RATIO = 0.75;
 
-function maxDrawerHeight(): number {
-  if (typeof window === "undefined") return DEFAULT_THREAD_TERMINAL_HEIGHT;
-  return Math.max(MIN_DRAWER_HEIGHT, Math.floor(window.innerHeight * MAX_DRAWER_HEIGHT_RATIO));
+interface DrawerLayout {
+  viewportHeight: number;
+  chatColumnHeight?: number;
+  headerHeight?: number;
+  composerHeight?: number;
 }
 
-function clampDrawerHeight(height: number, maxHeight = maxDrawerHeight()): number {
+function resolveTerminalDrawerMaxHeight(input: DrawerLayout): number {
+  const windowCap = Math.max(
+    MIN_DRAWER_HEIGHT,
+    Math.floor(input.viewportHeight * MAX_DRAWER_HEIGHT_RATIO),
+  );
+  if (input.chatColumnHeight === undefined) return windowCap;
+  // The composer overlays the timeline, so flex layout cannot reserve its
+  // height; without this cap a tall drawer pushes it into the header.
+  return Math.min(
+    windowCap,
+    Math.max(0, input.chatColumnHeight - (input.headerHeight ?? 0) - (input.composerHeight ?? 0)),
+  );
+}
+
+function clampDrawerHeight(height: number, maxHeight: number): number {
   const safeHeight = Number.isFinite(height) ? height : DEFAULT_THREAD_TERMINAL_HEIGHT;
   return Math.min(Math.max(Math.round(safeHeight), MIN_DRAWER_HEIGHT), maxHeight);
+}
+
+function chatColumnOf(drawer: HTMLElement | null): HTMLElement | null {
+  return drawer?.closest<HTMLElement>("[data-chat-column]") ?? null;
+}
+
+function readDrawerLayout(column: HTMLElement | null): Omit<DrawerLayout, "composerHeight"> {
+  const viewportHeight = typeof window === "undefined" ? 0 : window.innerHeight;
+  if (!column) return { viewportHeight };
+  return {
+    viewportHeight,
+    chatColumnHeight: column.clientHeight,
+    headerHeight: column.querySelector<HTMLElement>("[data-chat-header]")?.offsetHeight ?? 0,
+  };
 }
 
 function writeSystemMessage(terminal: GhosttyTerminalSurface, message: string): void {
@@ -309,10 +348,10 @@ export function terminalThemeFromApp(mountElement?: HTMLElement | null): Ghostty
   };
 }
 
-export function terminalSelectionLineRange(position: {
-  start: { y: number };
-  end: { y: number };
-}): { lineStart: number; lineEnd: number } {
+function terminalSelectionLineRange(position: { start: { y: number }; end: { y: number } }): {
+  lineStart: number;
+  lineEnd: number;
+} {
   const lineStart = position.start.y + 1;
   return {
     lineStart,
@@ -327,7 +366,7 @@ export type TerminalContextMenuAction =
   | "select-all"
   | "scroll-to-bottom";
 
-export function terminalSelectionMenuItems(options?: {
+function terminalSelectionMenuItems(options?: {
   canAddToChat?: boolean;
 }): ContextMenuItem<"add-to-chat" | "copy">[] {
   return [
@@ -338,7 +377,7 @@ export function terminalSelectionMenuItems(options?: {
   ];
 }
 
-export function terminalContextMenuItems(options: {
+function terminalContextMenuItems(options: {
   hasSelection: boolean;
   canAddToChat?: boolean;
   readOnly?: boolean;
@@ -443,6 +482,32 @@ function TerminalSessionViewport({
 }: TerminalViewportProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<GhosttyTerminalSurface | null>(null);
+  const findShortcutLabel = shortcutLabelForCommand(keybindings, "terminal.find", {
+    context: { terminalFocus: true, terminalOpen: true },
+  });
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResult, setSearchResult] = useState<{ index: number; count: number } | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const findOutput = useEffectEvent((direction: -1 | 1) => {
+    if (!searchQuery) return;
+    setSearchResult(terminalRef.current?.findText(searchQuery, direction) ?? null);
+  });
+  useEffect(() => {
+    if (searchOpen) {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    }
+  }, [searchOpen]);
+  useKeyboardCommands({
+    "terminal.find": () => {
+      const focused = document.activeElement?.closest("[data-terminal-session-root]");
+      if (!visible || !autoFocus || (focused && !focused.contains(containerRef.current)))
+        return false;
+      setSearchOpen(true);
+      queueMicrotask(() => searchInputRef.current?.focus());
+    },
+  });
   const visibleRef = useRef(visible);
   const environmentId = threadRef.environmentId;
   const canOperateTerminal = useEnvironmentScope(environmentId, AuthTerminalOperateScope);
@@ -867,7 +932,34 @@ function TerminalSessionViewport({
       };
 
       function handleBeforeKey(event: KeyboardEvent): boolean {
+        if (event.isComposing || event.keyCode === 229) return true;
         const currentKeybindings = readKeybindings();
+        const command = resolveShortcutCommand(event, currentKeybindings, {
+          context: { terminalFocus: true, terminalOpen: true },
+        });
+        if (command === "navigation.activate") {
+          event.preventDefault();
+          event.stopPropagation();
+          dispatchKeyboardCommand("navigation.activate");
+          return false;
+        }
+        if (
+          command === "terminal.find" ||
+          command === "terminal.previous" ||
+          command === "terminal.next"
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          dispatchKeyboardCommand(command);
+          return false;
+        }
+        if (event.key === "F3" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+          event.preventDefault();
+          event.stopPropagation();
+          setSearchOpen(true);
+          findOutput(event.shiftKey ? -1 : 1);
+          return false;
+        }
         const options = { context: { terminalFocus: true, terminalOpen: true } };
         if (preventTerminalCloseShortcut(event, currentKeybindings)) {
           return false;
@@ -1107,10 +1199,136 @@ function TerminalSessionViewport({
   }, [layoutRevision]);
   return (
     <div
-      ref={containerRef}
+      className="relative h-full w-full"
+      data-keyboard-object="Terminal output"
+      data-terminal-session-root
+      aria-label={terminalLabel}
       tabIndex={-1}
-      className="relative h-full w-full overflow-hidden bg-(--terminal-background)"
-    />
+    >
+      <div
+        ref={containerRef}
+        tabIndex={-1}
+        className="relative h-full w-full overflow-hidden bg-(--terminal-background)"
+      />
+      {!searchOpen ? (
+        <div className="absolute right-2 bottom-2 z-20">
+          <Button
+            size="icon-xs"
+            variant="outline"
+            aria-label={
+              findShortcutLabel
+                ? `Find terminal output (${findShortcutLabel})`
+                : "Find terminal output"
+            }
+            onClick={() => setSearchOpen(true)}
+          >
+            <Search />
+          </Button>
+        </div>
+      ) : (
+        <div
+          role="search"
+          aria-label="Find terminal output"
+          data-keyboard-object="Terminal search"
+          className="absolute top-2 right-2 z-30 flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-1 rounded-md border bg-popover p-1 shadow-md"
+        >
+          <Input
+            ref={searchInputRef}
+            value={searchQuery}
+            aria-label="Find terminal output"
+            placeholder="Find output"
+            size="sm"
+            className="w-40"
+            onChange={(event) => {
+              setSearchQuery(event.currentTarget.value);
+              setSearchResult(null);
+            }}
+            onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing) return;
+              if (event.key === "Enter") {
+                event.preventDefault();
+                event.stopPropagation();
+                findOutput(event.shiftKey ? -1 : 1);
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopPropagation();
+                setSearchOpen(false);
+                terminalRef.current?.focus();
+              }
+            }}
+          />
+          <span role="status" className="px-1 text-xs tabular-nums text-muted-foreground">
+            {searchResult
+              ? searchResult.count
+                ? `${searchResult.index}/${searchResult.count}${searchResult.count >= 10000 ? "+" : ""}`
+                : "No matches"
+              : ""}
+          </span>
+          <Button
+            size="icon-xs"
+            variant="ghost"
+            aria-label="Previous terminal match"
+            disabled={!searchQuery}
+            onClick={() => findOutput(-1)}
+          >
+            <ArrowUp />
+          </Button>
+          <Button
+            size="icon-xs"
+            variant="ghost"
+            aria-label="Next terminal match"
+            disabled={!searchQuery}
+            onClick={() => findOutput(1)}
+          >
+            <ArrowDown />
+          </Button>
+          <Button
+            size="xs"
+            variant="ghost"
+            disabled={!searchResult?.count}
+            onClick={() => {
+              const value = terminalRef.current?.getSelection();
+              if (value) void writeTextToClipboard(value);
+            }}
+          >
+            Copy match
+          </Button>
+          {onAddTerminalContext ? (
+            <Button
+              size="xs"
+              variant="ghost"
+              disabled={!searchResult?.count}
+              onClick={() => {
+                const terminal = terminalRef.current;
+                const position = terminal?.getSelectionPosition();
+                const text = terminal?.getSelection();
+                if (position && text)
+                  handleAddTerminalContext({
+                    terminalId,
+                    terminalLabel,
+                    text,
+                    ...terminalSelectionLineRange(position),
+                  });
+              }}
+            >
+              Add match to chat
+            </Button>
+          ) : null}
+          <Button
+            size="icon-xs"
+            variant="ghost"
+            aria-label="Close terminal search"
+            onClick={() => {
+              setSearchOpen(false);
+              terminalRef.current?.focus();
+            }}
+          >
+            <X />
+          </Button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1123,6 +1341,8 @@ interface ThreadTerminalDrawerProps {
   runtimeEnv?: Record<string, string>;
   visible?: boolean;
   height: number;
+  /** Space the chat column keeps for the composer overlay; only read in drawer mode. */
+  composerHeight?: number;
   terminalIds: string[];
   activeTerminalId: string;
   terminalGroups: ThreadTerminalGroup[];
@@ -1166,7 +1386,7 @@ function TerminalActionButton({
         render={
           <button
             type="button"
-            className={cn(className, disabled && "opacity-45 cursor-not-allowed")}
+            className={cn(className, disabled && "opacity-64 cursor-not-allowed")}
             onClick={disabled ? undefined : onClick}
             aria-label={label}
             aria-disabled={disabled}
@@ -1347,6 +1567,9 @@ function TerminalSidebarGroup({
           return (
             <div
               key={terminalId}
+              data-keyboard-object="Terminal session"
+              aria-label={terminalLabel}
+              tabIndex={-1}
               className={cn(
                 "group/tab flex h-6 w-full items-center gap-0.5 rounded-md pr-2 pl-1.5 text-xs",
                 isActive
@@ -1368,6 +1591,8 @@ function TerminalSidebarGroup({
               <button
                 type="button"
                 className="flex min-w-0 flex-1 cursor-pointer items-center gap-1 text-left"
+                data-keyboard-primary
+                aria-label={`Focus ${terminalLabel}`}
                 onClick={() => onActiveTerminalChange(terminalId)}
               >
                 <span className="truncate">{terminalLabel}</span>
@@ -1389,6 +1614,7 @@ export default function ThreadTerminalDrawer({
   runtimeEnv,
   visible = true,
   height,
+  composerHeight = 0,
   terminalIds,
   activeTerminalId,
   terminalGroups,
@@ -1417,14 +1643,16 @@ export default function ThreadTerminalDrawer({
     Schema.Boolean,
   );
   const controlledDrawerHeight = height;
-  const [windowMaxDrawerHeight, setWindowMaxDrawerHeight] = useState(maxDrawerHeight);
+  const drawerRef = useRef<HTMLElement | null>(null);
+  const [drawerLayout, setDrawerLayout] = useState(() => readDrawerLayout(null));
+  const maxDrawerHeight = resolveTerminalDrawerMaxHeight({ ...drawerLayout, composerHeight });
   const [drawerHeightState, setDrawerHeightState] = useState(() => ({
     threadId,
     height: controlledDrawerHeight,
   }));
   const preferredDrawerHeight =
     drawerHeightState.threadId === threadId ? drawerHeightState.height : controlledDrawerHeight;
-  const drawerHeight = clampDrawerHeight(preferredDrawerHeight, windowMaxDrawerHeight);
+  const drawerHeight = clampDrawerHeight(preferredDrawerHeight, maxDrawerHeight);
   const setDrawerHeight = (update: SetStateAction<number>) => {
     setDrawerHeightState((current) => {
       const currentHeight = current.threadId === threadId ? current.height : controlledDrawerHeight;
@@ -1435,12 +1663,6 @@ export default function ThreadTerminalDrawer({
     });
   };
   const [resizeEpoch, setResizeEpoch] = useState(0);
-  const [shownVisible, setShownVisible] = useState(visible);
-  if (shownVisible !== visible) {
-    setShownVisible(visible);
-    // The window may have resized while the drawer was hidden and not listening.
-    if (visible) setWindowMaxDrawerHeight(maxDrawerHeight());
-  }
   const drawerHeightRef = useRef(drawerHeight);
   const lastSyncedHeightRef = useRef({ threadId, height: controlledDrawerHeight });
   const resizeStateRef = useRef<{
@@ -1570,8 +1792,22 @@ export default function ThreadTerminalDrawer({
     (normalizedTerminalIds.length > 0 ? [resolvedActiveTerminalId] : []);
   const splitDirection =
     resolvedTerminalGroups[resolvedActiveGroupIndex]?.splitDirection ?? "horizontal";
+  const activateAdjacentTerminal = (direction: -1 | 1) => {
+    const focused = document.activeElement?.closest("[data-thread-terminal-drawer]");
+    if (!visible || normalizedTerminalIds.length < 2 || (focused && focused !== drawerRef.current))
+      return false;
+    const index = normalizedTerminalIds.indexOf(resolvedActiveTerminalId);
+    const next =
+      normalizedTerminalIds[
+        (index + direction + normalizedTerminalIds.length) % normalizedTerminalIds.length
+      ];
+    if (next) onActiveTerminalChange(next);
+  };
+  useKeyboardCommands({
+    "terminal.previous": () => activateAdjacentTerminal(-1),
+    "terminal.next": () => activateAdjacentTerminal(1),
+  });
   const hasTerminalSidebar = normalizedTerminalIds.length > 1;
-  const isSplitView = visibleTerminalIds.length > 1;
   const showGroupHeaders =
     resolvedTerminalGroups.length > 1 ||
     resolvedTerminalGroups.some((terminalGroup) => terminalGroup.terminalIds.length > 1);
@@ -1659,6 +1895,7 @@ export default function ThreadTerminalDrawer({
     event.preventDefault();
     const clampedHeight = clampDrawerHeight(
       resizeState.startHeight + (resizeState.startY - event.clientY),
+      maxDrawerHeight,
     );
     if (clampedHeight === drawerHeightRef.current) {
       return;
@@ -1676,11 +1913,11 @@ export default function ThreadTerminalDrawer({
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
     // A drag that ends where it started keeps the stored preference, which may
-    // be taller than the window-capped height the drag started from.
+    // be taller than the capped height the drag started from.
     if (!didResizeDuringDragRef.current || drawerHeightRef.current === resizeState.startHeight) {
       // React skips the write when the rendered height did not change, so put
-      // back the preference as the current window caps it.
-      const renderedHeight = clampDrawerHeight(preferredDrawerHeight);
+      // back the preference as the current layout caps it.
+      const renderedHeight = clampDrawerHeight(preferredDrawerHeight, maxDrawerHeight);
       drawerHeightRef.current = renderedHeight;
       resizeState.drawer?.style.setProperty("height", `${renderedHeight}px`);
       return;
@@ -1690,26 +1927,53 @@ export default function ThreadTerminalDrawer({
     setResizeEpoch((value) => value + 1);
   };
 
-  useEffect(() => {
-    if (!visible) {
-      return;
-    }
-
-    const onWindowResize = () => {
+  const drawerLayoutRef = useRef(drawerLayout);
+  const updateDrawerLayout = useEffectEvent(
+    (column: HTMLElement | null, source: "window" | "column") => {
+      const layout = readDrawerLayout(column);
+      const previous = drawerLayoutRef.current;
+      const heightBudgetChanged =
+        layout.viewportHeight !== previous.viewportHeight ||
+        layout.chatColumnHeight !== previous.chatColumnHeight ||
+        layout.headerHeight !== previous.headerHeight;
+      // The column also reports width-only changes, such as every frame of a
+      // right panel drag; the surface refits itself for those.
+      if (!heightBudgetChanged && source === "column") return;
+      drawerLayoutRef.current = layout;
       const resizeState = resizeStateRef.current;
-      const liveHeight = clampDrawerHeight(drawerHeightRef.current);
+      const liveHeight = clampDrawerHeight(
+        drawerHeightRef.current,
+        resolveTerminalDrawerMaxHeight({ ...layout, composerHeight }),
+      );
       if (resizeState && liveHeight !== drawerHeightRef.current) {
         drawerHeightRef.current = liveHeight;
         resizeState.drawer?.style.setProperty("height", `${liveHeight}px`);
       }
-      setWindowMaxDrawerHeight(maxDrawerHeight());
+      if (heightBudgetChanged) setDrawerLayout(layout);
       setResizeEpoch((value) => value + 1);
-    };
+    },
+  );
+  useLayoutEffect(() => {
+    if (!visible) {
+      return;
+    }
+    // The column and window may have resized while the drawer was hidden and
+    // not listening, so measure before the first visible paint.
+    const column = isPanel ? null : chatColumnOf(drawerRef.current);
+    const onWindowResize = () => updateDrawerLayout(column, "window");
+    onWindowResize();
+    const header = column?.querySelector<HTMLElement>("[data-chat-header]");
+    const stopObserving = column
+      ? observeResize(header ? [column, header] : column, () =>
+          updateDrawerLayout(column, "column"),
+        )
+      : undefined;
     window.addEventListener("resize", onWindowResize);
     return () => {
+      stopObserving?.();
       window.removeEventListener("resize", onWindowResize);
     };
-  }, [visible]);
+  }, [isPanel, visible]);
 
   const syncPreferredHeight = useEffectEvent(() => syncHeight(preferredDrawerHeight));
   useEffect(() => () => syncPreferredHeight(), []);
@@ -1717,7 +1981,11 @@ export default function ThreadTerminalDrawer({
   if (normalizedTerminalIds.length === 0) {
     return (
       <aside
+        ref={drawerRef}
         data-thread-terminal-drawer
+        data-keyboard-object="Terminal"
+        aria-label="Terminal"
+        tabIndex={-1}
         data-terminal-owner={isPanel ? "right-panel" : "drawer"}
         className={cn(
           "relative flex min-w-0 flex-col overflow-hidden bg-background",
@@ -1750,11 +2018,14 @@ export default function ThreadTerminalDrawer({
     );
   }
 
-  const activeTerminalLaunchLocation = resolveTerminalLaunchLocation(resolvedActiveTerminalId);
-
   return (
     <aside
+      ref={drawerRef}
       data-thread-terminal-drawer
+      data-keyboard-object="Terminal"
+      data-keyboard-region="terminal"
+      aria-label="Terminal"
+      tabIndex={-1}
       data-terminal-owner={isPanel ? "right-panel" : "drawer"}
       className={cn(
         "relative flex min-w-0 flex-col overflow-hidden bg-background",
@@ -1777,7 +2048,7 @@ export default function ThreadTerminalDrawer({
         <div className="pointer-events-none absolute right-2 top-2 z-20">
           <div className="pointer-events-auto inline-flex items-center overflow-hidden rounded-md border border-border/80 bg-background shadow-xs">
             <TerminalActionButton
-              disabled={!canOperateTerminal}
+              disabled={!canOperateTerminal || hasReachedSplitLimit}
               className={`p-1 text-foreground/90 transition-colors ${
                 hasReachedSplitLimit
                   ? "cursor-not-allowed opacity-64 hover:bg-transparent"
@@ -1790,7 +2061,7 @@ export default function ThreadTerminalDrawer({
             </TerminalActionButton>
             <div className="h-4 w-px bg-border/80" />
             <TerminalActionButton
-              disabled={!canOperateTerminal}
+              disabled={!canOperateTerminal || hasReachedSplitLimit}
               className={`p-1 text-foreground/90 transition-colors ${
                 hasReachedSplitLimit
                   ? "cursor-not-allowed opacity-64 hover:bg-transparent"
@@ -1831,52 +2102,24 @@ export default function ThreadTerminalDrawer({
           )}
         >
           <div className="min-w-0 flex-1">
-            {isSplitView ? (
-              <TerminalSplitPanes
-                terminalIds={visibleTerminalIds}
-                splitDirection={splitDirection}
-                activeTerminalId={resolvedActiveTerminalId}
-                terminalLabelById={terminalLabelById}
-                resolveLaunchLocation={resolveTerminalLaunchLocation}
-                onActiveTerminalChange={onActiveTerminalChange}
-                onCloseTerminal={onCloseTerminal}
-                advancedTypography={advancedTypography}
-                threadRef={threadRef}
-                threadId={threadId}
-                onAddTerminalContext={onAddTerminalContext}
-                focusRequestId={focusRequestId}
-                visible={visible}
-                resizeEpoch={resizeEpoch}
-                drawerHeight={drawerHeight}
-                keybindings={keybindings}
-              />
-            ) : (
-              <div className="h-full">
-                <TerminalViewport
-                  advancedTypography={advancedTypography}
-                  key={resolvedActiveTerminalId}
-                  threadRef={threadRef}
-                  threadId={threadId}
-                  terminalId={resolvedActiveTerminalId}
-                  terminalLabel={terminalLabelById.get(resolvedActiveTerminalId) ?? "Terminal"}
-                  cwd={activeTerminalLaunchLocation.cwd}
-                  {...(activeTerminalLaunchLocation.worktreePath !== undefined
-                    ? { worktreePath: activeTerminalLaunchLocation.worktreePath }
-                    : {})}
-                  {...(activeTerminalLaunchLocation.runtimeEnv
-                    ? { runtimeEnv: activeTerminalLaunchLocation.runtimeEnv }
-                    : {})}
-                  onSessionExited={() => onCloseTerminal(resolvedActiveTerminalId)}
-                  onAddTerminalContext={onAddTerminalContext}
-                  focusRequestId={focusRequestId}
-                  autoFocus
-                  visible={visible}
-                  resizeEpoch={resizeEpoch}
-                  drawerHeight={drawerHeight}
-                  keybindings={keybindings}
-                />
-              </div>
-            )}
+            <TerminalSplitPanes
+              terminalIds={visibleTerminalIds}
+              splitDirection={splitDirection}
+              activeTerminalId={resolvedActiveTerminalId}
+              terminalLabelById={terminalLabelById}
+              resolveLaunchLocation={resolveTerminalLaunchLocation}
+              onActiveTerminalChange={onActiveTerminalChange}
+              onCloseTerminal={onCloseTerminal}
+              advancedTypography={advancedTypography}
+              threadRef={threadRef}
+              threadId={threadId}
+              onAddTerminalContext={onAddTerminalContext}
+              focusRequestId={focusRequestId}
+              visible={visible}
+              resizeEpoch={resizeEpoch}
+              drawerHeight={drawerHeight}
+              keybindings={keybindings}
+            />
           </div>
 
           {hasTerminalSidebar && (
@@ -1884,7 +2127,7 @@ export default function ThreadTerminalDrawer({
               <div className="flex h-[22px] items-stretch justify-end border-b border-border/70">
                 <div className="inline-flex h-full items-stretch">
                   <TerminalActionButton
-                    disabled={!canOperateTerminal}
+                    disabled={!canOperateTerminal || hasReachedSplitLimit}
                     className={`inline-flex h-full items-center px-1 text-foreground/90 transition-colors ${
                       hasReachedSplitLimit
                         ? "cursor-not-allowed opacity-64 hover:bg-transparent"
@@ -1896,7 +2139,7 @@ export default function ThreadTerminalDrawer({
                     <SquareSplitHorizontal className="size-3.25" />
                   </TerminalActionButton>
                   <TerminalActionButton
-                    disabled={!canOperateTerminal}
+                    disabled={!canOperateTerminal || hasReachedSplitLimit}
                     className={`inline-flex h-full items-center border-l border-border/70 px-1 text-foreground/90 transition-colors ${
                       hasReachedSplitLimit
                         ? "cursor-not-allowed opacity-64 hover:bg-transparent"

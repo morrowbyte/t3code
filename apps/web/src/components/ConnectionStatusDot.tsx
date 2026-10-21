@@ -37,7 +37,7 @@ export function ConnectionStatusDot({
       {pingClassName ? (
         <span
           className={cn(
-            "absolute inline-flex h-full w-full animate-status-ping rounded-full",
+            "absolute inline-flex h-full w-full motion-safe:animate-status-ping rounded-full",
             pingClassName,
           )}
         />
@@ -58,6 +58,7 @@ export function ConnectionStatusDot({
     <button
       type="button"
       aria-label={tooltipText}
+      data-connection-status
       className="relative flex size-3 shrink-0 cursor-help items-center justify-center rounded-full outline-hidden"
     >
       {dotContent}

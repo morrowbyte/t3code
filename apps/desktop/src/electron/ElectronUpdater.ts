@@ -1,3 +1,4 @@
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -12,7 +13,7 @@ import { quitAndInstallInPlace } from "./quitAndInstallInPlace.ts";
 let updaterInstance: typeof electronAutoUpdater | NixManagedUpdater | undefined;
 function currentUpdater() {
   return (updaterInstance ??=
-    process.platform === "linux" && process.env.T3CODE_NIX_UPDATER
+    Effect.runSync(HostProcess.Platform) === "linux" && process.env.T3CODE_NIX_UPDATER
       ? new NixManagedUpdater({
           command: process.env.T3CODE_NIX_UPDATER,
           launcher: process.env.T3CODE_NIX_LAUNCHER ?? "",
@@ -167,7 +168,7 @@ export const make = ElectronUpdater.of({
       return Effect.tryPromise({
         try: async () => {
           await quitAndInstallInPlace(currentUpdater(), {
-            platform: process.platform,
+            platform: Effect.runSync(HostProcess.Platform),
             isPackaged: Electron.app.isPackaged,
             executable: process.execPath,
             isSilent,

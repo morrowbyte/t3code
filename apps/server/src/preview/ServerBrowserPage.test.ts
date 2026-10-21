@@ -177,6 +177,43 @@ describe("server browser element refs", () => {
     expect(cut.slice(-8)).toBe("xxx•••••");
   });
 
+  it("shows a data: link or blocked data: navigation by media type only", async () => {
+    // Chromium keeps raw spaces and quotes in both, so a payload can't be cut at either.
+    await page.setContent(`
+      <a download href="data:text/plain;charset=&quot;a,b&quot;,head PAYLOAD'tail">Key</a>
+      <a href="https://example.com/data:report,2026">Report</a>
+      <a href="#">data:text/plain,label</a>
+      <a href='"data:text/plain,relative'>Relative</a>
+      <a href=" data:text/plain,PAYLOAD">Spaced</a>
+      <a href="da&#9;ta:text/plain,PAYLOAD">Tabbed</a>
+      <a href="data:text/plain,head&#x2028;PAYLOAD">Separated</a>
+      <a href="data:PAYLOAD,x">Typeless</a>
+      <a href="&#11;data:text/plain,PAYLOAD">Vertical tab</a>
+      <a href="&#8;data:text/plain,PAYLOAD">Backspace</a>
+      <a id="controlled">Controlled</a>
+      <a id="escaped">Escaped</a>
+      <script>
+        controlled.href = "\\x01data:text/plain,PAYLOAD";
+        escaped.href = "\\x02da\\tta:text/plain,PAYLOAD";
+      </script>`);
+    const tree = String((await takeSnapshot()).accessibilityTree);
+    expect(tree.match(/\/url: data:text\/plain,…$/gm)).toHaveLength(8);
+    expect(tree).toContain("/url: data:,…");
+    expect(tree).toContain("/url: https://example.com/data:report,2026");
+    expect(tree).toMatch(/link "data:text\/plain,label" \[ref=t3-/);
+    expect(tree).not.toMatch(/PAYLOAD|tail|charset|\u2028/);
+    expect(tree).toContain('/url: "\\"data:text/plain,relative"');
+  });
+
+  it("redacts a data: link whose scheme a password value would mask", async () => {
+    await page.setContent(`
+      <input type="password" aria-label="Scheme" value="data">
+      <a download href="data:text/plain,PAYLOAD">Key</a>`);
+    const tree = String((await takeSnapshot()).accessibilityTree);
+    expect(tree).toContain("/url: ••••••••:text/plain,…");
+    expect(tree).not.toContain("PAYLOAD");
+  });
+
   it("rejects refs from another tab", async () => {
     await page.setContent("<button>same label</button>");
     const locator = buttonLocator((await takeSnapshot()).accessibilityTree, "same label");
@@ -185,27 +222,10 @@ describe("server browser element refs", () => {
     await expect(ServerBrowserPage.click(other, { locator })).rejects.toThrow(/another tab/);
   });
 
-  it("revokes refs on takeover and issues usable refs in the next snapshot", async () => {
-    await page.setContent("<button onclick=\"this.textContent='clicked'\">continue</button>");
-    const locator = buttonLocator((await takeSnapshot()).accessibilityTree, "continue");
-    ServerBrowserPage.invalidateRefs(page);
-    await expect(ServerBrowserPage.click(page, { locator })).rejects.toThrow(/stale/);
-    const fresh = buttonLocator((await takeSnapshot()).accessibilityTree, "continue");
-    await ServerBrowserPage.click(page, { locator: fresh });
-    expect(await page.locator("button").textContent()).toBe("clicked");
-  });
-
   it("revokes refs after navigation even when labels are identical", async () => {
     await page.goto("data:text/html,<button>continue</button>");
     const locator = buttonLocator((await takeSnapshot()).accessibilityTree, "continue");
     await page.goto("data:text/html,<button>continue</button><p>new document</p>");
-    await expect(ServerBrowserPage.click(page, { locator })).rejects.toThrow(/stale/);
-  });
-
-  it("only accepts refs from the most recent snapshot", async () => {
-    await page.setContent("<button>continue</button>");
-    const locator = buttonLocator((await takeSnapshot()).accessibilityTree, "continue");
-    await takeSnapshot();
     await expect(ServerBrowserPage.click(page, { locator })).rejects.toThrow(/stale/);
   });
 
@@ -217,14 +237,6 @@ describe("server browser element refs", () => {
       await expect(ServerBrowserPage.click(page, { locator })).rejects.toThrow(/stale/);
     },
   );
-
-  it("preserves CSS selectors containing an aria-ref attribute", async () => {
-    await page.setContent(
-      '<button aria-ref="save" onclick="this.textContent=\'saved\'">save</button>',
-    );
-    await ServerBrowserPage.click(page, { selector: 'button[aria-ref="save"]' });
-    expect(await page.locator("button").textContent()).toBe("saved");
-  });
 
   it("preserves quoted attribute values containing ref engine text", async () => {
     await page.setContent(

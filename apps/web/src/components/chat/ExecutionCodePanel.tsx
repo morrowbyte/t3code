@@ -1,7 +1,7 @@
 import type { EnvironmentId, OrchestrationV2TurnItem, ScopedThreadRef } from "@t3tools/contracts";
 import { turnItemDetailRevision } from "@t3tools/client-runtime/work-log/item-detail";
 import * as DateTime from "effect/DateTime";
-import { Suspense, useMemo, useState } from "react";
+import { Suspense, useRef, useState } from "react";
 import {
   executionCode,
   matchesExecutionTarget,
@@ -27,10 +27,8 @@ function ExecutionSyntax(props: {
   shell: boolean;
   theme: "light" | "dark";
 }) {
-  const embedded = useMemo(
-    () => (props.shell && props.language === "shellscript" ? embeddedScripts(props.code) : []),
-    [props.code, props.language, props.shell],
-  );
+  const embedded =
+    props.shell && props.language === "shellscript" ? embeddedScripts(props.code) : [];
   return (
     <HighlightedTokens
       code={props.code}
@@ -96,21 +94,103 @@ export function ExecutionCodeView(props: {
   const { resolvedTheme } = useTheme();
   const item =
     props.item && matchesExecutionTarget(props.item, props.target) ? props.item : undefined;
-  const code = useMemo(() => (item ? executionCode(item) : null), [item]);
+  const code = item ? executionCode(item) : null;
   const [query, setQuery] = useState("");
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
-  const matches = useMemo(() => {
+  const searchInput = useRef<HTMLInputElement>(null);
+  const source = useRef<HTMLPreElement>(null);
+  const [matchIndex, setMatchIndex] = useState(-1);
+  const copyInput = async () => {
+    if (!code?.text) return;
+    try {
+      await navigator.clipboard.writeText(code.text);
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+  };
+  const nextMatch = (direction: -1 | 1) => {
+    if (!query || !code?.text || !source.current) return;
+    const text = code.text.toLocaleLowerCase();
+    const needle = query.toLocaleLowerCase();
+    const offsets: number[] = [];
+    for (
+      let offset = text.indexOf(needle);
+      offset >= 0;
+      offset = text.indexOf(needle, offset + Math.max(1, needle.length))
+    )
+      offsets.push(offset);
+    if (!offsets.length) return;
+    const next =
+      matchIndex < 0
+        ? direction > 0
+          ? 0
+          : offsets.length - 1
+        : (matchIndex + direction + offsets.length) % offsets.length;
+    setMatchIndex(next);
+    const start = offsets[next]!;
+    const end = start + query.length;
+    const walker = document.createTreeWalker(source.current, NodeFilter.SHOW_TEXT);
+    const range = document.createRange();
+    let position = 0;
+    let hasStart = false;
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      const length = node.textContent?.length ?? 0;
+      if (!hasStart && position + length >= start) {
+        range.setStart(node, start - position);
+        hasStart = true;
+      }
+      if (hasStart && position + length >= end) {
+        range.setEnd(node, end - position);
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+        node.parentElement?.scrollIntoView?.({ block: "center", inline: "nearest" });
+        break;
+      }
+      position += length;
+    }
+  };
+  const matches = (() => {
     if (!query || !code?.text) return [];
     return code.text
       .split(/\r?\n/u)
       .flatMap((line, index) =>
         line.toLocaleLowerCase().includes(query.toLocaleLowerCase()) ? [index + 1] : [],
       );
-  }, [code, query]);
+  })();
   const time = (value: OrchestrationV2TurnItem["startedAt"] | undefined) =>
     value ? DateTime.formatIso(value) : "Not supplied";
   return (
-    <section aria-label="Execution code" className="flex min-h-0 flex-1 flex-col overflow-auto p-3">
+    <section
+      aria-label="Execution code"
+      className="flex min-h-0 flex-1 flex-col overflow-auto p-3"
+      data-keyboard-object="Execution code"
+      data-keyboard-local="true"
+      data-keyboard-help="/: find · Enter / Shift Enter in search: next / previous match · Y: copy recorded input · Esc: leave search"
+      onKeyDownCapture={(event) => {
+        if (
+          event.nativeEvent.isComposing ||
+          event.ctrlKey ||
+          event.metaKey ||
+          event.altKey ||
+          (event.target instanceof Element &&
+            event.target.closest('input,textarea,[contenteditable="true"]'))
+        )
+          return;
+        if (event.key === "/") {
+          event.preventDefault();
+          event.stopPropagation();
+          searchInput.current?.focus();
+        }
+        if (event.key.toLowerCase() === "y") {
+          event.preventDefault();
+          event.stopPropagation();
+          void copyInput();
+        }
+      }}
+    >
       <h2 className="text-sm font-medium">{code?.title ?? "Recorded input unavailable"}</h2>
       <dl className="my-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs wrap-break-word">
         <dt>Environment / host</dt>
@@ -154,24 +234,32 @@ export function ExecutionCodeView(props: {
             <label className="min-w-0 flex-1 text-xs">
               Find in recorded input
               <input
+                ref={searchInput}
                 aria-label="Find in recorded input"
                 value={query}
-                onChange={(event) => setQuery(event.target.value)}
+                onChange={(event) => {
+                  setQuery(event.target.value);
+                  setMatchIndex(-1);
+                }}
+                onKeyDown={(event) => {
+                  if (event.nativeEvent.isComposing) return;
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    nextMatch(event.shiftKey ? -1 : 1);
+                  }
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setQuery("");
+                    setMatchIndex(-1);
+                    source.current?.focus();
+                  }
+                }}
                 className="mt-1 block w-full rounded-sm border border-input bg-background px-2 py-1"
               />
             </label>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={async () => {
-                try {
-                  await navigator.clipboard.writeText(code.text!);
-                  setCopyState("copied");
-                } catch {
-                  setCopyState("failed");
-                }
-              }}
-            >
+            <Button size="sm" variant="outline" onClick={() => void copyInput()}>
               Copy input
             </Button>
           </div>
@@ -186,8 +274,10 @@ export function ExecutionCodeView(props: {
               : copyState === "failed"
                 ? " Could not copy input."
                 : ""}
+            {query && matchIndex >= 0 ? ` Match ${matchIndex + 1}.` : ""}
           </p>
           <pre
+            ref={source}
             aria-label="Recorded input"
             tabIndex={0}
             className="min-h-40 shrink-0 overflow-auto border border-border p-3 font-mono text-xs whitespace-pre select-text"

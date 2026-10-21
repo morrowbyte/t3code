@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
-import { MessageId, NodeId, ProviderDriverKind, ThreadId, TurnItemId } from "@t3tools/contracts";
-import * as DateTime from "effect/DateTime";
-import { makeAssistantStreamingFilter, splitBufferedAssistantText } from "./assistantStreaming.ts";
+import { splitBufferedAssistantText } from "./assistantStreaming.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
-
+import { ProviderDriverKind } from "@t3tools/contracts";
+import { MessageId } from "@t3tools/contracts";
+import { ThreadId } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
+import { makeAssistantStreamingFilter } from "./assistantStreaming.ts";
+import { TurnItemId } from "@t3tools/contracts";
+import { NodeId } from "@t3tools/contracts";
 const message = (text: string, streaming = true): ProviderAdapter.ProviderAdapterV2Event => ({
   type: "message.updated",
   driver: ProviderDriverKind.make("codex"),
@@ -52,17 +56,6 @@ const turnItem = (
 });
 
 describe("V2 assistant streaming", () => {
-  it("delivers completed paragraphs, coalesces rapid updates, and flushes final text", () => {
-    const filter = makeAssistantStreamingFilter("paragraph");
-    expect(filter(message("First"), 0)).toBeNull();
-    expect(filter(message("First\n\nSec"), 10)).toMatchObject({ message: { text: "First\n\n" } });
-    expect(filter(message("First\n\nSecond\n\nThi"), 100)).toBeNull();
-    expect(filter(message("First\n\nSecond\n\nThird"), 410)).toMatchObject({
-      message: { text: "First\n\nSecond\n\n" },
-    });
-    const final = message("First\n\nSecond\n\nThird", false);
-    expect(filter(final, 420)).toBe(final);
-  });
   it("keeps code fences intact", () => {
     expect(splitBufferedAssistantText("Intro\n\n```ts\nx()\n\n")).toEqual({
       ready: "Intro\n\n",

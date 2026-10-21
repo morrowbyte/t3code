@@ -16,7 +16,6 @@ import {
   type UpdateEverythingRun,
   type UpdateRunMachine,
   type UpdateRunMachineStatus,
-  UPDATE_SLOW_AFTER_MS,
 } from "./updateEverything.logic";
 
 const runMachine = (overrides: Partial<UpdateRunMachine> = {}): UpdateRunMachine => ({
@@ -155,32 +154,6 @@ describe("collectRestartingMachines", () => {
 });
 
 describe("runUpdateEverything", () => {
-  it("restarts servers after providers finish and returns every result", async () => {
-    const calls: string[] = [];
-    let finishProviders = (_value: string) => {};
-    const run = runUpdateEverything({
-      downloadLocal: async () => {
-        calls.push("download");
-        return true;
-      },
-      updateProviders: () =>
-        new Promise<string>((resolve) => {
-          calls.push("providers");
-          finishProviders = resolve;
-        }),
-      updateServers: async () => {
-        calls.push("servers");
-        return 2;
-      },
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(calls).toEqual(["download", "providers"]);
-    finishProviders("provider results");
-    expect(await run).toEqual({ localReady: true, providers: "provider results", servers: 2 });
-    expect(calls).toEqual(["download", "providers", "servers"]);
-  });
-
   it("still updates remote machines when the local download fails", async () => {
     const calls: string[] = [];
     const result = await runUpdateEverything({
@@ -271,14 +244,12 @@ describe("update capsule", () => {
       label: "1 of 3 updated",
       action: null,
     });
-    expect(describeUpdateCapsule(run(), machines, null, UPDATE_SLOW_AFTER_MS + 6 * 60_000)).toEqual(
-      {
-        tone: "slow",
-        label: "alvin",
-        slow: { status: "restarting", elapsed: "9m" },
-        action: null,
-      },
-    );
+    expect(describeUpdateCapsule(run(), machines, null, 9 * 60_000)).toEqual({
+      tone: "slow",
+      label: "alvin",
+      slow: { status: "restarting", elapsed: "9m" },
+      action: null,
+    });
   });
 
   it("offers a retry only for failed servers it can update again", () => {

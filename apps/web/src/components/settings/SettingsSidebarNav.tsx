@@ -10,6 +10,13 @@ import {
 import {
   ArchiveIcon,
   BlocksIcon,
+  AudioLinesIcon,
+  GlobeIcon,
+  SmartphoneIcon,
+  HistoryIcon,
+  MessageSquareIcon,
+  SlidersHorizontalIcon,
+  TimerIcon,
   BotIcon,
   createLucideIcon,
   CalendarClockIcon,
@@ -76,6 +83,14 @@ const SETTINGS_SECTION_ICONS: Readonly<
   Record<SettingsPath, ComponentType<{ className?: string }>>
 > = {
   "/settings/general": Settings2Icon,
+  "/settings/chat": MessageSquareIcon,
+  "/settings/agent-defaults": SlidersHorizontalIcon,
+  "/settings/threads": PanelsTopLeftIcon,
+  "/settings/voice": AudioLinesIcon,
+  "/settings/browser": GlobeIcon,
+  "/settings/devices": SmartphoneIcon,
+  "/settings/background": TimerIcon,
+  "/settings/updates": HistoryIcon,
   "/settings/diagnostics": Settings2Icon,
   "/settings/appearance": PaletteIcon,
   "/settings/projects": PanelsTopLeftIcon,
@@ -94,17 +109,15 @@ const SETTINGS_NAV_ITEMS: ReadonlyArray<{
   label: string;
   to: SettingsPath;
   icon: ComponentType<{ className?: string }>;
-}> = (Object.keys(SETTINGS_SECTION_LABELS) as SettingsPath[])
-  .filter((to) => to !== "/settings/diagnostics")
-  .map((to) => ({
-    to,
-    label: SETTINGS_SECTION_LABELS[to],
-    icon: SETTINGS_SECTION_ICONS[to],
-  }));
+}> = (Object.keys(SETTINGS_SECTION_LABELS) as SettingsPath[]).map((to) => ({
+  to,
+  label: SETTINGS_SECTION_LABELS[to],
+  icon: SETTINGS_SECTION_ICONS[to],
+}));
 
 function SettingsSectionIcon({ to }: { to: SettingsPath }) {
   const Icon = SETTINGS_SECTION_ICONS[to];
-  return <Icon className="mt-0.5 size-3.5 shrink-0 text-sidebar-muted-foreground/60" />;
+  return <Icon className="size-3.5 h-5 shrink-0 text-sidebar-muted-foreground/60" />;
 }
 
 export function SettingsSidebarNav({ pathname }: { pathname: string }) {
@@ -214,6 +227,7 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
   };
 
   const handleSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
     if (event.key === "Escape" && isSearching) {
       event.preventDefault();
       event.stopPropagation();
@@ -240,7 +254,11 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
 
   return (
     <>
-      <SidebarContent className="overflow-x-hidden">
+      <SidebarContent
+        className="overflow-x-hidden"
+        data-keyboard-region="settings-navigation"
+        aria-label="Settings navigation"
+      >
         <SidebarGroup>
           <div className="flex flex-col gap-2">
             <div className="flex h-8 items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground">
@@ -338,8 +356,14 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                     pathname === item.to ||
                     pathname.startsWith(`${item.to}/`);
                   return (
-                    <SidebarMenuItem key={item.to}>
+                    <SidebarMenuItem
+                      key={item.to}
+                      data-keyboard-object="Settings section"
+                      aria-label={item.label}
+                      tabIndex={-1}
+                    >
                       <SidebarMenuButton
+                        data-keyboard-primary
                         isActive={isActive}
                         onClick={() => handleSectionClick(item.to)}
                       >

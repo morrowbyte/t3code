@@ -1,3 +1,4 @@
+import { terminalTextMatches, type TerminalTextMatch } from "./search";
 import {
   type GhosttyKeyboardLayoutMap,
   ghosttyConsumedMods,
@@ -202,6 +203,7 @@ export function ghosttyCellText(codepointView: DataView, graphemeLength: number)
 
 export class GhosttyTerminalCore {
   private readonly runtime: GhosttyRuntime;
+  private searchCache: { query: string; matches: TerminalTextMatch[]; index: number } | null = null;
   private terminalSlot = 0;
   private terminal = 0;
   private renderStateSlot = 0;
@@ -341,14 +343,31 @@ export class GhosttyTerminalCore {
     this.resize(cols, rows, cellWidth, cellHeight);
   }
 
-  write(data: string | Uint8Array): void {
+  write(data: string | Uint8Array, onSynchronizedOutputEnd?: () => void): void {
+    this.searchCache = null;
     this.ensureActive();
     const bytes = typeof data === "string" ? encoder.encode(data) : data;
     if (bytes.length === 0) return;
     const pointer = this.runtime.alloc(bytes.length);
     this.runtime.bytes(pointer, bytes.length).set(bytes);
-    this.runtime.call("ghostty_terminal_vt_write", this.terminal, pointer, bytes.length);
-    this.runtime.free(pointer, bytes.length);
+    // An existing render deadline belongs to one group. Observe Ghostty before
+    // the next escape can reopen it; Ghostty still parses OSC/DCS and split VT
+    // sequences itself. Once that group ends, the remaining bytes can be batched.
+    let synchronized = onSynchronizedOutputEnd !== undefined && this.isSynchronizedOutput();
+    try {
+      for (let start = 0; start < bytes.length;) {
+        const nextEscape = synchronized ? bytes.indexOf(0x1b, start + 1) : -1;
+        const end = nextEscape === -1 ? bytes.length : nextEscape;
+        this.runtime.call("ghostty_terminal_vt_write", this.terminal, pointer + start, end - start);
+        start = end;
+        if (synchronized && !this.isSynchronizedOutput()) {
+          synchronized = false;
+          onSynchronizedOutputEnd?.();
+        }
+      }
+    } finally {
+      this.runtime.free(pointer, bytes.length);
+    }
   }
 
   resetAndWrite(data: string): void {
@@ -374,6 +393,7 @@ export class GhosttyTerminalCore {
   }
 
   resize(cols: number, rows: number, cellWidth: number, cellHeight: number): void {
+    this.searchCache = null;
     this.ensureActive();
     this.assertSuccess(
       "ghostty_terminal_resize",
@@ -472,6 +492,48 @@ export class GhosttyTerminalCore {
     };
   }
 
+  findText(
+    query: string,
+    direction: -1 | 1 = 1,
+  ): { index: number; count: number; match: TerminalTextMatch | null } {
+    const original = this.scrollbarState();
+    if (!query || !original) return { index: 0, count: 0, match: null };
+    if (this.searchCache?.query !== query) {
+      const rows: GhosttyRow[] = [];
+      this.scroll(-original.offset);
+      try {
+        let previousOffset = -1;
+        while (true) {
+          const scrollbar = this.scrollbarState();
+          if (!scrollbar || scrollbar.offset === previousOffset) break;
+          previousOffset = scrollbar.offset;
+          const snapshot = this.snapshot();
+          for (const [index, row] of snapshot.rowData.entries()) {
+            if (scrollbar.offset + index < scrollbar.total) rows[scrollbar.offset + index] = row;
+          }
+          if (scrollbar.offset + scrollbar.len >= scrollbar.total) break;
+          this.scroll(Math.max(1, scrollbar.len));
+        }
+      } finally {
+        const current = this.scrollbarState();
+        if (current) this.scroll(original.offset - current.offset);
+      }
+      const matches = terminalTextMatches(rows, query);
+      this.searchCache = { query, matches, index: direction === 1 ? -1 : 0 };
+    }
+    const cache = this.searchCache;
+    if (!cache || !cache.matches.length) {
+      this.clearSelection();
+      return { index: 0, count: 0, match: null };
+    }
+    cache.index = (cache.index + direction + cache.matches.length) % cache.matches.length;
+    const match = cache.matches[cache.index]!;
+    const current = this.scrollbarState();
+    if (current) this.scroll(match.start.y - current.offset);
+    this.setSelection({ ...match.start, tag: 2 }, { ...match.end, tag: 2 });
+    return { index: cache.index + 1, count: cache.matches.length, match };
+  }
+
   isMouseTracking(): boolean {
     this.ensureActive();
     this.runtime.bytes(this.scratch, 1)[0] = 0;
@@ -487,6 +549,23 @@ export class GhosttyTerminalCore {
     return (
       this.runtime.call("ghostty_terminal_mode_get", this.terminal, 1003, this.scratch) ===
         GHOSTTY_SUCCESS && this.runtime.bytes(this.scratch, 1)[0] !== 0
+    );
+  }
+
+  isSynchronizedOutput(): boolean {
+    this.ensureActive();
+    this.runtime.bytes(this.scratch, 1)[0] = 0;
+    return (
+      this.runtime.call("ghostty_terminal_mode_get", this.terminal, 2026, this.scratch) ===
+        GHOSTTY_SUCCESS && this.runtime.bytes(this.scratch, 1)[0] !== 0
+    );
+  }
+
+  endSynchronizedOutput(): void {
+    this.ensureActive();
+    this.assertSuccess(
+      "ghostty_terminal_mode_set",
+      this.runtime.call("ghostty_terminal_mode_set", this.terminal, 2026, 0),
     );
   }
 

@@ -1,5 +1,5 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off - The native updater boundary uses the current executable path synchronously.
-import { win32 } from "node:path";
+import * as NodePath from "node:path";
 
 interface UpdaterInstaller {
   installDirectory?: string | undefined;
@@ -20,11 +20,11 @@ export function quitAndInstallInPlace(
   },
 ): void | Promise<void> {
   if (input.platform === "win32" && input.isPackaged) {
-    if (!win32.isAbsolute(input.executable) || !/\.exe$/i.test(input.executable)) {
+    if (!NodePath.win32.isAbsolute(input.executable) || !/\.exe$/i.test(input.executable)) {
       throw new Error("Cannot preserve the current Windows installation directory");
     }
     // Public NsisUpdater API in electron-updater 6.8.9; emitted as its final /D argument.
-    updater.installDirectory = win32.dirname(input.executable);
+    updater.installDirectory = NodePath.win32.dirname(input.executable);
   }
   return updater.quitAndInstall(input.isSilent, input.isForceRunAfter);
 }

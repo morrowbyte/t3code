@@ -1,10 +1,11 @@
+import { useWindowsCuaStatus } from "~/state/windowsCua";
 import { DeviceHostUpdates } from "../device/DeviceHostUpdates";
-import { VoiceTranscriptionSettingsPanel } from "./VoiceTranscriptionSettings";
 import { LinearSettingsPanel } from "./LinearSettings";
 import { DeviceToolVersions } from "../device/DeviceToolVersions";
 import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
 import { ScopedSwitch } from "./ScopedSwitch";
 import { DeviceHostsSettings } from "./DeviceHostsSettings";
+import { EasDeviceHostsSettings } from "./EasDeviceHostsSettings";
 import {
   AuthSettingsWriteScope,
   BrowserImportFailureReason,
@@ -51,6 +52,7 @@ import { useEnvironments, usePrimaryEnvironment } from "~/state/environments";
 import { deviceEnvironment, useDeviceState } from "~/state/device";
 import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { serverEnvironment } from "~/state/server";
 import { formatEnvironmentQueryError } from "~/state/query";
 import { previewEnvironment } from "~/state/preview";
 import { useServerConfigs } from "~/state/entities";
@@ -63,6 +65,7 @@ import {
   platformSetupStatus,
   deviceHubDescription,
   agentDeviceDescription,
+  DeviceHostDiagnostics,
 } from "~/components/device/DeviceSetup";
 import { isElectron } from "../../env";
 
@@ -155,7 +158,7 @@ export async function clearBrowserProfileData(
   ]);
 }
 
-export function browserProfileRemovalAvailable(
+function browserProfileRemovalAvailable(
   bridgeAvailable: boolean,
   environmentsReady: boolean,
   environmentCount: number,
@@ -820,7 +823,7 @@ function DeviceIntegrationSettings() {
   );
 }
 
-export function DeviceIntegrationControls({
+function DeviceIntegrationControls({
   environmentId,
   enabled,
   agentAccessEnabled,
@@ -993,12 +996,23 @@ export function DeviceIntegrationControls({
                 : undefined
             }
             status={
-              <div className="flex flex-wrap gap-x-5 gap-y-2">
-                <PlatformStatus compact platform="iOS" status={platformSetupStatus(state, "ios")} />
-                <PlatformStatus
-                  compact
-                  platform="Android"
-                  status={platformSetupStatus(state, "android")}
+              <div className="space-y-2">
+                <div className="flex flex-wrap gap-x-5 gap-y-2">
+                  <PlatformStatus
+                    compact
+                    platform="iOS"
+                    status={platformSetupStatus(state, "ios")}
+                  />
+                  <PlatformStatus
+                    compact
+                    platform="Android"
+                    status={platformSetupStatus(state, "android")}
+                  />
+                </div>
+                {/* Remote hosts report their own warnings in the device host list below. */}
+                <DeviceHostDiagnostics
+                  hosts={state.hosts.filter((host) => host.kind === "local")}
+                  hostStatuses={state.hostStatuses}
                 />
               </div>
             }
@@ -1058,6 +1072,7 @@ export function DeviceIntegrationControls({
         />
       ) : null}
       <DeviceHostsSettings environmentId={environmentId} />
+      {state.supportsEasHosts ? <EasDeviceHostsSettings environmentId={environmentId} /> : null}
     </>
   );
 }
@@ -1599,7 +1614,7 @@ function BrowserProfilesSetting({ disabled }: { readonly disabled: boolean }) {
   );
 }
 
-export function IntegrationsSettingsPanel() {
+export function BrowserSettingsPanel() {
   const previewDefaultsDisabled = !isElectron;
   const previewDefaults = (
     <>
@@ -1616,8 +1631,6 @@ export function IntegrationsSettingsPanel() {
 
   return (
     <SettingsPageContainer>
-      <VoiceTranscriptionSettingsPanel />
-      <LinearSettingsPanel />
       <SettingsSection id="browser" title="Browser">
         <AgentBrowserAccessSetting />
         {previewDefaultsDisabled ? (
@@ -1631,7 +1644,108 @@ export function IntegrationsSettingsPanel() {
         <BrowserSearchEngineSetting />
         <PullRequestLinksOpenInAppSetting />
       </SettingsSection>
+    </SettingsPageContainer>
+  );
+}
+
+export function IntegrationsSettingsPanel() {
+  return (
+    <SettingsPageContainer>
+      <LinearSettingsPanel />
+    </SettingsPageContainer>
+  );
+}
+
+async function runWindowsCuaUpdate(
+  update: () => Promise<unknown>,
+  setPending: (pending: boolean) => void,
+) {
+  setPending(true);
+  try {
+    await update();
+  } finally {
+    setPending(false);
+  }
+}
+
+function WindowsCuaSetting() {
+  const { scope, environment } = useSettingsScope();
+  const target = scope.kind === "environment" ? environment : null;
+  const environmentId = target?.environmentId ?? null;
+  const canConfigure = useEnvironmentScope(environmentId, AuthSettingsWriteScope);
+  const update = useAtomCommand(serverEnvironment.updateSettings);
+  const [pending, setPending] = useState(false);
+  const connected = target?.connection.phase === "connected";
+  const platform = target?.serverConfig?.environment.platform;
+  const supported = platform?.os === "windows" && platform.arch === "x64";
+  const enabled = target?.serverConfig?.settings.enableWindowsCua === true;
+  const status = useWindowsCuaStatus(environmentId);
+  const phase = status.data?.phase;
+  const statusText =
+    status.error ??
+    (phase === "failed"
+      ? status.data?.ownerThreadId
+        ? "Stop failed; control may still be active."
+        : "Driver unavailable. Turn off before retrying."
+      : phase === "stopping"
+        ? "Stopping…"
+        : phase === "starting"
+          ? "Starting…"
+          : phase === "ready"
+            ? "Connected"
+            : phase === "idle"
+              ? "Waiting for Codex"
+              : phase === "disabled"
+                ? "Off"
+                : null);
+
+  return (
+    <SettingsSection id="computer-control" title="Computer control (experimental)">
+      <SettingsRow
+        {...searchableSetting("windows-cua")}
+        status={statusText}
+        description={
+          target === null
+            ? "Choose one Windows environment."
+            : !supported
+              ? "Requires a Windows x64 environment."
+              : "Available to new or resumed Codex sessions. Turning off stops this environment's managed driver."
+        }
+        control={
+          <Switch
+            aria-label="Windows computer control"
+            checked={enabled}
+            disabled={!connected || (!supported && !enabled) || !canConfigure || pending}
+            onCheckedChange={(checked) => {
+              if (
+                environmentId === null ||
+                !connected ||
+                (!supported && checked) ||
+                !canConfigure ||
+                pending
+              )
+                return;
+              return runWindowsCuaUpdate(
+                () =>
+                  update({
+                    environmentId,
+                    input: { patch: { enableWindowsCua: Boolean(checked) } },
+                  }),
+                setPending,
+              );
+            }}
+          />
+        }
+      />
+    </SettingsSection>
+  );
+}
+
+export function DevicesSettingsPanel() {
+  return (
+    <SettingsPageContainer>
       <DeviceIntegrationSettings />
+      <WindowsCuaSetting />
     </SettingsPageContainer>
   );
 }

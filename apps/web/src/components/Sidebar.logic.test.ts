@@ -17,10 +17,9 @@ import {
   deleteSelectedThreadEntries,
   filterSidebarProjectScopeItems,
   filterSidebarV2VisibleThreads,
-  formatWorkingDurationLabel,
   getFallbackThreadIdAfterDelete,
   getProjectSortTimestamp,
-  getSidebarForkParentThreadId,
+  resolveSidebarRowThreadId,
   getSidebarThreadIdsToPrewarm,
   hasUnseenCompletion,
   isContextMenuPointerDown,
@@ -33,19 +32,16 @@ import {
   resolveAdjacentThreadId,
   resolveProjectStatusIndicator,
   resolveSidebarSweepKeys,
-  resolveSidebarStageBadgeLabel,
   resolveSidebarThreadSection,
   resolveSidebarRowAccessibility,
   resolveSidebarThreadStatus,
   resolveSidebarV2TopStatus,
   resolveThreadLastVisitedAt,
-  resolveThreadRowClassName,
   resolveThreadStatusPill,
   resolveWorkingStartedAt,
   pullRequestMatchesSearchQuery,
   searchSidebarThreads,
   shouldClearThreadSelectionOnMouseDown,
-  shouldShowSidebarV2Duration,
   shouldRecedeSidebarThread,
   sortLogicalProjectsForSidebar,
   sortInboxThreadsByReturn,
@@ -63,6 +59,7 @@ import {
   type SidebarSection,
   resolveSidebarDropVerb,
 } from "./Sidebar.logic";
+import { formatWorkingDurationLabel } from "@t3tools/client-runtime/state/models";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import { sortSettledThreads } from "@t3tools/client-runtime/state/thread-sort";
 import { EnvironmentId, ProjectId, ProviderInstanceId, RunId, ThreadId } from "@t3tools/contracts";
@@ -358,44 +355,6 @@ describe("buildMultiSelectThreadContextMenuItems", () => {
     expect(
       buildMultiSelectThreadContextMenuItems({ count: 2, hasRunningThread: true }),
     ).toContainEqual({ id: "archive", label: "Archive (2)", disabled: true });
-  });
-});
-
-describe("resolveSidebarStageBadgeLabel", () => {
-  it("returns Nightly for nightly primary server versions", () => {
-    expect(
-      resolveSidebarStageBadgeLabel({
-        primaryServerVersion: "0.0.28-nightly.20260616.12",
-        fallbackStageLabel: "Alpha",
-      }),
-    ).toBe("Nightly");
-  });
-
-  it("returns the fallback label for stable primary server versions", () => {
-    expect(
-      resolveSidebarStageBadgeLabel({
-        primaryServerVersion: "0.0.27",
-        fallbackStageLabel: "Alpha",
-      }),
-    ).toBe("Alpha");
-  });
-
-  it("returns the fallback label when the primary server version is missing", () => {
-    expect(
-      resolveSidebarStageBadgeLabel({
-        primaryServerVersion: null,
-        fallbackStageLabel: "Dev",
-      }),
-    ).toBe("Dev");
-  });
-
-  it("returns the fallback label for malformed nightly prerelease versions", () => {
-    expect(
-      resolveSidebarStageBadgeLabel({
-        primaryServerVersion: "0.0.28-nightly.20260616",
-        fallbackStageLabel: "Alpha",
-      }),
-    ).toBe("Alpha");
   });
 });
 
@@ -827,30 +786,6 @@ describe("sidebar thread lineage helpers", () => {
 
     expect(isSidebarSubagentThread(subagent)).toBe(true);
     expect(isSidebarSubagentThread(makeThreadFixture())).toBe(false);
-  });
-
-  it("resolves the parent thread for fork sidebar affordances", () => {
-    const parentId = ThreadId.make("thread-parent");
-    const fallbackParentId = ThreadId.make("thread-fallback-parent");
-    const runFork = makeThreadFixture({
-      forkedFrom: { type: "run", threadId: parentId, runId: "run-1" as never },
-      lineage: {
-        rootThreadId: parentId,
-        parentThreadId: fallbackParentId,
-        relationshipToParent: "fork",
-      },
-    });
-    const lineageFork = makeThreadFixture({
-      lineage: {
-        rootThreadId: parentId,
-        parentThreadId: fallbackParentId,
-        relationshipToParent: "fork",
-      },
-    });
-
-    expect(getSidebarForkParentThreadId(runFork)).toBe(parentId);
-    expect(getSidebarForkParentThreadId(lineageFork)).toBe(fallbackParentId);
-    expect(getSidebarForkParentThreadId(makeThreadFixture())).toBeNull();
   });
 });
 
@@ -1365,11 +1300,6 @@ describe("resolveSidebarThreadStatus", () => {
     expect(resolveSidebarV2TopStatus({ status: "waiting", isUnread: true, isWoke: true })).toBe(
       "waiting",
     );
-  });
-
-  it("keeps Waiting static while Working shows elapsed duration", () => {
-    expect(shouldShowSidebarV2Duration("waiting")).toBe(false);
-    expect(shouldShowSidebarV2Duration("working")).toBe(true);
   });
 });
 
@@ -2799,4 +2729,44 @@ describe("Working shelf (beta)", () => {
       });
     });
   });
+});
+
+it("maps an open subagent to its nearest visible ancestor's sidebar row", () => {
+  const environmentId = EnvironmentId.make("environment-row");
+  const otherEnvironmentId = EnvironmentId.make("environment-other");
+  const subagentOf = (id: string, parentId: ThreadId, environment = environmentId) =>
+    makeThreadFixture({
+      id: ThreadId.make(id),
+      environmentId: environment,
+      lineage: {
+        rootThreadId: parentId,
+        parentThreadId: parentId,
+        relationshipToParent: "subagent",
+      },
+    });
+  const root = makeThreadFixture({ id: ThreadId.make("thread-root"), environmentId });
+  const fork = makeThreadFixture({
+    id: ThreadId.make("thread-fork"),
+    environmentId,
+    lineage: {
+      rootThreadId: root.id,
+      parentThreadId: root.id,
+      relationshipToParent: "fork",
+    },
+  });
+  const child = subagentOf("thread-child", root.id);
+  const grandchild = subagentOf("thread-grandchild", child.id);
+  const forkChild = subagentOf("thread-fork-child", fork.id);
+  const orphan = subagentOf("thread-orphan", ThreadId.make("thread-missing"));
+  const elsewhere = subagentOf("thread-elsewhere", root.id, otherEnvironmentId);
+  const threads = [root, fork, child, grandchild, forkChild, orphan, elsewhere];
+
+  expect(resolveSidebarRowThreadId(child.id, environmentId, threads)).toBe(root.id);
+  expect(resolveSidebarRowThreadId(grandchild.id, environmentId, threads)).toBe(root.id);
+  expect(resolveSidebarRowThreadId(forkChild.id, environmentId, threads)).toBe(fork.id);
+  expect(resolveSidebarRowThreadId(elsewhere.id, otherEnvironmentId, threads)).toBe(elsewhere.id);
+  expect(resolveSidebarRowThreadId(orphan.id, environmentId, threads)).toBe(orphan.id);
+  const loopA = subagentOf("thread-loop-a", ThreadId.make("thread-loop-b"));
+  const loopB = subagentOf("thread-loop-b", loopA.id);
+  expect(resolveSidebarRowThreadId(loopA.id, environmentId, [loopA, loopB])).toBe(loopA.id);
 });

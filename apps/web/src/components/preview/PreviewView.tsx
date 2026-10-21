@@ -1,5 +1,10 @@
 "use client";
 
+import { useAtomValue } from "@effect/atom-react";
+import { primaryServerKeybindingsAtom } from "~/state/server";
+import { resolveShortcutCommand } from "~/keybindings";
+import { dispatchKeyboardCommand, useKeyboardCommands } from "../keyboard/keyboardCommands";
+
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { settlePromise } from "@t3tools/client-runtime/state/runtime";
 import { previewStreamDownloadUrl } from "@t3tools/client-runtime/preview/server-browser-stream";
@@ -75,6 +80,7 @@ import {
 import { browserResponsiveViewportForToggle, useBrowserDefaults } from "~/browser/browserDefaults";
 import { BrowserDeviceToolbar } from "~/browser/BrowserDeviceToolbar";
 import { BROWSER_DEVICE_TOOLBAR_HEIGHT } from "~/browser/browserViewportLayout";
+import { useBrowserLayoutZoomFactor } from "~/browser/useBrowserLayoutZoomFactor";
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 import { BrowserSettingsReadError } from "~/browser/openFileInPreview";
 import { PreviewFileNotShown, PreviewUnreachable } from "./PreviewUnreachable";
@@ -221,6 +227,7 @@ export function PreviewView({
   const serverInputDisabled = isServerTab && serverControlledTabId !== runtimeTabId;
   const [serverFrameTabId, setServerFrameTabId] = useState<string | null>(null);
   const desktopOverlay = tabId ? (previewState.desktopByTabId[tabId] ?? null) : null;
+  const layoutZoomFactor = useBrowserLayoutZoomFactor(desktopOverlay?.zoomFactor ?? 1);
   const navStatus = snapshot?.navStatus ?? { _tag: "Idle" as const };
   const url = navStatus._tag === "Idle" ? "" : navStatus.url;
   const loading = desktopOverlay?.loading ?? navStatus._tag === "Loading";
@@ -391,7 +398,7 @@ export function PreviewView({
       browserResponsiveViewportForToggle({
         defaults: browserDefaults,
         panelRect,
-        zoomFactor: serverOwnsRendering ? serverZoomFactor : desktopOverlay?.zoomFactor,
+        zoomFactor: isServerTab ? serverZoomFactor : layoutZoomFactor,
       }),
     ).catch(() => undefined);
   };
@@ -413,6 +420,31 @@ export function PreviewView({
     if (isServerTab) serverSurfaceRef.current?.history(1);
     else if (previewBridge && runtimeTabId) void previewBridge.goForward(runtimeTabId);
   };
+
+  const browserRootRef = useRef<HTMLDivElement>(null);
+  const browserKeybindings = useAtomValue(primaryServerKeybindingsAtom);
+  const ownsBrowserKeyboardTarget = () => {
+    const focusedBrowser = document.activeElement?.closest('[data-keyboard-object="Browser"]');
+    return visible && (!focusedBrowser || focusedBrowser === browserRootRef.current);
+  };
+  useKeyboardCommands({
+    "preview.back": () => {
+      if (!ownsBrowserKeyboardTarget() || serverInputDisabled || !canGoBack) return false;
+      handleBack();
+    },
+    "preview.forward": () => {
+      if (!ownsBrowserKeyboardTarget() || serverInputDisabled || !canGoForward) return false;
+      handleForward();
+    },
+    "preview.focusUrl": () => {
+      if (!ownsBrowserKeyboardTarget() || serverInputDisabled) return false;
+      setFocusUrlNonce((value) => (value ?? 0) + 1);
+    },
+    "preview.refresh": () => {
+      if (!ownsBrowserKeyboardTarget() || serverInputDisabled || refreshDisabled) return false;
+      handleRefresh();
+    },
+  });
 
   const handleOpenInBrowser = () => {
     if (!localApi || !url) return;
@@ -911,6 +943,29 @@ export function PreviewView({
     <div
       className="flex min-h-0 flex-1 flex-col bg-background"
       data-thread-key={scopedThreadKey(threadRef)}
+      ref={browserRootRef}
+      data-keyboard-object="Browser"
+      aria-label="Browser"
+      tabIndex={-1}
+      onKeyDownCapture={(event) => {
+        if (
+          event.defaultPrevented ||
+          event.nativeEvent.isComposing ||
+          event.nativeEvent.keyCode === 229
+        )
+          return;
+        const command = resolveShortcutCommand(event.nativeEvent, browserKeybindings, {
+          context: { previewFocus: true, previewOpen: true },
+        });
+        if (
+          command &&
+          (command.startsWith("preview.") || command === "navigation.activate") &&
+          dispatchKeyboardCommand(command)
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+      }}
     >
       <PreviewChromeRow
         url={url}
@@ -1058,7 +1113,7 @@ export function PreviewView({
         !activeRecordingTabIds.has(runtimeTabId) ? (
           <AgentBrowserCursor
             tabId={runtimeTabId}
-            zoomFactor={desktopOverlay.zoomFactor}
+            zoomFactor={layoutZoomFactor}
             controller={controller}
           />
         ) : null}

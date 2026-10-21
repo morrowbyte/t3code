@@ -3,10 +3,11 @@ import * as NodePath from "node:path";
 import { assert, describe, it } from "@effect/vitest";
 
 import {
-  resolveEarlyLinuxElectronOptions,
+  restoreEarlyLinuxDeviceScaleFactor,
   resolveEarlyLinuxPasswordStorePreference,
   resolveLinuxDisableFeaturesSwitch,
 } from "./DesktopEarlyElectronStartup.ts";
+import { resolveEarlyLinuxElectronOptions } from "./DesktopEarlyElectronStartup.ts";
 
 describe("DesktopEarlyElectronStartup", () => {
   const joinPath = NodePath.posix.join;
@@ -187,70 +188,6 @@ describe("DesktopEarlyElectronStartup", () => {
       );
     });
 
-    it("keeps existing disabled features", () => {
-      assert.equal(
-        resolveLinuxDisableFeaturesSwitch({
-          ...brokenHyprland,
-          disableFeatures: "Vulkan,WaylandWpColorManagerV1Extra",
-        }),
-        "Vulkan,WaylandWpColorManagerV1Extra,WaylandWpColorManagerV1",
-      );
-    });
-
-    it.each([
-      { label: "Hyprland 0.47.2", readHyprctlVersionJson: hyprctlVersion("0.47.2") },
-      { label: "Hyprland 0.51.0", readHyprctlVersionJson: hyprctlVersion("0.51.0") },
-      { label: "Hyprland 0.56.2", readHyprctlVersionJson: hyprctlVersion("0.56.2") },
-      { label: "an unrecognized version", readHyprctlVersionJson: hyprctlVersion("1.0.0") },
-      {
-        label: "a malformed version",
-        readHyprctlVersionJson: hyprctlVersion("0.48.not-a-version"),
-      },
-      { label: "a two-part version", readHyprctlVersionJson: hyprctlVersion("0.48") },
-      { label: "a prerelease version", readHyprctlVersionJson: hyprctlVersion("0.49.0-rc1") },
-      {
-        label: "a development build after an affected release",
-        readHyprctlVersionJson: hyprctlVersion("0.50.1", { tag: "v0.50.1-87-g4e8875b5" }),
-      },
-      {
-        label: "a later Nix build reporting an affected release tag",
-        readHyprctlVersionJson: hyprctlVersion("0.50.1", {
-          commit: "4e8875b5e9700c81ca4e169dc7b85bb5b3c8cb7a",
-        }),
-      },
-      {
-        label: "an affected version with another release's commit",
-        readHyprctlVersionJson: hyprctlVersion("0.48.0", { commit: releaseCommits["0.48.1"] }),
-      },
-      { label: "an unknown patch release", readHyprctlVersionJson: hyprctlVersion("0.50.2") },
-      {
-        label: "missing commit metadata",
-        readHyprctlVersionJson: () =>
-          JSON.stringify({ version: "0.48.1", tag: "v0.48.1", dirty: false }),
-      },
-      {
-        label: "a build without git metadata",
-        readHyprctlVersionJson: hyprctlVersion("0.48.1", { tag: "" }),
-      },
-      {
-        label: "a dirty build",
-        readHyprctlVersionJson: hyprctlVersion("0.48.1", { dirty: true }),
-      },
-      {
-        label: "output without build metadata",
-        readHyprctlVersionJson: () => JSON.stringify({ version: "0.48.1" }),
-      },
-      { label: "unparseable hyprctl output", readHyprctlVersionJson: () => "ok" },
-      {
-        label: "a missing hyprctl",
-        readHyprctlVersionJson: () => {
-          throw new Error("spawnSync hyprctl ENOENT");
-        },
-      },
-    ])("preserves color management for $label", (overrides) => {
-      assert.isNull(resolveLinuxDisableFeaturesSwitch({ ...brokenHyprland, ...overrides }));
-    });
-
     it.each([
       {
         label: "a stale Hyprland signature in KDE",
@@ -278,5 +215,72 @@ describe("DesktopEarlyElectronStartup", () => {
         }),
       );
     });
+  });
+});
+
+describe("Linux device scale persistence failures", () => {
+  const input = {
+    env: { T3CODE_HOME: "/isolated" },
+    homeDirectory: "/home/user",
+    joinPath: NodePath.posix.join,
+  };
+
+  it.each(["0", "Infinity", "garbage"])("ignores invalid persisted scale %j", (value) => {
+    const applied: Array<[string, string]> = [];
+    const writes: Array<string> = [];
+    restoreEarlyLinuxDeviceScaleFactor({
+      ...input,
+      commandLine: {
+        hasSwitch: () => false,
+        getSwitchValue: () => "",
+        appendSwitch: (name, scale) => applied.push([name, scale]),
+      },
+      readFileString: () => value,
+      writeFileString: (_path, contents) => writes.push(contents),
+    });
+    assert.deepEqual(applied, []);
+    assert.deepEqual(writes, []);
+  });
+
+  it("keeps startup available with default scaling when saved state cannot be read", () => {
+    const applied: Array<[string, string]> = [];
+    restoreEarlyLinuxDeviceScaleFactor({
+      ...input,
+      commandLine: {
+        hasSwitch: () => false,
+        getSwitchValue: () => "",
+        appendSwitch: (name, value) => applied.push([name, value]),
+      },
+      readFileString: () => {
+        throw new Error("ENOENT");
+      },
+      writeFileString: () => {},
+    });
+    assert.deepEqual(applied, []);
+  });
+
+  it("keeps an explicit scale when saving it fails, without falling back to saved state", () => {
+    const applied: Array<[string, string]> = [];
+    const reads: Array<string> = [];
+    const writes: Array<string> = [];
+    restoreEarlyLinuxDeviceScaleFactor({
+      ...input,
+      commandLine: {
+        hasSwitch: () => true,
+        getSwitchValue: () => "1",
+        appendSwitch: (name, value) => applied.push([name, value]),
+      },
+      readFileString: (path) => {
+        reads.push(path);
+        return "1.75";
+      },
+      writeFileString: (_path, value) => {
+        writes.push(value);
+        throw new Error("EACCES");
+      },
+    });
+    assert.deepEqual(writes, ["1"]);
+    assert.deepEqual(reads, []);
+    assert.deepEqual(applied, []);
   });
 });

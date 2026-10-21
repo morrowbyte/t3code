@@ -20,36 +20,40 @@ export class VoiceSettingsStorageUnavailable extends Data.TaggedError(
   "VoiceSettingsStorageUnavailable",
 )<{}> {}
 
-export const requestEnvironmentVoiceSettings = (input: {
-  readonly prepared: PreparedConnection;
-  readonly signer: Option.Option<ManagedRelay.ManagedRelayDpopSigner["Service"]>;
-  readonly remoteAuthorization: Option.Option<
-    RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization["Service"]
-  >;
-  readonly update?: typeof VoiceTranscriptionSettingsInput.Type;
-}) =>
-  Effect.gen(function* () {
-    const request = (update?: typeof VoiceTranscriptionSettingsInput.Type) =>
-      executeAuthenticatedEnvironmentHttpRequest({
-        ...input,
-        group: "voice",
-        method: update ? "PUT" : "GET",
-        timeoutMs: 15_000,
-        url: (urls) => urls.voiceSettings(),
-        request: ({ client, headers }) =>
-          update
-            ? client.updateVoiceSettings({ payload: update, headers })
-            : client.voiceSettings({ headers }),
-      });
-    if (input.update?.apiKey?.trim()) {
-      // Enforce this at the transport boundary, even if an older/remounted UI
-      // still offers Save. Never send a new key to a plaintext-storage backend.
-      const current = yield* request();
-      if (current.supportsEncryptedApiKeyStorage !== true)
-        return yield* new VoiceSettingsStorageUnavailable();
-    }
-    return yield* request(input.update);
-  });
+export const requestEnvironmentVoiceSettings = Effect.fn(
+  "voiceTranscriptionHttp.requestEnvironmentVoiceSettings",
+)(
+  (input: {
+    readonly prepared: PreparedConnection;
+    readonly signer: Option.Option<ManagedRelay.ManagedRelayDpopSigner["Service"]>;
+    readonly remoteAuthorization: Option.Option<
+      RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization["Service"]
+    >;
+    readonly update?: typeof VoiceTranscriptionSettingsInput.Type;
+  }) =>
+    Effect.gen(function* () {
+      const request = (update?: typeof VoiceTranscriptionSettingsInput.Type) =>
+        executeAuthenticatedEnvironmentHttpRequest({
+          ...input,
+          group: "voice",
+          method: update ? "PUT" : "GET",
+          timeoutMs: 15_000,
+          url: (urls) => urls.voiceSettings(),
+          request: ({ client, headers }) =>
+            update
+              ? client.updateVoiceSettings({ payload: update, headers })
+              : client.voiceSettings({ headers }),
+        });
+      if (input.update?.apiKey?.trim()) {
+        // Enforce this at the transport boundary, even if an older/remounted UI
+        // still offers Save. Never send a new key to a plaintext-storage backend.
+        const current = yield* request();
+        if (current.supportsEncryptedApiKeyStorage !== true)
+          return yield* new VoiceSettingsStorageUnavailable();
+      }
+      return yield* request(input.update);
+    }),
+);
 
 const TRANSCRIPTION_RESPONSE = Schema.Struct({ transcript: Schema.String });
 const decodeTranscriptionResponse = Schema.decodeUnknownEffect(TRANSCRIPTION_RESPONSE);
@@ -121,7 +125,7 @@ export const transcribeEnvironmentVoiceRecording = (
     method: "POST",
     url: (urls) => urls.voiceTranscription(),
     timeoutMs: 60_000,
-    request: ({ headers, url }) =>
+    request: Effect.fn("voiceTranscriptionHttp.request")(({ headers, url }) =>
       Effect.gen(function* () {
         const request = HttpClientRequest.post(url).pipe(
           HttpClientRequest.setHeaders({
@@ -154,5 +158,6 @@ export const transcribeEnvironmentVoiceRecording = (
         const decoded = yield* decodeTranscriptionResponse(payload);
         return decoded.transcript;
       }),
+    ),
   });
 };

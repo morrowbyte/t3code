@@ -51,7 +51,7 @@ See [images and videos](#images-and-videos-in-messages) for previewing and savin
 
 ## Send while the agent is working
 
-On web and desktop, choose **Settings → General → Follow-up behavior** to queue
+On web and desktop, choose **Settings → Chat & editor → Follow-up behavior** to queue
 new messages for a later turn or steer the running turn immediately. The setting
 applies to this client; already queued messages keep their place. Queued messages
 are saved on the server and can be edited, reordered, or removed above the composer.
@@ -149,7 +149,8 @@ into a normal draft.
 
 On web and desktop, choose **Edit from here** beneath a sent message to rewind
 the conversation to before that message. Choose **Revert and keep changes** to
-leave workspace files as they are, or **Revert files too** to restore them as well.
+leave workspace files as they are, or **Revert files too** to put the workspace back
+to its checkpoint from before that message. That also undoes edits you made yourself.
 File restore is only offered for threads running in a worktree, and it is
 refused when another thread or agent session also uses that directory, a folder
 inside it, or a folder that contains it, since
@@ -225,7 +226,7 @@ Type `/` for commands or `$` to add a skill from the selected environment and
 provider. On mobile, both are also available before starting a thread on
 **New task**.
 
-The slash menu also includes skills unless you turn off **Settings → General →
+The slash menu also includes skills unless you turn off **Settings → Chat & editor →
 Show skills in slash menu**. Only skills enabled for the provider are listed.
 
 After you add or change skills, plugins, or MCP servers, use **Restart agent
@@ -237,6 +238,12 @@ Provider commands must start the message to run. T3 Code commands such as
 
 Send `/compact` in an existing conversation to reduce context usage when the
 provider supports it. Web and desktop also offer compaction from the context meter.
+
+Enable **Compact idle Claude threads (beta)** in **Settings > General** to compact
+an idle Claude thread with at least 200,000 tokens of context shortly before its
+prompt cache expires, so coming back does not reprocess the whole conversation.
+The cache lasts 1 hour on Claude subscriptions and 5 minutes with an API key. The
+compaction appears in the thread as a `/compact` turn sent by T3 Code.
 
 ## Goals
 

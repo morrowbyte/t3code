@@ -2,16 +2,17 @@ import {
   AuthOrchestrationOperateScope,
   AuthSourceControlWriteScope,
   EnvironmentId,
+  ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
-import { act, memo } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { type ComponentProps, memo, StrictMode, useRef, useState } from "react";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
 import "~/index.css";
+import { act, render } from "../../test/render";
 
 type Branched = { readonly branch: string };
 type GitActionInput = { featureBranch?: boolean; threadId?: string; action: string };
@@ -29,6 +30,9 @@ const state = vi.hoisted(() => ({
   metadataRequests: [] as { environmentId: string; branch: string }[],
   toasts: [] as Toast[],
   afterGitAction: undefined as (() => void) | undefined,
+  workingTreeRoot: undefined as string | undefined,
+  files: [{ path: "file.ts", insertions: 1, deletions: 0 }],
+  editorOpens: [] as { environmentId: string; input: { cwd: string; editor: string } }[],
 }));
 
 vi.mock(import("~/state/session"), async (original) => {
@@ -61,7 +65,8 @@ vi.mock(import("~/state/query"), async (original) => ({
       hasPrimaryRemote: true,
       hasWorkingTreeChanges: true,
       workingTree: {
-        files: [{ path: "file.ts", insertions: 1, deletions: 0 }],
+        ...(state.workingTreeRoot === undefined ? {} : { rootPath: state.workingTreeRoot }),
+        files: state.files,
         insertions: 1,
         deletions: 0,
       },
@@ -73,21 +78,45 @@ vi.mock(import("~/state/query"), async (original) => ({
     error: null,
   })) as never,
 }));
-vi.mock(import("~/state/use-atom-command"), async (original) => ({
-  ...(await original()),
-  // The only command whose result matters here is the thread's branch metadata update.
-  useAtomCommand: ((_command: unknown, options: unknown) =>
-    options === "thread branch metadata update"
-      ? async ({ environmentId, input }: { environmentId: string; input: { branch: string } }) => {
-          state.metadataRequests.push({ environmentId, branch: input.branch });
-          if (!state.scopes.has(AuthOrchestrationOperateScope))
-            return AsyncResult.failure(Cause.fail(new Error("Task denied")));
-          if (state.shell) state.shell = { branch: input.branch };
-          if (state.detail) state.detail = { branch: input.branch };
-          return AsyncResult.success(undefined);
-        }
-      : async () => AsyncResult.success(undefined)) as never,
-}));
+vi.mock(import("~/state/use-atom-command"), async (original) => {
+  const { shellEnvironment } = await import("~/state/shell");
+  return {
+    ...(await original()),
+    // Only the thread's branch metadata update and editor opens are observed here.
+    useAtomCommand: ((command: unknown, options: unknown) =>
+      options === "thread branch metadata update"
+        ? async ({
+            environmentId,
+            input,
+          }: {
+            environmentId: string;
+            input: { branch: string };
+          }) => {
+            state.metadataRequests.push({ environmentId, branch: input.branch });
+            if (!state.scopes.has(AuthOrchestrationOperateScope))
+              return AsyncResult.failure(Cause.fail(new Error("Task denied")));
+            if (state.shell) state.shell = { branch: input.branch };
+            if (state.detail) state.detail = { branch: input.branch };
+            return AsyncResult.success(undefined);
+          }
+        : command === shellEnvironment.openInEditor
+          ? async (request: (typeof state.editorOpens)[number]) => {
+              state.editorOpens.push(request);
+              return AsyncResult.success(undefined);
+            }
+          : async () => AsyncResult.success(undefined)) as never,
+  };
+});
+// The preferred-editor flow needs one editor the environment reports as installed.
+vi.mock(import("~/state/server"), async (original) => {
+  const actual = await original();
+  const { Atom } = await import("effect/reactivity");
+  const config = Atom.make(() => ({ availableEditors: ["cursor"] }));
+  return {
+    ...actual,
+    serverEnvironment: { ...actual.serverEnvironment, configValueAtom: (() => config) as never },
+  };
+});
 vi.mock(import("~/lib/sourceControlActions"), async (original) => ({
   ...(await original()),
   useSourceControlActionRunning: () => false,
@@ -134,41 +163,46 @@ vi.mock(import("~/components/ui/toast"), async (original) => {
   };
 });
 
+vi.mock(import("~/hooks/useT3ProjectFileScripts"), () => ({ useT3ProjectFileScripts: () => [] }));
+vi.mock(import("./BranchToolbar"), () => ({
+  BranchToolbar: memo<typeof import("./BranchToolbar").BranchToolbar.type>(
+    (_props: ComponentProps<typeof import("./BranchToolbar").BranchToolbar>) => <></>,
+  ),
+}));
+vi.mock(import("./chat/ThreadAutomationsPanel"), () => ({ ThreadAutomationsPanel: () => null }));
+vi.mock(import("./chat/ThreadRelationshipsControl"), () => ({
+  ThreadRelationshipsPanel: () => null,
+}));
+
 import { useComposerDraftStore } from "~/composerDraftStore";
 import GitActionsControl from "./GitActionsControl";
+
+import { ThreadDetailsPanel } from "./chat/ThreadDetailsPanel";
+import { PopoverCreateHandle, PopoverTrigger } from "./ui/popover";
+import { dispatchKeyboardCommand } from "./keyboard/keyboardCommands";
+import { WorkbenchCommandPicker } from "./keyboard/WorkbenchCommandPicker";
+import { useRightPanelStore } from "~/rightPanelStore";
 
 // ThreadDetailsPanel keeps this component mounted behind React.memo when threads change.
 const MemoGitActionsControl = memo(GitActionsControl);
 
-let root: Root;
-let container: HTMLDivElement;
-
-function render(thread = "thread", cwd = "/repo") {
-  return act(async () =>
-    root.render(
-      <MemoGitActionsControl
-        gitCwd={cwd}
-        activeThreadRef={{
-          environmentId: EnvironmentId.make("environment"),
-          threadId: ThreadId.make(thread),
-        }}
-      />,
-    ),
+function control(thread = "thread", cwd = "/repo") {
+  return (
+    <MemoGitActionsControl
+      gitCwd={cwd}
+      activeThreadRef={{
+        environmentId: EnvironmentId.make("environment"),
+        threadId: ThreadId.make(thread),
+      }}
+    />
   );
 }
 
 const button = (name: string | RegExp) =>
   page.getByRole("button", { name, exact: typeof name === "string" });
-const commits = () => state.actions.length;
 
-async function openCommitDialog() {
-  await userEvent.click(button("Git action options"));
-  await userEvent.click(page.getByRole("menuitem", { name: "Commit" }));
-  await expect.element(page.getByRole("dialog", { name: "Commit changes" })).toBeVisible();
-}
-
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+// The mocked modules read `state`, so every test starts by resetting all of it.
+function setup() {
   state.scopes = new Set([AuthSourceControlWriteScope]);
   state.primaryScopes = new Set([AuthSourceControlWriteScope, AuthOrchestrationOperateScope]);
   state.shell = { branch: "main" };
@@ -180,6 +214,10 @@ beforeEach(() => {
   state.metadataRequests = [];
   state.toasts = [];
   state.afterGitAction = undefined;
+  state.workingTreeRoot = undefined;
+  state.files = [{ path: "file.ts", insertions: 1, deletions: 0 }];
+  state.editorOpens = [];
+  useRightPanelStore.setState({ threadPanelVisibilityByThreadKey: {} });
   useComposerDraftStore.setState({
     getDraftSession: () => state.draft as never,
     getDraftThreadByRef: () => state.draft as never,
@@ -187,21 +225,114 @@ beforeEach(() => {
       if (state.draft && input.branch) state.draft = { ...state.draft, branch: input.branch };
     },
   });
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
+}
 
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-  await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull());
-});
+const commits = () => state.actions.length;
+
+async function openCommitDialog() {
+  await userEvent.click(button("Git action options"));
+  await userEvent.click(page.getByRole("menuitem", { name: "Commit" }));
+  await expect.element(page.getByRole("dialog", { name: "Commit changes" })).toBeVisible();
+}
+
+it.each(["direct", "workspace picker"])(
+  "opens Git actions from a closed workspace card via %s and keeps its commit dialog mounted",
+  async (entry) => {
+    setup();
+    function ClosedWorkspace() {
+      const anchor = useRef<HTMLButtonElement>(null);
+      const [handle] = useState(PopoverCreateHandle);
+      const [workspaceActionsOpen, setWorkspaceActionsOpen] = useState(
+        entry === "workspace picker",
+      );
+      return (
+        <>
+          <PopoverTrigger handle={handle} render={<button ref={anchor}>Workspace</button>} />
+          {workspaceActionsOpen ? (
+            <WorkbenchCommandPicker
+              title="Workspace actions"
+              onClose={() => setWorkspaceActionsOpen(false)}
+              commands={[
+                {
+                  id: "git-actions",
+                  label: "Git actions: commit, push and pull requests",
+                  run: () => {
+                    dispatchKeyboardCommand("git.actions");
+                  },
+                },
+              ]}
+            />
+          ) : null}
+          <ThreadDetailsPanel
+            anchor={anchor}
+            handle={handle}
+            onPresentationChange={() => {}}
+            environmentId={EnvironmentId.make("environment")}
+            threadId={ThreadId.make("thread")}
+            projectId={ProjectId.make("project")}
+            worktreePath={null}
+            isServerThread
+            activeProjectName="Project"
+            activeProjectScripts={undefined}
+            preferredScriptId={null}
+            keybindings={[]}
+            availableEditors={[]}
+            showOpenInPicker={false}
+            openInShortcutEnabled={false}
+            gitCwd="/repo"
+            isGitRepo
+            envLocked={false}
+            availableEnvironments={[]}
+            onEnvironmentChange={() => {}}
+            onEnvModeChange={() => {}}
+            envMode="local"
+            startFromOrigin={false}
+            onStartFromOriginChange={() => {}}
+            onComposerFocusRequest={() => {}}
+            onRunProjectScript={() => {}}
+            onAddProjectScript={async () => {
+              throw new Error("Unexpected script mutation");
+            }}
+            onUpdateProjectScript={async () => {
+              throw new Error("Unexpected script mutation");
+            }}
+            onDeleteProjectScript={async () => {
+              throw new Error("Unexpected script mutation");
+            }}
+          />
+        </>
+      );
+    }
+    await using _screen = await render(
+      <StrictMode>
+        <ClosedWorkspace />
+      </StrictMode>,
+    );
+    expect(document.querySelector("[data-thread-details-card]")).toBeNull();
+    if (entry === "workspace picker") {
+      await vi.waitFor(() =>
+        expect(document.activeElement?.getAttribute("aria-label")).toBe("Search workspace actions"),
+      );
+      await userEvent.keyboard("{Enter}");
+    } else await act(() => expect(dispatchKeyboardCommand("git.actions")).toBe(true));
+    await expect
+      .element(page.getByRole("dialog", { name: "Git actions", exact: true }))
+      .toBeVisible();
+    await vi.waitFor(() =>
+      expect(document.activeElement?.getAttribute("aria-label")).toBe("Search git actions"),
+    );
+    expect(document.querySelector("[data-thread-details-card]")).not.toBeNull();
+    await userEvent.keyboard("Commit{Enter}");
+    await expect.element(page.getByRole("dialog", { name: "Commit changes" })).toBeVisible();
+    expect(document.querySelector("[data-thread-details-card]")).not.toBeNull();
+    expect(commits()).toBe(0);
+  },
+);
 
 describe("Git actions while thread details load", () => {
   it("does not offer a feature branch for a server thread without task permission", async () => {
-    await render();
+    setup();
+    await using _screen = await render(control());
     await openCommitDialog();
 
     // The primary environment's task grant must not leak into this thread's environment.
@@ -210,8 +341,9 @@ describe("Git actions while thread details load", () => {
   });
 
   it("checks the task grant again when the feature-branch commit runs", async () => {
+    setup();
     state.scopes.add(AuthOrchestrationOperateScope);
-    await render();
+    await using _screen = await render(control());
     await openCommitDialog();
     state.scopes.delete(AuthOrchestrationOperateScope);
 
@@ -223,9 +355,10 @@ describe("Git actions while thread details load", () => {
   });
 
   it("commits and synchronizes the server thread before details finish loading", async () => {
+    setup();
     state.primaryScopes.clear();
     state.scopes.add(AuthOrchestrationOperateScope);
-    await render();
+    await using _screen = await render(control());
     await openCommitDialog();
     await userEvent.click(button("Commit on new branch"));
 
@@ -236,11 +369,12 @@ describe("Git actions while thread details load", () => {
   });
 
   it("synchronizes archived thread detail after its shell disappears", async () => {
+    setup();
     state.scopes.add(AuthOrchestrationOperateScope);
     state.detail = { branch: "main" };
-    await render();
+    await using screen = await render(control());
     state.shell = null;
-    await render();
+    await screen.rerender(control());
     await openCommitDialog();
     await userEvent.click(button("Commit on new branch"));
 
@@ -250,9 +384,10 @@ describe("Git actions while thread details load", () => {
   });
 
   it("requires task permission before changing an archived thread's branch", async () => {
+    setup();
     state.shell = null;
     state.detail = { branch: "main" };
-    await render();
+    await using _screen = await render(control());
     await openCommitDialog();
 
     await expect.element(button("Commit on new branch")).toBeDisabled();
@@ -260,9 +395,10 @@ describe("Git actions while thread details load", () => {
   });
 
   it("uses the current shell branch when cached detail names the new branch", async () => {
+    setup();
     state.scopes.add(AuthOrchestrationOperateScope);
     state.detail = { branch: "feature" };
-    await render();
+    await using _screen = await render(control());
     await openCommitDialog();
     await userEvent.click(button("Commit on new branch"));
 
@@ -276,9 +412,10 @@ describe("Git actions while thread details load", () => {
   ] as const)(
     "uses the fresh task grant after Git finishes, revoking %s",
     async (revokedScope, syncsThread) => {
+      setup();
       state.scopes.add(AuthOrchestrationOperateScope);
       state.afterGitAction = () => state.scopes.delete(revokedScope);
-      await render();
+      await using _screen = await render(control());
       await openCommitDialog();
       await userEvent.click(button("Commit on new branch"));
 
@@ -290,7 +427,8 @@ describe("Git actions while thread details load", () => {
   );
 
   it("keeps ordinary commits available while details load", async () => {
-    await render();
+    setup();
+    await using _screen = await render(control());
     await openCommitDialog();
     await userEvent.click(button("Commit"));
 
@@ -300,9 +438,10 @@ describe("Git actions while thread details load", () => {
   });
 
   it("keeps feature-branch commits available for a local draft", async () => {
+    setup();
     state.shell = null;
     state.draft = { branch: "main", worktreePath: null, envMode: "local" };
-    await render();
+    await using _screen = await render(control());
     await openCommitDialog();
     await userEvent.click(button("Commit on new branch"));
 
@@ -313,13 +452,11 @@ describe("Git actions while thread details load", () => {
 });
 
 describe("Default branch prompt", () => {
-  beforeEach(() => {
+  it("moves the commit to a feature branch when asked", async () => {
+    setup();
     state.isDefaultRef = true;
     state.scopes.add(AuthOrchestrationOperateScope);
-  });
-
-  it("moves the commit to a feature branch when asked", async () => {
-    await render();
+    await using _screen = await render(control());
     await userEvent.click(button(/^Commit & push/));
     await expect
       .element(page.getByRole("dialog", { name: "Commit & push to default ref?" }))
@@ -333,7 +470,10 @@ describe("Default branch prompt", () => {
   });
 
   it("checks the task grant again when the feature branch is chosen", async () => {
-    await render();
+    setup();
+    state.isDefaultRef = true;
+    state.scopes.add(AuthOrchestrationOperateScope);
+    await using _screen = await render(control());
     await userEvent.click(button(/^Commit & push/));
     await expect
       .element(page.getByRole("dialog", { name: "Commit & push to default ref?" }))
@@ -351,12 +491,13 @@ describe("Git action targets across thread navigation", () => {
   const quickAction = () => button(/^Commit, push & /);
 
   it("runs a retained PR toast in the thread that produced it", async () => {
-    await render("first", "/first");
+    setup();
+    await using screen = await render(control("first", "/first"));
     await userEvent.click(quickAction());
     await vi.waitFor(() => expect(state.toasts.some((toast) => toast.actionProps)).toBe(true));
     const toast = state.toasts.find((toast) => toast.actionProps)!;
 
-    await render("second", "/second");
+    await screen.rerender(control("second", "/second"));
     await act(async () => toast.actionProps!.onClick());
 
     expect(state.actions.at(-1)).toMatchObject({
@@ -366,12 +507,14 @@ describe("Git action targets across thread navigation", () => {
   });
 
   it("runs the memoized button in the current thread after navigation", async () => {
+    setup();
+    await using screen = await render(control("first", "/first"));
     for (const [thread, cwd] of [
       ["first", "/first"],
       ["second", "/second"],
       ["first", "/first"],
     ] as const) {
-      await render(thread, cwd);
+      await screen.rerender(control(thread, cwd));
       await userEvent.click(quickAction());
       await vi.waitFor(() =>
         expect(state.actions.at(-1)).toMatchObject({ scope: { cwd }, input: { threadId: thread } }),

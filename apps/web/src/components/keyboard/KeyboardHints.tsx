@@ -4,7 +4,7 @@ import { useKeyboardCommands } from "./keyboardCommands";
 
 const alphabet = "asdfghjklqwertyuiopzxcvbnm";
 const selector =
-  'button,a[href],input:not([type="hidden"]),textarea,select,[role="button"],[role="combobox"],[role="tab"],[contenteditable="true"],[tabindex="0"]';
+  'button,a[href],summary,input:not([type="hidden"]),textarea,select,[role="button"],[role="combobox"],[role="tab"],[contenteditable="true"],[tabindex="0"]';
 
 export function keyboardHintTargets(root: ParentNode = document) {
   return Array.from(root.querySelectorAll<HTMLElement>(selector))
@@ -20,7 +20,7 @@ export function keyboardHintTargets(root: ParentNode = document) {
         box.right > 0 &&
         box.top < window.innerHeight &&
         box.left < window.innerWidth &&
-        style.visibility === "visible" &&
+        element.checkVisibility({ visibilityProperty: true }) &&
         style.display !== "none"
       );
     })
@@ -32,11 +32,12 @@ export function KeyboardHints() {
   const [prefix, setPrefix] = useState("");
   const layer = useRef<HTMLDivElement>(null);
   const origin = useRef<HTMLElement | null>(null);
-  const close = (target = origin.current) => {
+  const close = (target?: HTMLElement | null) => {
+    const focusTarget = target === undefined ? origin.current : target;
     setTargets([]);
     setPrefix("");
     requestAnimationFrame(() => {
-      if (target?.isConnected) target.focus({ preventScroll: true });
+      if (focusTarget?.isConnected) focusTarget.focus({ preventScroll: true });
     });
   };
   useKeyboardCommands({
@@ -76,6 +77,10 @@ export function KeyboardHints() {
       tabIndex={-1}
       className="fixed inset-0 z-[100] outline-none"
       onPointerDown={() => close()}
+      onBlur={() => {
+        setTargets([]);
+        setPrefix("");
+      }}
       onKeyDownCapture={(event) => {
         if (event.nativeEvent.isComposing || event.ctrlKey || event.altKey || event.metaKey) return;
         event.preventDefault();

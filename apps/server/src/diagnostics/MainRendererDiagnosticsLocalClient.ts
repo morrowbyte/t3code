@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Named local socket adapter; private filesystem ownership is checked before and after every exchange.
-import * as NodeFS from "node:fs/promises";
+import * as NodeFSP from "node:fs/promises";
 import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -50,9 +50,9 @@ export async function inspectLocalMainBinding(input: {
   readonly profileLockPath: string;
   readonly userId: number;
 }): Promise<LocalMainBinding> {
-  const directory = await NodeFS.lstat(input.directory);
-  const socket = await NodeFS.lstat(input.address);
-  const lock = await NodeFS.lstat(input.profileLockPath);
+  const directory = await NodeFSP.lstat(input.directory);
+  const socket = await NodeFSP.lstat(input.address);
+  const lock = await NodeFSP.lstat(input.profileLockPath);
   if (
     !directory.isDirectory() ||
     directory.isSymbolicLink() ||
@@ -65,21 +65,21 @@ export async function inspectLocalMainBinding(input: {
     lock.uid !== input.userId
   )
     throw new Error("local-main-ownership-unavailable");
-  const target = await NodeFS.readlink(input.profileLockPath);
+  const target = await NodeFSP.readlink(input.profileLockPath);
   const prefix = `${NodeOS.hostname()}-`;
   if (!target.startsWith(prefix) || !/^[1-9][0-9]*$/.test(target.slice(prefix.length)))
     throw new Error("local-main-profile-unavailable");
   const pid = Number(target.slice(prefix.length));
-  const executable = await NodeFS.readlink(`/proc/${pid}/exe`);
+  const executable = await NodeFSP.readlink(`/proc/${pid}/exe`);
   const version =
     /^\/nix\/store\/[a-z0-9]{32}-t3code-weasel-([^/]+)\/lib\/t3code-weasel\/t3code$/.exec(
       executable,
     )?.[1];
   if (!version) throw new Error("local-main-executable-unavailable");
-  const unix = await NodeFS.readFile("/proc/net/unix", "utf8");
-  const entries = await NodeFS.readdir(`/proc/${pid}/fd`);
+  const unix = await NodeFSP.readFile("/proc/net/unix", "utf8");
+  const entries = await NodeFSP.readdir(`/proc/${pid}/fd`);
   const links = await Promise.all(
-    entries.map((entry) => NodeFS.readlink(`/proc/${pid}/fd/${entry}`).catch(() => "")),
+    entries.map((entry) => NodeFSP.readlink(`/proc/${pid}/fd/${entry}`).catch(() => "")),
   );
   // The canonical server binds a random staging pathname then renames it onto
   // the control address. Linux retains that original name in /proc/net/unix.
@@ -270,7 +270,7 @@ export const make = Effect.fn("MainRendererDiagnosticsLocalClient.make")(functio
   const home = yield* HostProcess.HomeDirectory;
   let pending = false;
   return MainRendererDiagnosticsLocalClient.of({
-    read: (request, environmentId) =>
+    read: Effect.fn("MainRendererDiagnosticsLocalClient.read")((request, environmentId) =>
       Effect.gen(function* () {
         const decoded = yield* Schema.decodeEffect(MainRendererDiagnosticsReadInput, {
           onExcessProperty: "error",
@@ -348,6 +348,7 @@ export const make = Effect.fn("MainRendererDiagnosticsLocalClient.make")(functio
           ),
         );
       }),
+    ),
   });
 });
 export const layer = Layer.effect(MainRendererDiagnosticsLocalClient, make());

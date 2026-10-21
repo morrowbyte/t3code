@@ -1,6 +1,7 @@
 import type { PullRequestAction } from "@t3tools/contracts";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { SearchIcon } from "lucide-react";
+import { PullRequestChangeBreakdownStat } from "./PullRequestChangeBreakdownStat";
 import { PullRequestStackPopover } from "./PullRequestStackPopover";
 import {
   PullRequestSpeedActions,
@@ -22,11 +23,7 @@ import {
   PullRequestRowGlyph,
   PullRequestRowLines,
 } from "./PullRequestListRow";
-import {
-  PullRequestDiffStat,
-  PullRequestLabelChip,
-  PullRequestReviewDecisionGlyph,
-} from "./pullRequestPresentation";
+import { PullRequestLabelChip, PullRequestReviewDecisionGlyph } from "./pullRequestPresentation";
 
 const LABEL_SLOTS = [
   { overflow: "@xl/pr-row-meta:hidden" },
@@ -111,6 +108,9 @@ function PullRequestRowImpl({
       ref={statsRef}
       data-pull-request-stats-key={statsKey}
       data-pull-request-key={statsKey}
+      data-keyboard-object="Pull request"
+      tabIndex={-1}
+      aria-label={`PR ${entry.number}: ${entry.title}`}
       className={cn(
         "flex items-center rounded-md [content-visibility:auto] [contain-intrinsic-block-size:56.5px]",
         selected ? "bg-accent" : "hover:bg-accent/60",
@@ -118,6 +118,7 @@ function PullRequestRowImpl({
     >
       <button
         type="button"
+        data-keyboard-primary
         aria-current={selected ? "true" : undefined}
         onClick={() => onSelect(entry)}
         className={cn(
@@ -186,7 +187,14 @@ function PullRequestRowImpl({
                   }
                 />
               ) : null}
-              <PullRequestDiffStat
+              <PullRequestChangeBreakdownStat
+                environmentId={entry.environmentId}
+                reference={{
+                  projectId: entry.projectId,
+                  host: entry.host,
+                  repository: entry.repository,
+                  number: entry.number,
+                }}
                 additions={entry.additions}
                 deletions={entry.deletions}
                 className="font-mono"

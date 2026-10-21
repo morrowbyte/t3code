@@ -1,3 +1,4 @@
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import {
   JarvisNativeNotification,
@@ -106,10 +107,10 @@ const make = Effect.gen(function* () {
     Config.option,
   );
   const engineSessionId = Option.getOrNull(configuredEngine);
-  const connect = (request: JarvisNativeRequest) =>
+  const connect = Effect.fn("JarvisClient.connect")((request: JarvisNativeRequest) =>
     Effect.gen(function* () {
       if (
-        process.platform !== "linux" ||
+        (yield* HostProcess.Platform) !== "linux" ||
         Option.isNone(runtime) ||
         engineSessionId === null ||
         process.getuid === undefined
@@ -181,7 +182,8 @@ const make = Effect.gen(function* () {
           "Native response identity differs; reconcile the existing request/job.",
         );
       return { response, next };
-    });
+    }),
+  );
   return JarvisClient.of({
     engineSessionId,
     call: (request) =>

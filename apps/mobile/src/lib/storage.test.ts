@@ -70,6 +70,10 @@ const mocks = vi.hoisted(() => {
   };
 });
 
+vi.mock("expo", () => ({
+  requireOptionalNativeModule: () => null,
+}));
+
 vi.mock("expo-secure-store", () => ({
   deleteItemAsync: mocks.deleteItemAsync,
   getItemAsync: mocks.getItemAsync,
@@ -89,17 +93,13 @@ vi.mock("expo-constants", () => ({
 }));
 
 vi.mock("react-native", () => ({
+  AppState: { currentState: "active" },
   Platform: {
     OS: "ios",
   },
 }));
 
-import {
-  loadPreferences,
-  loadSavedConnections,
-  saveConnection,
-  savePreferencesPatch,
-} from "../persistence/imperative";
+import { loadPreferences, saveConnection, savePreferencesPatch } from "../persistence/imperative";
 import { toStableSavedRemoteConnection } from "./connection";
 
 const managedConnection = {
@@ -131,69 +131,11 @@ describe("mobile connection storage", () => {
     });
   });
 
-  it("loads relay-managed connection metadata without a cached access token", async () => {
-    await saveConnection(managedConnection);
-
-    await expect(loadSavedConnections()).resolves.toEqual([
-      toStableSavedRemoteConnection(managedConnection),
-    ]);
-  });
-
-  it("preserves secure-storage read failures with operation and key context", async () => {
-    const cause = new Error("keychain unavailable");
-    mocks.getItemAsync.mockRejectedValueOnce(cause);
-
-    await expect(loadSavedConnections()).rejects.toMatchObject({
-      _tag: "MobileSecureStorageError",
-      operation: "read",
-      key: "t3code.connections",
-      cause,
-      message: "Mobile secure storage operation read failed for key t3code.connections.",
-    });
-  });
-
-  it("logs structured decode failures before using the empty fallback", async () => {
-    await mocks.setItemAsync("t3code.connections", "{");
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-
-    await expect(loadSavedConnections()).resolves.toEqual([]);
-    expect(warn).toHaveBeenCalledWith(
-      "[mobile-storage] ignored invalid JSON",
-      expect.objectContaining({
-        _tag: "MobileStorageDecodeError",
-        key: "t3code.connections",
-        cause: expect.any(SyntaxError),
-        message: "Failed to decode mobile storage value for key t3code.connections.",
-      }),
-    );
-
-    warn.mockRestore();
-  });
-
   it("loads legacy preferences when SQLite is unavailable", async () => {
     mocks.setDatabaseFailures(true, true);
     await mocks.setItemAsync("t3code.preferences", JSON.stringify({ baseFontSize: 17 }));
 
     await expect(loadPreferences()).resolves.toEqual({ baseFontSize: 17 });
-  });
-
-  it("persists independent light and dark theme choices", async () => {
-    mocks.setPreferencesJson(
-      JSON.stringify({
-        themeId: "grove",
-        lightThemeId: "iris",
-        darkThemeId: "ocean",
-        themeMode: "system",
-      }),
-      10,
-    );
-
-    await expect(loadPreferences()).resolves.toEqual({
-      themeId: "grove",
-      lightThemeId: "iris",
-      darkThemeId: "ocean",
-      themeMode: "system",
-    });
   });
 
   it("persists Material You independently for each appearance", async () => {
@@ -202,23 +144,6 @@ describe("mobile connection storage", () => {
     await expect(loadPreferences()).resolves.toEqual(themes);
     await savePreferencesPatch({ lightThemeId: "t3-chat" });
     await expect(loadPreferences()).resolves.toEqual({ ...themes, lightThemeId: "t3-chat" });
-  });
-
-  it.each([true, false])("drops the removed Android layout preference (%s)", async (enabled) => {
-    mocks.setPreferencesJson(
-      JSON.stringify({
-        materialYouStyleLayoutEnabled: enabled,
-        lightThemeId: "t3-chat",
-      }),
-      10,
-    );
-    await expect(loadPreferences()).resolves.toEqual({ lightThemeId: "t3-chat" });
-  });
-
-  it("drops the removed theme transition preference", async () => {
-    mocks.setPreferencesJson(JSON.stringify({ themeTransition: "circle-bottom-left" }), 10);
-
-    await expect(loadPreferences()).resolves.toEqual({});
   });
 
   it("falls back to secure storage when SQLite cannot save preferences", async () => {

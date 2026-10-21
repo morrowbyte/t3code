@@ -1,5 +1,6 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { deriveThreadQueueWorkflowState } from "@t3tools/client-runtime/state/thread-workflows";
+import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
 import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import type {
   ChatAttachment as ContractChatAttachment,
@@ -10,6 +11,8 @@ import type {
 } from "@t3tools/contracts";
 import {
   Clock3Icon,
+  ChevronUpIcon,
+  ChevronDownIcon,
   CornerUpRightIcon,
   GripVerticalIcon,
   ListOrderedIcon,
@@ -26,6 +29,7 @@ import { cn } from "~/lib/utils";
 import { ComposerBanner } from "./ComposerBanner";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { handleObjectActionKey } from "./objectKeyboardActions";
 
 export interface EditQueuedRunRequest {
   readonly runId: RunId;
@@ -246,8 +250,10 @@ export function QueuedRunsControl({
         <ComposerBanner.Scroll className={cn("max-h-32", !expanded && "hidden")}>
           <ComposerBanner.Children render={<ol />} id={queueListId}>
             {items.map((item) => {
-              const previewText = replaceComposerContextReferences(item.text, (reference) =>
-                reference.kind === "image" && item.thumbnails.length > 0 ? "" : reference.label,
+              const previewText = assistantCitationsToPlainText(
+                replaceComposerContextReferences(item.text, (reference) =>
+                  reference.kind === "image" && item.thumbnails.length > 0 ? "" : reference.label,
+                ),
               ).trim();
               const rowRunId = item.runId;
               const rowServerIndex = item.serverIndex;
@@ -258,6 +264,36 @@ export function QueuedRunsControl({
                 <ComposerBanner.Row
                   render={<li />}
                   key={item.key}
+                  data-keyboard-object="Queued message"
+                  tabIndex={-1}
+                  aria-label={`Queued message: ${previewText.slice(0, 120)}`}
+                  onKeyDown={(event) => {
+                    if (
+                      event.target === event.currentTarget &&
+                      event.altKey &&
+                      !event.ctrlKey &&
+                      !event.metaKey
+                    ) {
+                      const action =
+                        event.key === "ArrowUp"
+                          ? "earlier"
+                          : event.key === "ArrowDown"
+                            ? "later"
+                            : null;
+                      const control = action
+                        ? event.currentTarget.querySelector<HTMLButtonElement>(
+                            `[data-keyboard-action="${action}"]:not(:disabled)`,
+                          )
+                        : null;
+                      if (control) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        if (!event.repeat) control.click();
+                        return;
+                      }
+                    }
+                    handleObjectActionKey(event, { e: "edit", Delete: "remove", s: "steer" });
+                  }}
                   aria-current={isEditing ? "true" : undefined}
                   className={cn(
                     "relative rounded-sm",
@@ -396,6 +432,9 @@ export function QueuedRunsControl({
                                 size="icon-xs"
                                 variant="ghost-muted"
                                 aria-label="Edit queued message"
+                                data-keyboard-action="edit"
+                                data-keyboard-primary
+                                aria-keyshortcuts="E"
                                 disabled={item.runId === null || busyRunId !== null}
                                 onClick={() => {
                                   if (item.runId !== null && item.messageId !== null) {
@@ -421,6 +460,9 @@ export function QueuedRunsControl({
                             <Button
                               size="xs"
                               variant="ghost-muted"
+                              aria-label="Steer queued message"
+                              data-keyboard-action="steer"
+                              aria-keyshortcuts="S"
                               disabled={
                                 item.runId === null ||
                                 busyRunId !== null ||
@@ -447,6 +489,8 @@ export function QueuedRunsControl({
                             render={
                               <ComposerBanner.Dismiss
                                 aria-label="Remove queued message"
+                                data-keyboard-action="remove"
+                                aria-keyshortcuts="Delete"
                                 disabled={item.runId === null || busyRunId !== null}
                                 onClick={() => {
                                   if (item.runId !== null) void remove(item.runId);
@@ -456,6 +500,36 @@ export function QueuedRunsControl({
                           />
                           <TooltipPopup>Remove from queue</TooltipPopup>
                         </Tooltip>
+                        {canReorder && rowRunId !== null && rowServerIndex !== null ? (
+                          <span className="flex shrink-0 items-center">
+                            <Button
+                              size="icon-xs"
+                              variant="ghost-muted"
+                              aria-label="Move queued message earlier"
+                              aria-keyshortcuts="Alt+ArrowUp"
+                              data-keyboard-action="earlier"
+                              disabled={busyRunId !== null || rowServerIndex === 0}
+                              onClick={() =>
+                                void move(rowRunId, queued[rowServerIndex - 1]?.run.id ?? null)
+                              }
+                            >
+                              <ChevronUpIcon />
+                            </Button>
+                            <Button
+                              size="icon-xs"
+                              variant="ghost-muted"
+                              aria-label="Move queued message later"
+                              aria-keyshortcuts="Alt+ArrowDown"
+                              data-keyboard-action="later"
+                              disabled={busyRunId !== null || rowServerIndex >= queued.length - 1}
+                              onClick={() =>
+                                void move(rowRunId, queued[rowServerIndex + 2]?.run.id ?? null)
+                              }
+                            >
+                              <ChevronDownIcon />
+                            </Button>
+                          </span>
+                        ) : null}
                       </>
                     )}
                   </ComposerBanner.Actions>

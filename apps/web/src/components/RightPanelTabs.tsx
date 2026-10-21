@@ -159,9 +159,7 @@ export interface PullRequestTabStatus {
 
 export type PullRequestTabStatusSeed = Pick<PullRequestTabStatus, "state" | "isDraft">;
 
-export function shouldOpenDefaultBrowserProfileFromMenuClick(
-  pointerType: string | undefined,
-): boolean {
+function shouldOpenDefaultBrowserProfileFromMenuClick(pointerType: string | undefined): boolean {
   return pointerType !== "touch";
 }
 
@@ -175,16 +173,19 @@ const SURFACE_DISABLED_REASONS = {
   device: "Devices are only available from a thread.",
 } as const;
 
+// Closed keepMounted popups must stop blocking shortcuts once their exit transition ends.
 const LAUNCHER_SHORTCUT_BLOCKING_LAYERS = [
-  '[data-slot="dialog-popup"]',
-  '[data-slot="alert-dialog-popup"]',
-  '[data-slot="command-dialog-popup"]',
-  '[data-slot="menu-popup"]',
-  '[data-slot="select-popup"]',
-  '[data-slot="popover-popup"]',
-  '[data-slot="combobox-popup"]',
-  '[data-slot="autocomplete-popup"]',
-].join(",");
+  "dialog-popup",
+  "alert-dialog-popup",
+  "command-dialog-popup",
+  "menu-popup",
+  "select-popup",
+  "popover-popup",
+  "combobox-popup",
+  "autocomplete-popup",
+]
+  .map((slot) => `[data-slot="${slot}"]:is([data-open],[data-ending-style])`)
+  .join(",");
 
 const SURFACE_UNAVAILABLE_HINTS = {
   browser: "Only available in the desktop app.",
@@ -225,7 +226,7 @@ function previewTabIdOf(
  * resolve while the preview manager's createTab is still in flight, and muting
  * then fails with a PreviewTabNotFoundError nothing surfaces to the user.
  */
-export function tabMuteMenuItem(input: {
+function tabMuteMenuItem(input: {
   overlay: DesktopPreviewOverlay | null;
   canResolveRuntimeTabId: boolean;
 }): { label: string; disabled: boolean } {
@@ -804,7 +805,8 @@ interface RightPanelTabHandlers {
   onFinishRename: (surfaceId: string, title: string) => void;
 }
 
-function handleTabMouseDown(event: ReactMouseEvent) {
+// Chromium on Linux only suppresses primary-selection paste when mouseup is cancelled.
+function preventTabMiddleButtonDefault(event: ReactMouseEvent) {
   if (event.button !== 1) return;
   event.preventDefault();
 }
@@ -912,6 +914,7 @@ function RightPanelTab(
             render={
               <button
                 type="button"
+                data-keyboard-primary
                 onDoubleClick={() => {
                   if (surface.kind === "device" && props.canRename) onStartRename(surface.id);
                 }}
@@ -940,7 +943,12 @@ function RightPanelTab(
   return (
     <div
       data-active-tab={props.active}
-      onMouseDown={handleTabMouseDown}
+      data-surface-id={surface.id}
+      data-keyboard-object="Panel tab"
+      tabIndex={-1}
+      aria-label={title}
+      onMouseDown={preventTabMiddleButtonDefault}
+      onMouseUp={preventTabMiddleButtonDefault}
       onAuxClick={(event) => onAuxClick(event, surface)}
       onContextMenu={(event) => onContextMenu(event, surface)}
       {...listeners}
@@ -1266,6 +1274,71 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
           props.mode === "inline" && props.maximized && COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
         )}
         data-right-panel-tabbar
+        data-keyboard-local="true"
+        data-keyboard-help="Left/Right or J/K: switch tab · Home/End: first/last tab · Alt Left/Right: reorder tab · F2: rename device tab"
+        onKeyDownCapture={(event) => {
+          if (
+            event.defaultPrevented ||
+            event.nativeEvent.isComposing ||
+            event.nativeEvent.keyCode === 229 ||
+            event.ctrlKey ||
+            event.metaKey ||
+            event.shiftKey
+          )
+            return;
+          const target = event.target;
+          if (
+            !(target instanceof Element) ||
+            target.closest('input,textarea,[role="menu"],[role="listbox"]')
+          )
+            return;
+          const tab = target.closest<HTMLElement>("[data-surface-id]");
+          if (!tab) return;
+          const index = props.surfaces.findIndex((surface) => surface.id === tab.dataset.surfaceId);
+          const surface = props.surfaces[index];
+          if (!surface) return;
+          const key = event.key.toLowerCase();
+          if (key === "f2" && surface.kind === "device" && props.onRenameDevice) {
+            event.preventDefault();
+            event.stopPropagation();
+            setRenamingDevice(surface.id);
+            return;
+          }
+          const direction = ["arrowright", "arrowdown", "j"].includes(key)
+            ? 1
+            : ["arrowleft", "arrowup", "k"].includes(key)
+              ? -1
+              : 0;
+          const next =
+            key === "home"
+              ? 0
+              : key === "end"
+                ? props.surfaces.length - 1
+                : direction
+                  ? (index + direction + props.surfaces.length) % props.surfaces.length
+                  : -1;
+          if (next < 0) return;
+          event.preventDefault();
+          event.stopPropagation();
+          if (event.altKey) {
+            if (direction && props.onMoveSurface)
+              props.onMoveSurface(
+                surface.id,
+                Math.max(0, Math.min(props.surfaces.length - 1, index + direction)),
+              );
+            return;
+          }
+          const nextSurface = props.surfaces[next];
+          if (!nextSurface) return;
+          onActivateTab(nextSurface);
+          requestAnimationFrame(() => {
+            const nextTab = [
+              ...(tabListRef.current?.querySelectorAll<HTMLElement>("[data-surface-id]") ?? []),
+            ].find((item) => item.dataset.surfaceId === nextSurface.id);
+            nextTab?.querySelector<HTMLElement>("[data-keyboard-primary]")?.focus();
+            nextTab?.scrollIntoView({ block: "nearest", inline: "nearest" });
+          });
+        }}
       >
         <ScrollArea
           radius="none"

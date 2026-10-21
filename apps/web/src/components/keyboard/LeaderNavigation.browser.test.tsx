@@ -330,6 +330,65 @@ describe("LeaderNavigation", () => {
     expect(document.querySelector('[role="dialog"][aria-label="Keyboard navigation"]')).toBeNull();
   });
 
+  it.each([false, true])(
+    "executes a rapid thread sequence with an already mounted menu: %s",
+    async (mounted) => {
+      await act(() => requestNavigationMode());
+      if (mounted) await open();
+      const events = (mounted ? ["t", "n"] : [" ", "t", "n"]).map(
+        (key) => new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }),
+      );
+      await act(() => {
+        for (const event of events) (document.activeElement ?? document.body).dispatchEvent(event);
+      });
+      await flush();
+      expect(events.every((event) => event.defaultPrevented)).toBe(true);
+      expect(action).toHaveBeenCalledOnce();
+      expect(
+        document.querySelector('[role="dialog"][aria-label="Keyboard navigation"]'),
+      ).toBeNull();
+      await flush();
+      expect(action).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    { group: "f", key: "a", command: "composer.attachFiles", mounted: false },
+    { group: "f", key: "a", command: "composer.attachFiles", mounted: true },
+    { group: "w", key: "s", command: "project.scripts", mounted: false },
+    { group: "w", key: "s", command: "project.scripts", mounted: true },
+  ] as const)(
+    "executes rapid $group,$key once with an already mounted menu: $mounted",
+    async ({ group, key, command, mounted }) => {
+      const run = vi.fn();
+      function Commands() {
+        useKeyboardCommands({ [command]: run });
+        return (
+          <SidebarProvider>
+            <LeaderNavigationHost />
+          </SidebarProvider>
+        );
+      }
+      await act(() => root.render(<Commands />));
+      await act(() => requestNavigationMode());
+      if (mounted) await open();
+      const events = (mounted ? [group, key] : [" ", group, key]).map(
+        (key) => new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }),
+      );
+      await act(() => {
+        for (const event of events) (document.activeElement ?? document.body).dispatchEvent(event);
+      });
+      await flush();
+      expect(events.every((event) => event.defaultPrevented)).toBe(true);
+      expect(run).toHaveBeenCalledOnce();
+      expect(
+        document.querySelector('[role="dialog"][aria-label="Keyboard navigation"]'),
+      ).toBeNull();
+      await flush();
+      expect(run).toHaveBeenCalledOnce();
+    },
+  );
+
   it("backs out one leader group at a time while keeping navigation active", async () => {
     await open();
     await press("t");

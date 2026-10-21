@@ -105,7 +105,7 @@ if (process.argv.includes("--version")) {
 }
 
 if (packagedWeaselProfile) {
-  if (process.platform === "win32") {
+  if (Effect.runSync(HostProcess.Platform) === "win32") {
     const binding = resolveWindowsProfileBinding({
       homeDirectory: NodeOS.homedir(),
       appDataDirectory: process.env.APPDATA,

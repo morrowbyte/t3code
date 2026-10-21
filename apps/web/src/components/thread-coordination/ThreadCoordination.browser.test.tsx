@@ -7,6 +7,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, expect, it, vi } from "vite-plus/test";
 
 const fixture = vi.hoisted(() => ({
+  available: true,
   threads: [] as EnvironmentThreadShell[],
   allowed: true,
   active: false,
@@ -14,6 +15,10 @@ const fixture = vi.hoisted(() => ({
   calls: [] as unknown[],
   navigate: vi.fn(),
   release: null as (() => void) | null,
+}));
+
+vi.mock(import("./availability"), () => ({
+  isThreadCoordinationAvailable: () => fixture.available,
 }));
 
 vi.mock(import("@tanstack/react-router"), async (original) => ({
@@ -81,6 +86,8 @@ afterEach(async () => {
   await act(async () => root?.unmount());
   container?.remove();
   localStorage.clear();
+  fixture.available = true;
+  vi.restoreAllMocks();
 });
 
 const environmentId = EnvironmentId.make("wea31-fixture");
@@ -104,6 +111,37 @@ const makeThreads = () =>
         interactionMode: "default",
       }) as EnvironmentThreadShell,
   );
+
+it.each(["[]", '["one","missing-thread"]', "invalid old state"])(
+  "leaves dormant group state untouched and never mounts coordination (%s)",
+  async (stored) => {
+    const availability = await vi.importActual<typeof import("./availability")>("./availability");
+    expect(availability.isThreadCoordinationAvailable()).toBe(false);
+    fixture.available = availability.isThreadCoordinationAvailable();
+    fixture.threads = makeThreads();
+    fixture.calls = [];
+    const key = `t3code:thread-coordination:v1:${JSON.stringify([environmentId, "coordinator"])}`;
+    localStorage.setItem(key, stored);
+    const read = vi.spyOn(Storage.prototype, "getItem");
+    const write = vi.spyOn(Storage.prototype, "setItem");
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () =>
+      root!.render(
+        <ThreadCoordination
+          threadRef={{ environmentId, threadId: ThreadId.make("coordinator") }}
+        />,
+      ),
+    );
+    expect(container.childElementCount).toBe(0);
+    expect(read).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    expect(fixture.calls).toEqual([]);
+    expect(localStorage.getItem(key)).toBe(stored);
+  },
+);
+
 it("keeps a reversible local group across remount and dispatches once to the selected original", async () => {
   fixture.threads = makeThreads();
   fixture.calls = [];

@@ -4,7 +4,13 @@ import type {
   ContextMenuOpenContext as TreeContextMenuOpenContext,
 } from "@pierre/trees";
 import type { EnvironmentId, ProjectEntry } from "@t3tools/contracts";
-import { FileTree, useFileTree, useFileTreeSearch, useFileTreeSelector } from "@pierre/trees/react";
+import {
+  FileTree,
+  useFileTree,
+  useFileTreeSearch,
+  useFileTreeSelector,
+  useFileTreeSelection,
+} from "@pierre/trees/react";
 import { settlePromise } from "@t3tools/client-runtime/state/runtime";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
@@ -34,6 +40,7 @@ import { buildFileTreePathUpdates } from "./fileTreePathReconciliation";
 import { loadFileAncestors } from "./loadFileAncestors";
 import { useDirectoryEntries } from "./useDirectoryEntries";
 import { useProjectPathSearch } from "~/state/queries";
+import { treeNavigationKey } from "./panelTreeKeyboard";
 
 interface FileBrowserPanelProps {
   environmentId: EnvironmentId;
@@ -97,7 +104,9 @@ function FileSearchField(props: {
         spellCheck={false}
         onChange={(event) => props.onValueChange(event.target.value)}
         onKeyDown={(event) => {
-          if (event.key !== "Escape") return;
+          if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
+          event.preventDefault();
+          event.stopPropagation();
           props.onClose();
           event.currentTarget.blur();
         }}
@@ -130,8 +139,12 @@ function buildTreeEntries(
     entries.map((entry) => [entry.path, entry.kind] as const),
   );
   const treePaths = entries.map(treePath);
-  const directoryPaths = entries.filter((entry) => entry.kind === "directory").map(treePath);
-  return { entries, entryKinds, treePaths, directoryPaths };
+  const directories = entries.filter((entry) => entry.kind === "directory");
+  const directoryPaths = directories.map(treePath);
+  // Expanding a folder lists it, and an ignored one such as `node_modules` can hold tens of
+  // thousands, so expand all skips ignored folders. They still open by hand.
+  const expandableDirectoryPaths = directories.filter((entry) => !entry.ignored).map(treePath);
+  return { entries, entryKinds, treePaths, directoryPaths, expandableDirectoryPaths };
 }
 
 export default function FileBrowserPanel({
@@ -165,12 +178,8 @@ export default function FileBrowserPanel({
     { environmentId, cwd: hostFolder ? null : cwd, query: query.slice(0, 256) },
     200,
   );
-  const { entries, entryKinds, treePaths, directoryPaths } = buildTreeEntries(
-    directoryEntries,
-    pathSearch.entries,
-    pathSearch.isPending,
-    query,
-  );
+  const { entries, entryKinds, treePaths, directoryPaths, expandableDirectoryPaths } =
+    buildTreeEntries(directoryEntries, pathSearch.entries, pathSearch.isPending, query);
   const entryKindsRef = useRef(entryKinds);
   const previousTreePathsRef = useRef<readonly string[] | null>(null);
   const syncingSelectionRef = useRef(false);
@@ -321,16 +330,41 @@ export default function FileBrowserPanel({
   // Pierre restores the unfiltered tree when a search has no matches.
   const hasNoSearchMatches = search.value.trim().length > 0 && search.matchingPaths.length === 0;
   const allDirectoriesExpanded = useFileTreeSelector(model, (currentModel) =>
-    areAllDirectoriesExpanded(currentModel, directoryPaths),
+    areAllDirectoriesExpanded(currentModel, expandableDirectoryPaths),
   );
   const toggleAllDirectories = () => {
     const expanded = !(expandAll || allDirectoriesExpanded);
     setExpandAll(expanded);
-    setAllDirectoriesExpanded(model, directoryPaths, expanded);
+    setAllDirectoriesExpanded(
+      model,
+      expanded ? expandableDirectoryPaths : directoryPaths,
+      expanded,
+    );
   };
   const closeSearch = () => {
     setQuery("");
     search.close();
+    requestAnimationFrame(() => {
+      const tree = panelRef.current?.querySelector("file-tree-container");
+      tree?.shadowRoot
+        ?.querySelector<HTMLElement>('[data-item-path][tabindex="0"],[data-item-path]')
+        ?.focus();
+    });
+  };
+  const selectedPaths = useFileTreeSelection(model);
+  const addSelectedToChat = () => {
+    const paths = model.getSelectedPaths();
+    if (!paths.length) return;
+    const mentions = paths.map((path) =>
+      serializeComposerFileLink(panelPath(path.replace(/\/$/, ""))),
+    );
+    if (
+      !composerRef?.current?.insertTextAtEnd(`${mentions.join(" ")} `, {
+        ensureLeadingBoundary: true,
+      })
+    ) {
+      toastManager.add({ type: "error", title: "Unable to add selected files to chat" });
+    }
   };
   const expandedPathsRef = useRef(new Set<string>());
   useEffect(() => {
@@ -411,8 +445,9 @@ export default function FileBrowserPanel({
   }, [ready, entryKinds, model, treePaths]);
 
   useEffect(() => {
-    if (expandAll && !query.trim()) setAllDirectoriesExpanded(model, directoryPaths, true);
-  }, [directoryPaths, expandAll, model, query]);
+    if (expandAll && !query.trim())
+      setAllDirectoriesExpanded(model, expandableDirectoryPaths, true);
+  }, [expandableDirectoryPaths, expandAll, model, query]);
 
   useEffect(() => {
     if (!selectedPath) {
@@ -505,6 +540,38 @@ export default function FileBrowserPanel({
       ref={panelRef}
       className="flex min-h-0 flex-1 flex-col bg-background"
       data-file-browser-panel={`${environmentId}:${cwd}`}
+      data-keyboard-object="File browser"
+      data-keyboard-local="true"
+      data-keyboard-help="J/K or arrows: files · H/L: folders · /: search · A: add selected files to chat · Esc: leave search"
+      onKeyDownCapture={(event) => {
+        if (treeNavigationKey(event)) return;
+        if (
+          event.nativeEvent.isComposing ||
+          event.ctrlKey ||
+          event.metaKey ||
+          event.altKey ||
+          event.shiftKey
+        )
+          return;
+        if (
+          event.nativeEvent
+            .composedPath()
+            .some(
+              (node) =>
+                node instanceof Element && node.matches('input,textarea,[contenteditable="true"]'),
+            )
+        )
+          return;
+        if (event.key === "/") {
+          event.preventDefault();
+          event.stopPropagation();
+          panelRef.current?.querySelector<HTMLInputElement>('input[type="search"]')?.focus();
+        } else if (event.key === "a" && model.getSelectedPaths().length) {
+          event.preventDefault();
+          event.stopPropagation();
+          addSelectedToChat();
+        }
+      }}
     >
       <div
         className="flex h-10 min-h-10 shrink-0 items-center gap-1 border-b border-border/60 bg-background px-2 in-data-[preview-panel-mode=inline]:mb-1 in-data-[preview-panel-mode=inline]:h-9 in-data-[preview-panel-mode=inline]:min-h-9 in-data-[preview-panel-mode=inline]:border-b-transparent"
@@ -518,6 +585,15 @@ export default function FileBrowserPanel({
           onValueChange={handleSearchValueChange}
           onClose={closeSearch}
         />
+        <Button
+          size="xs"
+          variant="ghost"
+          disabled={!selectedPaths.length || !composerRef}
+          aria-label="Add selected files to chat"
+          onClick={addSelectedToChat}
+        >
+          Add to chat
+        </Button>
         {directoryPaths.length > 0 && !hostFolder ? (
           <Tooltip>
             <TooltipTrigger
@@ -561,7 +637,14 @@ export default function FileBrowserPanel({
         </div>
       ) : null}
       {(!ready || pathSearch.isPending) && (
-        <div role="status" className="px-3 py-1 text-xs text-muted-foreground">
+        <div
+          role="status"
+          className={
+            entries.length > 0 && !hasNoSearchMatches
+              ? "sr-only"
+              : "px-3 py-1 text-xs text-muted-foreground"
+          }
+        >
           Loading files…
         </div>
       )}

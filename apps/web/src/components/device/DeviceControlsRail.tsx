@@ -55,6 +55,44 @@ export function DeviceControlsRail(props: {
   return (
     <aside
       aria-label="Device controls"
+      data-keyboard-object="Device controls"
+      data-keyboard-local="true"
+      tabIndex={-1}
+      data-keyboard-help="J/K or up/down: device controls · Home/End: first/last · Enter: activate · Esc: close an open menu"
+      onKeyDown={(event) => {
+        if (
+          event.defaultPrevented ||
+          event.nativeEvent.isComposing ||
+          event.ctrlKey ||
+          event.altKey ||
+          event.metaKey ||
+          event.shiftKey
+        )
+          return;
+        if (
+          event.target instanceof Element &&
+          event.target.closest('[role="menu"],[role="listbox"],input,textarea')
+        )
+          return;
+        const key = event.key.toLowerCase();
+        const direction =
+          key === "j" || key === "arrowdown" ? 1 : key === "k" || key === "arrowup" ? -1 : 0;
+        if (!direction && key !== "home" && key !== "end") return;
+        const controls = [
+          ...event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"),
+        ].filter((button) => button.getClientRects().length > 0);
+        const index = controls.findIndex((button) => button === document.activeElement);
+        const next =
+          key === "home"
+            ? 0
+            : key === "end"
+              ? controls.length - 1
+              : (index + direction + controls.length) % controls.length;
+        if (!controls[next]) return;
+        event.preventDefault();
+        event.stopPropagation();
+        controls[next].focus();
+      }}
       data-layout="rail"
       className="pointer-events-none absolute inset-y-0 right-0 z-10 flex w-14 flex-col items-center gap-2 overflow-y-auto [justify-content:safe_center] py-3 pr-2 [scrollbar-width:none]"
     >

@@ -25,6 +25,31 @@ export const remarkChatMath: Plugin<[], Root> = function () {
       parent.children = parent.children.flatMap((node) => {
         const start = node.position?.start.offset;
         const end = node.position?.end.offset;
+        if (node.type === "paragraph" && start !== undefined && end === source.length) {
+          const raw = source.slice(start, end);
+          const opening = /^ {0,3}(\${2,})[ \t]*\n/.exec(raw);
+          if (opening && !mathSourceIsClosed(raw, true)) {
+            const value = raw.slice(opening[0].length);
+            return [
+              {
+                type: "math" as const,
+                value,
+                position: node.position,
+                data: {
+                  hName: "pre",
+                  hChildren: [
+                    {
+                      type: "element" as const,
+                      tagName: "code",
+                      properties: { className: ["language-math", "math-display"] },
+                      children: [{ type: "text" as const, value }],
+                    },
+                  ],
+                },
+              },
+            ];
+          }
+        }
         if (node.type === "inlineMath" && start !== undefined && end !== undefined) {
           const raw = source.slice(start, end);
           const single = raw.startsWith("$") && !raw.startsWith("$$");
@@ -69,7 +94,7 @@ export const remarkChatMath: Plugin<[], Root> = function () {
                 position,
                 data: {
                   hName: "code",
-                  hProperties: { className: ["language-math"] },
+                  hProperties: { className: ["language-math", "math-inline"] },
                   hChildren: [{ type: "text" as const, value: match[1]! }],
                 },
               },

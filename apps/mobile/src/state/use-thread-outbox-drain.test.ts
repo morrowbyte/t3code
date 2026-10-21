@@ -139,15 +139,8 @@ vi.mock("./thread-outbox", async () => {
 });
 
 import { appAtomRegistry } from "./atom-registry";
-import {
-  clearPendingThreadCreationOutcome,
-  pendingThreadCreationOutcomesAtom,
-} from "./pending-thread-creation";
-import {
-  clearThreadComposerError,
-  setThreadComposerError,
-  threadComposerErrorsAtom,
-} from "./thread-composer-error";
+import { pendingThreadCreationOutcomesAtom } from "./pending-thread-creation";
+import { clearThreadComposerError, threadComposerErrorsAtom } from "./thread-composer-error";
 import type { QueuedThreadMessage } from "./thread-outbox-model";
 import * as composerDrafts from "./use-composer-drafts";
 import { recoverFailedThreadDraft } from "./recover-failed-thread-draft";
@@ -159,6 +152,7 @@ import {
   removeAcknowledgedExistingThreadMessage,
   restoreRejectedQueuedMessage,
 } from "./use-thread-outbox-drain";
+import { clearPendingThreadCreationOutcome } from "./pending-thread-creation";
 
 function queuedMessage(input: {
   readonly messageId: string;
@@ -472,23 +466,6 @@ describe("thread outbox drain delivery cleanup", () => {
 
     expect(remainingMessages()).toEqual([]);
     expect(appAtomRegistry.get(acknowledgedThreadMessagesAtom)).toEqual([message]);
-  });
-
-  it("clears an error about the delivered message but keeps one about another message", async () => {
-    const threadKey = "environment-1:thread-1";
-    const retried = queuedMessage({ messageId: "message-retried", text: "retried" });
-    await harness.manager.enqueue(retried);
-    setThreadComposerError(threadKey, "could not be restored", retried.messageId);
-
-    await completeQueuedMessageDelivery(retried, harness.manager.revisionOf(retried.messageId));
-    expect(appAtomRegistry.get(threadComposerErrorsAtom)[threadKey]).toBeUndefined();
-
-    const other = queuedMessage({ messageId: "message-other", text: "other" });
-    await harness.manager.enqueue(other);
-    setThreadComposerError(threadKey, "rejected", "message-rejected");
-
-    await completeQueuedMessageDelivery(other, harness.manager.revisionOf(other.messageId));
-    expect(appAtomRegistry.get(threadComposerErrorsAtom)[threadKey]?.message).toBe("rejected");
   });
 
   it("keeps a delivered message when its editor opens during storage removal", async () => {

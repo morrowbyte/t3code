@@ -24,7 +24,7 @@ function visible(element: HTMLElement): boolean {
   return (
     !element.closest("[hidden],[inert],[aria-hidden=true]") &&
     element.getClientRects().length > 0 &&
-    getComputedStyle(element).visibility !== "hidden"
+    element.checkVisibility({ visibilityProperty: true })
   );
 }
 
@@ -181,7 +181,10 @@ export function createMessageNavigation() {
     previousTabIndex = message.getAttribute("tabindex");
     message.tabIndex = -1;
     message.setAttribute("data-leader-message-focus", "true");
-    return focusElement(message);
+    const object = message.matches('[data-keyboard-object="Message"]')
+      ? message
+      : message.querySelector<HTMLElement>('[data-keyboard-object="Message"]');
+    return focusElement(object ?? message);
   };
   return {
     enter: () => select(elements(MESSAGE).at(-1)),

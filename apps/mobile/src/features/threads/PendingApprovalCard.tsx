@@ -1,4 +1,4 @@
-import { RequestActionButton } from "./RequestActionButton";
+import { Button } from "../../components/ui/Button";
 import type {
   EnvironmentId,
   ProviderApprovalDecision,
@@ -141,7 +141,7 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
       ) : null}
       <View className="flex-row flex-wrap gap-2.5">
         {options.map((option) => (
-          <RequestActionButton
+          <Button
             key={option.decision}
             label={option.label}
             tone={
@@ -171,7 +171,7 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
           This connection cannot respond to approvals.
         </Text>
       ) : null}
-      <RequestActionButton
+      <Button
         label={detailsFor === key ? "Hide provider details" : "Show provider details"}
         tone="secondary"
         onPress={() => setDetailsFor((current) => (current === key ? null : key))}

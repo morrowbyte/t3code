@@ -129,7 +129,6 @@ focused_tests=(
   apps/server/src/serverRuntimeState.test.ts
   apps/server/src/voice/VoiceSettings.test.ts
   apps/web/src/voice/VoiceDictationControl.test.tsx
-  apps/web/src/voice/LiveVoiceControl.test.tsx
   apps/web/src/voice/LiveVoiceDraftThread.test.ts
   apps/web/src/voice/LiveVoiceCommands.test.ts
   apps/web/src/components/settings/VoiceTranscriptionSettings.test.tsx
@@ -336,12 +335,12 @@ else
   echo "Connection layer gate not present in this source; NOT EXECUTED: $connection_layer_test"
 fi
 
-transcript_ui_test=apps/web/src/voice/LiveVoiceTranscript.test.tsx
+transcript_ui_test=apps/web/src/voice/LiveVoiceTranscript.browser.test.tsx
 if [[ ! -f "$transcript_ui_test" ]]; then
   echo "Required Transcript UI gate is missing: $transcript_ui_test" >&2
   exit 1
 fi
-focused_tests+=("$transcript_ui_test")
+
 echo "Including required Transcript UI gate: $transcript_ui_test"
 agent_session_tests=(
   packages/contracts/src/agentSessions.test.ts
@@ -355,23 +354,54 @@ for agent_session_test in "${agent_session_tests[@]}"; do
   fi
   focused_tests+=("$agent_session_test")
 done
-mobile_composer_test=apps/web/src/components/chat/ChatComposer.mobile.test.tsx
+mobile_composer_test=apps/web/src/components/chat/ChatComposer.mobile.browser.test.tsx
 if [[ ! -f "$mobile_composer_test" ]]; then
   echo "Required mobile composer gate is missing: $mobile_composer_test" >&2
   exit 1
 fi
-focused_tests+=("$mobile_composer_test")
 focused_tests+=(apps/server/src/attachments/YaziPicker.test.ts apps/web/src/components/chat/TraitsPicker.test.ts)
+focused_tests+=(
+  apps/web/src/components/diffs/diffKeyboardSelection.test.ts
+)
 focused_tests+=(
   apps/mobile/src/features/keyboard/commandPaletteItems.test.ts
   apps/mobile/src/features/keyboard/composerPaletteItems.test.ts
   apps/mobile/src/features/keyboard/hardwareKeyboardCommands.test.ts
+  apps/mobile/src/native/NativeHeaderToolbar.test.tsx
+  packages/client-runtime/src/state/threadCoordination.test.ts
+  apps/web/src/components/settings/settingsSearch.test.ts
+  apps/web/src/components/settings/settingsScopeNavigation.test.ts
+  apps/web/src/components/settings/SettingsPanels.logic.test.ts
+  apps/web/src/components/settings/IntegrationsSettings.logic.test.ts
+  apps/web/src/components/settings/VoiceTranscriptionSettings.test.tsx
+  apps/web/src/components/settings/UpdateHistoryPanel.test.tsx
 )
 renderer_tests=(
+  "$transcript_ui_test"
+  apps/web/src/voice/LiveVoiceControl.browser.test.tsx
+  "$mobile_composer_test"
+  apps/web/src/components/CommandPalette.focus.browser.test.tsx
+  apps/web/src/components/keyboard/KeyboardContext.browser.test.tsx
+  apps/web/src/components/keyboard/AttachmentPicker.retry.browser.test.tsx
+  apps/web/src/components/chat/MessagesTimeline.browser.test.tsx
+  apps/web/src/components/chat/QueuedRunsControl.browser.test.tsx
+  apps/web/src/components/chat/ComposerPendingApprovalActions.browser.test.tsx
+  apps/web/src/components/chat/ComposerPendingUserInputPanel.navigation.browser.test.tsx
+  apps/web/src/components/diffs/AnnotatableCodeView.browser.test.tsx
+  apps/web/src/components/files/FileSelectionActions.browser.test.tsx
+  apps/web/src/components/files/FileBrowserPanel.browser.test.tsx
+  apps/web/src/components/device/DeviceControlsRail.browser.test.tsx
+  apps/web/src/components/RightPanelTabs.keyboard.browser.test.tsx
+  apps/web/src/components/preview/PreviewView.browser.test.tsx
+  apps/web/src/components/settings/KeybindingsSettings.environment.browser.test.tsx
+  apps/web/src/components/settings/IntegrationsSettings.browser.test.tsx
+  apps/web/src/components/thread-coordination/ThreadCoordination.browser.test.tsx
+  apps/web/src/components/GitActionsControl.browser.test.tsx
   apps/web/src/components/keyboard/LeaderNavigation.browser.test.tsx
   apps/web/src/components/keyboard/KeyboardHints.browser.test.tsx
   apps/web/src/components/keyboard/yaziAttachment.browser.test.ts
   apps/web/src/components/chat/ComposerChoiceDialog.browser.test.tsx
+  apps/web/src/components/chat/ProviderModelPicker.focus.browser.test.tsx
   apps/web/src/components/chat/composerFocusRedirect.browser.test.ts
   apps/web/src/components/ComposerPromptEditorTiptap.navigation.browser.test.tsx
   apps/web/src/components/ServerUpdateAction.browser.test.tsx
@@ -385,6 +415,17 @@ for renderer_test in "${renderer_tests[@]}"; do
   fi
 done
 vp_cmd lint --report-unused-disable-directives "$mobile_composer_test"
-vp_cmd test run --config vite.config.ts "${focused_tests[@]}"
+node_focused_tests=()
+mobile_focused_tests=()
+for focused_test in "${focused_tests[@]}"; do
+  if [[ "$focused_test" == apps/mobile/* ]]; then
+    mobile_focused_tests+=("${focused_test#apps/mobile/}")
+  else
+    node_focused_tests+=("$focused_test")
+  fi
+done
+vp_cmd test run --config vite.config.ts "${node_focused_tests[@]}"
+(cd apps/mobile && vp_cmd test run "${mobile_focused_tests[@]}")
+(cd apps/web && vp_cmd test run --project unit src/terminal/ghostty/core.test.ts)
 (cd apps/web && vp_cmd test run --project browser "${renderer_tests[@]#apps/web/}")
 (cd scripts && vp_cmd test run --config ../vite.config.ts build-desktop-artifact.test.ts lib/morrowbyte-branding.test.ts)

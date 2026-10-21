@@ -16,7 +16,7 @@ import { isJavaScriptReplTool } from "@t3tools/shared/toolActivity";
 import { ExternalLinkIcon, GitBranchIcon, RotateCcwIcon } from "lucide-react";
 import { memo, type ReactNode, Suspense, use } from "react";
 
-import { useTheme } from "../../hooks/useTheme";
+import { useRenderedAppearance } from "../../hooks/useTheme";
 import { cn } from "../../lib/utils";
 import { resolveDiffThemeName } from "../../lib/diffRendering";
 import { getSyntaxHighlighterPromise } from "../../lib/syntaxHighlighting";
@@ -30,6 +30,8 @@ import { CommandOutputPanel, useCommandOutputStreaming } from "./CommandOutputPa
 import { resolveExternalWebLinkHref } from "./externalLinkContextMenu";
 import type { ExpandedImagePreview } from "./ExpandedImagePreview";
 import { ShellCommandBlock } from "./ShellCommandBlock";
+import { MessageCopyButton } from "./MessageCopyButton";
+import { handleObjectActionKey } from "./objectKeyboardActions";
 
 interface V2ItemInspectorProps {
   readonly projectedItem: OrchestrationV2ProjectedTurnItem;
@@ -52,7 +54,7 @@ function SyntaxTokens({
   readonly text: string;
   readonly language: "json" | "typescript";
 }) {
-  const { resolvedTheme } = useTheme();
+  const resolvedTheme = useRenderedAppearance();
   const highlighter = use(getSyntaxHighlighterPromise(language));
   const { tokens } = highlighter.codeToTokens(text, {
     lang: language,
@@ -94,17 +96,32 @@ function StructuredValue({
   const isJson = highlightJson && isJsonText(text);
   if (!text) return null;
   return (
-    <pre className={cn("max-h-80 overflow-auto text-muted-foreground", monoClassName)}>
-      {language || isJson ? (
-        <RenderErrorBoundary fallback={text}>
-          <Suspense fallback={text}>
-            <SyntaxTokens text={text} language={language ?? "json"} />
-          </Suspense>
-        </RenderErrorBoundary>
-      ) : (
-        text
-      )}
-    </pre>
+    <div
+      data-keyboard-object="Tool data"
+      tabIndex={-1}
+      aria-label="Tool data"
+      onKeyDown={(event) => handleObjectActionKey(event, { c: "copy" })}
+    >
+      <div className="flex justify-end">
+        <MessageCopyButton
+          text={text}
+          label="Copy tool data"
+          keyboardAction="copy"
+          variant="ghost"
+        />
+      </div>
+      <pre className={cn("max-h-80 overflow-auto text-muted-foreground", monoClassName)}>
+        {language || isJson ? (
+          <RenderErrorBoundary fallback={text}>
+            <Suspense fallback={text}>
+              <SyntaxTokens text={text} language={language ?? "json"} />
+            </Suspense>
+          </RenderErrorBoundary>
+        ) : (
+          text
+        )}
+      </pre>
+    </div>
   );
 }
 
@@ -167,7 +184,22 @@ function ToolOutput(props: ToolOutputState) {
     />
   ));
   const text = props.output ? (
-    <div className="max-h-80 overflow-auto text-muted-foreground">{props.output}</div>
+    <div
+      data-keyboard-object="Tool output"
+      tabIndex={-1}
+      aria-label="Tool output"
+      onKeyDown={(event) => handleObjectActionKey(event, { c: "copy" })}
+    >
+      <div className="flex justify-end">
+        <MessageCopyButton
+          text={props.output}
+          label="Copy tool output"
+          keyboardAction="copy"
+          variant="ghost"
+        />
+      </div>
+      <div className="max-h-80 overflow-auto text-muted-foreground">{props.output}</div>
+    </div>
   ) : props.pending ? (
     <div className="text-muted-foreground italic">Loading output…</div>
   ) : props.error ? (

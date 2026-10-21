@@ -302,13 +302,15 @@ function parseAppUpdateYml(raw: string): Effect.Effect<Option.Option<AppUpdateYm
 
 function createBaseUpdateState(
   channel: DesktopUpdateChannel,
-  enabled: boolean,
+  disabledReason: Option.Option<string>,
   environment: DesktopEnvironment.DesktopEnvironment["Service"],
 ): DesktopUpdateState {
+  const enabled = Option.isNone(disabledReason);
   return {
     ...createInitialDesktopUpdateState(environment.appVersion, environment.runtimeInfo, channel),
     enabled,
     status: enabled ? "idle" : "disabled",
+    message: Option.getOrNull(disabledReason),
   };
 }
 
@@ -588,8 +590,6 @@ export const make = Effect.gen(function* () {
     });
   });
 
-  const shouldEnableAutoUpdates = resolveDisabledReason.pipe(Effect.map(Option.isNone));
-
   const checkForUpdates = Effect.fn("desktop.updates.checkForUpdates")(function* (
     reason: string,
     actionReservation: "acquire" | "held" = "acquire",
@@ -827,10 +827,10 @@ export const make = Effect.gen(function* () {
     }
   });
 
-  const baseUpdateState = (channel: DesktopUpdateChannel, enabled: boolean) =>
+  const baseUpdateState = (channel: DesktopUpdateChannel, disabledReason: Option.Option<string>) =>
     Ref.get(notAppliedVersionRef).pipe(
       Effect.map((notAppliedVersion) => ({
-        ...createBaseUpdateState(channel, enabled, environment),
+        ...createBaseUpdateState(channel, disabledReason, environment),
         ...Option.match(notAppliedVersion, {
           onNone: () => ({}),
           onSome: (version) => ({ notAppliedVersion: version }),
@@ -1372,7 +1372,7 @@ export const make = Effect.gen(function* () {
           ),
         ),
       ),
-    acknowledgeReadiness: (senderId, readiness) =>
+    acknowledgeReadiness: Effect.fn("DesktopUpdates.acknowledgeReadiness")((senderId, readiness) =>
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
         const completed = yield* Ref.modify(pendingReadiness, (pending) => {
@@ -1398,6 +1398,7 @@ export const make = Effect.gen(function* () {
         if (completed !== null) yield* Deferred.succeed(completed.signal, completed.ready);
         return completed !== null;
       }),
+    ),
     getState: Ref.get(updateStateRef),
     isActionActive: activeUpdateAction.pipe(Effect.map(Option.isSome)),
     isInstallActive: activeUpdateAction.pipe(
@@ -1439,9 +1440,9 @@ export const make = Effect.gen(function* () {
       }
 
       const settings = yield* desktopSettings.get;
-      const enabled = yield* shouldEnableAutoUpdates;
-      yield* setState(yield* baseUpdateState(settings.updateChannel, enabled));
-      if (!enabled) {
+      const disabledReason = yield* resolveDisabledReason;
+      yield* setState(yield* baseUpdateState(settings.updateChannel, disabledReason));
+      if (Option.isSome(disabledReason)) {
         return;
       }
       yield* Ref.set(updaterConfiguredRef, true);
@@ -1510,10 +1511,10 @@ export const make = Effect.gen(function* () {
             ),
           );
 
-        const enabled = yield* shouldEnableAutoUpdates;
-        yield* setState(yield* baseUpdateState(nextChannel, enabled));
+        const disabledReason = yield* resolveDisabledReason;
+        yield* setState(yield* baseUpdateState(nextChannel, disabledReason));
 
-        if (!enabled || !(yield* Ref.get(updaterConfiguredRef))) {
+        if (Option.isSome(disabledReason) || !(yield* Ref.get(updaterConfiguredRef))) {
           return yield* Ref.get(updateStateRef);
         }
 

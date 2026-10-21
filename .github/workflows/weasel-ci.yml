@@ -92,9 +92,9 @@ jobs:
           vp lint --report-unused-disable-directives
           apps/web/src/components/ChatView.tsx
           apps/web/src/components/chat/ChatComposer.tsx
-          apps/web/src/components/chat/ChatComposer.mobile.test.tsx
+          apps/web/src/components/chat/ChatComposer.mobile.browser.test.tsx
           apps/web/src/voice/LiveVoiceControl.tsx
-          apps/web/src/voice/LiveVoiceControl.test.tsx
+          apps/web/src/voice/LiveVoiceControl.browser.test.tsx
           apps/web/src/voice/LiveVoiceDraftThread.ts
           apps/web/src/voice/LiveVoiceDraftThread.test.ts
           packages/client-runtime/src/live-voice/controller.ts
@@ -257,7 +257,8 @@ jobs:
       ((github.event_name == 'workflow_dispatch' && inputs.qualifyUpstream) ||
       (github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
-      startsWith(github.head_ref, 't3/upstream-main-')))
+      (startsWith(github.head_ref, 't3/upstream-main-') ||
+      github.head_ref == 'integration/night-settings-groups-release-20261021')))
     runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 25
     strategy:

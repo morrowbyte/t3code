@@ -57,47 +57,49 @@ const make = Effect.gen(function* () {
       return yield* new LinearIntegrationError({ reason: "offline" });
     return response;
   });
-  const graphql = <A, I>(
-    token: string,
-    query: string,
-    variables: Record<string, string>,
-    schema: Schema.Codec<A, I>,
-  ) =>
-    Effect.gen(function* () {
-      const response = yield* execute(
-        HttpClientRequest.post("https://api.linear.app/graphql").pipe(
-          HttpClientRequest.setHeader("authorization", `Bearer ${token}`),
-          HttpClientRequest.bodyJsonUnsafe({ query, variables }),
-        ),
-      );
-      const envelope = yield* HttpClientResponse.schemaBodyJson(
-        Schema.Struct({
-          data: Schema.optional(Schema.NullOr(schema)),
-          errors: Schema.optional(
-            Schema.Array(
-              Schema.Struct({
-                extensions: Schema.optional(
-                  Schema.Struct({ code: Schema.optional(Schema.String) }),
-                ),
-              }),
+  const graphql = Effect.fn("LinearApi.graphql")(
+    <A, I>(
+      token: string,
+      query: string,
+      variables: Record<string, string>,
+      schema: Schema.Codec<A, I>,
+    ) =>
+      Effect.gen(function* () {
+        const response = yield* execute(
+          HttpClientRequest.post("https://api.linear.app/graphql").pipe(
+            HttpClientRequest.setHeader("authorization", `Bearer ${token}`),
+            HttpClientRequest.bodyJsonUnsafe({ query, variables }),
+          ),
+        );
+        const envelope = yield* HttpClientResponse.schemaBodyJson(
+          Schema.Struct({
+            data: Schema.optional(Schema.NullOr(schema)),
+            errors: Schema.optional(
+              Schema.Array(
+                Schema.Struct({
+                  extensions: Schema.optional(
+                    Schema.Struct({ code: Schema.optional(Schema.String) }),
+                  ),
+                }),
+              ),
             ),
-          ),
-        }),
-      )(response).pipe(Effect.mapError(() => new LinearIntegrationError({ reason: "invalid" })));
-      if (
-        envelope.errors?.some((error) =>
-          ["AUTHENTICATION_ERROR", "UNAUTHENTICATED", "FORBIDDEN"].includes(
-            error.extensions?.code ?? "",
-          ),
+          }),
+        )(response).pipe(Effect.mapError(() => new LinearIntegrationError({ reason: "invalid" })));
+        if (
+          envelope.errors?.some((error) =>
+            ["AUTHENTICATION_ERROR", "UNAUTHENTICATED", "FORBIDDEN"].includes(
+              error.extensions?.code ?? "",
+            ),
+          )
         )
-      )
-        return yield* new LinearIntegrationError({ reason: "revoked" });
-      if (!envelope.data || envelope.errors?.length)
-        return yield* new LinearIntegrationError({ reason: "invalid" });
-      return envelope.data;
-    }).pipe(Effect.withTracerEnabled(false));
+          return yield* new LinearIntegrationError({ reason: "revoked" });
+        if (!envelope.data || envelope.errors?.length)
+          return yield* new LinearIntegrationError({ reason: "invalid" });
+        return envelope.data;
+      }).pipe(Effect.withTracerEnabled(false)),
+  );
   return LinearApi.of({
-    token: (input) =>
+    token: Effect.fn("LinearApi.token")((input) =>
       Effect.gen(function* () {
         const response = yield* execute(
           HttpClientRequest.post("https://api.linear.app/oauth/token").pipe(
@@ -114,6 +116,7 @@ const make = Effect.gen(function* () {
           Effect.mapError(() => new LinearIntegrationError({ reason: "invalid" })),
         );
       }).pipe(Effect.withTracerEnabled(false)),
+    ),
     identity: (token) =>
       graphql(token, "query { viewer { id } organization { id name } }", {}, Identity),
     issue: (token, issueId) =>

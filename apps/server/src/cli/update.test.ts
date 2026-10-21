@@ -1,13 +1,55 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
-import { HttpClient, HttpClientResponse } from "effect/http";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import * as HostProcess from "@t3tools/shared/HostProcess";
+import { HttpClient, HttpClientResponse } from "effect/http";
+import { afterEach, vi } from "vite-plus/test";
 
 import { repointLauncher, resolveLauncherPath, resolveNewestVersion } from "./update.ts";
+
+afterEach(() => vi.restoreAllMocks());
+
+it.effect("authenticates each release page until the requested channel is found", () =>
+  Effect.gen(function* () {
+    const pages: string[] = [];
+    const httpClient = HttpClient.make((request) => {
+      const url = new URL(request.url);
+      assert.equal(url.origin, "https://api.github.com");
+      assert.equal(url.pathname, "/repos/morrowbyte/t3code/releases");
+      assert.equal(request.headers.accept, "application/vnd.github+json");
+      assert.equal(request.headers.authorization, "Bearer gh-token");
+      const page = url.searchParams.get("page") ?? "";
+      pages.push(page);
+      const tag_name = page === "1" ? "v1.2.4-preview.20260101.1" : "v1.2.3";
+      return Effect.succeed(
+        HttpClientResponse.fromWeb(
+          request,
+          Response.json([
+            {
+              tag_name,
+              draft: false,
+              assets: [
+                { name: `t3-${tag_name.slice(1)}-linux-x64.tar.gz` },
+                { name: "SHA256SUMS" },
+              ],
+            },
+          ]),
+        ),
+      );
+    });
+    const version = yield* resolveNewestVersion("stable").pipe(
+      Effect.provideService(HostProcess.Platform, "linux"),
+      Effect.provideService(HostProcess.Architecture, "x64"),
+      Effect.provideService(HostProcess.Environment, { GH_TOKEN: "gh-token" }),
+      Effect.provideService(HttpClient.HttpClient, httpClient),
+    );
+    assert.equal(version, "1.2.3");
+    assert.deepStrictEqual(pages, ["1", "2"]);
+  }),
+);
 
 it.layer(NodeServices.layer)("t3 update launcher", (it) => {
   it.effect("repoints a symlink that lives in a runtime versions tree", () =>

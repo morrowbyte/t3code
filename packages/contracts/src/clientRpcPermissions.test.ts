@@ -9,6 +9,12 @@ import {
 import { CLIENT_GUARDED_RPC_SCOPES, clientRpcRequiredScopes } from "./clientRpcPermissions.ts";
 import { WS_METHODS } from "./rpc.ts";
 
+it("requires read access for Windows CUA state on the destination environment", () => {
+  expect(clientRpcRequiredScopes(WS_METHODS.windowsCuaSubscribe, {})).toEqual([
+    AuthOrchestrationReadScope,
+  ]);
+});
+
 it("uses existing read and operate scopes for native author reconciliation and mutations", () => {
   expect(clientRpcRequiredScopes(WS_METHODS.nativeAuthorRead, {})).toEqual([
     AuthOrchestrationReadScope,

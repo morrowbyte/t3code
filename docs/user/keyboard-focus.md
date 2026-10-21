@@ -11,10 +11,35 @@ Space, then `c`, opens composer controls: `m` for model, `r` for reasoning,
 dictation, call and microphone commands. These actions keep their existing
 connection permissions and availability.
 
+Press `?` for help in the focused region or object, and Shift+F10 to search and
+run its actions. Use `j`/`k` to move between objects and Enter for their primary
+action. Lists also support arrows and Ctrl+N/P. Native editors, terminals and
+embedded browsers keep their own text and navigation keys.
+
 Use Space, then `a c`, to search controls in the focused region. Space, then
 `a h`, labels visible controls; type a label to focus its control, then press
 Enter to activate it. Space, then `r`, selects right-panel views. Space, then
 `w s`, finds and runs a project action in the thread's workspace.
+
+Focus a message and press `c` to copy it, `s` to select its text, or `q` to quote
+the selected excerpt. Shift+Arrow adjusts the selected text. Code blocks offer
+copy, wrapping and running in the terminal through their object actions. Queued
+messages support `e` to edit, Delete to remove and Alt+Up/Down to reorder.
+
+In a diff, `j`/`k` moves by line, Shift+J/K extends the selection, `[`/`]` moves
+between hunks, and `{`/`}` moves between files. Press `c` to comment or `y` to
+quote the selection in chat. Ctrl+Enter submits a comment; Escape cancels it.
+File previews also provide **Select lines** for quoting and commenting.
+
+Inside a terminal, Ctrl+Shift+F searches its output. Enter finds the next match;
+Shift+Enter finds the previous one. Escape returns to the terminal. Use
+Ctrl+PageUp/PageDown to switch terminal sessions. In an embedded browser,
+Alt+Left/Right goes back and forward; the URL and refresh shortcuts remain
+available in Keybindings.
+
+Questions support arrows or `j`/`k` between options, Space for multiple choices
+and Ctrl+Enter to continue or submit. An approval offers `a` to approve, `d` to
+deny and `m` for its available scopes. Existing permission restrictions apply.
 
 The command palette keeps focus while open. Closing a keyboard picker restores
 the context it was opened from.
@@ -44,3 +69,11 @@ modes. Shift+Tab returns to the source controls. Files are added to the current
 draft and use the normal upload limits. Closing or switching the picker cancels
 its selection session. The system picker remains available for local files,
 including web browsers that cannot open a terminal on the client device.
+
+In a web browser, **Choose folder** grants access to a local folder and opens
+a keyboard explorer for it. Use arrows or `j`/`k` to move, Left/`h` to go up,
+Right/`l` or Enter to enter a folder, Space to mark files across folders,
+`p` to preview and `/` to filter. Ctrl+Enter attaches the marked files. Remove
+an entry from the selection before attaching, or press Space on it again.
+The browser can only browse the folder you granted; selecting **Thread
+environment** opens Yazi on the environment instead.

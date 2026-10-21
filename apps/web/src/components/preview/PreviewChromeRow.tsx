@@ -100,6 +100,8 @@ export function PreviewChromeRow({
       <form
         onSubmit={submit}
         className="flex h-10 min-h-10 shrink-0 items-center gap-1 border-b border-border/60 bg-background px-2 in-data-[preview-panel-mode=inline]:mb-3 in-data-[preview-panel-mode=inline]:h-7 in-data-[preview-panel-mode=inline]:min-h-7 in-data-[preview-panel-mode=inline]:border-b-transparent"
+        data-keyboard-object="Browser controls"
+        aria-label="Browser controls"
         data-surface-subheader
       >
         <div className="flex items-center gap-0.5" role="group" aria-label="Navigation">
@@ -175,6 +177,7 @@ export function PreviewChromeRow({
                     setInputFocused(false);
                   }}
                   onKeyDown={(event) => {
+                    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
                     if (event.key === "Enter") submit(event);
                     if (event.key === "Escape") {
                       event.preventDefault();
@@ -185,6 +188,8 @@ export function PreviewChromeRow({
                   placeholder="Search or enter URL"
                   spellCheck={false}
                   disabled={inputDisabled}
+                  aria-label="Browser URL"
+                  data-keyboard-primary
                   data-preview-url-input
                   size="sm"
                 />
@@ -259,7 +264,7 @@ export function PreviewChromeRow({
             >
               <Camera className={cn(recording && "text-destructive")} />
               {recording ? (
-                <span className="absolute right-0.5 top-0.5 size-1.5 animate-status-pulse rounded-full bg-destructive" />
+                <span className="absolute right-0.5 top-0.5 size-1.5 motion-safe:animate-status-pulse rounded-full bg-destructive" />
               ) : null}
             </TooltipTrigger>
             <TooltipPopup>

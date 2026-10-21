@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 import { ForwardCompatibleArray, TrimmedString } from "./baseSchemas.ts";
 
-export const MAX_KEYBINDING_VALUE_LENGTH = 64;
+const MAX_KEYBINDING_VALUE_LENGTH = 64;
 const MAX_KEYBINDING_WHEN_LENGTH = 256;
 export const MAX_WHEN_EXPRESSION_DEPTH = 64;
 export const MAX_SCRIPT_ID_LENGTH = 24;
@@ -75,6 +75,7 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "rightPanel.execution",
   "project.scripts",
   "workspace.actions",
+  "git.actions",
   "sidebar.toggle",
   "navigation.back",
   "navigation.forward",
@@ -83,6 +84,9 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "terminal.splitVertical",
   "terminal.new",
   "terminal.close",
+  "terminal.find",
+  "terminal.previous",
+  "terminal.next",
   "rightPanel.toggle",
   "rightPanel.new",
   "threadPanel.toggle",
@@ -94,6 +98,8 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "preview.toggle",
   "preview.refresh",
   "preview.focusUrl",
+  "preview.back",
+  "preview.forward",
   "preview.zoomIn",
   "preview.zoomOut",
   "preview.resetZoom",

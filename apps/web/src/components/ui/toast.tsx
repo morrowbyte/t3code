@@ -239,7 +239,7 @@ function ToastDescriptionAndExpandable({
           </div>
           <MorphIcon
             aria-hidden
-            className="mt-0.5 size-3.5 shrink-0 text-muted-foreground opacity-80"
+            className="size-3.5 h-lh shrink-0 text-muted-foreground opacity-80"
             icon={open ? ChevronUp : ChevronDown}
             strokeWidth={2.25}
           />
@@ -387,6 +387,7 @@ function ToastBodyContent({
             <Toast.Action
               className={cn(buttonVariants({ size: "xs", variant: actionVariant }), "shrink-0")}
               data-slot="toast-action"
+              data-keyboard-primary
             >
               {actionProps?.children}
             </Toast.Action>
@@ -545,6 +546,9 @@ function Toasts({ position }: { position: ToastPosition }) {
         )}
         data-position={position}
         data-slot="toast-viewport"
+        data-keyboard-region="notifications"
+        aria-label="Notifications"
+        tabIndex={-1}
         style={
           {
             "--toast-frontmost-height": `${visibleToastLayout.frontmostHeight}px`,
@@ -603,6 +607,9 @@ function Toasts({ position }: { position: ToastPosition }) {
                 "data-expanded:data-ending-style:data-[swipe-direction=down]:transform-[translateY(calc(var(--toast-swipe-movement-y)+100%+var(--toast-inset)))]",
               )}
               data-position={position}
+              data-keyboard-object="Notification"
+              aria-label={typeof toast.title === "string" ? toast.title : "Notification"}
+              tabIndex={-1}
               key={toast.id}
               style={
                 {
@@ -706,6 +713,9 @@ function AnchoredToasts() {
                     tooltipStyle ? "rounded-md" : "rounded-lg",
                   )}
                   data-slot="toast-popup"
+                  data-keyboard-object="Notification"
+                  aria-label={typeof toast.title === "string" ? toast.title : "Notification"}
+                  tabIndex={-1}
                   toast={toast}
                 >
                   {tooltipStyle ? (

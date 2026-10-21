@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import { useKeyboardCommands } from "./keyboard/keyboardCommands";
+import { dispatchKeyboardCommand, useKeyboardCommands } from "./keyboard/keyboardCommands";
 import {
   scopeProjectRef,
   scopedThreadKey,
@@ -49,6 +49,8 @@ const PREVIEW_FORWARDED_LAYOUT_COMMANDS = [
   "sidebar.toggle",
   "rightPanel.toggle",
   "rightPanel.toggleMaximized",
+  "preview.back",
+  "preview.forward",
 ] as const;
 
 const isGlobalPullRequests = (ref: ScopedThreadRef) =>
@@ -175,6 +177,8 @@ export function ReopenClosedViewShortcut() {
     window.addEventListener("keydown", onKeyDown, true);
     const unsubscribe = window.desktopBridge?.onMenuAction((action) => {
       if (action === "view.reopenClosed" && !isCommandPaletteOpen()) enqueueReopen();
+      else if (action === "preview.back" || action === "preview.forward")
+        dispatchKeyboardCommand(action);
     });
     return () => {
       window.removeEventListener("keydown", onKeyDown, true);

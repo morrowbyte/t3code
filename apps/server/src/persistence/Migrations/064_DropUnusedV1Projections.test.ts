@@ -38,7 +38,9 @@ layer("064_DropUnusedV1Projections", (it) => {
       `,
         voiceHistory,
       );
-      assert.deepStrictEqual(yield* runMigrations(), [[65, "CanonicalizeThreadPullRequestLinks"]]);
+      assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 65 }), [
+        [65, "CanonicalizeThreadPullRequestLinks"],
+      ]);
 
       const rows = yield* sql<{ readonly name: string }>`
         SELECT name FROM sqlite_master WHERE type = 'table'

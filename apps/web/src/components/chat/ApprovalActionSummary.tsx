@@ -135,7 +135,7 @@ export function ApprovalActionSummary({
         key={`${environmentId ?? "unknown"}:${approval.requestId}`}
         className="min-w-0 text-xs"
       >
-        <summary className="cursor-pointer text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <summary className="cursor-pointer text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
           Provider details
         </summary>
         <div className="mt-2 flex min-w-0 flex-col gap-2">
@@ -143,7 +143,7 @@ export function ApprovalActionSummary({
             aria-label={approval.requestKind === "command" ? "Command" : "Provider request details"}
             data-approval-detail="complete"
             tabIndex={0}
-            className="max-h-48 min-w-0 overflow-auto whitespace-pre-wrap font-mono text-xs wrap-break-word focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="max-h-48 min-w-0 overflow-auto whitespace-pre-wrap font-mono text-xs wrap-break-word focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
           >
             {approval.detail || "No details supplied"}
           </pre>

@@ -1,5 +1,4 @@
 import { assert, describe, it } from "@effect/vitest";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -21,8 +20,9 @@ import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as DesktopWslEnvironment from "../wsl/DesktopWslEnvironment.ts";
 import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
 import * as DesktopBackendPool from "./DesktopBackendPool.ts";
-import type { DesktopBackendSnapshot, DesktopBackendStartConfig } from "./DesktopBackendManager.ts";
-
+import type { DesktopBackendStartConfig } from "./DesktopBackendManager.ts";
+import { type DesktopBackendSnapshot } from "./DesktopBackendManager.ts";
+import * as Duration from "effect/Duration";
 function makeStubInstance(
   id: DesktopBackendPool.BackendInstanceId,
   label: string,

@@ -525,12 +525,13 @@ export const make = Effect.gen(function* () {
     });
 
   // The ordinary FD reader starts commands independently; only explicit observers await completion.
-  const handleCommandLine = (line: string) =>
+  const handleCommandLine = Effect.fn("DesktopBrowserHost.handleCommandLine")((line: string) =>
     Effect.gen(function* () {
       const closeConnection = closeActiveConnection;
       const completion = yield* dispatchCommandLine(line);
       if (completion) void completion.settled.catch(() => closeConnection?.());
-    });
+    }),
+  );
 
   const humanStartedDownload = (source: Electron.WebContents) => {
     const tab = [...tabs.values()].find((candidate) => candidate.debuggee.webContents === source);

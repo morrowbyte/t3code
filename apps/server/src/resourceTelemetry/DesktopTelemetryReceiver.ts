@@ -1,9 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
 import * as NodeNet from "node:net";
-import type { Readable } from "node:stream";
+import type * as NodeStream from "node:stream";
 
-import * as NodeStream from "@effect/platform-node/NodeStream";
+import * as EffectNodeStream from "@effect/platform-node/NodeStream";
 import {
   DesktopHostTelemetryMessage,
   DesktopMainRendererDiagnosticsReply,
@@ -348,7 +348,7 @@ export function requireDesktopTelemetryWriteProgress(
 
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")(function* (io?: {
-  readonly readable?: Readable;
+  readonly readable?: NodeStream.Readable;
   readonly write?: typeof writeAllToFileDescriptor;
 }) {
   const config = yield* ServerConfig.ServerConfig;
@@ -517,7 +517,7 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
     );
 
     const messages: Stream.Stream<DesktopHostTelemetryMessageValue, DesktopTelemetryReceiverError> =
-      NodeStream.fromReadable<Uint8Array, DesktopTelemetryStreamFailed>({
+      EffectNodeStream.fromReadable<Uint8Array, DesktopTelemetryStreamFailed>({
         evaluate: () => readable,
         closeOnDone: true,
         onError: (cause) => new DesktopTelemetryStreamFailed({ fd, cause }),
@@ -704,7 +704,7 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
 
   const readMainRendererDiagnostics: NonNullable<
     DesktopTelemetryReceiver["Service"]["readMainRendererDiagnostics"]
-  > = (input, environmentId) =>
+  > = Effect.fn("DesktopTelemetryReceiver.readMainRendererDiagnostics")((input, environmentId) =>
     Effect.gen(function* () {
       if (input.target.environmentId !== environmentId) return unavailable("target-mismatch");
       const start = DateTime.toEpochMillis(yield* DateTime.now);
@@ -761,7 +761,8 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
           }),
         ),
       );
-    });
+    }),
+  );
   return DesktopTelemetryReceiver.of({
     readMainRendererDiagnostics,
     latest: Ref.get(latest),

@@ -1,30 +1,17 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
-import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
-import type { JsonSchemaType } from "@modelcontextprotocol/sdk/validation";
 import {
   CommandId,
   EnvironmentId,
-  EventId,
-  IsoDateTime,
   isProviderNativeSubagentThread,
   MessageId,
   NodeId,
   type ModelSelection,
-  type OrchestrationV2DelegatedCompletionDelivery,
-  type OrchestrationV2ProviderCapabilities,
-  type OrchestrationV2ProviderSession,
-  type OrchestrationV2ProviderThread,
-  type OrchestrationV2ThreadProjection,
-  OrchestratorMcpCreateThreadsResult,
   OrchestratorMcpDelegateTaskResult,
   OrchestratorMcpExternalTaskEventsResult,
   OrchestratorMcpTaskCancelResult,
   OrchestratorMcpThreadInterruptResult,
-  OrchestratorMcpThreadListResult,
-  OrchestratorMcpThreadReadResult,
   OrchestratorMcpThreadSendResult,
-  OrchestratorMcpThreadWaitResult,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -38,11 +25,7 @@ import {
   type ScheduledTaskUpsertInput,
   type ServerProvider,
   ThreadId,
-  ThreadMetadataMcpUpdateResult,
-  TurnItemId,
 } from "@t3tools/contracts";
-import * as DateTime from "effect/DateTime";
-import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
@@ -52,14 +35,10 @@ import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
-import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import { McpSchema, McpServer } from "effect/ai";
 
-import { ClaudeProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
-import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import { CodexOrchestratorReplayHarness } from "../orchestration-v2/Adapters/CodexAdapterV2.testkit.ts";
-import { threadShellFromProjection } from "../orchestration-v2/ProjectionStore.ts";
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
@@ -69,9 +48,6 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
-import * as ThreadSearch from "../orchestration-v2/ThreadSearch.ts";
-import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
-import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
@@ -86,73 +62,33 @@ import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
-import { delegatedTaskRun, hasPendingChildRuns } from "./OrchestratorMcpService.ts";
+import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
+import { type OrchestrationV2ProviderCapabilities } from "@t3tools/contracts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
-
-const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
-  Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
-  Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
-);
-
-// Effect returns a declared tool failure as `isError` with its encoded payload
-// as JSON text, never as `structuredContent`.
-const declaredFailure = (result: McpSchema.CallToolResult) => {
-  const text = result.content[0];
-  return result.isError === true && text?.type === "text" ? JSON.parse(text.text) : undefined;
-};
-
-const parentThreadId = ThreadId.make("thread:mcp-orchestrator-parent");
-const projectId = ProjectId.make("project:mcp-orchestrator");
-const codexInstanceId = ProviderInstanceId.make("codex");
-const claudeInstanceId = ProviderInstanceId.make("claudeAgent");
-const codexModel = "gpt-5.4";
-const claudeModel = "claude-sonnet-4-6";
-const parentPrompt = "Keep this parent turn active while orchestration tools are tested.";
-const delegatedPrompt = "Inspect the delegated API boundary and return the result.";
-const delegatedResult = "Delegated API boundary inspected.";
-const cancellationPrompt = "Remain active until the parent cancels this delegated task.";
-const createdThreadPrompt = "Complete the newly created ordinary thread.";
-const queuedFollowupPrompt = "Complete the queued follow-up and return the final result.";
-const queuedFollowupResult = "Queued delegated follow-up completed.";
-
-const decodeCreateThreadsResult = Schema.decodeUnknownEffect(OrchestratorMcpCreateThreadsResult);
-const decodeDelegateTaskResult = Schema.decodeUnknownEffect(OrchestratorMcpDelegateTaskResult);
-const decodeTaskCancelResult = Schema.decodeUnknownEffect(OrchestratorMcpTaskCancelResult);
-const decodeThreadInterruptResult = Schema.decodeUnknownEffect(
-  OrchestratorMcpThreadInterruptResult,
-);
-const decodeThreadListResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadListResult);
-const decodeThreadReadResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadReadResult);
-const decodeThreadSendResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadSendResult);
-const decodeThreadWaitResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadWaitResult);
-const decodeThreadUpdateResult = Schema.decodeUnknownEffect(ThreadMetadataMcpUpdateResult);
-
-const codexSelection = {
-  instanceId: codexInstanceId,
-  model: codexModel,
-} satisfies ModelSelection;
-
-const claudeSelection = {
-  instanceId: claudeInstanceId,
-  model: claudeModel,
-} satisfies ModelSelection;
-
-const delegatedTaskStatusTranscriptFile = new URL(
-  "../orchestration-v2/testkit/fixtures/delegated_task_status/codex_transcript.ndjson",
-  import.meta.url,
-);
-
-const readDelegatedTaskStatusTranscript = Effect.fn("readDelegatedTaskStatusTranscript")(
-  function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const text = yield* fs.readFileString(
-      decodeURIComponent(delegatedTaskStatusTranscriptFile.pathname),
-    );
-    return yield* decodeProviderReplayNdjson(text);
-  },
-  Effect.provide(NodeServices.layer),
-);
-
+import * as Deferred from "effect/Deferred";
+import * as DateTime from "effect/DateTime";
+import { type OrchestrationV2ProviderSession } from "@t3tools/contracts";
+import { type OrchestrationV2ProviderThread } from "@t3tools/contracts";
+import { TurnItemId } from "@t3tools/contracts";
+import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
+import * as ThreadSearch from "../orchestration-v2/ThreadSearch.ts";
+import * as Fiber from "effect/Fiber";
+import { EventId } from "@t3tools/contracts";
+import { ClaudeProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
+import { IsoDateTime } from "@t3tools/contracts";
+import { type OrchestrationV2ThreadProjection } from "@t3tools/contracts";
+import { OrchestratorMcpThreadWaitResult } from "@t3tools/contracts";
+import { OrchestratorMcpThreadReadResult } from "@t3tools/contracts";
+import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
+import { type JsonSchemaType } from "@modelcontextprotocol/sdk/validation";
+import { threadShellFromProjection } from "../orchestration-v2/ProjectionStore.ts";
+import { delegatedTaskRun } from "./OrchestratorMcpService.ts";
+import { hasPendingChildRuns } from "./OrchestratorMcpService.ts";
+import { OrchestratorMcpCreateThreadsResult } from "@t3tools/contracts";
+import { ThreadMetadataMcpUpdateResult } from "@t3tools/contracts";
+import { OrchestratorMcpThreadListResult } from "@t3tools/contracts";
+import { type OrchestrationV2DelegatedCompletionDelivery } from "@t3tools/contracts";
 interface CapturedTurn {
   readonly instanceId: ProviderInstanceId;
   readonly threadId: ThreadId;
@@ -161,37 +97,6 @@ interface CapturedTurn {
 
 function unsupported(driver: ProviderDriverKind, detail: string) {
   return Effect.fail(new ProviderAdapter.ProviderAdapterProtocolError({ driver, detail }));
-}
-
-function makeProviderSnapshot(input: {
-  readonly instanceId: ProviderInstanceId;
-  readonly driver: ProviderDriverKind;
-  readonly model: string;
-  readonly optionDescriptors?: ReadonlyArray<ProviderOptionDescriptor>;
-}): ServerProvider {
-  return {
-    instanceId: input.instanceId,
-    driver: input.driver,
-    enabled: true,
-    installed: true,
-    version: "test",
-    status: "ready",
-    auth: { status: "authenticated" },
-    checkedAt: "2026-06-17T00:00:00.000Z",
-    models: [
-      {
-        slug: input.model,
-        name: input.model,
-        isCustom: false,
-        capabilities:
-          input.optionDescriptors === undefined
-            ? null
-            : { optionDescriptors: input.optionDescriptors },
-      },
-    ],
-    slashCommands: [],
-    skills: [],
-  };
 }
 
 function makeDeterministicAdapter(input: {
@@ -430,37 +335,14 @@ function makeDeterministicAdapter(input: {
   };
 }
 
-function waitForProjection(
-  orchestrator: Orchestrator.OrchestratorV2Shape,
-  threadId: ThreadId,
-  predicate: (projection: OrchestrationV2ThreadProjection) => boolean,
-) {
-  return Effect.gen(function* () {
-    for (let attempt = 0; attempt < 1_000; attempt += 1) {
-      const projection = yield* orchestrator.getThreadProjection(threadId);
-      if (predicate(projection)) {
-        return projection;
-      }
-      yield* Effect.sleep("5 millis");
-    }
-    return yield* Effect.die(
-      new Error(`Timed out waiting for orchestration projection ${threadId}.`),
-    );
-  });
-}
+const declaredFailure = (result: McpSchema.CallToolResult) => {
+  const text = result.content[0];
+  return result.isError === true && text?.type === "text" ? JSON.parse(text.text) : undefined;
+};
 
-const client = McpSchema.McpServerClient.of({
-  clientId: 1,
-  protocolVersion: "2025-06-18",
-  clientCapabilities: {},
-  clientInfo: { name: "orchestrator-mcp-test", version: "1.0.0" },
-  initializePayload: {
-    protocolVersion: "2025-06-18",
-    capabilities: {},
-    clientInfo: { name: "orchestrator-mcp-test", version: "1.0.0" },
-  },
-  getClient: Effect.die("unused"),
-});
+const claudeInstanceId = ProviderInstanceId.make("claudeAgent");
+
+const claudeModel = "claude-sonnet-4-6";
 
 function scheduledTaskFromUpsert(input: ScheduledTaskUpsertInput): ScheduledTask {
   const timestamp = IsoDateTime.make("2026-07-01T09:00:00.000Z");
@@ -501,6 +383,133 @@ function scheduledTaskFromUpsert(input: ScheduledTaskUpsertInput): ScheduledTask
   };
 }
 
+function waitForProjection(
+  orchestrator: Orchestrator.OrchestratorV2Shape,
+  threadId: ThreadId,
+  predicate: (projection: OrchestrationV2ThreadProjection) => boolean,
+) {
+  return Effect.gen(function* () {
+    for (let attempt = 0; attempt < 1_000; attempt += 1) {
+      const projection = yield* orchestrator.getThreadProjection(threadId);
+      if (predicate(projection)) {
+        return projection;
+      }
+      yield* Effect.sleep("5 millis");
+    }
+    return yield* Effect.die(
+      new Error(`Timed out waiting for orchestration projection ${threadId}.`),
+    );
+  });
+}
+
+const claudeSelection = {
+  instanceId: claudeInstanceId,
+  model: claudeModel,
+} satisfies ModelSelection;
+
+const decodeThreadWaitResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadWaitResult);
+
+const decodeThreadReadResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadReadResult);
+
+const decodeTaskCancelResult = Schema.decodeUnknownEffect(OrchestratorMcpTaskCancelResult);
+
+const createdThreadPrompt = "Complete the newly created ordinary thread.";
+
+const decodeCreateThreadsResult = Schema.decodeUnknownEffect(OrchestratorMcpCreateThreadsResult);
+
+const decodeThreadUpdateResult = Schema.decodeUnknownEffect(ThreadMetadataMcpUpdateResult);
+
+const decodeThreadListResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadListResult);
+
+const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
+  Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
+  Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+);
+
+// Effect returns a declared tool failure as `isError` with its encoded payload
+// as JSON text, never as `structuredContent`.
+
+const parentThreadId = ThreadId.make("thread:mcp-orchestrator-parent");
+const projectId = ProjectId.make("project:mcp-orchestrator");
+const codexInstanceId = ProviderInstanceId.make("codex");
+const codexModel = "gpt-5.4";
+const parentPrompt = "Keep this parent turn active while orchestration tools are tested.";
+const delegatedPrompt = "Inspect the delegated API boundary and return the result.";
+const delegatedResult = "Delegated API boundary inspected.";
+const cancellationPrompt = "Remain active until the parent cancels this delegated task.";
+const queuedFollowupPrompt = "Complete the queued follow-up and return the final result.";
+const queuedFollowupResult = "Queued delegated follow-up completed.";
+
+const decodeDelegateTaskResult = Schema.decodeUnknownEffect(OrchestratorMcpDelegateTaskResult);
+const decodeThreadInterruptResult = Schema.decodeUnknownEffect(
+  OrchestratorMcpThreadInterruptResult,
+);
+const decodeThreadSendResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadSendResult);
+
+const codexSelection = {
+  instanceId: codexInstanceId,
+  model: codexModel,
+} satisfies ModelSelection;
+
+const delegatedTaskStatusTranscriptFile = new URL(
+  "../orchestration-v2/testkit/fixtures/delegated_task_status/codex_transcript.ndjson",
+  import.meta.url,
+);
+
+const readDelegatedTaskStatusTranscript = Effect.fn("readDelegatedTaskStatusTranscript")(function* (
+  followupResult: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const text = yield* fs.readFileString(
+    decodeURIComponent(delegatedTaskStatusTranscriptFile.pathname),
+  );
+  return yield* decodeProviderReplayNdjson(text.replaceAll(queuedFollowupResult, followupResult));
+}, Effect.provide(NodeServices.layer));
+
+function makeProviderSnapshot(input: {
+  readonly instanceId: ProviderInstanceId;
+  readonly driver: ProviderDriverKind;
+  readonly model: string;
+  readonly optionDescriptors?: ReadonlyArray<ProviderOptionDescriptor>;
+}): ServerProvider {
+  return {
+    instanceId: input.instanceId,
+    driver: input.driver,
+    enabled: true,
+    installed: true,
+    version: "test",
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt: "2026-06-17T00:00:00.000Z",
+    models: [
+      {
+        slug: input.model,
+        name: input.model,
+        isCustom: false,
+        capabilities:
+          input.optionDescriptors === undefined
+            ? null
+            : { optionDescriptors: input.optionDescriptors },
+      },
+    ],
+    slashCommands: [],
+    skills: [],
+  };
+}
+
+const client = McpSchema.McpServerClient.of({
+  clientId: 1,
+  protocolVersion: "2025-06-18",
+  clientCapabilities: {},
+  clientInfo: { name: "orchestrator-mcp-test", version: "1.0.0" },
+  initializePayload: {
+    protocolVersion: "2025-06-18",
+    capabilities: {},
+    clientInfo: { name: "orchestrator-mcp-test", version: "1.0.0" },
+  },
+  getClient: Effect.die("unused"),
+});
+
 const layerMemorySecretStore = Layer.sync(ServerSecretStore.ServerSecretStore, () => {
   const stored = new Map<string, Uint8Array>();
   return ServerSecretStore.ServerSecretStore.of({
@@ -527,6 +536,7 @@ const layerUnusedScheduledTaskStub = Layer.succeed(
     upsert: () => Effect.die("ScheduledTaskService.upsert is unused in this test"),
     setEnabled: () => Effect.die("ScheduledTaskService.setEnabled is unused in this test"),
     delete: () => Effect.die("ScheduledTaskService.delete is unused in this test"),
+    deleteForThread: () => Effect.die("unused in this test"),
     runNow: () => Effect.die("ScheduledTaskService.runNow is unused in this test"),
     rotateWebhookToken: () => Effect.die("unused in this test"),
     listWebhookDeliveries: () => Effect.die("unused in this test"),
@@ -1261,6 +1271,7 @@ describe("orchestrator MCP toolkit", () => {
                 Ref.update(scheduledStore, (all) =>
                   all.filter((candidate) => candidate.id !== input.id),
                 ).pipe(Effect.as({ id: input.id })),
+              deleteForThread: () => Effect.die("unused in this test"),
               runNow: () => Effect.die("ScheduledTaskService.runNow is unused in this test"),
               rotateWebhookToken: () => Effect.die("unused in this test"),
               listWebhookDeliveries: () => Effect.die("unused in this test"),
@@ -2368,10 +2379,10 @@ describe("orchestrator MCP toolkit", () => {
               hasPendingChildRuns: false,
               latestTerminalRunId: delegated.childRunId,
               latestTerminalStatus: "completed",
-              latestTerminalSummary: delegatedResult,
+              latestTerminalSummary: null,
             });
             expect(delegatedStatus.resultContextTransferId).not.toBeNull();
-            expect(delegatedStatus.latestTerminalResultContextTransferId).not.toBeNull();
+            expect(delegatedStatus.latestTerminalResultContextTransferId).toBeNull();
 
             yield* expectOffersToStay(0);
 
@@ -4644,11 +4655,14 @@ describe("orchestrator MCP toolkit", () => {
       ),
   );
 
-  it.live("reports running and queued child follow-ups from a Codex replay transcript", () =>
+  it.live.each([
+    { label: "distinct", result: queuedFollowupResult, latestSummary: queuedFollowupResult },
+    { label: "identical", result: delegatedResult, latestSummary: null },
+  ])("reports $label child results", ({ result, latestSummary }) =>
     Effect.scoped(
       Effect.gen(function* () {
         const cwd = yield* checkpointWorkspace("delegated-task-status");
-        const rawTranscript = yield* readDelegatedTaskStatusTranscript();
+        const rawTranscript = yield* readDelegatedTaskStatusTranscript(result);
         const transcript = yield* CodexOrchestratorReplayHarness.decodeTranscript(
           materializeReplayTranscriptWorkspace(rawTranscript, cwd),
         );
@@ -4817,12 +4831,10 @@ describe("orchestrator MCP toolkit", () => {
             hasPendingChildRuns: false,
             latestTerminalRunId: delegated.childRunId,
             latestTerminalStatus: "completed",
-            latestTerminalSummary: delegatedResult,
+            latestTerminalSummary: null,
+            latestTerminalResultContextTransferId: null,
           });
           expect(delegated.resultContextTransferId).not.toBeNull();
-          expect(delegated.latestTerminalResultContextTransferId).toBe(
-            delegated.resultContextTransferId,
-          );
 
           const delegatedChild = yield* orchestrator.getThreadProjection(delegated.childThreadId);
           expect(delegatedChild.thread.lineage.relationshipToParent).toBe("subagent");
@@ -4916,8 +4928,8 @@ describe("orchestrator MCP toolkit", () => {
             hasPendingChildRuns: true,
             latestTerminalRunId: delegated.childRunId,
             latestTerminalStatus: "completed",
-            latestTerminalSummary: delegatedResult,
-            latestTerminalResultContextTransferId: delegated.resultContextTransferId,
+            latestTerminalSummary: null,
+            latestTerminalResultContextTransferId: null,
           });
 
           const finalSequence = yield* orchestrator.getThreadEventSequence(delegated.childThreadId);
@@ -4990,7 +5002,7 @@ describe("orchestrator MCP toolkit", () => {
             finishedParent.subagents.find((task) => task.id === followupTasks[1]!.id),
           ).toMatchObject({
             status: "completed",
-            result: queuedFollowupResult,
+            result,
           });
           expect(
             finishedParent.contextTransfers.filter(
@@ -5017,9 +5029,18 @@ describe("orchestrator MCP toolkit", () => {
             hasPendingChildRuns: false,
             latestTerminalRunId: queuedFollowup.runId,
             latestTerminalStatus: "completed",
-            latestTerminalSummary: queuedFollowupResult,
+            latestTerminalSummary: latestSummary,
           });
-          expect(finalStatus.latestTerminalResultContextTransferId).not.toBeNull();
+          const followupTransfer = finishedParent.contextTransfers.find(
+            (transfer) =>
+              transfer.type === "subagent_result" &&
+              transfer.sourcePoint.runId === queuedFollowup.runId,
+          );
+          expect(followupTransfer).toBeDefined();
+          expect(finalStatus.latestTerminalResultContextTransferId).toBe(followupTransfer?.id);
+          expect(finalStatus.latestTerminalResultContextTransferId).not.toBe(
+            delegated.resultContextTransferId,
+          );
           const read = yield* invoke("t3_thread_read", {
             threadId: delegated.childThreadId,
             limit: 100,

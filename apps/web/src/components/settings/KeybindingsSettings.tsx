@@ -129,8 +129,16 @@ function KeybindingsSearchInput({
         value={query}
         onChange={(event) => onChange(event.currentTarget.value)}
         onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+          if (event.key === "ArrowDown") {
+            event.preventDefault();
+            event.stopPropagation();
+            document.querySelector<HTMLElement>('[data-keyboard-object="Keybinding"]')?.focus();
+            return;
+          }
           if (event.key !== "Escape") return;
           event.preventDefault();
+          event.stopPropagation();
           if (query.length > 0) onChange("");
           else event.currentTarget.blur();
         }}
@@ -260,10 +268,7 @@ function UnknownWhenVariableWarning({
 
 function KeybindingConflictWarning({ labels }: { labels: ReadonlyArray<string> }) {
   if (labels.length === 0) return null;
-  const description =
-    labels.length === 1
-      ? `Conflicts with ${labels[0]}.`
-      : `Conflicts with ${labels.slice(0, 3).join(", ")}${labels.length > 3 ? ", and more" : ""}.`;
+  const description = `Conflicts with ${labels.join(", ")}.`;
 
   return (
     <WarningTooltipIcon label={description}>
@@ -736,13 +741,21 @@ function useKeybindingRowEditor({
   };
 
   const captureKeybinding = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
     if (event.key === "Tab" && !isRecording) return;
     event.preventDefault();
+    event.stopPropagation();
+    if (!isRecording && event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      if (keyDraft.trim().length > 0 && isWhenDraftValid) save();
+      return;
+    }
     if (event.key === "Escape") {
       setDraft({ keyDraft: row.key, isRecording: false });
       return;
     }
-    const next = keybindingFromKeyboardEvent(event.nativeEvent, navigator.platform);
+    const next = keybindingFromKeyboardEvent(event.nativeEvent, navigator.platform, {
+      layoutCharacter: true,
+    });
     if (!next) return;
     setDraft({ keyDraft: next, isRecording: false });
   };
@@ -806,6 +819,7 @@ function KeybindingKeyControl({
       {showPill ? (
         <button
           type="button"
+          data-keyboard-primary
           onClick={() => setDraft({ isRecording: true })}
           aria-label={`Edit shortcut for ${commandLabel(row.command)}: ${formatShortcutLabel(row.binding.shortcut)}`}
           className={cn(
@@ -988,6 +1002,9 @@ function KeybindingSettingsRow(props: KeybindingRowProps) {
   return (
     <SettingsRow
       id={anchorId}
+      data-keyboard-object="Keybinding"
+      aria-label={commandLabel(row.command)}
+      tabIndex={-1}
       className="group/row rounded-none"
       title={<KeybindingRowTitle row={row} />}
       description={<KeybindingRowWhen row={row} editor={editor} variables={variables} />}
@@ -1046,13 +1063,21 @@ function useNewKeybindingDraft({
   };
 
   const captureKeybinding = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
     if (event.key === "Tab" && !isRecording) return;
     event.preventDefault();
+    event.stopPropagation();
+    if (!isRecording && event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      if (keyDraft.trim().length > 0 && isWhenDraftValid) save();
+      return;
+    }
     if (event.key === "Escape") {
       setDraft({ keyDraft: "", isRecording: false });
       return;
     }
-    const next = keybindingFromKeyboardEvent(event.nativeEvent, navigator.platform);
+    const next = keybindingFromKeyboardEvent(event.nativeEvent, navigator.platform, {
+      layoutCharacter: true,
+    });
     if (!next) return;
     setDraft({ keyDraft: next, isRecording: false });
   };
@@ -1307,6 +1332,7 @@ export function KeybindingsSettingsPanel() {
     availableEditors,
   );
   const [query, setQuery] = useState("");
+  const [conflictsOnly, setConflictsOnly] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [savingCommand, setSavingCommand] = useState<KeybindingCommand | null>(null);
   const [isAddingBinding, setIsAddingBinding] = useState(false);
@@ -1319,7 +1345,10 @@ export function KeybindingsSettingsPanel() {
   }
   const whenVariables = buildWhenVariableOptions();
   const { commandOptions, allRows } = useKeybindingCatalog();
-  const rows = filterKeybindingRows(allRows, query);
+  const conflictCount = allRows.filter((row) => row.conflicts.length > 0).length;
+  const rows = filterKeybindingRows(allRows, query).filter(
+    (row) => !conflictsOnly || row.conflicts.length > 0,
+  );
   const groups = groupKeybindingRows(rows);
   const anchorIds = keybindingAnchorIds(rows);
 
@@ -1439,13 +1468,46 @@ export function KeybindingsSettingsPanel() {
   };
 
   return (
-    <SettingsPageContainer>
+    <SettingsPageContainer
+      data-keyboard-object="Keybindings"
+      onKeyDownCapture={(event) => {
+        if (
+          event.nativeEvent.isComposing ||
+          event.nativeEvent.keyCode === 229 ||
+          (event.target instanceof Element &&
+            event.target.closest(
+              '[data-keybinding-capture], [role="dialog"], [data-slot$="popup"]',
+            ))
+        )
+          return;
+        if (
+          (event.ctrlKey || event.metaKey) &&
+          !event.altKey &&
+          !event.shiftKey &&
+          event.key.toLowerCase() === "f"
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          searchInputRef.current?.focus();
+          searchInputRef.current?.select();
+        }
+      }}
+    >
       <SettingsSection
         {...searchableSetting("keybindings")}
         headerAction={!isElectron ? <BrowserKeybindingNotice /> : null}
       >
         <div className="flex flex-wrap items-center gap-2 px-3 py-3 sm:px-4">
           <KeybindingsSearchInput query={query} onChange={setQuery} inputRef={searchInputRef} />
+          <Toggle
+            variant="outline"
+            size="sm"
+            aria-label="Show conflicting keybindings"
+            pressed={conflictsOnly}
+            onPressedChange={setConflictsOnly}
+          >
+            <TriangleAlertIcon aria-hidden className="size-3.5" /> Conflicts {conflictCount}
+          </Toggle>
           <Button
             type="button"
             variant="outline"

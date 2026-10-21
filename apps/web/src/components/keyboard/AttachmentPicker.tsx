@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, YaziPickerFile } from "@t3tools/contracts";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { readPreparedConnection } from "../../state/session";
 import { useEnvironments } from "../../state/environments";
@@ -7,6 +7,11 @@ import { openYaziPicker, yaziPickerApi } from "../../rpc/yaziPicker";
 import { GhosttyTerminalSurface } from "../../terminal/ghostty/surface";
 import { terminalThemeFromApp } from "../ThreadTerminalDrawer";
 import { readYaziAttachment } from "./yaziAttachment";
+import {
+  BrowserAttachmentExplorer,
+  browserAttachmentDirectory,
+  type BrowserDirectoryHandle,
+} from "./BrowserAttachmentExplorer";
 import { Button } from "../ui/button";
 import { Dialog, DialogHeader, DialogTitle, DialogPopup } from "../ui/dialog";
 
@@ -33,6 +38,8 @@ function YaziTerminal(props: {
   const [home, setHome] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState("Starting Yazi…");
+  const [attaching, setAttaching] = useState(false);
+  const retrySelection = useRef<(() => void) | null>(null);
   const allowed = useAtomValue(openYaziPicker.permissionAtom(props.environmentId));
   useEffect(() => {
     const element = mount.current;
@@ -43,6 +50,9 @@ function YaziTerminal(props: {
     let surface: GhosttyTerminalSurface | null = null;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let wake: (() => void) | undefined;
+    let selectedFiles: ReadonlyArray<YaziPickerFile> | null = null;
+    let nextFileIndex = 0;
+    let attachmentInFlight = false;
     const fail = (cause: unknown) => {
       if (!disposed)
         setError(
@@ -51,6 +61,48 @@ function YaziTerminal(props: {
             : "The file picker could not complete. Retry or choose files from this device.",
         );
     };
+    const attachRemaining = async () => {
+      if (disposed || attachmentInFlight || !sessionId || !selectedFiles) return;
+      const files = selectedFiles;
+      const activeSessionId = sessionId;
+      attachmentInFlight = true;
+      setAttaching(true);
+      setError(null);
+      await (async () => {
+        while (nextFileIndex < files.length) {
+          if (disposed) return;
+          const selected = files[nextFileIndex]!;
+          setStatus(`Attaching ${nextFileIndex + 1}/${files.length}: ${selected.name}`);
+          const file = await readYaziAttachment(
+            selected,
+            (offset) => api.read(activeSessionId, selected.id, offset),
+            () => disposed,
+          );
+          if (!file || disposed) return;
+          const accepted = await latest.current.onFiles([file]);
+          if (disposed) return;
+          if (!accepted) {
+            fail(
+              new Error(
+                `Could not attach ${selected.name}. The remaining files have not been attached.`,
+              ),
+            );
+            return;
+          }
+          nextFileIndex += 1;
+        }
+        if (!disposed) latest.current.onClose();
+      })()
+        .catch(fail)
+        .finally(() => {
+          attachmentInFlight = false;
+          if (!disposed) setAttaching(false);
+        });
+    };
+    const retry = () => {
+      void attachRemaining();
+    };
+    retrySelection.current = null;
     setError(null);
     setStatus("Starting Yazi…");
     void (async () => {
@@ -93,21 +145,9 @@ function YaziTerminal(props: {
           return;
         }
         if (update.state === "completed") {
-          for (const [index, selected] of update.files.entries()) {
-            if (disposed) return;
-            setStatus(`Attaching ${index + 1}/${update.files.length}: ${selected.name}`);
-            const file = await readYaziAttachment(
-              selected,
-              (offset) => api.read(sessionId!, selected.id, offset),
-              () => disposed,
-            );
-            if (!file || disposed) return;
-            if (!(await latest.current.onFiles([file])))
-              throw new Error(
-                `Could not attach ${selected.name}. The remaining files have not been attached.`,
-              );
-          }
-          if (!disposed) latest.current.onClose();
+          selectedFiles = update.files;
+          retrySelection.current = retry;
+          await attachRemaining();
           return;
         }
         await new Promise<void>((resolve) => {
@@ -118,6 +158,7 @@ function YaziTerminal(props: {
     })().catch(fail);
     return () => {
       disposed = true;
+      if (retrySelection.current === retry) retrySelection.current = null;
       clearTimeout(timer);
       wake?.();
       surface?.dispose();
@@ -129,7 +170,15 @@ function YaziTerminal(props: {
       <div className="flex items-center justify-between gap-2 px-4 text-xs text-muted-foreground">
         <span className="truncate">{home || "Home"}</span>
         {error ? (
-          <Button variant="ghost" size="sm" onClick={props.onRetry}>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={attaching}
+            onClick={() => {
+              if (retrySelection.current) retrySelection.current();
+              else props.onRetry();
+            }}
+          >
             Retry
           </Button>
         ) : null}
@@ -150,6 +199,7 @@ function YaziTerminal(props: {
 }
 
 export function AttachmentPicker(props: {
+  restoreFocus?: () => HTMLElement | false;
   environmentId: EnvironmentId;
   targetKey: string;
   onFiles: (files: File[]) => Promise<boolean>;
@@ -158,6 +208,8 @@ export function AttachmentPicker(props: {
   const { environments } = useEnvironments();
   const [source, setSource] = useState<"device" | "environment">("device");
   const input = useRef<HTMLInputElement>(null);
+  const directoryInput = useRef<HTMLInputElement>(null);
+  const [directory, setDirectory] = useState<BrowserDirectoryHandle | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const localBootstraps = window.desktopBridge?.getLocalEnvironmentBootstraps() ?? [];
@@ -176,7 +228,9 @@ export function AttachmentPicker(props: {
         if (
           !open &&
           details.reason === "escape-key" &&
-          document.activeElement?.closest('[aria-label="Yazi file picker"]')
+          document.activeElement?.closest(
+            '[aria-label="Yazi file picker"],[aria-label="Granted local folder"]',
+          )
         ) {
           details.cancel();
           return;
@@ -186,6 +240,7 @@ export function AttachmentPicker(props: {
     >
       <DialogPopup
         aria-label="Attach files with Yazi"
+        finalFocus={props.restoreFocus}
         size="wide"
         bottomStickOnMobile={false}
         onKeyDown={(event) => {
@@ -207,7 +262,10 @@ export function AttachmentPicker(props: {
               size="sm"
               variant={source === "device" ? "secondary" : "ghost"}
               aria-pressed={source === "device"}
-              onClick={() => setSource("device")}
+              onClick={() => {
+                setDirectory(null);
+                setSource("device");
+              }}
             >
               This device
             </Button>
@@ -215,7 +273,10 @@ export function AttachmentPicker(props: {
               size="sm"
               variant={source === "environment" ? "secondary" : "ghost"}
               aria-pressed={source === "environment"}
-              onClick={() => setSource("environment")}
+              onClick={() => {
+                setDirectory(null);
+                setSource("environment");
+              }}
             >
               Thread environment
             </Button>
@@ -223,7 +284,25 @@ export function AttachmentPicker(props: {
             <Button size="sm" variant="outline" onClick={() => input.current?.click()}>
               System file picker
             </Button>
+            {!window.desktopBridge && source === "device" ? (
+              <Button size="sm" variant="outline" onClick={() => directoryInput.current?.click()}>
+                Choose folder
+              </Button>
+            ) : null}
           </div>
+          <input
+            ref={directoryInput}
+            type="file"
+            multiple
+            {...{ webkitdirectory: "" }}
+            aria-label="Choose local attachment folder"
+            className="hidden"
+            onChange={(event) => {
+              const root = browserAttachmentDirectory(Array.from(event.currentTarget.files ?? []));
+              event.currentTarget.value = "";
+              if (root) setDirectory(root);
+            }}
+          />
           <input
             ref={input}
             type="file"
@@ -242,7 +321,13 @@ export function AttachmentPicker(props: {
                 .catch(() => setError("The selected files could not be attached."));
             }}
           />
-          {target ? (
+          {directory && source === "device" ? (
+            <BrowserAttachmentExplorer
+              root={directory}
+              onFiles={props.onFiles}
+              onClose={props.onClose}
+            />
+          ) : target ? (
             <YaziTerminal
               key={`${props.targetKey}:${source}:${target}:${attempt}`}
               environmentId={target}
@@ -254,7 +339,7 @@ export function AttachmentPicker(props: {
             <div role="status" className="px-4 pb-6 text-sm text-muted-foreground">
               {window.desktopBridge
                 ? "Enable this device’s local environment in Connections to use Yazi here."
-                : "The browser needs a system file selection to access this device. Yazi is available in the thread environment."}
+                : "Choose a local folder to browse its files, or use the system file picker. Yazi is available in the thread environment."}
             </div>
           )}
           {error ? (

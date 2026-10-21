@@ -9,6 +9,7 @@ import {
 import {
   DEFAULT_RESOLVED_KEYBINDINGS,
   parseKeybindingWhenExpression,
+  US_SHIFTED_TO_UNSHIFTED_KEYS,
 } from "@t3tools/shared/keybindings";
 
 import { shortcutKeyFromEvent } from "../../keybindings";
@@ -244,12 +245,14 @@ export function groupKeybindingRows(
 export function buildKeybindingRows(
   keybindings: ResolvedKeybindingsConfig,
 ): ReadonlyArray<KeybindingRow> {
-  const rows = keybindings.map((binding, index) => {
+  const rowsById = new Map<string, KeybindingRow>();
+  for (const binding of keybindings) {
     const defaultBinding = defaultBindingForBinding(binding);
     const key = shortcutToKeybindingInput(binding.shortcut);
     const when = whenAstToExpression(binding.whenAst);
-    return {
-      id: `${keybindingRowId(binding.command, key, when)}\u0000${index}`,
+    const id = keybindingRowId(binding.command, key, when);
+    rowsById.set(id, {
+      id,
       command: binding.command,
       key,
       when,
@@ -258,8 +261,9 @@ export function buildKeybindingRows(
       defaultWhen: whenAstToExpression(defaultBinding?.whenAst),
       binding,
       conflicts: [],
-    } satisfies KeybindingRow;
-  });
+    });
+  }
+  const rows = [...rowsById.values()];
 
   const rowsWithConflicts = rows.map((row) => {
     const conflicts = keybindingConflictLabels(rows, {
@@ -389,6 +393,11 @@ export function commandLabel(command: KeybindingCommand): string {
   const usagePeriod = WINDOW_OPTIONS.find((option) => option.command === command);
   if (usagePeriod) return `Usage: Period: ${usagePeriod.label}`;
   if (command === "view.reopenClosed") return "Reopen Closed Tab";
+  if (command === "terminal.find") return "Terminal: Find Output";
+  if (command === "terminal.previous") return "Terminal: Previous Session";
+  if (command === "terminal.next") return "Terminal: Next Session";
+  if (command === "preview.back") return "Preview: Back";
+  if (command === "preview.forward") return "Preview: Forward";
   if (command === "preview.focusUrl") return "Preview: Focus URL";
   const raw = String(command);
   if (raw.startsWith("script.") && raw.endsWith(".run")) {
@@ -405,6 +414,18 @@ function titleCaseCommandSegment(segment: string): string {
     }
   }
   return words.join(" ");
+}
+
+function recordedLayoutShortcutKey(
+  event: Pick<KeyboardEvent, "key" | "code" | "shiftKey" | "altKey">,
+): string {
+  const physicalKey = shortcutKeyFromEvent(event);
+  const layoutKey = event.key.toLowerCase();
+  if (event.altKey || layoutKey.length !== 1) return physicalKey;
+  // Normalize only US shifted glyphs at their US position. Other layouts can
+  // produce the same glyph without Shift or at a different position.
+  const unshiftedKey = event.shiftKey ? US_SHIFTED_TO_UNSHIFTED_KEYS.get(layoutKey) : undefined;
+  return unshiftedKey === physicalKey ? physicalKey : layoutKey;
 }
 
 function normalizeShortcutKeyToken(key: string): string | null {
@@ -440,8 +461,13 @@ function normalizeShortcutKeyToken(key: string): string | null {
 export function keybindingFromKeyboardEvent(
   event: Pick<KeyboardEvent, "key" | "code" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
   platform: string,
+  options?: {
+    readonly layoutCharacter?: boolean;
+  },
 ): string | null {
-  const keyToken = normalizeShortcutKeyToken(shortcutKeyFromEvent(event));
+  const keyToken = normalizeShortcutKeyToken(
+    options?.layoutCharacter ? recordedLayoutShortcutKey(event) : shortcutKeyFromEvent(event),
+  );
   if (!keyToken) return null;
 
   const parts: string[] = [];

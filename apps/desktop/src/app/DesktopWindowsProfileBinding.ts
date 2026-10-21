@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Profile selection must finish synchronously before Electron auth and userData bootstrap.
-import * as Fs from "node:fs";
-import * as Path from "node:path";
-import { randomUUID } from "node:crypto";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+import * as NodeCrypto from "node:crypto";
 
 interface WindowsProfileInput {
   readonly homeDirectory: string;
@@ -13,8 +13,9 @@ interface WindowsProfileInput {
 /** Outside the installation and Electron's version/profile-specific userData.
  * NSIS may replace executables and shortcuts; it must not choose another T3 home. */
 export function windowsProfileBindingPath(input: WindowsProfileInput): string {
-  return Path.join(
-    input.appDataDirectory?.trim() || Path.win32.join(input.homeDirectory, "AppData", "Roaming"),
+  return NodePath.join(
+    input.appDataDirectory?.trim() ||
+      NodePath.win32.join(input.homeDirectory, "AppData", "Roaming"),
     "morrowbyte-t3",
     "desktop-profile.json",
   );
@@ -25,7 +26,7 @@ function isAbsoluteWindowsHome(value: unknown): value is string {
     typeof value === "string" &&
     value.trim() === value &&
     value.length > 0 &&
-    Path.win32.isAbsolute(value) &&
+    NodePath.win32.isAbsolute(value) &&
     // A rooted path without a drive (\\profile) depends on the current drive.
     /^(?:[a-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)/i.test(value)
   );
@@ -40,12 +41,14 @@ function validPort(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value > 0 && value <= 65535;
 }
 
-function readBinding(bindingPath: string): (WindowsProfileBinding & { readonly serialized: string }) | undefined {
+function readBinding(
+  bindingPath: string,
+): (WindowsProfileBinding & { readonly serialized: string }) | undefined {
   let raw: string;
   try {
-    if (Fs.statSync(bindingPath).size > 16_384)
+    if (NodeFS.statSync(bindingPath).size > 16_384)
       throw new Error("Saved desktop profile is too large");
-    raw = Fs.readFileSync(bindingPath, "utf8");
+    raw = NodeFS.readFileSync(bindingPath, "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw new Error("Cannot read saved Windows desktop profile", { cause: error });
@@ -103,47 +106,56 @@ export function resolveWindowsProfileBinding(input: WindowsProfileInput): Window
     if (!explicitHome) throw error;
     return { t3Home: explicitHome, backendPort: explicitPort };
   }
-  const sameHome = saved && (!explicitHome ||
-    Path.win32.normalize(saved.t3Home).toLowerCase() ===
-      Path.win32.normalize(explicitHome).toLowerCase());
+  const sameHome =
+    saved &&
+    (!explicitHome ||
+      NodePath.win32.normalize(saved.t3Home).toLowerCase() ===
+        NodePath.win32.normalize(explicitHome).toLowerCase());
   const selected = {
-    t3Home: explicitHome ?? saved?.t3Home ?? Path.win32.join(input.homeDirectory, ".t3-weasel"),
+    t3Home: explicitHome ?? saved?.t3Home ?? NodePath.win32.join(input.homeDirectory, ".t3-weasel"),
     backendPort: explicitPort ?? (sameHome ? saved?.backendPort : undefined),
   };
   const addPort = sameHome && saved?.backendPort === undefined && explicitPort !== undefined;
   if ((!saved && explicitHome) || addPort) {
-    Fs.mkdirSync(Path.dirname(bindingPath), { recursive: true, mode: 0o700 });
+    NodeFS.mkdirSync(NodePath.dirname(bindingPath), { recursive: true, mode: 0o700 });
     const lockPath = `${bindingPath}.lock`;
     let lock: number | undefined;
     if (addPort) {
       try {
-        lock = Fs.openSync(lockPath, "wx", 0o600);
+        lock = NodeFS.openSync(lockPath, "wx", 0o600);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "EEXIST") return selected;
         throw error;
       }
     }
-    const temporary = `${bindingPath}.${process.pid}.${randomUUID()}.tmp`;
+    const temporary = `${bindingPath}.${process.pid}.${NodeCrypto.randomUUID()}.tmp`;
     try {
-      Fs.writeFileSync(temporary, JSON.stringify({
-        schemaVersion: 1, profile: "weasel", t3Home: saved?.t3Home ?? selected.t3Home,
-        ...(selected.backendPort === undefined ? {} : { backendPort: selected.backendPort }),
-      }) + "\n", { flag: "wx", mode: 0o600 });
+      NodeFS.writeFileSync(
+        temporary,
+        JSON.stringify({
+          schemaVersion: 1,
+          profile: "weasel",
+          t3Home: saved?.t3Home ?? selected.t3Home,
+          ...(selected.backendPort === undefined ? {} : { backendPort: selected.backendPort }),
+        }) + "\n",
+        { flag: "wx", mode: 0o600 },
+      );
       if (addPort) {
         // Upgrade only the unchanged matching-home record; retain concurrent choices.
-        if (Fs.readFileSync(bindingPath, "utf8") === saved?.serialized) Fs.renameSync(temporary, bindingPath);
+        if (NodeFS.readFileSync(bindingPath, "utf8") === saved?.serialized)
+          NodeFS.renameSync(temporary, bindingPath);
       } else {
         try {
-          Fs.linkSync(temporary, bindingPath);
+          NodeFS.linkSync(temporary, bindingPath);
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
         }
       }
     } finally {
-      Fs.rmSync(temporary, { force: true });
+      NodeFS.rmSync(temporary, { force: true });
       if (lock !== undefined) {
-        Fs.closeSync(lock);
-        Fs.rmSync(lockPath, { force: true });
+        NodeFS.closeSync(lock);
+        NodeFS.rmSync(lockPath, { force: true });
       }
     }
   }

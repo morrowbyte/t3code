@@ -14,6 +14,9 @@
 export const CLI_RUNTIME_EXTERNAL_PREFIXES = [
   // Cursor ships computed Webpack imports and platform helper packages.
   "@cursor/sdk",
+  // Cua and UniFFI resolve platform DLLs and addons beside their package files.
+  "@trycua/",
+  "@ubjs/",
   // Playwright reads package.json and browsers.json beside its runtime modules.
   "playwright-core",
   "node-pty",

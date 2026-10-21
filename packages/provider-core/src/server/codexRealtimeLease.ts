@@ -51,7 +51,10 @@ export class CodexRealtimeLease {
     return true;
   }
 
-  settleReadback(key: CodexRealtimeReadbackIdentity, state: Exclude<CodexRealtimeReadbackState, "pending">): boolean {
+  settleReadback(
+    key: CodexRealtimeReadbackIdentity,
+    state: Exclude<CodexRealtimeReadbackState, "pending">,
+  ): boolean {
     const encoded = readbackKey(key);
     if (this.#readbacks.get(encoded) !== "pending") return false;
     this.#readbacks.set(encoded, state);
@@ -64,7 +67,8 @@ export class CodexRealtimeLease {
 }
 
 function sameLease(a: CodexRealtimeLeaseIdentity, b: CodexRealtimeLeaseIdentity): boolean {
-  return a.environmentId === b.environmentId &&
+  return (
+    a.environmentId === b.environmentId &&
     a.threadId === b.threadId &&
     a.providerInstanceId === b.providerInstanceId &&
     a.providerSessionId === b.providerSessionId &&
@@ -72,7 +76,8 @@ function sameLease(a: CodexRealtimeLeaseIdentity, b: CodexRealtimeLeaseIdentity)
     a.nativeThreadId === b.nativeThreadId &&
     a.accountGeneration === b.accountGeneration &&
     a.realtimeSessionId === b.realtimeSessionId &&
-    a.generation === b.generation;
+    a.generation === b.generation
+  );
 }
 
 function readbackKey(key: CodexRealtimeReadbackIdentity): string {

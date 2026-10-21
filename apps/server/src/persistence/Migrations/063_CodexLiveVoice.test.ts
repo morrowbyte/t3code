@@ -13,7 +13,7 @@ it.effect(
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations({ toMigrationInclusive: 61 });
       assert.lengthOf(yield* failureIndex, 0);
-      assert.deepStrictEqual(yield* runMigrations(), [
+      assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 65 }), [
         [62, "ThreadFailureLookupIndex"],
         [63, "CodexLiveVoice"],
         [64, "DropUnusedV1Projections"],
@@ -171,7 +171,7 @@ it.effect("adds Voice 63 to the current main 62 database without replacing main'
     `,
       0,
     );
-    assert.deepStrictEqual(yield* runMigrations(), [
+    assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 65 }), [
       [63, "CodexLiveVoice"],
       [64, "DropUnusedV1Projections"],
       [65, "CanonicalizeThreadPullRequestLinks"],
@@ -182,9 +182,9 @@ it.effect("adds Voice 63 to the current main 62 database without replacing main'
     `;
     assert.deepStrictEqual(
       ledger.map((row) => [row.migration_id, row.name] as const),
-      migrationManifest,
+      migrationManifest.filter(([id]) => id <= 65),
     );
-    assert.deepStrictEqual(yield* runMigrations(), []);
+    assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 65 }), []);
   }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
 );
 
@@ -218,7 +218,7 @@ it.effect(
       const leases = yield* sql`SELECT * FROM codex_live_voice_leases`;
       const intents = yield* sql`SELECT * FROM codex_live_voice_intents`;
       assert.lengthOf(yield* failureIndex, 0);
-      assert.deepStrictEqual(yield* runMigrations(), [
+      assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 65 }), [
         [62, "ThreadFailureLookupIndex"],
         [63, "CodexLiveVoice"],
         [64, "DropUnusedV1Projections"],
@@ -237,10 +237,10 @@ it.effect(
     `;
       assert.deepStrictEqual(
         ledger.map((row) => [row.migration_id, row.name] as const),
-        migrationManifest,
+        migrationManifest.filter(([id]) => id <= 65),
       );
       assert.lengthOf(yield* failureIndex, 1);
-      assert.deepStrictEqual(yield* runMigrations(), []);
+      assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 65 }), []);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
 );
 
@@ -254,7 +254,7 @@ it.effect.each(["OtherForkMigration", "CodexLiveVoice"])(
       INSERT INTO effect_sql_migrations (migration_id, name) VALUES (62, ${name})
     `;
       const before = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
-      const result = yield* Effect.exit(runMigrations());
+      const result = yield* Effect.exit(runMigrations({ toMigrationInclusive: 65 }));
       assert.isTrue(Exit.isFailure(result));
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,

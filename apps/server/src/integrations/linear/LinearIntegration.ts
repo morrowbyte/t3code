@@ -291,7 +291,7 @@ const make = Effect.gen(function* () {
     yield* save({ ...state, deliveries: [...retained, delivery] });
   });
 
-  const action = (input: LinearAction) =>
+  const action = Effect.fn("LinearIntegration.action")((input: LinearAction) =>
     Effect.gen(function* () {
       let authorizeUrl: string | undefined;
       if (input.type === "enable") {
@@ -403,97 +403,102 @@ const make = Effect.gen(function* () {
         }
       }
       return { settings: yield* settings, ...(authorizeUrl ? { authorizeUrl } : {}) };
-    }).pipe(lock.withPermits(1), Effect.withTracerEnabled(false));
+    }).pipe(lock.withPermits(1), Effect.withTracerEnabled(false)),
+  );
 
-  const callback = (input: { readonly code: string; readonly state: string }) =>
-    Effect.gen(function* () {
-      if (!state.enabled) return yield* new LinearIntegrationError({ reason: "disabled" });
-      if (!oauthConfigured)
-        return yield* new LinearIntegrationError({ reason: "oauth_unconfigured" });
-      const stored = yield* readSecret(PENDING);
-      if (Option.isNone(stored)) return yield* new LinearIntegrationError({ reason: "invalid" });
-      const pending = yield* decodePendingOAuth(stored.value).pipe(
-        Effect.mapError(() => new LinearIntegrationError({ reason: "invalid" })),
-      );
-      if (
-        !constantTimeEquals(pending.state, input.state) ||
-        pending.expiresAt < (yield* Clock.currentTimeMillis)
-      )
-        return yield* new LinearIntegrationError({ reason: "invalid" });
-      yield* removeSecret(PENDING);
-      const token = yield* api.token({ ...oauth, code: input.code, verifier: pending.verifier });
-      const identity = yield* api.identity(token.access_token);
-      yield* writeSecret(TOKEN, token.access_token);
-      const sameWorkspace = state.workspace?.id === identity.organization.id;
-      yield* save({
-        ...state,
-        connection: "connected",
-        workspace: { ...identity.organization, actorId: identity.viewer.id },
-        bindings: sameWorkspace ? state.bindings : [],
-        deliveries: sameWorkspace ? state.deliveries : [],
-      });
-    }).pipe(lock.withPermits(1), Effect.withTracerEnabled(false));
-
-  const receive: LinearIntegration["Service"]["receive"] = (input) =>
-    Effect.gen(function* () {
-      if (!state.enabled || state.connection !== "connected" || !state.workspace)
-        return "disabled" as const;
-      if (input.body.byteLength > 1024 * 1024) return "rejected" as const;
-      const secret = yield* readSecret(WEBHOOK_SECRET);
-      if (
-        Option.isNone(secret) ||
-        !verifyWebhookSignature({
-          signature: { header: "linear-signature", encoding: "hex", prefix: "" },
-          secret: secret.value,
-          headers: input.headers,
-          body: input.body,
-        })
-      )
-        return "rejected" as const;
-      const event = yield* decodeEvent(new TextDecoder().decode(input.body)).pipe(Effect.option);
-      if (Option.isNone(event)) return "rejected" as const;
-      const now = yield* Clock.currentTimeMillis;
-      if (
-        Math.abs(now - event.value.webhookTimestamp) > 60_000 ||
-        event.value.organizationId !== state.workspace.id
-      )
-        return "rejected" as const;
-      const hash = digest(input.body);
-      const providerDeliveryId = input.headers["linear-delivery"]?.slice(0, 200) ?? hash;
-      if (
-        state.deliveries.some(
-          (item) => item.digest === hash || item.providerDeliveryId === providerDeliveryId,
+  const callback = Effect.fn("LinearIntegration.callback")(
+    (input: { readonly code: string; readonly state: string }) =>
+      Effect.gen(function* () {
+        if (!state.enabled) return yield* new LinearIntegrationError({ reason: "disabled" });
+        if (!oauthConfigured)
+          return yield* new LinearIntegrationError({ reason: "oauth_unconfigured" });
+        const stored = yield* readSecret(PENDING);
+        if (Option.isNone(stored)) return yield* new LinearIntegrationError({ reason: "invalid" });
+        const pending = yield* decodePendingOAuth(stored.value).pipe(
+          Effect.mapError(() => new LinearIntegrationError({ reason: "invalid" })),
+        );
+        if (
+          !constantTimeEquals(pending.state, input.state) ||
+          pending.expiresAt < (yield* Clock.currentTimeMillis)
         )
-      )
-        return "duplicate" as const;
-      if (
-        state.deliveries.filter((item) => item.outcome === "pending").length >= 20 ||
-        state.deliveries.filter((item) => now - item.receivedAt <= TTL).length >= 100
-      )
-        return "queue_full" as const;
-      const issueId =
-        event.value.type === "Issue"
-          ? event.value.data.id
-          : (event.value.data.issueId ?? event.value.data.issue?.id);
-      const binding = state.bindings.find((item) => item.issueId === issueId);
-      const ownReply = event.value.actor?.id === state.workspace.actorId;
-      yield* addDelivery({
-        id: digest(`${state.workspace.id}:${providerDeliveryId}`),
-        bindingId: binding?.id ?? null,
-        issueId: issueId ?? "",
-        digest: hash,
-        providerDeliveryId,
-        receivedAt: now,
-        outcome: ownReply ? "own_reply" : binding ? "pending" : "unbound",
-        text:
-          event.value.type === "Comment"
-            ? (event.value.data.body ?? "").slice(0, 8000)
-            : "Issue updated in Linear.",
-        runId: null,
-        dispatch: null,
-      });
-      return "accepted" as const;
-    }).pipe(lock.withPermits(1), Effect.withTracerEnabled(false));
+          return yield* new LinearIntegrationError({ reason: "invalid" });
+        yield* removeSecret(PENDING);
+        const token = yield* api.token({ ...oauth, code: input.code, verifier: pending.verifier });
+        const identity = yield* api.identity(token.access_token);
+        yield* writeSecret(TOKEN, token.access_token);
+        const sameWorkspace = state.workspace?.id === identity.organization.id;
+        yield* save({
+          ...state,
+          connection: "connected",
+          workspace: { ...identity.organization, actorId: identity.viewer.id },
+          bindings: sameWorkspace ? state.bindings : [],
+          deliveries: sameWorkspace ? state.deliveries : [],
+        });
+      }).pipe(lock.withPermits(1), Effect.withTracerEnabled(false)),
+  );
+
+  const receive: LinearIntegration["Service"]["receive"] = Effect.fn("LinearIntegration.receive")(
+    (input) =>
+      Effect.gen(function* () {
+        if (!state.enabled || state.connection !== "connected" || !state.workspace)
+          return "disabled" as const;
+        if (input.body.byteLength > 1024 * 1024) return "rejected" as const;
+        const secret = yield* readSecret(WEBHOOK_SECRET);
+        if (
+          Option.isNone(secret) ||
+          !verifyWebhookSignature({
+            signature: { header: "linear-signature", encoding: "hex", prefix: "" },
+            secret: secret.value,
+            headers: input.headers,
+            body: input.body,
+          })
+        )
+          return "rejected" as const;
+        const event = yield* decodeEvent(new TextDecoder().decode(input.body)).pipe(Effect.option);
+        if (Option.isNone(event)) return "rejected" as const;
+        const now = yield* Clock.currentTimeMillis;
+        if (
+          Math.abs(now - event.value.webhookTimestamp) > 60_000 ||
+          event.value.organizationId !== state.workspace.id
+        )
+          return "rejected" as const;
+        const hash = digest(input.body);
+        const providerDeliveryId = input.headers["linear-delivery"]?.slice(0, 200) ?? hash;
+        if (
+          state.deliveries.some(
+            (item) => item.digest === hash || item.providerDeliveryId === providerDeliveryId,
+          )
+        )
+          return "duplicate" as const;
+        if (
+          state.deliveries.filter((item) => item.outcome === "pending").length >= 20 ||
+          state.deliveries.filter((item) => now - item.receivedAt <= TTL).length >= 100
+        )
+          return "queue_full" as const;
+        const issueId =
+          event.value.type === "Issue"
+            ? event.value.data.id
+            : (event.value.data.issueId ?? event.value.data.issue?.id);
+        const binding = state.bindings.find((item) => item.issueId === issueId);
+        const ownReply = event.value.actor?.id === state.workspace.actorId;
+        yield* addDelivery({
+          id: digest(`${state.workspace.id}:${providerDeliveryId}`),
+          bindingId: binding?.id ?? null,
+          issueId: issueId ?? "",
+          digest: hash,
+          providerDeliveryId,
+          receivedAt: now,
+          outcome: ownReply ? "own_reply" : binding ? "pending" : "unbound",
+          text:
+            event.value.type === "Comment"
+              ? (event.value.data.body ?? "").slice(0, 8000)
+              : "Issue updated in Linear.",
+          runId: null,
+          dispatch: null,
+        });
+        return "accepted" as const;
+      }).pipe(lock.withPermits(1), Effect.withTracerEnabled(false)),
+  );
   yield* (yield* Scheduler.Scheduler).register("linear-deliveries", drain);
   return LinearIntegration.of({ settings, action, callback, receive, drain });
 });
