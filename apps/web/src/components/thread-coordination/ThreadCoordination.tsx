@@ -22,11 +22,16 @@ import { threadEnvironment, useEnvironmentThread } from "../../state/threads";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
+import { isThreadCoordinationAvailable } from "./availability";
 
 const MembersSchema = Schema.Array(Schema.String);
 const EMPTY_MEMBERS: readonly string[] = [];
 
 export function ThreadCoordination({ threadRef }: { threadRef: ScopedThreadRef }) {
+  return isThreadCoordinationAvailable() ? <LocalThreadCoordination threadRef={threadRef} /> : null;
+}
+
+function LocalThreadCoordination({ threadRef }: { threadRef: ScopedThreadRef }) {
   const { environmentId, threadId } = threadRef;
   const coordinator = useThreadShell(threadRef);
   const threads = useThreadShells();
