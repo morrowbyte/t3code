@@ -1,3 +1,4 @@
+import { useWindowsCuaStatus } from "~/state/windowsCua";
 import { DeviceHostUpdates } from "../device/DeviceHostUpdates";
 import { LinearSettingsPanel } from "./LinearSettings";
 import { DeviceToolVersions } from "../device/DeviceToolVersions";
@@ -51,6 +52,7 @@ import { useEnvironments, usePrimaryEnvironment } from "~/state/environments";
 import { deviceEnvironment, useDeviceState } from "~/state/device";
 import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { serverEnvironment } from "~/state/server";
 import { formatEnvironmentQueryError } from "~/state/query";
 import { previewEnvironment } from "~/state/preview";
 import { useServerConfigs } from "~/state/entities";
@@ -1654,10 +1656,85 @@ export function IntegrationsSettingsPanel() {
   );
 }
 
+function WindowsCuaSetting() {
+  const { scope, environment } = useSettingsScope();
+  const target = scope.kind === "environment" ? environment : null;
+  const environmentId = target?.environmentId ?? null;
+  const canConfigure = useEnvironmentScope(environmentId, AuthSettingsWriteScope);
+  const update = useAtomCommand(serverEnvironment.updateSettings);
+  const [pending, setPending] = useState(false);
+  const connected = target?.connection.phase === "connected";
+  const platform = target?.serverConfig?.environment.platform;
+  const supported = platform?.os === "windows" && platform.arch === "x64";
+  const enabled = target?.serverConfig?.settings.enableWindowsCua === true;
+  const status = useWindowsCuaStatus(environmentId);
+  const phase = status.data?.phase;
+  const statusText =
+    status.error ??
+    (phase === "failed"
+      ? status.data?.ownerThreadId
+        ? "Stop failed; control may still be active."
+        : "Driver unavailable. Turn off before retrying."
+      : phase === "stopping"
+        ? "Stopping…"
+        : phase === "starting"
+          ? "Starting…"
+          : phase === "ready"
+            ? "Connected"
+            : phase === "idle"
+              ? "Waiting for Codex"
+              : phase === "disabled"
+                ? "Off"
+                : null);
+
+  return (
+    <SettingsSection id="computer-control" title="Computer control">
+      <SettingsRow
+        {...searchableSetting("windows-cua")}
+        status={statusText}
+        description={
+          target === null
+            ? "Choose one Windows environment."
+            : !supported
+              ? "Requires a Windows x64 environment."
+              : "Available to new or resumed Codex sessions. Turning off stops this environment's managed driver."
+        }
+        control={
+          <Switch
+            aria-label="Windows computer control"
+            checked={enabled}
+            disabled={!connected || (!supported && !enabled) || !canConfigure || pending}
+            onCheckedChange={async (checked) => {
+              if (
+                environmentId === null ||
+                !connected ||
+                (!supported && checked) ||
+                !canConfigure ||
+                pending
+              )
+                return;
+              setPending(true);
+              try {
+                await update({
+                  environmentId,
+                  input: { patch: { enableWindowsCua: Boolean(checked) } },
+                });
+              } finally {
+                setPending(false);
+              }
+            }}
+          />
+        }
+      />
+    </SettingsSection>
+  );
+}
+
 export function DevicesSettingsPanel() {
   return (
     <SettingsPageContainer>
       <DeviceIntegrationSettings />
+      <WindowsCuaSetting />
     </SettingsPageContainer>
   );
 }

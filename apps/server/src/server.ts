@@ -1,3 +1,4 @@
+import * as CuaRuntime from "./cua/CuaRuntime.ts";
 import * as MainRendererDiagnosticsLocalClient from "./diagnostics/MainRendererDiagnosticsLocalClient.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
@@ -622,6 +623,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.effectDiscard(ProjectSettingsOverrideSweep.sweep),
 ).pipe(
   Layer.provideMerge(layerOrchestrationApplication),
+  Layer.provideMerge(CuaRuntime.layer.pipe(Layer.provide(layerServerSettings))),
   Layer.provideMerge(RuntimeLayer.layerEventInfrastructure),
   Layer.provideMerge(Layer.merge(ProjectStore.layer, ThreadSearch.layer)),
   Layer.provideMerge(layerServerSettings),

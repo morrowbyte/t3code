@@ -1042,6 +1042,9 @@ export const WINDOWS_SERVER_ASAR_RESOURCE = "server.asar";
 export const WINDOWS_NATIVE_ASAR_UNPACK_GLOB =
   "{**/*.node,**/*.dll,**/*.exe,**/*.so,**/*.so.*,**/*.dylib}";
 export const WINDOWS_SERVER_ASAR_UNPACK_GLOBS = [
+  // UniFFI opens the SDK DLL by a real path; keep its JS resolver beside it.
+  "**/node_modules/@trycua/**",
+  "**/node_modules/@ubjs/**",
   "**/*.dll",
   "**/*.exe",
   "**/*.so",

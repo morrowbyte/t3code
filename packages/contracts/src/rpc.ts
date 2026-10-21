@@ -1,3 +1,5 @@
+import { WindowsCuaStatus, WindowsCuaStatusError } from "./windowsCua.ts";
+import { EnvironmentId as CuaEnvironmentId } from "./baseSchemas.ts";
 import {
   YaziPickerOpenInput,
   YaziPickerSessionInput,
@@ -530,6 +532,7 @@ export const WS_METHODS = {
 
   deviceConfigure: "device.configure",
   deviceList: "device.list",
+  windowsCuaSubscribe: "windowsCua.subscribe",
   deviceTestHost: "device.testHost",
   deviceEasAccount: "device.easAccount",
   deviceOpen: "device.open",
@@ -1748,6 +1751,13 @@ const WsDeviceActionRpc = Rpc.make(WS_METHODS.deviceAction, {
   error: Schema.Union([DeviceError, EnvironmentAuthorizationError]),
 });
 
+const WsWindowsCuaSubscribeRpc = Rpc.make(WS_METHODS.windowsCuaSubscribe, {
+  payload: Schema.Struct({ environmentId: CuaEnvironmentId }),
+  success: WindowsCuaStatus,
+  error: Schema.Union([WindowsCuaStatusError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
 const WsSubscribeDeviceStateRpc = Rpc.make(WS_METHODS.subscribeDeviceState, {
   payload: Schema.Struct({}),
   success: DeviceServiceState,
@@ -2129,6 +2139,7 @@ export const YaziPickerRpcGroup = RpcGroup.make(
 ).middleware(RpcScopeAuthorization);
 
 export const WsRpcGroup = RpcGroup.make(
+  WsWindowsCuaSubscribeRpc,
   WsAgentObservatorySubscribeRpc,
   WsAgentObservatoryReadNativeRosterRpc,
   WsAgentObservatorySubscribeNativeRosterRpc,

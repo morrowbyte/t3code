@@ -55,6 +55,7 @@
     "@t3tools/source-control-gitcafe": "workspace:*",
     "@t3tools/source-control-github": "workspace:*",
     "@t3tools/source-control-gitlab": "workspace:*",
+    "@trycua/cua-driver": "0.37.0",
     "effect": "catalog:",
     "jose": "catalog:",
     "node-pty": "^1.2.0-beta.15",

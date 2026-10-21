@@ -735,6 +735,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["ssh remote simulator emulator ios android mac mini identity key connection"],
   },
   {
+    id: "windows-cua",
+    title: "Windows computer control",
+    to: "/settings/devices",
+    searchTerms: ["cua codex windows computer control desktop"],
+  },
+  {
     id: "agent-device-access",
     title: "Agent device access",
     to: "/settings/devices",

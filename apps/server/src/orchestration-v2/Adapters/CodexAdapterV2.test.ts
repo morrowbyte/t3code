@@ -965,15 +965,12 @@ describe("CodexAdapterV2 process spawning", () => {
           "tools.update_plan.enabled": true,
           // Codex waits up to 10 s, not 1 s, for MCP servers before the first request (#13437).
           mcp_optional_startup_grace_ms: 10_000,
-          mcp_servers: {
-            "t3-code": {
-              url: "http://127.0.0.1:43123/mcp",
-              tool_timeout_sec: 3_900,
-              http_headers: {
-                Authorization: "Bearer secret-codex-token",
-              },
-            },
+          "mcp_servers.t3-code": {
+            url: "http://127.0.0.1:43123/mcp",
+            tool_timeout_sec: 3_900,
+            http_headers: { Authorization: "Bearer secret-codex-token" },
           },
+          "mcp_servers.t3-windows-cua": { enabled: false },
         },
       },
     );

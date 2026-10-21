@@ -1,3 +1,5 @@
+import * as CuaControl from "./cua/CuaControl.ts";
+import { WindowsCuaStatusError } from "@t3tools/contracts";
 import { YaziPickerRpcGroup } from "@t3tools/contracts";
 import { HostUpdateHistoryError } from "@t3tools/contracts";
 import type {
@@ -601,6 +603,7 @@ const CoreWsRpcGroup = ServerWsRpcGroup.omit(
 );
 
 const CoreFirstWsRpcGroup = CoreWsRpcGroup.omit(
+  WS_METHODS.windowsCuaSubscribe,
   WS_METHODS.pullRequestsPreview,
   WS_METHODS.pullRequestsChecks,
   WS_METHODS.pullRequestsActivity,
@@ -1529,6 +1532,7 @@ const layerCoreWsRpc = (
       const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
       const pullRequestSync = yield* PullRequestSyncReactor.PullRequestSyncReactor;
       const deviceService = yield* DeviceService.DeviceService;
+      const cuaControl = yield* Effect.serviceOption(CuaControl.CuaControl);
       const deviceHostContext =
         yield* Effect.context<Effect.Services<ReturnType<typeof remoteSshDeviceHosts>>>();
       const orchestrationEngine = yield* Orchestrator.OrchestratorV2;
@@ -3271,6 +3275,14 @@ const layerCoreWsRpc = (
         [WS_METHODS.deviceConfigure]: (input) => deviceService.configure(input),
         [WS_METHODS.deviceTestHost]: (input) => deviceService.testHost(input),
         [WS_METHODS.deviceEasAccount]: (input) => deviceService.easAccount(input),
+        [WS_METHODS.windowsCuaSubscribe]: (input) =>
+          Option.match(cuaControl, {
+            onNone: () => Stream.fail(new WindowsCuaStatusError({})),
+            onSome: (control) =>
+              control
+                .subscribe(input.environmentId)
+                .pipe(Stream.mapError(() => new WindowsCuaStatusError({}))),
+          }),
         [WS_METHODS.deviceList]: (input) =>
           input.inspectOnly && !input.updateTool
             ? deviceService.inspect
