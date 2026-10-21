@@ -207,6 +207,108 @@
   ],
   "packageOverrides": [
     {
+      "name": "@trycua/cua-driver",
+      "version": "0.37.0",
+      "sourceUrl": "https://raw.githubusercontent.com/trycua/cua/2d2f99228d4d2508dc6fcc84c176b296e146714a/LICENSE.md",
+      "noticeFile": "third-party-notices/cua-driver-0.37.0.txt"
+    },
+    {
+      "name": "@trycua/cua-driver-darwin-arm64",
+      "version": "0.37.0",
+      "sourceUrl": "https://raw.githubusercontent.com/trycua/cua/2d2f99228d4d2508dc6fcc84c176b296e146714a/libs/cua-driver/scripts/node-runtime-NOTICE.md",
+      "noticeFile": "third-party-notices/cua-driver-native-0.37.0.txt"
+    },
+    {
+      "name": "@trycua/cua-driver-darwin-x64",
+      "version": "0.37.0",
+      "sourceUrl": "https://raw.githubusercontent.com/trycua/cua/2d2f99228d4d2508dc6fcc84c176b296e146714a/libs/cua-driver/scripts/node-runtime-NOTICE.md",
+      "noticeFile": "third-party-notices/cua-driver-native-0.37.0.txt"
+    },
+    {
+      "name": "@trycua/cua-driver-linux-arm64-gnu",
+      "version": "0.37.0",
+      "sourceUrl": "https://raw.githubusercontent.com/trycua/cua/2d2f99228d4d2508dc6fcc84c176b296e146714a/libs/cua-driver/scripts/node-runtime-NOTICE.md",
+      "noticeFile": "third-party-notices/cua-driver-native-0.37.0.txt"
+    },
+    {
+      "name": "@trycua/cua-driver-linux-x64-gnu",
+      "version": "0.37.0",
+      "sourceUrl": "https://raw.githubusercontent.com/trycua/cua/2d2f99228d4d2508dc6fcc84c176b296e146714a/libs/cua-driver/scripts/node-runtime-NOTICE.md",
+      "noticeFile": "third-party-notices/cua-driver-native-0.37.0.txt"
+    },
+    {
+      "name": "@trycua/cua-driver-win32-arm64-msvc",
+      "version": "0.37.0",
+      "sourceUrl": "https://raw.githubusercontent.com/trycua/cua/2d2f99228d4d2508dc6fcc84c176b296e146714a/libs/cua-driver/scripts/node-runtime-NOTICE.md",
+      "noticeFile": "third-party-notices/cua-driver-native-0.37.0.txt"
+    },
+    {
+      "name": "@trycua/cua-driver-win32-x64-msvc",
+      "version": "0.37.0",
+      "sourceUrl": "https://raw.githubusercontent.com/trycua/cua/2d2f99228d4d2508dc6fcc84c176b296e146714a/libs/cua-driver/scripts/node-runtime-NOTICE.md",
+      "noticeFile": "third-party-notices/cua-driver-native-0.37.0.txt"
+    },
+    {
+      "name": "@ubjs/core",
+      "version": "0.31.0-3",
+      "sourceUrl": "https://raw.githubusercontent.com/jhugman/uniffi-bindgen-react-native/49bc59194d183a05855ed4104c18eb92fb465e02/LICENSE",
+      "noticeFile": "third-party-notices/ubjs-0.31.0-3.txt"
+    },
+    {
+      "name": "@ubjs/node",
+      "version": "0.31.0-3",
+      "sourceUrl": "https://raw.githubusercontent.com/jhugman/uniffi-bindgen-react-native/dcb5c4ab2350d57f6d26f5fa81a99c77ed86d449/LICENSE",
+      "noticeFile": "third-party-notices/ubjs-0.31.0-3.txt"
+    },
+    {
+      "name": "@ubjs/node-darwin-arm64",
+      "version": "0.31.0-3",
+      "sourceUrl": "https://raw.githubusercontent.com/jhugman/uniffi-bindgen-react-native/dcb5c4ab2350d57f6d26f5fa81a99c77ed86d449/LICENSE",
+      "noticeFile": "third-party-notices/ubjs-0.31.0-3.txt"
+    },
+    {
+      "name": "@ubjs/node-darwin-x64",
+      "version": "0.31.0-3",
+      "sourceUrl": "https://raw.githubusercontent.com/jhugman/uniffi-bindgen-react-native/dcb5c4ab2350d57f6d26f5fa81a99c77ed86d449/LICENSE",
+      "noticeFile": "third-party-notices/ubjs-0.31.0-3.txt"
+    },
+    {
+      "name": "@ubjs/node-linux-arm64-gnu",
+      "version": "0.31.0-3",
+      "sourceUrl": "https://raw.githubusercontent.com/jhugman/uniffi-bindgen-react-native/dcb5c4ab2350d57f6d26f5fa81a99c77ed86d449/LICENSE",
+      "noticeFile": "third-party-notices/ubjs-0.31.0-3.txt"
+    },
+    {
+      "name": "@ubjs/node-linux-arm64-musl",
+      "version": "0.31.0-3",
+      "sourceUrl": "https://raw.githubusercontent.com/jhugman/uniffi-bindgen-react-native/dcb5c4ab2350d57f6d26f5fa81a99c77ed86d449/LICENSE",
+      "noticeFile": "third-party-notices/ubjs-0.31.0-3.txt"
+    },
+    {
+      "name": "@ubjs/node-linux-x64-gnu",
+      "version": "0.31.0-3",
+      "sourceUrl": "https://raw.githubusercontent.com/jhugman/uniffi-bindgen-react-native/dcb5c4ab2350d57f6d26f5fa81a99c77ed86d449/LICENSE",
+      "noticeFile": "third-party-notices/ubjs-0.31.0-3.txt"
+    },
+    {
+      "name": "@ubjs/node-linux-x64-musl",
+      "version": "0.31.0-3",
+      "sourceUrl": "https://raw.githubusercontent.com/jhugman/uniffi-bindgen-react-native/dcb5c4ab2350d57f6d26f5fa81a99c77ed86d449/LICENSE",
+      "noticeFile": "third-party-notices/ubjs-0.31.0-3.txt"
+    },
+    {
+      "name": "@ubjs/node-win32-arm64-msvc",
+      "version": "0.31.0-3",
+      "sourceUrl": "https://raw.githubusercontent.com/jhugman/uniffi-bindgen-react-native/dcb5c4ab2350d57f6d26f5fa81a99c77ed86d449/LICENSE",
+      "noticeFile": "third-party-notices/ubjs-0.31.0-3.txt"
+    },
+    {
+      "name": "@ubjs/node-win32-x64-msvc",
+      "version": "0.31.0-3",
+      "sourceUrl": "https://raw.githubusercontent.com/jhugman/uniffi-bindgen-react-native/dcb5c4ab2350d57f6d26f5fa81a99c77ed86d449/LICENSE",
+      "noticeFile": "third-party-notices/ubjs-0.31.0-3.txt"
+    },
+    {
       "name": "remark-math",
       "version": "6.0.0",
       "sourceUrl": "https://raw.githubusercontent.com/remarkjs/remark-math/d5d0660b150810a535bbb07eac6cc96a4510aa24/license",

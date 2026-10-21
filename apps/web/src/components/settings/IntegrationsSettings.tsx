@@ -1688,7 +1688,7 @@ function WindowsCuaSetting() {
                 : null);
 
   return (
-    <SettingsSection id="computer-control" title="Computer control">
+    <SettingsSection id="computer-control" title="Computer control (experimental)">
       <SettingsRow
         {...searchableSetting("windows-cua")}
         status={statusText}
