@@ -568,7 +568,7 @@ jobs:
           root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'observatory-route-generation'
           receipt = json.loads((root / 'receipt.json').read_bytes())
           digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
-          expected = '4a398647bcd2507fd8aabab1ea0119b5bb635ccb880f4c73f0570f533650480e'
+          expected = 'fa1b95cb16c59c5a6bf92647b1bb3f3ab872c4cb06ef7a0e5e723775fb5c3dcc'
           source = os.environ['SOURCE_SHA']
           assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == source
           assert receipt['status'] == 'generated-unreviewed'
@@ -691,7 +691,7 @@ jobs:
           python3 - <<'PYROUTE'
           import hashlib, json, os, pathlib, subprocess
           digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
-          expected = '4a398647bcd2507fd8aabab1ea0119b5bb635ccb880f4c73f0570f533650480e'
+          expected = 'fa1b95cb16c59c5a6bf92647b1bb3f3ab872c4cb06ef7a0e5e723775fb5c3dcc'
           source = os.environ['SOURCE_SHA']
           assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == source
           assert os.environ['PREFLIGHT_ROUTE_SHA'] == expected
@@ -1303,7 +1303,7 @@ jobs:
           python3 - <<'PYROUTE'
           import hashlib, json, os, pathlib, subprocess
           digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
-          expected = '4a398647bcd2507fd8aabab1ea0119b5bb635ccb880f4c73f0570f533650480e'
+          expected = 'fa1b95cb16c59c5a6bf92647b1bb3f3ab872c4cb06ef7a0e5e723775fb5c3dcc'
           source = os.environ['SOURCE_SHA']
           assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == source
           assert os.environ['PREFLIGHT_ROUTE_SHA'] == expected
@@ -1517,7 +1517,7 @@ jobs:
           {
             printf 'fork_release=%s\nsource_sha=%s\npnpm_lock_sha256=%s\n' "$tag" "$source_sha" "$lock_sha"
             if [[ -f apps/web/src/routes/observatory.tsx ]]; then
-              test "$OBSERVATORY_ROUTE_SHA" = 4a398647bcd2507fd8aabab1ea0119b5bb635ccb880f4c73f0570f533650480e
+              test "$OBSERVATORY_ROUTE_SHA" = fa1b95cb16c59c5a6bf92647b1bb3f3ab872c4cb06ef7a0e5e723775fb5c3dcc
               printf 'generated_route_sha256=%s\ngenerated_route_source_sha=%s\ngenerated_route_run_id=%s\ngenerated_route_run_attempt=%s\n' \
                 "$OBSERVATORY_ROUTE_SHA" "$source_sha" "$DESKTOP_RUN_ID" "$DESKTOP_RUN_ATTEMPT"
             fi
