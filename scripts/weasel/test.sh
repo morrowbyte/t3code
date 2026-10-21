@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+python3 scripts/weasel/release62-recovery.test.py
 
 bash -n scripts/weasel/*.sh
 bash scripts/weasel/sync-upstream-nightly.test.sh
