@@ -162,6 +162,8 @@ const WINDOWS_PAYLOAD_FIXTURE_VERSION = "1.2.3";
 
 const makeWindowsPayloadFixture = Effect.fn("test.makeWindowsPayloadFixture")(function* (input: {
   readonly copyUnpackedNatives: boolean;
+  readonly cuaFileCount?: number;
+  readonly cuaPackage?: string;
   readonly serverEntrySource?: string;
   readonly wslRuntime?: "valid" | "loose-server-tree" | "missing-pty" | "bad-digest";
   readonly targetArch?: "x64" | "arm64";
@@ -179,6 +181,18 @@ const makeWindowsPayloadFixture = Effect.fn("test.makeWindowsPayloadFixture")(fu
   yield* fs.makeDirectory(path.dirname(nativePath), { recursive: true });
   yield* fs.writeFileString(serverEntryPath, input.serverEntrySource ?? "console.log('server');\n");
   yield* fs.writeFileString(nativePath, "MZ native-binary");
+
+  for (let index = 0; index < (input.cuaFileCount ?? 0); index += 1) {
+    const file = path.join(
+      sourceDir,
+      "node_modules",
+      input.cuaPackage ?? "@trycua/cua-driver",
+      "dist",
+      `fixture-${index}.js`,
+    );
+    yield* fs.makeDirectory(path.dirname(file), { recursive: true });
+    yield* fs.writeFileString(file, "export {};\n");
+  }
 
   const generatedAsarPath = path.join(tempDir, WINDOWS_SERVER_ASAR_RESOURCE);
   yield* packWindowsServerAsar({ sourceDir, asarPath: generatedAsarPath, arch: "x64" });
@@ -1661,6 +1675,125 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.deepStrictEqual(resourceMonitorError.missingFiles, [
           "resource-monitor/t3-resource-monitor.exe",
         ]);
+      }),
+    ),
+  );
+
+  it.effect("allows only bounded ASAR-declared CUA packages beyond the Windows base budget", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeWindowsPayloadFixture({
+          copyUnpackedNatives: true,
+          cuaFileCount: 107,
+        });
+        const result = yield* validateWindowsPackagedPayload({
+          stageDistDir: fixture.stageDistDir,
+          appExecutableName: fixture.appExecutableName,
+          targetArch: "x64",
+          appVersion: WINDOWS_PAYLOAD_FIXTURE_VERSION,
+        });
+        assert.isAbove(result.fileCount, WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT);
+        assert.lengthOf(
+          result.unpackedFiles.filter((file) =>
+            file.startsWith("node_modules/@trycua/cua-driver/"),
+          ),
+          107,
+        );
+      }),
+    ).pipe(Effect.provideService(HostProcess.Platform, "linux")),
+  );
+
+  it.effect("keeps loose files outside the CUA allowance", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const fixture = yield* makeWindowsPayloadFixture({
+          copyUnpackedNatives: true,
+          cuaFileCount: 107,
+        });
+        for (let index = 0; index < WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT; index += 1)
+          yield* fs.writeFileString(
+            path.join(fixture.packagedAppDir, `loose-${index}.txt`),
+            "unexpected",
+          );
+        const error = yield* validateWindowsPackagedPayload({
+          stageDistDir: fixture.stageDistDir,
+          appExecutableName: fixture.appExecutableName,
+          targetArch: "x64",
+          appVersion: WINDOWS_PAYLOAD_FIXTURE_VERSION,
+        }).pipe(Effect.flip);
+        assert.instanceOf(error, WindowsPackagedPayloadValidationError);
+        assert.equal(error.reason, "file-limit-exceeded");
+      }),
+    ),
+  );
+
+  it.effect("rejects a missing declared CUA resolver file", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const fixture = yield* makeWindowsPayloadFixture({
+          copyUnpackedNatives: true,
+          cuaFileCount: 107,
+        });
+        yield* fs.remove(
+          path.join(
+            fixture.packagedAppDir,
+            "resources",
+            "server.asar.unpacked",
+            "node_modules/@trycua/cua-driver/dist/fixture-0.js",
+          ),
+        );
+        const error = yield* validateWindowsPackagedPayload({
+          stageDistDir: fixture.stageDistDir,
+          appExecutableName: fixture.appExecutableName,
+          targetArch: "x64",
+          appVersion: WINDOWS_PAYLOAD_FIXTURE_VERSION,
+        }).pipe(Effect.flip);
+        assert.instanceOf(error, WindowsPackagedPayloadValidationError);
+        assert.equal(error.reason, "unpacked-native-missing");
+      }),
+    ),
+  );
+
+  it.effect("rejects an oversized CUA SDK despite its declared ASAR paths", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeWindowsPayloadFixture({
+          copyUnpackedNatives: true,
+          cuaFileCount: 129,
+        });
+        const error = yield* validateWindowsPackagedPayload({
+          stageDistDir: fixture.stageDistDir,
+          appExecutableName: fixture.appExecutableName,
+          targetArch: "x64",
+          appVersion: WINDOWS_PAYLOAD_FIXTURE_VERSION,
+        }).pipe(Effect.flip);
+        assert.instanceOf(error, WindowsPackagedPayloadValidationError);
+        assert.equal(error.reason, "cua-file-limit-exceeded");
+        assert.equal(error.fileLimit, 128);
+      }),
+    ),
+  );
+
+  it.effect("does not grant other trycua packages the Windows SDK allowance", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeWindowsPayloadFixture({
+          copyUnpackedNatives: true,
+          cuaFileCount: 107,
+          cuaPackage: "@trycua/unreviewed",
+        });
+        const error = yield* validateWindowsPackagedPayload({
+          stageDistDir: fixture.stageDistDir,
+          appExecutableName: fixture.appExecutableName,
+          targetArch: "x64",
+          appVersion: WINDOWS_PAYLOAD_FIXTURE_VERSION,
+        }).pipe(Effect.flip);
+        assert.instanceOf(error, WindowsPackagedPayloadValidationError);
+        assert.equal(error.reason, "file-limit-exceeded");
       }),
     ),
   );

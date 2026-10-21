@@ -752,6 +752,7 @@ const WindowsPackagedPayloadValidationReason = Schema.Literals([
   "wsl-runtime-missing",
   "wsl-runtime-invalid",
   "file-limit-exceeded",
+  "cua-file-limit-exceeded",
 ]);
 
 export class WindowsPackagedPayloadValidationError extends Schema.TaggedError<WindowsPackagedPayloadValidationError>()(
@@ -766,6 +767,9 @@ export class WindowsPackagedPayloadValidationError extends Schema.TaggedError<Wi
   },
 ) {
   override get message(): string {
+    if (this.reason === "cua-file-limit-exceeded") {
+      return `Windows CUA sidecar contains ${String(this.fileCount)} unpacked files; expected at most ${String(this.fileLimit)}.`;
+    }
     if (this.reason === "file-limit-exceeded") {
       return `Windows packaged payload contains ${String(this.fileCount)} files; expected at most ${String(this.fileLimit)}.`;
     }
@@ -1080,6 +1084,9 @@ export function resolveWindowsServerAsarIgnoreGlobs(arch: typeof BuildArch.Type)
 }
 
 export const WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 80;
+// The pinned SDKs contain 107 JS/type/metadata files plus their Windows natives.
+// Their real-path resolvers require complete packages outside server.asar.
+const WINDOWS_CUA_UNPACKED_FILE_LIMIT = 128;
 export const WINDOWS_SERVER_RESOURCE_SOURCE_DIR = "apps/desktop/prod-resources/windows-server";
 export const WINDOWS_SERVER_EXTRA_RESOURCES = [
   {
@@ -3660,12 +3667,33 @@ export const validateWindowsPackagedPayload = Effect.fn(
   }
 
   const fileCount = yield* countPayloadFiles(packagedAppDir);
-  if (fileCount > fileLimit) {
+  const cuaPackageRoots = [
+    "node_modules/@trycua/cua-driver/",
+    `node_modules/@trycua/cua-driver-win32-${input.targetArch}-msvc/`,
+    "node_modules/@ubjs/core/",
+    "node_modules/@ubjs/node/",
+    `node_modules/@ubjs/node-win32-${input.targetArch}-msvc/`,
+  ];
+  const cuaFileCount = unpackedFiles.filter((file) =>
+    cuaPackageRoots.some((root) => file.startsWith(root)),
+  ).length;
+  if (cuaFileCount > WINDOWS_CUA_UNPACKED_FILE_LIMIT) {
+    return yield* new WindowsPackagedPayloadValidationError({
+      reason: "cua-file-limit-exceeded",
+      packagedAppDir,
+      fileCount: cuaFileCount,
+      fileLimit: WINDOWS_CUA_UNPACKED_FILE_LIMIT,
+    });
+  }
+  // Only ASAR-declared files already checked above earn the SDK allowance.
+  // Loose files and unrelated packages still consume the original budget.
+  const totalFileLimit = fileLimit + cuaFileCount;
+  if (fileCount > totalFileLimit) {
     return yield* new WindowsPackagedPayloadValidationError({
       reason: "file-limit-exceeded",
       packagedAppDir,
       fileCount,
-      fileLimit,
+      fileLimit: totalFileLimit,
     });
   }
 

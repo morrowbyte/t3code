@@ -1,0 +1,587 @@
+name: Recover only the pinned .62 Windows package and publish original platform bytes
+run-name: Pinned .62 Windows recovery; original application source 01102e1d064e371033bbd9782bc8f2ac20c7b3ad
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Explicitly approved one-time .62 recovery and publication
+        type: boolean
+        required: true
+        default: false
+      source_sha:
+        description: Must remain the original .62 application commit
+        type: string
+        required: true
+        default: 01102e1d064e371033bbd9782bc8f2ac20c7b3ad
+      origin_run_id:
+        description: Must remain the failed .62 origin run
+        type: string
+        required: true
+        default: "39537119530"
+concurrency:
+  group: weasel-desktop-nightly
+  cancel-in-progress: false
+permissions:
+  actions: read
+  contents: read
+jobs:
+  recover:
+    if: github.repository == 'morrowbyte/t3code' && inputs.publish
+    runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    timeout-minutes: 15
+    outputs:
+      source_sha: ${{ steps.recover.outputs.source_sha }}
+      version: ${{ steps.recover.outputs.version }}
+      android_version_code: ${{ steps.recover.outputs.android_version_code }}
+      tag: ${{ steps.recover.outputs.tag }}
+      observatory_route_sha256: ${{ steps.recover.outputs.observatory_route_sha256 }}
+      desktop_run_id: ${{ steps.recover.outputs.desktop_run_id }}
+      desktop_run_attempt: ${{ steps.recover.outputs.desktop_run_attempt }}
+      desktop_context_sha: ${{ steps.recover.outputs.desktop_context_sha }}
+      desktop_workflow_sha: ${{ steps.recover.outputs.desktop_workflow_sha }}
+      desktop_workflow_ref: ${{ steps.recover.outputs.desktop_workflow_ref }}
+      recovery_artifact_attempt: ${{ steps.recover.outputs.recovery_artifact_attempt }}
+      recovery_workflow_sha256: ${{ steps.recover.outputs.recovery_workflow_sha256 }}
+      windows_packaging_sha256: ${{ steps.recover.outputs.windows_packaging_sha256 }}
+      windows_recovery_receipt_sha256: ${{ steps.recover.outputs.windows_recovery_receipt_sha256 }}
+      android_source_sha: ${{ steps.recover.outputs.android_source_sha }}
+      android_lock_sha256: ${{ steps.recover.outputs.android_lock_sha256 }}
+      recovered_apk_sha256: ${{ steps.recover.outputs.recovered_apk_sha256 }}
+      recovered_apk_receipt_sha256: ${{ steps.recover.outputs.recovered_apk_receipt_sha256 }}
+    steps:
+      - name: Checkout immutable .62 application source
+        uses: actions/checkout@v4
+        with:
+          ref: 01102e1d064e371033bbd9782bc8f2ac20c7b3ad
+          fetch-depth: 0
+      - name: Load the reviewed .62 recovery helper from the immutable workflow commit
+        env:
+          CONTROL_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$CONTROL_SHA"
+          git show "$CONTROL_SHA:scripts/weasel/release62-recovery.py" > "$RUNNER_TEMP/release62-recovery.py"
+      - id: recover
+        name: Verify .62 origin, tooling CI, exact artifact bytes and proof chain
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          ORIGIN_RUN_ID: ${{ inputs.origin_run_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 "$RUNNER_TEMP/release62-recovery.py" recover
+      - name: Retain verified original weasel-release-recovered-platforms
+        uses: actions/upload-artifact@v4
+        with:
+          name: weasel-release-recovered-platforms
+          path: ${{ runner.temp }}/recovered-platforms/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Retain verified original weasel-release-cli-linux
+        uses: actions/upload-artifact@v4
+        with:
+          name: weasel-release-cli-linux
+          path: ${{ runner.temp }}/recovered-cli-linux/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Retain verified original weasel-js-bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: weasel-js-bundle
+          path: ${{ runner.temp }}/recovered-js-bundle
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Retain verified original weasel-observatory-preflight-01102e1d064e371033bbd9782bc8f2ac20c7b3ad-1
+        uses: actions/upload-artifact@v4
+        with:
+          name: weasel-observatory-preflight-01102e1d064e371033bbd9782bc8f2ac20c7b3ad-1
+          path: ${{ runner.temp }}/observatory-route-generation/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Retain verified original weasel-observatory-build-01102e1d064e371033bbd9782bc8f2ac20c7b3ad-1
+        uses: actions/upload-artifact@v4
+        with:
+          name: weasel-observatory-build-01102e1d064e371033bbd9782bc8f2ac20c7b3ad-1
+          path: ${{ runner.temp }}/observatory-release-build/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+  build_windows:
+    if: ${{ !cancelled() && inputs.publish && needs.recover.result == 'success' }}
+    needs:
+      - recover
+    runs-on: ${{ vars.WEASEL_WINDOWS_RUNNER || 'blacksmith-8vcpu-windows-2025' }}
+    timeout-minutes: 50
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.recover.outputs.source_sha }}
+          fetch-depth: 0
+      - name: Apply only the hash-pinned .62 validator fix
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ needs.recover.outputs.source_sha }}
+          PACKAGING_SHA256: ${{ needs.recover.outputs.windows_packaging_sha256 }}
+          CONTROL_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$SOURCE_SHA" = 01102e1d064e371033bbd9782bc8f2ac20c7b3ad
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          test "$PACKAGING_SHA256" = 537a26500a69adb09690a68af0e98cf8e822e0bbc428308fb229eb05d462829d
+          git fetch --no-tags origin "$CONTROL_SHA"
+          git show "$CONTROL_SHA:scripts/build-desktop-artifact.ts" > scripts/build-desktop-artifact.ts
+          printf '%s  %s\n' "$PACKAGING_SHA256" scripts/build-desktop-artifact.ts | sha256sum --check --strict
+          test "$(git diff --name-only)" = scripts/build-desktop-artifact.ts
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
+        with:
+          node-version-file: package.json
+          cache: false
+          run-install: false
+      - name: Install Windows build dependencies
+        run: vp install --frozen-lockfile --filter=@t3tools/desktop... --filter=t3... --filter=@t3tools/scripts...
+      - name: Install Spectre-mitigated MSVC runtime libraries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installPath = & $vswhere -products * -latest -property installationPath
+          $setupExe = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+          $proc = Start-Process -FilePath $setupExe `
+            -ArgumentList "modify", "--installPath", "`"$installPath`"", "--add", `
+            "Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre", "--quiet", "--norestart" `
+            -Wait -PassThru -NoNewWindow
+          if ($null -eq $proc -or $proc.ExitCode -ne 0) {
+            $code = if ($null -ne $proc) { $proc.ExitCode } else { 1 }
+            Write-Error "Visual Studio Installer failed with exit code $code"
+            exit $code
+          }
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Download shared assets
+        uses: actions/download-artifact@v4
+        with:
+          name: weasel-js-bundle
+          path: apps
+      - name: Align package versions
+        run: node scripts/update-release-package-versions.ts "${{ needs.recover.outputs.version }}"
+      - name: Download same-build Linux CLI runtime for WSL
+        uses: actions/download-artifact@v4
+        with:
+          name: weasel-release-cli-linux
+          path: wsl-runtime
+      - name: Build Windows CLI executable
+        env:
+          VP_NODE_VERSION: 26.8.2
+        shell: bash
+        run: node apps/server/scripts/cli.ts build-exe --verbose
+      - name: Build Windows x64 installer and updater metadata
+        env:
+          T3CODE_DESKTOP_REUSE_PUBLISHED_WSL_RUNTIME: ${{ false }}
+          T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ vars.WEASEL_RELEASE_REPOSITORY || 'EvilWeasel/t3code' }}
+          T3CODE_DESKTOP_APP_ID: com.evilweasel.t3code
+          T3CODE_DESKTOP_PRODUCT_NAME: T3 Code (Weasel Nightly)
+          T3CODE_DESKTOP_PROFILE: weasel
+        shell: bash
+        run: >
+          set -euo pipefail
+
+          node scripts/build-desktop-artifact.ts --platform win --target nsis --arch x64 --build-version "${{
+          needs.recover.outputs.version }}" --skip-build --keep-stage --wsl-runtime
+          "$GITHUB_WORKSPACE"/wsl-runtime/t3-*-linux-x64.tar.gz --output-dir release-windows
+
+          test -s release-windows/nightly.yml
+
+          tmp_roots=("$RUNNER_TEMP")
+
+          [[ -n "${TEMP:-}" ]] && tmp_roots+=("$TEMP")
+
+          [[ -n "${TMP:-}" ]] && tmp_roots+=("$TMP")
+
+          update_config="$(find "${tmp_roots[@]}" -path '*/resources/app-update.yml' -print -quit 2>/dev/null
+          || true)"
+
+          test -n "$update_config"
+
+          IFS=/ read -r expected_owner expected_repo <<<"${T3CODE_DESKTOP_UPDATE_REPOSITORY}"
+
+          grep -Fq "owner: $expected_owner" "$update_config"
+
+          grep -Fq "repo: $expected_repo" "$update_config"
+      - name: Package and smoke-test Windows CLI archive
+        shell: bash
+        run: >
+          set -euo pipefail
+
+          monitor_dir="$RUNNER_TEMP/cli-resource-monitor/win32-x64"
+
+          mkdir -p "$monitor_dir"
+
+          cp native/resource-monitor/target/x86_64-pc-windows-msvc/release/t3-resource-monitor.exe
+          "$monitor_dir/"
+
+          node scripts/build-cli-archive.ts --platform win --arch x64 --version "${{
+          needs.recover.outputs.version }}" --resource-monitor-dir "$RUNNER_TEMP/cli-resource-monitor"
+          --output-dir release-cli
+
+          node scripts/smoke-cli-archive.ts --archive release-cli/* --expect-version "${{
+          needs.recover.outputs.version }}"
+      - name: Upload Windows release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: weasel-release-windows
+          path: release-windows/*
+          if-no-files-found: error
+          retention-days: 1
+      - name: Upload Windows CLI archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: weasel-release-cli-windows
+          path: release-cli/*
+          if-no-files-found: error
+          retention-days: 1
+  publish:
+    if:
+      ${{ !cancelled() && inputs.publish && needs.recover.result == 'success' && needs.build_windows.result ==
+      'success' }}
+    needs:
+      - recover
+      - build_windows
+    runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout promoted source for receipt metadata
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.recover.outputs.source_sha }}
+          fetch-depth: 1
+      - name: Load the reviewed .62 recovery helper from the immutable workflow commit
+        env:
+          CONTROL_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$CONTROL_SHA"
+          git show "$CONTROL_SHA:scripts/weasel/release62-recovery.py" > "$RUNNER_TEMP/release62-recovery.py"
+      - name: Download dedicated release assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: weasel-release-*
+          merge-multiple: true
+          path: release-assets
+      - name: Download Observatory preflight proof for publication
+        if: needs.recover.outputs.observatory_route_sha256 != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: weasel-observatory-preflight-${{ needs.recover.outputs.source_sha }}-${{
+            needs.recover.outputs.recovery_artifact_attempt || github.run_attempt }}
+          path: ${{ runner.temp }}/observatory-publish-preflight
+      - name: Download Observatory build proof for publication
+        if: needs.recover.outputs.observatory_route_sha256 != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: weasel-observatory-build-${{ needs.recover.outputs.source_sha }}-${{
+            needs.recover.outputs.recovery_artifact_attempt || github.run_attempt }}
+          path: ${{ runner.temp }}/observatory-publish-build
+      - name: Require matching Observatory route proofs before publication
+        env:
+          SOURCE_SHA: ${{ needs.recover.outputs.source_sha }}
+          PREFLIGHT_ROUTE_SHA: ${{ needs.recover.outputs.observatory_route_sha256 }}
+          DESKTOP_RUN_ID: ${{ needs.recover.outputs.desktop_run_id }}
+          DESKTOP_RUN_ATTEMPT: ${{ needs.recover.outputs.desktop_run_attempt }}
+          DESKTOP_CONTEXT_SHA: ${{ needs.recover.outputs.desktop_context_sha }}
+          DESKTOP_WORKFLOW_SHA: ${{ needs.recover.outputs.desktop_workflow_sha }}
+          DESKTOP_WORKFLOW_REF: ${{ needs.recover.outputs.desktop_workflow_ref }}
+        run: >
+          set -euo pipefail
+
+          if [[ ! -f apps/web/src/routes/observatory.tsx ]]; then
+            test -z "$PREFLIGHT_ROUTE_SHA"
+            exit 0
+          fi
+
+          python3 - <<'PYROUTE'
+
+          import hashlib, json, os, pathlib, subprocess
+
+          digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+
+          expected = 'fa1b95cb16c59c5a6bf92647b1bb3f3ab872c4cb06ef7a0e5e723775fb5c3dcc'
+
+          source = os.environ['SOURCE_SHA']
+
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == source
+
+          assert os.environ['PREFLIGHT_ROUTE_SHA'] == expected
+
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+
+          preflight = root / 'observatory-publish-preflight'
+
+          build = root / 'observatory-publish-build'
+
+          pre = json.loads((preflight / 'receipt.json').read_bytes())
+
+          built = json.loads((build / 'receipt.json').read_bytes())
+
+          for receipt in [pre, built]:
+              assert receipt['source'] == source
+              assert receipt['run'] == os.environ['DESKTOP_RUN_ID'] and receipt['attempt'] == os.environ['DESKTOP_RUN_ATTEMPT']
+              assert receipt['lockSha256'] == digest(pathlib.Path('pnpm-lock.yaml'))
+              assert receipt['trustedContextSha'] == os.environ['DESKTOP_CONTEXT_SHA']
+              assert receipt['trustedWorkflowSha'] == os.environ['DESKTOP_WORKFLOW_SHA']
+              assert receipt['trustedWorkflowRef'] == os.environ['DESKTOP_WORKFLOW_REF']
+          assert pre['effectiveSourceSha'] == source and pre['status'] == 'generated-unreviewed'
+
+          assert pre['afterSha256'] == built['generatedRouteSha256'] == expected
+
+          assert digest(preflight / 'routeTree.gen.ts') == digest(build / 'routeTree.gen.ts') == expected
+
+          assert built['preflightReceiptSha256'] == digest(preflight / 'receipt.json')
+
+          assert pre['generatorVersion'] == '1.167.12' and pre['config'] == {'autoCodeSplitting': True}
+
+          assert (preflight / 'routeTree.diff').is_file()
+
+          PYROUTE
+      - name: Setup checksum consumer runtime
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
+        with:
+          node-version-file: package.json
+          cache: false
+          run-install: false
+      - name: Verify Android bytes from this build before publication
+        env:
+          SOURCE_SHA: ${{ needs.recover.outputs.android_source_sha || needs.recover.outputs.source_sha }}
+          DESKTOP_SOURCE_SHA: ${{ needs.recover.outputs.source_sha }}
+          ANDROID_LOCK_SHA256: ${{ needs.recover.outputs.android_lock_sha256 }}
+          ANDROID_VERSION: ${{ needs.recover.outputs.version }}
+          ANDROID_VERSION_CODE: ${{ needs.recover.outputs.android_version_code }}
+          APK_SHA256: ${{ needs.recover.outputs.recovered_apk_sha256 }}
+          APK_RECEIPT_SHA256: ${{ needs.recover.outputs.recovered_apk_receipt_sha256 }}
+          APK_BUILD_ATTEMPT: "1"
+          APK_BUILD_RUN: "39537119530"
+          APK_CONTEXT_SHA: 01102e1d064e371033bbd9782bc8f2ac20c7b3ad
+          APK_WORKFLOW_SHA: 01102e1d064e371033bbd9782bc8f2ac20c7b3ad
+          APK_WORKFLOW_REF: morrowbyte/t3code/.github/workflows/weasel-release.yml@refs/heads/main
+        run: >
+          set -euo pipefail
+
+          python3 - <<'PYPUBLISHAPK'
+
+          import hashlib, json, os, re
+
+          from pathlib import Path
+
+          digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+
+          assets = Path('release-assets')
+
+          version = os.environ['ANDROID_VERSION']
+
+          name = f'Morrowbyte-{version}-android-arm64.apk'
+
+          assert sorted(p.name for p in assets.iterdir() if p.suffix in {'.apk', '.aab', '.ipa'}) == [name]
+
+          expected_sha = os.environ['APK_SHA256']
+
+          assert re.fullmatch('[0-9a-f]{64}', expected_sha)
+
+          receipt_path = assets / (name + '.json')
+
+          assert digest(assets / name) == expected_sha
+
+          assert digest(receipt_path) == os.environ['APK_RECEIPT_SHA256']
+
+          assert (assets / (name + '.sha256')).read_text() == f'{expected_sha}  {name}\n'
+
+          receipt = json.loads(receipt_path.read_text())
+
+          expected = {
+              'schemaVersion': 1, 'source': os.environ['SOURCE_SHA'], 'version': version,
+              'desktopSource': os.environ['DESKTOP_SOURCE_SHA'],
+              'lockSha256': os.environ['ANDROID_LOCK_SHA256'] or digest(Path('pnpm-lock.yaml')),
+              'versionCode': int(os.environ['ANDROID_VERSION_CODE']),
+              'run': os.environ['APK_BUILD_RUN'], 'attempt': os.environ['APK_BUILD_ATTEMPT'],
+              'trustedContextSha': os.environ['APK_CONTEXT_SHA'], 'trustedWorkflowSha': os.environ['APK_WORKFLOW_SHA'],
+              'trustedWorkflowRef': os.environ['APK_WORKFLOW_REF'],
+              'apk': name, 'apkSha256': expected_sha, 'package': 'com.morrowbyte.t3code', 'name': 'Morrowbyte',
+              'certificateSha256': '34a33c2541544bc4a96e359a33e9f71aaa449ee9a0cd725c2469b65b057aa2b2',
+              'abis': ['arm64-v8a'], 'signatureVerified': True, 'zip16KB': True, 'elf16KB': True,
+              'deviceAcceptance': 'not-run',
+          }
+
+          assert all(receipt.get(key) == value for key, value in expected.items())
+
+          PYPUBLISHAPK
+      - name: Verify every retained .62 payload byte and recovery ownership
+        env:
+          RECOVERY_RECEIPT_SHA256: ${{ needs.recover.outputs.windows_recovery_receipt_sha256 }}
+          PACKAGING_SHA256: ${{ needs.recover.outputs.windows_packaging_sha256 }}
+        run: |
+          set -euo pipefail
+          python3 "$RUNNER_TEMP/release62-recovery.py" verify
+      - name: Verify isolated release payload
+        env:
+          DESKTOP_ONLY: ${{ false }}
+        run: >
+          set -euo pipefail
+
+          if [[ "$DESKTOP_ONLY" == true ]]; then
+            test -z "$(find release-assets -maxdepth 1 -type f \( -name '*.apk' -o -name '*.aab' -o -name '*.ipa' \) -print -quit)"
+          fi
+
+          test -s release-assets/nightly-linux.yml
+
+          test -s release-assets/nightly.yml
+
+          test -s release-assets/weasel-linux-x64.tar.gz
+
+          test -s "release-assets/T3-Code-${{ needs.recover.outputs.version }}-x86_64.AppImage"
+
+          test -s release-assets/install-linux.sh
+
+          test -s "release-assets/T3-Code-${{ needs.recover.outputs.version
+          }}-x86_64-linux-nix-closure.nar.zst"
+
+          test -s "release-assets/T3-Code-${{ needs.recover.outputs.version
+          }}-x86_64-linux-nix-closure.json"
+
+          bash scripts/weasel/verify-nixos-closure.sh "${{ needs.recover.outputs.version }}" release-assets
+
+          test -n "$(find release-assets -maxdepth 1 -name 't3-*-linux-x64.tar.gz' -print -quit)"
+
+          test -n "$(find release-assets -maxdepth 1 -name 't3-*-win32-x64.zip' -print -quit)"
+
+          bash scripts/weasel/verify-published-release.sh --write-checksums "${{
+          needs.recover.outputs.version }}" release-assets
+      - name: Create fork-only prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ vars.WEASEL_RELEASE_REPOSITORY || 'EvilWeasel/t3code' }}
+          OBSERVATORY_ROUTE_SHA: ${{ needs.recover.outputs.observatory_route_sha256 }}
+          DESKTOP_RUN_ID: ${{ needs.recover.outputs.desktop_run_id }}
+          DESKTOP_RUN_ATTEMPT: ${{ needs.recover.outputs.desktop_run_attempt }}
+          DESKTOP_CONTEXT_SHA: ${{ needs.recover.outputs.desktop_context_sha }}
+          DESKTOP_WORKFLOW_SHA: ${{ needs.recover.outputs.desktop_workflow_sha }}
+          DESKTOP_WORKFLOW_REF: ${{ needs.recover.outputs.desktop_workflow_ref }}
+          RECOVERY_WORKFLOW_SHA256: ${{ needs.recover.outputs.recovery_workflow_sha256 }}
+          ANDROID_SOURCE_SHA: ${{ needs.recover.outputs.android_source_sha || needs.recover.outputs.source_sha }}
+          ANDROID_LOCK_SHA256: ${{ needs.recover.outputs.android_lock_sha256 }}
+          DESKTOP_ONLY: ${{ false }}
+          WINDOWS_RECOVERY_RUN_ID: ${{ '39537119530' }}
+          WINDOWS_PACKAGING_SHA256: ${{ needs.recover.outputs.windows_packaging_sha256 }}
+        run: >
+          set -euo pipefail
+
+          tag="${{ needs.recover.outputs.tag }}"
+
+          source_sha="${{ needs.recover.outputs.source_sha }}"
+
+          version="${{ needs.recover.outputs.version }}"
+
+          assert_draft_release() {
+            local release_state is_draft target_commitish
+            release_state="$(gh release view "$tag" --json isDraft,targetCommitish)"
+            is_draft="$(jq -r .isDraft <<<"$release_state")"
+            target_commitish="$(jq -r .targetCommitish <<<"$release_state")"
+            if [[ "$is_draft" != "true" ]]; then
+              echo "Release tag $tag is already published and immutable; refusing to overwrite its assets." >&2
+              return 1
+            fi
+            if [[ "$target_commitish" != "$source_sha" ]]; then
+              echo "Release tag $tag already points to $target_commitish, refusing to replace it." >&2
+              return 1
+            fi
+          }
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            release_state="$(gh release view "$tag" --json isDraft,targetCommitish)"
+            if [[ "$(jq -r .isDraft <<<"$release_state")" == "false" ]]; then
+              bash scripts/weasel/verify-published-release.sh \
+                "$tag" "$source_sha" "$version" release-assets
+              exit 0
+            fi
+            assert_draft_release
+          else
+            if [[ "$DESKTOP_ONLY" == true ]]; then
+              platform_notes="Desktop-only hotfix for Windows x64, Linux x64 and NixOS x64. No Android or macOS assets were built for this release."
+            else
+              platform_notes="Android source $ANDROID_SOURCE_SHA."
+            fi
+            if [[ -n "$WINDOWS_RECOVERY_RUN_ID" ]]; then
+              platform_notes+=" Retained Linux, NixOS, Android and shared runtime bytes from run $WINDOWS_RECOVERY_RUN_ID. Windows packaging uses validation-only script $WINDOWS_PACKAGING_SHA256 from control source $GITHUB_SHA; application source and version remain unchanged."
+            fi
+            gh release create "$tag" \
+              --target "$source_sha" \
+              --title "Weasel Nightly ${{ needs.recover.outputs.version }}" \
+              --prerelease \
+              --draft \
+              --notes "Fork channel desktop source $source_sha. $platform_notes Linux AppImage installs include a user-local installer. NixOS installs use the dedicated package and updater launcher when available at https://github.com/$GH_REPO/tree/main/packaging/nixos. Linux auto-updates stay disabled for Nix store installs. This build has no configured T3 Connect relay backend."
+          fi
+
+          # Asset replacement is permitted only while the release is still a
+
+          # draft. Recheck immediately before each clobber in case a maintainer
+
+          # published it while the job was preparing the payload.
+
+          assert_draft_release
+
+          gh release upload "$tag" release-assets/* --clobber
+
+
+          lock_sha="$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)"
+
+          assets_json="$(bash scripts/weasel/read-draft-release-assets.sh "$tag" "$source_sha")"
+
+          jq -e 'length > 0 and all(.[]; (.digest | type == "string") and (.digest | startswith("sha256:")))'
+          <<<"$assets_json"
+
+          expected_assets="$(find release-assets -maxdepth 1 -type f ! -name 'RELEASE-RECEIPT.txt' -printf
+          '%f\n' | jq -Rsc 'split("\n") | map(select(length > 0)) | sort')"
+
+          jq -e --argjson expected "$expected_assets" '([.[].name] | sort) == $expected' <<<"$assets_json"
+
+          {
+            printf 'fork_release=%s\nsource_sha=%s\npnpm_lock_sha256=%s\n' "$tag" "$source_sha" "$lock_sha"
+            if [[ -f apps/web/src/routes/observatory.tsx ]]; then
+              test "$OBSERVATORY_ROUTE_SHA" = fa1b95cb16c59c5a6bf92647b1bb3f3ab872c4cb06ef7a0e5e723775fb5c3dcc
+              printf 'generated_route_sha256=%s\ngenerated_route_source_sha=%s\ngenerated_route_run_id=%s\ngenerated_route_run_attempt=%s\n' \
+                "$OBSERVATORY_ROUTE_SHA" "$source_sha" "$DESKTOP_RUN_ID" "$DESKTOP_RUN_ATTEMPT"
+            fi
+            printf 'desktop_origin_run_id=%s\ndesktop_origin_run_attempt=%s\ndesktop_origin_context_sha=%s\ndesktop_origin_workflow_sha=%s\ndesktop_origin_workflow_ref=%s\n' \
+              "$DESKTOP_RUN_ID" "$DESKTOP_RUN_ATTEMPT" "$DESKTOP_CONTEXT_SHA" "$DESKTOP_WORKFLOW_SHA" "$DESKTOP_WORKFLOW_REF"
+            printf 'publication_run_id=%s\npublication_run_attempt=%s\npublication_context_sha=%s\npublication_workflow_sha=%s\npublication_workflow_ref=%s\npublication_workflow_sha256=%s\n' \
+              "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" "$GITHUB_WORKFLOW_SHA" "$GITHUB_WORKFLOW_REF" \
+              "${RECOVERY_WORKFLOW_SHA256:-$(sha256sum .github/workflows/weasel-release.yml | cut -d ' ' -f 1)}"
+            if [[ -n "$WINDOWS_RECOVERY_RUN_ID" ]]; then
+              printf 'retained_platform_origin_run_id=%s\nretained_platform_origin_run_attempt=1\nwindows_build_run_id=%s\nwindows_build_run_attempt=%s\nwindows_application_source_sha=%s\nwindows_packaging_control_sha=%s\nwindows_packaging_script_sha256=%s\n' \
+                "$WINDOWS_RECOVERY_RUN_ID" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$source_sha" "$GITHUB_SHA" "$WINDOWS_PACKAGING_SHA256"
+            fi
+            if [[ "$DESKTOP_ONLY" == true ]]; then
+              printf 'release_platforms=windows-x64,linux-x64,nixos-x64\nandroid_status=not-built-desktop-only\n'
+            else
+              printf 'android_source_sha=%s\nandroid_pnpm_lock_sha256=%s\n' \
+                "$ANDROID_SOURCE_SHA" "${ANDROID_LOCK_SHA256:-$lock_sha}"
+            fi
+            printf 'github_asset_digests=%s\n' "$(jq -c '[.[] | {name, digest}]' <<<"$assets_json")"
+            printf 'artifact_sha256:\n'
+            cat release-assets/SHA256SUMS
+          } > release-assets/RELEASE-RECEIPT.txt
+
+          assert_draft_release
+
+          gh release upload "$tag" release-assets/RELEASE-RECEIPT.txt --clobber
+
+          gh release edit "$tag" --draft=false
