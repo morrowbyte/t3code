@@ -369,6 +369,10 @@ focused_tests+=(
   apps/mobile/src/features/keyboard/commandPaletteItems.test.ts
   apps/mobile/src/features/keyboard/composerPaletteItems.test.ts
   apps/mobile/src/features/keyboard/hardwareKeyboardCommands.test.ts
+  apps/mobile/src/native/NativeHeaderToolbar.test.tsx
+  packages/client-runtime/src/state/threadCoordination.test.ts
+  apps/web/src/components/settings/settingsSearch.test.ts
+  apps/web/src/components/settings/settingsScopeNavigation.test.ts
 )
 renderer_tests=(
   apps/web/src/components/CommandPalette.focus.browser.test.tsx
@@ -385,6 +389,8 @@ renderer_tests=(
   apps/web/src/components/RightPanelTabs.keyboard.browser.test.tsx
   apps/web/src/components/preview/PreviewView.browser.test.tsx
   apps/web/src/components/settings/KeybindingsSettings.environment.browser.test.tsx
+  apps/web/src/components/settings/IntegrationsSettings.browser.test.tsx
+  apps/web/src/components/thread-coordination/ThreadCoordination.browser.test.tsx
   apps/web/src/components/GitActionsControl.browser.test.tsx
   apps/web/src/components/keyboard/LeaderNavigation.browser.test.tsx
   apps/web/src/components/keyboard/KeyboardHints.browser.test.tsx
