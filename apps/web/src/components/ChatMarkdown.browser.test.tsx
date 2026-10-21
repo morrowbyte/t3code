@@ -160,7 +160,9 @@ describe("ChatMarkdown math", () => {
     );
     await using screen = await render(message("$$\n\\frac{", true));
     const { container, rerender } = screen;
-    expect(container.querySelector('[role="status"]')?.textContent).toBe("Formel…");
+    await expect
+      .poll(() => container.querySelector('[role="status"]')?.textContent)
+      .toBe("Formel…");
     expect(container.querySelector("math")).toBeNull();
     await rerender(message("$$\n\\frac{1}{2}", true));
     expect(container.querySelector("math")).toBeNull();

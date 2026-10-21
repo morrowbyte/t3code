@@ -1,15 +1,13 @@
-// @vitest-environment jsdom
-
-import { act, createRef, useState } from "react";
+import { createRef, useState } from "react";
+import { act, render } from "../../../test/render";
 import { useStableCallback } from "../../hooks/useStableCallback";
-import { createRoot, type Root } from "react-dom/client";
 import {
   EnvironmentId,
   ThreadId,
   type RuntimeMode,
   type ProviderInteractionMode,
 } from "@t3tools/contracts";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 const commands = vi.hoisted(() => ({
   prepare: vi.fn(),
@@ -44,29 +42,23 @@ const environmentId = EnvironmentId.make("mobile-fixture");
 const threadId = ThreadId.make("mobile-fixture-thread");
 const getUserMedia = vi.fn();
 const peer = vi.fn();
-let root: Root;
-let container: HTMLDivElement;
-
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+function setup(): Disposable {
+  const mediaDevices = Object.getOwnPropertyDescriptor(navigator, "mediaDevices");
   vi.stubGlobal("RTCPeerConnection", peer);
   Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia } });
   for (const command of Object.values(commands)) command.mockReset();
   getUserMedia.mockReset();
   peer.mockReset();
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
+  return {
+    [Symbol.dispose]() {
+      if (mediaDevices) Object.defineProperty(navigator, "mediaDevices", mediaDevices);
+      else Reflect.deleteProperty(navigator, "mediaDevices");
+      vi.unstubAllGlobals();
+    },
+  };
+}
 
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  Reflect.deleteProperty(navigator, "mediaDevices");
-  vi.unstubAllGlobals();
-});
-
-function control(label: string): HTMLButtonElement {
+function control(container: HTMLElement, label: string): HTMLButtonElement {
   const element = container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
   if (!element) throw new Error(`Missing ${label}`);
   return element;
@@ -82,6 +74,7 @@ function expectPassive() {
 
 describe("production composer mobile footer", () => {
   it("keeps unfocused voice controls mounted through draft hydration until deliberate End", async () => {
+    using _state = setup();
     let finishSaving!: () => void;
     const saving = new Promise<void>((resolve) => {
       finishSaving = resolve;
@@ -137,11 +130,12 @@ describe("production composer mobile footer", () => {
         </TooltipProvider>
       );
     }
-    await act(async () => root.render(<Fixture />));
+    await using screen = await render(<Fixture />);
+    const { container } = screen;
     const editor = container.querySelector<HTMLTextAreaElement>('[aria-label="Unfocused message"]');
     expect(document.activeElement).not.toBe(editor);
-    await act(async () => control("Start voice call").click());
-    const end = control("End Live voice");
+    await act(async () => control(container, "Start voice call").click());
+    const end = control(container, "End Live voice");
     const footer = container.querySelector<HTMLElement>('[data-chat-composer-footer="true"]');
     expect(footer).not.toBeNull();
     expect(footer?.classList.contains("hidden")).toBe(false);
@@ -161,6 +155,7 @@ describe("production composer mobile footer", () => {
   });
 
   it("keeps real disabled Live control compact while preserving child focus, actions and form submission", async () => {
+    using _state = setup();
     const send = vi.fn();
     const attach = vi.fn();
     const options = vi.fn();
@@ -233,10 +228,11 @@ describe("production composer mobile footer", () => {
         </TooltipProvider>
       );
     }
-    await act(async () => root.render(<Fixture />));
-    expect(controlsRef.current?.contains(control("Options"))).toBe(true);
-    expect(actionsRef.current?.contains(control("Send message"))).toBe(true);
-    expect(control("Start voice call").disabled).toBe(true);
+    await using screen = await render(<Fixture />);
+    const { container } = screen;
+    expect(controlsRef.current?.contains(control(container, "Options"))).toBe(true);
+    expect(actionsRef.current?.contains(control(container, "Send message"))).toBe(true);
+    expect(control(container, "Start voice call").disabled).toBe(true);
     expect(container.querySelector('[role="status"]')).toBeNull();
     expect(container.textContent).not.toContain("has no saved settings");
     expectPassive();
@@ -249,20 +245,21 @@ describe("production composer mobile footer", () => {
       editor.dispatchEvent(new Event("input", { bubbles: true }));
     });
     expect(document.activeElement).toBe(editor);
-    await act(async () => control("Options").click());
-    await act(async () => control("Attach files").click());
-    await act(async () => control("Start voice call").click());
+    await act(async () => control(container, "Options").click());
+    await act(async () => control(container, "Attach files").click());
+    await act(async () => control(container, "Start voice call").click());
     expect(options).toHaveBeenCalledOnce();
     expect(attach).toHaveBeenCalledOnce();
     expect(editor.value).toBe("Keep this draft");
     expectPassive();
-    await act(async () => control("Send message").click());
+    await act(async () => control(container, "Send message").click());
     expect(send).toHaveBeenCalledExactlyOnceWith("Keep this draft");
     expectPassive();
   });
 });
 
 it("opens the production grouped configuration deliberately, preserves choices and returns focus", async () => {
+  using _state = setup();
   const changedMode = vi.fn();
   const changedInteraction = vi.fn();
   const send = vi.fn();
@@ -328,8 +325,9 @@ it("opens the production grouped configuration deliberately, preserves choices a
       </TooltipProvider>
     );
   }
-  await act(async () => root.render(<Fixture />));
-  const trigger = control("Model and configuration");
+  await using screen = await render(<Fixture />);
+  const { container } = screen;
+  const trigger = control(container, "Model and configuration");
   expect(trigger.getAttribute("aria-description")).toBe("GPT-6.1-Sol");
   expect(trigger.textContent).toBe("Model");
   expect(document.querySelector('[aria-label="Runtime mode"]')).toBeNull();
@@ -361,7 +359,7 @@ it("opens the production grouped configuration deliberately, preserves choices a
   if (!close) throw new Error("Missing configuration close");
   await act(async () => close.click());
   expect(trigger.getAttribute("aria-expanded")).toBe("false");
-  expect(document.activeElement).toBe(trigger);
+  await expect.poll(() => document.activeElement).toBe(trigger);
   await act(async () => trigger.click());
   expect(document.querySelector('[aria-label="Runtime mode"]')?.textContent).toContain(
     "Full access",
@@ -376,9 +374,9 @@ it("opens the production grouped configuration deliberately, preserves choices a
   await act(async () => closeAgain.click());
   const editor = container.querySelector<HTMLTextAreaElement>('[aria-label="Message"]');
   expect(editor?.value).toBe("Keep this draft");
-  await act(async () => control("Attach files").click());
+  await act(async () => control(container, "Attach files").click());
   expect(attach).toHaveBeenCalledOnce();
-  await act(async () => control("Send message").click());
+  await act(async () => control(container, "Send message").click());
   expect(send).toHaveBeenCalledExactlyOnceWith("Keep this draft");
   expectPassive();
 });

@@ -92,9 +92,9 @@ jobs:
           vp lint --report-unused-disable-directives
           apps/web/src/components/ChatView.tsx
           apps/web/src/components/chat/ChatComposer.tsx
-          apps/web/src/components/chat/ChatComposer.mobile.test.tsx
+          apps/web/src/components/chat/ChatComposer.mobile.browser.test.tsx
           apps/web/src/voice/LiveVoiceControl.tsx
-          apps/web/src/voice/LiveVoiceControl.test.tsx
+          apps/web/src/voice/LiveVoiceControl.browser.test.tsx
           apps/web/src/voice/LiveVoiceDraftThread.ts
           apps/web/src/voice/LiveVoiceDraftThread.test.ts
           packages/client-runtime/src/live-voice/controller.ts

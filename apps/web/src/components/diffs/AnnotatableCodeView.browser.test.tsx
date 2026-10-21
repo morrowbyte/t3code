@@ -212,8 +212,11 @@ it("selects diff lines with the keyboard and creates a real comment draft", asyn
     />,
     { container: host },
   );
+  // The real viewer mounts only after its worker pool finishes initializing.
   await expect
-    .poll(() => viewer.mock.calls.some(([handle]) => typeof handle?.scrollTo === "function"))
+    .poll(() => viewer.mock.calls.some(([handle]) => typeof handle?.scrollTo === "function"), {
+      timeout: 10_000,
+    })
     .toBe(true);
   const region = host.querySelector<HTMLElement>('[aria-label="Test diff code"]')!;
   region.focus();

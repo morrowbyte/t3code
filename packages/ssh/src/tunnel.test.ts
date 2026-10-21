@@ -79,6 +79,8 @@ function commandArgs(command: ChildProcess.Command): ReadonlyArray<string> {
   return command._tag === "StandardCommand" ? command.args : [];
 }
 
+const NODE_SCRIPT = { nodeScriptPath: "/workspace/apps/server/dist/bin.mjs" } as const;
+
 const ARCHIVE = { archiveVersion: "1.2.3-preview.20260911.4" } as const;
 
 describe("ssh tunnel scripts", () => {
@@ -103,8 +105,11 @@ describe("ssh tunnel scripts", () => {
       script,
       'T3_LOCK="$HOME/.t3/runtime/versions/.$T3_ARCHIVE_VERSION.install.lock"',
     );
-    assert.include(script, 'while ! mkdir "$T3_LOCK" 2>/dev/null; do');
-    assert.include(script, 'mv "$T3_LOCK/pid.tmp" "$T3_LOCK/pid"');
+    assert.include(
+      script,
+      String.raw`while ! (set -C; printf '%s\n' "$$" > "$T3_LOCK") 2>/dev/null; do`,
+    );
+    assert.include(script, 'T3_LOCK_OWNER="$(cat "$T3_LOCK" 2>/dev/null || true)"');
     assert.include(script, 'if ! kill -0 "$T3_LOCK_OWNER" 2>/dev/null; then');
     assert.include(script, 'if [ "$T3_LOCK_UNOWNED" -ge 5 ]; then');
     assert.include(script, 'if [ "$T3_LOCK_WAITED" -ge 360 ]; then');

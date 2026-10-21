@@ -1,7 +1,4 @@
-// @vitest-environment jsdom
-
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
+import { act, render as renderUi, stubGlobal } from "../../test/render";
 import {
   EnvironmentId,
   LiveVoiceError,
@@ -15,7 +12,7 @@ import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { dispatchKeyboardCommand } from "~/components/keyboard/keyboardCommands";
 
 const showToast = vi.hoisted(() => vi.fn());
@@ -94,15 +91,22 @@ const nativeLoaded: AvailabilityInput = {
   config: { setupMode: "existing" },
 };
 
-let root: Root;
-let container: HTMLDivElement;
 const getUserMedia = vi.fn();
 const peer = vi.fn();
 
-beforeEach(() => {
+function setupEnvironment() {
+  using cleanup = new DisposableStack();
+  const desktopBridge = Object.getOwnPropertyDescriptor(window, "desktopBridge");
+  const mediaDevices = Object.getOwnPropertyDescriptor(navigator, "mediaDevices");
+  cleanup.defer(() => {
+    if (desktopBridge) Object.defineProperty(window, "desktopBridge", desktopBridge);
+    else Reflect.deleteProperty(window, "desktopBridge");
+    if (mediaDevices) Object.defineProperty(navigator, "mediaDevices", mediaDevices);
+    else Reflect.deleteProperty(navigator, "mediaDevices");
+  });
+  cleanup.use(stubGlobal("RTCPeerConnection", peer));
+  cleanup.defer(() => vi.unstubAllGlobals());
   Reflect.deleteProperty(window, "desktopBridge");
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  vi.stubGlobal("RTCPeerConnection", peer);
   Object.defineProperty(navigator, "mediaDevices", {
     configurable: true,
     value: { getUserMedia },
@@ -114,18 +118,8 @@ beforeEach(() => {
   showToast.mockReset();
   peer.mockClear();
   getUserMedia.mockClear();
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
-
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  Reflect.deleteProperty(navigator, "mediaDevices");
-  Reflect.deleteProperty(window, "desktopBridge");
-  vi.unstubAllGlobals();
-});
+  return cleanup.move();
+}
 
 const localEnvironment = EnvironmentId.make("24efa85c-862c-4de4-9b5e-aaaa041e28a4");
 const rootThread = ThreadId.make("7cd05d6b-5e09-4691-a664-0b56c6283f12");
@@ -186,6 +180,7 @@ function diagnosticBridgeFixture() {
 
 describe("explicit main renderer diagnostic requests", () => {
   it("rejects raw request extras before pinning session or consuming sequence", () => {
+    using _environment = setupEnvironment();
     const fixture = diagnosticBridgeFixture();
     const producer = createLiveVoiceDiagnosticProducer(fixture.bridge, {
       nowMs: () => 1_000,
@@ -214,6 +209,7 @@ describe("explicit main renderer diagnostic requests", () => {
   });
 
   it("pins only the first valid unexpired session and rejects foreign sessions without consuming their sequence", () => {
+    using _environment = setupEnvironment();
     const fixture = diagnosticBridgeFixture();
     const producer = createLiveVoiceDiagnosticProducer(fixture.bridge, {
       nowMs: () => 1_000,
@@ -254,6 +250,9 @@ describe("explicit main renderer diagnostic requests", () => {
   });
 
   it("does not resnapshot retired A or invalidate replacement B on a still-unexpired A replay", async () => {
+    using _environment = setupEnvironment();
+    await using control = await setupControl();
+    const { render } = control;
     const fixture = diagnosticBridgeFixture();
     Object.defineProperty(window, "desktopBridge", { configurable: true, value: fixture.bridge });
     await render(localInput);
@@ -285,6 +284,7 @@ describe("explicit main renderer diagnostic requests", () => {
     "respondMainRendererDiagnostics",
     "invalidateMainRendererDiagnostics",
   ] as const)("does not create a producer when %s is absent", (missing) => {
+    using _environment = setupEnvironment();
     const fixture = diagnosticBridgeFixture();
     const partial: NonNullable<Parameters<typeof createLiveVoiceDiagnosticProducer>[0]> = {
       ...fixture.bridge,
@@ -301,6 +301,9 @@ describe("explicit main renderer diagnostic requests", () => {
   });
 
   it("returns the mounted control's current gate only on a valid explicit request and invalidates the original pair", async () => {
+    using _environment = setupEnvironment();
+    await using control = await setupControl();
+    const { render, startButton, startHint } = control;
     const fixture = diagnosticBridgeFixture();
     Object.defineProperty(window, "desktopBridge", { configurable: true, value: fixture.bridge });
     await render(localInput);
@@ -340,6 +343,9 @@ describe("explicit main renderer diagnostic requests", () => {
   });
 
   it("never sends a gate on target mismatch and invalidates on navigation and unmount", async () => {
+    using _environment = setupEnvironment();
+    await using control = await setupControl();
+    const { render, unmount } = control;
     const fixture = diagnosticBridgeFixture();
     Object.defineProperty(window, "desktopBridge", { configurable: true, value: fixture.bridge });
     await render(loaded);
@@ -359,7 +365,7 @@ describe("explicit main renderer diagnostic requests", () => {
       DateTime.toEpochMillis(DateTime.nowUnsafe()) + 4_000,
     );
     await act(async () => fixture.send(current));
-    await act(async () => root.unmount());
+    await unmount();
     expect(fixture.unsubscribe).toHaveBeenCalledOnce();
     const responses = fixture.bridge.respondMainRendererDiagnostics.mock.calls.length;
     fixture.send(fixture.request("after-unmount", current.expiresAtMs));
@@ -371,6 +377,7 @@ describe("explicit main renderer diagnostic requests", () => {
   });
 
   it("rejects malformed, expired, overlong and clock-rollback requests and only schedules expiry after a request", () => {
+    using _environment = setupEnvironment();
     const fixture = diagnosticBridgeFixture();
     let now = 1_000;
     const expiries = new Set<() => void>();
@@ -407,6 +414,7 @@ describe("explicit main renderer diagnostic requests", () => {
   });
 
   it("does not let a delayed rejected response invalidate a replacement request", async () => {
+    using _environment = setupEnvironment();
     const fixture = diagnosticBridgeFixture();
     let reject!: (cause: Error) => void;
     fixture.bridge.respondMainRendererDiagnostics.mockReturnValueOnce(
@@ -434,6 +442,9 @@ describe("explicit main renderer diagnostic requests", () => {
   });
 
   it("reports an actually observed prepare code without running a provider for a diagnostic request", async () => {
+    using _environment = setupEnvironment();
+    await using control = await setupControl();
+    const { render, startButton } = control;
     const fixture = diagnosticBridgeFixture();
     Object.defineProperty(window, "desktopBridge", { configurable: true, value: fixture.bridge });
     await render(localInput);
@@ -454,13 +465,16 @@ describe("explicit main renderer diagnostic requests", () => {
   });
 });
 
-async function render(
-  input: AvailabilityInput,
-  targetEnvironment = input.environmentId,
-  callbacks: Pick<Parameters<typeof LiveVoiceControl>[0], "beforePrepare" | "onPhaseChange"> = {},
-) {
-  await act(async () =>
-    root.render(
+async function setupControl() {
+  await using cleanup = new AsyncDisposableStack();
+  const screen = cleanup.use(await renderUi(null, { router: false }));
+  const { container } = screen;
+  async function render(
+    input: AvailabilityInput,
+    targetEnvironment = input.environmentId,
+    callbacks: Pick<Parameters<typeof LiveVoiceControl>[0], "beforePrepare" | "onPhaseChange"> = {},
+  ) {
+    await screen.rerender(
       <TooltipProvider delay={0}>
         <LiveVoiceControl
           environmentId={targetEnvironment}
@@ -471,25 +485,35 @@ async function render(
           {...callbacks}
         />
       </TooltipProvider>,
-    ),
-  );
-}
-function startButton() {
-  const button = container.querySelector<HTMLButtonElement>('[aria-label="Start voice call"]');
-  if (!button) throw new Error("Missing Start voice call button");
-  return button;
-}
+    );
+  }
+  function startButton() {
+    const button = container.querySelector<HTMLButtonElement>('[aria-label="Start voice call"]');
+    if (!button) throw new Error("Missing Start voice call button");
+    return button;
+  }
 
-async function startHint() {
-  const trigger = startButton().closest<HTMLElement>('[data-slot="tooltip-trigger"]');
-  if (!trigger) throw new Error("Missing keyboard-accessible voice hint trigger");
-  await act(async () => {
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
-    trigger.focus();
-  });
-  const tooltip = document.querySelector<HTMLElement>('[role="tooltip"]');
-  if (!tooltip) throw new Error("Voice hint did not open on deliberate focus");
-  return tooltip.textContent;
+  async function startHint() {
+    const trigger = startButton().closest<HTMLElement>('[data-slot="tooltip-trigger"]');
+    if (!trigger) throw new Error("Missing keyboard-accessible voice hint trigger");
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+      trigger.focus();
+    });
+    const tooltip = document.querySelector<HTMLElement>('[role="tooltip"]');
+    if (!tooltip) throw new Error("Voice hint did not open on deliberate focus");
+    return tooltip.textContent;
+  }
+  const environment = cleanup.move();
+  return {
+    render,
+    startButton,
+    startHint,
+    container,
+    rerender: screen.rerender,
+    unmount: screen.unmount,
+    [Symbol.asyncDispose]: () => environment.disposeAsync(),
+  };
 }
 
 function expectPassive() {
@@ -501,6 +525,9 @@ function expectPassive() {
 }
 
 it("keyboard call and mute respect the current permission gate without microphone capture", async () => {
+  using _environment = setupEnvironment();
+  await using control = await setupControl();
+  const { render } = control;
   await render({ ...loaded, canOperate: false });
   await act(async () => {
     expect(dispatchKeyboardCommand("voice.call")).toBe(true);
@@ -515,6 +542,9 @@ it("keyboard call and mute respect the current permission gate without microphon
 });
 
 it("keyboard call can cancel a pending preparation", async () => {
+  using _environment = setupEnvironment();
+  await using control = await setupControl();
+  const { render, container } = control;
   let finishPrepare!: (value: Awaited<ReturnType<typeof commands.prepare>>) => void;
   commands.prepare.mockImplementation(
     () =>
@@ -561,6 +591,9 @@ function gateFor(
 
 describe("Live voice diagnostic producer model (transport absent)", () => {
   it("uses the rendered gate unchanged and freezes only sanitized data", async () => {
+    using _environment = setupEnvironment();
+    await using control = await setupControl();
+    const { render, startButton } = control;
     const input = { ...loaded, config: { setupMode: "managed", privateKey: "must-not-copy" } };
     const gate = gateFor(input);
     const model = advanceLiveVoiceDiagnosticModel(null, gate);
@@ -579,6 +612,9 @@ describe("Live voice diagnostic producer model (transport absent)", () => {
   });
 
   it("keeps stable revision for identical sanitized facts and increments on actual gate changes", async () => {
+    using _environment = setupEnvironment();
+    await using control = await setupControl();
+    const { render, startButton, startHint } = control;
     const first = advanceLiveVoiceDiagnosticModel(null, gateFor(loaded));
     const unchanged = advanceLiveVoiceDiagnosticModel(
       first,
@@ -604,6 +640,7 @@ describe("Live voice diagnostic producer model (transport absent)", () => {
   });
 
   it("advances context epoch on environment/thread/provider changes and never revives an old epoch", () => {
+    using _environment = setupEnvironment();
     const first = advanceLiveVoiceDiagnosticModel(null, gateFor(loaded));
     const b = advanceLiveVoiceDiagnosticModel(
       first,
@@ -650,6 +687,7 @@ describe("Live voice diagnostic producer model (transport absent)", () => {
   });
 
   it("withholds stale catalog facts and keeps provider/config metadata enumerated", () => {
+    using _environment = setupEnvironment();
     const failed = gateFor({ ...loaded, configState: "failed" });
     expect(failed.facts).toMatchObject({
       driver: "unknown",
@@ -702,6 +740,7 @@ describe("LiveVoice instance defaults", () => {
   }
 
   it("uses the observed setup mode when checking browser support", () => {
+    using _environment = setupEnvironment();
     const availability = resolveLiveVoiceAvailability(nativeLoaded);
     for (const setupMode of ["missing", "invalid", "unknown"] as const) {
       const gate = resolveLiveVoiceControlGate({
@@ -720,6 +759,9 @@ describe("LiveVoice instance defaults", () => {
   });
 
   it("admits the implicit built-in Codex default without saving settings or probing", async () => {
+    using _environment = setupEnvironment();
+    await using control = await setupControl();
+    const { render, startButton } = control;
     const settings = { providerInstances: {} };
     const input = availabilityFor(provider, settings);
     expect(gateFor(input).canStart).toBe(true);
@@ -742,6 +784,7 @@ describe("LiveVoice instance defaults", () => {
   )(
     "uses native defaults for omitted legacy config/mode while preserving fields: %j",
     ({ config }) => {
+      using _environment = setupEnvironment();
       const settings = {
         providerInstances: { [provider.instanceId]: { driver: provider.driverKind, config } },
       };
@@ -755,6 +798,7 @@ describe("LiveVoice instance defaults", () => {
   );
 
   it("requires an own configured entry for custom Codex instances", () => {
+    using _environment = setupEnvironment();
     const custom = { ...provider, instanceId: ProviderInstanceId.make("codex-personal") };
     const missing = availabilityFor(custom, { providerInstances: {} });
     expect(gateFor(missing).canStart).toBe(false);
@@ -778,6 +822,7 @@ describe("LiveVoice instance defaults", () => {
       (config) => ({ config }),
     ),
   )("preserves malformed explicit config for rejection: %j", ({ config }) => {
+    using _environment = setupEnvironment();
     const settings = {
       providerInstances: { [provider.instanceId]: { driver: provider.driverKind, config } },
     };
@@ -813,6 +858,9 @@ describe("LiveVoice instance defaults", () => {
   ] satisfies ReadonlyArray<Partial<AvailabilityInput>>)(
     "keeps native defaults behind real auth, catalog and permission gates: %j",
     async (patch) => {
+      using _environment = setupEnvironment();
+      await using control = await setupControl();
+      const { render, startButton } = control;
       const input = availabilityFor(provider, { providerInstances: {} }, patch);
       expect(gateFor(input).canStart).toBe(false);
       await render(input);
@@ -825,6 +873,9 @@ describe("LiveVoice instance defaults", () => {
 
 describe("LiveVoiceControl passive availability", () => {
   it("toasts each failed start once while preserving the draft and Start/End controls", async () => {
+    using _environment = setupEnvironment();
+    await using control = await setupControl();
+    const { startButton, container, rerender } = control;
     let finishSaving!: () => void;
     const saving = new Promise<void>((resolve) => {
       finishSaving = resolve;
@@ -835,20 +886,18 @@ describe("LiveVoiceControl passive availability", () => {
     );
     container.style.width = "390px";
     const renderComposer = () =>
-      act(async () =>
-        root.render(
-          <TooltipProvider delay={0}>
-            <textarea aria-label="Draft" defaultValue="unsent sentinel" />
-            <LiveVoiceControl
-              environmentId={loaded.environmentId}
-              threadId={loaded.threadId}
-              providerInstanceId={loaded.providerInstanceId}
-              eligible={true}
-              availability={resolveLiveVoiceAvailability(loaded)}
-              beforePrepare={beforePrepare}
-            />
-          </TooltipProvider>,
-        ),
+      rerender(
+        <TooltipProvider delay={0}>
+          <textarea aria-label="Draft" defaultValue="unsent sentinel" />
+          <LiveVoiceControl
+            environmentId={loaded.environmentId}
+            threadId={loaded.threadId}
+            providerInstanceId={loaded.providerInstanceId}
+            eligible={true}
+            availability={resolveLiveVoiceAvailability(loaded)}
+            beforePrepare={beforePrepare}
+          />
+        </TooltipProvider>,
       );
     await renderComposer();
     const draft = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Draft"]')!;
@@ -882,6 +931,9 @@ describe("LiveVoiceControl passive availability", () => {
     expect(peer).not.toHaveBeenCalled();
   });
   it("uses the replacement controller's actual state after changing thread during a draft save", async () => {
+    using _environment = setupEnvironment();
+    await using control = await setupControl();
+    const { render, startButton, container } = control;
     let finishSaving!: () => void;
     const saving = new Promise<void>((resolve) => {
       finishSaving = resolve;
@@ -921,6 +973,9 @@ describe("LiveVoiceControl passive availability", () => {
   ] as const)(
     "classifies only observed typed prepare failure %s after deliberate start",
     async (code) => {
+      using _environment = setupEnvironment();
+      await using control = await setupControl();
+      const { render, startButton, container } = control;
       const result = AsyncResult.failure(Cause.fail(new LiveVoiceError({ code })));
       let classified: ReturnType<typeof classifyLiveVoicePrepareFailure> | null = null;
       try {
@@ -963,6 +1018,7 @@ describe("LiveVoiceControl passive availability", () => {
   );
 
   it("never infers a typed account failure from arbitrary text", () => {
+    using _environment = setupEnvironment();
     const raw = new Error(
       "private detail: " + liveVoicePublicErrorMessage("managed_account_required"),
     );
@@ -977,6 +1033,9 @@ describe("LiveVoiceControl passive availability", () => {
   });
 
   it("ignores a late prepare failure from an aborted A context after A to B to A", async () => {
+    using _environment = setupEnvironment();
+    await using control = await setupControl();
+    const { render, startButton, container } = control;
     let finish!: (result: ReturnType<typeof AsyncResult.failure>) => void;
     commands.prepare.mockReturnValueOnce(
       new Promise((resolve) => {
@@ -1002,6 +1061,9 @@ describe("LiveVoiceControl passive availability", () => {
   });
 
   it("keeps the production voice fallback identical to the composer for a stale request and custom-first wire order", async () => {
+    using _environment = setupEnvironment();
+    await using control = await setupControl();
+    const { render, startButton, container } = control;
     const driver = ProviderDriverKind.make("codex");
     const provider = (id: string): ServerProvider => ({
       driver,
@@ -1065,6 +1127,9 @@ describe("LiveVoiceControl passive availability", () => {
   it.each([false, true])(
     "shows config projection failure with cached previous value=%s without qualifying it",
     async (cached) => {
+      using _environment = setupEnvironment();
+      await using control = await setupControl();
+      const { render, startButton, startHint, container } = control;
       const previous = AsyncResult.success({ environmentId: environmentA });
       const failed = AsyncResult.failure(Cause.fail(new Error("private-config-cause")), {
         previousSuccess: cached ? Option.some(previous) : Option.none(),
@@ -1101,6 +1166,9 @@ describe("LiveVoiceControl passive availability", () => {
   );
 
   it("keeps the disabled reason out of the toolbar and opens it on deliberate keyboard focus", async () => {
+    using _environment = setupEnvironment();
+    await using control = await setupControl();
+    const { render, startHint, container } = control;
     await render({ ...loaded, config: { setupMode: "existing" } });
     expect(container.querySelector('[role="status"]')).toBeNull();
     expect(container.textContent).not.toContain("Sign in to this Codex installation");
@@ -1121,6 +1189,9 @@ describe("LiveVoiceControl passive availability", () => {
   ] as const)(
     "enables %s setup passively and prepares only after a deliberate click",
     async (_name, input) => {
+      using _environment = setupEnvironment();
+      await using control = await setupControl();
+      const { render, startButton } = control;
       await render(input);
       expect(startButton().disabled).toBe(false);
       expectPassive();
@@ -1211,6 +1282,9 @@ describe("LiveVoiceControl passive availability", () => {
     patch: Partial<AvailabilityInput>;
     reason: string;
   }>)("explains $reason and blocks side effects", async ({ patch, reason }) => {
+    using _environment = setupEnvironment();
+    await using control = await setupControl();
+    const { render, startButton, startHint, container } = control;
     await render({ ...loaded, ...patch });
     expect(startButton().disabled).toBe(true);
     expect(container.querySelector('[role="status"]')).toBeNull();
@@ -1225,6 +1299,9 @@ describe("LiveVoiceControl passive availability", () => {
   it.each(["WebRTC", "microphone"] as const)(
     "explains unavailable %s APIs without requesting access",
     async (missing) => {
+      using _environment = setupEnvironment();
+      await using control = await setupControl();
+      const { render, startButton, startHint, container } = control;
       if (missing === "WebRTC") vi.stubGlobal("RTCPeerConnection", undefined);
       else
         Object.defineProperty(navigator, "mediaDevices", {
@@ -1243,6 +1320,9 @@ describe("LiveVoiceControl passive availability", () => {
   );
 
   it("drops A's qualification during A to B scope changes and waits for B's own facts", async () => {
+    using _environment = setupEnvironment();
+    await using control = await setupControl();
+    const { render, startButton, startHint } = control;
     await render(loaded);
     expect(startButton().disabled).toBe(false);
     await render(loaded, environmentB);

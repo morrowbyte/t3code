@@ -129,7 +129,6 @@ focused_tests=(
   apps/server/src/serverRuntimeState.test.ts
   apps/server/src/voice/VoiceSettings.test.ts
   apps/web/src/voice/VoiceDictationControl.test.tsx
-  apps/web/src/voice/LiveVoiceControl.test.tsx
   apps/web/src/voice/LiveVoiceDraftThread.test.ts
   apps/web/src/voice/LiveVoiceCommands.test.ts
   apps/web/src/components/settings/VoiceTranscriptionSettings.test.tsx
@@ -336,12 +335,12 @@ else
   echo "Connection layer gate not present in this source; NOT EXECUTED: $connection_layer_test"
 fi
 
-transcript_ui_test=apps/web/src/voice/LiveVoiceTranscript.test.tsx
+transcript_ui_test=apps/web/src/voice/LiveVoiceTranscript.browser.test.tsx
 if [[ ! -f "$transcript_ui_test" ]]; then
   echo "Required Transcript UI gate is missing: $transcript_ui_test" >&2
   exit 1
 fi
-focused_tests+=("$transcript_ui_test")
+
 echo "Including required Transcript UI gate: $transcript_ui_test"
 agent_session_tests=(
   packages/contracts/src/agentSessions.test.ts
@@ -355,12 +354,11 @@ for agent_session_test in "${agent_session_tests[@]}"; do
   fi
   focused_tests+=("$agent_session_test")
 done
-mobile_composer_test=apps/web/src/components/chat/ChatComposer.mobile.test.tsx
+mobile_composer_test=apps/web/src/components/chat/ChatComposer.mobile.browser.test.tsx
 if [[ ! -f "$mobile_composer_test" ]]; then
   echo "Required mobile composer gate is missing: $mobile_composer_test" >&2
   exit 1
 fi
-focused_tests+=("$mobile_composer_test")
 focused_tests+=(apps/server/src/attachments/YaziPicker.test.ts apps/web/src/components/chat/TraitsPicker.test.ts)
 focused_tests+=(
   apps/web/src/components/diffs/diffKeyboardSelection.test.ts
@@ -379,6 +377,9 @@ focused_tests+=(
   apps/web/src/components/settings/UpdateHistoryPanel.test.tsx
 )
 renderer_tests=(
+  "$transcript_ui_test"
+  apps/web/src/voice/LiveVoiceControl.browser.test.tsx
+  "$mobile_composer_test"
   apps/web/src/components/CommandPalette.focus.browser.test.tsx
   apps/web/src/components/keyboard/KeyboardContext.browser.test.tsx
   apps/web/src/components/keyboard/AttachmentPicker.retry.browser.test.tsx

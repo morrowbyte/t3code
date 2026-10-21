@@ -1,8 +1,6 @@
-// @vitest-environment jsdom
-
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { act, render } from "../../test/render";
+import { userEvent } from "vite-plus/test/browser";
+import { describe, expect, it, vi } from "vite-plus/test";
 import type { LiveVoiceState } from "@t3tools/client-runtime/live-voice";
 
 const clipboard = vi.hoisted(() => ({ writeTextToClipboard: vi.fn() }));
@@ -12,31 +10,14 @@ vi.mock("~/hooks/useCopyToClipboard", () => ({
 
 import { LiveVoiceTranscript } from "./LiveVoiceTranscript";
 
-let root: Root;
-let container: HTMLDivElement;
-
 const transcript: LiveVoiceState["transcript"] = [
   { speaker: "user", text: "First question", final: true },
   { speaker: "assistant", text: "First answer", final: true },
   { speaker: "user", text: `Second question ${"full text ".repeat(70)}`, final: true },
 ];
 
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+function setup() {
   clipboard.writeTextToClipboard.mockReset().mockResolvedValue(true);
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
-
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
-
-async function render(entries: LiveVoiceState["transcript"]) {
-  await act(async () => root.render(<LiveVoiceTranscript transcript={entries} />));
 }
 
 function button(label: string): HTMLButtonElement {
@@ -53,18 +34,16 @@ async function click(label: string) {
 }
 
 async function pressEnter(target: HTMLButtonElement) {
-  await act(async () => {
-    target.focus();
-    // jsdom does not synthesize the browser's native button activation after Enter.
-    target.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-    target.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", bubbles: true }));
-    target.click();
-  });
+  await act(() => target.focus());
+  await userEvent.keyboard("{Enter}");
 }
 
 describe("LiveVoiceTranscript", () => {
   it("opens the retained conversation, copies every full turn, and restores trigger focus on Escape", async () => {
-    await render(transcript);
+    setup();
+    await using screen = await render(<LiveVoiceTranscript transcript={transcript} />, {
+      router: false,
+    });
     const trigger = button("Transcript");
     trigger.focus();
     expect(document.activeElement).toBe(trigger);
@@ -88,19 +67,18 @@ describe("LiveVoiceTranscript", () => {
     expect(clipboard.writeTextToClipboard).toHaveBeenCalledWith(expectedCopy, "Live transcript");
     expect(dialog?.textContent).toContain("Transcript copied.");
 
-    await act(async () => {
-      document.activeElement?.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
-      );
-    });
-    expect(document.querySelector('[role="dialog"]')).toBeNull();
-    expect(document.activeElement).toBe(trigger);
+    await userEvent.keyboard("{Escape}");
+    await expect.poll(() => document.querySelector('[role="dialog"]')).toBeNull();
+    await expect.poll(() => document.activeElement).toBe(trigger);
     expect(clipboard.writeTextToClipboard).toHaveBeenCalledOnce();
   });
 
   it("reports a copy failure truthfully and lets the user retry", async () => {
+    setup();
     clipboard.writeTextToClipboard.mockRejectedValueOnce(new Error("clipboard unavailable"));
-    await render(transcript);
+    await using screen = await render(<LiveVoiceTranscript transcript={transcript} />, {
+      router: false,
+    });
     await click("Transcript");
     await click("Copy transcript");
     expect(document.querySelector('[role="alert"]')?.textContent).toContain(
@@ -114,12 +92,15 @@ describe("LiveVoiceTranscript", () => {
   });
 
   it("closes and clears when the current session transcript resets", async () => {
-    await render(transcript);
+    setup();
+    await using screen = await render(<LiveVoiceTranscript transcript={transcript} />, {
+      router: false,
+    });
     await click("Transcript");
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
 
-    await render([]);
-    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    await screen.rerender(<LiveVoiceTranscript transcript={[]} />);
+    await expect.poll(() => document.querySelector('[role="dialog"]')).toBeNull();
     expect(document.querySelector("button")).toBeNull();
     expect(clipboard.writeTextToClipboard).not.toHaveBeenCalled();
   });
