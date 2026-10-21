@@ -77,7 +77,7 @@ describe("composer keyboard choices", () => {
     ).toEqual(["current", "available"]);
     const reasoning = actions.find((item) => item.key === "composer.option.reasoningEffort")!;
     expect(reasoning.detail).toBe("High");
-    expect(reasoning.children?.map((item) => item.title)).toEqual(["High", "Ultra"]);
+    expect(reasoning.children?.map((item) => item.title)).toEqual(["High", "Ultra", "Ultrathink"]);
     reasoning.children?.find((item) => item.title === "Ultra")?.run();
     expect(input.onUpdateOptionSelections).toHaveBeenCalledWith([
       { id: "reasoningEffort", value: "ultra" },

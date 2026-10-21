@@ -415,7 +415,17 @@ for renderer_test in "${renderer_tests[@]}"; do
   fi
 done
 vp_cmd lint --report-unused-disable-directives "$mobile_composer_test"
-vp_cmd test run --config vite.config.ts "${focused_tests[@]}"
+node_focused_tests=()
+mobile_focused_tests=()
+for focused_test in "${focused_tests[@]}"; do
+  if [[ "$focused_test" == apps/mobile/* ]]; then
+    mobile_focused_tests+=("${focused_test#apps/mobile/}")
+  else
+    node_focused_tests+=("$focused_test")
+  fi
+done
+vp_cmd test run --config vite.config.ts "${node_focused_tests[@]}"
+(cd apps/mobile && vp_cmd test run "${mobile_focused_tests[@]}")
 (cd apps/web && vp_cmd test run --project unit src/terminal/ghostty/core.test.ts)
 (cd apps/web && vp_cmd test run --project browser "${renderer_tests[@]#apps/web/}")
 (cd scripts && vp_cmd test run --config ../vite.config.ts build-desktop-artifact.test.ts lib/morrowbyte-branding.test.ts)

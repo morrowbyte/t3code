@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { EnvironmentId, RuntimeRequestId } from "@t3tools/contracts";
 import { act, type ReactNode, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -33,6 +32,24 @@ vi.mock("react-native", async () => {
 });
 vi.mock("../../components/ui/AppText", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
+}));
+vi.mock("../../components/ui/Button", () => ({
+  Button: ({
+    label,
+    onPress,
+    disabled,
+  }: {
+    label: string;
+    onPress: () => void;
+    disabled?: boolean;
+  }) => {
+    harness.presses.set(label, onPress);
+    return (
+      <button onClick={onPress} disabled={disabled}>
+        {label}
+      </button>
+    );
+  },
 }));
 import { PendingApprovalCard } from "./PendingApprovalCard";
 let root: Root | undefined;
