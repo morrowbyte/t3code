@@ -34,6 +34,20 @@ export const resolveEditorCommand = Effect.fn("editor.resolveEditorCommand")(fun
   if (editor.commands === null) return Option.none();
   const baseArgs = "baseArgs" in editor ? editor.baseArgs : [];
   const platform = yield* HostProcess.Platform;
+  // The Windows CLI needs an explicit distro when invoked without Zed's
+  // bundled WSL shell wrapper. Prefer it over a Linux `zed` (possibly ZFS).
+  if (
+    platform === "linux" &&
+    editor.id === "zed" &&
+    env.WSL_DISTRO_NAME?.trim() &&
+    env.SSH_CONNECTION === undefined &&
+    env.SSH_TTY === undefined &&
+    env.container === undefined &&
+    (yield* isCommandAvailable("zed.exe", { env }))
+  ) {
+    const distro = env.USER ? `${env.USER}@${env.WSL_DISTRO_NAME}` : env.WSL_DISTRO_NAME;
+    return Option.some({ command: "zed.exe", baseArgs: ["--wsl", distro] });
+  }
   // OpenZFS also installs a `zed` executable. Prefer the macOS editor bundle
   // so a PATH entry for the ZFS Event Daemon cannot take over editor opens.
   const preferBundle = platform === "darwin" && editor.id === "zed";
