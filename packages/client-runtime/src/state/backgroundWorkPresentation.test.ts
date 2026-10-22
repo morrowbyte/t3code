@@ -25,6 +25,7 @@ describe("background command presentation", () => {
       id: TurnItemId.make("test-command"),
       type: "command_execution" as const,
       input: original,
+      status: "waiting" as const,
       nativeItemRef: {
         driver: ProviderDriverKind.make("codex"),
         nativeId: "native-command",
@@ -38,6 +39,7 @@ describe("background command presentation", () => {
     expect(presentation?.items[0]).toMatchObject({
       commandLabel: "sleep 600",
       commandLine: original,
+      commandStatus: "waiting",
     });
   });
 });

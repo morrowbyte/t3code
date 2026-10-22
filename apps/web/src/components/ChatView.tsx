@@ -5328,7 +5328,7 @@ export default function ChatView(props: ChatViewProps) {
       ? pendingBackgroundTasks
       : pendingBackgroundTurnItems({
           turnItems: serverProjection?.turnItems ?? [],
-          runs: serverProjection?.runs,
+          runs: serverProjection?.runs ?? [],
         }).flatMap((item) =>
           item.type === "command_execution"
             ? [

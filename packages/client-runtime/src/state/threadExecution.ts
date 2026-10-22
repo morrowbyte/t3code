@@ -299,6 +299,7 @@ export interface PendingBackgroundWorkItem {
   readonly childThreadId: ThreadId | undefined;
   readonly commandLine?: string;
   readonly commandLabel?: string;
+  readonly commandStatus?: "pending" | "running" | "waiting";
 }
 
 export interface PendingBackgroundWorkPresentation {
@@ -315,7 +316,10 @@ function joinWithAnd(parts: ReadonlyArray<string>): string {
 export function presentPendingBackgroundWork(
   tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>,
   turnItems: ReadonlyArray<
-    Pick<OrchestrationV2TurnItem, "id" | "type" | "nativeItemRef"> & { readonly input?: unknown }
+    Pick<OrchestrationV2TurnItem, "id" | "type" | "nativeItemRef"> & {
+      readonly input?: unknown;
+      readonly status?: OrchestrationV2TurnItem["status"];
+    }
   > = [],
 ): PendingBackgroundWorkPresentation | null {
   if (tasks.length === 0) return null;
@@ -352,6 +356,11 @@ export function presentPendingBackgroundWork(
         ...(commandLine === undefined
           ? {}
           : { commandLine, commandLabel: commandActivityLabel(commandLine) }),
+        ...(commandItem?.status === "running" ||
+        commandItem?.status === "pending" ||
+        commandItem?.status === "waiting"
+          ? { commandStatus: commandItem.status }
+          : {}),
       };
     })
     // `map` returned a new array; Hermes has no `toSorted`.

@@ -6,6 +6,12 @@ import { useId, useState } from "react";
 
 import { Button, InlineButton } from "../ui/button";
 
+const COMMAND_STATUS_LABELS = {
+  pending: "Pending",
+  running: "Running",
+  waiting: "Waiting",
+} as const;
+
 export function BackgroundWorkActivity({
   presentation,
   canStop,
@@ -50,6 +56,13 @@ export function BackgroundWorkActivity({
           const open = expanded.has(item.taskId);
           const panelId = `${detailsId}-${index}`;
           const childThreadId = item.childThreadId;
+          const statusLabel = stopping
+            ? "Stopping…"
+            : item.kind === "monitor"
+              ? "Watching"
+              : item.commandStatus === undefined
+                ? "Active"
+                : COMMAND_STATUS_LABELS[item.commandStatus];
           return (
             <div key={item.taskId} className="min-w-0">
               <div className="flex min-w-0 flex-wrap items-center gap-1">
@@ -72,9 +85,7 @@ export function BackgroundWorkActivity({
                     <span className="block truncate font-medium">
                       {item.commandLabel ?? item.label}
                     </span>
-                    <span className="block text-xs text-muted-foreground">
-                      {stopping ? "Stopping…" : item.kind === "monitor" ? "Watching" : "Running"}
-                    </span>
+                    <span className="block text-xs text-muted-foreground">{statusLabel}</span>
                   </span>
                   <ChevronRightIcon
                     aria-hidden
