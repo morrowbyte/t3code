@@ -17,6 +17,7 @@ import { Button } from "~/components/ui/button";
 import { Popover, PopoverPopup, PopoverTrigger, PopoverTitle } from "~/components/ui/popover";
 import { useEffect, useRef } from "react";
 import { useKeyboardCommands } from "~/components/keyboard/keyboardCommands";
+import { useStableCallback } from "~/hooks/useStableCallback";
 
 export function VoiceDictationControl(props: {
   readonly environmentId?: EnvironmentId;
@@ -26,6 +27,7 @@ export function VoiceDictationControl(props: {
   readonly onTranscript: (text: string, targetKey: string) => boolean;
   readonly onSend?: (targetKey: string, transcript: string) => Promise<boolean>;
   readonly hasTranscript?: (transcript: string) => boolean;
+  readonly onDraftActiveChange?: (active: boolean) => void;
 }) {
   const { currentTargetKey } = props;
   const recordedTargetKey = useRef(props.targetKey);
@@ -67,6 +69,26 @@ export function VoiceDictationControl(props: {
     },
   });
   const state = dictation.state;
+  const onDraftActiveChange = useStableCallback((active: boolean) =>
+    props.onDraftActiveChange?.(active),
+  );
+  useEffect(() => {
+    if (state.phase === "error" && !state.audioUrl) onDraftActiveChange(false);
+    else if (state.phase !== "idle") onDraftActiveChange(true);
+    // An inserted transcript still belongs to this draft until it is sent or discarded.
+  }, [state, onDraftActiveChange]);
+  useEffect(() => () => onDraftActiveChange(false), [onDraftActiveChange]);
+  const startRecording = () => {
+    recordedTargetKey.current = props.targetKey;
+    recordingTranscriber.current = props.transcribe;
+    // Protect the draft before the nonabortable microphone permission request resolves.
+    onDraftActiveChange(true);
+    return dictation.start();
+  };
+  const discardRecording = () => {
+    dictation.cancel();
+    onDraftActiveChange(false);
+  };
   const keyboardActionPending = useRef(false);
   useKeyboardCommands({
     "voice.dictation": () => {
@@ -74,10 +96,8 @@ export function VoiceDictationControl(props: {
       if (state.phase === "recording") {
         dictation.stop("insert");
       } else if (state.phase === "idle" || (state.phase === "error" && !state.audioUrl)) {
-        recordedTargetKey.current = props.targetKey;
-        recordingTranscriber.current = props.transcribe;
         keyboardActionPending.current = true;
-        void Promise.resolve(dictation.start()).finally(() => {
+        void Promise.resolve(startRecording()).finally(() => {
           keyboardActionPending.current = false;
         });
       } else if (state.phase === "review" || state.phase === "error") {
@@ -120,9 +140,7 @@ export function VoiceDictationControl(props: {
           size="icon-sm"
           onPointerDown={(event) => event.preventDefault()}
           onClick={() => {
-            recordedTargetKey.current = props.targetKey;
-            recordingTranscriber.current = props.transcribe;
-            void dictation.start();
+            void startRecording();
           }}
           aria-label="Record voice message"
           title="Record voice message"
@@ -189,7 +207,7 @@ export function VoiceDictationControl(props: {
           type="button"
           variant="ghost"
           size="icon-sm"
-          onClick={dictation.cancel}
+          onClick={discardRecording}
           aria-label="Discard recording"
           title="Discard recording"
         >
@@ -269,7 +287,7 @@ export function VoiceDictationControl(props: {
               type="button"
               variant="ghost"
               size="icon-sm"
-              onClick={dictation.cancel}
+              onClick={discardRecording}
               aria-label="Discard recording"
               title="Discard recording"
             >
