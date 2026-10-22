@@ -2297,6 +2297,9 @@ const layerCoreWsRpc = (
                             ...(input.initialMessage.messageId === undefined
                               ? {}
                               : { messageId: input.initialMessage.messageId }),
+                            ...(input.initialMessage.senderThreadId === undefined
+                              ? {}
+                              : { senderThreadId: input.initialMessage.senderThreadId }),
                             text: input.initialMessage.text,
                             attachments: input.initialMessage.attachments,
                             ...(input.initialMessage.context === undefined
@@ -2304,7 +2307,8 @@ const layerCoreWsRpc = (
                               : { context: input.initialMessage.context }),
                           },
                         }),
-                    createdBy: "user",
+                    createdBy:
+                      input.initialMessage?.senderThreadId === undefined ? "user" : "agent",
                     creationSource: input.creationSource ?? "web",
                   }).pipe(Effect.provide(intakeContext)),
                 )
