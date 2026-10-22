@@ -153,7 +153,10 @@ import {
   resolveProjectScripts,
 } from "@t3tools/shared/projectScripts";
 import { CHAT_LIST_ANCHOR_OFFSET } from "@t3tools/shared/chatList";
-import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import {
+  derivePendingBackgroundWork,
+  pendingBackgroundTurnItems,
+} from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import {
   latestUnheldRun,
   usageLimitRunPresentedAsLatest,
@@ -478,6 +481,7 @@ import { useIncrementalTimelineEntries } from "../hooks/useIncrementalTimelineEn
 import { useRightPanelSurfaceClose } from "../hooks/useRightPanelSurfaceClose";
 import { useAgentOpenedPreviews } from "./preview/useAgentOpenedPreviews";
 import type { ComposerBannerStackItem } from "./chat/ComposerBannerStack";
+import { BackgroundWorkActivity } from "./chat/BackgroundWorkActivity";
 import { ThreadStatusLine } from "./chat/ThreadStatusLine";
 import { formatRelativeTimeLabel, formatRelativeTimeUntilLabel } from "../timestampFormat";
 import { ComposerSurface } from "./chat/ComposerSurface";
@@ -5318,7 +5322,24 @@ export default function ChatView(props: ChatViewProps) {
   });
   // The interrupt path also accepts a completed run while its provider still
   // has background work.
-  const activeBackgroundTasks = !isWorking && activeThread ? pendingBackgroundTasks : [];
+  const activeBackgroundTasks = !activeThread
+    ? []
+    : !isWorking
+      ? pendingBackgroundTasks
+      : pendingBackgroundTurnItems({
+          turnItems: serverProjection?.turnItems ?? [],
+          runs: serverProjection?.runs,
+        }).flatMap((item) =>
+          item.type === "command_execution"
+            ? [
+                {
+                  taskId: item.nativeItemRef?.nativeId ?? item.id,
+                  kind: "command" as const,
+                  description: item.input,
+                },
+              ]
+            : [],
+        );
   const [stoppingBackgroundWorkKey, setStoppingBackgroundWorkKey] = useState<string | null>(null);
   const isStoppingBackgroundWork =
     stoppingBackgroundWorkKey === `${environmentId}:${activeThreadId}`;
@@ -5476,9 +5497,31 @@ export default function ChatView(props: ChatViewProps) {
   })() as ComposerBannerStackItem | null;
 
   const backgroundWorkBannerItem = (() => {
-    const presentation = presentPendingBackgroundWork(activeBackgroundTasks);
+    const presentation = presentPendingBackgroundWork(
+      activeBackgroundTasks,
+      serverProjection?.turnItems,
+    );
     if (presentation === null || !activeThread) {
       return null;
+    }
+    if (presentation.items.some((item) => item.kind === "command")) {
+      return {
+        id: `background-work:${activeThread.id}`,
+        variant: "default",
+        priority: "activity",
+        icon: null,
+        title: presentation.title,
+        content: (
+          <BackgroundWorkActivity
+            key={`${environmentId}:${activeThread.id}`}
+            presentation={presentation}
+            canStop={canOperateThread}
+            stopping={isStoppingBackgroundWork}
+            onStopThread={() => void handleStopBackgroundWorkStable()}
+            onOpenThread={onOpenRelatedThreadStable}
+          />
+        ),
+      };
     }
     return {
       id: `background-work:${activeThread.id}`,
@@ -5530,7 +5573,7 @@ export default function ChatView(props: ChatViewProps) {
           disabled={!canOperateThread || isStoppingBackgroundWork}
           onClick={() => void handleStopBackgroundWorkStable()}
         >
-          {isStoppingBackgroundWork ? "Stopping..." : "Stop"}
+          {isStoppingBackgroundWork ? "Stopping thread..." : "Stop thread"}
         </Button>
       ),
     };

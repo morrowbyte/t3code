@@ -15,6 +15,7 @@ import {
   type ServerProviderModel,
   type OrchestrationV2ExecutionNode,
   type OrchestrationV2ThreadProjection,
+  type OrchestrationV2TurnItem,
   orchestrationV2RunWorkStartedAt,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -32,6 +33,7 @@ import {
   type ThreadRuntimeSummary,
 } from "./models.ts";
 import { formatSubagentDisplayTitle } from "./subagentDisplay.ts";
+import { commandActivityLabel } from "../work-log/commandLabel.ts";
 
 const ACTIVITY_RUN_STATUSES = new Set(["preparing", "starting", "running", "waiting"]);
 const INTERRUPTIBLE_RUN_STATUSES = new Set(["preparing", "starting", "running"]);
@@ -295,6 +297,8 @@ export interface PendingBackgroundWorkItem {
   readonly kind: BackgroundWorkKind;
   readonly label: string;
   readonly childThreadId: ThreadId | undefined;
+  readonly commandLine?: string;
+  readonly commandLabel?: string;
 }
 
 export interface PendingBackgroundWorkPresentation {
@@ -310,6 +314,9 @@ function joinWithAnd(parts: ReadonlyArray<string>): string {
 
 export function presentPendingBackgroundWork(
   tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>,
+  turnItems: ReadonlyArray<
+    Pick<OrchestrationV2TurnItem, "id" | "type" | "nativeItemRef"> & { readonly input?: unknown }
+  > = [],
 ): PendingBackgroundWorkPresentation | null {
   if (tasks.length === 0) return null;
   const waiting = backgroundWorkHoldsCompletion(tasks);
@@ -320,6 +327,20 @@ export function presentPendingBackgroundWork(
         task.kind === "subagent" && description !== undefined
           ? formatSubagentDisplayTitle(description).trim()
           : description;
+      const commandItem =
+        task.kind === "command"
+          ? turnItems.find(
+              (item) =>
+                item.type === "command_execution" &&
+                (item.nativeItemRef?.nativeId === task.taskId || item.id === task.taskId),
+            )
+          : undefined;
+      const commandLine =
+        typeof commandItem?.input === "string"
+          ? commandItem.input
+          : task.kind === "command"
+            ? description
+            : undefined;
       return {
         taskId: task.taskId,
         kind: task.kind,
@@ -328,6 +349,9 @@ export function presentPendingBackgroundWork(
             ? BACKGROUND_WORK_KINDS[task.kind].singular
             : label,
         childThreadId: task.kind === "subagent" ? task.childThreadId : undefined,
+        ...(commandLine === undefined
+          ? {}
+          : { commandLine, commandLabel: commandActivityLabel(commandLine) }),
       };
     })
     // `map` returned a new array; Hermes has no `toSorted`.
@@ -344,7 +368,7 @@ export function presentPendingBackgroundWork(
         ? `${only.kind === "monitor" ? "" : `Waiting on ${noun} `}${only.label}`
         : `Waiting on a ${noun}`
       : named
-        ? `Running: ${only.label}`
+        ? `Running: ${only.commandLabel ?? only.label}`
         : `Running a ${noun}`;
     return { title, items, waiting };
   }
