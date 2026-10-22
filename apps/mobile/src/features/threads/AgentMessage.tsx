@@ -46,13 +46,6 @@ export const AgentMessage = memo(function AgentMessage(props: {
   const [copiedText, setCopiedText] = useState<string | null>(null);
   const actor = props.attribution === "agent" ? "Agent" : "MCP";
   const direction = props.direction === "outgoing" ? "An" : "Von";
-  const senderLabel = sender?.title
-    ? `${direction} · ${sender.title}`
-    : props.senderThreadId
-      ? `${direction} · ${actor}`
-      : props.direction === "outgoing"
-        ? "An · Ziel nicht hinterlegt"
-        : `${actor} · Sender nicht hinterlegt`;
   const metadata = (
     <View className="w-full min-w-0 flex-row items-center gap-1.5">
       <Text className="text-xs text-foreground-muted">{direction}</Text>
@@ -65,7 +58,7 @@ export const AgentMessage = memo(function AgentMessage(props: {
         </View>
       ) : (
         <Text className="min-w-0 flex-1 text-xs text-foreground-muted" numberOfLines={1}>
-          {senderLabel}
+          {actor}
         </Text>
       )}
       {props.senderThreadId ? (
