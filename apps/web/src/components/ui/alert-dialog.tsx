@@ -1,6 +1,7 @@
 "use client";
 
 import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog";
+import { use, useId, useLayoutEffect, useRef } from "react";
 
 import { cn } from "~/lib/utils";
 import {
@@ -8,8 +9,19 @@ import {
   DIALOG_MOBILE_SHEET_CLASS,
   DIALOG_POPUP_CLASS,
 } from "~/components/ui/dialog-styles";
+import { KeyboardLayerContext, registerKeyboardLayer } from "./keyboardLayer";
 
-const AlertDialog = AlertDialogPrimitive.Root;
+function AlertDialog<Payload>(props: AlertDialogPrimitive.Root.Props<Payload>) {
+  const id = useId();
+  const localActions = useRef<AlertDialogPrimitive.Root.Actions | null>(null);
+  const actions = props.actionsRef ?? localActions;
+  useLayoutEffect(() => registerKeyboardLayer(id, () => actions.current?.close()), [actions, id]);
+  return (
+    <KeyboardLayerContext value={id}>
+      <AlertDialogPrimitive.Root {...props} actionsRef={actions} />
+    </KeyboardLayerContext>
+  );
+}
 
 const AlertDialogPortal = AlertDialogPrimitive.Portal;
 
@@ -46,6 +58,7 @@ function AlertDialogPopup({
   bottomStickOnMobile?: boolean;
   portalContainer?: AlertDialogPrimitive.Portal.Props["container"];
 }) {
+  const keyboardLayer = use(KeyboardLayerContext);
   return (
     <AlertDialogPortal container={portalContainer}>
       <AlertDialogBackdrop />
@@ -60,6 +73,7 @@ function AlertDialogPopup({
             className,
           )}
           data-slot="alert-dialog-popup"
+          data-keyboard-layer={keyboardLayer ?? undefined}
           {...props}
         />
       </AlertDialogViewport>

@@ -362,7 +362,7 @@ export function buildKeybindingCommandOptions(
 
 export function commandLabel(command: KeybindingCommand): string {
   const workbenchLabels: Partial<Record<KeybindingCommand, string>> = {
-    "navigation.activate": "Navigation: Activate",
+    "navigation.activate": "Navigation: Enter Normal Mode",
     "navigation.contextActions": "Navigation: Context Actions",
     "navigation.hints": "Navigation: Focus Hints",
     "composer.serviceTier": "Composer: Service Tier or Speed",

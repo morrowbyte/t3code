@@ -2,11 +2,13 @@
 
 import { Dialog as SheetPrimitive } from "@base-ui/react/dialog";
 import { XIcon } from "lucide-react";
-import type { CSSProperties } from "react";
+import { use, type CSSProperties } from "react";
 import { cn } from "~/lib/utils";
 import { Button } from "~/components/ui/button";
+import { Dialog } from "./dialog";
+import { KeyboardLayerContext } from "./keyboardLayer";
 
-const Sheet = SheetPrimitive.Root;
+const Sheet = Dialog;
 
 const SheetPortal = SheetPrimitive.Portal;
 
@@ -66,6 +68,7 @@ function SheetPopup({
   side?: "right" | "left" | "top" | "bottom";
   variant?: "default" | "inset";
 }) {
+  const keyboardLayer = use(KeyboardLayerContext);
   const transitionStyle =
     transitionDurationMs === undefined
       ? undefined
@@ -101,12 +104,14 @@ function SheetPopup({
             className,
           )}
           data-slot="sheet-popup"
+          data-keyboard-layer={keyboardLayer ?? undefined}
           style={{ ...transitionStyle, ...style }}
           {...props}
         >
           {children}
           {showCloseButton && (
             <SheetPrimitive.Close
+              data-slot="sheet-close"
               aria-label="Close"
               className="absolute end-2 top-2"
               render={<Button size="icon" variant="ghost" />}

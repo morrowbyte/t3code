@@ -6,6 +6,16 @@ export interface CommandPaletteLinkedThreads {
 }
 
 const COMMAND_PALETTE_OPEN_EVENT = "t3code:open-command-palette";
+const COMMAND_PALETTE_CLOSE_EVENT = "t3code:close-command-palette";
+
+export function closeCommandPalette(): void {
+  window.dispatchEvent(new Event(COMMAND_PALETTE_CLOSE_EVENT));
+}
+
+export function onCloseCommandPalette(listener: () => void): () => void {
+  window.addEventListener(COMMAND_PALETTE_CLOSE_EVENT, listener);
+  return () => window.removeEventListener(COMMAND_PALETTE_CLOSE_EVENT, listener);
+}
 
 export interface CommandPaletteOpenDetail {
   readonly open?: "add-project" | "new-thread-in";

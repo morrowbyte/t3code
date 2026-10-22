@@ -310,6 +310,7 @@ export interface DeviceStreamClient {
   /** Normalized 0..1 coordinates in the displayed frame. */
   readonly sendTouch: (phase: "begin" | "move" | "end", x: number, y: number) => void;
   readonly sendKey: (event: KeyboardEvent, phase: "down" | "up") => void;
+  readonly releaseKeys: () => void;
   /** Android only: iOS input is HID key codes, which cannot carry arbitrary text. */
   readonly sendText: (text: string) => void;
   readonly pressButton: (button: DeviceHardwareButton) => void;
@@ -397,6 +398,7 @@ export function createDeviceStreamClient(
 
   let stopped = true;
   let socket: WebSocket | null = null;
+  const pressedKeys = new Set<number>();
   let controller: AbortController | null = null;
   const retryTimers = new Map<"video" | "input", ReturnType<typeof setTimeout>>();
   let primeController: AbortController | null = null;
@@ -1133,6 +1135,7 @@ export function createDeviceStreamClient(
       if (socket !== ws) return;
       socket = null;
       iosInputAdmitted = false;
+      pressedKeys.clear();
       duoControl.clear();
       rotationCursor = null;
       if (stopped) return;
@@ -1243,6 +1246,7 @@ export function createDeviceStreamClient(
 
   const stop = () => {
     if (stopped) return;
+    releaseKeys();
     stopped = true;
     generation++;
     videoGeneration++;
@@ -1276,8 +1280,16 @@ export function createDeviceStreamClient(
       !stopped &&
       (platform !== "ios" || (iosInputAdmitted && !iosInputUnavailable)) &&
       socket?.readyState === WebSocket.OPEN
-    )
+    ) {
       socket.send(payload);
+      return true;
+    }
+    return false;
+  };
+
+  const releaseKeys = () => {
+    for (const usage of pressedKeys) send(taggedJson(IOS_MSG_KEY, { type: "up", usage }));
+    pressedKeys.clear();
   };
 
   const rawPoint = (x: number, y: number) => {
@@ -1299,6 +1311,7 @@ export function createDeviceStreamClient(
   return {
     start,
     stop,
+    releaseKeys,
     setMjpegImage,
     controlDuo: duoControl.enqueue,
     sendRawTouch: (phase, x, y) => {
@@ -1335,7 +1348,12 @@ export function createDeviceStreamClient(
     sendKey: (event, phase) => {
       if (platform === "ios") {
         const usage = hidUsageForCode(event.code);
-        if (usage !== null) send(taggedJson(IOS_MSG_KEY, { type: phase, usage }));
+        if (usage === null) return;
+        if (phase === "up") {
+          if (pressedKeys.delete(usage)) send(taggedJson(IOS_MSG_KEY, { type: phase, usage }));
+        } else if (send(taggedJson(IOS_MSG_KEY, { type: phase, usage }))) {
+          pressedKeys.add(usage);
+        }
         return;
       }
       if (phase !== "down") return;
