@@ -11,6 +11,18 @@ import { getTerminalFocusOwner, type TerminalFocusOwner } from "../../lib/termin
 import { shouldTypeToFocusComposer } from "./composerFocusRedirect";
 import { dispatchKeyboardCommand, useKeyboardCommands } from "../keyboard/keyboardCommands";
 
+function hasLocalShortcutOwner(event: KeyboardEvent): boolean {
+  return event
+    .composedPath()
+    .some(
+      (node) =>
+        node instanceof Element &&
+        node.matches(
+          '[role="dialog"],[role="alertdialog"],[data-keyboard-local],.cm-editor,.monaco-editor',
+        ),
+    );
+}
+
 /** Runs a command. Returning false lets the key event through untouched. */
 export type ChatShortcutHandler = (context: {
   readonly event: KeyboardEvent;
@@ -59,6 +71,8 @@ export function useChatShortcuts(input: ChatShortcutsInput) {
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       const current = latest.current;
+      // Capture runs before editor handlers can claim search, paging, or history keys.
+      if (hasLocalShortcutOwner(event)) return;
       const { keybindings } = current;
       if (preventRepeatedTerminalCloseShortcut(event, keybindings)) {
         event.stopPropagation();
@@ -103,6 +117,7 @@ export function useChatShortcuts(input: ChatShortcutsInput) {
         event.defaultPrevented ||
         event.isComposing ||
         event.keyCode === 229 ||
+        hasLocalShortcutOwner(event) ||
         isCommandPaletteOpen()
       )
         return;
