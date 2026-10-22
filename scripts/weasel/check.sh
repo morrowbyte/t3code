@@ -96,6 +96,7 @@ focused_tests=(
   packages/contracts/src/environmentHttp.test.ts \
   packages/client-runtime/src/state/serverConfigProjection.test.ts \
   packages/client-runtime/src/rpc/session.test.ts \
+  packages/client-runtime/src/device/stream.test.ts \
   apps/desktop/src/app/DesktopEarlyElectronStartup.test.ts \
   apps/desktop/src/app/DesktopEnvironment.test.ts \
   apps/desktop/src/app/DesktopWindowsProfileBinding.test.ts \
@@ -391,6 +392,7 @@ renderer_tests=(
   apps/web/src/components/files/FileSelectionActions.browser.test.tsx
   apps/web/src/components/files/FileBrowserPanel.browser.test.tsx
   apps/web/src/components/device/DeviceControlsRail.browser.test.tsx
+  apps/web/src/components/device/DeviceStreamView.browser.test.tsx
   apps/web/src/components/RightPanelTabs.keyboard.browser.test.tsx
   apps/web/src/components/preview/PreviewView.browser.test.tsx
   apps/web/src/components/settings/KeybindingsSettings.environment.browser.test.tsx
@@ -398,6 +400,8 @@ renderer_tests=(
   apps/web/src/components/thread-coordination/ThreadCoordination.browser.test.tsx
   apps/web/src/components/GitActionsControl.browser.test.tsx
   apps/web/src/components/keyboard/LeaderNavigation.browser.test.tsx
+  apps/web/src/components/keyboard/NormalMode.browser.test.tsx
+  apps/web/src/components/keyboard/SidebarNavigation.browser.test.tsx
   apps/web/src/components/keyboard/KeyboardHints.browser.test.tsx
   apps/web/src/components/keyboard/yaziAttachment.browser.test.ts
   apps/web/src/components/chat/ComposerChoiceDialog.browser.test.tsx

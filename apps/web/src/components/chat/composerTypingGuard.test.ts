@@ -9,6 +9,59 @@ function typing() {
 }
 
 describe("composer typing guard", () => {
+  it("holds new questions throughout dictation, focus loss and transcription until send", () => {
+    let state = updateComposerTypingGuard(createComposerTypingGuardState(), {
+      type: "voice",
+      active: true,
+    });
+    state = updateComposerTypingGuard(state, {
+      type: "requests",
+      requestIds: ["question"],
+      now: 10_000,
+    });
+    for (const type of ["blur", "idle", "focus", "idle"] as const) {
+      state = updateComposerTypingGuard(state, { type });
+      expect([...state.held]).toEqual(["question"]);
+    }
+    state = updateComposerTypingGuard(state, {
+      type: "requests",
+      requestIds: ["question", "second"],
+      now: 30_000,
+    });
+    expect([...state.held]).toEqual(["question", "second"]);
+    state = updateComposerTypingGuard(state, { type: "send" });
+    expect([...state.held]).toEqual([]);
+    expect(state.voiceDraftActive).toBe(false);
+    state = updateComposerTypingGuard(state, {
+      type: "requests",
+      requestIds: ["question", "second", "third"],
+      now: 31_000,
+    });
+    expect([...state.held]).toEqual([]);
+  });
+
+  it("releases on discard and drops withdrawn requests without hiding existing questions", () => {
+    let state = updateComposerTypingGuard(createComposerTypingGuardState(), {
+      type: "requests",
+      requestIds: ["existing"],
+      now: 0,
+    });
+    state = updateComposerTypingGuard(state, { type: "voice", active: true });
+    state = updateComposerTypingGuard(state, {
+      type: "requests",
+      requestIds: ["existing", "withdrawn", "new"],
+      now: 10_000,
+    });
+    state = updateComposerTypingGuard(state, {
+      type: "requests",
+      requestIds: ["existing", "new"],
+      now: 11_000,
+    });
+    expect([...state.held]).toEqual(["new"]);
+    state = updateComposerTypingGuard(state, { type: "voice", active: false });
+    expect([...state.held]).toEqual([]);
+  });
+
   it.each(["idle", "send", "blur"] as const)(
     "releases on %s and never re-holds the request",
     (type) => {

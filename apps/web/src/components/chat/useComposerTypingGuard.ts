@@ -30,22 +30,35 @@ export function useComposerTypingGuard(scope: string, requestIds: readonly strin
     }));
   }
   const dispatch = (event: Parameters<typeof updateComposerTypingGuard>[1]) => {
-    setSnapshot((current) => ({
-      ...current,
-      state: updateComposerTypingGuard(current.state, event),
-    }));
+    setSnapshot((current) =>
+      current.scope !== scope
+        ? current
+        : {
+            ...current,
+            state: updateComposerTypingGuard(current.state, event),
+          },
+    );
   };
   const onDraftChange = () => dispatch({ type: "type", now: Date.now() });
   const onFocus = () => dispatch({ type: "focus" });
   const onBlur = () => dispatch({ type: "blur" });
   const onSend = () => dispatch({ type: "send" });
+  const onVoiceDraftActiveChange = (active: boolean) => dispatch({ type: "voice", active });
   useEffect(() => {
-    if (state.held.size === 0) return;
+    if (state.held.size === 0 || state.voiceDraftActive) return;
     const timeout = window.setTimeout(
       () => dispatch({ type: "idle" }),
       Math.max(0, state.lastTypedAt + COMPOSER_TYPING_IDLE_MS - Date.now()),
     );
     return () => window.clearTimeout(timeout);
-  }, [state.held, state.lastTypedAt, dispatch]);
-  return { heldRequestIds: state.held, onDraftChange, onFocus, onBlur, onSend };
+  }, [state.held, state.lastTypedAt, state.voiceDraftActive, dispatch]);
+  return {
+    heldRequestIds: state.held,
+    voiceDraftActive: state.voiceDraftActive,
+    onDraftChange,
+    onFocus,
+    onBlur,
+    onSend,
+    onVoiceDraftActiveChange,
+  };
 }

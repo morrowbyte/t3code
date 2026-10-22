@@ -7,7 +7,7 @@ import { useComposerHandleContext } from "../composerHandleContext";
 import { openCommandPalette } from "../commandPaletteBus";
 import { primaryServerKeybindingsAtom } from "../state/server";
 import { LeaderNavigation } from "./keyboard/LeaderNavigation";
-import { leaveNavigationMode } from "./keyboard/navigationMode";
+import { isNavigationMode, leaveNavigationMode } from "./keyboard/navigationMode";
 
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
@@ -111,6 +111,52 @@ function Composer() {
 }
 
 describe("command palette focus restoration", () => {
+  it("closes the palette for app Normal mode before Space opens Which-Key", async () => {
+    await using _resources = setup();
+    await using _screen = await render(
+      <CommandPalette>
+        <textarea aria-label="Previous input" />
+        <LeaderNavigation
+          groups={[]}
+          isClaimed={() => false}
+          showSidebar={() => {}}
+          isActivationShortcut={(event) => event.key === " " && event.ctrlKey && event.shiftKey}
+        />
+      </CommandPalette>,
+      {
+        // Standalone keyboard fixture; route navigation is outside this scenario.
+        router: false,
+      },
+    );
+    await act(() => openCommandPalette());
+    await flushFocus();
+    await act(() =>
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: " ",
+          ctrlKey: true,
+          shiftKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      ),
+    );
+    await flushFocus();
+    await flushFocus();
+    expect(document.querySelector("[data-command-palette]")).toBeNull();
+    expect(isNavigationMode()).toBe(true);
+    await act(() =>
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: " ",
+          bubbles: true,
+          cancelable: true,
+        }),
+      ),
+    );
+    await flushFocus();
+    expect(document.querySelector('[aria-label="Keyboard navigation"]')).not.toBeNull();
+  });
   it("returns to the previously focused Settings field when no composer is mounted", async () => {
     await using _setup = setup();
     await using screen = await render(

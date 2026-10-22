@@ -6,10 +6,18 @@ import { isContextMenuOpen } from "../../contextMenuFallback";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../../keybindings";
 import { isTerminalFocused } from "../../lib/terminalFocus";
 import { isPreviewFocused } from "../../lib/previewFocus";
+import { isEditableFocused } from "../../lib/editableFocus";
+import { isNavigationMode } from "./navigationMode";
 import { primaryServerKeybindingsAtom } from "../../state/server";
 import { useSidebar } from "../ui/sidebar";
 import { LeaderNavigation, type LeaderNavigationGroup } from "./LeaderNavigation";
-import { activateAdjacentThread, clickVisible, focusElement } from "./LeaderNavigation.dom";
+import {
+  activateAdjacentThread,
+  clickVisible,
+  focusElement,
+  focusComposer,
+} from "./LeaderNavigation.dom";
+import { useNavigateToMainApp } from "../sidebar/mainAppLocation";
 import { dispatchKeyboardCommand } from "./keyboardCommands";
 import { KeyboardHints } from "./KeyboardHints";
 import { toastManager } from "../ui/toast";
@@ -24,6 +32,7 @@ export function LeaderNavigationHost() {
   );
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const sidebar = useSidebar();
+  const navigateToMainApp = useNavigateToMainApp();
   const showSidebar = () => {
     if (sidebar.isMobile) sidebar.setOpenMobile(true);
     else sidebar.setOpen(true);
@@ -216,12 +225,17 @@ export function LeaderNavigationHost() {
       <KeyboardHints />
       <LeaderNavigation
         groups={groups}
+        activationShortcutLabel={shortcutLabelForCommand(keybindings, "navigation.activate")}
         showSidebar={showSidebar}
         leaveSidebar={leaveSidebar}
+        showComposer={async () => {
+          await navigateToMainApp();
+          requestAnimationFrame(() => focusComposer());
+        }}
         isClaimed={(event) =>
           isContextMenuOpen() ||
-          isTerminalFocused() ||
-          isPreviewFocused() ||
+          ((!isNavigationMode() || isEditableFocused(event.target)) &&
+            (isTerminalFocused() || isPreviewFocused())) ||
           resolveShortcutCommand(event, keybindings) !== null
         }
         isActivationShortcut={(event) =>

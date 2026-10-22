@@ -2,6 +2,7 @@
 
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { XIcon } from "lucide-react";
+import { use, useId, useLayoutEffect, useRef } from "react";
 import { cn } from "~/lib/utils";
 import { Button } from "~/components/ui/button";
 import {
@@ -12,8 +13,20 @@ import {
   DIALOG_POPUP_CLASS,
 } from "~/components/ui/dialog-styles";
 import { ScrollArea } from "~/components/ui/scroll-area";
+import { KeyboardLayerContext, registerKeyboardLayer } from "./keyboardLayer";
 
-const Dialog = DialogPrimitive.Root;
+function Dialog<Payload>(props: DialogPrimitive.Root.Props<Payload>) {
+  const id = useId();
+  const localActions = useRef<DialogPrimitive.Root.Actions | null>(null);
+  const actions = props.actionsRef ?? localActions;
+  // Use the root's close action even when a popup supplies its own close controls.
+  useLayoutEffect(() => registerKeyboardLayer(id, () => actions.current?.close()), [actions, id]);
+  return (
+    <KeyboardLayerContext value={id}>
+      <DialogPrimitive.Root {...props} actionsRef={actions} />
+    </KeyboardLayerContext>
+  );
+}
 
 const DialogPortal = DialogPrimitive.Portal;
 
@@ -70,6 +83,7 @@ function DialogPopup({
   variant?: "default" | "media";
   size?: "default" | "wide";
 }) {
+  const keyboardLayer = use(KeyboardLayerContext);
   return (
     <DialogPortal>
       {/* Media opens from inside other overlays (a composer chip, a popover), so it sits above them. */}
@@ -91,11 +105,13 @@ function DialogPopup({
             className,
           )}
           data-slot="dialog-popup"
+          data-keyboard-layer={keyboardLayer ?? undefined}
           {...props}
         >
           {children}
           {showCloseButton && (
             <DialogPrimitive.Close
+              data-slot="dialog-close"
               aria-label="Close"
               className="absolute end-2 top-2"
               render={<Button size="icon" variant="ghost" />}

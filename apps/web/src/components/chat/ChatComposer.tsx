@@ -2179,11 +2179,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const composerDraftTargetKey = composerTargetKey(composerDraftTarget);
   const {
     heldRequestIds,
+    voiceDraftActive,
     onDraftChange: onTypingGuardDraftChange,
     onFocus: onTypingGuardFocus,
     onBlur: onTypingGuardBlur,
     onSend: onTypingGuardSend,
-  } = useComposerTypingGuard(composerDraftTargetKey, [
+    onVoiceDraftActiveChange,
+  } = useComposerTypingGuard(`${composerDraftTargetKey}:${environmentId}`, [
     ...pendingApprovals.map((request) => request.requestId),
     ...incomingPendingUserInputs.map((request) => request.requestId),
   ]);
@@ -4385,11 +4387,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     });
     setComposerSubmissionError(submission.validationMessage);
     if (!submission.didDispatch) return;
-    onTypingGuardSend();
+    if (!voiceDraftActive) onTypingGuardSend();
     if (shouldBlurMobileComposerOnSubmit()) {
       blurMobileComposerAfterSend();
     }
-    return Promise.resolve(sendResult.completion).then((accepted) => accepted === true);
+    return Promise.resolve(sendResult.completion).then((accepted) => {
+      // Keep a voice draft mounted until admission finishes, including failed sends.
+      if (accepted === true && voiceDraftActive) onTypingGuardSend();
+      return accepted === true;
+    });
   };
   const submitComposerStable = useStableCallback(submitComposer);
   const sendVoiceTranscript = async (targetKey: string, transcript: string) => {
@@ -7815,6 +7821,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       onTranscript={insertVoiceTranscript}
                       onSend={sendVoiceTranscript}
                       hasTranscript={(text) => promptRef.current.includes(text)}
+                      onDraftActiveChange={onVoiceDraftActiveChange}
                     />
                   ) : null}
                   <LiveVoiceControl

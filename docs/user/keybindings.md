@@ -3,6 +3,26 @@
 Customize shortcuts in **Settings → Keybindings** on web and desktop. That page
 also lists the command IDs and defaults available in your version.
 
+## App navigation
+
+Press `Ctrl+Shift+Space` to enter **Normal mode** from a text field, terminal,
+editor, or the embedded browser. This leaves the current page open. Change
+**Navigation: Enter Normal Mode** in Keybindings to use another shortcut.
+
+In Normal mode, `Space` opens the grouped keyboard commands (Which-Key).
+Use `j`/`k` to move between items and Enter to activate one. In the thread
+sidebar, `h`/`l` collapse or expand a family and move to its parent or child;
+Home/End move to the first or last visible row. Elsewhere, `h`/`l` move between
+app regions, as do F6/Shift+F6. Press `?` for the current context's commands,
+or `i` to return to the composer, including from Settings.
+
+Mouse clicks still work. Click a text field to type normally; use the app
+shortcut to resume navigation. Escape first closes a local popup or cancels
+an edit. In the composer, Escape leaves typing after dismissing suggestions.
+On an ordinary app control, Escape returns to Normal mode. Escape in a
+terminal or webpage remains available to that program; use `Ctrl+Shift+Space`
+to return to T3.
+
 ## Composer controls
 
 In **Settings → Chat & editor → Send shortcut**, choose whether Enter sends, requires
