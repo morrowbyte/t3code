@@ -46,7 +46,8 @@ export const resolveEditorCommand = Effect.fn("editor.resolveEditorCommand")(fun
     (yield* isCommandAvailable("zed.exe", { env }))
   ) {
     const distro = env.USER ? `${env.USER}@${env.WSL_DISTRO_NAME}` : env.WSL_DISTRO_NAME;
-    return Option.some({ command: "zed.exe", baseArgs: ["--wsl", distro] });
+    const wslArgs: ReadonlyArray<string> = ["--wsl", distro];
+    return Option.some({ command: "zed.exe", baseArgs: wslArgs });
   }
   // OpenZFS also installs a `zed` executable. Prefer the macOS editor bundle
   // so a PATH entry for the ZFS Event Daemon cannot take over editor opens.
