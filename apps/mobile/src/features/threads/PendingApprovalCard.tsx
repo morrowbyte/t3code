@@ -1,4 +1,9 @@
 import { Button } from "../../components/ui/Button";
+import {
+  parseApprovalReviewDetail,
+  type ReviewBundle,
+} from "@t3tools/client-runtime/approvalReview";
+import { canRespondToThreadApproval } from "@t3tools/client-runtime/state/thread-requests";
 import type {
   EnvironmentId,
   ProviderApprovalDecision,
@@ -6,11 +11,12 @@ import type {
   RuntimeMode,
   RuntimeRequestId,
 } from "@t3tools/contracts";
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import type { PendingApproval } from "../../lib/threadActivity";
+import { ApprovalReviewModal } from "./ApprovalReviewModal";
 
 export interface PendingApprovalCardProps {
   readonly canOperateThread: boolean;
@@ -22,6 +28,7 @@ export interface PendingApprovalCardProps {
   readonly onRespond: (
     requestId: RuntimeRequestId,
     decision: ProviderApprovalDecision,
+    packageHash?: string,
   ) => Promise<unknown>;
 }
 const DEFAULT_APPROVAL_OPTIONS: ReadonlyArray<ProviderApprovalOption> = [
@@ -44,6 +51,16 @@ const modeLabels: Record<RuntimeMode, string> = {
 };
 
 export function PendingApprovalCard(props: PendingApprovalCardProps) {
+  const [now, setNow] = useState(Date.now);
+  const expiresAt = props.approval.approvalReview?.expiresAt;
+  useEffect(() => {
+    if (expiresAt === undefined) return;
+    const timer = setTimeout(
+      () => setNow(Date.now()),
+      Math.max(0, Math.min(expiresAt - Date.now(), 2_147_483_647)),
+    );
+    return () => clearTimeout(timer);
+  }, [expiresAt]);
   const options = props.approval.options ?? DEFAULT_APPROVAL_OPTIONS;
   const key = `${props.environmentId ?? "unknown"}:${props.approval.requestId}`;
   const latest = useRef(props);
@@ -55,21 +72,73 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
   const refreshResponses = () => setInFlightSnapshot(new Set(inFlight.current));
   const [failedKey, setFailedKey] = useState<string | null>(null);
   const [detailsFor, setDetailsFor] = useState<string | null>(null);
-  const canRespond = props.approval.responseCapability === "live";
+  const verifiedReview = useRef<ReviewBundle | null>(null);
+  const [reviewFor, setReviewFor] = useState<{
+    environmentId: EnvironmentId | undefined;
+    requestId: RuntimeRequestId;
+    detail: string | undefined;
+  } | null>(null);
+  if (
+    reviewFor !== null &&
+    (reviewFor.environmentId !== props.environmentId ||
+      reviewFor.requestId !== props.approval.requestId ||
+      reviewFor.detail !== props.approval.detail)
+  ) {
+    setReviewFor(null);
+  }
+  const review = useMemo(
+    () => parseApprovalReviewDetail(props.approval.detail),
+    [props.approval.detail],
+  );
+  const reviewIssue =
+    review.kind === "bundle"
+      ? review.bundle.exampleOnly
+        ? "Example only. Decisions are disabled."
+        : !props.approval.approvalReview
+          ? "Approval disabled: this response channel cannot bind a decision to the reviewed package hash."
+          : review.bundle.hash !== props.approval.approvalReview.packageHash ||
+              review.bundle.target.identity !== props.approval.approvalReview.verifiedTargetId
+            ? "Approval disabled: this package does not match the authoritative request."
+            : null
+      : review.kind === "invalid"
+        ? `Approval disabled: invalid review package. ${review.error}`
+        : props.approval.approvalReview
+          ? "Approval disabled: request has no review package."
+          : null;
+  const decisionBlocked = (decision: ProviderApprovalDecision, reviewedBundle?: ReviewBundle) => {
+    if (review.kind === "bundle" && review.bundle.exampleOnly) return true;
+    if (decision === "decline" || decision === "cancel") return false;
+    if (review.kind === "none" && !props.approval.approvalReview) return false;
+    return (
+      decision !== "accept" ||
+      review.kind !== "bundle" ||
+      reviewedBundle !== review.bundle ||
+      reviewIssue !== null
+    );
+  };
+  const canRespond = props.approval.responseCapability !== "not_resumable";
   const disabled =
     !canRespond ||
     !props.canOperateThread ||
     props.respondingApprovalId === props.approval.requestId ||
     inFlightSnapshot.has(key);
-  const respond = async (decision: ProviderApprovalDecision) => {
+  const respond = async (decision: ProviderApprovalDecision, reviewedBundle?: ReviewBundle) => {
     const current = latest.current;
+    const packageHash = current.approval.approvalReview?.packageHash;
     if (
       current.environmentId !== props.environmentId ||
       current.approval.requestId !== props.approval.requestId ||
+      current.approval.detail !== props.approval.detail ||
+      current.approval.approvalReview?.packageHash !== props.approval.approvalReview?.packageHash ||
       current.onRespond !== props.onRespond ||
       !current.canOperateThread ||
-      current.approval.responseCapability !== "live" ||
+      !canRespondToThreadApproval(current.approval, decision, packageHash) ||
       current.respondingApprovalId === props.approval.requestId ||
+      decisionBlocked(decision, reviewedBundle) ||
+      (reviewedBundle !== undefined && verifiedReview.current !== reviewedBundle) ||
+      (reviewedBundle !== undefined &&
+        (current.approval.approvalReview?.packageHash !== reviewedBundle.hash ||
+          current.approval.approvalReview?.verifiedTargetId !== reviewedBundle.target.identity)) ||
       !(current.approval.options ?? DEFAULT_APPROVAL_OPTIONS).some(
         (option) => option.decision === decision,
       ) ||
@@ -79,26 +148,110 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
     inFlight.current.add(key);
     refreshResponses();
     setFailedKey(null);
+    const reportFailure = () => {
+      if (
+        latest.current.environmentId === props.environmentId &&
+        latest.current.approval.requestId === props.approval.requestId &&
+        latest.current.approval.detail === props.approval.detail
+      )
+        setFailedKey(key);
+    };
     await (async () => {
-      await props.onRespond(props.approval.requestId, decision);
+      const result =
+        packageHash === undefined
+          ? await props.onRespond(props.approval.requestId, decision)
+          : await props.onRespond(props.approval.requestId, decision, packageHash);
+      if (
+        result !== null &&
+        typeof result === "object" &&
+        "_tag" in result &&
+        result._tag === "Failure"
+      ) {
+        reportFailure();
+      }
     })()
-      .catch(() => {
-        if (
-          latest.current.environmentId === props.environmentId &&
-          latest.current.approval.requestId === props.approval.requestId
-        )
-          setFailedKey(key);
-      })
+      .catch(reportFailure)
       .finally(() => {
         inFlight.current.delete(key);
         refreshResponses();
       });
   };
+  const responseControls = (reviewedBundle?: ReviewBundle) => (
+    <View className="gap-3">
+      {options.map((option) =>
+        option.warning ? (
+          <Text key={option.decision} className="text-xs leading-normal text-warning-foreground">
+            {option.label}: {option.warning}
+          </Text>
+        ) : null,
+      )}
+      {!canRespond ? (
+        <Text className="text-sm leading-5 text-foreground-muted">
+          The provider process for this request is no longer available. Interrupt or restart the run
+          to continue.
+        </Text>
+      ) : null}
+      {reviewIssue ? (
+        <Text accessibilityRole="alert" className="text-sm text-warning-foreground">
+          {reviewIssue}
+        </Text>
+      ) : null}
+      {props.approval.approvalReview &&
+      (props.approval.approvalReview.state !== "pending" ||
+        props.approval.approvalReview.expiresAt <= now) ? (
+        <Text accessibilityRole="alert" className="text-sm text-warning-foreground">
+          This review request is no longer pending or has expired.
+        </Text>
+      ) : null}
+      <View className="flex-row flex-wrap gap-2.5">
+        {options.map((option) => (
+          <Button
+            key={option.decision}
+            label={option.label}
+            tone={
+              option.decision === "accept"
+                ? "primary"
+                : option.decision === "decline"
+                  ? "danger"
+                  : "secondary"
+            }
+            disabled={
+              disabled ||
+              decisionBlocked(option.decision, reviewedBundle) ||
+              !canRespondToThreadApproval(
+                props.approval,
+                option.decision,
+                props.approval.approvalReview?.packageHash,
+              )
+            }
+            onPress={() => void respond(option.decision, reviewedBundle)}
+          />
+        ))}
+      </View>
+      {options.length === 0 ? (
+        <Text className="text-xs text-foreground-muted">
+          No decisions supplied by the provider.
+        </Text>
+      ) : null}
+      {failedKey === key ? (
+        <Text accessibilityRole="alert" className="text-xs text-danger-foreground">
+          Could not submit this decision. No decision was confirmed.
+        </Text>
+      ) : null}
+      {!props.canOperateThread ? (
+        <Text className="text-xs text-foreground-muted">
+          This connection cannot respond to approvals.
+        </Text>
+      ) : null}
+    </View>
+  );
   return (
     <View className="gap-3 rounded-[20px] border border-border bg-card-alt p-4">
       <View className="flex-row flex-wrap items-center justify-between gap-2">
         <Text className="font-t3-bold text-lg text-foreground">
-          {titles[props.approval.requestKind]}
+          {props.approval.responseCapability === "external"
+            ? "Review external action"
+            : titles[props.approval.requestKind]}
         </Text>
         <Text className="font-t3-bold text-xs text-warning-foreground">
           {canRespond ? "Decision needed" : "Provider disconnected"}
@@ -126,51 +279,19 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
         <Text className="text-xs text-foreground-muted">Execution unconfirmed</Text>
         <Text className="text-xs text-foreground-muted">Verification unconfirmed</Text>
       </View>
-      {options.map((option) =>
-        option.warning ? (
-          <Text key={option.decision} className="text-xs leading-normal text-warning-foreground">
-            {option.label}: {option.warning}
-          </Text>
-        ) : null,
-      )}
-      {!canRespond ? (
-        <Text className="text-sm leading-5 text-foreground-muted">
-          The provider process for this request is no longer available. Interrupt or restart the run
-          to continue.
-        </Text>
-      ) : null}
-      <View className="flex-row flex-wrap gap-2.5">
-        {options.map((option) => (
-          <Button
-            key={option.decision}
-            label={option.label}
-            tone={
-              option.decision === "accept"
-                ? "primary"
-                : option.decision === "decline"
-                  ? "danger"
-                  : "secondary"
-            }
-            disabled={disabled}
-            onPress={() => void respond(option.decision)}
-          />
-        ))}
-      </View>
-      {options.length === 0 ? (
-        <Text className="text-xs text-foreground-muted">
-          No decisions supplied by the provider.
-        </Text>
-      ) : null}
-      {failedKey === key ? (
-        <Text accessibilityRole="alert" className="text-xs text-danger-foreground">
-          Could not send this decision. The request is still pending.
-        </Text>
-      ) : null}
-      {!props.canOperateThread ? (
-        <Text className="text-xs text-foreground-muted">
-          This connection cannot respond to approvals.
-        </Text>
-      ) : null}
+      <Button
+        label="Open Approval Review"
+        tone="secondary"
+        onPress={() => {
+          verifiedReview.current = null;
+          setReviewFor({
+            environmentId: props.environmentId,
+            requestId: props.approval.requestId,
+            detail: props.approval.detail,
+          });
+        }}
+      />
+      {responseControls()}
       <Button
         label={detailsFor === key ? "Hide provider details" : "Show provider details"}
         tone="secondary"
@@ -198,6 +319,29 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
             Structured resource scope: Not supplied
           </Text>
         </View>
+      ) : null}
+      {reviewFor !== null &&
+      reviewFor.environmentId === props.environmentId &&
+      reviewFor.requestId === props.approval.requestId &&
+      reviewFor.detail === props.approval.detail ? (
+        <ApprovalReviewModal
+          bundle={review.kind === "bundle" ? review.bundle : null}
+          detail={props.approval.detail}
+          issue={review.kind === "invalid" ? reviewIssue : null}
+          environmentLabel={props.environmentLabel || props.environmentId || "Not supplied"}
+          requestId={props.approval.requestId}
+          authority={props.approval.approvalReview}
+          renderResponseControls={(verified) =>
+            responseControls(verified && review.kind === "bundle" ? review.bundle : undefined)
+          }
+          onVerification={(valid) => {
+            verifiedReview.current = valid && review.kind === "bundle" ? review.bundle : null;
+          }}
+          onClose={() => {
+            verifiedReview.current = null;
+            setReviewFor(null);
+          }}
+        />
       ) : null}
     </View>
   );

@@ -1,0 +1,670 @@
+{
+  "schemaVersion": 1,
+  "title": "GitLab-Upgrade prüfen",
+  "packageId": "gitlab-upgrade-review-example",
+  "version": "19.2.1-to-19.2.2-example",
+  "files": [
+    {
+      "path": "NOTES.txt",
+      "sha256": "bb418740784e0aec12de03fab6483fc7aed21f062b67f7ee479bf31bd25945b2",
+      "language": "text"
+    },
+    {
+      "path": "change.example.json",
+      "sha256": "768286db15a6ac1b6e4e9770be0f7efbce27bb5d6a631748bacbc56993661e8c",
+      "language": "json"
+    },
+    {
+      "path": "gitlab.after.container",
+      "sha256": "8d269e7f54dd550d3fb05ae7009c2bc3bb1502d172178fe58466bb03d3361532",
+      "language": "ini",
+      "presentation": {
+        "artifact": "gitlab-quadlet",
+        "role": "revised"
+      }
+    },
+    {
+      "path": "gitlab.before.container",
+      "sha256": "15bac8cee4c648487283afd6e3023c947e11d05acc8bddb550b9f8a6653114b1",
+      "language": "ini",
+      "presentation": {
+        "artifact": "gitlab-quadlet",
+        "role": "original"
+      }
+    },
+    {
+      "path": "request.example.json",
+      "sha256": "fbf5f4322353084a470da1a5b0e304ecdf5af3ed1ece9e78c9dbacb70bd95c5a",
+      "language": "json"
+    },
+    {
+      "path": "review.json",
+      "sha256": "b2d0b51a53abb8216f2dadec63ddb2ab3a7ca7695057a845a3d82f172dcae6ad",
+      "language": "json"
+    },
+    {
+      "path": "review.py",
+      "sha256": "4e9835f6f15e4e797cc6032ec2ad1eace5c7faab82b70b066adde8c476beb40d",
+      "language": "python"
+    },
+    {
+      "path": "upgrade.py",
+      "sha256": "da760c0a6dc482d5edfe024b4c29774dc0b352083b69a2ee44c9483557144548",
+      "language": "python"
+    }
+  ],
+  "steps": [
+    {
+      "id": "start",
+      "title": "Geprüfter Ablauf",
+      "description": "Illustrativer Ablauf; dieses Beispiel darf nicht ausgeführt werden.",
+      "kind": "start",
+      "source": {
+        "path": "upgrade.py",
+        "line": 363,
+        "endLine": 389
+      }
+    },
+    {
+      "id": "validate",
+      "title": "Plan ausführbar?",
+      "description": "validate_change verwirft example_only und Platzhalter vor Zielschreibzugriffen. Dieses Paket scheitert hier.",
+      "kind": "decision",
+      "source": {
+        "path": "upgrade.py",
+        "line": 90,
+        "endLine": 134
+      }
+    },
+    {
+      "id": "check_expected_installation",
+      "title": "Installation prüfen",
+      "description": "Check machine, service, Quadlet, persistent mounts, version and migrations.",
+      "source": {
+        "path": "upgrade.py",
+        "line": 191,
+        "endLine": 213
+      },
+      "kind": "step",
+      "effects": ["Liest Maschinen-ID, Quadlet, Service, Mounts, Version und Migrationen."]
+    },
+    {
+      "id": "check_expected_installation-completed",
+      "title": "Schritt erfolgreich?",
+      "description": "Bei einer Exception beendet main den Lauf mit Status 1; kein automatischer Retry oder Rollback.",
+      "kind": "decision",
+      "source": {
+        "path": "upgrade.py",
+        "line": 380,
+        "endLine": 388
+      }
+    },
+    {
+      "id": "download_target_image",
+      "title": "Ziel-Image laden",
+      "description": "Pull the pinned image before starting the downtime.",
+      "source": {
+        "path": "upgrade.py",
+        "line": 216,
+        "endLine": 219
+      },
+      "kind": "step",
+      "effects": ["Kontaktiert die Registry und verändert den lokalen Image-Speicher."]
+    },
+    {
+      "id": "download_target_image-completed",
+      "title": "Schritt erfolgreich?",
+      "description": "Bei einer Exception beendet main den Lauf mit Status 1; kein automatischer Retry oder Rollback.",
+      "kind": "decision",
+      "source": {
+        "path": "upgrade.py",
+        "line": 380,
+        "endLine": 388
+      }
+    },
+    {
+      "id": "stop_gitlab_and_start_only_backup_dependencies",
+      "title": "GitLab für Backup stoppen",
+      "description": "Downtime starts: stop GitLab's supervised services; enable local backup dependencies.",
+      "source": {
+        "path": "upgrade.py",
+        "line": 222,
+        "endLine": 227
+      },
+      "kind": "step",
+      "effects": ["Beginnt die Ausfallzeit; startet PostgreSQL, Redis und Gitaly für das Backup."]
+    },
+    {
+      "id": "stop_gitlab_and_start_only_backup_dependencies-completed",
+      "title": "Schritt erfolgreich?",
+      "description": "Bei einer Exception beendet main den Lauf mit Status 1; kein automatischer Retry oder Rollback.",
+      "kind": "decision",
+      "source": {
+        "path": "upgrade.py",
+        "line": 380,
+        "endLine": 388
+      }
+    },
+    {
+      "id": "create_and_check_backups",
+      "title": "Backups erstellen und prüfen",
+      "description": "Back up local application data, configuration/secrets and the original Quadlet.",
+      "source": {
+        "path": "upgrade.py",
+        "line": 243,
+        "endLine": 266
+      },
+      "kind": "step",
+      "effects": [
+        "Schreibt Backup, Konfiguration und Secrets in ein privates Zielverzeichnis. Kein Restore-Test."
+      ]
+    },
+    {
+      "id": "create_and_check_backups-completed",
+      "title": "Schritt erfolgreich?",
+      "description": "Bei einer Exception beendet main den Lauf mit Status 1; kein automatischer Retry oder Rollback.",
+      "kind": "decision",
+      "source": {
+        "path": "upgrade.py",
+        "line": 380,
+        "endLine": 388
+      }
+    },
+    {
+      "id": "install_reviewed_quadlet",
+      "title": "Geprüftes Quadlet ersetzen",
+      "description": "Replace only the Image= line; stop if the reviewed file changed meanwhile.",
+      "source": {
+        "path": "upgrade.py",
+        "line": 269,
+        "endLine": 292
+      },
+      "kind": "step",
+      "effects": ["Ersetzt das Quadlet atomar nach erneutem Bytevergleich."]
+    },
+    {
+      "id": "install_reviewed_quadlet-completed",
+      "title": "Schritt erfolgreich?",
+      "description": "Bei einer Exception beendet main den Lauf mit Status 1; kein automatischer Retry oder Rollback.",
+      "kind": "decision",
+      "source": {
+        "path": "upgrade.py",
+        "line": 380,
+        "endLine": 388
+      }
+    },
+    {
+      "id": "recreate_gitlab_container",
+      "title": "Container neu starten",
+      "description": "Regenerate the systemd service from the Quadlet and restart it.",
+      "source": {
+        "path": "upgrade.py",
+        "line": 295,
+        "endLine": 298
+      },
+      "kind": "step",
+      "effects": ["Lädt systemd neu und startet GitLab neu."]
+    },
+    {
+      "id": "recreate_gitlab_container-completed",
+      "title": "Schritt erfolgreich?",
+      "description": "Bei einer Exception beendet main den Lauf mit Status 1; kein automatischer Retry oder Rollback.",
+      "kind": "decision",
+      "source": {
+        "path": "upgrade.py",
+        "line": 380,
+        "endLine": 388
+      }
+    },
+    {
+      "id": "wait_until_gitlab_is_ready",
+      "title": "Bereitschaft abwarten",
+      "description": "Check Rails and its dependencies through the loopback-published HTTP endpoint.",
+      "source": {
+        "path": "upgrade.py",
+        "line": 301,
+        "endLine": 321
+      },
+      "kind": "step",
+      "effects": ["Fragt den lokalen HTTP-Endpunkt wiederholt bis zur Zeitgrenze ab."]
+    },
+    {
+      "id": "wait_until_gitlab_is_ready-completed",
+      "title": "Schritt erfolgreich?",
+      "description": "Bei einer Exception beendet main den Lauf mit Status 1; kein automatischer Retry oder Rollback.",
+      "kind": "decision",
+      "source": {
+        "path": "upgrade.py",
+        "line": 380,
+        "endLine": 388
+      }
+    },
+    {
+      "id": "check_running_image_and_version",
+      "title": "Image und Version prüfen",
+      "description": "Check the actual container image ID and the version reported by GitLab.",
+      "source": {
+        "path": "upgrade.py",
+        "line": 324,
+        "endLine": 337
+      },
+      "kind": "step",
+      "effects": ["Liest tatsächliche Image-ID und GitLab-Version."]
+    },
+    {
+      "id": "check_running_image_and_version-completed",
+      "title": "Schritt erfolgreich?",
+      "description": "Bei einer Exception beendet main den Lauf mit Status 1; kein automatischer Retry oder Rollback.",
+      "kind": "decision",
+      "source": {
+        "path": "upgrade.py",
+        "line": 380,
+        "endLine": 388
+      }
+    },
+    {
+      "id": "wait_until_background_migrations_finish",
+      "title": "Migrationen abwarten",
+      "description": "Wait for each explicitly inventoried local database; never start repairs.",
+      "source": {
+        "path": "upgrade.py",
+        "line": 340,
+        "endLine": 348
+      },
+      "kind": "step",
+      "effects": ["Fragt Migrationen jeder inventarisierten Datenbank bis zur Zeitgrenze ab."]
+    },
+    {
+      "id": "wait_until_background_migrations_finish-completed",
+      "title": "Schritt erfolgreich?",
+      "description": "Bei einer Exception beendet main den Lauf mit Status 1; kein automatischer Retry oder Rollback.",
+      "kind": "decision",
+      "source": {
+        "path": "upgrade.py",
+        "line": 380,
+        "endLine": 388
+      }
+    },
+    {
+      "id": "write_success_receipt",
+      "title": "Erfolgsbeleg schreiben",
+      "description": "Schreibt den abschließenden Erfolgsbeleg.",
+      "source": {
+        "path": "upgrade.py",
+        "line": 351,
+        "endLine": 360
+      },
+      "kind": "step",
+      "effects": ["Schreibt receipt.json und gibt einen kompakten Beleg aus."]
+    },
+    {
+      "id": "write_success_receipt-completed",
+      "title": "Schritt erfolgreich?",
+      "description": "Bei einer Exception beendet main den Lauf mit Status 1; kein automatischer Retry oder Rollback.",
+      "kind": "decision",
+      "source": {
+        "path": "upgrade.py",
+        "line": 380,
+        "endLine": 388
+      }
+    },
+    {
+      "id": "stopped",
+      "title": "Gestoppt",
+      "description": "GitLab kann offline oder teilweise aktualisiert sein. Ursprünglichen Lauf prüfen; keine automatische Wiederholung oder Wiederherstellung.",
+      "kind": "end",
+      "source": {
+        "path": "upgrade.py",
+        "line": 382,
+        "endLine": 388
+      }
+    },
+    {
+      "id": "completed",
+      "title": "Prüfungen abgeschlossen",
+      "description": "Image, Version, Bereitschaft und Migrationen geprüft. Kein Endnutzer- oder Restore-Test.",
+      "kind": "end",
+      "source": {
+        "path": "upgrade.py",
+        "line": 351,
+        "endLine": 360
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "start",
+      "to": "validate"
+    },
+    {
+      "from": "validate",
+      "to": "stopped",
+      "label": "Beispiel / ungültig"
+    },
+    {
+      "from": "check_expected_installation",
+      "to": "check_expected_installation-completed"
+    },
+    {
+      "from": "check_expected_installation-completed",
+      "to": "stopped",
+      "label": "Fehler"
+    },
+    {
+      "from": "check_expected_installation-completed",
+      "to": "download_target_image",
+      "label": "Erfolg"
+    },
+    {
+      "from": "download_target_image",
+      "to": "download_target_image-completed"
+    },
+    {
+      "from": "download_target_image-completed",
+      "to": "stopped",
+      "label": "Fehler"
+    },
+    {
+      "from": "download_target_image-completed",
+      "to": "stop_gitlab_and_start_only_backup_dependencies",
+      "label": "Erfolg"
+    },
+    {
+      "from": "stop_gitlab_and_start_only_backup_dependencies",
+      "to": "stop_gitlab_and_start_only_backup_dependencies-completed"
+    },
+    {
+      "from": "stop_gitlab_and_start_only_backup_dependencies-completed",
+      "to": "stopped",
+      "label": "Fehler"
+    },
+    {
+      "from": "stop_gitlab_and_start_only_backup_dependencies-completed",
+      "to": "create_and_check_backups",
+      "label": "Erfolg"
+    },
+    {
+      "from": "create_and_check_backups",
+      "to": "create_and_check_backups-completed"
+    },
+    {
+      "from": "create_and_check_backups-completed",
+      "to": "stopped",
+      "label": "Fehler"
+    },
+    {
+      "from": "create_and_check_backups-completed",
+      "to": "install_reviewed_quadlet",
+      "label": "Erfolg"
+    },
+    {
+      "from": "install_reviewed_quadlet",
+      "to": "install_reviewed_quadlet-completed"
+    },
+    {
+      "from": "install_reviewed_quadlet-completed",
+      "to": "stopped",
+      "label": "Fehler"
+    },
+    {
+      "from": "install_reviewed_quadlet-completed",
+      "to": "recreate_gitlab_container",
+      "label": "Erfolg"
+    },
+    {
+      "from": "recreate_gitlab_container",
+      "to": "recreate_gitlab_container-completed"
+    },
+    {
+      "from": "recreate_gitlab_container-completed",
+      "to": "stopped",
+      "label": "Fehler"
+    },
+    {
+      "from": "recreate_gitlab_container-completed",
+      "to": "wait_until_gitlab_is_ready",
+      "label": "Erfolg"
+    },
+    {
+      "from": "wait_until_gitlab_is_ready",
+      "to": "wait_until_gitlab_is_ready-completed"
+    },
+    {
+      "from": "wait_until_gitlab_is_ready-completed",
+      "to": "stopped",
+      "label": "Fehler"
+    },
+    {
+      "from": "wait_until_gitlab_is_ready-completed",
+      "to": "check_running_image_and_version",
+      "label": "Erfolg"
+    },
+    {
+      "from": "check_running_image_and_version",
+      "to": "check_running_image_and_version-completed"
+    },
+    {
+      "from": "check_running_image_and_version-completed",
+      "to": "stopped",
+      "label": "Fehler"
+    },
+    {
+      "from": "check_running_image_and_version-completed",
+      "to": "wait_until_background_migrations_finish",
+      "label": "Erfolg"
+    },
+    {
+      "from": "wait_until_background_migrations_finish",
+      "to": "wait_until_background_migrations_finish-completed"
+    },
+    {
+      "from": "wait_until_background_migrations_finish-completed",
+      "to": "stopped",
+      "label": "Fehler"
+    },
+    {
+      "from": "wait_until_background_migrations_finish-completed",
+      "to": "write_success_receipt",
+      "label": "Erfolg"
+    },
+    {
+      "from": "write_success_receipt",
+      "to": "write_success_receipt-completed"
+    },
+    {
+      "from": "write_success_receipt-completed",
+      "to": "stopped",
+      "label": "Fehler"
+    },
+    {
+      "from": "write_success_receipt-completed",
+      "to": "completed",
+      "label": "Erfolg"
+    },
+    {
+      "from": "validate",
+      "to": "check_expected_installation",
+      "label": "Verifizierter realer Plan"
+    }
+  ],
+  "symbols": [
+    {
+      "name": "Change",
+      "path": "upgrade.py",
+      "line": 32,
+      "endLine": 50
+    },
+    {
+      "name": "Change.backup_directory",
+      "path": "upgrade.py",
+      "line": 49,
+      "endLine": 50
+    },
+    {
+      "name": "upgrade_gitlab",
+      "path": "upgrade.py",
+      "line": 53,
+      "endLine": 64
+    },
+    {
+      "name": "load_change",
+      "path": "upgrade.py",
+      "line": 72,
+      "endLine": 73
+    },
+    {
+      "name": "reviewed_quadlet",
+      "path": "upgrade.py",
+      "line": 76,
+      "endLine": 77
+    },
+    {
+      "name": "updated_quadlet",
+      "path": "upgrade.py",
+      "line": 80,
+      "endLine": 87
+    },
+    {
+      "name": "validate_change",
+      "path": "upgrade.py",
+      "line": 90,
+      "endLine": 134
+    },
+    {
+      "name": "event",
+      "path": "upgrade.py",
+      "line": 137,
+      "endLine": 142
+    },
+    {
+      "name": "command",
+      "path": "upgrade.py",
+      "line": 145,
+      "endLine": 170
+    },
+    {
+      "name": "in_container",
+      "path": "upgrade.py",
+      "line": 173,
+      "endLine": 174
+    },
+    {
+      "name": "installed_version",
+      "path": "upgrade.py",
+      "line": 177,
+      "endLine": 181
+    },
+    {
+      "name": "pending_migrations",
+      "path": "upgrade.py",
+      "line": 184,
+      "endLine": 188
+    },
+    {
+      "name": "check_expected_installation",
+      "path": "upgrade.py",
+      "line": 191,
+      "endLine": 213
+    },
+    {
+      "name": "download_target_image",
+      "path": "upgrade.py",
+      "line": 216,
+      "endLine": 219
+    },
+    {
+      "name": "stop_gitlab_and_start_only_backup_dependencies",
+      "path": "upgrade.py",
+      "line": 222,
+      "endLine": 227
+    },
+    {
+      "name": "backup_names",
+      "path": "upgrade.py",
+      "line": 230,
+      "endLine": 235
+    },
+    {
+      "name": "sha256_file",
+      "path": "upgrade.py",
+      "line": 238,
+      "endLine": 240
+    },
+    {
+      "name": "create_and_check_backups",
+      "path": "upgrade.py",
+      "line": 243,
+      "endLine": 266
+    },
+    {
+      "name": "install_reviewed_quadlet",
+      "path": "upgrade.py",
+      "line": 269,
+      "endLine": 292
+    },
+    {
+      "name": "recreate_gitlab_container",
+      "path": "upgrade.py",
+      "line": 295,
+      "endLine": 298
+    },
+    {
+      "name": "wait_until_gitlab_is_ready",
+      "path": "upgrade.py",
+      "line": 301,
+      "endLine": 321
+    },
+    {
+      "name": "check_running_image_and_version",
+      "path": "upgrade.py",
+      "line": 324,
+      "endLine": 337
+    },
+    {
+      "name": "wait_until_background_migrations_finish",
+      "path": "upgrade.py",
+      "line": 340,
+      "endLine": 348
+    },
+    {
+      "name": "write_success_receipt",
+      "path": "upgrade.py",
+      "line": 351,
+      "endLine": 360
+    },
+    {
+      "name": "main",
+      "path": "upgrade.py",
+      "line": 363,
+      "endLine": 389
+    },
+    {
+      "name": "make_review",
+      "path": "review.py",
+      "line": 15,
+      "endLine": 67
+    }
+  ],
+  "target": {
+    "label": "Linux / GitLab auf Podman (Beispiel)",
+    "identity": "192.0.2.44; Maschinen-ID und SSH-Hostschlüssel nicht verifiziert",
+    "rights": ["root auf dem Linux-Ziel", "Keine Betriebssystem-Sandbox auf einzelne Dateien"]
+  },
+  "warnings": [
+    "Nur Beispiel: niemals eine Freigabe senden oder dieses Paket ausführen.",
+    "Es gibt keine vertrauenswürdige Backend-Bindung zwischen Request-ID, Paket-Hash und Zielidentität.",
+    "Backup-Erstellung hat keinen Retry-Loop. Nur Bereitschaft und Migrationen warten wiederholt bis zur Zeitgrenze.",
+    "Der Graph zeigt den sequenziellen Aufrufablauf und Stop bei Exceptions; keine Parallelität. validate_change verhindert die Ausführung dieses Beispiels.",
+    "Symbolindex aus Python-AST: alle Definitionen in upgrade.py und review.py, Methoden mit Klassenpräfix. Dynamische oder externe Aufrufe werden nicht aufgelöst.",
+    "Example versions and placeholders; not a current security recommendation.",
+    "Root on the Linux target; effects are not sandboxed to the named files.",
+    "Single node, local PostgreSQL/Redis/Gitaly, default local backup path.",
+    "No Geo, external storage, container registry, custom hooks or cluster orchestration.",
+    "Maintenance window, drained existing work, no concurrent administrative changes.",
+    "Backup structure and SHA-256 checked; no restore exercise performed.",
+    "No automatic retry, rollback, repair or post-timeout resubmission.",
+    "No real proxy, SSH transport, approval validation or mobile UI implemented here."
+  ],
+  "exampleOnly": true,
+  "hash": "a3b12cc4ef941515faa8b675c06697ffcc0dc17824be720b9f45a98918d34133"
+}

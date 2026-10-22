@@ -54,7 +54,8 @@ export function ApprovalActionSummary({
   if (approval === null) return null;
   const presentation = presentations[approval.requestKind];
   const Icon = presentation.icon;
-  const live = approval.responseCapability === "live";
+  const external = approval.responseCapability === "external";
+  const live = approval.responseCapability === "live" || external;
   const warnings = [
     ...new Set(
       approval.options?.flatMap((option) => (option.warning ? [option.warning] : [])) ?? [],
@@ -67,7 +68,9 @@ export function ApprovalActionSummary({
     >
       <div className="flex flex-wrap items-center gap-2">
         <Icon aria-hidden className="size-4 shrink-0 text-warning" />
-        <span className="text-xs font-medium text-foreground">{presentation.title}</span>
+        <span className="text-xs font-medium text-foreground">
+          {external ? "Review external action" : presentation.title}
+        </span>
         <Badge variant={live ? "warning" : "secondary"} size="sm">
           {live ? "Decision needed" : "Provider disconnected"}
         </Badge>

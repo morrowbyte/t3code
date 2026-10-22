@@ -98,7 +98,11 @@ type Reply = {
   readonly origin: ScopedThreadRef;
   readonly requestId: RuntimeRequestId;
 } & (
-  | { readonly type: "approval"; readonly decision: ProviderApprovalDecision }
+  | {
+      readonly type: "approval";
+      readonly decision: ProviderApprovalDecision;
+      readonly packageHash?: string;
+    }
   | {
       readonly type: "question";
       readonly answers: Record<string, unknown>;
@@ -169,7 +173,14 @@ export function ChildThreadRequests({ parent }: { readonly parent: ScopedThreadR
     };
     const result =
       reply.type === "approval"
-        ? await approve({ ...target, input: { ...target.input, decision: reply.decision } })
+        ? await approve({
+            ...target,
+            input: {
+              ...target.input,
+              decision: reply.decision,
+              ...(reply.packageHash ? { packageHash: reply.packageHash } : {}),
+            },
+          })
         : reply.type === "question"
           ? await answer({
               ...target,
@@ -444,12 +455,24 @@ function ChildRequestCard({
               </details>
               <div className="flex flex-wrap gap-2">
                 <ComposerPendingApprovalActions
+                  approval={entry.request}
+                  environmentId={group.origin.environmentId}
                   requestId={request.requestId}
-                  canRespond={canOperate && entry.request.responseCapability === "live"}
+                  canRespond={
+                    canOperate &&
+                    (entry.request.responseCapability === "live" ||
+                      entry.request.responseCapability === "external")
+                  }
                   isResponding={responding}
                   options={entry.request.options}
-                  onRespondToApproval={(requestId, decision) =>
-                    submit({ type: "approval", origin: group.origin, requestId, decision })
+                  onRespondToApproval={(requestId, decision, packageHash) =>
+                    submit({
+                      type: "approval",
+                      origin: group.origin,
+                      requestId,
+                      decision,
+                      ...(packageHash ? { packageHash } : {}),
+                    })
                   }
                 />
               </div>

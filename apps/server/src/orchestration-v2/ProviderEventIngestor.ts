@@ -1,5 +1,6 @@
 import {
   NodeId,
+  ApprovalReviewError,
   CommandId,
   OrchestrationV2DomainEvent,
   OrchestrationV2StoredEvent,
@@ -632,6 +633,12 @@ export const layer: Layer.Layer<
                 }),
               ];
             case "turn_item.updated":
+              if (
+                (input.event.turnItem.type === "approval_request" &&
+                  input.event.turnItem.approvalReview !== undefined) ||
+                input.event.turnItem.id.startsWith("approval-review:")
+              )
+                return yield* new ApprovalReviewError({ reason: "forbidden" });
               return [
                 yield* makeDomainEvent(input, {
                   type: "turn-item.updated",
@@ -644,6 +651,12 @@ export const layer: Layer.Layer<
                 }),
               ];
             case "runtime_request.updated":
+              if (
+                input.event.runtimeRequest.approvalReview !== undefined ||
+                input.event.runtimeRequest.responseCapability.type === "external" ||
+                input.event.runtimeRequest.id.startsWith("approval-review:")
+              )
+                return yield* new ApprovalReviewError({ reason: "forbidden" });
               return [
                 yield* makeDomainEvent(input, {
                   type: "runtime-request.updated",

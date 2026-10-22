@@ -1,0 +1,20 @@
+[Unit]
+Description=GitLab single-node example
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+ContainerName=gitlab
+Image=docker.io/gitlab/gitlab-ee:19.2.2-ee.0@sha256:REPLACE_WITH_VERIFIED_DIGEST
+PublishPort=127.0.0.1:8080:80
+PublishPort=2222:22
+Volume=/srv/gitlab/config:/etc/gitlab:Z
+Volume=/srv/gitlab/logs:/var/log/gitlab:Z
+Volume=/srv/gitlab/data:/var/opt/gitlab:Z
+ShmSize=256m
+
+[Service]
+TimeoutStartSec=1500
+
+[Install]
+WantedBy=multi-user.target

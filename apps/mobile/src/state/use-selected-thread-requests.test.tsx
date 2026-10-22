@@ -115,7 +115,14 @@ vi.mock("./use-thread-detail", () => ({
   }),
 }));
 
-import { ApprovalRequestId, RuntimeRequestId, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import {
+  AuthSessionId,
+  ApprovalRequestId,
+  RuntimeRequestId,
+  EnvironmentId,
+  ThreadId,
+  type ApprovalReviewAuthority,
+} from "@t3tools/contracts";
 import { questionAttachmentDraftKey } from "./question-attachments";
 import { useSelectedThreadRequests, useThreadRequests } from "./use-selected-thread-requests";
 
@@ -264,6 +271,84 @@ describe("descendant request origin", () => {
         value: { environmentId, input: { threadId: origin.threadId, requestId } },
       },
     ]);
+  });
+  it("transports the reviewed host hash at the original child and rechecks authority and permissions", async () => {
+    prepare();
+    const authority: ApprovalReviewAuthority = {
+      packageHash: "a".repeat(64),
+      verifiedTargetId: "fixture-host",
+      expiresAt: Date.now() + 60_000,
+      state: "pending",
+      approverSessionId: AuthSessionId.make("fixture-approver-session"),
+      approverSubject: "fixture-approver",
+      requesterSubject: "fixture-requester",
+      workerSubject: "fixture-worker",
+      action: {
+        kind: "create_file_once",
+        verifiedTargetId: "fixture-host",
+        path: "fixture.txt",
+        content: "never executed",
+        mode: 384,
+        expectedAbsent: true,
+        implementationVersion: "fixture-v1",
+        implementationHash: "b".repeat(64),
+      },
+      implementationSource: "fixture only",
+    };
+    const hostPending = {
+      ...pending,
+      approvals: [
+        {
+          ...pending.approvals[0]!,
+          responseCapability: "external" as const,
+          approvalReview: authority,
+        },
+      ],
+    };
+    fixture.pending = hostPending;
+    const result = probe();
+    await result.onRespondToApproval(requestId, "accept");
+    await result.onRespondToApproval(requestId, "accept", "c".repeat(64));
+    await result.onRespondToApproval(requestId, "acceptForSession", authority.packageHash);
+    expect(fixture.commands).toEqual([]);
+    await result.onRespondToApproval(requestId, "accept", authority.packageHash);
+    expect(fixture.commands).toEqual([
+      {
+        command: "approve",
+        value: {
+          environmentId,
+          input: {
+            threadId: origin.threadId,
+            requestId,
+            decision: "accept",
+            packageHash: authority.packageHash,
+          },
+        },
+      },
+    ]);
+    fixture.pending = {
+      ...hostPending,
+      approvals: [
+        { ...hostPending.approvals[0]!, approvalReview: { ...authority, state: "claimed" } },
+      ],
+    };
+    await result.onRespondToApproval(requestId, "decline", authority.packageHash);
+    fixture.pending = hostPending;
+    fixture.canOperate = false;
+    await result.onRespondToApproval(requestId, "cancel", authority.packageHash);
+    expect(fixture.commands).toHaveLength(1);
+    fixture.canOperate = true;
+    await result.onRespondToApproval(requestId, "cancel", authority.packageHash);
+    expect(fixture.commands.at(-1)).toMatchObject({
+      value: {
+        input: {
+          threadId: origin.threadId,
+          requestId,
+          decision: "cancel",
+          packageHash: authority.packageHash,
+        },
+      },
+    });
   });
   it.each(["cached", "synchronizing", "live"])(
     "rejects a stale action when current state is %s",

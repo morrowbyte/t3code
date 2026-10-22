@@ -24,6 +24,7 @@ import {
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import {
+  canRespondToThreadApproval,
   type PendingThreadRequests,
   type ThreadUserInputQuestion,
   seedUserInputDraftAnswers,
@@ -249,13 +250,20 @@ export function useThreadRequests(
   );
 
   const onRespondToApproval = useCallback(
-    async (requestId: RuntimeRequestId, decision: ProviderApprovalDecision) => {
+    async (
+      requestId: RuntimeRequestId,
+      decision: ProviderApprovalDecision,
+      packageHash?: string,
+    ) => {
       if (!origin || !readEnvironmentScope(origin.environmentId, AuthOrchestrationOperateScope)) {
         return;
       }
       if (
-        currentRequests()?.approvals.find((approval) => approval.requestId === requestId)
-          ?.responseCapability !== "live"
+        !canRespondToThreadApproval(
+          currentRequests()?.approvals.find((approval) => approval.requestId === requestId),
+          decision,
+          packageHash,
+        )
       ) {
         return;
       }
@@ -267,6 +275,7 @@ export function useThreadRequests(
           threadId: origin.threadId,
           requestId,
           decision,
+          ...(packageHash === undefined ? {} : { packageHash }),
         },
       });
       setRespondingApprovalId((current) => (current === requestId ? null : current));

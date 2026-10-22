@@ -11,6 +11,7 @@ import {
   ProviderInstanceId,
   ProviderDriverKind,
   RunId,
+  RuntimeRequestId,
   ThreadId,
   TurnItemId,
   WS_METHODS,
@@ -39,6 +40,7 @@ import {
   archiveThread,
   interruptThreadTurn,
   revertThreadCheckpoint,
+  respondToThreadApproval,
   startThreadTurn,
 } from "./commands.ts";
 
@@ -136,6 +138,38 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
 });
 
 describe("V2 environment commands", () => {
+  it.effect(
+    "transports exact review hashes for each host decision and omits absent provider hashes",
+    () =>
+      Effect.gen(function* () {
+        const commands: OrchestrationV2Command[] = [];
+        const supervisor = yield* makeSupervisor({ commands, projects: [] });
+        const packageHash = "a".repeat(64);
+        for (const decision of ["accept", "decline", "cancel"] as const) {
+          yield* respondToThreadApproval({
+            commandId: CommandId.make(`host-${decision}`),
+            threadId: ThreadId.make("thread-1"),
+            requestId: RuntimeRequestId.make("host-request"),
+            decision,
+            packageHash,
+          }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+          expect(commands.at(-1)).toMatchObject({
+            type: "runtime-request.respond",
+            requestId: "host-request",
+            decision,
+            packageHash,
+          });
+        }
+        yield* respondToThreadApproval({
+          commandId: CommandId.make("provider-approval"),
+          threadId: ThreadId.make("thread-1"),
+          requestId: RuntimeRequestId.make("provider-request"),
+          decision: "acceptForSession",
+        }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+        expect(commands.at(-1)).not.toHaveProperty("packageHash");
+      }).pipe(Effect.provide(layerTestCrypto)),
+  );
+
   it.effect("preserves caller command ids for idempotent V2 commands", () =>
     Effect.gen(function* () {
       const commands: OrchestrationV2Command[] = [];

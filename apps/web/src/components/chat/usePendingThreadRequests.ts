@@ -9,6 +9,7 @@ import {
   type UserInputAttachments,
 } from "@t3tools/contracts";
 import {
+  canRespondToThreadApproval,
   derivePendingThreadRequests,
   seedUserInputDraftAnswers,
 } from "@t3tools/client-runtime/state/thread-requests";
@@ -300,12 +301,16 @@ export function usePendingThreadRequests(input: {
   const onRespondToApproval = async (
     requestId: RuntimeRequestId,
     decision: ProviderApprovalDecision,
+    packageHash?: string,
   ) => {
     if (!activeThreadId || !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope))
       return;
     if (
-      pendingApprovals.find((approval) => approval.requestId === requestId)?.responseCapability !==
-      "live"
+      !canRespondToThreadApproval(
+        pendingApprovals.find((approval) => approval.requestId === requestId),
+        decision,
+        packageHash,
+      )
     )
       return;
 
@@ -318,6 +323,7 @@ export function usePendingThreadRequests(input: {
         threadId: activeThreadId,
         requestId,
         decision,
+        ...(packageHash === undefined ? {} : { packageHash }),
       },
     });
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {

@@ -1,6 +1,7 @@
 import type {
   EnvironmentId,
   OrchestrationV2ProjectedTurnItem,
+  OrchestrationV2TurnItem,
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -14,7 +15,10 @@ import {
 import { formatDiffCount } from "@t3tools/client-runtime/diff-count";
 import { isJavaScriptReplTool } from "@t3tools/shared/toolActivity";
 import { ExternalLinkIcon, GitBranchIcon, RotateCcwIcon } from "lucide-react";
-import { memo, type ReactNode, Suspense, use } from "react";
+import { memo, type ReactNode, Suspense, use, useState } from "react";
+import * as DateTime from "effect/DateTime";
+import { parseApprovalReviewDetail } from "@t3tools/client-runtime/approvalReview";
+import { ApprovalReview } from "../approvalReview/ApprovalReview";
 
 import { useRenderedAppearance } from "../../hooks/useTheme";
 import { cn } from "../../lib/utils";
@@ -45,6 +49,40 @@ interface V2ItemInspectorProps {
     readonly scopeId: string;
   }) => void;
   readonly onImageExpand?: ((preview: ExpandedImagePreview) => void) | undefined;
+}
+
+function ApprovalItemReview({
+  item,
+  environmentId,
+}: {
+  item: Extract<OrchestrationV2TurnItem, { type: "approval_request" }>;
+  environmentId: EnvironmentId;
+}) {
+  const [open, setOpen] = useState(false);
+  if (parseApprovalReviewDetail(item.prompt).kind === "none")
+    return <StructuredValue value={item.prompt} />;
+  return (
+    <>
+      <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
+        Review package and evidence
+      </Button>
+      <ApprovalReview
+        open={open}
+        onOpenChange={setOpen}
+        environmentId={environmentId}
+        disabled
+        approval={{
+          requestId: item.requestId,
+          requestKind: item.requestKind,
+          createdAt: DateTime.formatIso(item.updatedAt),
+          responseCapability: "not_resumable",
+          ...(item.prompt === undefined ? {} : { detail: item.prompt }),
+          ...(item.appName === undefined ? {} : { appName: item.appName }),
+          ...(item.approvalReview === undefined ? {} : { approvalReview: item.approvalReview }),
+        }}
+      />
+    </>
+  );
 }
 
 function SyntaxTokens({
@@ -415,7 +453,9 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
         />
       ) : null}
 
-      {item.type === "approval_request" ? <StructuredValue value={item.prompt} /> : null}
+      {item.type === "approval_request" ? (
+        <ApprovalItemReview item={item} environmentId={props.environmentId} />
+      ) : null}
       {item.type === "user_input_request" ? (
         <StructuredValue value={item.questions.map((question) => question.question).join("\n\n")} />
       ) : null}

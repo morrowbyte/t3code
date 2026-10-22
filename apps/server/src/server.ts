@@ -1,3 +1,5 @@
+import * as ApprovalReviewHttp from "./orchestration-v2/ApprovalReviewHttp.ts";
+import * as ApprovalReviewService from "./orchestration-v2/ApprovalReviewService.ts";
 import * as CuaRuntime from "./cua/CuaRuntime.ts";
 import * as MainRendererDiagnosticsLocalClient from "./diagnostics/MainRendererDiagnosticsLocalClient.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
@@ -716,6 +718,16 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(CloudHttp.layer),
       Layer.provide(AndroidAppUpdatesHttp.layer.pipe(Layer.provide(AndroidAppUpdates.layer))),
       Layer.provide(OrchestrationHttp.layer),
+      Layer.provide(
+        ApprovalReviewHttp.layer.pipe(
+          Layer.provide(
+            ApprovalReviewService.layer.pipe(
+              Layer.provide(ApprovalReviewService.layerTargets),
+              Layer.provide(ProjectionStoreV2.layer),
+            ),
+          ),
+        ),
+      ),
       Layer.provide(PullRequestHttp.layer),
       Layer.provide(VoiceHttp.layer.pipe(Layer.provide(VoiceTranscriptionService.layer))),
       Layer.provide(

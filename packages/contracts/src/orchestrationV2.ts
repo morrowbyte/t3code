@@ -1,3 +1,8 @@
+import {
+  ApprovalReviewAuthority,
+  ApprovalReviewHash,
+  ApprovalReviewReceipt,
+} from "./approvalReviewAuthority.ts";
 import { AgentObservatoryMetadata } from "./agentObservatory.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import * as Effect from "effect/Effect";
@@ -1022,7 +1027,9 @@ export const OrchestrationV2RuntimeRequest = Schema.Struct({
     Schema.Literals(["dynamic_tool_call", "user_input", "auth_refresh"]),
   ]),
   status: Schema.Literals(["pending", "resolved", "expired", "cancelled"]),
+  approvalReview: Schema.optional(ApprovalReviewAuthority),
   responseCapability: Schema.Union([
+    Schema.Struct({ type: Schema.Literal("external") }),
     Schema.Struct({ type: Schema.Literal("live"), providerSessionId: ProviderSessionId }),
     Schema.Struct({ type: Schema.Literal("message") }),
     Schema.Struct({ type: Schema.Literal("not_resumable"), reason: Schema.String }),
@@ -1433,6 +1440,7 @@ export const OrchestrationV2TurnItem = Schema.Union([
     type: Schema.Literal("approval_request"),
     requestId: RuntimeRequestId,
     requestKind: ProviderRequestKind,
+    approvalReview: Schema.optional(ApprovalReviewAuthority),
     prompt: Schema.optional(Schema.String),
     appName: Schema.optional(Schema.String),
     options: Schema.optional(Schema.Array(ProviderApprovalOption)),
@@ -2199,6 +2207,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     type: Schema.Literal("approval_request"),
     requestId: RuntimeRequestId,
     requestKind: ProviderRequestKind,
+    approvalReview: Schema.optional(ApprovalReviewAuthority),
     prompt: Schema.optional(Schema.String),
     appName: Schema.optional(Schema.String),
     options: Schema.optional(Schema.Array(ProviderApprovalOption)),
@@ -2924,6 +2933,7 @@ export const OrchestrationV2Command = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
     requestId: RuntimeRequestId,
+    packageHash: Schema.optional(ApprovalReviewHash),
     decision: Schema.optional(ProviderApprovalDecision),
     answers: Schema.optional(ProviderUserInputAnswers),
     attachmentsByQuestionId: Schema.optional(UserInputAttachments),
@@ -3024,6 +3034,37 @@ export type OrchestrationV2Command = typeof OrchestrationV2Command.Type;
  * send them.
  */
 const OrchestrationV2InternalCommand = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("approval-review.submit"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    requestId: RuntimeRequestId,
+    nodeId: NodeId,
+    turnItemId: TurnItemId,
+    authority: ApprovalReviewAuthority,
+    prompt: Schema.String,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("approval-review.claim"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    requestId: RuntimeRequestId,
+    packageHash: ApprovalReviewHash,
+    verifiedTargetId: Schema.String,
+    workerSubject: Schema.String,
+    claimId: Schema.String,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("approval-review.receipt"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    requestId: RuntimeRequestId,
+    packageHash: ApprovalReviewHash,
+    verifiedTargetId: Schema.String,
+    workerSubject: Schema.String,
+    claimId: Schema.String,
+    receipt: ApprovalReviewReceipt,
+  }),
   Schema.Struct({
     type: Schema.Literal("thread.pull-request-watch.sync"),
     commandId: CommandId,

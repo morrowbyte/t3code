@@ -3,6 +3,7 @@ import type {
   OrchestrationV2RuntimeRequest,
   OrchestrationV2UserInputQuestion,
   ProviderApprovalOption,
+  ProviderApprovalDecision,
   ProviderRequestKind,
   RuntimeRequestId,
 } from "@t3tools/contracts";
@@ -15,7 +16,26 @@ export interface ThreadPendingApproval {
   readonly detail?: string;
   readonly appName?: string;
   readonly options?: ReadonlyArray<ProviderApprovalOption>;
-  readonly responseCapability: "live" | "not_resumable";
+  readonly approvalReview?: OrchestrationV2RuntimeRequest["approvalReview"];
+  readonly responseCapability: "live" | "external" | "not_resumable";
+}
+
+export function canRespondToThreadApproval(
+  approval: ThreadPendingApproval | undefined,
+  decision: ProviderApprovalDecision,
+  packageHash?: string,
+  now = Date.now(),
+): boolean {
+  if (!approval || approval.responseCapability === "not_resumable") return false;
+  const authority = approval.approvalReview;
+  if (!authority) return approval.responseCapability === "live" && packageHash === undefined;
+  return (
+    approval.responseCapability === "external" &&
+    authority.state === "pending" &&
+    authority.expiresAt > now &&
+    authority.packageHash === packageHash &&
+    (decision === "accept" || decision === "decline" || decision === "cancel")
+  );
 }
 
 export interface ThreadUserInputQuestion extends Omit<
@@ -103,7 +123,11 @@ export function derivePendingThreadRequests(
       ...(item?.type === "approval_request" && item.options !== undefined
         ? { options: item.options }
         : {}),
-      responseCapability: responseCapability === "live" ? "live" : "not_resumable",
+      ...(request.approvalReview ? { approvalReview: request.approvalReview } : {}),
+      responseCapability:
+        responseCapability === "live" || responseCapability === "external"
+          ? responseCapability
+          : "not_resumable",
     });
   }
 

@@ -18,6 +18,18 @@ and modes you choose in a draft keep their permissions.
 Approve or reject requests in the conversation to let the agent continue. Permission modes do
 not prevent the agent from asking questions about the task.
 
+## Review an action
+
+Choose **Review action** on a pending request to inspect it full screen. Requests with a frozen
+package include the process, complete source files, available changes and execution evidence.
+Opening or closing a review never approves it. Examples and packages that fail verification cannot
+be approved.
+
+An external host action requires approval for that exact package from its configured approver
+session, regardless of the agent's permission mode. A changed or expired package needs a new
+request. An approval allows the action once; check its execution receipt and target readback before
+treating the change as complete.
+
 ## Provider differences
 
 Providers enforce permissions differently. Some read-only actions can proceed in **Supervised**.

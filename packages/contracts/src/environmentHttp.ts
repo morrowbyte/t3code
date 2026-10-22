@@ -1,3 +1,12 @@
+import {
+  ApprovalReviewSubmit,
+  ApprovalReviewRead,
+  ApprovalReviewClaim,
+  ApprovalReviewReport,
+  ApprovalReviewResult,
+  ApprovalReviewReady,
+  ApprovalReviewError,
+} from "./approvalReviewAuthority.ts";
 import * as Context from "effect/Context";
 import type * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
@@ -1065,7 +1074,72 @@ class EnvironmentAndroidAppUpdatesHttpApi extends HttpApiGroup.make("androidAppU
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}
 
+class EnvironmentApprovalReviewHttpApi extends HttpApiGroup.make("approvalReview")
+  .add(
+    HttpApiEndpoint.get("identity", "/api/approval-review/identity", {
+      headers: OptionalBearerHeaders,
+      success: Schema.Struct({ sessionId: AuthSessionId, subject: Schema.String }),
+      error: EnvironmentScopedOperationErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("ready", "/api/approval-review/ready", {
+      headers: OptionalBearerHeaders,
+      payload: Schema.Struct({}),
+      success: ApprovalReviewReady,
+      error: [
+        ...EnvironmentScopedOperationErrors,
+        ApprovalReviewError.pipe(HttpApiSchema.status(409)),
+      ],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("submit", "/api/approval-review/submit", {
+      headers: OptionalBearerHeaders,
+      payload: ApprovalReviewSubmit,
+      success: ApprovalReviewResult,
+      error: [
+        ...EnvironmentScopedOperationErrors,
+        ApprovalReviewError.pipe(HttpApiSchema.status(409)),
+      ],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("read", "/api/approval-review/read", {
+      headers: OptionalBearerHeaders,
+      payload: ApprovalReviewRead,
+      success: ApprovalReviewResult,
+      error: [
+        ...EnvironmentScopedOperationErrors,
+        ApprovalReviewError.pipe(HttpApiSchema.status(409)),
+      ],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("claim", "/api/approval-review/claim", {
+      headers: OptionalBearerHeaders,
+      payload: ApprovalReviewClaim,
+      success: ApprovalReviewResult,
+      error: [
+        ...EnvironmentScopedOperationErrors,
+        ApprovalReviewError.pipe(HttpApiSchema.status(409)),
+      ],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("receipt", "/api/approval-review/receipt", {
+      headers: OptionalBearerHeaders,
+      payload: ApprovalReviewReport,
+      success: ApprovalReviewResult,
+      error: [
+        ...EnvironmentScopedOperationErrors,
+        ApprovalReviewError.pipe(HttpApiSchema.status(409)),
+      ],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
 export class EnvironmentHttpApi extends HttpApi.make("environment")
+  .add(EnvironmentApprovalReviewHttpApi)
   .add(EnvironmentAndroidAppUpdatesHttpApi)
   .add(EnvironmentLinearHttpApi)
   .add(EnvironmentLinearIngressHttpApi)

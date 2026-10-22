@@ -2,7 +2,11 @@ import {
   type ProviderApprovalDecision,
   type ProviderApprovalOption,
   type RuntimeRequestId,
+  type EnvironmentId,
 } from "@t3tools/contracts";
+import { parseApprovalReviewDetail } from "@t3tools/client-runtime/approvalReview";
+import type { PendingApproval } from "../../session-logic";
+import { ApprovalReview } from "../approvalReview/ApprovalReview";
 import { memo, useLayoutEffect, useRef, useState } from "react";
 import { EllipsisIcon, TriangleAlertIcon } from "lucide-react";
 import { Button } from "../ui/button";
@@ -12,6 +16,8 @@ import { composerFloatingLayerProps } from "./composerEventScope";
 import { handleObjectActionKey } from "./objectKeyboardActions";
 
 interface ComposerPendingApprovalActionsProps {
+  approval?: PendingApproval | undefined;
+  environmentId?: EnvironmentId | undefined;
   requestId: RuntimeRequestId;
   isResponding: boolean;
   canRespond: boolean;
@@ -20,6 +26,7 @@ interface ComposerPendingApprovalActionsProps {
   onRespondToApproval: (
     requestId: RuntimeRequestId,
     decision: ProviderApprovalDecision,
+    packageHash?: string,
   ) => Promise<unknown>;
 }
 
@@ -31,6 +38,8 @@ const DEFAULT_APPROVAL_OPTIONS = [
 ] satisfies ReadonlyArray<ProviderApprovalOption>;
 
 export const ComposerPendingApprovalActions = memo(function ComposerPendingApprovalActions({
+  approval,
+  environmentId,
   requestId,
   isResponding,
   canRespond,
@@ -38,7 +47,13 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
   options = DEFAULT_APPROVAL_OPTIONS,
   onRespondToApproval,
 }: ComposerPendingApprovalActionsProps) {
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const review = parseApprovalReviewDetail(approval?.detail);
+  const blockedExample = review.kind === "bundle" && review.bundle.exampleOnly;
+  const decisionBlocked = (decision: ProviderApprovalDecision) =>
+    blockedExample || (review.kind !== "none" && decision !== "decline" && decision !== "cancel");
   const latest = useRef({
+    detail: approval?.detail,
     requestId,
     disabled,
     isResponding,
@@ -48,6 +63,7 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
   });
   useLayoutEffect(() => {
     latest.current = {
+      detail: approval?.detail,
       requestId,
       disabled,
       isResponding,
@@ -77,6 +93,8 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
     const current = latest.current;
     if (
       current.requestId !== requestId ||
+      current.detail !== approval?.detail ||
+      decisionBlocked(decision) ||
       current.onRespondToApproval !== onRespondToApproval ||
       current.disabled ||
       current.isResponding ||
@@ -91,7 +109,9 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
     refreshResponses();
     setFailedRequest(null);
     await (async () => {
-      await onRespondToApproval(requestId, decision);
+      if (approval?.approvalReview)
+        await onRespondToApproval(requestId, decision, approval.approvalReview.packageHash);
+      else await onRespondToApproval(requestId, decision);
     })()
       .catch(() => {
         if (
@@ -125,13 +145,33 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
         handleObjectActionKey(event, { a: "approve", d: "decline", m: "scope" })
       }
     >
+      {approval ? (
+        <>
+          <Button
+            variant="outline"
+            size="xs"
+            data-keyboard-action="review"
+            onClick={() => setReviewOpen(true)}
+          >
+            Review action
+          </Button>
+          <ApprovalReview
+            approval={approval}
+            environmentId={environmentId}
+            open={reviewOpen}
+            onOpenChange={setReviewOpen}
+            onRespond={onRespondToApproval}
+            disabled={responseDisabled}
+          />
+        </>
+      ) : null}
       {primaryOptions.map((option) => {
         const button = (
           <Button
             key={option.decision}
             size="xs"
             variant={option.decision === "accept" ? "default" : "outline"}
-            disabled={responseDisabled}
+            disabled={responseDisabled || decisionBlocked(option.decision)}
             aria-description={option.warning}
             data-keyboard-action={option.decision === "accept" ? "approve" : "decline"}
             data-keyboard-primary={option.decision === "accept" ? true : undefined}
@@ -174,7 +214,7 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
               const item = (
                 <MenuItem
                   key={option.decision}
-                  disabled={responseDisabled}
+                  disabled={responseDisabled || decisionBlocked(option.decision)}
                   aria-description={option.warning}
                   onClick={() => {
                     void respond(option.decision);

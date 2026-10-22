@@ -1,0 +1,88 @@
+Purpose
+=======
+A code/readability example for reviewing a complete external change. This is
+not an installed proxy, real approval, tested production runbook or verified
+GitLab-on-Podman support statement. No remote command has been executed.
+
+Start with upgrade_gitlab() in upgrade.py. Every function it calls is defined
+in that same file. Change is the explicitly defined input dataclass. There is
+no hidden host.run implementation. subprocess.run is visible in command().
+
+review.py parses the actual upgrade_gitlab() call sequence, includes function
+source/locations, calculates the concrete Quadlet diff and hashes package
+sources/inputs. Its labels/docstrings describe intent, not a proof of effects.
+An app could render this JSON and navigate to the included source. This sample
+does not add that renderer or editor to T3 or the mobile app.
+
+Read-only local use (Python 3.11+ standard library)
+================================================
+python3 review.py
+python3 upgrade.py --help
+
+The example plan has example_only=true and missing identity/digest values.
+Even with --apply it refuses execution before target writes. The versions
+19.2.1 -> 19.2.2 are example numbers, not a claim about current releases or
+which release fixes a particular CVE. Actual inventory, advisory, release
+notes, upgrade-path checks and a validated image digest precede freezing a
+real change. Do not simply disable example_only to deploy these examples.
+
+Explicit example environment
+============================
+One Linux host, rootful Podman, /etc/containers/systemd/gitlab.container,
+gitlab.service, container gitlab, local PostgreSQL/Redis/Gitaly and the three
+bind mounts in change.example.json. The existing installation already has
+a reachable loopback-published /-/readiness?all=1 endpoint. database_names
+must include every relevant database discovered during inventory.
+
+No Geo, external databases/services, object storage, registry data, custom
+backup hooks or rootless/user Quadlets. GitLab's official container procedure
+documents Docker; this Podman/Quadlet adaptation has not been executed here.
+Verify the stop/start/backup procedure on the intended installation first.
+
+The maintenance window must allow interrupted HTTP/SSH/CI work, existing work
+must be drained and other administrators/automation must not modify the
+installation concurrently. Stopping supervised services is not a universal
+guarantee that every possible custom/background writer has stopped. The local
+flock serializes this example's own invocations only. Rechecking file bytes
+before atomic replacement is not an atomic compare-and-swap against arbitrary
+concurrent administrators. These are deployment assumptions, not policy gates.
+
+Effective systemd inventory hash convention: SHA-256 of systemctl cat output
+decoded as UTF-8, stripped with str.strip(), then encoded as UTF-8. The exact
+reviewed Quadlet bytes are stored as gitlab.before.container. Application
+configuration lives in the existing /srv/gitlab/config bind mount; it is not
+changed by this example. Pulling an image modifies local image storage and
+contacts the image registry; these are part of the reviewed effects.
+
+Failure and evidence
+====================
+Root privileges on the target are broad. This script does not provide an OS
+sandbox. The proxy, credential isolation and network boundary must enforce
+the external execution contract separately. The example request's key_ref is
+an opaque proposed reference, not a real key or a usable credential.
+
+Backups, secrets, logs and receipts remain under a private target-local
+/var/backups/gitlab-approved-upgrades/<request-id>/ directory with no automatic
+cleanup. Do not share this directory wholesale with the agent or a UI: it
+contains secrets and potentially sensitive GitLab backup data and diagnostics.
+There is no guaranteed retention after host cleanup, disk loss or operator
+deletion. No off-host disaster recovery backup or restore exercise is claimed.
+
+Commands write complete stdout/stderr to separate private files before any
+selection. events.jsonl records paths, starts, exit codes and timeouts. Only
+explicitly requested small outputs are read into Python; the final stdout is
+a compact receipt. These files are diagnostic originals, not tamper-proof
+remote audit storage. The example has no automatic retention/export policy.
+
+On failure the script stops with a nonzero status. GitLab can remain offline,
+the Quadlet can already be changed, and migrations can already have run.
+There is no automatic recovery. A timed-out podman exec may leave work in the
+container running: inspect the original run before any new action. The proxy
+must supervise the process tree and preserve uncertain outcomes. Resubmitting
+an existing request directory fails; this is not a substitute for proxy-side
+single-use authorization.
+
+Archive membership and SHA-256 verification are not proof of restorability.
+GitLab readiness and version checks are not end-user acceptance or a complete
+security/CVE assessment. Rollback after database migrations needs a separately
+reviewed restore procedure and the matching old GitLab version.

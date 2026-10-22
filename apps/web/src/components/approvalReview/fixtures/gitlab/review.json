@@ -1,0 +1,163 @@
+{
+  "status": "illustrative_not_submitted_not_approved",
+  "inputs": {
+    "request_id": "gitlab-patch-review-example",
+    "example_only": true,
+    "machine_id": "REPLACE_WITH_VERIFIED_TARGET_MACHINE_ID",
+    "current_version": "19.2.1",
+    "target_version": "19.2.2",
+    "target_image": "docker.io/gitlab/gitlab-ee:19.2.2-ee.0@sha256:REPLACE_WITH_VERIFIED_DIGEST",
+    "expected_systemd_unit_sha256": "REPLACE_WITH_SHA256_OF_STRIPPED_SYSTEMCTL_CAT_OUTPUT",
+    "expected_mounts": {
+      "/etc/gitlab": "/srv/gitlab/config",
+      "/var/log/gitlab": "/srv/gitlab/logs",
+      "/var/opt/gitlab": "/srv/gitlab/data"
+    },
+    "database_names": ["gitlabhq_production"],
+    "readiness_url": "http://127.0.0.1:8080/-/readiness?all=1",
+    "quadlet": "/etc/containers/systemd/gitlab.container",
+    "service": "gitlab.service",
+    "container": "gitlab",
+    "backup_root": "/var/backups/gitlab-approved-upgrades"
+  },
+  "transport": {
+    "status": "example_not_submitted",
+    "target": {
+      "address": "192.0.2.44",
+      "ssh_port": 22,
+      "ssh_user": "root",
+      "ssh_key_ref": "host-secret-store://ssh/gitlab-maintenance",
+      "ssh_host_key_sha256": "REPLACE_WITH_VERIFIED_SERVER_HOST_KEY"
+    },
+    "execution": {
+      "argv": ["python3", "upgrade.py", "--apply", "--plan", "change.example.json"],
+      "working_directory": "PROXY_ASSIGNED_DIRECTORY_FOR_THE_FROZEN_PACKAGE",
+      "maximum_runtime_seconds": 10800,
+      "privileges": "root on this Linux target; no per-file OS sandbox implied",
+      "maximum_starts": 1
+    },
+    "approval_contract_required_from_proxy": [
+      "Bind verified target identity, SSH host key, user, privileges and package bytes.",
+      "Bind all inputs, dependency/runtime selection, limits, expiry and an unguessable request ID.",
+      "Validate the human approval outside the agent VM and consume the single-use start right.",
+      "Run exactly the frozen package; supervise and retain its original outputs.",
+      "After an ambiguous outcome, reconcile the original run rather than starting it again."
+    ]
+  },
+  "steps": [
+    {
+      "function": "check_expected_installation",
+      "description": "Check machine, service, Quadlet, persistent mounts, version and migrations.",
+      "file": "upgrade.py",
+      "line": 191,
+      "source": "def check_expected_installation(change: Change) -> None:\n    \"\"\"Check machine, service, Quadlet, persistent mounts, version and migrations.\"\"\"\n    if Path(\"/etc/machine-id\").read_text().strip() != change.machine_id:\n        raise RuntimeError(\"Wrong target machine\")\n    quadlet = Path(change.quadlet)\n    if quadlet.is_symlink() or not quadlet.is_file() or quadlet.read_bytes() != reviewed_quadlet():\n        raise RuntimeError(\"Quadlet differs from the reviewed snapshot\")\n    unit = command(change, \"systemctl\", \"cat\", change.service, read_output=True)\n    # systemctl output is normalized here in exactly the same way as inventory must be.\n    if hashlib.sha256(unit.encode()).hexdigest() != change.expected_systemd_unit_sha256:\n        raise RuntimeError(\"Effective systemd unit differs from the reviewed inventory\")\n    command(change, \"systemctl\", \"is-active\", \"--quiet\", change.service)\n    details = json.loads(command(\n        change, \"podman\", \"inspect\", change.container, read_output=True\n    ))[0]\n    mounts = {item[\"Destination\"]: item[\"Source\"] for item in details[\"Mounts\"]}\n    if any(mounts.get(dest) != source for dest, source in change.expected_mounts.items()):\n        raise RuntimeError(\"Persistent data mounts differ from the reviewed inventory\")\n    if installed_version(change) != change.current_version:\n        raise RuntimeError(\"Current GitLab version differs from the approved plan\")\n    if pending_migrations(change) != 0:\n        raise RuntimeError(\"Finish existing background migrations before upgrading\")\n    event(change, \"preconditions_passed\")\n"
+    },
+    {
+      "function": "download_target_image",
+      "description": "Pull the pinned image before starting the downtime.",
+      "file": "upgrade.py",
+      "line": 216,
+      "source": "def download_target_image(change: Change) -> None:\n    \"\"\"Pull the pinned image before starting the downtime.\"\"\"\n    command(change, \"podman\", \"pull\", change.target_image, timeout=1200)\n    command(change, \"podman\", \"image\", \"inspect\", change.target_image)\n"
+    },
+    {
+      "function": "stop_gitlab_and_start_only_backup_dependencies",
+      "description": "Downtime starts: stop GitLab's supervised services; enable local backup dependencies.",
+      "file": "upgrade.py",
+      "line": 222,
+      "source": "def stop_gitlab_and_start_only_backup_dependencies(change: Change) -> None:\n    \"\"\"Downtime starts: stop GitLab's supervised services; enable local backup dependencies.\"\"\"\n    in_container(change, \"gitlab-ctl\", \"stop\", timeout=600)\n    for service in (\"postgresql\", \"redis\", \"gitaly\"):\n        in_container(change, \"gitlab-ctl\", \"start\", service)\n    event(change, \"downtime_started\")\n"
+    },
+    {
+      "function": "create_and_check_backups",
+      "description": "Back up local application data, configuration/secrets and the original Quadlet.",
+      "file": "upgrade.py",
+      "line": 243,
+      "source": "def create_and_check_backups(change: Change) -> None:\n    \"\"\"Back up local application data, configuration/secrets and the original Quadlet.\"\"\"\n    previous = backup_names(change)\n    in_container(change, \"gitlab-backup\", \"create\", timeout=3600)\n    created = backup_names(change) - previous\n    if len(created) != 1:\n        raise RuntimeError(\"Cannot unambiguously identify the newly created backup\")\n    name = created.pop()\n    archive = change.backup_directory / name\n    command(change, \"podman\", \"cp\", f\"{change.container}:/var/opt/gitlab/backups/{name}\",\n            str(archive), timeout=1800)\n    command(change, \"podman\", \"cp\", f\"{change.container}:/etc/gitlab\",\n            str(change.backup_directory / \"etc-gitlab\"))\n    shutil.copy2(change.quadlet, change.backup_directory / \"gitlab.original.container\")\n    if not (change.backup_directory / \"etc-gitlab/gitlab-secrets.json\").is_file():\n        raise RuntimeError(\"Secrets file missing from configuration backup\")\n    if not (change.backup_directory / \"etc-gitlab/gitlab.rb\").is_file():\n        raise RuntimeError(\"gitlab.rb missing from configuration backup\")\n    with tarfile.open(archive) as backup:\n        names = {member.name.removeprefix(\"./\") for member in backup}\n    if \"backup_information.yml\" not in names or not any(n.startswith(\"db/\") for n in names):\n        raise RuntimeError(\"Backup archive lacks expected metadata/database entries\")\n    event(change, \"backups_created\", archive=name, sha256=sha256_file(archive),\n          restore_tested=False)\n"
+    },
+    {
+      "function": "install_reviewed_quadlet",
+      "description": "Replace only the Image= line; stop if the reviewed file changed meanwhile.",
+      "file": "upgrade.py",
+      "line": 269,
+      "source": "def install_reviewed_quadlet(change: Change) -> None:\n    \"\"\"Replace only the Image= line; stop if the reviewed file changed meanwhile.\"\"\"\n    path = Path(change.quadlet)\n    if path.read_bytes() != reviewed_quadlet():\n        raise RuntimeError(\"Quadlet changed during the upgrade; new review required\")\n    old_stat = path.stat()\n    fd, name = tempfile.mkstemp(prefix=\".gitlab-approved-\", dir=path.parent)\n    temporary = Path(name)\n    try:\n        with os.fdopen(fd, \"wb\") as output:\n            output.write(updated_quadlet(change))\n            output.flush()\n            os.fsync(output.fileno())\n        shutil.copystat(path, temporary)\n        os.chown(temporary, old_stat.st_uid, old_stat.st_gid)\n        os.replace(temporary, path)\n        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)\n        try:\n            os.fsync(directory_fd)\n        finally:\n            os.close(directory_fd)\n    finally:\n        temporary.unlink(missing_ok=True)\n    event(change, \"quadlet_replaced\", sha256=sha256_file(path))\n"
+    },
+    {
+      "function": "recreate_gitlab_container",
+      "description": "Regenerate the systemd service from the Quadlet and restart it.",
+      "file": "upgrade.py",
+      "line": 295,
+      "source": "def recreate_gitlab_container(change: Change) -> None:\n    \"\"\"Regenerate the systemd service from the Quadlet and restart it.\"\"\"\n    command(change, \"systemctl\", \"daemon-reload\")\n    command(change, \"systemctl\", \"restart\", change.service, timeout=1500)\n"
+    },
+    {
+      "function": "wait_until_gitlab_is_ready",
+      "description": "Check Rails and its dependencies through the loopback-published HTTP endpoint.",
+      "file": "upgrade.py",
+      "line": 301,
+      "source": "def wait_until_gitlab_is_ready(change: Change) -> None:\n    \"\"\"Check Rails and its dependencies through the loopback-published HTTP endpoint.\"\"\"\n    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))\n    deadline = time.monotonic() + 900\n    last_problem = \"No response yet\"\n    while time.monotonic() < deadline:\n        try:\n            with opener.open(change.readiness_url, timeout=10) as response:\n                body = response.read(65_537)\n                if len(body) > 65_536:\n                    raise RuntimeError(\"Unexpectedly large readiness response\")\n                data = json.loads(body)\n                checks = [check for values in data.values() for check in values]\n                if checks and all(check.get(\"status\") == \"ok\" for check in checks):\n                    event(change, \"readiness_passed\", checks=data)\n                    return\n                last_problem = \"A readiness dependency has not passed\"\n        except (urllib.error.URLError, TimeoutError, ValueError) as error:\n            last_problem = str(error)\n        time.sleep(10)\n    raise RuntimeError(f\"Readiness timed out: {last_problem}\")\n"
+    },
+    {
+      "function": "check_running_image_and_version",
+      "description": "Check the actual container image ID and the version reported by GitLab.",
+      "file": "upgrade.py",
+      "line": 324,
+      "source": "def check_running_image_and_version(change: Change) -> None:\n    \"\"\"Check the actual container image ID and the version reported by GitLab.\"\"\"\n    expected = json.loads(command(\n        change, \"podman\", \"image\", \"inspect\", change.target_image, read_output=True\n    ))[0][\"Id\"]\n    actual = json.loads(command(\n        change, \"podman\", \"inspect\", change.container, read_output=True\n    ))[0][\"Image\"]\n    if actual.removeprefix(\"sha256:\") != expected.removeprefix(\"sha256:\"):\n        raise RuntimeError(\"The container is not running the approved image\")\n    if installed_version(change) != change.target_version:\n        raise RuntimeError(\"GitLab does not report the approved target version\")\n    event(change, \"target_image_and_version_passed\", image_id=actual,\n          version=change.target_version)\n"
+    },
+    {
+      "function": "wait_until_background_migrations_finish",
+      "description": "Wait for each explicitly inventoried local database; never start repairs.",
+      "file": "upgrade.py",
+      "line": 340,
+      "source": "def wait_until_background_migrations_finish(change: Change) -> None:\n    \"\"\"Wait for each explicitly inventoried local database; never start repairs.\"\"\"\n    deadline = time.monotonic() + 900\n    while time.monotonic() < deadline:\n        if pending_migrations(change) == 0:\n            event(change, \"background_migrations_complete\")\n            return\n        time.sleep(30)\n    raise RuntimeError(\"Background migrations did not finish within the approved wait\")\n"
+    },
+    {
+      "function": "write_success_receipt",
+      "description": null,
+      "file": "upgrade.py",
+      "line": 351,
+      "source": "def write_success_receipt(change: Change) -> None:\n    receipt = {\n        \"request_id\": change.request_id, \"status\": \"completed\",\n        \"machine_id\": change.machine_id, \"version\": change.target_version,\n        \"image\": change.target_image, \"backup_directory\": str(change.backup_directory),\n        \"acceptance\": \"Image, GitLab version, readiness and migration counts checked\",\n        \"restore_tested\": False,\n    }\n    (change.backup_directory / \"receipt.json\").write_text(json.dumps(receipt, indent=2) + \"\\n\")\n    print(json.dumps(receipt))\n"
+    }
+  ],
+  "quadlet_diff": "--- gitlab.container (before)\n+++ gitlab.container (after)\n@@ -5,7 +5,7 @@\n \n [Container]\n ContainerName=gitlab\n-Image=docker.io/gitlab/gitlab-ee:19.2.1-ee.0\n+Image=docker.io/gitlab/gitlab-ee:19.2.2-ee.0@sha256:REPLACE_WITH_VERIFIED_DIGEST\n PublishPort=127.0.0.1:8080:80\n PublishPort=2222:22\n Volume=/srv/gitlab/config:/etc/gitlab:Z\n",
+  "source_files": [
+    {
+      "path": "upgrade.py",
+      "sha256": "da760c0a6dc482d5edfe024b4c29774dc0b352083b69a2ee44c9483557144548"
+    },
+    {
+      "path": "review.py",
+      "sha256": "4e9835f6f15e4e797cc6032ec2ad1eace5c7faab82b70b066adde8c476beb40d"
+    },
+    {
+      "path": "change.example.json",
+      "sha256": "768286db15a6ac1b6e4e9770be0f7efbce27bb5d6a631748bacbc56993661e8c"
+    },
+    {
+      "path": "request.example.json",
+      "sha256": "fbf5f4322353084a470da1a5b0e304ecdf5af3ed1ece9e78c9dbacb70bd95c5a"
+    },
+    {
+      "path": "gitlab.before.container",
+      "sha256": "15bac8cee4c648487283afd6e3023c947e11d05acc8bddb550b9f8a6653114b1"
+    },
+    {
+      "path": "NOTES.txt",
+      "sha256": "bb418740784e0aec12de03fab6483fc7aed21f062b67f7ee479bf31bd25945b2"
+    }
+  ],
+  "limits": [
+    "Example versions and placeholders; not a current security recommendation.",
+    "Root on the Linux target; effects are not sandboxed to the named files.",
+    "Single node, local PostgreSQL/Redis/Gitaly, default local backup path.",
+    "No Geo, external storage, container registry, custom hooks or cluster orchestration.",
+    "Maintenance window, drained existing work, no concurrent administrative changes.",
+    "Backup structure and SHA-256 checked; no restore exercise performed.",
+    "No automatic retry, rollback, repair or post-timeout resubmission.",
+    "No real proxy, SSH transport, approval validation or mobile UI implemented here."
+  ],
+  "sources": [
+    "https://docs.gitlab.com/update/docker/",
+    "https://docs.gitlab.com/install/docker/backup/",
+    "https://docs.gitlab.com/update/background_migrations/",
+    "https://docs.gitlab.com/administration/monitoring/health_check/",
+    "https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html"
+  ]
+}

@@ -1,3 +1,5 @@
+import { ApprovalReviewError } from "@t3tools/contracts";
+import * as ApprovalReviewCommands from "./ApprovalReviewCommands.ts";
 import type {
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -276,6 +278,7 @@ function canReplayCommandReceipt(receiptThreadId: ThreadId, commandThreadId: Thr
 }
 
 export const OrchestratorV2Error = Schema.Union([
+  ApprovalReviewError,
   OrchestratorDispatchError,
   OrchestratorThreadAlreadyExistsError,
   OrchestratorCommandRejectedError,
@@ -484,6 +487,9 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "queued-run.reorder":
     case "queued-run.cancel":
     case "queued-run.edit":
+    case "approval-review.submit":
+    case "approval-review.claim":
+    case "approval-review.receipt":
     case "runtime-request.respond":
     case "thread.user-input.dismiss":
     case "checkpoint.rollback":
@@ -7691,8 +7697,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
 
       const now = yield* DateTime.now;
+      const approvalReview =
+        runtimeRequest.responseCapability.type === "external"
+          ? yield* ApprovalReviewCommands.resolve(runtimeRequest, command, now)
+          : undefined;
       const resolvedRequest = {
         ...runtimeRequest,
+        ...(approvalReview === undefined ? {} : { approvalReview }),
         status: "resolved" as const,
         resolvedAt: now,
         ...(command.decision === undefined ? {} : { decision: command.decision }),
@@ -7755,6 +7766,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           occurredAt: now,
           payload: {
             ...approvalTurnItem,
+            ...(approvalReview === undefined ? {} : { approvalReview }),
             ...(approvalTurnItem.type === "user_input_request" && answers !== undefined
               ? {
                   questionAnswer: {
@@ -11316,6 +11328,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "prepared-run.retry":
         yield* dispatchPreparedRunRetry(command, events);
         break;
+      case "approval-review.submit":
+      case "approval-review.claim":
+      case "approval-review.receipt": {
+        const planned = yield* ApprovalReviewCommands.plan(command).pipe(
+          Effect.provideService(ProjectionStoreV2, projectionStore),
+        );
+        for (const event of planned) yield* emit(events, command)(event);
+        break;
+      }
       case "runtime-request.respond":
         yield* dispatchRuntimeRequestRespond(command, events, effects);
         break;

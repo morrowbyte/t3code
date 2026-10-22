@@ -114,6 +114,58 @@ const modelSelection = {
 } satisfies ModelSelection;
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
 
+it.effect(
+  "rejects provider-created external approval authority and its reserved request namespace",
+  () =>
+    Effect.gen(function* () {
+      const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+      const allocator = yield* IdAllocator.IdAllocatorV2;
+      const now = yield* DateTime.now;
+      const threadEvent = yield* threadCreatedEvent(now);
+      const providerSessionId = yield* allocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId: threadEvent.threadId,
+      });
+      const base: OrchestrationV2RuntimeRequest = {
+        id: RuntimeRequestId.make("ordinary-provider-request"),
+        nodeId: NodeId.make("provider-request-node"),
+        providerTurnId: null,
+        nativeRequestRef: null,
+        kind: "file-change",
+        status: "pending",
+        responseCapability: { type: "live", providerSessionId },
+        createdAt: now,
+        resolvedAt: null,
+      };
+      for (const request of [
+        { ...base, responseCapability: { type: "external" as const } },
+        { ...base, id: RuntimeRequestId.make("approval-review:forged") },
+      ]) {
+        const error = yield* ingestor
+          .normalize({
+            providerSessionId,
+            providerInstanceId: modelSelection.instanceId,
+            threadId: threadEvent.threadId,
+            event: {
+              type: "runtime_request.updated",
+              driver: CODEX_DRIVER,
+              runtimeRequest: request,
+            },
+          })
+          .pipe(Effect.flip);
+        assert.equal(error._tag, "ProviderEventNormalizeError");
+      }
+      const ordinary = yield* ingestor.normalize({
+        providerSessionId,
+        providerInstanceId: modelSelection.instanceId,
+        threadId: threadEvent.threadId,
+        event: { type: "runtime_request.updated", driver: CODEX_DRIVER, runtimeRequest: base },
+      });
+      assert.equal(ordinary.length, 1);
+      assert.equal(ordinary[0]?.type, "runtime-request.updated");
+    }).pipe(Effect.provide(layerTest)),
+);
+
 function threadCreatedEvent(
   now: DateTime.Utc,
 ): Effect.Effect<

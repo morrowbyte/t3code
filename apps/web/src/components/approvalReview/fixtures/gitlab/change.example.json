@@ -1,0 +1,16 @@
+{
+  "request_id": "gitlab-patch-review-example",
+  "example_only": true,
+  "machine_id": "REPLACE_WITH_VERIFIED_TARGET_MACHINE_ID",
+  "current_version": "19.2.1",
+  "target_version": "19.2.2",
+  "target_image": "docker.io/gitlab/gitlab-ee:19.2.2-ee.0@sha256:REPLACE_WITH_VERIFIED_DIGEST",
+  "expected_systemd_unit_sha256": "REPLACE_WITH_SHA256_OF_STRIPPED_SYSTEMCTL_CAT_OUTPUT",
+  "expected_mounts": {
+    "/etc/gitlab": "/srv/gitlab/config",
+    "/var/log/gitlab": "/srv/gitlab/logs",
+    "/var/opt/gitlab": "/srv/gitlab/data"
+  },
+  "database_names": ["gitlabhq_production"],
+  "readiness_url": "http://127.0.0.1:8080/-/readiness?all=1"
+}
