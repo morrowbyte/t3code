@@ -93,6 +93,11 @@ jobs:
           apps/web/src/components/ChatView.tsx
           apps/web/src/components/chat/ChatComposer.tsx
           apps/web/src/components/chat/ChatComposer.mobile.browser.test.tsx
+          apps/web/src/components/chat/composerTypingGuard.ts
+          apps/web/src/components/chat/composerTypingGuard.test.ts
+          apps/web/src/components/chat/useComposerTypingGuard.ts
+          apps/web/src/voice/VoiceDictationControl.tsx
+          apps/web/src/voice/VoiceDictationControl.question.browser.test.tsx
           apps/web/src/voice/LiveVoiceControl.tsx
           apps/web/src/voice/LiveVoiceControl.browser.test.tsx
           apps/web/src/voice/LiveVoiceDraftThread.ts
@@ -104,6 +109,12 @@ jobs:
           apps/server/src/voice/CodexLiveSessionService.test.ts
           apps/server/src/voice/CodexLiveSessionService.ts
           packages/provider-core/src/server/ProviderAdapter.ts
+      - name: Test voice dictation request deferral
+        working-directory: apps/web
+        run: >-
+          vp test run
+          src/components/chat/composerTypingGuard.test.ts
+          src/voice/VoiceDictationControl.question.browser.test.tsx
   product_bundle:
     needs: [check]
     if: github.event_name == 'workflow_dispatch'

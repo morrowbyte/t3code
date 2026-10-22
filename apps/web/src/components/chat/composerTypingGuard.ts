@@ -5,6 +5,7 @@ export function createComposerTypingGuardState() {
     seen: new Set<string>(),
     held: new Set<string>(),
     focused: false,
+    voiceDraftActive: false,
     lastTypedAt: -Infinity,
   };
 }
@@ -12,6 +13,7 @@ export function createComposerTypingGuardState() {
 type TypingGuardEvent =
   | { type: "requests"; requestIds: readonly string[]; now: number }
   | { type: "type"; now: number }
+  | { type: "voice"; active: boolean }
   | { type: "focus" | "blur" | "send" | "idle" };
 
 export function updateComposerTypingGuard(
@@ -25,8 +27,8 @@ export function updateComposerTypingGuard(
       for (const id of event.requestIds) {
         if (
           !seen.has(id) &&
-          state.focused &&
-          event.now - state.lastTypedAt < COMPOSER_TYPING_IDLE_MS
+          (state.voiceDraftActive ||
+            (state.focused && event.now - state.lastTypedAt < COMPOSER_TYPING_IDLE_MS))
         ) {
           held.add(id);
         }
@@ -38,14 +40,21 @@ export function updateComposerTypingGuard(
       return { ...state, lastTypedAt: event.now };
     case "focus":
       return { ...state, focused: true };
+    case "voice":
+      return {
+        ...state,
+        voiceDraftActive: event.active,
+        held: event.active ? state.held : new Set<string>(),
+      };
     case "blur":
-    case "send":
     case "idle":
       return {
         ...state,
-        held: new Set<string>(),
+        held: state.voiceDraftActive ? state.held : new Set<string>(),
         lastTypedAt: -Infinity,
         focused: event.type === "blur" ? false : state.focused,
       };
+    case "send":
+      return { ...state, held: new Set<string>(), voiceDraftActive: false, lastTypedAt: -Infinity };
   }
 }
