@@ -128,11 +128,7 @@ export function AgentMessageRow({
           </Link>
         ) : (
           <span className="min-w-0 truncate">
-            {outgoing
-              ? "Agent · Ziel nicht erfasst"
-              : attribution === "unknown"
-                ? "MCP · Absender nicht erfasst"
-                : "Agent · Absender nicht erfasst"}
+            {outgoing ? "Agent" : attribution === "unknown" ? "MCP" : "Agent"}
           </span>
         )}
         <span className="ml-auto shrink-0">
