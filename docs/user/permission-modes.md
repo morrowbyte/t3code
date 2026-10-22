@@ -25,8 +25,8 @@ package include the process, complete source files, available changes and execut
 Opening or closing a review never approves it. Examples and packages that fail verification cannot
 be approved.
 
-An external host action requires approval for that exact package from its configured approver
-session, regardless of the agent's permission mode. A changed or expired package needs a new
+An action submitted to the host review service requires approval for that exact package from its
+configured approver session, regardless of the agent's permission mode. A changed or expired package needs a new
 request. An approval allows the action once; check its execution receipt and target readback before
 treating the change as complete.
 
