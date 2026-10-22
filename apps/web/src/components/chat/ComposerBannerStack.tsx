@@ -21,6 +21,7 @@ export interface ComposerBannerStackItem {
   readonly actions?: ReactNode;
   readonly dismissLabel?: string;
   readonly onDismiss?: () => void;
+  readonly content?: ReactNode;
 }
 
 export type ComposerBannerStackContent = Pick<
