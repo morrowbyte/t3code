@@ -68,6 +68,8 @@ export function BackgroundWorkActivity({
               <div className="flex min-w-0 flex-wrap items-center gap-1">
                 <button
                   type="button"
+                  aria-label={`${open ? "Hide" : "Show"} details for ${item.commandLabel ?? item.label}`}
+                  aria-describedby={`${panelId}-status`}
                   aria-expanded={open}
                   aria-controls={panelId}
                   onClick={() =>
@@ -85,7 +87,9 @@ export function BackgroundWorkActivity({
                     <span className="block truncate font-medium">
                       {item.commandLabel ?? item.label}
                     </span>
-                    <span className="block text-xs text-muted-foreground">{statusLabel}</span>
+                    <span id={`${panelId}-status`} className="block text-xs text-muted-foreground">
+                      {statusLabel}
+                    </span>
                   </span>
                   <ChevronRightIcon
                     aria-hidden

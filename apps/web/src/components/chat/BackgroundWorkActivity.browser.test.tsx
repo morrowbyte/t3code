@@ -37,7 +37,7 @@ describe("background process activity", () => {
         ]}
       />,
     );
-    const disclosure = screen.getByRole("button", { name: "vp run dev Active" });
+    const disclosure = screen.getByRole("button", { name: "Show details for vp run dev" });
     expect(screen.container.textContent).not.toContain("PATH=/bin");
     await disclosure.click();
     expect(screen.container.querySelector('[aria-label="Full command"]')?.textContent).toBe(
@@ -70,7 +70,7 @@ describe("background process activity", () => {
     expect(
       screen.container.querySelectorAll('button[aria-label="Stop all work in this thread"]'),
     ).toHaveLength(1);
-    await screen.getByRole("button", { name: "Command Active", exact: true }).click();
+    await screen.getByRole("button", { name: "Show details for Command", exact: true }).click();
     expect(screen.container.querySelector('[aria-label="Full command"]')?.textContent).toBe(
       "while true; do sleep 1; done",
     );
