@@ -24,15 +24,17 @@ of the selected theme.
 ## Composer context
 
 Git-backed projects show branch and worktree controls below the composer while you create a thread.
-The controls retreat as the composer docks after you send the first message.
+With **Composer context** turned off, the controls retreat as the composer docks after you send
+the first message.
 
-Turn on **Composer context** to keep those controls visible after the thread starts. This preference
-applies to the web and desktop clients.
+**Composer context** keeps those controls visible after the thread starts by default. Turn it off
+in **Settings → Appearance** to hide them. This preference applies to the web and desktop clients.
 
 ## Math
 
-Turn on **Render math** in **Settings → Appearance** to typeset LaTeX in messages and Markdown
-previews on web, desktop, and mobile. It reads `$…$`, `$$…$$`, `\(…\)`, and `\[…\]`, outside of code.
+**Render math** typesets LaTeX in messages and Markdown previews by default on web, desktop,
+and mobile. Turn it off in **Settings → Appearance** to show the source instead.
+It reads `$…$`, `$$…$$`, `\(…\)`, and `\[…\]`, outside of code.
 Fenced `math` blocks also render. Formulas work in tables, including absolute-value bars.
 Dollar amounts such as `$5 and $10` stay text; write `\$` to keep any other dollar sign literal.
 Wide formulas scroll horizontally while the surrounding text wraps. Copying a formula or
