@@ -92,6 +92,41 @@ function makeProjection() {
   } as unknown as OrchestrationV2ThreadProjection;
 }
 
+it("does not block provider continuation for an independent external approval", () => {
+  const projection = makeProjection();
+  const request: OrchestrationV2ThreadProjection["runtimeRequests"][number] = {
+    id: RuntimeRequestId.make("approval-review:restart-independent"),
+    nodeId: NodeId.make("node:external-approval"),
+    providerTurnId: null,
+    nativeRequestRef: null,
+    kind: "file-change",
+    status: "pending",
+    responseCapability: { type: "external" },
+    createdAt: now,
+    resolvedAt: null,
+  };
+  assert.equal(
+    restartContinuationRun({ ...projection, runtimeRequests: [request] }, now)?.id,
+    runId,
+  );
+  assert.isUndefined(
+    restartContinuationRun(
+      {
+        ...projection,
+        runtimeRequests: [
+          {
+            ...request,
+            id: RuntimeRequestId.make("provider-approval:restart"),
+            providerTurnId: projection.providerTurns[0]!.id,
+            responseCapability: { type: "live", providerSessionId: sessionId },
+          },
+        ],
+      },
+      now,
+    ),
+  );
+});
+
 it("requires matching saved native state for an unfinished root run", () => {
   const projection = makeProjection();
   assert.equal(restartContinuationRun(projection, now)?.id, runId);

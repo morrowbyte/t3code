@@ -1,7 +1,11 @@
 import { assert, it, vi } from "@effect/vitest";
 import {
+  AuthSessionId,
+  CommandId,
+  EventId,
   MessageId,
   NodeId,
+  ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionId,
@@ -14,8 +18,11 @@ import {
   TurnItemId,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
+import { hashTelemetryId as hash } from "@t3tools/shared/telemetryId";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
@@ -24,6 +31,185 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as Sqlite from "../persistence/Sqlite.ts";
+import * as HumanAuthority from "../auth/ApprovalReviewHumanAuthority.ts";
+import * as ApprovalReviewCommands from "./ApprovalReviewCommands.ts";
+import * as ApprovalReviewService from "./ApprovalReviewService.ts";
+import * as Orchestrator from "./Orchestrator.ts";
+import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
+import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
+
+const recoverySource = "def execute(request):\n    raise RuntimeError('inert recovery test')\n";
+const recoveryTarget = {
+  verifiedTargetId: "recovery-fixture",
+  requesterSubject: "recovery-requester",
+  workerSubject: "recovery-worker",
+  approverSessionId: AuthSessionId.make("recovery-human-fixture"),
+  approverSubject: "recovery-human",
+  allowedPath: "/tmp/recovery-fixture-never-created.txt",
+  implementationVersion: "recovery-test-v1",
+  implementationSource: recoverySource,
+};
+const recoveryDatabase = Sqlite.layerMemory;
+const layerExternalRecovery = Layer.mergeAll(
+  ProviderRuntimeRecovery.layer,
+  ApprovalReviewService.layer,
+).pipe(
+  Layer.provideMerge(
+    Layer.mergeAll(
+      recoveryDatabase,
+      ProjectionStore.layer.pipe(Layer.provide(recoveryDatabase)),
+      EffectOutbox.layer.pipe(Layer.provide(recoveryDatabase)),
+      IdAllocator.layer,
+      ServerSettings.layerTest({ continueThreadsAfterServerUpdate: false }),
+      ProviderReplayHarness.layerWithRegistry(
+        { name: "external-approval-recovery" },
+        ProviderAdapterRegistry.layerFromAdapters([]),
+        {
+          databaseLayer: recoveryDatabase,
+          runEffectWorker: false,
+        },
+      ),
+    ),
+  ),
+  Layer.provide(Layer.succeed(ApprovalReviewService.ApprovalReviewTargets, [recoveryTarget])),
+);
+
+it.effect.each([false, true] as const)(
+  "preserves external approval through shutdown and startup with SQLite/EventSink (expired=%s)",
+  (expired) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const service = yield* ApprovalReviewService.ApprovalReviewService;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
+      const threadId = ThreadId.make("thread:external-approval-recovery");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("create:external-approval-recovery"),
+        threadId,
+        projectId: ProjectId.make("project:external-approval-recovery"),
+        title: "External approval recovery",
+        modelSelection: { instanceId: ProviderInstanceId.make("unconfigured"), model: "unused" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const createdAt = yield* DateTime.now;
+      const submitted = yield* service.submit(
+        {
+          threadId,
+          submissionId: "recovery-one",
+          expiresAt: DateTime.toEpochMillis(createdAt) + 60_000,
+          action: {
+            kind: "create_file_once",
+            verifiedTargetId: recoveryTarget.verifiedTargetId,
+            path: recoveryTarget.allowedPath,
+            content: "inert fixture",
+            mode: 384,
+            expectedAbsent: true,
+            implementationVersion: recoveryTarget.implementationVersion,
+            implementationHash: hash(recoverySource),
+          },
+        },
+        recoveryTarget.requesterSubject,
+      );
+      const nativeId = RuntimeRequestId.make("native-request:lost-callback");
+      yield* eventSink.write({
+        events: [
+          {
+            id: EventId.make("event:native-request:lost-callback"),
+            type: "runtime-request.updated",
+            threadId,
+            occurredAt: createdAt,
+            payload: {
+              id: nativeId,
+              nodeId: NodeId.make("node:native-request"),
+              providerTurnId: null,
+              nativeRequestRef: null,
+              kind: "command",
+              status: "pending",
+              responseCapability: {
+                type: "live",
+                providerSessionId: ProviderSessionId.make("lost-session"),
+              },
+              createdAt,
+              resolvedAt: null,
+            },
+          },
+        ],
+      });
+      if (expired) yield* TestClock.adjust(60_001);
+      yield* recovery.prepareForShutdown;
+      assert.equal((yield* recovery.reconcile("shutdown")).closedRequests, 1);
+      assert.equal((yield* recovery.recover).closedRequests, 0);
+      const request = yield* projections.getRuntimeRequest(threadId, submitted.requestId);
+      assert.isDefined(request);
+      if (request === undefined)
+        return assert.fail("Persisted external request must survive restart");
+      assert.equal(request.status, "pending");
+      assert.equal(request.responseCapability.type, "external");
+      assert.isNull(request.resolvedAt);
+      assert.deepEqual(
+        yield* service.read(submitted, recoveryTarget.requesterSubject),
+        submitted.authority,
+      );
+      const context = yield* projections.getRuntimeResponseContext(threadId, submitted.requestId);
+      assert.equal(context.node?.status, "waiting");
+      assert.equal(context.item?.status, "waiting");
+      assert.equal(
+        context.item?.type === "approval_request" && context.item.approvalReview?.packageHash,
+        submitted.authority.packageHash,
+      );
+      const native = yield* projections.getRuntimeRequest(threadId, nativeId);
+      assert.equal(native?.status, "cancelled");
+      assert.equal(native?.responseCapability.type, "not_resumable");
+      if (expired) {
+        const error = yield* ApprovalReviewCommands.resolve(
+          request,
+          {
+            type: "runtime-request.respond",
+            commandId: CommandId.make("expired-recovery-attempt"),
+            threadId,
+            requestId: submitted.requestId,
+            packageHash: submitted.authority.packageHash,
+            decision: "accept",
+          },
+          yield* DateTime.now,
+        ).pipe(
+          Effect.provideService(HumanAuthority.ApprovalReviewHumanAuthority, {
+            sessionId: recoveryTarget.approverSessionId,
+            subject: recoveryTarget.approverSubject,
+          }),
+          Effect.flip,
+        );
+        assert.equal(error.reason, "expired");
+        assert.equal(
+          (yield* service
+            .claim(
+              {
+                threadId,
+                requestId: submitted.requestId,
+                packageHash: submitted.authority.packageHash,
+                verifiedTargetId: recoveryTarget.verifiedTargetId,
+                claimId: "expired-claim-attempt",
+              },
+              recoveryTarget.workerSubject,
+            )
+            .pipe(Effect.flip)).reason,
+          "expired",
+        );
+      }
+      assert.equal(
+        (yield* projections.getRuntimeRequest(threadId, submitted.requestId))?.status,
+        "pending",
+      );
+    }).pipe(Effect.provide(layerExternalRecovery)),
+);
 
 it.effect("expires orphaned runtime requests before command readiness", () => {
   const threadId = ThreadId.make("thread_recovery_requests");

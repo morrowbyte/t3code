@@ -228,16 +228,21 @@ export const make = Effect.gen(function* () {
         }
         runs.push(run);
       }
-      const messageRequestNodeIds = new Set(
+      const persistentRequestNodeIds = new Set(
         projection.runtimeRequests
           .filter(
             (request) =>
-              request.status === "pending" && request.responseCapability.type === "message",
+              request.status === "pending" &&
+              (request.responseCapability.type === "message" ||
+                request.responseCapability.type === "external"),
           )
           .map((request) => request.nodeId),
       );
       const requests = projection.runtimeRequests.filter(
-        (request) => request.status === "pending" && request.responseCapability.type !== "message",
+        (request) =>
+          request.status === "pending" &&
+          request.responseCapability.type !== "message" &&
+          request.responseCapability.type !== "external",
       );
       // Delegated task rows, items and nodes stay open: the child settles them.
       const delegatedTaskNodeIds = new Set<string>([
@@ -381,7 +386,7 @@ export const make = Effect.gen(function* () {
         for (const node of projection.nodes.filter(
           (candidate) =>
             candidate.runId === run.id &&
-            !messageRequestNodeIds.has(candidate.id) &&
+            !persistentRequestNodeIds.has(candidate.id) &&
             !delegatedTaskNodeIds.has(candidate.id) &&
             (candidate.status === "pending" ||
               candidate.status === "running" ||
@@ -434,7 +439,7 @@ export const make = Effect.gen(function* () {
         for (const item of projection.turnItems.filter(
           (candidate) =>
             candidate.runId === run.id &&
-            (candidate.nodeId === null || !messageRequestNodeIds.has(candidate.nodeId)) &&
+            (candidate.nodeId === null || !persistentRequestNodeIds.has(candidate.nodeId)) &&
             !isAppOwnedDelegationItem(candidate) &&
             (candidate.status === "pending" ||
               candidate.status === "running" ||
