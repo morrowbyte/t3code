@@ -6,6 +6,7 @@ import { isOpenFavoriteEditorShortcut } from "../../keybindings";
 import { useRemoteOpenState } from "../../remoteOpen";
 import { shellEnvironment } from "../../state/shell";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { hasLocalShortcutOwner } from "../keyboard/keyboardFocus";
 
 export function useOpenFavoriteEditorShortcut({
   enabled,
@@ -27,7 +28,12 @@ export function useOpenFavoriteEditorShortcut({
   useEffect(() => {
     if (!enabled || remote.mode !== "local-exec") return;
     const handler = (event: globalThis.KeyboardEvent) => {
-      if (event.defaultPrevented || !isOpenFavoriteEditorShortcut(event, keybindings)) return;
+      if (
+        event.defaultPrevented ||
+        hasLocalShortcutOwner(event) ||
+        !isOpenFavoriteEditorShortcut(event, keybindings)
+      )
+        return;
       if (!openInCwd || !preferredEditor) return;
 
       event.preventDefault();

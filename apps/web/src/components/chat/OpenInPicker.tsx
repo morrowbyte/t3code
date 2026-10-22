@@ -1,4 +1,5 @@
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
+import { hasLocalShortcutOwner } from "../keyboard/keyboardFocus";
 import {
   AuthOrchestrationOperateScope,
   buildRemoteOpenUrl,
@@ -283,7 +284,12 @@ export const OpenInPicker = memo(function OpenInPicker({
   useEffect(() => {
     if (!enableShortcut || !canOpenEditor) return;
     const handler = (e: globalThis.KeyboardEvent) => {
-      if (e.defaultPrevented || !isOpenFavoriteEditorShortcut(e, keybindings)) return;
+      if (
+        e.defaultPrevented ||
+        hasLocalShortcutOwner(e) ||
+        !isOpenFavoriteEditorShortcut(e, keybindings)
+      )
+        return;
       if (!openInCwd) return;
       if (!preferredEditor) return;
       if (

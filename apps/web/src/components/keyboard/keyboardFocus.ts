@@ -1,3 +1,15 @@
+export function hasLocalShortcutOwner(event: KeyboardEvent): boolean {
+  return event
+    .composedPath()
+    .some(
+      (node) =>
+        node instanceof Element &&
+        node.matches(
+          '[role="dialog"],[role="alertdialog"],[data-keyboard-local],.cm-editor,.monaco-editor',
+        ),
+    );
+}
+
 export function captureKeyboardFocus() {
   const element = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const selection =

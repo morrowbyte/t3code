@@ -2,6 +2,7 @@ import { AuthOrchestrationOperateScope, EnvironmentId, type EditorId } from "@t3
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { userEvent } from "vite-plus/test/browser";
 
 import { act, render as renderUi } from "../../../test/render";
 import type { RemoteOpenState } from "../../remoteOpen";
@@ -161,6 +162,50 @@ async function setup() {
 }
 
 describe("host editor access", () => {
+  it.each([
+    ["picker", "dialog"],
+    ["picker", "local"],
+    ["fallback", "dialog"],
+    ["fallback", "local"],
+  ] as const)("leaves Ctrl+O with the %s's %s keyboard owner", async (entry, owner) => {
+    await using fixture = await setup();
+    state.allowed.add(selected);
+    let historyMoves = 0;
+    const Fallback = fixture.FavoriteEditorFallback;
+    await fixture.screen.rerender(
+      <>
+        {entry === "picker" ? (
+          <OpenInPicker
+            environmentId={selected}
+            keybindings={DEFAULT_RESOLVED_KEYBINDINGS}
+            availableEditors={editors}
+            openInCwd="/work/project"
+          />
+        ) : (
+          <Fallback />
+        )}
+        <div
+          role={owner === "dialog" ? "dialog" : undefined}
+          data-keyboard-local={owner === "local" ? "true" : undefined}
+          onKeyDown={(event) => {
+            if (event.ctrlKey && event.key === "o") {
+              historyMoves++;
+              event.preventDefault();
+            }
+          }}
+        >
+          <textarea aria-label="Review source" />
+        </div>
+      </>,
+    );
+    await userEvent.click(fixture.screen.getByRole("textbox", { name: "Review source" }));
+    await userEvent.keyboard("{Control>}o{/Control}");
+    expect(historyMoves).toBe(1);
+    expect(state.run).not.toHaveBeenCalled();
+    expect(state.openUrl).not.toHaveBeenCalled();
+    expect(state.setPreferred).not.toHaveBeenCalled();
+  });
+
   it("uses the selected grant for both the button and a retained shortcut", async () => {
     await using fixture = await setup();
     const { renderPicker, byLabel, primaryButton, click, pressOpenFavorite } = fixture;

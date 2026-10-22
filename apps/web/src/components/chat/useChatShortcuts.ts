@@ -10,18 +10,7 @@ import {
 import { getTerminalFocusOwner, type TerminalFocusOwner } from "../../lib/terminalFocus";
 import { shouldTypeToFocusComposer } from "./composerFocusRedirect";
 import { dispatchKeyboardCommand, useKeyboardCommands } from "../keyboard/keyboardCommands";
-
-function hasLocalShortcutOwner(event: KeyboardEvent): boolean {
-  return event
-    .composedPath()
-    .some(
-      (node) =>
-        node instanceof Element &&
-        node.matches(
-          '[role="dialog"],[role="alertdialog"],[data-keyboard-local],.cm-editor,.monaco-editor',
-        ),
-    );
-}
+import { hasLocalShortcutOwner } from "../keyboard/keyboardFocus";
 
 /** Runs a command. Returning false lets the key event through untouched. */
 export type ChatShortcutHandler = (context: {
