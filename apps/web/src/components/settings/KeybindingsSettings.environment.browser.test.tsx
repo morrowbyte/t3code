@@ -214,7 +214,7 @@ describe("keyboard binding editing", () => {
     ];
     expect(rows).toHaveLength(2);
     expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual(
-      expect.arrayContaining(["Navigation: Activate", "Navigation: Focus Hints"]),
+      expect.arrayContaining(["Navigation: Enter Normal Mode", "Navigation: Focus Hints"]),
     );
     expect(container.textContent).not.toContain("No keybindings match");
   });
