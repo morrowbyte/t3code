@@ -17,6 +17,7 @@ export const AgentIdentityLabel = memo(function AgentIdentityLabel(props: {
   readonly lineage?: Pick<OrchestrationV2AppThreadLineage, "relationshipToParent"> | null;
   readonly featureTitle?: string | null;
   readonly details?: boolean;
+  readonly size?: "sm" | "md";
 }) {
   const thread = useQuietThreadShell(props.threadRef);
   const project = useProject(
@@ -31,8 +32,12 @@ export const AgentIdentityLabel = memo(function AgentIdentityLabel(props: {
         theme={theme}
         identity={identity}
         projectColor={resolveAgentProjectColor(project)}
+        size={props.size ?? "sm"}
       />
-      <Text className="min-w-0 flex-1 text-xs text-foreground-muted" numberOfLines={1}>
+      <Text
+        className={`min-w-0 flex-1 text-foreground-muted ${props.size === "md" ? "text-lg font-t3-medium" : "text-xs"}`}
+        numberOfLines={1}
+      >
         {identity.label}
       </Text>
     </View>

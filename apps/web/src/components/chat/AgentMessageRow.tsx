@@ -105,14 +105,14 @@ export function AgentMessageRow({
       aria-label={`Agent message: ${summary}`}
       data-keyboard-help="C: copy this message · D: toggle details · J/K: messages · H/L: actions"
       onKeyDown={(event) => handleObjectActionKey(event, { c: "copy", d: "details" })}
-      className={`min-w-0 rounded-lg border px-3.5 py-3 sm:px-4 ${outgoing ? "border-dashed border-border bg-background" : "border-border/70 bg-muted/20"}`}
+      className="min-w-0 rounded-2xl border border-border/60 bg-muted/20 px-3 py-2.5"
       data-agent-message={messageId}
       data-agent-message-direction={direction}
       data-agent-message-format={parsed?.kind ?? "loading"}
       data-user-message-attribution={attribution}
     >
-      <div className="mb-2 flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-        <DirectionIcon className="size-3.5 shrink-0" aria-hidden />
+      <div className="mb-1.5 flex min-w-0 items-center gap-1.5 text-lg leading-8 text-muted-foreground">
+        <DirectionIcon className="size-6 shrink-0" aria-hidden />
         <span className="shrink-0">{outgoing ? "An" : "Von"}</span>
         {peerThreadId ? (
           <Link
@@ -124,6 +124,7 @@ export function AgentMessageRow({
             <AgentIdentityLabel
               threadRef={{ environmentId, threadId: peerThreadId }}
               featureTitle={peerTitle}
+              size="md"
             />
           </Link>
         ) : (
@@ -131,7 +132,7 @@ export function AgentMessageRow({
             {outgoing ? "Agent" : attribution === "unknown" ? "MCP" : "Agent"}
           </span>
         )}
-        <span className="ml-auto shrink-0">
+        <span className="ml-auto shrink-0 text-xs">
           <Tooltip>
             <TooltipTrigger render={<time className="tabular-nums" dateTime={createdAt} />}>
               {timestamp}
@@ -157,7 +158,7 @@ export function AgentMessageRow({
           aria-keyshortcuts="D"
         >
           <span className="min-w-0 flex-1">
-            <span className="block text-sm leading-relaxed font-medium text-foreground whitespace-pre-line [overflow-wrap:anywhere]">
+            <span className="block text-base leading-relaxed font-medium text-foreground whitespace-pre-line [overflow-wrap:anywhere]">
               {summary}
             </span>
           </span>

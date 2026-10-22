@@ -12,10 +12,12 @@ export function AgentIdentityLabel({
   threadRef,
   featureTitle,
   lineage,
+  size = "sm",
 }: {
   threadRef: ScopedThreadRef;
   featureTitle?: string | null;
   lineage?: Pick<OrchestrationV2AppThreadLineage, "relationshipToParent">;
+  size?: "sm" | "md";
 }) {
   const thread = useQuietThreadShell(threadRef);
   const project = useProject(
@@ -52,6 +54,7 @@ export function AgentIdentityLabel({
           theme={theme}
           identity={identity}
           projectColor={resolveAgentProjectColor(project)}
+          size={size}
         />
         <span className="min-w-0 truncate">{identity.name}</span>
       </TooltipTrigger>

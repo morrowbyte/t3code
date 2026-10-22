@@ -48,33 +48,32 @@ export const AgentMessage = memo(function AgentMessage(props: {
   const direction = props.direction === "outgoing" ? "An" : "Von";
   const metadata = (
     <View className="w-full min-w-0 flex-row items-center gap-1.5">
-      <Text className="text-xs text-foreground-muted">{direction}</Text>
+      <View className="shrink-0">
+        <SymbolView
+          name={props.direction === "outgoing" ? "arrow.up.right" : "arrow.down.left"}
+          size={24}
+          tintColorClassName="accent-foreground-muted"
+        />
+      </View>
+      <Text className="text-lg text-foreground-muted">{direction}</Text>
       {props.senderThreadId ? (
         <View className="min-w-0 flex-1">
           <AgentIdentityLabel
             threadRef={{ environmentId: props.environmentId, threadId: props.senderThreadId }}
             featureTitle={sender?.title}
+            size="md"
           />
         </View>
       ) : (
-        <Text className="min-w-0 flex-1 text-xs text-foreground-muted" numberOfLines={1}>
+        <Text className="min-w-0 flex-1 text-lg text-foreground-muted" numberOfLines={1}>
           {actor}
         </Text>
       )}
-      {props.senderThreadId ? (
-        <View className="shrink-0">
-          <SymbolView
-            name="arrow.up.right"
-            size={14}
-            tintColorClassName="accent-foreground-muted"
-          />
-        </View>
-      ) : null}
     </View>
   );
 
   return (
-    <View className="mb-4 w-full rounded-lg border border-border px-3.5 py-3">
+    <View className="mb-3 w-full rounded-2xl border border-border bg-grouped-card px-3 py-2.5">
       <View className="min-h-11 flex-row items-center gap-3">
         {props.senderThreadId ? (
           <Pressable
