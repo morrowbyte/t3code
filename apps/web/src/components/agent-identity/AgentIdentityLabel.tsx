@@ -47,7 +47,12 @@ export function AgentIdentityLabel({
           />
         }
       >
-        <AgentAvatar identity={identity} projectColor={resolveAgentProjectColor(project)} />
+        <AgentAvatar
+          threadRef={threadRef}
+          theme={theme}
+          identity={identity}
+          projectColor={resolveAgentProjectColor(project)}
+        />
         <span className="min-w-0 truncate">{identity.name}</span>
       </TooltipTrigger>
       <TooltipPopup>

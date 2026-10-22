@@ -80,6 +80,13 @@ it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
           planType: "plus",
         });
 
+        const capabilities = yield* client.request("modelProvider/capabilities/read", {});
+        assert.deepEqual(capabilities, {
+          imageGeneration: true,
+          webSearch: true,
+          namespaceTools: false,
+        });
+
         const path = yield* Path.Path;
         const peerCwd = path.join(import.meta.dirname, "..");
         const skills = yield* client.request("skills/list", { cwds: [peerCwd] });

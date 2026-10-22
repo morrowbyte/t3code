@@ -18,6 +18,9 @@ import {
   OrchestratorMcpFailure,
   SourceControlCloneRepositoryInput,
   SourceControlCloneRepositoryResult,
+  AgentAvatarKey,
+  AgentAvatarGenerateInput,
+  AgentAvatarState,
 } from "@t3tools/contracts";
 import * as FileSystem from "effect/FileSystem";
 import * as ServerConfig from "../../../config.ts";
@@ -32,6 +35,7 @@ import * as ThreadManagementService from "../../../orchestration-v2/ThreadManage
 import * as SourceControlRepositoryService from "../../../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import * as AgentAvatarService from "../../../agent-avatar/AgentAvatarService.ts";
 
 const shared = {
   success: Project,
@@ -162,7 +166,35 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
   .annotate(Tool.Destructive, true)
   .annotate(Tool.OpenWorld, true);
 
+const avatarTool = {
+  failure: OrchestratorMcpFailure,
+  failureMode: "return" as const,
+  success: AgentAvatarState,
+  dependencies: [...shared.dependencies, AgentAvatarService.AgentAvatarService],
+};
+const AgentAvatarReadTool = Tool.make("t3_agent_avatar_read", {
+  ...avatarTool,
+  parameters: AgentAvatarKey,
+  description:
+    "Read the saved portrait and generation status for one agent and style. Does not start image generation.",
+}).annotate(Tool.Readonly, true);
+const AgentAvatarGenerateTool = Tool.make("t3_agent_avatar_generate", {
+  ...avatarTool,
+  parameters: AgentAvatarGenerateInput,
+  description:
+    "Generate one individual agent portrait through the existing ChatGPT subscription. Reuses a saved portrait unless regenerate=true. Returns generating status immediately; read the same thread/style for the result. Fails explicitly without subscription access; never uses an API key or another provider.",
+}).annotate(Tool.Readonly, false);
+const AgentAvatarCancelTool = Tool.make("t3_agent_avatar_cancel", {
+  ...avatarTool,
+  parameters: AgentAvatarKey,
+  description:
+    "Cancel this agent portrait generation without stopping its project work. Keeps an existing portrait.",
+}).annotate(Tool.Readonly, false);
+
 export const ProjectToolkit = Toolkit.make(
+  AgentAvatarReadTool,
+  AgentAvatarGenerateTool,
+  AgentAvatarCancelTool,
   ThreadLaunchTool,
   ProjectListTool,
   ProjectReadTool,

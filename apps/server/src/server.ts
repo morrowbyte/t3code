@@ -52,6 +52,8 @@ import * as Scheduler from "./scheduling/Scheduler.ts";
 import * as UmlRenderRoute from "./streamable-ui/UmlRenderRoute.ts";
 import * as UmlRenderer from "./streamable-ui/UmlRenderer.ts";
 import * as VoiceTranscriptionService from "./voice/VoiceTranscriptionService.ts";
+import * as AgentAvatarService from "./agent-avatar/AgentAvatarService.ts";
+import * as CodexAvatarGenerator from "./agent-avatar/CodexAvatarGenerator.ts";
 import * as PullRequestProviderRegistry from "./pullRequest/PullRequestProviderRegistry.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import * as SqlitePersistence from "./persistence/Sqlite.ts";
@@ -687,7 +689,9 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
   ),
 );
 
-const layerRuntimeDependencies = layerRuntimeCoreDependencies.pipe(
+const layerRuntimeDependencies = AgentAvatarService.layer.pipe(
+  Layer.provide(CodexAvatarGenerator.layer),
+  Layer.provideMerge(layerRuntimeCoreDependencies),
   Layer.provideMerge(layerUsage),
   Layer.provideMerge(layerBackground),
   Layer.provideMerge(layerResourceDiagnostics),

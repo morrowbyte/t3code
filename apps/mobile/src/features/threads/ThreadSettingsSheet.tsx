@@ -2,6 +2,7 @@ import {
   getPromptControlledTraits,
   getTraitSelectChange,
 } from "@t3tools/client-runtime/model-traits";
+import { AgentAvatarSettings } from "../agent-identity/AgentAvatarSettings";
 import { SheetHeader } from "../../components/ui/SheetHeader";
 import { Toolbar } from "../../components/ui/Toolbar";
 import * as Dialog from "../../components/ui/Dialog";
@@ -13,6 +14,7 @@ import {
 } from "@t3tools/shared/serverSettings";
 import type {
   EnvironmentId,
+  ScopedThreadRef,
   ModelSelection,
   ProjectId,
   ProviderInstanceId,
@@ -245,6 +247,7 @@ type ThreadSettingsSubmenuPage =
   | { readonly kind: "runtime" };
 
 type ThreadSettingsSessionProps = {
+  readonly threadRef?: ScopedThreadRef;
   readonly environmentId: EnvironmentId | null;
   readonly projectId: ProjectId | null;
   readonly providerInstanceId?: ProviderInstanceId;
@@ -303,6 +306,7 @@ export function useExistingThreadSettingsRoutePresentation() {
 }
 
 type ThreadSettingsSessionValue = {
+  readonly threadRef: ScopedThreadRef | null;
   readonly environmentId: EnvironmentId | null;
   readonly providerInstanceId?: ProviderInstanceId;
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
@@ -647,6 +651,7 @@ function ThreadSettingsSessionProvider(
     setShowLegacy: setShowLegacyToggle,
     toggleProvider,
     toggleFavorite,
+    threadRef: props.threadRef ?? null,
   } satisfies ThreadSettingsSessionValue;
 
   return (
@@ -1035,6 +1040,7 @@ function ThreadSettingsMainContent(props: {
       maintainVisibleContentPosition={THREAD_SETTINGS_MAINTAIN_VISIBLE_CONTENT_POSITION}
       ListHeaderComponent={
         <>
+          {session.threadRef ? <AgentAvatarSettings threadRef={session.threadRef} /> : null}
           {Platform.OS === "android" ? (
             <View className="px-4 pb-2 pt-3">
               <View

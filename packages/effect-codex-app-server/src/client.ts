@@ -94,6 +94,13 @@ const V2TurnStartParamsWithCollaborationMode = CodexSchema.V2TurnStartParams.pip
   }),
 );
 
+// Codex 0.162 reports imageGeneration/webSearch before namespaceTools was added.
+const ModelProviderCapabilitiesResponse = CodexSchema.V2ModelProviderCapabilitiesReadResponse.pipe(
+  Schema.fieldsAssign({
+    namespaceTools: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  }),
+);
+
 export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make")(function* (
   stdio: Stdio.Stdio,
   options: CodexAppServerClientOptions = {},
@@ -139,7 +146,10 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
         CodexRpc.ClientRequestResponsesByMethod[M],
         CodexRpc.ClientRequestResponsesByMethod[M]
       >
-    | undefined => CodexRpc.CLIENT_REQUEST_RESPONSES[method] as never;
+    | undefined =>
+    method === "modelProvider/capabilities/read"
+      ? (ModelProviderCapabilitiesResponse as never)
+      : (CodexRpc.CLIENT_REQUEST_RESPONSES[method] as never);
 
   const getClientNotificationParamSchema = <M extends CodexRpc.ClientNotificationMethod>(
     method: M,

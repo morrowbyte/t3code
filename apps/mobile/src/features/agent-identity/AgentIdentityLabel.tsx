@@ -26,7 +26,12 @@ export const AgentIdentityLabel = memo(function AgentIdentityLabel(props: {
   const identity = deriveAgentIdentity(props.threadRef, thread?.lineage ?? props.lineage, theme);
   const content = (
     <View className="min-w-0 flex-row items-center gap-1.5 py-0.5">
-      <AgentAvatar identity={identity} projectColor={resolveAgentProjectColor(project)} />
+      <AgentAvatar
+        threadRef={props.threadRef}
+        theme={theme}
+        identity={identity}
+        projectColor={resolveAgentProjectColor(project)}
+      />
       <Text className="min-w-0 flex-1 text-xs text-foreground-muted" numberOfLines={1}>
         {identity.label}
       </Text>
