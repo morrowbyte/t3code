@@ -13,7 +13,9 @@
       "/var/log/gitlab": "/srv/gitlab/logs",
       "/var/opt/gitlab": "/srv/gitlab/data"
     },
-    "database_names": ["gitlabhq_production"],
+    "database_names": [
+      "gitlabhq_production"
+    ],
     "readiness_url": "http://127.0.0.1:8080/-/readiness?all=1",
     "quadlet": "/etc/containers/systemd/gitlab.container",
     "service": "gitlab.service",
@@ -30,7 +32,13 @@
       "ssh_host_key_sha256": "REPLACE_WITH_VERIFIED_SERVER_HOST_KEY"
     },
     "execution": {
-      "argv": ["python3", "upgrade.py", "--apply", "--plan", "change.example.json"],
+      "argv": [
+        "python3",
+        "upgrade.py",
+        "--apply",
+        "--plan",
+        "change.example.json"
+      ],
       "working_directory": "PROXY_ASSIGNED_DIRECTORY_FOR_THE_FROZEN_PACKAGE",
       "maximum_runtime_seconds": 10800,
       "privileges": "root on this Linux target; no per-file OS sandbox implied",
