@@ -34,6 +34,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import * as ServerConfig from "../../../config.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
+import { PreviewBatchInput, PreviewBatchResult } from "./PreviewBatch.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
@@ -57,6 +58,17 @@ const safeBrowserTool = <T extends Tool.Any>(tool: T): T =>
 
 const readonlyBrowserTool = <T extends Tool.Any>(tool: T): T =>
   safeBrowserTool(tool).annotate(Tool.Readonly, true).annotate(Tool.Idempotent, true) as T;
+
+const PreviewBatchTool = browserTool(
+  Tool.make("preview_batch", {
+    description:
+      "Run 1-8 known deterministic browser steps in one explicitly owned tab on expectedOrigin. Each step rechecks ownership, origin and dialogs and uses the ordinary action tool; a fresh semantic snapshot follows. Use this for already understood form fields and local text waits. Stops at the first failure, never retries, substitutes an action or falls back to foreground. An incomplete result requires readback before retrying; actions_completed is not task success. Per-step action timeout is 5 seconds. Do not use stale aria refs after navigation, or bundle an uncertain non-idempotent action twice.",
+    parameters: PreviewBatchInput,
+    success: PreviewBatchResult,
+    failure: PreviewToolFailure,
+    dependencies,
+  }).annotate(Tool.Title, "Run browser steps"),
+);
 
 const PreviewStatusTool = Tool.make("preview_status", {
   description:
@@ -309,6 +321,7 @@ const PreviewRecordingStopTool = safeBrowserTool(
 );
 
 export const PreviewToolkit = Toolkit.make(
+  PreviewBatchTool,
   PreviewDialogTool,
   PreviewStatusTool,
   PreviewOpenTool,
@@ -331,6 +344,7 @@ export const PreviewToolkit = Toolkit.make(
 );
 
 export const PreviewStandardToolkit = Toolkit.make(
+  PreviewBatchTool,
   PreviewDialogTool,
   PreviewStatusTool,
   PreviewOpenTool,

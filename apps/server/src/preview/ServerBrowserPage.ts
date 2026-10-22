@@ -512,6 +512,7 @@ type SnapshotInput = {
   readonly consoleEntries: ReadonlyArray<PreviewAutomationConsoleEntry>;
   readonly networkEntries: ReadonlyArray<PreviewAutomationNetworkEntry>;
   readonly actionTimeline: PreviewAutomationSnapshot["actionTimeline"];
+  readonly includeScreenshot?: boolean;
 };
 
 /** The scale a page renders at and its viewport in device-independent pixels, a clip's units. */
@@ -536,10 +537,9 @@ const capture = async (
   input: SnapshotInput,
   deadline: number,
 ): Promise<PreviewAutomationSnapshot> => {
-  const { renderScale, viewport, offset } = await renderingOf(input);
+  const rendering = input.includeScreenshot === false ? undefined : await renderingOf(input);
   // A late metrics reply must not begin a capture after viewers have resumed.
   if (Date.now() >= deadline) throw tooBusy();
-  const scale = Math.min(1, MAX_SCREENSHOT_WIDTH / (viewport.width * renderScale));
   const state = refsFor(input.page);
   invalidateRefs(input.page);
   const generation = state.generation;
@@ -554,7 +554,17 @@ const capture = async (
         "url" | "title" | "loading" | "visibleText" | "interactiveElements"
       >
     >,
-    captureViewport(input.page, input.cdp, { format: "png", scale, viewport, offset }),
+    rendering === undefined
+      ? Promise.resolve(undefined)
+      : captureViewport(input.page, input.cdp, {
+          format: "png",
+          scale: Math.min(
+            1,
+            MAX_SCREENSHOT_WIDTH / (rendering.viewport.width * rendering.renderScale),
+          ),
+          viewport: rendering.viewport,
+          offset: rendering.offset,
+        }),
   ]);
   void pageAndScreenshot.catch(constVoid);
   // Leaves time for the second read; a frame that never loads holds the tree until then.
@@ -601,11 +611,11 @@ const capture = async (
     consoleEntries: [...input.consoleEntries],
     networkEntries: [...input.networkEntries],
     actionTimeline: [...input.actionTimeline],
-    screenshot: {
-      mimeType: "image/png",
-      data,
-      ...pngSize(data),
-    },
+    ...(data === undefined
+      ? {}
+      : {
+          screenshot: { mimeType: "image/png" as const, data, ...pngSize(data) },
+        }),
   };
 };
 

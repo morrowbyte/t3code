@@ -5,7 +5,16 @@ import {
   type CDPSession,
   type Page,
 } from "playwright-core";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vite-plus/test";
 
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 
@@ -55,6 +64,35 @@ describe("server browser element refs", () => {
     return locator!;
   };
   const repeatedRows = `<ul>${Array.from({ length: 5 }, (_, i) => `<li>row ${i + 1}<button data-testid="delete-row" onclick="this.parentElement.remove()">delete</button></li>`).join("")}</ul>`;
+
+  it("keeps semantic reads and fresh refs usable when pixel capture is unavailable", async () => {
+    await page.setContent(
+      '<input type="password" value="private-value"><span>private-value</span><button onclick="this.textContent=\'Done\'">Save</button>',
+    );
+    const send = cdp.send.bind(cdp);
+    using capture = vi.spyOn(cdp, "send").mockImplementation((method, ...args) => {
+      if (method === "Page.captureScreenshot") return Promise.reject(new Error("No pixel capture"));
+      return send(method, ...args);
+    });
+    const result = await ServerBrowserPage.snapshot({
+      page,
+      cdp,
+      renderScale: 1,
+      consoleEntries: [],
+      networkEntries: [],
+      actionTimeline: [],
+      includeScreenshot: false,
+    });
+    expect(result.screenshot).toBeUndefined();
+    expect(String(result.accessibilityTree)).not.toContain("private-value");
+    expect(result.visibleText).not.toContain("private-value");
+    expect(capture.mock.calls.some(([method]) => method === "Page.captureScreenshot")).toBe(false);
+    await ServerBrowserPage.click(page, {
+      locator: buttonLocator(result.accessibilityTree, "Save"),
+      timeoutMs: 1_000,
+    });
+    expect(await page.getByRole("button").innerText()).toBe("Done");
+  });
 
   it("clicks the fifth repeated delete control without touching row one", async () => {
     await page.setContent(repeatedRows);

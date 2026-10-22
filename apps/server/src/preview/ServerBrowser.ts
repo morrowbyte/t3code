@@ -971,15 +971,17 @@ const make = Effect.gen(function* () {
     }
   };
 
-  const desktopRenders = (snapshot: PreviewSessionSnapshot) =>
-    desktopChannel.available
-      ? Effect.runPromise(
-          desktopChannel.awaitAttached(
-            { threadId: snapshot.threadId, tabId: snapshot.tabId },
-            DESKTOP_ATTACH_TIMEOUT,
-          ),
-        )
-      : Promise.resolve(false);
+  const desktopRenders = (snapshot: PreviewSessionSnapshot) => {
+    if (!desktopChannel.available) return Promise.resolve(false);
+    const key = { threadId: snapshot.threadId, tabId: snapshot.tabId };
+    // A hidden agent tab need not wait for a renderer that may never attach.
+    // Preserve a real existing attachment and the normal visible/user-tab wait.
+    return Effect.runPromise(
+      snapshot.automationOwner !== undefined && snapshot.reveal === false
+        ? desktopChannel.isAttached(key)
+        : desktopChannel.awaitAttached(key, DESKTOP_ATTACH_TIMEOUT),
+    );
+  };
 
   const connectDesktop = async (snapshot: PreviewSessionSnapshot) => {
     const scope = await Effect.runPromise(Scope.make());
@@ -2269,12 +2271,17 @@ const make = Effect.gen(function* () {
         return { tabId: tab.tabId, colorScheme };
       }
       case "snapshot": {
-        return withScreencastsPaused(tab, () =>
+        const includeScreenshot =
+          (input as { readonly includeScreenshot?: boolean }).includeScreenshot !== false;
+        const read = () =>
           ServerBrowserPage.snapshot({
             ...tab,
             renderScale: tab.desktop ? "display" : RENDER_SCALE,
-          }),
-        );
+            includeScreenshot,
+          });
+        // Semantic reads neither capture pixels nor interrupt the viewer's screencast.
+        if (!includeScreenshot) return read();
+        return withScreencastsPaused(tab, () => read());
       }
       case "click": {
         const clickInput = input as PreviewAutomationClickInput;
