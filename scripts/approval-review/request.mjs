@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import process from "node:process";
 import { createHash } from "node:crypto";
+import { isIP } from "node:net";
 
 const [configFile, packageFile, outputFile, operation = "submit"] = process.argv.slice(2);
 if (!configFile || !packageFile || !outputFile || !["submit", "read"].includes(operation)) {
@@ -34,7 +35,11 @@ try {
   if (url.username || url.password || url.search || url.hash || url.pathname !== "/") {
     throw new Error("invalid_authority_url");
   }
-  const privateHttp = /^(127\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(url.hostname);
+  const privateHttp =
+    isIP(url.hostname) === 4 &&
+    /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(
+      url.hostname,
+    );
   if (
     url.protocol !== "https:" &&
     !(url.protocol === "http:" && config.allowPrivateHttp === true && privateHttp)

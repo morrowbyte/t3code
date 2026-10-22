@@ -1,12 +1,16 @@
 import copy
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 import create_file_once
 import worker
@@ -40,6 +44,68 @@ class FakeApi:
 
 
 class WorkerTests(unittest.TestCase):
+    def test_binding_checks_exact_active_browser_metadata_without_mutation(self):
+        script = Path(__file__).with_name("bind-approver.py")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = root/"app"
+            (app/"apps/server/src").mkdir(parents=True)
+            policy = root/"policy.json"
+            original = '[{"verifiedTargetId":"test-target"}]'
+            policy.write_text(original)
+            config = root/"operator.json"
+            config.write_text(json.dumps({"node": sys.executable, "appRoot": str(app), "home": str(root/"home"),
+                "policyFile": str(policy), "environmentFile": str(root/"env"), "verifiedTargetId": "test-target"}))
+            session = {"sessionId": "fixture-browser", "subject": "fixture-subject", "method": "browser-session-cookie",
+                "scopes": ["orchestration:operate"], "expiresAt": "2099-01-01T00:00:00Z"}
+            cases = [(session, 0), ({**session, "method": "bearer-access-token"}, 1),
+                ({**session, "subject": "other"}, 1), ({**session, "scopes": []}, 1),
+                ({**session, "expiresAt": "2000-01-01T00:00:00Z"}, 1)]
+            for metadata, expected in cases:
+                (app/"apps/server/src/bin.ts").write_text("print("+repr(json.dumps([metadata]))+")")
+                result = subprocess.run([sys.executable, "-B", str(script), "--config", str(config),
+                    "--session-id", "fixture-browser", "--subject", "fixture-subject"], capture_output=True)
+                self.assertEqual(result.returncode, expected, result.stderr.decode())
+                self.assertEqual(policy.read_text(), original)
+
+    def test_node_requester_rejects_private_looking_dns_before_http(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for index, url in enumerate(("http://127.attacker.example", "http://172.32.0.1", "http://8.8.8.8")):
+                config = root/"config.json"
+                config.write_text(json.dumps({"authorityUrl": url, "allowPrivateHttp": True, "tokenFile": "absent"}))
+                output = root/str(index)
+                result = subprocess.run(["node", str(Path(__file__).with_name("request.mjs")), str(config), "absent", str(output)], capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+                trace = [json.loads(line) for line in Path(str(output)+".trace.jsonl").read_text().splitlines()]
+                self.assertEqual(trace[-1]["message"], "tls_required")
+                self.assertFalse(any(row["event"] == "http_submit_start" for row in trace))
+
+    def test_development_http_requires_literal_private_address_and_opt_in(self):
+        for host in ("127.0.0.1", "100.96.239.170", "172.17.160.1", "10.145.5.50", "192.168.1.5"):
+            worker.Api({"authorityUrl": "http://"+host, "allowPrivateHttp": True, "tokenFile": "unused"})
+            with self.assertRaises(ValueError):
+                worker.Api({"authorityUrl": "http://"+host, "tokenFile": "unused"})
+        for host in ("127.attacker.example", "172.32.0.1", "192.169.0.1", "100.128.0.1", "8.8.8.8"):
+            with self.assertRaises(ValueError):
+                worker.Api({"authorityUrl": "http://"+host, "allowPrivateHttp": True, "tokenFile": "unused"})
+
+    def test_operator_readback_rejects_worker_key_and_wrong_artifact(self):
+        spec = importlib.util.spec_from_file_location("operator_readback", Path(__file__).with_name("operator-readback.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as directory:
+            config, authority, _ = self.setup_case(directory)
+            config.update(ssh={"identityFile": "unused"}, sshKeygen="unused", operatorKeyFingerprint="SHA256:same", workerKeyFingerprint="SHA256:same")
+            result = type("Fingerprint", (), {"stdout": "256 SHA256:same key (ED25519)"})()
+            with patch.object(module.subprocess, "run", return_value=result), patch.object(module, "ssh_run") as remote:
+                with self.assertRaisesRegex(ValueError, "independent_identity_required"):
+                    module.check(config, authority["action"])
+                authority["action"]["path"] = "/other"
+                with self.assertRaisesRegex(ValueError, "target_mismatch"):
+                    module.check(config, authority["action"])
+                remote.assert_not_called()
+
     def setup_case(self, directory):
         source = worker.TEMPLATE.read_text()
         digest = hashlib.sha256(source.encode()).hexdigest()

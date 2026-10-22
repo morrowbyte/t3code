@@ -29,7 +29,8 @@ public static class ApprovalTokenAudit {
         try {
             if (process == IntPtr.Zero || !OpenProcessToken(process, 0x000A, out token)) throw new System.ComponentModel.Win32Exception();
             string sid = new WindowsIdentity(token).User.Value;
-            int restrictedSidCount = Info(token, 11), hasRestrictions = Info(token, 21), appContainer = Info(token, 29);
+            int restrictedSidCount = Info(token, 11), hasRestrictions = Info(token, 21), appContainer = Info(token, 29),
+                elevated = Info(token, 20), elevationType = Info(token, 18);
             if (!DuplicateToken(token, 2, out duplicate)) throw new System.ComponentModel.Win32Exception();
             var readability = new System.Collections.Generic.List<object>();
             using (var safe = new SafeAccessTokenHandle(duplicate)) {
@@ -44,7 +45,7 @@ public static class ApprovalTokenAudit {
                     }
                 });
             }
-            return new { pid, sid, restrictedSidCount, hasRestrictions, appContainer, readability };
+            return new { pid, sid, restrictedSidCount, hasRestrictions, appContainer, elevated, elevationType, readability };
         } finally {
             if (duplicate != IntPtr.Zero) CloseHandle(duplicate);
             if (token != IntPtr.Zero) CloseHandle(token);

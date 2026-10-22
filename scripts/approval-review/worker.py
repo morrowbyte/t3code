@@ -26,7 +26,9 @@ class Api:
             raise ValueError("invalid_authority_url")
         if parsed.scheme != "https":
             address = ipaddress.ip_address(parsed.hostname)
-            if parsed.scheme != "http" or not config.get("allowPrivateHttp") or not (address.is_loopback or address in ipaddress.ip_network("100.64.0.0/10")):
+            allowed = address.is_loopback or any(address in ipaddress.ip_network(network) for network in
+                ("100.64.0.0/10", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+            if parsed.scheme != "http" or not config.get("allowPrivateHttp") or not allowed:
                 raise ValueError("tls_required")
         self.token_file = Path(config["tokenFile"])
         class NoRedirect(urllib.request.HTTPRedirectHandler):

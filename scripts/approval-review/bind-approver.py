@@ -1,7 +1,6 @@
 """Trusted operator side only. Bind an existing browser identity; never approve a request."""
 import argparse
 from datetime import datetime, timezone
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -17,11 +16,12 @@ def atomic(path, data):
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(name, path)
-        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        if os.name != "nt":
+            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     finally:
         Path(name).unlink(missing_ok=True)
 
@@ -48,10 +48,18 @@ def main():
     if datetime.fromisoformat(session["expiresAt"].replace("Z", "+00:00")) <= datetime.now(timezone.utc):
         raise ValueError("browser_session_expired")
     policy = Path(config["policyFile"])
-    env_file = Path(config["environmentFile"])
+    env_file = Path(config["environmentFile"]) if os.name != "nt" else None
     # Only active local auth metadata authenticates the selection. No client label heuristic.
     with open(str(policy)+".lock", "a+b") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        if os.name == "nt":
+            import msvcrt
+            lock.write(b"\0")
+            lock.flush()
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         previous = policy.read_bytes()
         targets = json.loads(previous)
         selected = [target for target in targets if target["verifiedTargetId"] == config["verifiedTargetId"]]
@@ -70,25 +78,36 @@ def main():
             print(json.dumps({"validated": True, "sessionId": args.session_id, "subject": args.subject,
                 "verifiedTargetId": config["verifiedTargetId"], "activation": "not_requested"}))
             return
-        configured = subprocess.run(["systemctl", "--user", "show", config["unit"], "--property=EnvironmentFiles", "--value"], capture_output=True, check=True, text=True).stdout
-        if str(env_file) not in configured:
-            raise ValueError("unit_must_already_reference_owned_environment_file")
-        old_env = env_file.read_bytes() if env_file.exists() else None
+        if os.name == "nt":
+            dev_config = Path(config["devConfigFile"])
+            dev = json.loads(dev_config.read_text(encoding="utf-8-sig"))
+            if Path(dev["targets"]).resolve() != policy.resolve() or Path(dev["source"]).resolve() != app.resolve() or (Path(dev["state"])/"home").resolve() != Path(config["home"]).resolve():
+                raise ValueError("launcher_policy_or_home_mismatch")
+            restart = [config["powershell"], "-NoProfile", "-NonInteractive", "-File", str(Path(__file__).with_name("dev-operations.ps1")), "-Action", "restart", "-Config", str(dev_config)]
+        else:
+            configured = subprocess.run(["systemctl", "--user", "show", config["unit"], "--property=EnvironmentFiles", "--value"], capture_output=True, check=True, text=True).stdout
+            if str(env_file) not in configured:
+                raise ValueError("unit_must_already_reference_owned_environment_file")
+            restart = ["systemctl", "--user", "restart", config["unit"]]
+        old_env = env_file.read_bytes() if env_file is not None and env_file.exists() else None
         backup = policy.with_name(policy.name+".before-"+datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))
         atomic(backup, previous)
         atomic(policy, (encoded+"\n").encode())
         # systemd EnvironmentFile quoting; no token or pairing credential is written here.
-        atomic(env_file, ("T3CODE_APPROVAL_REVIEW_TARGETS="+json.dumps(encoded, ensure_ascii=False)+"\n").encode())
+        if env_file is not None:
+            atomic(env_file, ("T3CODE_APPROVAL_REVIEW_TARGETS="+json.dumps(encoded, ensure_ascii=False)+"\n").encode())
         try:
-            subprocess.run(["systemctl", "--user", "restart", config["unit"]], check=True, capture_output=True)
-            subprocess.run(["systemctl", "--user", "is-active", "--quiet", config["unit"]], check=True)
+            subprocess.run(restart, check=True, capture_output=True)
+            if os.name != "nt":
+                subprocess.run(["systemctl", "--user", "is-active", "--quiet", config["unit"]], check=True)
         except Exception:
             atomic(policy, previous)
-            if old_env is None:
-                env_file.unlink(missing_ok=True)
-            else:
-                atomic(env_file, old_env)
-            subprocess.run(["systemctl", "--user", "restart", config["unit"]], capture_output=True)
+            if env_file is not None:
+                if old_env is None:
+                    env_file.unlink(missing_ok=True)
+                else:
+                    atomic(env_file, old_env)
+            subprocess.run(restart, capture_output=True)
             raise
         print(json.dumps({"bound": True, "sessionId": args.session_id, "subject": args.subject,
             "verifiedTargetId": config["verifiedTargetId"], "oldPackages": "invalid_under_changed_session_policy",
