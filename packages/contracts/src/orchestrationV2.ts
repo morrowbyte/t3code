@@ -3192,6 +3192,7 @@ export const OrchestrationV2ThreadLaunchInput = Schema.Struct({
   initialMessage: Schema.optional(
     Schema.Struct({
       messageId: Schema.optional(MessageId),
+      senderThreadId: Schema.optional(ThreadId),
       text: Schema.String,
       context: Schema.optional(OrchestrationMessageContext),
       attachments: Schema.Array(ChatAttachment),

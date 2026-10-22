@@ -21,6 +21,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   OrchestrationV2ThreadProjectionJson,
+  OrchestrationV2ThreadLaunchInput,
   ScheduledTaskId,
   type ServerProvider,
   ThreadId,
@@ -67,6 +68,7 @@ import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAda
 const projectId = ProjectId.make("project:launch-test");
 const otherProjectId = ProjectId.make("project:launch-other");
 const encodeThreadProjection = Schema.encodeEffect(OrchestrationV2ThreadProjectionJson);
+const decodeThreadLaunch = Schema.decodeUnknownSync(OrchestrationV2ThreadLaunchInput);
 const modelSelection = {
   instanceId: ProviderInstanceId.make("codex"),
   model: "gpt-5.1-codex",
@@ -463,6 +465,55 @@ it.effect("runs a thread-bound automation on the provider the thread uses now", 
     assert.deepStrictEqual(run?.modelSelection, claudeModelSelection);
     assert.deepStrictEqual(projection.thread.modelSelection, claudeModelSelection);
   }).pipe(Effect.provide(Layer.mergeAll(harness.layer, layerScheduledTasks)));
+});
+
+it.effect("retains the initiating agent on an RPC launch and its replay", () => {
+  const harness = makeHarness({ runSetup: () => Effect.never });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const senderThreadId = ThreadId.make("thread:initiating-agent");
+    const request = decodeThreadLaunch({
+      ...launchInput({
+        command: "command:agent-launch",
+        thread: "thread:agent-launch",
+        workspace: { type: "worktree", baseRef: "main" },
+      }),
+      creationSource: "mcp",
+      initialMessage: {
+        messageId: "message:agent-launch",
+        senderThreadId,
+        text: "Check the cloud interface",
+        attachments: [],
+      },
+    });
+    const input = {
+      ...launchInput({
+        command: "command:agent-launch",
+        thread: "thread:agent-launch",
+        workspace: { type: "worktree", baseRef: "main" },
+      }),
+      createdBy: "agent" as const,
+      creationSource: "mcp" as const,
+      initialMessage: {
+        text: request.initialMessage!.text,
+        attachments: request.initialMessage!.attachments,
+        ...(request.initialMessage?.senderThreadId === undefined
+          ? {}
+          : { senderThreadId: request.initialMessage.senderThreadId }),
+      },
+    };
+    const launched = yield* launches.launch(input);
+    yield* launches.launch(input);
+    const projection = yield* threads.getThreadProjection(launched.threadId);
+    assert.equal(projection.messages.length, 1);
+    assert.equal(projection.messages[0]?.senderThreadId, senderThreadId);
+    assert.equal(projection.messages[0]?.createdBy, "agent");
+    const item = projection.turnItems.find((candidate) => candidate.type === "user_message");
+    assert.equal(item?.type === "user_message" ? item.senderThreadId : undefined, senderThreadId);
+    const wire = yield* encodeThreadProjection(projection);
+    assert.equal(wire.messages[0]?.senderThreadId, senderThreadId);
+  }).pipe(Effect.provide(harness.layer));
 });
 
 it.effect("retains automation and sender attribution while a message waits in the queue", () => {

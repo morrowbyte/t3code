@@ -1,4 +1,4 @@
-import { EnvironmentId, MessageId } from "@t3tools/contracts";
+import { EnvironmentId, MessageId, ThreadId } from "@t3tools/contracts";
 import type { LegendListRef } from "@legendapp/list/react";
 import { createRef, type ComponentProps, type ReactElement } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -124,6 +124,41 @@ function setup(): Disposable {
   leaveNavigationMode();
   return { [Symbol.dispose]: leaveNavigationMode };
 }
+
+it("shows the initiating agent identity and a link on the initial message", async () => {
+  using _state = setup();
+  const senderThreadId = ThreadId.make("thread:initial-message-sender");
+  await using screen = await renderTimeline([
+    message("Check the cloud interface", {
+      createdBy: "agent",
+      creationSource: "mcp",
+      senderThreadId,
+    }),
+  ]);
+  const link = await vi.waitFor(() => {
+    const element = screen.container.querySelector<HTMLAnchorElement>(
+      'a[aria-label^="Absenderthread öffnen:"]',
+    );
+    expect(element).not.toBeNull();
+    return element!;
+  });
+  expect(decodeURIComponent(link.getAttribute("href")!)).toContain(
+    `/${ENVIRONMENT_ID}/${senderThreadId}`,
+  );
+  expect(link.querySelector("[data-agent-identity]")).not.toBeNull();
+  expect(link.textContent?.trim()).toMatch(/\S+\s+\S+/u);
+  expect(screen.container.textContent).not.toContain("nicht erfasst");
+});
+
+it("keeps legacy MCP messages readable without a missing-sender notice or invented link", async () => {
+  using _state = setup();
+  await using screen = await renderTimeline([
+    message("Check the cloud interface", { createdBy: "user", creationSource: "mcp" }),
+  ]);
+  await vi.waitFor(() => expect(screen.container.textContent).toContain("MCP"));
+  expect(screen.container.textContent).not.toContain("nicht erfasst");
+  expect(screen.container.querySelector('a[aria-label^="Absenderthread öffnen:"]')).toBeNull();
+});
 
 it("copies only the keyboard-focused message, not another response or the whole transcript", async () => {
   using _state = setup();
