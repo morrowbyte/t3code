@@ -5,6 +5,9 @@ import { expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
 import { act, render } from "../../../test/render";
 import { ComposerPendingApprovalActions } from "../chat/ComposerPendingApprovalActions";
+import { ComposerPendingApprovalPanel } from "../chat/ComposerPendingApprovalPanel";
+import { usePendingApprovalSelection } from "../chat/usePendingApprovalSelection";
+import type { PendingApproval } from "../../session-logic";
 import { gitlabExampleBundle } from "./gitlabExample";
 
 function externalApproval() {
@@ -44,6 +47,69 @@ function externalApproval() {
     approvalReview: authority,
   };
 }
+
+function PendingQueue({
+  approvals,
+  onRespond,
+}: {
+  approvals: PendingApproval[];
+  onRespond: (requestId: RuntimeRequestId, decision: string, hash?: string) => Promise<unknown>;
+}) {
+  const { selectedApproval: selected, selectApproval } = usePendingApprovalSelection(
+    approvals,
+    approvals[0] ?? null,
+  );
+  if (!selected) return null;
+  return (
+    <>
+      <ComposerPendingApprovalPanel
+        approval={selected}
+        pendingCount={approvals.length}
+        pendingIndex={approvals.indexOf(selected)}
+        approvals={approvals}
+        onSelectRequest={selectApproval}
+      />
+      <ComposerPendingApprovalActions
+        approval={selected}
+        requestId={selected.requestId}
+        canRespond={selected.responseCapability === "external"}
+        isResponding={false}
+        onRespondToApproval={onRespond}
+      />
+    </>
+  );
+}
+
+it("can review a second request while an earlier disconnected example remains pending", async () => {
+  const next = externalApproval();
+  const first: PendingApproval = {
+    ...next,
+    requestId: RuntimeRequestId.make("disconnected-first"),
+    responseCapability: "not_resumable",
+    approvalReview: undefined,
+    detail: JSON.stringify({ approvalReview: gitlabExampleBundle }),
+  };
+  const onRespond = vi.fn(async () => undefined);
+  await using screen = await render(
+    <PendingQueue approvals={[first, next]} onRespond={onRespond} />,
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Next pending approval" }));
+  await expect.element(screen.getByText("2/2")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Review action" }));
+  const dialog = document.querySelector<HTMLElement>('[role="dialog"][data-keyboard-local]')!;
+  expect(dialog.textContent).toContain("Isolated test target");
+  await act(async () =>
+    [...dialog.querySelectorAll("button")]
+      .find((button) => button.textContent === "Evidence")!
+      .click(),
+  );
+  expect(dialog.textContent).toContain(next.requestId);
+  expect(dialog.textContent).toContain(next.approvalReview.packageHash);
+  await userEvent.click(screen.getByRole("button", { name: "Close review" }));
+  await userEvent.click(screen.getByRole("button", { name: "Previous pending approval" }));
+  await expect.element(screen.getByText("1/2")).toBeVisible();
+  expect(onRespond).not.toHaveBeenCalled();
+});
 
 it("enables an exact verified external package only inside review and sends its frozen hash", async () => {
   const onRespond = vi.fn(async () => undefined);

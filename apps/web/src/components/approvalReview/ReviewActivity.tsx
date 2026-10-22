@@ -295,7 +295,6 @@ function ActivityCanvas({
           defaultViewport={{ x: 70, y: 90, zoom: 1 }}
           preventScrolling
           autoPanOnNodeFocus
-          proOptions={{ hideAttribution: true }}
         >
           <Background gap={24} size={1} color="var(--border)" />
         </ReactFlow>

@@ -323,6 +323,7 @@ import { transcribeVoiceRecording } from "../../voice/transcriptionClient";
 import { hasSpeechTranscription } from "@t3tools/shared/speechTranscription";
 import type { SpeechTranscription, SpeechTranscriptionRange } from "@t3tools/contracts";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
+import { usePendingApprovalSelection } from "./usePendingApprovalSelection";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
 import {
@@ -2190,9 +2191,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ...pendingApprovals.map((request) => request.requestId),
     ...incomingPendingUserInputs.map((request) => request.requestId),
   ]);
+  const { selectedApproval: selectedPendingApproval, selectApproval: setSelectedApprovalId } =
+    usePendingApprovalSelection(pendingApprovals, incomingPendingApproval);
   const activePendingApproval =
-    incomingPendingApproval && !heldRequestIds.has(incomingPendingApproval.requestId)
-      ? incomingPendingApproval
+    selectedPendingApproval && !heldRequestIds.has(selectedPendingApproval.requestId)
+      ? selectedPendingApproval
       : null;
   const holdingUserInput = incomingPendingUserInputs[0]
     ? heldRequestIds.has(incomingPendingUserInputs[0].requestId)
@@ -7047,6 +7050,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       <ComposerPendingApprovalPanel
                         approval={activePendingApproval}
                         pendingCount={pendingApprovals.length}
+                        pendingIndex={pendingApprovals.findIndex(
+                          (approval) => approval.requestId === activePendingApproval.requestId,
+                        )}
+                        onSelectRequest={setSelectedApprovalId}
+                        approvals={pendingApprovals}
                         environmentId={activeThreadEnvironmentId}
                         runtimeMode={activeThread?.runtimeMode}
                       />

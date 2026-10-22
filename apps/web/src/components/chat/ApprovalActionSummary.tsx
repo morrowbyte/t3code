@@ -35,6 +35,7 @@ const modeLabels: Record<RuntimeMode, string> = {
 export interface ApprovalActionSummaryProps {
   readonly approval: PendingApproval | null;
   readonly pendingCount?: number;
+  readonly pendingIndex?: number;
   /** The request's thread environment, never an unrelated composer destination. */
   readonly environmentId?: EnvironmentId | undefined;
   readonly environmentLabel?: string | null | undefined;
@@ -46,6 +47,7 @@ export interface ApprovalActionSummaryProps {
 export function ApprovalActionSummary({
   approval,
   pendingCount = 1,
+  pendingIndex = 0,
   environmentId,
   environmentLabel,
   runtimeMode,
@@ -76,7 +78,7 @@ export function ApprovalActionSummary({
         </Badge>
         {pendingCount > 1 ? (
           <span className="ml-auto text-2xs tabular-nums text-muted-foreground">
-            1/{pendingCount}
+            {pendingIndex + 1}/{pendingCount}
           </span>
         ) : null}
       </div>

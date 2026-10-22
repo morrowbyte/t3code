@@ -7,6 +7,7 @@ import type {
   ProviderRequestKind,
   RuntimeRequestId,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 
 export interface ThreadPendingApproval {
@@ -24,7 +25,7 @@ export function canRespondToThreadApproval(
   approval: ThreadPendingApproval | undefined,
   decision: ProviderApprovalDecision,
   packageHash?: string,
-  now = Date.now(),
+  now = Clock.Clock.defaultValue().currentTimeMillisUnsafe(),
 ): boolean {
   if (!approval || approval.responseCapability === "not_resumable") return false;
   const authority = approval.approvalReview;

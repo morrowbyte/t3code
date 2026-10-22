@@ -1,7 +1,15 @@
 /* oxlint-disable react/no-array-index-key -- This immutable package preserves supplied positions and duplicate entries without IDs. */
 import { verifyReviewBundle, type ReviewBundle } from "@t3tools/client-runtime/approvalReview";
 import type { ApprovalReviewAuthority } from "@t3tools/contracts";
-import { useEffect, useEffectEvent, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentRef,
+  type ReactNode,
+} from "react";
 import { Modal, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -22,7 +30,7 @@ export function ApprovalReviewModal(props: {
   readonly onClose: () => void;
 }) {
   const insets = useSafeAreaInsets();
-  const bodyScroll = useRef<ScrollView>(null);
+  const bodyScroll = useRef<ComponentRef<typeof ScrollView>>(null);
   const [tab, setTab] = useState<"source" | "steps">("source");
   const [source, setSource] = useState({ path: props.bundle?.files[0]?.path ?? "", line: 1 });
   const [showOriginal, setShowOriginal] = useState(false);

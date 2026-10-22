@@ -193,9 +193,12 @@ it("derives host capability and authority only from the runtime request", () => 
     responseCapability: { type: "external" as const },
     approvalReview: reviewAuthority,
   };
+  const questionItem = projection.turnItems[0];
+  if (questionItem?.type !== "user_input_request") throw new Error("Missing question fixture");
   const item = {
-    ...projection.turnItems[0]!,
+    ...questionItem,
     type: "approval_request" as const,
+    requestId,
     requestKind: "command" as const,
     prompt: "Exact providerless request detail",
     approvalReview: { ...reviewAuthority, packageHash: "d".repeat(64) },
