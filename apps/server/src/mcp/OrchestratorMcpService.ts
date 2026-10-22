@@ -1,3 +1,4 @@
+import { firstDelegationParagraph } from "@t3tools/shared/delegationMessage";
 import {
   CommandId,
   type RunId,
@@ -1901,6 +1902,7 @@ const make = Effect.gen(function* () {
             parentRunId: parentRun.id,
             parentNodeId: parentRun.rootNodeId,
             task: taskPrompt(input),
+            taskFirstParagraph: firstDelegationParagraph(input.task),
             ...(input.title === undefined ? {} : { title: input.title }),
             modelSelection: target.modelSelection,
             runtimeMode,

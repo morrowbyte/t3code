@@ -1527,6 +1527,10 @@ export const OrchestrationV2TurnItem = Schema.Union([
     driver: ProviderDriverKind,
     providerInstanceId: ProviderInstanceId,
     childThreadId: Schema.NullOr(ThreadId),
+    /** Recorded on new T3 delegations; provider-native and older items omit it. */
+    delegationMessage: Schema.optional(
+      Schema.Struct({ messageId: MessageId, firstParagraph: Schema.String }),
+    ),
     prompt: Schema.String,
     progress: Schema.optional(Schema.String),
     result: Schema.NullOr(Schema.String),
@@ -2293,6 +2297,9 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     driver: ProviderDriverKind,
     providerInstanceId: ProviderInstanceId,
     childThreadId: Schema.NullOr(ThreadId),
+    delegationMessage: Schema.optional(
+      Schema.Struct({ messageId: MessageId, firstParagraph: Schema.String }),
+    ),
     prompt: Schema.String,
     progress: Schema.optional(Schema.String),
     result: Schema.NullOr(Schema.String),
@@ -2969,6 +2976,8 @@ export const OrchestrationV2Command = Schema.Union([
     parentRunId: RunId,
     parentNodeId: NodeId,
     task: TrimmedNonEmptyString,
+    /** Original task introduction, before an MCP role wrapper is added to task. */
+    taskFirstParagraph: Schema.optional(Schema.String),
     title: Schema.optional(TrimmedNonEmptyString),
     modelSelection: ModelSelection,
     runtimeMode: RuntimeMode,

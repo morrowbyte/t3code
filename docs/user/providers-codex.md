@@ -99,6 +99,19 @@ when it resets, when Codex reports them. Send the message again after the reset.
 message also says whether your workspace owner needs to add credits or raise the
 spend limit to continue sooner.
 
+## Generate an agent portrait
+
+Open the thread details on web or desktop, or thread settings on mobile, and
+generate an agent portrait. This uses Codex image generation through your
+ChatGPT subscription and its image usage limits. A Codex thread uses its selected
+account; other threads use the environment's enabled Codex account. API-key logins
+and custom OpenAI endpoints are not supported for portraits.
+
+Portraits are saved per agent and avatar style, and reused across devices connected
+to that environment. Generation is explicit: changing a style does not start a
+request. You can cancel or generate a replacement; the existing portrait remains
+available if replacement fails.
+
 ## Send feedback to OpenAI
 
 In an existing Codex thread, send `/feedback` with an optional description, for

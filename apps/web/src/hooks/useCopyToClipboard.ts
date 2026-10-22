@@ -206,7 +206,7 @@ export function useCopyToClipboard<TContext = void>({
   extraFlavors?: Readonly<Record<string, string>>;
 } = {}): { copyToClipboard: (value: string, ctx: TContext) => void; isCopied: boolean } {
   const [isCopied, setIsCopied] = React.useState(false);
-  const timeoutIdRef = React.useRef<NodeJS.Timeout | null>(null);
+  const timeoutIdRef = React.useRef<ReturnType<typeof setTimeout> | number | null>(null);
   // Callers pass inline onCopy/onError but key callbacks and effects on this function.
   const copyToClipboard = useStableCallback((value: string, ctx: TContext): void => {
     void writeTextToClipboard(value, target, extraFlavors).then(

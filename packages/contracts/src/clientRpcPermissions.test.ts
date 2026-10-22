@@ -9,6 +9,14 @@ import {
 import { CLIENT_GUARDED_RPC_SCOPES, clientRpcRequiredScopes } from "./clientRpcPermissions.ts";
 import { WS_METHODS } from "./rpc.ts";
 
+it("separates avatar reads from subscription-consuming generation on the destination", () => {
+  for (const method of [WS_METHODS.agentAvatarGenerate, WS_METHODS.agentAvatarCancel]) {
+    expect(clientRpcRequiredScopes(method, { threadId: "agent", theme: "weasel" })).toEqual([
+      AuthOrchestrationOperateScope,
+    ]);
+  }
+});
+
 it("requires read access for Windows CUA state on the destination environment", () => {
   expect(clientRpcRequiredScopes(WS_METHODS.windowsCuaSubscribe, {})).toEqual([
     AuthOrchestrationReadScope,

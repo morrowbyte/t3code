@@ -2,7 +2,14 @@ import type { OrchestrationV2TurnItem } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
-import { parseAgentMessage, readAgentSend } from "./agentMessagePresentation";
+import { agentMessagePreview, parseAgentMessage, readAgentSend } from "./agentMessagePresentation";
+
+it("shows the complete authored first paragraph, including wrapped lines and long sentences", () => {
+  const opening = `Prüfe die Agentennachrichten mit VK Birkenborn.\r\n${"Der Kurzauftrag bleibt vollständig sichtbar. ".repeat(8).trim()}`;
+  expect(agentMessagePreview(`\r\n${opening}\r\n \t\r\nTechnik: ausführlicher Auftrag`)).toBe(
+    opening,
+  );
+});
 
 describe("parseAgentMessage", () => {
   it.each([

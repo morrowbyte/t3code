@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./delegationMessage": {
+      "types": "./src/delegationMessage.ts",
+      "import": "./src/delegationMessage.ts"
+    },
     "./speechTranscription": {
       "types": "./src/speechTranscription.ts",
       "import": "./src/speechTranscription.ts"

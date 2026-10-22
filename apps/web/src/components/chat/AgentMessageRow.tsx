@@ -8,7 +8,7 @@ import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collaps
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { MessageCopyButton } from "./MessageCopyButton";
 import { findRevealRef } from "./markdownFindContext";
-import { parseAgentMessage } from "./agentMessagePresentation";
+import { agentMessagePreview, parseAgentMessage } from "./agentMessagePresentation";
 import { AgentIdentityLabel } from "../agent-identity/AgentIdentityLabel";
 import { handleObjectActionKey } from "./objectKeyboardActions";
 
@@ -40,16 +40,10 @@ function keyedSections<T extends { readonly label: string }>(sections: ReadonlyA
   });
 }
 
-function originalExcerpt(text: string) {
-  const firstLine = text.trimStart().split(/\r?\n/u, 1)[0] ?? "";
-  if (firstLine.length <= 150) return firstLine;
-  const boundary = firstLine.lastIndexOf(" ", 150);
-  return `${firstLine.slice(0, boundary > 90 ? boundary : 150)}…`;
-}
-
 export function AgentMessageRow({
   messageId,
   text,
+  previewText,
   peerThreadId,
   peerTitle,
   attribution,
@@ -68,6 +62,7 @@ export function AgentMessageRow({
 }: {
   messageId: string;
   text: string | null;
+  previewText?: string | undefined;
   peerThreadId: ThreadId | undefined;
   peerTitle: string | null;
   attribution: "agent" | "unknown";
@@ -95,7 +90,8 @@ export function AgentMessageRow({
   const technical = keyed.filter((section) => section.kind === "technical");
   const outgoing = direction === "outgoing";
   const DirectionIcon = outgoing ? ArrowUpRightIcon : ArrowDownLeftIcon;
-  const summary = parsed?.summary ?? (text ? originalExcerpt(text) : "Agentennachricht");
+  const summary =
+    previewText ?? parsed?.summary ?? (text ? agentMessagePreview(text) : "Agentennachricht");
   const collapse = () => {
     setExpanded(false);
     setOriginalOpen(false);
@@ -165,12 +161,7 @@ export function AgentMessageRow({
           aria-keyshortcuts="D"
         >
           <span className="min-w-0 flex-1">
-            {parsed?.kind === "legacy" ? (
-              <span className="mb-1 block text-2xs text-muted-foreground">Auszug</span>
-            ) : null}
-            <span
-              className={`text-sm leading-relaxed font-medium text-foreground [overflow-wrap:anywhere] ${expanded ? "block" : "line-clamp-2"}`}
-            >
+            <span className="block text-sm leading-relaxed font-medium text-foreground whitespace-pre-line [overflow-wrap:anywhere]">
               {summary}
             </span>
           </span>

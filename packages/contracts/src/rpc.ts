@@ -1,4 +1,10 @@
 import { WindowsCuaStatus, WindowsCuaStatusError } from "./windowsCua.ts";
+import {
+  AgentAvatarKey,
+  AgentAvatarGenerateInput,
+  AgentAvatarState,
+  AgentAvatarError,
+} from "./agentAvatar.ts";
 import { EnvironmentId as CuaEnvironmentId } from "./baseSchemas.ts";
 import {
   YaziPickerOpenInput,
@@ -486,6 +492,9 @@ export const WS_METHODS = {
   liveVoiceSubscribe: "liveVoice.subscribe",
   nativeAuthorRead: "nativeAuthor.read",
   nativeAuthorWrite: "nativeAuthor.write",
+  agentAvatarRead: "agentAvatar.read",
+  agentAvatarGenerate: "agentAvatar.generate",
+  agentAvatarCancel: "agentAvatar.cancel",
 
   // VCS methods
   vcsPull: "vcs.pull",
@@ -1771,6 +1780,22 @@ const WsOrchestrationV2DispatchCommandRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS
   error: Schema.Union([OrchestrationV2DispatchCommandError, EnvironmentAuthorizationError]),
 });
 
+const WsAgentAvatarReadRpc = Rpc.make(WS_METHODS.agentAvatarRead, {
+  payload: AgentAvatarKey,
+  success: AgentAvatarState,
+  error: Schema.Union([AgentAvatarError, EnvironmentAuthorizationError]),
+});
+const WsAgentAvatarGenerateRpc = Rpc.make(WS_METHODS.agentAvatarGenerate, {
+  payload: AgentAvatarGenerateInput,
+  success: AgentAvatarState,
+  error: Schema.Union([AgentAvatarError, EnvironmentAuthorizationError]),
+});
+const WsAgentAvatarCancelRpc = Rpc.make(WS_METHODS.agentAvatarCancel, {
+  payload: AgentAvatarKey,
+  success: AgentAvatarState,
+  error: Schema.Union([AgentAvatarError, EnvironmentAuthorizationError]),
+});
+
 const WsNativeAuthorReadRpc = Rpc.make(WS_METHODS.nativeAuthorRead, {
   payload: Schema.Union([NativeAuthorRead, NativeAuthorOpenResults]),
   success: NativeAuthorState,
@@ -2264,6 +2289,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsEnsureScratchRpc,
   WsNativeAuthorReadRpc,
   WsNativeAuthorWriteRpc,
+  WsAgentAvatarReadRpc,
+  WsAgentAvatarGenerateRpc,
+  WsAgentAvatarCancelRpc,
   WsProjectsCreateNewRpc,
   WsProjectsWriteFileRpc,
   WsProjectsFeatureTimingRpc,

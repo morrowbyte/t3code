@@ -2,6 +2,7 @@ import * as AgentObservatory from "./observatory/AgentObservatoryService.ts";
 import * as CodexLiveSessionService from "./voice/CodexLiveSessionService.ts";
 import * as DesktopTelemetryReceiver from "./resourceTelemetry/DesktopTelemetryReceiver.ts";
 import * as NativeAuthorService from "./orchestration-v2/NativeAuthorService.ts";
+import * as AgentAvatarService from "./agent-avatar/AgentAvatarService.ts";
 import * as YaziPicker from "./attachments/YaziPicker.ts";
 import { readMainRendererDiagnosticsForTarget } from "./ws.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -500,6 +501,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(CodexLiveSessionService.CodexLiveSessionService)({}),
   Layer.mock(DesktopTelemetryReceiver.DesktopTelemetryReceiver)({}),
   Layer.mock(NativeAuthorService.NativeAuthorService)({}),
+  Layer.mock(AgentAvatarService.AgentAvatarService)({}),
   Layer.mock(YaziPicker.YaziPicker)({}),
 
   Layer.mock(ServerSecretStore.ServerSecretStore)({}),

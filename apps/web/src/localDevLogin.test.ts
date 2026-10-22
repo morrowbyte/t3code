@@ -19,7 +19,7 @@ async function run(
   );
   cookieHeaders.append("set-cookie", "t3_session_previous=; Max-Age=0; HttpOnly; Path=/");
   const fetch = vi
-    .fn<typeof globalThis.fetch>()
+    .fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>()
     .mockResolvedValueOnce(
       new Response("{}", {
         status: options.exchangeStatus ?? 200,

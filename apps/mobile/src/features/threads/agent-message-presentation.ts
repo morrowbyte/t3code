@@ -6,6 +6,10 @@ type MessageStatus = "info" | "fertig" | "blockiert" | "frage" | "entscheidung";
 type SectionKind = "result" | "open" | "next" | "decision" | "technical" | "detail";
 type Delivery = "started" | "queued" | "steered" | "restarted";
 
+export function agentMessagePreview(text: string): string {
+  return text.trim().split(/\r?\n[\t ]*\r?\n/u, 1)[0] ?? "";
+}
+
 interface MessageSection {
   readonly kind: SectionKind;
   readonly label: string;

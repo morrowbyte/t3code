@@ -216,6 +216,40 @@ describe("orchestration V2 wire projection", () => {
     expect(item.progress).toBe(progress);
   });
 
+  it("preserves the entire delegation introduction through wire and JSON contracts", () => {
+    const firstParagraph = `Kurz: ${"Ein vollständiger langer Absatz. ".repeat(2_000)}\nMit einer weiteren Zeile.`;
+    const item = {
+      ...base,
+      type: "subagent" as const,
+      subagentId: NodeId.make("delegated-agent"),
+      origin: "app_owned" as const,
+      driver: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      childThreadId: ThreadId.make("delegated-child"),
+      delegationMessage: { messageId: MessageId.make("delegated-message"), firstParagraph },
+      prompt: `${firstParagraph}\n\nTechnical instructions.`,
+      result: null,
+    } satisfies OrchestrationV2TurnItem;
+    const projected = projectTurnItemForWire(item);
+    const decoded = decodeTurnItem(projected);
+    const json = decodeTurnItemJson(encodeTurnItemJson(decoded));
+    expect(json).toMatchObject({ delegationMessage: item.delegationMessage });
+    expect(projected).not.toMatchObject({ prompt: item.prompt });
+    expect(projectTurnItemForDetail(item)).toMatchObject({
+      delegationMessage: item.delegationMessage,
+    });
+    const event = {
+      id: EventId.make("delegated-communication:wire"),
+      type: "turn-item.updated" as const,
+      threadId: base.threadId,
+      occurredAt: base.updatedAt,
+      payload: item,
+    };
+    expect(projectDomainEventForWire(event)).toMatchObject({
+      payload: { delegationMessage: item.delegationMessage },
+    });
+  });
+
   it("leaves a screenshot's bytes out of the fetched tool output", () => {
     const data = "A".repeat(600_000);
     const item = {

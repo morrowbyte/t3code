@@ -1095,6 +1095,42 @@ describe("buildThreadFeed", () => {
     );
   });
 
+  it("keeps new delegation cards visible outside settled run folds without changing legacy subagents", () => {
+    const firstParagraph =
+      "Prüfe die Darstellung mit VK Birkenborn.\nBehalte den vollständigen Kurzauftrag.";
+    const item: OrchestrationV2TurnItem = {
+      ...base("delegation", "2026-06-20T00:00:02.000Z", 2),
+      type: "subagent",
+      subagentId: NodeId.make("child-agent"),
+      origin: "app_owned",
+      driver: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      childThreadId: sourceThreadId,
+      prompt: `${firstParagraph}\n\nTechnik: vollständiger Child-Auftrag.`,
+      result: null,
+      delegationMessage: { messageId: MessageId.make("child-task"), firstParagraph },
+    };
+    const entries = deriveThreadFeedPresentation(
+      buildThreadFeed([
+        projected(userMessage(), 0),
+        projected(item, 1),
+        projected(assistantMessage(), 2),
+      ]),
+      { runId, status: "completed", startedAt: null, completedAt: null },
+      new Set(),
+    );
+    expect(entries.filter((entry) => entry.type === "agent-send")).toHaveLength(1);
+    expect(entries.find((entry) => entry.type === "agent-send")).toMatchObject({
+      createdAt: "2026-06-20T00:00:02.000Z",
+      projectedItem: { item: { delegationMessage: { firstParagraph } } },
+    });
+    expect(
+      buildThreadFeed([projected({ ...item, delegationMessage: undefined }, 0)]).some(
+        (entry) => entry.type === "agent-send",
+      ),
+    ).toBe(false);
+  });
+
   it("keeps outgoing messages visible outside compact work groups and settled run folds", () => {
     const rows = [
       projected(command("2026-06-20T00:00:01.000Z"), 0),

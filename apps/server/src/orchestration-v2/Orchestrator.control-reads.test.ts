@@ -649,6 +649,85 @@ it.effect("settles only the stopped run's background work, once", () =>
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("records delegation communication once while retaining the complete child prompt", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const parentThreadId = ThreadId.make("thread:delegation-communication");
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-delegation-communication"),
+      threadId: parentThreadId,
+      projectId: ProjectId.make("project:delegation-communication"),
+      title: "Parent",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("start-delegation-communication"),
+      threadId: parentThreadId,
+      messageId: MessageId.make("message:delegation-communication"),
+      text: "Delegate work",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const parentRun = (yield* projections.getThreadProjection(parentThreadId)).runs[0]!;
+    const firstParagraph = `Kurz: Prüfe diese Aufgabe vollständig. ${"Kein Wort abschneiden. ".repeat(40)}\nAuch diese Zeile gehört dazu.`;
+    const task = `${firstParagraph}\n\nTechnik:\nVollständiger ausführlicher Auftrag.\n\nWeitere Details.`;
+    const now = yield* DateTime.now;
+    for (const roleWrapped of [false, true]) {
+      const command = {
+        type: "delegated_task.request" as const,
+        commandId: CommandId.make(`delegate-communication-${roleWrapped}`),
+        parentThreadId,
+        parentRunId: parentRun.id,
+        parentNodeId: parentRun.rootNodeId!,
+        task: roleWrapped ? `Act as the implementation sub-agent for this task.\n\n${task}` : task,
+        ...(roleWrapped ? { taskFirstParagraph: firstParagraph } : {}),
+        modelSelection,
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+        createdBy: "agent" as const,
+        creationSource: "mcp" as const,
+        createdAt: now,
+      };
+      const accepted = yield* orchestrator.dispatch(command);
+      const updatedParent = yield* projections.getThreadProjection(parentThreadId);
+      const item = updatedParent.turnItems.find(
+        (row) => row.type === "subagent" && row.prompt === command.task,
+      );
+      assert.ok(item?.type === "subagent" && item.delegationMessage !== undefined);
+      assert.equal(item.delegationMessage.firstParagraph, firstParagraph);
+      assert.deepEqual(item.startedAt, now);
+      const child = yield* projections.getThreadProjection(item.childThreadId!);
+      assert.lengthOf(child.messages, 1);
+      assert.equal(child.messages[0]!.id, item.delegationMessage.messageId);
+      assert.equal(child.messages[0]!.text, command.task);
+      assert.equal(child.messages[0]!.senderThreadId, parentThreadId);
+      assert.equal(item.prompt, command.task);
+      const replayed = yield* orchestrator.dispatch({
+        ...command,
+        task: "A retry must not replace the original.",
+      });
+      assert.equal(replayed.sequence, accepted.sequence);
+      assert.deepEqual(
+        replayed.storedEvents.map(({ event }) => event.id),
+        accepted.storedEvents.map(({ event }) => event.id),
+      );
+      assert.deepEqual(yield* projections.getThreadProjection(parentThreadId), updatedParent);
+      assert.deepEqual(yield* projections.getThreadProjection(item.childThreadId!), child);
+    }
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("promotes child presentation without changing execution ownership", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;

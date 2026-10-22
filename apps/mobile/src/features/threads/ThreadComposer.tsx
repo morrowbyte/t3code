@@ -708,6 +708,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
   const settingsOwnerId = composerOwnerKey;
   const settingsRouteSession = {
     ownerId: settingsOwnerId,
+    threadRef: { environmentId: props.environmentId, threadId: props.selectedThread.id },
     environmentId: props.environmentId,
     projectId: props.selectedThread.projectId,
     providerInstanceId: currentModelSelection.instanceId,

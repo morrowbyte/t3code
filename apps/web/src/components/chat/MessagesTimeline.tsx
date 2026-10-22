@@ -2175,25 +2175,34 @@ function OutgoingAgentTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "
   const item =
     fetchedItem?.type === wireItem.type && fetchedItem.id === wireItem.id ? fetchedItem : wireItem;
   const send = item.type === "dynamic_tool" ? readAgentSend(item) : null;
-  const targetThreadId = send?.targetThreadId ? ThreadId.make(send.targetThreadId) : undefined;
+  const delegation = item.type === "subagent" ? item.delegationMessage : undefined;
+  const targetThreadId =
+    item.type === "subagent"
+      ? (item.childThreadId ?? undefined)
+      : send?.targetThreadId
+        ? ThreadId.make(send.targetThreadId)
+        : undefined;
   const target = useThreadShell(
     targetThreadId ? scopeThreadRef(ctx.activeThreadEnvironmentId, targetThreadId) : null,
   );
   const live = ["idle", "pending", "running", "waiting"].includes(item.status);
-  const receipt = send?.failed
-    ? "Aufruf fehlgeschlagen"
-    : send?.accepted
-      ? send.delivery === "queued"
-        ? "In Warteschlange"
-        : "Sendung angenommen"
-      : live
-        ? "Wird gesendet…"
-        : "Annahme nicht bestätigt";
+  const receipt = delegation
+    ? "Auftrag erteilt"
+    : send?.failed
+      ? "Aufruf fehlgeschlagen"
+      : send?.accepted
+        ? send.delivery === "queued"
+          ? "In Warteschlange"
+          : "Sendung angenommen"
+        : live
+          ? "Wird gesendet…"
+          : "Annahme nicht bestätigt";
 
   return (
     <AgentMessageRow
       messageId={row.id}
-      text={send?.text ?? null}
+      text={delegation?.firstParagraph ?? send?.text ?? null}
+      previewText={delegation?.firstParagraph}
       peerThreadId={targetThreadId}
       peerTitle={target?.title ?? null}
       attribution="agent"
