@@ -22,11 +22,13 @@ export function AgentAvatar({
   theme,
   identity,
   projectColor,
+  size = 24,
 }: {
   threadRef: ScopedThreadRef;
   theme: AgentAvatarKey["theme"];
   identity: ReturnType<typeof deriveAgentIdentity>;
   projectColor: string;
+  size?: 20 | 24;
 }) {
   const portraits = PORTRAITS[identity.icon];
   const avatar = useAgentAvatar(threadRef, theme);
@@ -42,7 +44,7 @@ export function AgentAvatar({
   const src = savedSrc && !failedSources.has(savedSrc) ? savedSrc : fallbackSrc;
   return (
     <span
-      className="inline-flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-full border-2 bg-muted text-3xs text-muted-foreground"
+      className={`inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full border-2 bg-muted text-3xs text-muted-foreground ${size === 20 ? "size-5" : "size-6"}`}
       style={{ borderColor: projectColor, flex: "0 0 auto" }}
       aria-hidden="true"
     >

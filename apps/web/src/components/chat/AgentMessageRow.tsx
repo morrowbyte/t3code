@@ -112,8 +112,8 @@ export function AgentMessageRow({
       data-agent-message-format={parsed?.kind ?? "loading"}
       data-user-message-attribution={attribution}
     >
-      <div className="mb-1.5 flex min-w-0 items-center gap-1.5 text-lg leading-8 text-muted-foreground">
-        <DirectionIcon className="size-6 shrink-0" aria-hidden />
+      <div className="mb-1.5 flex min-w-0 items-center gap-1.5 text-base leading-5 text-muted-foreground">
+        <DirectionIcon className="size-5 shrink-0" aria-hidden />
         <span className="shrink-0">{outgoing ? "An" : "Von"}</span>
         {peerThreadId ? (
           <Link
@@ -125,6 +125,7 @@ export function AgentMessageRow({
             <AgentIdentityLabel
               threadRef={{ environmentId, threadId: peerThreadId }}
               featureTitle={peerTitle}
+              avatarSize={20}
             />
           </Link>
         ) : (
