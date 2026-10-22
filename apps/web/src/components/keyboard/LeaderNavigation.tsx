@@ -131,18 +131,6 @@ export function LeaderNavigation({
       if (focusGeneration.current === generation) action();
     });
   };
-  const restoreModeFocus = () => {
-    if (isNavigationMode()) {
-      navigationStatus.current?.focus({ preventScroll: true });
-      return;
-    }
-    const target = returnFocus.current;
-    void afterSidebar(() => {
-      if (target === composerElement() || target === document.body || !target?.isConnected)
-        focusComposer();
-      else if (target?.isConnected) target.focus();
-    });
-  };
   const enter = (origin?: HTMLElement | null) => {
     requestNavigationMode();
     finishMode();
@@ -683,16 +671,14 @@ export function LeaderNavigation({
             <span className="inline-flex items-center gap-1">
               <Kbd>I</Kbd>compose
             </span>
-            <Kbd>Esc</Kbd>
             <Button
               size="icon-xs"
               variant="ghost"
               onClick={() => {
                 finishMode();
-                leaveNavigationMode();
-                restoreModeFocus();
+                enterComposer();
               }}
-              aria-label={mode ? `Exit ${mode} navigation` : "Return to composer"}
+              aria-label="Return to composer"
             >
               <span aria-hidden>×</span>
             </Button>
