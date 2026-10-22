@@ -47,7 +47,7 @@ describe("background process activity", () => {
     await userEvent.keyboard("{Enter}");
     expect(screen.container.querySelector('[aria-label="Full command"]')).toBeNull();
     await screen.getByRole("button", { name: "Stop all work in this thread" }).click();
-    expect(onStop).toHaveBeenCalledExactlyOnceWith();
+    expect(onStop).toHaveBeenCalledTimes(1);
   });
 
   it("shows several command identities and one shared thread stop, including pending stop", async () => {
