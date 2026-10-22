@@ -51,21 +51,25 @@ export const AgentMessage = memo(function AgentMessage(props: {
       <View className="shrink-0">
         <SymbolView
           name={props.direction === "outgoing" ? "arrow.up.right" : "arrow.down.left"}
-          size={24}
+          size={20}
           tintColorClassName="accent-foreground-muted"
         />
       </View>
-      <Text className="text-lg text-foreground-muted">{direction}</Text>
+      <Text className="text-base leading-5 text-foreground-muted">{direction}</Text>
       {props.senderThreadId ? (
         <View className="min-w-0 flex-1">
           <AgentIdentityLabel
             threadRef={{ environmentId: props.environmentId, threadId: props.senderThreadId }}
             featureTitle={sender?.title}
             size="md"
+            avatarSize={20}
           />
         </View>
       ) : (
-        <Text className="min-w-0 flex-1 text-lg text-foreground-muted" numberOfLines={1}>
+        <Text
+          className="min-w-0 flex-1 text-base leading-5 text-foreground-muted"
+          numberOfLines={1}
+        >
           {actor}
         </Text>
       )}

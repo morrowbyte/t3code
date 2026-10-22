@@ -18,6 +18,7 @@ export const AgentIdentityLabel = memo(function AgentIdentityLabel(props: {
   readonly featureTitle?: string | null;
   readonly details?: boolean;
   readonly size?: "sm" | "md";
+  readonly avatarSize?: 20 | 24;
 }) {
   const thread = useQuietThreadShell(props.threadRef);
   const project = useProject(
@@ -26,15 +27,18 @@ export const AgentIdentityLabel = memo(function AgentIdentityLabel(props: {
   const { theme } = useAgentIdentityTheme();
   const identity = deriveAgentIdentity(props.threadRef, thread?.lineage ?? props.lineage, theme);
   const content = (
-    <View className="min-w-0 flex-row items-center gap-1.5 py-0.5">
+    <View
+      className={`min-w-0 flex-row items-center gap-1.5 ${props.size === "md" ? "" : "py-0.5"}`}
+    >
       <AgentAvatar
         threadRef={props.threadRef}
         theme={theme}
         identity={identity}
         projectColor={resolveAgentProjectColor(project)}
+        size={props.avatarSize ?? 24}
       />
       <Text
-        className={`min-w-0 flex-1 text-foreground-muted ${props.size === "md" ? "text-lg font-t3-medium" : "text-xs"}`}
+        className={`min-w-0 flex-1 text-foreground-muted ${props.size === "md" ? "text-base leading-5 font-t3-medium" : "text-xs"}`}
         numberOfLines={1}
       >
         {identity.label}
