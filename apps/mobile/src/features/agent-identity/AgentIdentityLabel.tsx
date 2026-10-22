@@ -32,7 +32,6 @@ export const AgentIdentityLabel = memo(function AgentIdentityLabel(props: {
         theme={theme}
         identity={identity}
         projectColor={resolveAgentProjectColor(project)}
-        size={props.size ?? "sm"}
       />
       <Text
         className={`min-w-0 flex-1 text-foreground-muted ${props.size === "md" ? "text-lg font-t3-medium" : "text-xs"}`}

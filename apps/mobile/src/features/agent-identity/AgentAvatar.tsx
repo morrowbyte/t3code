@@ -29,13 +29,11 @@ export function AgentAvatar({
   theme,
   identity,
   projectColor,
-  size = "sm",
 }: {
   readonly threadRef: ScopedThreadRef;
   readonly theme: AgentAvatarKey["theme"];
   readonly identity: ReturnType<typeof deriveAgentIdentity>;
   readonly projectColor: string;
-  readonly size?: "sm" | "md";
 }) {
   const portraits = PORTRAITS[identity.icon];
   const avatar = useAgentAvatar(threadRef, theme);
@@ -54,9 +52,9 @@ export function AgentAvatar({
     <View
       className="items-center justify-center overflow-hidden bg-grouped-card"
       style={{
-        width: size === "md" ? 32 : 24,
-        height: size === "md" ? 32 : 24,
-        borderRadius: 16,
+        width: 24,
+        height: 24,
+        borderRadius: 12,
         borderWidth: 2,
         borderColor: projectColor,
       }}
@@ -73,7 +71,7 @@ export function AgentAvatar({
       ) : (
         <Image
           source={source}
-          style={{ width: size === "md" ? 28 : 20, height: size === "md" ? 28 : 20 }}
+          style={{ width: 20, height: 20 }}
           contentFit="cover"
           onError={() => setFailedSources((current) => new Set(current).add(sourceKey))}
         />

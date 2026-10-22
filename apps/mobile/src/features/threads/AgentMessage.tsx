@@ -73,7 +73,7 @@ export const AgentMessage = memo(function AgentMessage(props: {
   );
 
   return (
-    <View className="mb-3 w-full rounded-2xl border border-border bg-grouped-card px-3 py-2.5">
+    <View className="mb-3 w-full rounded border border-border bg-grouped-card px-3 py-2.5">
       <View className="min-h-11 flex-row items-center gap-3">
         {props.senderThreadId ? (
           <Pressable

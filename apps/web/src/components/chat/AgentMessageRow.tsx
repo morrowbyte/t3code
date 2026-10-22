@@ -105,7 +105,8 @@ export function AgentMessageRow({
       aria-label={`Agent message: ${summary}`}
       data-keyboard-help="C: copy this message · D: toggle details · J/K: messages · H/L: actions"
       onKeyDown={(event) => handleObjectActionKey(event, { c: "copy", d: "details" })}
-      className="min-w-0 rounded-2xl border border-border/60 bg-muted/20 px-3 py-2.5"
+      className="min-w-0 border border-border/60 bg-muted/20 px-3 py-2.5"
+      style={{ borderRadius: "calc(var(--radius-2xl) / 4)" }}
       data-agent-message={messageId}
       data-agent-message-direction={direction}
       data-agent-message-format={parsed?.kind ?? "loading"}
@@ -124,7 +125,6 @@ export function AgentMessageRow({
             <AgentIdentityLabel
               threadRef={{ environmentId, threadId: peerThreadId }}
               featureTitle={peerTitle}
-              size="md"
             />
           </Link>
         ) : (
