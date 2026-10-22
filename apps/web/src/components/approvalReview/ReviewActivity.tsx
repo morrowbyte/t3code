@@ -19,6 +19,7 @@ import "@xyflow/react/dist/style.css";
 import styles from "./approvalReview.module.css";
 import { activityLayout } from "./ReviewActivity.layout";
 import { useStableCallback } from "../../hooks/useStableCallback";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
 
 type ActivityNode = Node<{ step: ReviewStep; ordinal: number }, "activity">;
 function ActivityNodeView({ data, selected }: NodeProps<ActivityNode>) {
@@ -100,6 +101,7 @@ function ActivityCanvas({
   sessionKey: string;
 }) {
   const flow = useReactFlow<ActivityNode>();
+  const controlSize = useMediaQuery("max-sm") ? "xl" : "sm";
   const container = useRef<HTMLDivElement>(null);
   const previousSelection = useRef(selectedId);
   const [expanded, setExpanded] = useState(false);
@@ -211,32 +213,46 @@ function ActivityCanvas({
       }}
     >
       <div className={styles["review-graph-toolbar"]} aria-label="Diagram controls">
-        <Button variant="outline" size="sm" onClick={() => move(-1)} aria-label="Previous step">
+        <Button
+          variant="outline"
+          size={controlSize}
+          onClick={() => move(-1)}
+          aria-label="Previous step"
+        >
           ←
         </Button>
-        <Button variant="outline" size="sm" onClick={() => move(1)} aria-label="Next step">
+        <Button variant="outline" size={controlSize} onClick={() => move(1)} aria-label="Next step">
           →
         </Button>
         <Button
           variant="outline"
-          size="sm"
+          size={controlSize}
           onClick={() => void flow.zoomOut()}
           aria-label="Zoom out"
         >
           −
         </Button>
-        <Button variant="outline" size="sm" onClick={() => void flow.zoomIn()} aria-label="Zoom in">
+        <Button
+          variant="outline"
+          size={controlSize}
+          onClick={() => void flow.zoomIn()}
+          aria-label="Zoom in"
+        >
           +
         </Button>
-        <Button variant="outline" size="sm" onClick={reveal}>
+        <Button variant="outline" size={controlSize} onClick={reveal}>
           Selected step
         </Button>
-        <Button variant="outline" size="sm" onClick={() => void flow.fitView({ padding: 0.2 })}>
+        <Button
+          variant="outline"
+          size={controlSize}
+          onClick={() => void flow.fitView({ padding: 0.2 })}
+        >
           Overview
         </Button>
         <Button
           variant="outline"
-          size="sm"
+          size={controlSize}
           aria-pressed={expanded || selectedIsDecision}
           onClick={() => {
             if (selectedIsDecision)
