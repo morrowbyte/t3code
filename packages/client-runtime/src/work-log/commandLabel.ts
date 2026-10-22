@@ -1358,6 +1358,30 @@ export function commandProgramName(command: string, depth = 0): string | null {
   return commandProgramNameInternal(command, depth, "shell", MAX_COMMAND_SEGMENTS);
 }
 
+/** A short identifier, never a replacement for the original command. */
+export function commandActivityLabel(command: string): string {
+  const program = commandProgramName(command);
+  if (program === null) return "Command";
+  let remaining: string | null = withoutShellWrapper(command);
+  for (let segment = 0; remaining !== null && segment < MAX_COMMAND_SEGMENTS; segment += 1) {
+    const split = splitFirstShellCommand(remaining);
+    const tokens = tokenizeShellCommand(split.firstCommand);
+    if (tokens !== null && commandProgramName(split.firstCommand) === program) {
+      const index = tokens.findIndex((token) => staticProgramName(token) === program);
+      if (index >= 0) {
+        const args: string[] = [];
+        for (const token of tokens.slice(index + 1, index + 3)) {
+          if (indexAfterShellRedirection([token], 0) !== null || /[\r\n]/u.test(token)) break;
+          args.push(token.length > 40 ? `${token.slice(0, 39)}…` : token);
+        }
+        return withVisibleControlCharacters([program, ...args].join(" "));
+      }
+    }
+    remaining = split.remainingCommand;
+  }
+  return withVisibleControlCharacters(program);
+}
+
 // Escape bytes and other control characters render as invisible gaps; display
 // shows them as Unicode control pictures (ESC becomes ␛) instead. Tab, newline
 // and carriage return lay out as whitespace, so CRLF scripts stay unmarked.
