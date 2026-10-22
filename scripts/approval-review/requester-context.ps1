@@ -104,7 +104,7 @@ if(-not $Owner.sid -and -not $User -and $Owner.root -eq $Root -and $Owner.name -
     return
 }
 if ($User.SID.Value -ne $Owner.sid -or $Owner.root -ne $Root) { throw 'Account/root identity mismatch.' }
-$Sessions = @(Get-CimInstance Win32_LogonSession | ForEach-Object { Get-CimAssociatedInstance -InputObject $_ -Association Win32_LoggedOnUser -ErrorAction SilentlyContinue } | Where-Object SID -eq $Owner.sid)
+$Sessions = @(Get-CimInstance Win32_LogonSession | ForEach-Object { Get-CimAssociatedInstance -InputObject $_ -Association Win32_LoggedOnUser -ErrorAction Stop } | Where-Object SID -eq $Owner.sid)
 if ($Sessions.Count) { throw 'Sign out of all requester sessions before rollback.' }
 Remove-LocalUser -SID $User.SID
 Write-Output 'Only the owned account was removed. Protected runtime, workspace, receipts and the separate user profile are retained for deliberate cleanup.'
