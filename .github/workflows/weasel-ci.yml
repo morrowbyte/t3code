@@ -115,6 +115,14 @@ jobs:
           vp test run
           src/components/chat/composerTypingGuard.test.ts
           src/voice/VoiceDictationControl.question.browser.test.tsx
+      - name: Test background process presentation
+        run: >-
+          vp test run
+          packages/client-runtime/src/work-log/commandLabel.test.ts
+          packages/client-runtime/src/state/backgroundWorkPresentation.test.ts
+      - name: Test background process controls in Chromium
+        working-directory: apps/web
+        run: vp test run src/components/chat/BackgroundWorkActivity.browser.test.tsx
   product_bundle:
     needs: [check]
     if: github.event_name == 'workflow_dispatch'

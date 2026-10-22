@@ -76,6 +76,7 @@ export * from "./clientRpcPermissions.ts";
 export * from "./jarvis.ts";
 
 export * from "./agentObservatory.ts";
+export * from "./agentAvatar.ts";
 
 export * from "./updateHistory.ts";
 export * from "./featureTiming.ts";

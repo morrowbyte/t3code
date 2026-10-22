@@ -1,6 +1,23 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { commandDisplayText, commandProgramName } from "./commandLabel.ts";
+import { commandActivityLabel, commandDisplayText, commandProgramName } from "./commandLabel.ts";
+
+describe("commandActivityLabel", () => {
+  it.each([
+    [
+      "/run/current-system/sw/bin/bash -lc 'umask 077; PATH=\"$PWD/node_modules/.bin:$PATH\" vp run dev --port 14664 > /tmp/private.log 2>&1'",
+      "vp run dev",
+    ],
+    ["bash -lc 'cd /work && env CI=1 pnpm test > /tmp/test.log 2>&1'", "pnpm test"],
+    ["env PATH=/bin /opt/custom/strange-tool --watch ./data", "strange-tool --watch ./data"],
+    ["sleep 600 > /tmp/sleep.log 2>&1", "sleep 600"],
+    ["python3 -m http.server 8000", "python3 -m http.server"],
+    ["bash -lc 'git status", "Command"],
+    ["while true; do sleep 1; done", "Command"],
+  ])("identifies the executable without guessing its purpose: %s", (command, label) => {
+    expect(commandActivityLabel(command)).toBe(label);
+  });
+});
 
 describe("commandProgramName", () => {
   it.each([

@@ -2040,7 +2040,10 @@ export function buildThreadFeed(
       continue;
     }
     const createdAt = DateTime.formatIso(item.startedAt ?? item.updatedAt);
-    if (item.type === "dynamic_tool" && resolveT3McpToolId(item.toolName) === "t3_thread_send") {
+    if (
+      (item.type === "dynamic_tool" && resolveT3McpToolId(item.toolName) === "t3_thread_send") ||
+      (item.type === "subagent" && item.delegationMessage !== undefined)
+    ) {
       const entry: RawThreadFeedEntry = {
         type: "agent-send",
         id: `agent-send:${row.visibility}:${row.sourceThreadId}:${row.sourceItemId}`,

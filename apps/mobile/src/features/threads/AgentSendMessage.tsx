@@ -21,33 +21,44 @@ export const AgentSendMessage = memo(function AgentSendMessage(props: {
       : null,
   );
   const item = detail.data?.item ?? projected;
-  if (item.type !== "dynamic_tool") return null;
-  const send = readAgentSend(item);
+  const delegation = item.type === "subagent" ? item.delegationMessage : undefined;
+  if (item.type !== "dynamic_tool" && !delegation) return null;
+  const send = item.type === "dynamic_tool" ? readAgentSend(item) : null;
+  const text = delegation?.firstParagraph ?? send?.text ?? null;
+  const targetThreadId =
+    item.type === "subagent"
+      ? (item.childThreadId ?? undefined)
+      : send?.targetThreadId
+        ? ThreadId.make(send.targetThreadId)
+        : undefined;
   return (
     <AgentMessage
       messageId={String(projected.id)}
       attribution="agent"
       direction="outgoing"
       environmentId={props.environmentId}
-      senderThreadId={send.targetThreadId ? ThreadId.make(send.targetThreadId) : undefined}
+      senderThreadId={targetThreadId}
       timestampLabel={props.timestampLabel}
-      text={send.text ?? ""}
-      streaming={item.status === "running"}
+      text={text ?? ""}
+      previewText={delegation?.firstParagraph}
+      streaming={!delegation && item.status === "running"}
       deliveryLabel={
-        send.failed
-          ? "Sendung fehlgeschlagen"
-          : send.accepted
-            ? "Sendung angenommen"
-            : "Sendestatus offen"
+        delegation
+          ? "Auftrag erteilt"
+          : send?.failed
+            ? "Sendung fehlgeschlagen"
+            : send?.accepted
+              ? "Sendung angenommen"
+              : "Sendestatus offen"
       }
     >
-      {(text) =>
-        send.text === null ? (
+      {(bodyText) =>
+        text === null ? (
           <Text className="text-sm text-foreground-muted">
             {detail.error ? "Original konnte nicht geladen werden." : "Original wird geladen…"}
           </Text>
         ) : (
-          props.children(text)
+          props.children(bodyText)
         )
       }
     </AgentMessage>

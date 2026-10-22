@@ -8,7 +8,7 @@ import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collaps
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { MessageCopyButton } from "./MessageCopyButton";
 import { findRevealRef } from "./markdownFindContext";
-import { parseAgentMessage } from "./agentMessagePresentation";
+import { agentMessagePreview, parseAgentMessage } from "./agentMessagePresentation";
 import { AgentIdentityLabel } from "../agent-identity/AgentIdentityLabel";
 import { handleObjectActionKey } from "./objectKeyboardActions";
 
@@ -40,16 +40,10 @@ function keyedSections<T extends { readonly label: string }>(sections: ReadonlyA
   });
 }
 
-function originalExcerpt(text: string) {
-  const firstLine = text.trimStart().split(/\r?\n/u, 1)[0] ?? "";
-  if (firstLine.length <= 150) return firstLine;
-  const boundary = firstLine.lastIndexOf(" ", 150);
-  return `${firstLine.slice(0, boundary > 90 ? boundary : 150)}…`;
-}
-
 export function AgentMessageRow({
   messageId,
   text,
+  previewText,
   peerThreadId,
   peerTitle,
   attribution,
@@ -68,6 +62,7 @@ export function AgentMessageRow({
 }: {
   messageId: string;
   text: string | null;
+  previewText?: string | undefined;
   peerThreadId: ThreadId | undefined;
   peerTitle: string | null;
   attribution: "agent" | "unknown";
@@ -95,7 +90,8 @@ export function AgentMessageRow({
   const technical = keyed.filter((section) => section.kind === "technical");
   const outgoing = direction === "outgoing";
   const DirectionIcon = outgoing ? ArrowUpRightIcon : ArrowDownLeftIcon;
-  const summary = parsed?.summary ?? (text ? originalExcerpt(text) : "Agentennachricht");
+  const summary =
+    previewText ?? parsed?.summary ?? (text ? agentMessagePreview(text) : "Agentennachricht");
   const collapse = () => {
     setExpanded(false);
     setOriginalOpen(false);
@@ -109,14 +105,15 @@ export function AgentMessageRow({
       aria-label={`Agent message: ${summary}`}
       data-keyboard-help="C: copy this message · D: toggle details · J/K: messages · H/L: actions"
       onKeyDown={(event) => handleObjectActionKey(event, { c: "copy", d: "details" })}
-      className={`min-w-0 rounded-lg border px-3.5 py-3 sm:px-4 ${outgoing ? "border-dashed border-border bg-background" : "border-border/70 bg-muted/20"}`}
+      className="min-w-0 border border-border/60 bg-muted/20 px-3 py-2.5"
+      style={{ borderRadius: "calc(var(--radius-2xl) / 4)" }}
       data-agent-message={messageId}
       data-agent-message-direction={direction}
       data-agent-message-format={parsed?.kind ?? "loading"}
       data-user-message-attribution={attribution}
     >
-      <div className="mb-2 flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-        <DirectionIcon className="size-3.5 shrink-0" aria-hidden />
+      <div className="mb-1.5 flex min-w-0 items-center gap-1.5 text-lg leading-8 text-muted-foreground">
+        <DirectionIcon className="size-6 shrink-0" aria-hidden />
         <span className="shrink-0">{outgoing ? "An" : "Von"}</span>
         {peerThreadId ? (
           <Link
@@ -132,14 +129,10 @@ export function AgentMessageRow({
           </Link>
         ) : (
           <span className="min-w-0 truncate">
-            {outgoing
-              ? "Agent · Ziel nicht erfasst"
-              : attribution === "unknown"
-                ? "MCP · Absender nicht erfasst"
-                : "Agent · Absender nicht erfasst"}
+            {outgoing ? "Agent" : attribution === "unknown" ? "MCP" : "Agent"}
           </span>
         )}
-        <span className="ml-auto shrink-0">
+        <span className="ml-auto shrink-0 text-xs">
           <Tooltip>
             <TooltipTrigger render={<time className="tabular-nums" dateTime={createdAt} />}>
               {timestamp}
@@ -165,12 +158,7 @@ export function AgentMessageRow({
           aria-keyshortcuts="D"
         >
           <span className="min-w-0 flex-1">
-            {parsed?.kind === "legacy" ? (
-              <span className="mb-1 block text-2xs text-muted-foreground">Auszug</span>
-            ) : null}
-            <span
-              className={`text-sm leading-relaxed font-medium text-foreground [overflow-wrap:anywhere] ${expanded ? "block" : "line-clamp-2"}`}
-            >
+            <span className="block text-base leading-relaxed font-medium text-foreground whitespace-pre-line [overflow-wrap:anywhere]">
               {summary}
             </span>
           </span>

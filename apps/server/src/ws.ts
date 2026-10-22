@@ -139,6 +139,7 @@ import * as McpAppRequests from "./mcpApps/McpAppRequests.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts";
 import * as NativeAuthorService from "./orchestration-v2/NativeAuthorService.ts";
+import * as AgentAvatarService from "./agent-avatar/AgentAvatarService.ts";
 import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts";
 import * as CodexLiveSessionService from "./voice/CodexLiveSessionService.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -710,6 +711,9 @@ const CoreFirstWsRpcGroup = CoreWsRpcGroup.omit(
   WS_METHODS.subscribeResourceTelemetry,
 );
 const CoreSecondWsRpcGroup = CoreWsRpcGroup.omit(
+  WS_METHODS.agentAvatarRead,
+  WS_METHODS.agentAvatarGenerate,
+  WS_METHODS.agentAvatarCancel,
   WS_METHODS.nativeAuthorRead,
   WS_METHODS.nativeAuthorWrite,
   WS_METHODS.liveVoicePrepare,
@@ -819,6 +823,7 @@ const CoreSecondWsRpcGroup = CoreWsRpcGroup.omit(
 // Materialize the signatures once so deriving handler services does not repeatedly
 // expand the complete RPC schema union.
 type WsRpcHandlerServices =
+  | AgentAvatarService.AgentAvatarService
   | NativeAuthorService.NativeAuthorService
   | ProjectEnrichmentService.ProjectEnrichmentService
   | OrchestrationEventStore.OrchestrationEventStore
@@ -2114,6 +2119,14 @@ const layerCoreWsRpc = (
       });
 
       const handlers: WsRpcHandlers = {
+        [WS_METHODS.agentAvatarRead]: (input) =>
+          Effect.flatMap(AgentAvatarService.AgentAvatarService, (service) => service.read(input)),
+        [WS_METHODS.agentAvatarGenerate]: (input) =>
+          Effect.flatMap(AgentAvatarService.AgentAvatarService, (service) =>
+            service.generate(input),
+          ),
+        [WS_METHODS.agentAvatarCancel]: (input) =>
+          Effect.flatMap(AgentAvatarService.AgentAvatarService, (service) => service.cancel(input)),
         [WS_METHODS.nativeAuthorRead]: nativeAuthorRpcHandler,
         [WS_METHODS.nativeAuthorWrite]: nativeAuthorRpcHandler,
         ...agentObservatoryReadHandlers(observatoryService),
@@ -2284,6 +2297,9 @@ const layerCoreWsRpc = (
                             ...(input.initialMessage.messageId === undefined
                               ? {}
                               : { messageId: input.initialMessage.messageId }),
+                            ...(input.initialMessage.senderThreadId === undefined
+                              ? {}
+                              : { senderThreadId: input.initialMessage.senderThreadId }),
                             text: input.initialMessage.text,
                             attachments: input.initialMessage.attachments,
                             ...(input.initialMessage.context === undefined
@@ -2291,7 +2307,8 @@ const layerCoreWsRpc = (
                               : { context: input.initialMessage.context }),
                           },
                         }),
-                    createdBy: "user",
+                    createdBy:
+                      input.initialMessage?.senderThreadId === undefined ? "user" : "agent",
                     creationSource: input.creationSource ?? "web",
                   }).pipe(Effect.provide(intakeContext)),
                 )

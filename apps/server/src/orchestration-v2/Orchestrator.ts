@@ -1,5 +1,6 @@
 import { ApprovalReviewError } from "@t3tools/contracts";
 import * as ApprovalReviewCommands from "./ApprovalReviewCommands.ts";
+import { firstDelegationParagraph } from "@t3tools/shared/delegationMessage";
 import type {
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -7062,6 +7063,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         driver: targetAdapter.driver,
         providerInstanceId: command.modelSelection.instanceId,
         childThreadId,
+        delegationMessage: {
+          messageId: childMessageId,
+          firstParagraph: command.taskFirstParagraph ?? firstDelegationParagraph(command.task),
+        },
         prompt: command.task,
         result: null,
       };

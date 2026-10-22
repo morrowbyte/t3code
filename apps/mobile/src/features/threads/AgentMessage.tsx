@@ -10,12 +10,13 @@ import * as Dialog from "../../components/ui/Dialog";
 import { tryCopyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { useThreadShell } from "../../state/entities";
 import { AgentIdentityLabel } from "../agent-identity/AgentIdentityLabel";
-import { agentMessageParts, parseAgentMessage } from "./agent-message-presentation";
+import { agentMessagePreview, parseAgentMessage } from "./agent-message-presentation";
 
 export const AgentMessage = memo(function AgentMessage(props: {
   readonly messageId: string;
   readonly attribution: "agent" | "unknown";
   readonly text: string;
+  readonly previewText?: string;
   readonly environmentId: EnvironmentId;
   readonly senderThreadId?: ThreadId;
   readonly direction?: "incoming" | "outgoing";
@@ -35,7 +36,6 @@ export const AgentMessage = memo(function AgentMessage(props: {
   const [raw, setRaw] = useState(false);
   const [technical, setTechnical] = useState(false);
   const trigger = useRef<ComponentRef<typeof View>>(null);
-  const parts = agentMessageParts(props.text);
   const structured = parseAgentMessage(props.text);
   const collapse = () => {
     setExpanded(false);
@@ -46,32 +46,34 @@ export const AgentMessage = memo(function AgentMessage(props: {
   const [copiedText, setCopiedText] = useState<string | null>(null);
   const actor = props.attribution === "agent" ? "Agent" : "MCP";
   const direction = props.direction === "outgoing" ? "An" : "Von";
-  const senderLabel = sender?.title
-    ? `${direction} · ${sender.title}`
-    : props.senderThreadId
-      ? `${direction} · ${actor}`
-      : props.direction === "outgoing"
-        ? "An · Ziel nicht hinterlegt"
-        : `${actor} · Sender nicht hinterlegt`;
   const metadata = (
-    <View className="w-full min-w-0 flex-row items-center gap-1">
-      <Text className="min-w-0 flex-1 text-xs text-foreground-muted" numberOfLines={1}>
-        {senderLabel}
-      </Text>
+    <View className="w-full min-w-0 flex-row items-center gap-1.5">
+      <View className="shrink-0">
+        <SymbolView
+          name={props.direction === "outgoing" ? "arrow.up.right" : "arrow.down.left"}
+          size={24}
+          tintColorClassName="accent-foreground-muted"
+        />
+      </View>
+      <Text className="text-lg text-foreground-muted">{direction}</Text>
       {props.senderThreadId ? (
-        <View className="shrink-0">
-          <SymbolView
-            name="arrow.up.right"
-            size={14}
-            tintColorClassName="accent-foreground-muted"
+        <View className="min-w-0 flex-1">
+          <AgentIdentityLabel
+            threadRef={{ environmentId: props.environmentId, threadId: props.senderThreadId }}
+            featureTitle={sender?.title}
+            size="md"
           />
         </View>
-      ) : null}
+      ) : (
+        <Text className="min-w-0 flex-1 text-lg text-foreground-muted" numberOfLines={1}>
+          {actor}
+        </Text>
+      )}
     </View>
   );
 
   return (
-    <View className="mb-4 w-full border-b border-border py-4">
+    <View className="mb-3 w-full rounded border border-border bg-grouped-card px-3 py-2.5">
       <View className="min-h-11 flex-row items-center gap-3">
         {props.senderThreadId ? (
           <Pressable
@@ -92,14 +94,7 @@ export const AgentMessage = memo(function AgentMessage(props: {
         )}
         <Text className="text-xs tabular-nums text-foreground-muted">{props.timestampLabel}</Text>
       </View>
-      {props.senderThreadId ? (
-        <AgentIdentityLabel
-          threadRef={{ environmentId: props.environmentId, threadId: props.senderThreadId }}
-          featureTitle={sender?.title}
-          details
-        />
-      ) : null}
-      {structured.status ? (
+      {structured.status && structured.status !== "info" ? (
         <Text
           accessibilityLabel={`Nachrichtenstatus: ${structured.status}`}
           className="text-sm font-t3-medium text-foreground-muted"
@@ -115,12 +110,11 @@ export const AgentMessage = memo(function AgentMessage(props: {
         accessibilityState={{ expanded }}
         onPress={() => (expanded ? collapse() : setExpanded(true))}
       >
-        <Text
-          className="min-w-0 flex-1 text-base font-t3-medium leading-6 text-foreground"
-          numberOfLines={expanded ? undefined : 2}
-        >
-          {structured.summary ??
-            (parts.lead || (props.attribution === "agent" ? "Agent message" : "MCP message"))}
+        <Text className="min-w-0 flex-1 text-base font-t3-medium leading-6 text-foreground">
+          {props.previewText ??
+            structured.summary ??
+            (agentMessagePreview(props.text) ||
+              (props.attribution === "agent" ? "Agent message" : "MCP message"))}
         </Text>
         <SymbolView
           name={expanded ? "chevron.up" : "chevron.down"}
@@ -155,7 +149,7 @@ export const AgentMessage = memo(function AgentMessage(props: {
                   </View>
                 ),
               )
-            : props.children(parts.body)}
+            : props.children(props.text)}
         </View>
       ) : null}
       {expanded ? (

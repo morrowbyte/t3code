@@ -1253,7 +1253,8 @@ describe("OrchestratorMcpService provider resolution", () => {
       yield* Effect.gen(function* () {
         const service = yield* OrchestratorMcpService.OrchestratorMcpService;
         const result = yield* service.delegateTask(scope, {
-          task: "Summarize the diff.",
+          task: "Summarize the diff.\nKeep the whole paragraph.\n\nTechnical instructions.",
+          role: "implementation",
           target: { driverKind: ProviderDriverKind.make("codex") },
           mode: "async",
           clientRequestId: "delegate-driver-skip-disabled-1",
@@ -1263,8 +1264,15 @@ describe("OrchestratorMcpService provider resolution", () => {
         assert.equal(commands.length, 1);
         const request = commands[0] as {
           modelSelection: { instanceId: string; model: string };
+          task: string;
+          taskFirstParagraph: string;
         };
         assert.equal(request.modelSelection.instanceId, altInstanceId);
+        assert.equal(request.taskFirstParagraph, "Summarize the diff.\nKeep the whole paragraph.");
+        assert.equal(
+          request.task,
+          "Act as the implementation sub-agent for this task.\n\nSummarize the diff.\nKeep the whole paragraph.\n\nTechnical instructions.",
+        );
       }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
     }),
   );

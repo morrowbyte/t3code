@@ -187,11 +187,11 @@ export function ZoomableImage({
           width: width || undefined,
           height: height || undefined,
           maxHeight,
-          cursor: zoom > 1 ? (dragging ? "grabbing" : "grab") : "zoom-in",
+          cursor: overlay ? "crosshair" : zoom > 1 ? (dragging ? "grabbing" : "grab") : "zoom-in",
         }}
         onClick={(event) => {
           // Pointer capture also produces a click after dragging; leave the image zoomed.
-          if (suppressClickRef.current || event.detail > 1) return;
+          if (overlay || suppressClickRef.current || event.detail > 1) return;
           changeZoom(zoomRef.current > 1 ? 1 : 2, { x: event.clientX, y: event.clientY });
         }}
         onKeyDown={(event) => {
@@ -211,7 +211,7 @@ export function ZoomableImage({
           }
         }}
         onPointerDown={(event) => {
-          if (dragRef.current) return;
+          if (overlay || event.defaultPrevented || dragRef.current) return;
           suppressClickRef.current = false;
           if (event.pointerType !== "mouse" || event.button !== 0 || zoomRef.current <= 1) return;
           const viewport = event.currentTarget;

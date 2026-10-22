@@ -81,6 +81,10 @@ const handleMethod = (message: Record<string, unknown>) => {
       });
       return;
     }
+    case "modelProvider/capabilities/read": {
+      respond(message.id as number | string, { imageGeneration: true, webSearch: true });
+      return;
+    }
     case "skills/list": {
       pendingSkillsListRequestId = message.id as number | string;
       pendingUserInputRequestId = sendRequest("item/tool/requestUserInput", {

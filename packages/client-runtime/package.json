@@ -7,6 +7,7 @@
       "types": "./src/approvalReview.ts",
       "default": "./src/approvalReview.ts"
     },
+    "./agent-avatars/*": "./src/assets/agent-avatars/*",
     "./state/agent-identity": {
       "types": "./src/state/agentIdentity.ts",
       "default": "./src/state/agentIdentity.ts"
