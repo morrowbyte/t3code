@@ -293,6 +293,12 @@ export function LeaderNavigation({
     }
     if (generation !== focusGeneration.current) return;
     pendingFocus.current = false;
+    if (
+      openKeyboardLayers().some(
+        (layer) => !layer.matches('[data-mobile="true"][data-sidebar="sidebar"]'),
+      )
+    )
+      return;
     returnToNavigation(!dismissed);
   };
 

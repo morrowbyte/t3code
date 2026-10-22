@@ -47,7 +47,6 @@ export function openKeyboardLayers(): HTMLElement[] {
 export function dismissKeyboardLayer(): HTMLElement | null {
   const layer = openKeyboardLayers().at(-1);
   if (!layer || layer.matches('[data-mobile="true"][data-sidebar="sidebar"]')) return null;
-  if (dismissRegisteredKeyboardLayer(layer)) return layer;
   if (layer.hasAttribute("data-command-palette")) {
     closeCommandPalette();
     return layer;
@@ -59,7 +58,8 @@ export function dismissKeyboardLayer(): HTMLElement | null {
     ? elements(`button[aria-controls~="${CSS.escape(layer.id)}"][aria-expanded="true"]`)[0]
     : undefined;
   const dismiss = close ?? trigger;
-  if (!dismiss || disabled(dismiss)) return null;
+  if (!dismiss) return dismissRegisteredKeyboardLayer(layer) ? layer : null;
+  if (disabled(dismiss)) return null;
   dismiss.click();
   return layer;
 }

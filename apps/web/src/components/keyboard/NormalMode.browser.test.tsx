@@ -8,6 +8,7 @@ import { LeaderNavigationHost } from "./LeaderNavigationHost";
 import { SidebarProvider } from "../ui/sidebar";
 import { Dialog, DialogPopup, DialogTitle } from "../ui/dialog";
 import { Sheet, SheetPopup, SheetTitle } from "../ui/sheet";
+import { AlertDialog, AlertDialogPopup, AlertDialogTitle } from "../ui/alert-dialog";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { isNavigationMode, leaveNavigationMode, requestNavigationMode } from "./navigationMode";
 import { dispatchKeyboardCommand } from "./keyboardCommands";
@@ -355,7 +356,12 @@ it.each(["terminal", "browser"])(
 function DeviceSetupDialog() {
   const [open, setOpen] = useState(true);
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      onOpenChange={(next, details) => {
+        if (details.reason === "close-press") setOpen(next);
+      }}
+    >
       <DialogPopup aria-label="Set up devices">
         <DialogTitle>Set up devices</DialogTitle>
         <button>Device hub</button>
@@ -446,4 +452,36 @@ it("respects a dialog that refuses to close without showing an unreachable Norma
   await expect.element(page.getByRole("dialog", { name: "Custom preview" })).toBeVisible();
   expect(isNavigationMode()).toBe(false);
   expect(document.activeElement?.closest('[aria-label="Custom preview"]')).not.toBeNull();
+});
+
+function Confirmation({ onDelete }: { onDelete: () => void }) {
+  const [open, setOpen] = useState(true);
+  return (
+    <AlertDialog open={open} onOpenChange={setOpen}>
+      <AlertDialogPopup aria-label="Delete confirmation">
+        <AlertDialogTitle>Delete item?</AlertDialogTitle>
+        <button onClick={onDelete}>Delete item</button>
+      </AlertDialogPopup>
+    </AlertDialog>
+  );
+}
+
+it("dismisses a confirmation without activating its destructive action", async () => {
+  using _mode = setup();
+  const onDelete = vi.fn();
+  await using _screen = await render(
+    <>
+      <Confirmation onDelete={onDelete} />
+      <Navigation />
+    </>,
+  );
+  await expect.element(page.getByRole("alertdialog", { name: "Delete item?" })).toBeVisible();
+  await userEvent.keyboard("{Control>}{Shift>} {/Shift}{/Control}");
+  await vi.waitFor(() =>
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("App navigation"),
+  );
+  expect(document.querySelector('[aria-label="Delete confirmation"]')).toBeNull();
+  expect(onDelete).not.toHaveBeenCalled();
+  await userEvent.keyboard(" ");
+  await expect.element(page.getByRole("dialog", { name: /Keyboard navigation/ })).toBeVisible();
 });
