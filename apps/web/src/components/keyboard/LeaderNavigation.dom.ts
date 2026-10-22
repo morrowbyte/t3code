@@ -2,6 +2,7 @@ import { isEditableFocused } from "../../lib/editableFocus";
 import { isContextMenuOpen } from "../../contextMenuFallback";
 import { TYPE_TO_FOCUS_FLOATING_LAYER_SELECTOR } from "../chat/composerFocusRedirect";
 import { closeCommandPalette } from "../../commandPaletteBus";
+import { dismissRegisteredKeyboardLayer } from "../ui/keyboardLayer";
 
 export const LEADER_OPEN_EVENT = "t3code:leader-navigation-open";
 export const requestLeaderNavigation = () => window.dispatchEvent(new Event(LEADER_OPEN_EVENT));
@@ -46,6 +47,7 @@ export function openKeyboardLayers(): HTMLElement[] {
 export function dismissKeyboardLayer(): HTMLElement | null {
   const layer = openKeyboardLayers().at(-1);
   if (!layer || layer.matches('[data-mobile="true"][data-sidebar="sidebar"]')) return null;
+  if (dismissRegisteredKeyboardLayer(layer)) return layer;
   if (layer.hasAttribute("data-command-palette")) {
     closeCommandPalette();
     return layer;

@@ -286,6 +286,10 @@ export function LeaderNavigation({
       await Promise.allSettled(layer.getAnimations().map((animation) => animation.finished));
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       if (generation !== focusGeneration.current) return;
+      if (openKeyboardLayers().includes(layer)) {
+        pendingFocus.current = false;
+        return;
+      }
     }
     if (generation !== focusGeneration.current) return;
     pendingFocus.current = false;
@@ -614,7 +618,7 @@ export function LeaderNavigation({
       {help ? (
         <KeyboardContextHelp
           target={help.target}
-          activationShortcutLabel={activationShortcutLabel}
+          activationShortcutLabel={activationShortcutLabel ?? null}
           onClose={() => setHelp(null)}
           onActions={() => {
             setHelp(null);

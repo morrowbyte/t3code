@@ -7,6 +7,7 @@ import { LeaderNavigation } from "./LeaderNavigation";
 import { LeaderNavigationHost } from "./LeaderNavigationHost";
 import { SidebarProvider } from "../ui/sidebar";
 import { Dialog, DialogPopup, DialogTitle } from "../ui/dialog";
+import { Sheet, SheetPopup, SheetTitle } from "../ui/sheet";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { isNavigationMode, leaveNavigationMode, requestNavigationMode } from "./navigationMode";
 import { dispatchKeyboardCommand } from "./keyboardCommands";
@@ -387,4 +388,62 @@ it("leaves a local setup dialog through its dismiss control before returning app
     expect(document.activeElement).toBe(screen.container.querySelector("textarea")),
   );
   expect(screen.container.querySelector("textarea")!.value).toBe("Keep this draft");
+});
+
+function CustomCloseLayer({ sheet, refuse = false }: { sheet: boolean; refuse?: boolean }) {
+  const [open, setOpen] = useState(true);
+  const Root = sheet ? Sheet : Dialog;
+  const Popup = sheet ? SheetPopup : DialogPopup;
+  const Title = sheet ? SheetTitle : DialogTitle;
+  return (
+    <Root open={open} onOpenChange={(next) => !refuse && setOpen(next)}>
+      <Popup showCloseButton={false} aria-label="Custom preview">
+        <Title>Custom preview</Title>
+        <button onClick={() => setOpen(false)}>Dismiss preview</button>
+      </Popup>
+    </Root>
+  );
+}
+
+it.each([false, true])(
+  "dismisses a custom-close preview before entering app Normal mode (sheet=%s)",
+  async (sheet) => {
+    using _mode = setup();
+    await using _screen = await render(
+      <>
+        <CustomCloseLayer sheet={sheet} />
+        <Navigation />
+      </>,
+    );
+    await expect.element(page.getByRole("dialog", { name: "Custom preview" })).toBeVisible();
+    await userEvent.keyboard("{Control>}{Shift>} {/Shift}{/Control}");
+    await vi.waitFor(() =>
+      expect(document.activeElement?.getAttribute("aria-label")).toBe("App navigation"),
+    );
+    expect(document.querySelector('[aria-label="Custom preview"]')).toBeNull();
+    await userEvent.keyboard(" ");
+    await expect.element(page.getByRole("dialog", { name: /Keyboard navigation/ })).toBeVisible();
+  },
+);
+
+it("respects a dialog that refuses to close without showing an unreachable Normal mode", async () => {
+  using _mode = setup();
+  await using _screen = await render(
+    <>
+      <CustomCloseLayer sheet={false} refuse />
+      <Navigation />
+    </>,
+  );
+  await expect.element(page.getByRole("dialog", { name: "Custom preview" })).toBeVisible();
+  await userEvent.keyboard("{Control>}{Shift>} {/Shift}{/Control}");
+  await act(async () => {
+    const layer = document.querySelector('[aria-label="Custom preview"]')!;
+    await Promise.allSettled(layer.getAnimations().map((animation) => animation.finished));
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
+  });
+  await expect.element(page.getByRole("dialog", { name: "Custom preview" })).toBeVisible();
+  expect(isNavigationMode()).toBe(false);
+  expect(document.activeElement?.closest('[aria-label="Custom preview"]')).not.toBeNull();
 });
