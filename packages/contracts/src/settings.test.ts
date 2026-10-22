@@ -135,11 +135,35 @@ describe("custom model settings", () => {
 });
 
 describe("ClientSettings notifications", () => {
-  it("requires opt-in when existing settings omit notification preferences", () => {
+  it("enables in-app notifications without opting into system notifications", () => {
     expect(decodeClientSettings({}).notificationMode).toBe("off");
-    expect(decodeClientSettings({}).inAppNotificationsEnabled).toBe(false);
+    expect(decodeClientSettings({}).inAppNotificationsEnabled).toBe(true);
     expect(decodeClientSettingsPatch({})).not.toHaveProperty("inAppNotificationsEnabled");
     expect(decodeClientSettingsPatch({})).not.toHaveProperty("notificationMode");
+  });
+});
+
+describe("ClientSettings presentation defaults", () => {
+  it("fills omitted preferences while preserving explicitly saved choices", () => {
+    expect(decodeClientSettings({})).toMatchObject({
+      mathRenderingEnabled: true,
+      inAppNotificationsEnabled: true,
+      persistComposerContextStrip: true,
+      diffIgnoreWhitespace: false,
+      snapShotPlaySound: false,
+    });
+    const saved = {
+      mathRenderingEnabled: false,
+      inAppNotificationsEnabled: false,
+      persistComposerContextStrip: false,
+      diffIgnoreWhitespace: true,
+      snapShotPlaySound: true,
+    };
+    expect(decodeClientSettings(saved)).toMatchObject(saved);
+    expect(decodeClientSettingsPatch(saved)).toEqual(saved);
+    for (const key of Object.keys(saved)) {
+      expect(decodeClientSettingsPatch({})).not.toHaveProperty(key);
+    }
   });
 });
 
