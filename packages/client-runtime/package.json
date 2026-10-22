@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./agent-avatars/*": "./src/assets/agent-avatars/*",
     "./state/agent-identity": {
       "types": "./src/state/agentIdentity.ts",
       "default": "./src/state/agentIdentity.ts"

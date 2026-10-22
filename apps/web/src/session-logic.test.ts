@@ -1562,6 +1562,31 @@ describe("HTML renders in the timeline", () => {
   });
 
   describe("outgoing agent messages", () => {
+    it("keeps a new delegation visible as a communication card after the run folds", () => {
+      const firstParagraph =
+        "Prüfe die Darstellung mit VK Birkenborn.\nBehalte den vollständigen Kurzauftrag.";
+      const item: OrchestrationV2TurnItem = {
+        ...base("delegation", 2),
+        type: "subagent",
+        subagentId: NodeId.make("child-agent"),
+        origin: "app_owned",
+        driver: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        childThreadId: ThreadId.make("child-thread"),
+        prompt: `${firstParagraph}\n\nTechnik: vollständiger Child-Auftrag.`,
+        result: null,
+        delegationMessage: { messageId: MessageId.make("child-task"), firstParagraph },
+      };
+      const entries = turn(item);
+      expect(entries.find((entry) => entry.id === item.id)).toMatchObject({
+        kind: "agent-send",
+        createdAt: DateTime.formatIso(at(2)),
+        projectedItem: { item: { delegationMessage: { firstParagraph } } },
+      });
+      expect(rowsFor(entries, false)).toContain("agent-send");
+      expect(entries.filter((entry) => entry.id === item.id)).toHaveLength(1);
+    });
+
     const original =
       " \r\nKurz: Aufnahme und Upload geprüft. 🦦\r\n\r\nOffen:\r\n- Transkription bleibt am Konto blockiert.\r\n ";
     const sendCall = (

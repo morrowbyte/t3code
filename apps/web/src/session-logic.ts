@@ -786,7 +786,10 @@ export function deriveTimelineEntriesFromVisibleTurnItems(
       continue;
     }
 
-    if (item.type === "dynamic_tool" && resolveT3McpToolId(item.toolName) === "t3_thread_send") {
+    if (
+      (item.type === "dynamic_tool" && resolveT3McpToolId(item.toolName) === "t3_thread_send") ||
+      (item.type === "subagent" && item.delegationMessage !== undefined)
+    ) {
       entries.push({
         id: item.id,
         kind: "agent-send",
