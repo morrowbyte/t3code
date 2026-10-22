@@ -6,6 +6,7 @@ import {
   menuControlDirection,
 } from "../../keybindings";
 import { isEditableFocused } from "../../lib/editableFocus";
+import { dismissContextMenu, isContextMenuOpen } from "../../contextMenuFallback";
 import { Button } from "../ui/button";
 import { Dialog, DialogHeader, DialogPanel, DialogPopup, DialogTitle } from "../ui/dialog";
 import { Kbd } from "../ui/kbd";
@@ -32,12 +33,15 @@ import {
   discloseSidebar,
   focusComposer,
   focusSidebar,
+  focusSidebarBoundary,
   leaderTargetContext,
   LEADER_OPEN_EVENT,
   moveMenu,
   moveContextMenu,
   movePalette,
   moveSidebar,
+  openKeyboardLayers,
+  dismissKeyboardLayer,
 } from "./LeaderNavigation.dom";
 
 export type LeaderNavigationAction = Pick<CommandPaletteActionItem, "run"> & {
@@ -55,6 +59,23 @@ const noSidebarTransition = async () => {};
 const noActivationShortcut = () => false;
 const noNavigationShortcut = (): "navigation.contextActions" | "navigation.hints" | null => null;
 
+function hasOpenKeyboardLayer() {
+  return isContextMenuOpen() || openKeyboardLayers().length > 0;
+}
+
+function isPlainEscape(event: KeyboardEvent) {
+  return (
+    isNavigationKeyEvent(event) &&
+    event.key === "Escape" &&
+    !event.repeat &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.altKey &&
+    !event.shiftKey &&
+    !(event.target instanceof Element && event.target.closest("[data-keybinding-capture]"))
+  );
+}
+
 export function LeaderNavigation({
   groups,
   isClaimed,
@@ -62,6 +83,8 @@ export function LeaderNavigation({
   resolveNavigationShortcut = noNavigationShortcut,
   showSidebar,
   leaveSidebar = noSidebarTransition,
+  showComposer = noSidebarTransition,
+  activationShortcutLabel,
 }: {
   readonly groups: readonly LeaderNavigationGroup[];
   readonly isClaimed: (event: KeyboardEvent) => boolean;
@@ -71,6 +94,8 @@ export function LeaderNavigation({
   ) => "navigation.contextActions" | "navigation.hints" | null;
   readonly showSidebar: () => void;
   readonly leaveSidebar?: () => Promise<void>;
+  readonly showComposer?: () => Promise<void>;
+  readonly activationShortcutLabel?: string | null;
 }) {
   const [open, setOpen] = useState(false);
   const [navigation, setNavigation] = useState(isNavigationMode);
@@ -148,7 +173,7 @@ export function LeaderNavigation({
   const enterComposer = () => {
     leaveNavigationMode();
     void afterSidebar(() => {
-      focusComposer();
+      if (!focusComposer()) void showComposer();
     });
   };
   const enterSidebar = () => {
@@ -177,10 +202,101 @@ export function LeaderNavigation({
     event.stopPropagation();
   };
 
+  const returnToNavigation = (preserveContext = false) => {
+    focusGeneration.current++;
+    pendingFocus.current = false;
+    if (openState.current) {
+      openState.current = false;
+      pendingAction.current = null;
+      setOpen(false);
+    }
+    finishMode();
+    const origin = document.activeElement;
+    let target: HTMLElement | null = null;
+    if (origin instanceof HTMLElement) {
+      setRegionName(keyboardContextName(origin));
+      if (preserveContext) {
+        target = origin.closest<HTMLElement>(
+          "[data-keyboard-object],[data-keyboard-region],[data-app-sidebar],[data-right-panel-surface-content]",
+        );
+        if (
+          origin.closest(
+            '[data-terminal-owner],[data-preview-panel-mode],[data-keyboard-object="Browser"],[data-keyboard-object="Terminal output"]',
+          ) ||
+          (target &&
+            (leaderTargetContext(target).blocked || target.matches("[data-keyboard-local]")))
+        )
+          target = null;
+      }
+      origin.blur();
+    }
+    requestNavigationMode();
+    if (target?.isConnected) {
+      if (!target.hasAttribute("tabindex")) target.tabIndex = -1;
+      target.focus({ preventScroll: true });
+    }
+    const generation = focusGeneration.current;
+    requestAnimationFrame(() => {
+      if (
+        generation === focusGeneration.current &&
+        isNavigationMode() &&
+        document.activeElement === document.body
+      )
+        navigationStatus.current?.focus({ preventScroll: true });
+    });
+  };
+
+  const handleEscape = useEffectEvent((event: KeyboardEvent) => {
+    // Local popups, suggestions and rename cancellation get the key first.
+    if (!isPlainEscape(event) || hasOpenKeyboardLayer()) return;
+    const generation = focusGeneration.current;
+    const origin = document.activeElement;
+    const tooltipTrigger =
+      origin instanceof HTMLElement &&
+      origin.matches("[data-base-ui-tooltip-trigger]") &&
+      !isEditableFocused(origin) &&
+      !leaderTargetContext(origin).blocked &&
+      !hasLocalKeyboardNavigation(event);
+    requestAnimationFrame(() => {
+      if (
+        // Base UI consumes Escape when dismissing a trigger's informational tooltip.
+        (isPlainEscape(event) || (tooltipTrigger && event.defaultPrevented)) &&
+        generation === focusGeneration.current &&
+        document.activeElement === origin &&
+        !hasOpenKeyboardLayer()
+      )
+        returnToNavigation();
+    });
+  });
+
+  const activateNavigation = async () => {
+    if (openState.current) {
+      returnToNavigation();
+      return;
+    }
+    const generation = ++focusGeneration.current;
+    pendingFocus.current = true;
+    let dismissed = isContextMenuOpen();
+    if (dismissed) dismissContextMenu();
+    for (let depth = 0; depth < 8; depth++) {
+      const layer = dismissKeyboardLayer();
+      if (!layer) break;
+      dismissed = true;
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      await Promise.allSettled(layer.getAnimations().map((animation) => animation.finished));
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      if (generation !== focusGeneration.current) return;
+    }
+    if (generation !== focusGeneration.current) return;
+    pendingFocus.current = false;
+    returnToNavigation(!dismissed);
+  };
+
   const handleKey = useEffectEvent((event: KeyboardEvent) => {
     const group = groupState.current;
     const selectedGroup = groups.find((item) => item.key === group);
-    if (pendingFocus.current && isEditableFocused(event.target)) focusGeneration.current++;
+    if (pendingFocus.current && isEditableFocused(event.target) && !isActivationShortcut(event))
+      focusGeneration.current++;
     if (!isNavigationKeyEvent(event)) return;
     if (
       event.key === "F6" &&
@@ -198,14 +314,16 @@ export function LeaderNavigation({
           getComputedStyle(element).visibility !== "hidden",
       )
     ) {
-      if (cycleWorkbenchRegion(event.shiftKey ? -1 : 1)) consume(event);
+      if (cycleWorkbenchRegion(event.shiftKey ? -1 : 1, isNavigationMode())) consume(event);
       return;
     }
-    if (isActivationShortcut(event)) {
+    if (
+      isActivationShortcut(event) &&
+      !(event.target instanceof Element && event.target.closest("[data-keybinding-capture]"))
+    ) {
       consume(event);
       if (event.repeat) return;
-      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
-      enter();
+      void activateNavigation();
       return;
     }
     const navigationCommand = resolveNavigationShortcut(event);
@@ -283,6 +401,16 @@ export function LeaderNavigation({
       return;
     }
     const context = leaderTargetContext(event.target);
+    const inSidebar =
+      event.target instanceof Element &&
+      event.target.closest('[data-app-sidebar],[data-mobile="true"][data-sidebar="sidebar"]') !==
+        null &&
+      event.target.closest('[role="menu"],[role="listbox"],[data-keybinding-capture]') === null &&
+      event.target.closest('[data-keyboard-region="settings-navigation"]') === null &&
+      (!context.blocked ||
+        event.target
+          .closest('[role="dialog"]')
+          ?.matches('[data-mobile="true"][data-sidebar="sidebar"]') === true);
     if (
       isNavigationMode() &&
       !context.editable &&
@@ -305,7 +433,13 @@ export function LeaderNavigation({
         setControls(contextControls(target));
         return;
       }
-      if (!context.blocked && !hasLocalKeyboardNavigation(event) && !mode && !event.shiftKey) {
+      if (
+        !context.blocked &&
+        !hasLocalKeyboardNavigation(event) &&
+        !mode &&
+        !inSidebar &&
+        !event.shiftKey
+      ) {
         if (
           (event.key === "j" || event.key === "k") &&
           moveKeyboardObject(target, event.key === "j" ? 1 : -1)
@@ -314,6 +448,13 @@ export function LeaderNavigation({
           return;
         }
         if (event.key === "Enter" && activateKeyboardObject(target)) {
+          consume(event);
+          return;
+        }
+        if (
+          (event.key === "h" || event.key === "l") &&
+          cycleWorkbenchRegion(event.key === "h" ? -1 : 1, true)
+        ) {
           consume(event);
           return;
         }
@@ -327,17 +468,17 @@ export function LeaderNavigation({
         return;
       }
     }
-    const inSidebar =
-      mode === "sidebar" &&
-      event.target instanceof Element &&
-      event.target.closest('[data-app-sidebar],[data-mobile="true"][data-sidebar="sidebar"]') !==
-        null &&
-      event.target.closest('[role="menu"],[role="listbox"],[data-keybinding-capture]') === null;
-    if (mode && !context.editable && (!context.blocked || inSidebar)) {
+    const activeMode = inSidebar && isNavigationMode() ? "sidebar" : mode;
+    if (
+      activeMode &&
+      !context.editable &&
+      (!context.blocked || inSidebar) &&
+      !hasLocalKeyboardNavigation(event) &&
+      !isClaimed(event)
+    ) {
       if (event.key === "Escape") {
         consume(event);
-        finishMode();
-        restoreModeFocus();
+        returnToNavigation();
         return;
       }
       if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
@@ -354,14 +495,18 @@ export function LeaderNavigation({
           key === "l" || key === "arrowright" ? 1 : key === "h" || key === "arrowleft" ? -1 : null;
         if (vertical !== null) {
           consume(event);
-          if (mode === "messages") messages.move(vertical);
+          if (activeMode === "messages") messages.move(vertical);
           else moveSidebar(vertical);
           return;
         }
         if (horizontal !== null) {
           consume(event);
-          if (mode === "messages") messages.action(horizontal);
+          if (activeMode === "messages") messages.action(horizontal);
           else discloseSidebar(horizontal > 0);
+          return;
+        }
+        if (activeMode === "sidebar" && (key === "home" || key === "end")) {
+          if (focusSidebarBoundary(key === "end")) consume(event);
           return;
         }
       }
@@ -402,7 +547,14 @@ export function LeaderNavigation({
     )
       setRegionName(keyboardContextName(event.target));
     if (event.target === composerElement()) leaveNavigationMode();
-    if (mode && isEditableFocused(event.target)) finishMode();
+    if (mode && event.target instanceof Element) {
+      const inRegion =
+        mode === "sidebar"
+          ? event.target.closest("[data-app-sidebar],[data-mobile='true'][data-sidebar='sidebar']")
+          : event.target.closest("[data-message-id][data-message-role]");
+      if (!inRegion || isEditableFocused(event.target) || hasLocalKeyboardNavigation(event))
+        finishMode();
+    }
   });
   const lostFocus = useEffectEvent(() => {
     focusGeneration.current++;
@@ -416,7 +568,10 @@ export function LeaderNavigation({
   });
   // Claim explicit navigation before the chat's passive type-to-focus listener.
   useLayoutEffect(() => {
-    const key = (event: KeyboardEvent) => handleKey(event);
+    const key = (event: KeyboardEvent) => {
+      handleKey(event);
+      handleEscape(event);
+    };
     const request = () => requestOpen();
     const focus = (event: FocusEvent) => focusChanged(event);
     const blur = () => lostFocus();
@@ -450,8 +605,7 @@ export function LeaderNavigation({
       setControls(contextControls(returnFocus.current));
     },
     "navigation.activate": () => {
-      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
-      enter();
+      void activateNavigation();
     },
   });
 
@@ -460,6 +614,7 @@ export function LeaderNavigation({
       {help ? (
         <KeyboardContextHelp
           target={help.target}
+          activationShortcutLabel={activationShortcutLabel}
           onClose={() => setHelp(null)}
           onActions={() => {
             setHelp(null);
@@ -492,7 +647,7 @@ export function LeaderNavigation({
             className="flex flex-wrap items-center justify-center gap-1.5 rounded-md border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-sm"
           >
             <span role="status">
-              NAV · {mode ? (mode === "messages" ? "Messages" : "Sidebar") : regionName}
+              NORMAL · {mode ? (mode === "messages" ? "Messages" : "Sidebar") : regionName}
             </span>
             <span className="inline-flex items-center gap-1">
               <Kbd>Space</Kbd>actions

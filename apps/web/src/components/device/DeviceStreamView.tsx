@@ -182,8 +182,10 @@ export function DeviceStreamView(props: {
     setMjpegUrl(null);
     setInputState({ connected: false });
     client.start();
+    window.addEventListener("blur", client.releaseKeys);
     onHandle?.({ pressButton: client.pressButton, rotate: client.rotate, inputConnected: false });
     return () => {
+      window.removeEventListener("blur", client.releaseKeys);
       cancelPhoneInput();
       client.stop();
       clientRef.current = null;
@@ -386,6 +388,9 @@ export function DeviceStreamView(props: {
         tabIndex={0}
         role="application"
         aria-label={`${props.platform === "ios" ? "iOS Simulator" : "Android Emulator"} screen`}
+        onBlur={(event) => {
+          if (event.target === event.currentTarget) clientRef.current?.releaseKeys();
+        }}
         onKeyDown={(event) => {
           if (event.target !== event.currentTarget) return;
           if (event.metaKey && !["r", "R"].includes(event.key)) return;

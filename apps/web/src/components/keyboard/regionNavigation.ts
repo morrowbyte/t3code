@@ -30,7 +30,7 @@ export function focusWorkbenchRegion(selector: string): void {
   });
 }
 
-export function cycleWorkbenchRegion(direction: -1 | 1): boolean {
+export function cycleWorkbenchRegion(direction: -1 | 1, navigation = false): boolean {
   const visibleRegions = [...document.querySelectorAll<HTMLElement>(REGION_SELECTOR)].filter(
     visible,
   );
@@ -48,6 +48,15 @@ export function cycleWorkbenchRegion(direction: -1 | 1): boolean {
         : (current + direction + regions.length) % regions.length
     ];
   if (!next) return false;
+  if (navigation) {
+    const object = [...next.querySelectorAll<HTMLElement>(OBJECT_SELECTOR)].find(visible);
+    if (object) {
+      if (!object.hasAttribute("tabindex")) object.tabIndex = -1;
+      return focusElement(object);
+    }
+    next.tabIndex = -1;
+    return focusElement(next);
+  }
   const control = [...next.querySelectorAll<HTMLElement>(CONTROL_SELECTOR)].find(visible);
   if (control) return focusElement(control);
   next.tabIndex = -1;
@@ -99,8 +108,10 @@ export function keyboardContextRoot(target: Element | null = document.activeElem
     if (region) return region;
   }
   return (
-    document.querySelector("[data-leader-message-focus]") ??
-    document.querySelector("[data-right-panel-surface-content]") ??
+    [...document.querySelectorAll<HTMLElement>("[data-leader-message-focus]")].find(visible) ??
+    [...document.querySelectorAll<HTMLElement>("[data-right-panel-surface-content]")].find(
+      visible,
+    ) ??
     document.querySelector("main") ??
     document
   );
@@ -115,7 +126,7 @@ export function keyboardContextName(target: Element | null = document.activeElem
   return root.getAttribute("aria-label") ?? root.dataset.keyboardRegion ?? "App";
 }
 
-export function hasLocalKeyboardNavigation(event: KeyboardEvent): boolean {
+export function hasLocalKeyboardNavigation(event: Event): boolean {
   return event
     .composedPath()
     .some(

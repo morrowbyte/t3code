@@ -102,6 +102,75 @@ describe("native device stream transport", () => {
     return { client, opened, waitForSocket, events, fetch };
   }
 
+  const key = (code: string, value = "Control") =>
+    ({ code, key: value, metaKey: false, ctrlKey: false }) as KeyboardEvent;
+  const hidMessages = (socket: { send: ReturnType<typeof vi.fn> }) =>
+    socket.send.mock.calls.map(([payload]) => {
+      const bytes = payload as Uint8Array;
+      expect(bytes[0]).toBe(0x06);
+      return JSON.parse(new TextDecoder().decode(bytes.subarray(1)));
+    });
+
+  it("releases only admitted iOS keydowns once, including repeated keys and ordinary keyup", async () => {
+    const { client, opened } = setup("ios");
+    client.start();
+    const socket = await opened;
+    client.sendKey(key("AltLeft"), "down");
+    socket.onmessage?.({ data: Uint8Array.of(0x83).buffer });
+    client.sendKey(key("ControlLeft"), "down");
+    client.sendKey(key("ShiftLeft"), "down");
+    client.sendKey(key("ShiftLeft"), "down");
+    client.sendKey(key("KeyA", "a"), "down");
+    client.sendKey(key("KeyA", "a"), "up");
+    client.sendKey(key("Space", " "), "up");
+    client.sendKey(key("AltLeft"), "up");
+    client.releaseKeys();
+    client.releaseKeys();
+    client.sendKey(key("ControlLeft"), "up");
+    client.sendKey(key("ShiftLeft"), "up");
+    client.stop();
+    expect(hidMessages(socket)).toEqual([
+      { type: "down", usage: 0xe0 },
+      { type: "down", usage: 0xe1 },
+      { type: "down", usage: 0xe1 },
+      { type: "down", usage: 0x04 },
+      { type: "up", usage: 0x04 },
+      { type: "up", usage: 0xe0 },
+      { type: "up", usage: 0xe1 },
+    ]);
+  });
+
+  it("releases iOS keys before closing the transport", async () => {
+    const { client, opened } = setup("ios");
+    client.start();
+    const socket = await opened;
+    socket.onmessage?.({ data: Uint8Array.of(0x83).buffer });
+    client.sendKey(key("ControlLeft"), "down");
+    socket.close.mockImplementation(() => {
+      expect(hidMessages(socket)).toEqual([
+        { type: "down", usage: 0xe0 },
+        { type: "up", usage: 0xe0 },
+      ]);
+    });
+    client.stop();
+    client.stop();
+    expect(socket.close).toHaveBeenCalledOnce();
+  });
+
+  it("keeps Android key actions independent of HID releases", async () => {
+    const { client, opened } = setup("android");
+    client.start();
+    const socket = await opened;
+    client.sendKey(key("ControlLeft"), "down");
+    client.sendKey(key("Enter", "Enter"), "down");
+    client.sendKey(key("Enter", "Enter"), "up");
+    client.releaseKeys();
+    client.stop();
+    expect(socket.send.mock.calls.map(([payload]) => JSON.parse(payload))).toEqual([
+      { type: "key", keycode: 66 },
+    ]);
+  });
+
   it("renews an expired Android ticket when the HTTP upgrade is rejected instead of retrying it forever", async () => {
     const { client, opened, events } = setup("android");
     client.start();

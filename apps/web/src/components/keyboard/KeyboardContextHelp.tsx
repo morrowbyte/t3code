@@ -7,10 +7,12 @@ export function KeyboardContextHelp({
   target,
   onClose,
   onActions,
+  activationShortcutLabel,
 }: {
   target: HTMLElement | null;
   onClose: () => void;
   onActions: () => void;
+  activationShortcutLabel?: string | null;
 }) {
   const root = keyboardContextRoot(target);
   const localHelp =
@@ -25,6 +27,7 @@ export function KeyboardContextHelp({
     ["F6 / Shift F6", "Next / previous app region"],
     ["i", "Write in composer"],
   ];
+  if (activationShortcutLabel) keys.unshift([activationShortcutLabel, "Enter app Normal mode"]);
   if (
     root instanceof Element &&
     !target?.closest("[data-keyboard-local]") &&

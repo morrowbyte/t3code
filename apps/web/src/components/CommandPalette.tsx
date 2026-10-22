@@ -153,7 +153,7 @@ import {
   isUnsupportedWindowsProjectPath,
   resolveProjectPathForDispatch,
 } from "../lib/projectPaths";
-import { onOpenCommandPalette } from "../commandPaletteBus";
+import { onCloseCommandPalette, onOpenCommandPalette } from "../commandPaletteBus";
 import { isPreviewFocused } from "../lib/previewFocus";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import {
@@ -504,6 +504,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
     if (open) rememberOrigin();
     dispatch({ _tag: "SetOpen", open });
   };
+  useEffect(() => onCloseCommandPalette(() => dispatch({ _tag: "SetOpen", open: false })), []);
   const toggleMode = (mode: SearchOverlayMode) => {
     rememberOrigin();
     dispatch({ _tag: "ToggleMode", mode });

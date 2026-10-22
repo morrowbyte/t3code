@@ -1,5 +1,7 @@
 import { isEditableFocused } from "../../lib/editableFocus";
 import { isContextMenuOpen } from "../../contextMenuFallback";
+import { TYPE_TO_FOCUS_FLOATING_LAYER_SELECTOR } from "../chat/composerFocusRedirect";
+import { closeCommandPalette } from "../../commandPaletteBus";
 
 export const LEADER_OPEN_EVENT = "t3code:leader-navigation-open";
 export const requestLeaderNavigation = () => window.dispatchEvent(new Event(LEADER_OPEN_EVENT));
@@ -10,6 +12,13 @@ const BLOCKED =
   "[role=dialog],[role=menu],[role=listbox],[role=application],[data-keybinding-capture],.xterm,.monaco-editor,.cm-editor,iframe";
 const MESSAGE = "[data-message-id][data-message-role]";
 const THREAD = "[data-thread-item] [data-testid^=sidebar-row]";
+const SIDEBAR_ROW =
+  `${THREAD},[data-keyboard-object="Thread"],` +
+  '[data-testid="sidebar-working-shelf-toggle"],[data-testid="sidebar-settled-shelf-toggle"],[data-testid="sidebar-snoozed-shelf-toggle"]';
+
+function disabled(element: HTMLElement): boolean {
+  return element.matches(":disabled,[aria-disabled=true]");
+}
 
 export function leaderTargetContext(target: EventTarget | null) {
   const element = target instanceof Element ? target : null;
@@ -26,6 +35,31 @@ function visible(element: HTMLElement): boolean {
     element.getClientRects().length > 0 &&
     element.checkVisibility({ visibilityProperty: true })
   );
+}
+
+export function openKeyboardLayers(): HTMLElement[] {
+  return elements(TYPE_TO_FOCUS_FLOATING_LAYER_SELECTOR).filter(
+    (element) => !element.hasAttribute("data-ending-style"),
+  );
+}
+
+export function dismissKeyboardLayer(): HTMLElement | null {
+  const layer = openKeyboardLayers().at(-1);
+  if (!layer || layer.matches('[data-mobile="true"][data-sidebar="sidebar"]')) return null;
+  if (layer.hasAttribute("data-command-palette")) {
+    closeCommandPalette();
+    return layer;
+  }
+  const close = layer.querySelector<HTMLButtonElement>(
+    '[data-slot="dialog-close"],[data-slot="sheet-close"],[data-slot="alert-dialog-cancel"]',
+  );
+  const trigger = layer.id
+    ? elements(`button[aria-controls~="${CSS.escape(layer.id)}"][aria-expanded="true"]`)[0]
+    : undefined;
+  const dismiss = close ?? trigger;
+  if (!dismiss || disabled(dismiss)) return null;
+  dismiss.click();
+  return layer;
 }
 
 export function focusElement(element: HTMLElement | null | undefined): boolean {
@@ -89,9 +123,19 @@ export function movePalette(direction: -1 | 1): boolean {
 }
 
 export function sidebarRows(): HTMLElement[] {
-  return elements(
-    `${THREAD},[data-testid="sidebar-settled-shelf-toggle"],[data-testid="sidebar-snoozed-shelf-toggle"]`,
+  const rows = elements(SIDEBAR_ROW).filter(
+    (row) =>
+      !disabled(row) &&
+      (row.matches('[data-keyboard-object="Thread"]') ||
+        !row.querySelector('[data-keyboard-object="Thread"]')),
   );
+  const candidates = new Set(rows);
+  return rows.filter((row) => {
+    for (let parent = row.parentElement; parent; parent = parent.parentElement) {
+      if (candidates.has(parent)) return false;
+    }
+    return true;
+  });
 }
 
 export function focusSidebar(): boolean {
@@ -100,12 +144,19 @@ export function focusSidebar(): boolean {
 }
 
 export function moveSidebar(direction: -1 | 1): boolean {
-  return move(sidebarRows(), direction);
+  const rows = sidebarRows();
+  const active = document.activeElement;
+  return move(rows, direction, rows.find((row) => row.contains(active)) ?? active);
+}
+
+export function focusSidebarBoundary(end: boolean): boolean {
+  const rows = sidebarRows();
+  return focusElement(end ? rows.at(-1) : rows[0]);
 }
 
 export function discloseSidebar(expand: boolean): boolean {
   const active = document.activeElement;
-  if (!(active instanceof HTMLElement)) return false;
+  if (!(active instanceof HTMLElement) || !sidebarRows().includes(active)) return false;
   const toggle = active.hasAttribute("aria-expanded")
     ? active
     : active
@@ -113,8 +164,8 @@ export function discloseSidebar(expand: boolean): boolean {
         ?.querySelector<HTMLButtonElement>(
           "button[aria-expanded][data-thread-selection-safe]:not([aria-haspopup])",
         );
-  if (!toggle) return false;
-  if ((toggle.getAttribute("aria-expanded") === "true") !== expand) {
+  if (toggle && (disabled(toggle) || toggle.hasAttribute("aria-haspopup"))) return false;
+  if (toggle && (toggle.getAttribute("aria-expanded") === "true") !== expand) {
     const threadKey = active.closest<HTMLElement>("[data-thread-item]")?.dataset.threadItem;
     toggle.click();
     requestAnimationFrame(() => {
@@ -133,8 +184,27 @@ export function discloseSidebar(expand: boolean): boolean {
       );
       focusElement(row?.querySelector<HTMLElement>("[data-testid^=sidebar-row]"));
     });
+    return true;
   }
-  return true;
+  // Dispatching another arrow key would re-enter the global navigation handler.
+  // Match Sidebar's own family-row handler after disclosure is already settled.
+  const family = active.closest<HTMLElement>("[data-sidebar-family-row]");
+  if (family) {
+    const depth = Number(family.dataset.familyDepth ?? 0);
+    const families = elements("[data-sidebar-family-row]");
+    const index = families.indexOf(family);
+    const target = expand
+      ? families[index + 1]?.dataset.familyDepth === String(depth + 1)
+        ? families[index + 1]
+        : undefined
+      : families
+          .slice(0, index)
+          .toReversed()
+          .find((row) => Number(row.dataset.familyDepth) < depth);
+    focusElement(sidebarRows().find((row) => target?.contains(row)));
+    return true;
+  }
+  return toggle !== null && toggle !== undefined;
 }
 
 export function activateAdjacentThread(direction: -1 | 1): void {
