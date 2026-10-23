@@ -90,6 +90,13 @@ if [[ "$typecheck_failed" != 0 ]]; then
   exit 1
 fi
 focused_tests=(
+  packages/client-runtime/src/state/threadInbox.test.ts
+  packages/client-runtime/src/state/threadShell.test.ts
+  packages/client-runtime/src/state/entities.test.ts
+  packages/client-runtime/src/state/threadCommands.test.ts
+  apps/web/src/components/Sidebar.logic.test.ts
+  apps/web/src/components/attention-inbox/attentionInbox.test.ts
+  apps/mobile/src/features/threads/threadListV2.test.ts
   scripts/windows-wsl-runtime.test.ts \
   packages/contracts/src/ipc.test.ts \
   packages/contracts/src/server.test.ts \

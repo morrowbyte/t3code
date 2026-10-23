@@ -25,6 +25,7 @@ import {
   isContextMenuPointerDown,
   isSidebarSubagentThread,
   isSidebarThreadWorking,
+  workingThreadKeys,
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
   pinOrderKeyBetween,
@@ -397,7 +398,7 @@ describe("sidebar thread lineage helpers", () => {
       activeKey: null,
       workingShelfEnabled: false,
     };
-    expect(input.workingKeys.size).toBe(2);
+    expect(input.workingKeys.size).toBe(0);
     expect(buildSidebarHierarchy(input)).toEqual([]);
     expect(buildSidebarHierarchy({ ...input, workingShelfEnabled: true })).toEqual([]);
     expect(
@@ -417,9 +418,7 @@ describe("sidebar thread lineage helpers", () => {
       { ...threads[0]!, hasPendingUserInput: true },
       { ...threads[0]!, runtime: { ...threads[0]!.runtime!, activeRunId: RunId.make("live-run") } },
     ]) {
-      expect(buildSidebarHierarchy({ ...input, threads: [waiting] })).toMatchObject([
-        { key: key(waiting), displaySection: "active" },
-      ]);
+      expect(buildSidebarHierarchy({ ...input, threads: [waiting] })).toEqual([]);
     }
   });
 
@@ -524,7 +523,11 @@ describe("sidebar thread lineage helpers", () => {
           ...input,
           threads: threads.map((thread) =>
             thread === descendant
-              ? { ...thread, source: { ...thread.source, pendingBackgroundTasks: [] } }
+              ? {
+                  ...thread,
+                  pendingBackgroundTasks: [],
+                  source: { ...thread.source, pendingBackgroundTasks: [] },
+                }
               : thread,
           ),
         }),
@@ -1286,7 +1289,7 @@ describe("resolveSidebarThreadStatus", () => {
         ...idle,
         runtime: { ...connected, activeRunId: RunId.make("live-run") },
       }),
-    ).toBe("waiting");
+    ).toBe("ready");
     expect(
       resolveSidebarThreadStatus({ ...idle, runtime: connected, hasPendingUserInput: true }),
     ).toBe("input");
@@ -2498,6 +2501,89 @@ describe("unseen completion with background work", () => {
 });
 
 describe("Working shelf (beta)", () => {
+  it("counts eligible scoped threads while folded families retain only real work and current input", () => {
+    const parent = makeThreadFixture({ id: ThreadId.make("family"), settledOverride: "settled" });
+    const running = makeThreadFixture({
+      id: ThreadId.make("worker"),
+      runtime: {
+        status: "running",
+        activeRunId: RunId.make("worker-run"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        providerName: null,
+        lastError: null,
+        updatedAt: parent.updatedAt,
+      },
+      lineage: {
+        rootThreadId: parent.id,
+        parentThreadId: parent.id,
+        relationshipToParent: "subagent",
+      },
+    });
+    const oldQuestion = {
+      ...running,
+      id: ThreadId.make("old-question"),
+      settledOverride: "settled" as const,
+      hasPendingUserInput: true,
+    };
+    const oldApproval = {
+      ...oldQuestion,
+      id: ThreadId.make("old-approval"),
+      hasPendingUserInput: false,
+      hasPendingApprovals: true,
+    };
+    const asking = { ...running, id: ThreadId.make("asking"), hasPendingUserInput: true };
+    const otherEnvironment = { ...running, environmentId: EnvironmentId.make("remote") };
+    const outOfScope = {
+      ...running,
+      id: ThreadId.make("other-project"),
+      projectId: ProjectId.make("other"),
+    };
+    const archived = { ...running, id: ThreadId.make("archived"), archivedAt: running.updatedAt };
+    const threads = filterSidebarV2VisibleThreads(
+      [parent, running, oldQuestion, oldApproval, asking, otherEnvironment, outOfScope, archived],
+      new Set([
+        `${parent.environmentId}:${parent.projectId}`,
+        `${otherEnvironment.environmentId}:${parent.projectId}`,
+      ]),
+    );
+    const keys = workingThreadKeys([...threads, running]);
+    const key = (thread: typeof parent) => `${thread.environmentId}:${thread.id}`;
+    expect(keys.size).toBe(2);
+    const input = {
+      threads,
+      workingKeys: keys,
+      sectionByKey: new Map(
+        threads.map((thread) => [
+          key(thread),
+          thread.settledOverride === "settled" ? ("settled" as const) : ("active" as const),
+        ]),
+      ),
+      visibleKeys: new Set(threads.map(key)),
+      expandedKeys: new Set<string>(),
+      activeKey: null,
+      workingShelfEnabled: true,
+    };
+    const folded = buildSidebarHierarchy(input);
+    expect(folded.find((row) => row.key === key(parent))).toMatchObject({
+      displaySection: "working",
+      activeDescendantCount: 1,
+      descendantCount: 2,
+    });
+    expect(folded).toHaveLength(2);
+    const expanded = buildSidebarHierarchy({ ...input, expandedKeys: new Set([key(parent)]) });
+    expect(expanded.map((row) => row.key)).not.toContain(key(oldQuestion));
+    expect(expanded.map((row) => row.key)).not.toContain(key(oldApproval));
+    const questionsOnly = buildSidebarHierarchy({
+      ...input,
+      threads: [parent, asking],
+      workingKeys: workingThreadKeys([parent, asking]),
+      expandedKeys: new Set([key(parent)]),
+    });
+    expect(questionsOnly.map((row) => row.displaySection)).toEqual(["active", "active"]);
+    expect(questionsOnly[0]?.activeDescendantCount).toBe(0);
+    expect(resolveSidebarThreadStatus(oldQuestion)).toBe("ready");
+    expect(resolveThreadStatusPill({ thread: oldApproval })).toBeNull();
+  });
   const runtime = {
     status: "running" as const,
     activeRunId: null,

@@ -36,6 +36,23 @@ const shell = (patch: Partial<OrchestrationV2ThreadShell> = {}): OrchestrationV2
 });
 
 describe("canonical attention inbox", () => {
+  it.each(["user_input", "command", "auth_refresh"] as const)(
+    "does not revive settled %s requests or old failures",
+    (kind) => {
+      const settled = shell({
+        status: "failed",
+        settledOverride: "settled",
+        settledAt: now,
+        pendingRuntimeRequest: { ...request, kind },
+      });
+      const model = deriveAttentionInbox(environmentId, [settled]);
+      expect(model.loadedThreads).toBe(1);
+      expect(model.entries).toEqual([]);
+      const reopened = { ...settled, settledOverride: null, settledAt: null };
+      expect(deriveAttentionInbox(environmentId, [reopened]).entries).toHaveLength(2);
+      expect(settled.pendingRuntimeRequest).toEqual({ ...request, kind });
+    },
+  );
   it("uses source request IDs and separates questions, approvals and auth warnings", () => {
     const threads = [
       shell({ pendingRuntimeRequest: request }),

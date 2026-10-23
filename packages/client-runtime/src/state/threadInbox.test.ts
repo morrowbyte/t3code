@@ -1,7 +1,13 @@
 import { EnvironmentId, ProviderInstanceId, RunId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { createInboxReturnTracker, sortWorkingThreadsBySend } from "./threadInbox.ts";
+import {
+  createInboxReturnTracker,
+  isThreadWorking,
+  isThreadAwaitingInput,
+  workingThreadKeys,
+  sortWorkingThreadsBySend,
+} from "./threadInbox.ts";
 
 const environmentId = EnvironmentId.make("environment-1");
 
@@ -28,6 +34,84 @@ function thread(id: string, working: boolean) {
       : null,
   };
 }
+
+describe("Working membership", () => {
+  const running = thread("run", true);
+  const completed = {
+    runId: RunId.make("run-completed"),
+    status: "completed" as const,
+    requestedAt: running.createdAt,
+    startedAt: running.createdAt,
+    completedAt: running.createdAt,
+    assistantMessageId: null,
+  };
+
+  it.each([null, completed])("does not count connected idle with latest run %s", (latestRun) => {
+    for (const activeRunId of [null, completed.runId]) {
+      expect(
+        isThreadWorking({
+          ...running,
+          latestRun,
+          runtime: { ...running.runtime!, status: "idle", activeRunId },
+        }),
+      ).toBe(false);
+    }
+  });
+
+  it.each(["preparing", "queued", "starting", "running", "waiting"] as const)(
+    "keeps %s work until explicit settlement",
+    (status) => {
+      const active = { ...running, runtime: { ...running.runtime!, status } };
+      expect(isThreadWorking(active)).toBe(true);
+      expect(isThreadWorking({ ...active, settledOverride: "settled" })).toBe(false);
+      expect(isThreadWorking({ ...active, settledOverride: null })).toBe(true);
+      expect(isThreadWorking({ ...active, settledOverride: "active" })).toBe(true);
+    },
+  );
+
+  it.each(["monitor", "subagent", "background_task", "command"] as const)(
+    "keeps only completion-holding %s background work",
+    (kind) => {
+      const waiting = {
+        ...running,
+        latestRun: completed,
+        runtime: { ...running.runtime!, status: "idle" as const },
+        pendingBackgroundTasks: [{ taskId: "background", kind }],
+      };
+      expect(isThreadWorking(waiting)).toBe(kind !== "command");
+      expect(isThreadWorking({ ...waiting, settledOverride: "settled" })).toBe(false);
+      expect(isThreadWorking({ ...waiting, pendingBackgroundTasks: [] })).toBe(false);
+    },
+  );
+
+  it.each([
+    { hasPendingApprovals: true },
+    { hasPendingUserInput: true },
+    { pendingSubagentRequest: "approval" as const },
+    { pendingSubagentRequest: "user_input" as const },
+  ])("keeps input in Inbox and suppresses settled old input: %s", (request) => {
+    const waiting = {
+      ...running,
+      ...request,
+      runtime: { ...running.runtime!, status: "waiting" as const },
+    };
+    expect(isThreadWorking(waiting)).toBe(false);
+    expect(isThreadAwaitingInput(waiting)).toBe(true);
+    expect(isThreadAwaitingInput({ ...waiting, settledOverride: "settled" })).toBe(false);
+  });
+
+  it("counts scoped thread identities, without counting an entry twice or merging environments", () => {
+    const remote = { ...running, environmentId: EnvironmentId.make("remote") };
+    expect([
+      ...workingThreadKeys([
+        running,
+        running,
+        remote,
+        { ...running, id: ThreadId.make("old"), settledOverride: "settled" },
+      ]),
+    ]).toEqual([`${environmentId}:run`, "remote:run"]);
+  });
+});
 
 describe("createInboxReturnTracker", () => {
   it("stamps a thread when it stops working, but never on the first observation", () => {

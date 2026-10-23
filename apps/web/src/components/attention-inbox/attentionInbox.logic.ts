@@ -38,6 +38,7 @@ export function deriveAttentionInbox(
   for (const thread of threads) {
     if (thread.deletedAt !== null || thread.archivedAt !== null) continue;
     loadedThreads++;
+    if (thread.settledOverride === "settled") continue;
     const threadRef = scopeThreadRef(environmentId, thread.id);
     const key = scopedThreadKey(threadRef);
     const base = { threadRef, threadTitle: thread.title };

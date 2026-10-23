@@ -1,5 +1,6 @@
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
+import { isThreadWorking } from "@t3tools/client-runtime/state/thread-inbox";
 import { useAndroidControlSizing } from "../../components/ui/useAndroidControlSizing";
 import type { ThreadMoveDestination } from "../threads/threadOrder";
 import { computeThreadMoveAvailability } from "../threads/threadOrder";
@@ -603,12 +604,22 @@ export function HomeScreen(props: HomeScreenProps) {
     for (const section of sections) {
       const rows = families.filter((row) => row.displaySection === section);
       if (section === "working" || section === "snoozed" || section === "settled") {
-        counts[section] = Math.max(
-          counts[section],
-          rows
+        if (section === "working") {
+          counts.working = rows
             .filter((row) => row.depth === 0)
-            .reduce((count, row) => count + 1 + row.descendantCount, 0),
-        );
+            .reduce(
+              (count, row) =>
+                count + Number(isThreadWorking(row.item.thread)) + row.activeDescendantCount,
+              0,
+            );
+        } else {
+          counts[section] = Math.max(
+            counts[section],
+            rows
+              .filter((row) => row.depth === 0)
+              .reduce((count, row) => count + 1 + row.descendantCount, 0),
+          );
+        }
         if (counts[section] > 0) headers[section] = items.length;
         const expanded =
           section === "working"

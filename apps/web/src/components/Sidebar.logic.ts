@@ -1,7 +1,5 @@
-import {
-  resolveThreadWorkingStartedAt,
-  threadRuntimeIsActive,
-} from "@t3tools/client-runtime/state/models";
+import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
+import { isThreadWorking, isThreadAwaitingInput } from "@t3tools/client-runtime/state/thread-inbox";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
 import * as React from "react";
@@ -610,7 +608,9 @@ export function revealSidebarRouteAncestors(
 }
 
 export function buildSidebarHierarchy(input: {
-  readonly threads: readonly (SidebarHierarchyThread & SidebarThreadStatusInput)[];
+  readonly threads: readonly (SidebarHierarchyThread &
+    SidebarThreadStatusInput &
+    Parameters<typeof isThreadWorking>[0])[];
   readonly sectionByKey: ReadonlyMap<string, SidebarSection>;
   readonly visibleKeys: ReadonlySet<string>;
   readonly workingKeys: ReadonlySet<string>;
@@ -622,22 +622,13 @@ export function buildSidebarHierarchy(input: {
   const keyOf = (thread: (typeof input.threads)[number]) => `${thread.environmentId}:${thread.id}`;
   const byKey = new Map(input.threads.map((thread) => [keyOf(thread), thread]));
   const rank = new Map(input.threads.map((thread, index) => [keyOf(thread), index]));
-  // Imported provider references can be connected-idle for years without a
-  // run. Inbox candidates alone must not wake their parked sidebar rows.
   const workingKeys = new Set(
     [...input.workingKeys].filter((key) => {
       const thread = byKey.get(key);
-      return (
-        thread !== undefined &&
-        (threadRuntimeIsActive(thread.runtime) ||
-          thread.hasPendingApprovals ||
-          thread.hasPendingUserInput ||
-          thread.pendingSubagentRequest != null ||
-          backgroundWorkHoldsCompletion(thread.source?.pendingBackgroundTasks ?? []) ||
-          (thread.runtime?.status === "idle" && thread.runtime.activeRunId !== null))
-      );
+      return thread !== undefined && isThreadWorking(thread);
     }),
   );
+  const inputKeys = new Set(input.threads.filter(isThreadAwaitingInput).map(keyOf));
   const parents = new Map<string, string>();
   for (const thread of input.threads) {
     if (
@@ -678,7 +669,11 @@ export function buildSidebarHierarchy(input: {
     children.set(parent, siblings);
   }
   const relevant = new Set<string>();
-  for (const key of [...workingKeys, ...(input.activeKey === null ? [] : [input.activeKey])]) {
+  for (const key of [
+    ...workingKeys,
+    ...inputKeys,
+    ...(input.activeKey === null ? [] : [input.activeKey]),
+  ]) {
     let current: string | undefined = key;
     while (current !== undefined && byKey.has(current) && !relevant.has(current)) {
       relevant.add(current);
@@ -720,7 +715,9 @@ export function buildSidebarHierarchy(input: {
         ? input.workingShelfEnabled
           ? "working"
           : "active"
-        : (input.sectionByKey.get(anchor) ?? "active"),
+        : family.some((key) => inputKeys.has(key))
+          ? "active"
+          : (input.sectionByKey.get(anchor) ?? "active"),
       rank: Math.min(...visible.map((key) => rank.get(key)!)),
     });
   }
@@ -817,6 +814,7 @@ type ThreadStatusInput = Pick<
   lastVisitedAt?: string | null | undefined;
   pendingBackgroundTasks?: SidebarThreadSummary["pendingBackgroundTasks"] | undefined;
   blockedOnThreadWait?: boolean | undefined;
+  settledOverride?: SidebarThreadSummary["settledOverride"];
 };
 
 export interface ThreadJumpHintVisibilityController {
@@ -1092,10 +1090,12 @@ type SidebarThreadStatusInput = Pick<
   | "runtime"
   | "blockedOnThreadWait"
 > & {
+  readonly settledOverride?: SidebarThreadSummary["settledOverride"];
   readonly source?: Pick<SidebarThreadSummary["source"], "pendingBackgroundTasks"> | undefined;
 };
 
 export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): SidebarThreadStatus {
+  if (thread.settledOverride === "settled") return "ready";
   if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {
     return "approval";
   }
@@ -1112,8 +1112,7 @@ export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): Si
     return "working";
   }
   if (thread.runtime?.status === "idle") {
-    return thread.runtime.activeRunId !== null ||
-      backgroundWorkHoldsCompletion(thread.source?.pendingBackgroundTasks ?? [])
+    return backgroundWorkHoldsCompletion(thread.source?.pendingBackgroundTasks ?? [])
       ? "waiting"
       : "ready";
   }
@@ -1173,6 +1172,7 @@ export function firstValidTimestampMs(
 export { sortActiveThreadsByOrderKey as sortThreadsForSidebar } from "@t3tools/client-runtime/state/thread-sort";
 export {
   isThreadWorking as isSidebarThreadWorking,
+  workingThreadKeys,
   sortInboxThreadsByReturn,
   sortWorkingThreadsBySend,
 } from "@t3tools/client-runtime/state/thread-inbox";
@@ -1269,6 +1269,8 @@ export function resolveThreadStatusPill(input: {
   thread: ThreadStatusInput;
 }): ThreadStatusPill | null {
   const { thread } = input;
+
+  if (thread.settledOverride === "settled") return null;
 
   if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {
     return {
