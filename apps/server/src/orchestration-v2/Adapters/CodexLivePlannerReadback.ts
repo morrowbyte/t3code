@@ -27,7 +27,12 @@ export const appendCodexLivePlannerAnswer = Effect.fn("CodexLivePlannerReadback.
   const key = `${input.turnId}:${item.id}`;
   if (delivered.has(key)) return false;
   delivered.add(key);
+  yield* Effect.annotateCurrentSpan({
+    "voice.planner.turn_id": input.turnId,
+    "voice.planner.answer_item_id": item.id,
+  });
   yield* append(item.text).pipe(Effect.onError(() => Effect.sync(() => delivered.delete(key))));
+  yield* Effect.annotateCurrentSpan("voice.planner.answer_appended", true);
   if (delivered.size > 128) {
     const oldest = delivered.values().next().value;
     if (oldest !== undefined) delivered.delete(oldest);
