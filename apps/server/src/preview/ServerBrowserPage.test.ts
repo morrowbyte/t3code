@@ -25,7 +25,12 @@ describe("server browser element refs", () => {
   let cdp: CDPSession;
 
   beforeAll(async () => {
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch({
+      headless: true,
+      ...(process.env.T3_TEST_CHROMIUM_EXECUTABLE_PATH
+        ? { executablePath: process.env.T3_TEST_CHROMIUM_EXECUTABLE_PATH }
+        : {}),
+    });
   });
   afterAll(async () => {
     await browser?.close();
@@ -64,6 +69,114 @@ describe("server browser element refs", () => {
     return locator!;
   };
   const repeatedRows = `<ul>${Array.from({ length: 5 }, (_, i) => `<li>row ${i + 1}<button data-testid="delete-row" onclick="this.parentElement.remove()">delete</button></li>`).join("")}</ul>`;
+
+  it("patches exact GUI text once while preserving all text outside the matches", async () => {
+    await page.setContent(
+      '<textarea id="source">Review. Restart. Wait30. Table30. Keep.</textarea><output id="events">0</output><script>source.oninput=()=>events.textContent=String(Number(events.textContent)+1)</script>',
+    );
+    expect(
+      await ServerBrowserPage.patchText(page, {
+        locator: "#source",
+        edits: [
+          { kind: "replace", old: "30", text: "45", count: 2 },
+          { kind: "insert_before", old: "Restart.", text: "Inspect. ", count: 1 },
+        ],
+      }),
+    ).toEqual({ editsApplied: 2, taskSuccessVerified: false });
+    expect(await page.locator("#source").inputValue()).toBe(
+      "Review. Inspect. Restart. Wait45. Table45. Keep.",
+    );
+    expect(await page.locator("#events").textContent()).toBe("1");
+  });
+
+  it("leaves the original field intact when any later edit has a wrong occurrence count", async () => {
+    await page.setContent('<textarea id="source">old same same</textarea>');
+    await expect(
+      ServerBrowserPage.patchText(page, {
+        locator: "#source",
+        edits: [
+          { kind: "replace", old: "old", text: "new", count: 1 },
+          { kind: "replace", old: "same", text: "changed", count: 1 },
+        ],
+      }),
+    ).rejects.toThrow("count mismatch");
+    expect(await page.locator("#source").inputValue()).toBe("old same same");
+  });
+
+  it.each([
+    "<textarea readonly>old</textarea>",
+    "<textarea disabled>old</textarea>",
+    "<textarea hidden>old</textarea>",
+    "<div contenteditable>old</div>",
+  ])("refuses unsupported text controls before writing: %s", async (html) => {
+    await page.setContent(html);
+    await expect(
+      ServerBrowserPage.patchText(page, {
+        locator: "body > :first-child",
+        edits: [{ kind: "replace", old: "old", text: "new", count: 1 }],
+      }),
+    ).rejects.toThrow();
+    expect(await page.locator("body").textContent()).toContain("old");
+  });
+
+  it("refuses a password before reading its value", async () => {
+    await page.setContent('<input id="secret" type="password">');
+    const locator = page.locator("#secret"),
+      handle = (await locator.elementHandle())!;
+    using target = vi.spyOn(page, "locator").mockReturnValue(locator);
+    using retained = vi.spyOn(locator, "elementHandle").mockResolvedValue(handle);
+    using valueRead = vi.spyOn(handle, "inputValue");
+    await expect(
+      ServerBrowserPage.patchText(page, {
+        locator: "#secret",
+        edits: [{ kind: "replace", old: "old", text: "new", count: 1 }],
+      }),
+    ).rejects.toThrow("plain-text");
+    expect(valueRead).not.toHaveBeenCalled();
+  });
+
+  it("rejects stale snapshot refs before patching", async () => {
+    await page.setContent("<textarea>old</textarea>");
+    const snapshot = await takeSnapshot(),
+      ref = locators(snapshot.accessibilityTree)[0]!;
+    await takeSnapshot();
+    await expect(
+      ServerBrowserPage.patchText(page, {
+        locator: ref,
+        edits: [{ kind: "replace", old: "old", text: "new", count: 1 }],
+      }),
+    ).rejects.toThrow("stale");
+    expect(await page.locator("textarea").inputValue()).toBe("old");
+  });
+
+  it("never writes to a replacement node after the planned field disappears", async () => {
+    await page.setContent('<textarea id="source">old</textarea>');
+    const locator = page.locator("#source"),
+      handle = (await locator.elementHandle())!;
+    using target = vi.spyOn(page, "locator").mockReturnValue(locator);
+    using retained = vi.spyOn(locator, "elementHandle").mockResolvedValue(handle);
+    const read = handle.inputValue.bind(handle);
+    let reads = 0;
+    using replaced = vi.spyOn(handle, "inputValue").mockImplementation(async () => {
+      const value = await read();
+      if (++reads === 2)
+        await page.evaluate(() => {
+          const replacement = document.createElement("textarea");
+          replacement.id = "source";
+          replacement.value = "different";
+          document.querySelector("#source")!.replaceWith(replacement);
+        });
+      return value;
+    });
+    await expect(
+      ServerBrowserPage.patchText(page, {
+        locator: "#source",
+        timeoutMs: 100,
+        edits: [{ kind: "replace", old: "old", text: "new", count: 1 }],
+      }),
+    ).rejects.toThrow();
+    expect(await page.locator("#source").inputValue()).toBe("different");
+  });
 
   it("keeps semantic reads and fresh refs usable when pixel capture is unavailable", async () => {
     await page.setContent(

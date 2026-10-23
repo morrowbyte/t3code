@@ -54,6 +54,7 @@ export const PREVIEW_AUTOMATION_SERVER_OPERATIONS = [
   "hover",
   "select",
   "drag",
+  "patchText",
 ] as const;
 export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_SERVER_OPERATIONS);
 export type PreviewAutomationOperation = typeof PreviewAutomationOperation.Type;
@@ -545,6 +546,23 @@ export const PreviewAutomationTypeInput = Schema.Struct({
       "Types into locator/selector, or into the currently focused element when neither target is provided.",
   });
 export type PreviewAutomationTypeInput = typeof PreviewAutomationTypeInput.Type;
+
+export const PreviewTextEdit = Schema.Struct({
+  kind: Schema.Literals(["replace", "insert_before"]),
+  old: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(20_000)),
+  text: Schema.String.check(Schema.isMaxLength(20_000)),
+  count: Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(8)),
+});
+export type PreviewTextEdit = typeof PreviewTextEdit.Type;
+
+/** Exact edits to visible plain text, never to rendered HTML or password fields. */
+export const PreviewAutomationPatchTextInput = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
+  locator: Locator,
+  edits: Schema.Array(PreviewTextEdit).check(Schema.isMinLength(1), Schema.isMaxLength(8)),
+  timeoutMs: OptionalTimeoutMs,
+});
+export type PreviewAutomationPatchTextInput = typeof PreviewAutomationPatchTextInput.Type;
 
 export const PreviewAutomationPressInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,

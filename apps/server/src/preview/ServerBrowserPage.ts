@@ -8,6 +8,7 @@ import {
   type PreviewAutomationEvaluateInput,
   type PreviewAutomationHoverInput,
   type PreviewAutomationNetworkEntry,
+  type PreviewAutomationPatchTextInput,
   type PreviewAutomationPressInput,
   type PreviewAutomationScrollInput,
   type PreviewAutomationSelectInput,
@@ -679,6 +680,79 @@ export const click = async (
     page.off("dialog", onDialog);
   }
   return point;
+};
+
+export const patchText = async (page: Page, input: PreviewAutomationPatchTextInput) => {
+  const refuse = (message: string): never => {
+    throw new ServerBrowserOperationError("PreviewAutomationInvalidArgumentError", message);
+  };
+  if (!input.edits.length || input.edits.length > 8) refuse("Use 1-8 exact text edits.");
+  const field = targetLocator(page, input);
+  if (field === null || (await field.count()) !== 1 || !(await field.isVisible()))
+    refuse("An exact, unique visible text field is required.");
+  const handle = await field.elementHandle();
+  if (handle === null) refuse("The text field disappeared before planning.");
+  try {
+    const data = await handle.evaluate((element) => {
+      const control = element as unknown as {
+        readonly type?: string;
+        readonly disabled?: boolean;
+        readonly readOnly?: boolean;
+      };
+      return {
+        tag: element.tagName,
+        type: control.type ?? "",
+        disabled: control.disabled,
+        readOnly: control.readOnly,
+      };
+    });
+    // Inspect the kind before reading the value: a password is never read.
+    if (
+      !(
+        data.tag === "TEXTAREA" ||
+        (data.tag === "INPUT" && ["text", "search", "url", "email", "tel"].includes(data.type))
+      ) ||
+      data.disabled ||
+      data.readOnly
+    )
+      refuse("Only writable visible plain-text fields support exact patches.");
+    const original = await handle.inputValue();
+    if (original.length > 100_000) refuse("The text field exceeds 100000 characters.");
+    let text = original;
+    // Plan every edit before any UI write. A later ambiguous match leaves the
+    // complete original value intact. Text outside the supplied matches is kept.
+    for (const edit of input.edits) {
+      if (
+        !edit.old ||
+        edit.old.length > 20_000 ||
+        edit.text.length > 20_000 ||
+        !Number.isInteger(edit.count) ||
+        edit.count < 1 ||
+        edit.count > 8 ||
+        !["replace", "insert_before"].includes(edit.kind)
+      )
+        refuse("Invalid exact text edit.");
+      const parts = text.split(edit.old);
+      if (parts.length - 1 !== edit.count)
+        refuse("Exact occurrence count mismatch; no text was written.");
+      const replacement = edit.kind === "insert_before" ? edit.text + edit.old : edit.text;
+      if (replacement === edit.old) refuse("A no-op text edit is not an action.");
+      text = parts.join(replacement);
+      if (text.length > 100_000) refuse("Patched text exceeds 100000 characters.");
+    }
+    if ((await handle.inputValue()) !== original)
+      refuse("The field changed while planning; no text was written.");
+    // Normal UI fill, retaining this exact node so a replacement cannot receive it.
+    await handle.fill(text, { timeout: input.timeoutMs ?? DEFAULT_TIMEOUT_MS });
+    if ((await handle.inputValue()) !== text)
+      throw new ServerBrowserOperationError(
+        "PreviewAutomationActionError",
+        "Text delivery is uncertain. Read the field before considering another edit.",
+      );
+    return { editsApplied: input.edits.length, taskSuccessVerified: false as const };
+  } finally {
+    await handle.dispose();
+  }
 };
 
 export const type = async (page: Page, input: PreviewAutomationTypeInput) => {

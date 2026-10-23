@@ -24,6 +24,7 @@ import {
   type PreviewAutomationHoverInput,
   type PreviewAutomationNavigateInput,
   type PreviewAutomationNetworkEntry,
+  type PreviewAutomationPatchTextInput,
   type PreviewAutomationOpenInput,
   type PreviewAutomationPressInput,
   type PreviewAutomationRequest,
@@ -2309,6 +2310,10 @@ const make = Effect.gen(function* () {
       case "type":
         return recordAction(tab, "type", () =>
           ServerBrowserPage.type(tab.page, input as PreviewAutomationTypeInput),
+        );
+      case "patchText":
+        return recordAction(tab, "type", () =>
+          ServerBrowserPage.patchText(tab.page, input as PreviewAutomationPatchTextInput),
         );
       case "press":
         return recordAction(tab, "press", () =>

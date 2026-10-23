@@ -2,6 +2,7 @@ import {
   PreviewAutomationSnapshot,
   PreviewAutomationTabTargetInput,
   PreviewTabId,
+  PreviewTextEdit,
   TrimmedNonEmptyString,
   type PreviewAutomationStatus,
 } from "@t3tools/contracts";
@@ -22,6 +23,11 @@ const Step = Schema.Union([
     modifiers: Schema.optional(Schema.Array(Schema.Literals(["Alt", "Control", "Meta", "Shift"]))),
   }),
   Schema.Struct({ operation: Schema.Literal("waitFor"), text: TrimmedNonEmptyString }),
+  Schema.Struct({
+    operation: Schema.Literal("patchText"),
+    locator: TrimmedNonEmptyString,
+    edits: Schema.Array(PreviewTextEdit).check(Schema.isMinLength(1), Schema.isMaxLength(8)),
+  }),
 ]);
 export type PreviewBatchStep = typeof Step.Type;
 export const PreviewBatchInput = Schema.Struct({
@@ -105,20 +111,31 @@ export function executePreviewBatch<E, R>(
         });
         break;
       }
-      const returned = yield* executor
-        .action(step)
-        .pipe(Effect.match({ onFailure: () => false, onSuccess: () => true }));
+      const returned = yield* executor.action(step).pipe(
+        Effect.match({
+          onFailure: (cause) => ({
+            ok: false,
+            unsupported:
+              typeof cause === "object" &&
+              cause !== null &&
+              "_tag" in cause &&
+              cause._tag === "PreviewAutomationUnsupportedClientError",
+          }),
+          onSuccess: () => ({ ok: true, unsupported: false }),
+        }),
+      );
       steps.push({
         index,
         operation: step.operation,
-        outcome: returned ? "returned" : "failed",
+        outcome: returned.ok ? "returned" : "failed",
         elapsedMs: performance.now() - stepStart,
       });
-      if (!returned) {
+      if (!returned.ok) {
         stoppedAt = index;
-        deliveryUnknown = step.operation !== "waitFor";
-        reason =
-          "Step failed. Inspect state before any retry; completed actions were not replayed.";
+        deliveryUnknown = !returned.unsupported && step.operation !== "waitFor";
+        reason = returned.unsupported
+          ? "This browser client does not support the requested operation. No substitute was attempted."
+          : "Step failed. Inspect state before any retry; completed actions were not replayed.";
         break;
       }
     }

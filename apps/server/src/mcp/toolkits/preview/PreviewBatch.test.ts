@@ -27,6 +27,65 @@ const steps: PreviewBatchStep[] = [
 ];
 const input = { tabId, expectedOrigin: origin, steps };
 describe("bounded browser batches", () => {
+  it("does not substitute an exact patch on an older browser client", async () => {
+    const attempted: string[] = [];
+    const patch = {
+      ...input,
+      steps: [
+        {
+          operation: "patchText" as const,
+          locator: "textarea",
+          edits: [{ kind: "replace" as const, old: "old", text: "new", count: 1 }],
+        },
+        { operation: "click" as const, locator: "button.save" },
+      ],
+    };
+    const result = await Effect.runPromise(
+      executePreviewBatch(patch, {
+        status: Effect.succeed(status),
+        snapshot: Effect.succeed(state),
+        action: (step) =>
+          Effect.suspend(() => {
+            attempted.push(step.operation);
+            return Effect.fail({ _tag: "PreviewAutomationUnsupportedClientError" });
+          }),
+      }),
+    );
+    expect(attempted).toEqual(["patchText"]);
+    expect(result).toMatchObject({
+      status: "incomplete",
+      deliveryUnknown: false,
+      readBeforeRetry: true,
+      taskSuccessVerified: false,
+    });
+  });
+
+  it("passes an exact patch through the ordinary caller-bound action path", async () => {
+    const patch = {
+      ...input,
+      steps: [
+        {
+          operation: "patchText" as const,
+          locator: "textarea",
+          edits: [{ kind: "replace" as const, old: "old", text: "new", count: 1 }],
+        },
+      ],
+    };
+    const received: PreviewBatchStep[] = [];
+    const result = await Effect.runPromise(
+      executePreviewBatch(patch, {
+        status: Effect.succeed(status),
+        snapshot: Effect.succeed(state),
+        action: (step) =>
+          Effect.sync(() => {
+            received.push(step);
+          }),
+      }),
+    );
+    expect(received).toEqual(patch.steps);
+    expect(result).toMatchObject({ status: "actions_completed", taskSuccessVerified: false });
+  });
+
   it("uses ordered ordinary actions and returns fresh state without claiming task success", async () => {
     const calls: string[] = [];
     let reads = 0;
