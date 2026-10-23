@@ -4,6 +4,8 @@ import { act, render } from "../../test/render";
 import { useComposerTypingGuard } from "../components/chat/useComposerTypingGuard";
 import { TooltipProvider } from "../components/ui/tooltip";
 import { VoiceDictationControl } from "./VoiceDictationControl";
+import { PendingAnswerDictationControl } from "./PendingAnswerDictationControl";
+import { EnvironmentId } from "@t3tools/contracts";
 
 function syntheticCapture() {
   const mediaDevices = Object.getOwnPropertyDescriptor(navigator, "mediaDevices");
@@ -49,6 +51,70 @@ function syntheticCapture() {
     },
   };
 }
+
+it("dictates into the pending answer while preserving its text and requiring explicit submission", async () => {
+  using capture = syntheticCapture();
+  const answer = vi.fn();
+  await using screen = await render(
+    <TooltipProvider>
+      <PendingAnswerDictationControl
+        environmentId={EnvironmentId.make("question-dictation")}
+        scope="pending-answer-insertion"
+        requestId="request"
+        questionId="question"
+        answer="Schon erledigt."
+        onChangeAnswer={answer}
+        transcribe={async () => "Du kannst weiterarbeiten."}
+      />
+    </TooltipProvider>,
+  );
+  await screen.getByRole("button", { name: "Record voice message", exact: true }).click();
+  await act(() => capture.recorder().chunk("synthetic question answer"));
+  await expect
+    .element(screen.getByRole("button", { name: "Transcribe and send recording", exact: true }))
+    .toBeDisabled();
+  await screen.getByRole("button", { name: "Stop recording", exact: true }).click();
+  await expect
+    .poll(() => answer.mock.calls)
+    .toEqual([["Schon erledigt. Du kannst weiterarbeiten."]]);
+  expect(capture.trackStop).toHaveBeenCalledOnce();
+});
+
+it("does not insert a late transcript into a different question", async () => {
+  using capture = syntheticCapture();
+  let finish!: (text: string) => void;
+  const transcribe = vi.fn(
+    () =>
+      new Promise<string>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const answer = vi.fn();
+  const control = (questionId: string) => (
+    <TooltipProvider>
+      <PendingAnswerDictationControl
+        environmentId={EnvironmentId.make("question-dictation")}
+        scope="pending-answer-race"
+        requestId="request"
+        questionId={questionId}
+        answer=""
+        onChangeAnswer={answer}
+        transcribe={transcribe}
+      />
+    </TooltipProvider>
+  );
+  await using screen = await render(control("first"));
+  await screen.getByRole("button", { name: "Record voice message", exact: true }).click();
+  await act(() => capture.recorder().chunk("first question audio"));
+  await screen.getByRole("button", { name: "Stop recording", exact: true }).click();
+  await expect.poll(() => transcribe.mock.calls.length).toBe(1);
+  await screen.rerender(control("second"));
+  await act(() => finish("Antwort auf die erste Frage."));
+  expect(answer).not.toHaveBeenCalled();
+  await expect
+    .element(screen.getByRole("button", { name: "Record voice message", exact: true }))
+    .toBeVisible();
+});
 
 it("retains audio and original ASR across a new question and a failed send before releasing it", async () => {
   using capture = syntheticCapture();

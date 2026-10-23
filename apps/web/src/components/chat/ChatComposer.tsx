@@ -218,6 +218,7 @@ import {
 } from "./ComposerAttachmentStrip";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
 import { VoiceDictationControl } from "../../voice/VoiceDictationControl";
+import { PendingAnswerDictationControl } from "../../voice/PendingAnswerDictationControl";
 import {
   deriveLiveVoiceProviderEntries,
   LiveVoiceControl,
@@ -853,7 +854,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const isEditingQueuedMessage = editingQueuedAttachments !== null;
   const composerDraft = useComposerThreadDraft(composerDraftTarget);
   const composerDraftTargetKeyRef = useRef("");
-  const voiceDraftTargetKey = `${composerDraftTargetKey}:${environmentId}`;
+  const voiceDraftTargetKey = `${composerDraftTargetKey}:${environmentId}${activePendingApproval ? `:approval:${activePendingApproval.requestId}` : ""}`;
   const voiceDraftTargetKeyRef = useRef(voiceDraftTargetKey);
   useLayoutEffect(() => {
     voiceDraftTargetKeyRef.current = voiceDraftTargetKey;
@@ -3918,6 +3919,48 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       focusComposer={focusComposer}
     />
   ) : null;
+  const dictationControl =
+    activePendingProgress?.activeQuestion && activePendingUserInput ? (
+      !isChoiceOnlyPendingQuestion && !activePendingIsResponding ? (
+        <PendingAnswerDictationControl
+          environmentId={environmentId}
+          scope={composerDraftTargetKey}
+          requestId={activePendingUserInput.requestId}
+          questionId={activePendingProgress.activeQuestion.id}
+          answer={activePendingProgress.customAnswer}
+          onChangeAnswer={(answer) => {
+            const question = activePendingProgress.activeQuestion!;
+            promptRef.current = answer;
+            const cursor = collapseExpandedComposerCursor(
+              answer,
+              answer.length,
+              isLiteralPendingAnswer,
+            );
+            setComposerCursor(cursor);
+            setComposerTrigger(null);
+            onChangeActivePendingUserInputCustomAnswer(
+              question.id,
+              answer,
+              cursor,
+              answer.length,
+              false,
+            );
+          }}
+          onInserted={scheduleComposerFocus}
+        />
+      ) : null
+    ) : pendingUserInputs.length === 0 ? (
+      <VoiceDictationControl
+        environmentId={environmentId}
+        targetKey={voiceDraftTargetKey}
+        currentTargetKey={() => voiceDraftTargetKeyRef.current}
+        transcribe={transcribeVoiceRecording(environmentId)}
+        onTranscript={insertVoiceTranscript}
+        {...(!isComposerApprovalState ? { onSend: sendVoiceTranscript } : {})}
+        hasTranscript={(text) => promptRef.current.includes(text)}
+        onDraftActiveChange={onVoiceDraftActiveChange}
+      />
+    ) : null;
   const composer = (
     <form
       ref={composerFormRef}
@@ -4397,6 +4440,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     data-chat-composer-mobile-pending-actions="true"
                     className="absolute bottom-0 right-0 flex items-center justify-end gap-1"
                   >
+                    {dictationControl}
                     <ComposerPrimaryActions
                       compact
                       canOperateThread={canOperateThread}
@@ -4429,6 +4473,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               message={providerInputSubmissionError ?? composerSubmissionError}
             />
 
+            {isComposerApprovalState ? (
+              <div className="flex justify-end px-3 pb-2 sm:px-4">{dictationControl}</div>
+            ) : null}
+
             <ChatComposerFooter
               hidden={isComposerCollapsedMobile || isComposerApprovalState}
               keepVisibleForLiveVoice={liveVoiceComposer.keepVisible}
@@ -4459,18 +4507,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 : {})}
               actions={
                 <>
-                  {!isComposerApprovalState && pendingUserInputs.length === 0 ? (
-                    <VoiceDictationControl
-                      environmentId={environmentId}
-                      targetKey={voiceDraftTargetKey}
-                      currentTargetKey={() => voiceDraftTargetKeyRef.current}
-                      transcribe={transcribeVoiceRecording(environmentId)}
-                      onTranscript={insertVoiceTranscript}
-                      onSend={sendVoiceTranscript}
-                      hasTranscript={(text) => promptRef.current.includes(text)}
-                      onDraftActiveChange={onVoiceDraftActiveChange}
-                    />
-                  ) : null}
+                  {!isComposerApprovalState && !showMobilePendingAnswerActions
+                    ? dictationControl
+                    : null}
                   <LiveVoiceControl
                     environmentId={liveVoiceEnvironmentId}
                     threadId={activeThreadId}
