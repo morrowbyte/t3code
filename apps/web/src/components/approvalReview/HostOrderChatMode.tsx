@@ -28,7 +28,7 @@ export function HostOrderChatMode({
       <div
         role="group"
         aria-label="Task delivery"
-        className="mx-auto mb-2 flex w-full max-w-(--chat-content-max-width) flex-wrap gap-2"
+        className="mx-auto mb-2 flex w-full max-w-(--chat-content-max-width) flex-wrap gap-2 rounded-xl bg-background"
       >
         <Button
           ref={chatButton}
@@ -68,7 +68,7 @@ export function HostOrderChatMode({
           inert={!hostMode || undefined}
           aria-label="Host-bound task"
           data-keyboard-local="host-order"
-          className="mx-auto max-h-[70dvh] w-full min-w-0 max-w-(--chat-content-max-width) overflow-y-auto rounded-xl border border-border p-4"
+          className="mx-auto max-h-[70dvh] w-full min-w-0 max-w-(--chat-content-max-width) overflow-y-auto rounded-xl border border-border bg-background p-4"
           onKeyDown={(event) => {
             if (event.key !== "Escape" || event.defaultPrevented) return;
             event.preventDefault();

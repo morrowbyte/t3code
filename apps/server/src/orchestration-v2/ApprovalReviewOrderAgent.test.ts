@@ -281,13 +281,19 @@ const receive = Effect.fn("ApprovalReviewOrderAgentTest.receive")(function* (cwd
   return { ack, expiresAt, proposal, orchestrator, agent: yield* Agent.ApprovalReviewOrderAgent };
 });
 const start = Effect.fn("ApprovalReviewOrderAgentTest.start")(function* (
-  commandId = "resume-agent-order",
+  commandId = "release-agent-order",
 ) {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const prepared = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+    (candidate) => candidate.status === "preparing",
+  );
+  if (prepared === undefined)
+    return yield* Effect.die("Receiver delivery must persist its prepared run before release");
   yield* orchestrator.dispatch({
-    type: "queue.resume",
+    type: "prepared-run.release",
     commandId: CommandId.make(commandId),
     threadId,
+    runId: prepared.id,
   });
   yield* (yield* EffectWorker.OrchestrationEffectWorkerV2).drain();
   const snapshot = yield* orchestrator.getThreadProjection(threadId);
@@ -297,6 +303,7 @@ const start = Effect.fn("ApprovalReviewOrderAgentTest.start")(function* (
   );
   if (run === undefined || providerThread?.providerSessionId == null)
     return yield* Effect.die("Canonical worker did not start the assigned run");
+  assert.equal(run.id, prepared.id);
   assert.equal(snapshot.thread.activeProviderThreadId, providerThread.id);
   assert.isTrue(
     snapshot.attempts.some(
@@ -354,13 +361,13 @@ it.effect(
           const { ack, proposal, agent, orchestrator } = yield* receive(f.cwd);
           assert.equal(
             (yield* orchestrator.getThreadProjection(threadId)).runs[0]?.status,
-            "queued",
+            "preparing",
           );
-          const queuedScope: McpInvocationScope = {
+          const preparingScope: McpInvocationScope = {
             environmentId,
             capabilities: new Set(["orchestration"]),
             issuedAt: 0,
-            requestNamespace: "queued",
+            requestNamespace: "preparing",
             client: undefined,
             thread: {
               threadId,
@@ -368,9 +375,12 @@ it.effect(
               providerSessionId: "unstarted-session",
             },
           };
-          assert.equal((yield* agent.current(queuedScope).pipe(Effect.flip)).reason, "forbidden");
           assert.equal(
-            (yield* agent.propose(queuedScope, proposal).pipe(Effect.flip)).reason,
+            (yield* agent.current(preparingScope).pipe(Effect.flip)).reason,
+            "forbidden",
+          );
+          assert.equal(
+            (yield* agent.propose(preparingScope, proposal).pipe(Effect.flip)).reason,
             "forbidden",
           );
           assert.lengthOf(f.started, 0);
@@ -507,7 +517,7 @@ it.effect("does not reuse the earlier order ACK for a subsequent canonical run",
           createdBy: "agent",
           creationSource: "mcp",
         });
-        const { scope, run: later } = yield* start("resume-later-agent-run");
+        const { scope, run: later } = yield* start("release-later-agent-run");
         assert.notEqual(later.id, ack.runId);
         assert.equal(later.ordinal, ack.runOrdinal + 1);
         assert.equal(f.started.at(-1)?.runId, later.id);

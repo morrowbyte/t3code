@@ -458,8 +458,14 @@ it.effect(
       };
       assert.isTrue(
         Exit.isFailure(
-          yield* Schema.decodeUnknownEffect(ApprovalReviewSubmit)(raw).pipe(Effect.exit),
+          yield* Schema.decodeUnknownEffect(ApprovalReviewSubmit)(raw, {
+            onExcessProperty: "error",
+          }).pipe(Effect.exit),
         ),
+      );
+      assert.equal(
+        (yield* service.submit(raw, vmActor).pipe(Effect.flip)).reason,
+        "invalid-action",
       );
       assert.equal(
         (yield* service
