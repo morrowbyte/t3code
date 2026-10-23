@@ -187,7 +187,7 @@ const make = Effect.gen(function* () {
       },
       catch: () => new ApprovalReviewError({ reason: "channel-unconfigured" }),
     });
-    const bodyJson = yield* Schema.encodeEffect(Schema.UnknownFromJsonString)(body).pipe(
+    const bodyJson = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(body).pipe(
       Effect.mapError(() => new ApprovalReviewError({ reason: "forward-unknown" })),
     );
     const response = yield* Effect.tryPromise({

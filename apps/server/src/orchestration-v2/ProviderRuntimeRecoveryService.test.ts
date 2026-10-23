@@ -114,15 +114,15 @@ it.effect.each([false, true] as const)(
         requestId,
         expiresAt: DateTime.toEpochMillis(createdAt) + 60_000,
         action: {
-          kind: "create_file_once" as const,
+          kind: "create_file_once",
           verifiedTargetId: recoveryTarget.verifiedTargetId,
           path: recoveryTarget.allowedPath,
           content: "inert fixture",
           mode: 384,
-          expectedAbsent: true as const,
+          expectedAbsent: true,
           implementationVersion: recoveryTarget.implementationVersion,
           implementationHash: hash(recoverySource),
-        },
+        } satisfies ApprovalReviewAuthority["action"],
       };
       const review = frozenReview(input, recoveryTarget);
       const authority = {
