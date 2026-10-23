@@ -85,8 +85,7 @@ export function deriveAttentionInbox(
       thread.activityRunStatus == null &&
       !backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []) &&
       (thread.status === "completed" || thread.status === "idle") &&
-      request === null &&
-      thread.settledOverride !== "settled";
+      request === null;
     if (!completed) continue;
     // Older shells omit this field. updatedAt can describe a title or visit,
     // so it cannot establish that work actually completed.
