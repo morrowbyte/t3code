@@ -24,6 +24,7 @@ import {
   type PreviewAutomationHoverInput,
   type PreviewAutomationNavigateInput,
   type PreviewAutomationNetworkEntry,
+  type PreviewAutomationPatchTextInput,
   type PreviewAutomationOpenInput,
   type PreviewAutomationPressInput,
   type PreviewAutomationRequest,
@@ -2269,12 +2270,17 @@ const make = Effect.gen(function* () {
         return { tabId: tab.tabId, colorScheme };
       }
       case "snapshot": {
-        return withScreencastsPaused(tab, () =>
+        const includeScreenshot =
+          (input as { readonly includeScreenshot?: boolean }).includeScreenshot !== false;
+        const read = () =>
           ServerBrowserPage.snapshot({
             ...tab,
             renderScale: tab.desktop ? "display" : RENDER_SCALE,
-          }),
-        );
+            includeScreenshot,
+          });
+        // Semantic reads neither capture pixels nor interrupt the viewer's screencast.
+        if (!includeScreenshot) return read();
+        return withScreencastsPaused(tab, () => read());
       }
       case "click": {
         const clickInput = input as PreviewAutomationClickInput;
@@ -2302,6 +2308,10 @@ const make = Effect.gen(function* () {
       case "type":
         return recordAction(tab, "type", () =>
           ServerBrowserPage.type(tab.page, input as PreviewAutomationTypeInput),
+        );
+      case "patchText":
+        return recordAction(tab, "type", () =>
+          ServerBrowserPage.patchText(tab.page, input as PreviewAutomationPatchTextInput),
         );
       case "press":
         return recordAction(tab, "press", () =>

@@ -34,6 +34,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import * as ServerConfig from "../../../config.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
+import { PreviewBatchInput, PreviewBatchResult } from "./PreviewBatch.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
@@ -57,6 +58,17 @@ const safeBrowserTool = <T extends Tool.Any>(tool: T): T =>
 
 const readonlyBrowserTool = <T extends Tool.Any>(tool: T): T =>
   safeBrowserTool(tool).annotate(Tool.Readonly, true).annotate(Tool.Idempotent, true) as T;
+
+const PreviewBatchTool = browserTool(
+  Tool.make("preview_batch", {
+    description:
+      "Run 1-8 known deterministic browser steps in one explicitly owned tab on expectedOrigin. Each step rechecks ownership, origin and dialogs and uses the ordinary action tool; a fresh semantic snapshot follows. For an observed plain-text field, patchText applies exact replace or insert_before edits with an expected count, checking every match before one UI write; text outside those matches is preserved. Password fields and rendered rich text are unsupported, and older browser clients refuse this step. This is useful for editing a GUI Source code textarea without regenerating its entire content. Stops at the first failure, never retries, substitutes an action or falls back to foreground. An incomplete result requires readback before retrying; actions_completed is not task success. Per-step action timeout is 5 seconds. Use locator=aria-ref=<ref> exactly, without brackets or JavaScript getByRole expressions. Do not use stale aria refs after navigation, or bundle an uncertain non-idempotent action twice.",
+    parameters: PreviewBatchInput,
+    success: PreviewBatchResult,
+    failure: PreviewToolFailure,
+    dependencies,
+  }).annotate(Tool.Title, "Run browser steps"),
+);
 
 const PreviewStatusTool = Tool.make("preview_status", {
   description:
@@ -139,7 +151,7 @@ const PreviewSetAppearanceTool = safeBrowserTool(
 export const PreviewSnapshotTool = safeBrowserTool(
   Tool.make("preview_snapshot", {
     description:
-      "Inspect a page before interacting. Pass tabId to inspect a specific tab, including one the user opened (see preview_status tabs), even while they control it; omit it to use this agent session's current tab, or the tab the user is viewing when you have none. Returns page state, semantic elements, diagnostics, action history, and screenshot dimensions. Server snapshots include an accessibilityTree with refs; pass locator=aria-ref=<ref> to target one exact element, including inside frames. Refresh refs after navigation, another snapshot, or human takeover. The text is capped near 20 KB and lists what it omitted; use preview_evaluate to read more. Set includeImage=true only when you need to see the page; the image stays in tool history. Set save=true to write the PNG to disk and get back only the url and screenshotPath. Embed that path in your reply as ![alt](screenshotPath) so the user sees it. This is the only way to show the user a screenshot; the image in the tool result is not saved anywhere.",
+      "Inspect a page before interacting. Pass tabId to inspect a specific tab, including one the user opened (see preview_status tabs), even while they control it; omit it to use this agent session's current tab, or the tab the user is viewing when you have none. Returns page state, semantic elements, diagnostics, action history, and screenshot dimensions. Server snapshots include an accessibilityTree with refs; pass locator=aria-ref=<ref> to target one exact element, including inside frames. Refresh refs after navigation, another snapshot, or human takeover. The text is capped near 20 KB and lists what it omitted; use preview_evaluate to read more. Semantic reads omit the PNG and tree bounding boxes; refs still resolve live. Set includeImage=true when you need geometry or to see the page; the image stays in tool history. Set save=true to write the PNG to disk and get back only the url and screenshotPath. Embed that path in your reply as ![alt](screenshotPath) so the user sees it. This is the only way to show the user a screenshot; the image in the tool result is not saved anywhere.",
     parameters: Schema.Struct({
       ...PreviewAutomationTabTargetInput.fields,
       includeImage: Schema.optional(
@@ -309,6 +321,7 @@ const PreviewRecordingStopTool = safeBrowserTool(
 );
 
 export const PreviewToolkit = Toolkit.make(
+  PreviewBatchTool,
   PreviewDialogTool,
   PreviewStatusTool,
   PreviewOpenTool,
@@ -331,6 +344,7 @@ export const PreviewToolkit = Toolkit.make(
 );
 
 export const PreviewStandardToolkit = Toolkit.make(
+  PreviewBatchTool,
   PreviewDialogTool,
   PreviewStatusTool,
   PreviewOpenTool,

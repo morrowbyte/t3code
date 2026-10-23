@@ -225,6 +225,7 @@ let focusedFrame: ReturnType<typeof makeFrame> | null = null;
 let contextFailure: Error | null = null;
 let initialNavigation: (() => Promise<void>) | null = null;
 let desktopRendersNext = false;
+const desktopAttachWaits: string[] = [];
 const desktopDetaches = new NodeEvents.EventEmitter();
 const desktopTabs = new Set<string>();
 const desktopRenders = (tabId: string) => {
@@ -292,7 +293,11 @@ const dependencies = Layer.mergeAll(
         waiter?.(response);
         return true;
       }),
-    awaitAttached: (key) => Effect.sync(() => desktopRenders(key.tabId)),
+    awaitAttached: (key) =>
+      Effect.sync(() => {
+        desktopAttachWaits.push(key.tabId);
+        return desktopRenders(key.tabId);
+      }),
     detached: Stream.callback<{ threadId: string; tabId: string }>((queue) =>
       Effect.acquireRelease(
         Effect.sync(() => {
@@ -361,9 +366,47 @@ beforeEach(() => {
   focusedFrame = null;
   desktopTabs.clear();
   desktopRendersNext = false;
+  desktopAttachWaits.length = 0;
   releasedDesktopTabs.length = 0;
   desktopConnections.length = 0;
 });
+
+it.live("hidden agent tabs retain the desktop handshake and agent ownership", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      // The renderer may attach after manager.open. Do not race it with a second
+      // independently stateful browser page that the user would not be viewing.
+      expect(desktopAttachWaits).toContain(tabId);
+      expect(contexts).toHaveLength(1);
+      expect(desktopConnections).toHaveLength(0);
+      const status = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        tabId,
+        operation: "status",
+        input: {},
+      });
+      expect(status.control?.owner).toBe("agent");
+      expect(status.control?.ownedByCaller).toBe(true);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("visible user tabs retain their desktop attach wait", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const browser = yield* ServerBrowser.ServerBrowser;
+      const manager = yield* Manager.PreviewManager;
+      const opened = yield* manager.open({
+        threadId: scope.thread.threadId,
+        runtime: "server",
+        reveal: true,
+      });
+      yield* browser.attachViewer(viewerInput(opened.tabId, false));
+      expect(desktopAttachWaits).toContain(opened.tabId);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
 
 it.live(
   "a confirmed challenge stops agent mutations and new tabs but leaves snapshots readable until human release",

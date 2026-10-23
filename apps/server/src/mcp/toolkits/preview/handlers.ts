@@ -32,6 +32,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import { PreviewSnapshotToolkit, PreviewStandardToolkit, PreviewToolkit } from "./tools.ts";
+import { executePreviewBatch } from "./PreviewBatch.ts";
 
 /** Whether a preview the agent
  * said nothing about surfaces is the user's `browserAutoShowFloatingPreview`
@@ -185,6 +186,23 @@ export const claimPreviewRecording = Effect.fn("PreviewToolkit.claimRecording")(
 });
 
 const handlers = {
+  preview_batch: McpToolAccess.actsAsCaller((input) =>
+    executePreviewBatch(input, {
+      status: invokeTargeted<PreviewAutomationStatus>("status", { tabId: input.tabId }),
+      snapshot: invokeTargeted<PreviewAutomationSnapshot>("snapshot", {
+        tabId: input.tabId,
+        includeScreenshot: false,
+      }),
+      action: (step) => {
+        const { operation, ...parameters } = step;
+        return invokeTargeted<object>(
+          operation,
+          { ...parameters, tabId: input.tabId, timeoutMs: 5_000 },
+          5_000,
+        );
+      },
+    }),
+  ),
   preview_dialog: McpToolAccess.actsAsCaller((input) =>
     invokeTargeted<PreviewAutomationStatus>("dialog", input),
   ),
@@ -204,8 +222,11 @@ const handlers = {
     invokeTargeted<PreviewAutomationSetColorSchemeResult>("setColorScheme", input),
   ),
   preview_snapshot: McpToolAccess.readsAsCaller((input) => {
-    const { includeImage: _includeImage, save: _save, ...operationInput } = input ?? {};
-    return invokeTargeted<PreviewAutomationSnapshot>("snapshot", operationInput);
+    const { includeImage, save, ...operationInput } = input ?? {};
+    return invokeTargeted<PreviewAutomationSnapshot>("snapshot", {
+      ...operationInput,
+      includeScreenshot: includeImage === true || save === true,
+    });
   }),
   preview_click: McpToolAccess.actsAsCaller((input) =>
     invokeTargeted<object>("click", input, input.timeoutMs),
