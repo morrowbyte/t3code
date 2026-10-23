@@ -1006,6 +1006,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         "@napi-rs/keyring": "1.3.0",
         "playwright-core": "1.60.0",
         "@ff-labs/fff-bin-darwin-arm64": "0.9.4",
+        "@ubjs/core": "0.31.0-3",
+        "@ubjs/node": "0.31.0-3",
       },
     );
 
@@ -1023,6 +1025,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         "@crowecawcaw/xa11y": "0.13.0",
         "@ff-labs/fff-bin-linux-x64-gnu": "0.9.4",
         "@ff-labs/fff-bin-linux-x64-musl": "0.9.4",
+        "@ubjs/core": "0.31.0-3",
+        "@ubjs/node": "0.31.0-3",
       },
     );
   });
