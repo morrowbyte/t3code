@@ -1,5 +1,5 @@
 name: Android Expo development client
-run-name: Android Metro development client · x86_64 · source 1af269d
+run-name: Android Metro development client · x86_64 · ${{ github.sha }}
 
 on:
   workflow_dispatch:
@@ -17,23 +17,25 @@ jobs:
     runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 60
     env:
-      SOURCE_SHA: 1af269d6144fb63cdaf74002d5e65ef6403a6822
+      SOURCE_SHA: ${{ github.sha }}
       APP_VARIANT: development
       MOBILE_VERSION_POLICY: appVersion
-      T3CODE_MOBILE_VERSION: 0.1.2-nightly.20261018.55
-      MORROWBYTE_ANDROID_VERSION_CODE: "55"
+      T3CODE_MOBILE_VERSION: 0.1.2-nightly.20261023.65
+      MORROWBYTE_ANDROID_VERSION_CODE: "65"
       ANDROID_BUILD_TOOLS: "36.0.0"
       CI: "1"
     steps:
-      - name: Require trusted main dispatch
+      - name: Require repository branch dispatch
         env:
           REQUESTED_REF: ${{ github.ref }}
-        run: test "$REQUESTED_REF" = refs/heads/main
+        run: |
+          test "$GITHUB_REPOSITORY" = morrowbyte/t3code
+          [[ "$REQUESTED_REF" = refs/heads/* ]]
 
       - name: Checkout native development baseline
         uses: actions/checkout@v4
         with:
-          ref: 1af269d6144fb63cdaf74002d5e65ef6403a6822
+          ref: ${{ github.sha }}
           fetch-depth: 1
 
       - name: Setup Vite+
@@ -125,7 +127,7 @@ jobs:
           modules = {p.parent.name: json.loads(p.read_text())['android']['modules'] for p in (mobile / 'modules').glob('*/expo-module.config.json') if 'android' in json.loads(p.read_text()).get('platforms', [])}
           output = Path('android-dev-client')
           output.mkdir()
-          target = output / 'Morrowbyte-Dev-1af269d-android-x86_64.apk'
+          target = output / f'Morrowbyte-Dev-{source[:12]}-android-x86_64.apk'
           shutil.copyfile(apk, target)
           assert digest(apk) == digest(target)
           receipt = {'schemaVersion': 1, 'developmentClient': True, 'shippingArtifact': False, 'buildMode': 'debug', 'minification': False, 'source': source, 'lockSha256': digest(Path('pnpm-lock.yaml')), 'run': os.environ['GITHUB_RUN_ID'], 'attempt': os.environ['GITHUB_RUN_ATTEMPT'], 'trustedWorkflowSha': os.environ['GITHUB_WORKFLOW_SHA'], 'package': 'com.morrowbyte.t3code.dev', 'scheme': 'morrowbyte-dev', 'runtimeVersionPolicy': 'appVersion', 'apk': target.name, 'apkSha256': digest(target), 'certificateSha256': certs[0].replace(':', '').lower(), 'signatureVerified': True, 'abis': ['x86_64'], 'nativeLibraryCount': len(libraries), 'versions': versions, 'localAndroidModules': modules, 'metroRequired': True, 'deviceAcceptance': 'not-run'}
@@ -136,7 +138,7 @@ jobs:
       - name: Upload development client and receipt
         uses: actions/upload-artifact@v4
         with:
-          name: morrowbyte-android-dev-client-x86_64-1af269d
+          name: morrowbyte-android-dev-client-x86_64-${{ github.sha }}
           path: android-dev-client/*
           if-no-files-found: error
           retention-days: 7
@@ -145,7 +147,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: morrowbyte-android-dev-client-evidence-1af269d-${{ github.run_attempt }}
+          name: morrowbyte-android-dev-client-evidence-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/dev-client-dependencies.txt
           if-no-files-found: ignore
           retention-days: 7
