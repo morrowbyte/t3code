@@ -12,6 +12,7 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
 import * as Settings from "../serverSettings.ts";
+import * as CuaControl from "../cua/CuaControl.ts";
 import { BUILT_IN_DRIVERS, type BuiltInDriversEnv } from "./builtInDrivers.ts";
 import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
 import * as ProviderInstanceRegistryMutator from "./ProviderInstanceRegistryMutator.ts";
@@ -30,6 +31,7 @@ type ProviderInstanceRegistryHydrationEnv =
       | ProviderHost.ProviderHost
     >
   | Settings.ServerSettingsService
+  | CuaControl.CuaControl
   | BackgroundPolicy.BackgroundPolicy
   | ServerConfig.ServerConfig;
 
@@ -99,6 +101,8 @@ export const layer: Layer.Layer<
 > = Layer.unwrap(
   Effect.gen(function* () {
     const serverSettings = yield* Settings.ServerSettingsService;
+    // Drivers retain their construction context, including the control used by Settings.
+    const cuaControl = yield* CuaControl.CuaControl;
     // Subscribe before the seed read so saves during registry construction are queued.
     const settingsChanges = yield* serverSettings.subscribeChanges;
     const initialSettings: ServerSettings | undefined = yield* serverSettings.getSettings.pipe(
@@ -113,6 +117,7 @@ export const layer: Layer.Layer<
       drivers: BUILT_IN_DRIVERS,
       configMap: initialConfigMap,
     }).pipe(
+      Layer.provide(Layer.succeed(CuaControl.CuaControl, cuaControl)),
       Layer.provide(ProviderOrchestrationAdapterInfrastructure.layer),
       Layer.provide(AcpRegistrySupport.layerFromHost),
       Layer.provide(ProviderHostLive.layer),

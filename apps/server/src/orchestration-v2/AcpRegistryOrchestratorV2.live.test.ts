@@ -1,3 +1,4 @@
+import * as CuaControl from "../cua/CuaControl.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -102,6 +103,7 @@ const layerBackgroundPolicy = BackgroundPolicy.layer.pipe(
   Layer.provide(layerServerSettings),
 );
 const layerProviderInstanceRegistry = ProviderInstanceRegistryHydration.layer.pipe(
+  Layer.provide(Layer.mock(CuaControl.CuaControl)({})),
   Layer.provide(
     Layer.mock(CodexManagedTokenBroker.CodexManagedTokenBroker)({
       endpoint: Effect.die("Managed token endpoint is unused by this provider fixture"),
