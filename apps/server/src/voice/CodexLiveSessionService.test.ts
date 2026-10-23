@@ -867,6 +867,59 @@ it.effect.each([false, true])(
           "public context must not use forced speech during an unqualified speaking slot",
         );
         const question = "Soll ich zuerst den kleineren Befund erklären?";
+        const beforeStreaming = durableProjection;
+        const streamedFirst = "Ein erster geprüfter Befund liegt vor.";
+        const streamedSecond = "Ein zweiter Befund folgt.";
+        const streamedText = `${streamedFirst}\n\n${streamedSecond}`;
+        durableProjection = {
+          ...completedFixture,
+          runs: completedFixture.runs.map((run) => ({
+            ...run,
+            status: "running",
+            completedAt: null,
+          })),
+          providerTurns: completedFixture.providerTurns.map((turn) => ({
+            ...turn,
+            status: "running",
+            completedAt: null,
+          })),
+          nodes: completedFixture.nodes.map((node) =>
+            node.id === completedFixture.messages[1]!.nodeId
+              ? { ...node, status: "running" }
+              : node,
+          ),
+          messages: completedFixture.messages.slice(0, 1),
+          turnItems: completedFixture.turnItems.map((item) =>
+            item.type === "assistant_message" && item.ordinal === 2
+              ? { ...item, streaming: true, status: "running", text: streamedText }
+              : item,
+          ),
+        } as OrchestrationV2ThreadProjection;
+        const firstParagraph = yield* Deferred.make<void>();
+        contextSignals.set(streamedFirst, firstParagraph);
+        yield* Queue.offer(t3EventQueues.get("turn-item.updated")!, updateEvent());
+        yield* Deferred.await(firstParagraph);
+        assert.equal(contexts.at(-1)!.text, streamedFirst);
+        assert.equal(spoken.length, 0, "streaming context must not force an interruption");
+        assert.equal(completedWork, 0, "first paragraph arrives before work completion");
+        const nextParagraph = yield* Deferred.make<void>();
+        contextSignals.set(streamedSecond, nextParagraph);
+        durableProjection = {
+          ...durableProjection,
+          turnItems: durableProjection.turnItems.map((item) =>
+            item.type === "assistant_message" && item.ordinal === 2
+              ? { ...item, text: `${streamedText}\n\nStill generating` }
+              : item,
+          ),
+        };
+        yield* Queue.offer(t3EventQueues.get("turn-item.updated")!, updateEvent());
+        yield* Deferred.await(nextParagraph);
+        assert.deepEqual(
+          contexts.splice(1).map((message) => message.text),
+          [streamedFirst, streamedSecond],
+          "repeated projection updates do not redeliver the first paragraph",
+        );
+        durableProjection = beforeStreaming;
         const secondContext = yield* Deferred.make<void>();
         contextSignals.set(question, secondContext);
         const firstMessage = durableProjection.messages[0]!;

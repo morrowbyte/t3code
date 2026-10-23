@@ -43,6 +43,8 @@ import * as CodexLiveEventHub from "./CodexLiveEventHub.ts";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { getCodexServiceTierOptionValue } from "../codexModelOptions.ts";
 import { isVoiceWorkActive, voiceRunStatus } from "./voiceWorkStatus.ts";
+import { voiceAnswerParagraphs } from "./voiceAnswerParagraphs.ts";
+import { voiceStartupHistory } from "./voiceStartupHistory.ts";
 
 type LeaseRow = {
   lease_id: string;
@@ -350,6 +352,24 @@ export const layer: Layer.Layer<
       }
       return items.flatMap((item) => {
         const turn = turns.get(item.providerTurnId!)!;
+        if (item.type === "assistant_message" && item.streaming && item.status === "running") {
+          const node = projection.nodes.find((candidate) => candidate.id === item.nodeId);
+          if (
+            !node ||
+            node.kind !== "assistant_message" ||
+            node.status !== "running" ||
+            node.rootNodeId !== run.rootNodeId ||
+            node.providerTurnId !== turn.id ||
+            item.text.length > 16_384
+          )
+            return [];
+          return voiceAnswerParagraphs(item.text).map((paragraph) => ({
+            attemptId: attempt.id,
+            messageId: item.messageId,
+            deliveryId: `${item.messageId}:paragraph:${paragraph.offset}`,
+            text: paragraph.text,
+          }));
+        }
         // A later native turn also proves the previous completed turn's last answer is
         // intermediate. The latest turn's last answer still belongs to the final path.
         if (
@@ -382,7 +402,14 @@ export const layer: Layer.Layer<
             candidate.text === item.text,
         );
         return message
-          ? [{ attemptId: attempt.id, messageId: message.id, text: message.text }]
+          ? [
+              {
+                attemptId: attempt.id,
+                messageId: message.id,
+                deliveryId: message.id,
+                text: message.text,
+              },
+            ]
           : [];
       });
     };
@@ -532,6 +559,7 @@ export const layer: Layer.Layer<
       readonly runId: string;
       readonly attemptId: string;
       readonly messageId: string;
+      readonly deliveryId?: string;
       readonly kind: "final" | "context";
       readonly text: string;
     }) =>
@@ -567,10 +595,11 @@ export const layer: Layer.Layer<
             !Array.isArray(receipt.publicReadbacks)
               ? (receipt.publicReadbacks as Record<string, unknown>)
               : {};
+          const deliveryId = input.deliveryId ?? input.messageId;
           if (
             input.kind === "final"
               ? receipt.readback !== undefined
-              : Object.hasOwn(publicReadbacks, input.messageId) ||
+              : Object.hasOwn(publicReadbacks, deliveryId) ||
                 lease.runtime.liveVoice.appendContext === undefined
           )
             return;
@@ -581,7 +610,7 @@ export const layer: Layer.Layer<
                 ? { ...receipt, readback: { ...delivery, finalMessageId: input.messageId } }
                 : {
                     ...receipt,
-                    publicReadbacks: { ...publicReadbacks, [input.messageId]: delivery },
+                    publicReadbacks: { ...publicReadbacks, [deliveryId]: delivery },
                   },
             );
           };
@@ -611,7 +640,7 @@ export const layer: Layer.Layer<
             input.kind === "final"
               ? finalResult && { ...finalResult, messageId: finalResult.finalMessageId }
               : publicReadbackResults(latestProjection, input.runId).find(
-                  (message) => message.messageId === input.messageId,
+                  (message) => message.deliveryId === deliveryId,
                 );
           if (
             latestFinal === undefined ||
@@ -669,6 +698,7 @@ export const layer: Layer.Layer<
               publicReadbackResults(currentProjection, input.runId).some(
                 (message) =>
                   message.messageId === input.messageId &&
+                  message.deliveryId === deliveryId &&
                   message.attemptId === input.attemptId &&
                   message.text === input.text,
               );
@@ -1131,13 +1161,7 @@ export const layer: Layer.Layer<
                 plannerNativeThreadId,
                 realtimeSessionId: `${input.leaseId}:${input.generation}`,
                 offerSdp: input.offerSdp,
-                initialItems: projection.messages
-                  .flatMap((message) =>
-                    !message.streaming && message.role !== "system" && message.text.trim()
-                      ? [{ role: message.role, text: message.text.slice(0, 1_000) }]
-                      : [],
-                  )
-                  .slice(-6),
+                initialItems: voiceStartupHistory(projection.messages),
               })
               .pipe(
                 Effect.mapError(() => liveError("runtime_unavailable")),

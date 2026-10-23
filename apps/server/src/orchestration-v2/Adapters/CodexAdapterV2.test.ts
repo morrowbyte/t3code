@@ -2312,7 +2312,12 @@ describe("CodexAdapterV2 LiveVoice planner preparation", () => {
                           };
                         if (method === "thread/settings/update")
                           return yield* options.update?.(emit) ?? Effect.succeed({});
-                        if (method === "thread/archive") return {};
+                        if (
+                          method === "thread/archive" ||
+                          method === "thread/inject_items" ||
+                          method === "thread/realtime/start"
+                        )
+                          return {};
                         return yield* CodexError.CodexAppServerRequestError.methodNotFound(method);
                       }),
                   },
@@ -2350,6 +2355,7 @@ describe("CodexAdapterV2 LiveVoice planner preparation", () => {
     return {
       requests,
       emit,
+      start: liveVoice.start,
       prepare: () =>
         liveVoice.preparePlanner({
           modelSelection: CODEX_TEST_MODEL_SELECTION,
@@ -2375,6 +2381,47 @@ describe("CodexAdapterV2 LiveVoice planner preparation", () => {
         assert.deepEqual(
           planner.requests.map((request) => request.method),
           ["account/read", "thread/start"],
+        );
+      }).pipe(Effect.scoped, Effect.provide(dependencies)),
+  );
+
+  it.effect(
+    "makes the same existing findings available to planner and realtime before a call",
+    () =>
+      Effect.gen(function* () {
+        const planner = yield* openPlanner();
+        yield* planner.prepare();
+        const history = [
+          { role: "assistant" as const, text: "Existing research: useful finding and source." },
+        ];
+        yield* planner.start({
+          plannerNativeThreadId: "new-live-planner",
+          realtimeSessionId: "test-call",
+          offerSdp: "test-offer",
+          initialItems: history,
+        });
+        const injected = planner.requests.find(
+          (request) => request.method === "thread/inject_items",
+        );
+        const realtime = planner.requests.find(
+          (request) => request.method === "thread/realtime/start",
+        );
+        if (!injected || !realtime)
+          return yield* Effect.die("Missing planner history or realtime start.");
+        assert.deepEqual(injected.params, {
+          threadId: "new-live-planner",
+          items: [
+            {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: history[0]!.text }],
+            },
+          ],
+        });
+        assert.isBelow(planner.requests.indexOf(injected), planner.requests.indexOf(realtime));
+        assert.deepEqual(
+          (realtime.params as { initialItems: unknown[] }).initialItems.slice(1),
+          history,
         );
       }).pipe(Effect.scoped, Effect.provide(dependencies)),
   );
