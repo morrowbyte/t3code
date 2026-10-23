@@ -35,10 +35,13 @@ host's private launch environment remains managed by that host.
 The separate phone control starts a voice call for an eligible signed-in Codex
 thread. It needs microphone permission and WebRTC in a secure browser context.
 Call availability also depends on the configured account. During a call you can
-mute the microphone or speaker and end the call. Ending releases the microphone
-and leaves the call transcript available to view or copy while you remain in
-that composer. Starting another call replaces that transcript. Leaving the
-thread ends its call; already submitted agent work continues independently.
+mute the microphone or speaker and end the call. Your speech and Live replies
+appear in the thread alongside agent results. Ending releases the microphone;
+saved conversations remain available across calls and app reloads. You can load
+earlier calls and copy individual contributions. Incomplete transcripts are marked.
+Voice contributions stay in the conversation without automatically becoming new
+agent prompts. Leaving the thread ends its call; already submitted agent work
+continues independently.
 
 Keep talking while the agent works. Finished results return to the call for a
 brief spoken explanation, and follow-up questions can use those results without
