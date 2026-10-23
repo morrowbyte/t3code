@@ -53,8 +53,8 @@ export const NativeVoiceConversationRow = memo(
     const entry = item.entry;
     const user = entry.speaker === "user";
     return (
-      <View className={`min-w-0 gap-1 pb-4 ${user ? "items-end" : ""}`} testID={item.id}>
-        <View className="flex-row flex-wrap items-center gap-2">
+      <View className={`relative min-w-0 gap-1 pb-3 ${user ? "items-end" : ""}`} testID={item.id}>
+        <View className="min-h-7 flex-row flex-wrap items-center gap-2 pr-9">
           <AppText className="text-xs font-t3-medium text-foreground-muted">
             {user ? "Du" : "Live"} · Voice
           </AppText>
@@ -75,7 +75,9 @@ export const NativeVoiceConversationRow = memo(
             {entry.text}
           </AppText>
         </View>
-        <CopyTextButton accessibilityLabel="Beitrag kopieren" text={entry.text} />
+        <View className="absolute top-0 right-0">
+          <CopyTextButton accessibilityLabel="Beitrag kopieren" text={entry.text} />
+        </View>
       </View>
     );
   },

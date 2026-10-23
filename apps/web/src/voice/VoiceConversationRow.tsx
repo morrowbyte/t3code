@@ -50,9 +50,9 @@ export function VoiceConversationRow({ item }: { readonly item: VoiceConversatio
   return (
     <article
       aria-label={user ? "You · Voice" : "Live · Voice"}
-      className={cn("group/voice flex min-w-0 flex-col gap-1 pb-3", user && "items-end")}
+      className={cn("group/voice relative flex min-w-0 flex-col gap-1", user && "items-end")}
     >
-      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+      <div className="flex min-h-6 flex-wrap items-center gap-2 pr-8 text-xs text-muted-foreground">
         <span className="font-medium">{user ? "You" : "Live"}</span>
         <span className="inline-flex items-center gap-1">
           <MicIcon className="size-3" />
@@ -76,7 +76,7 @@ export function VoiceConversationRow({ item }: { readonly item: VoiceConversatio
           {entry.text}
         </p>
       </div>
-      <div className="flex sm:opacity-0 sm:group-hover/voice:opacity-100 sm:group-focus-within/voice:opacity-100">
+      <div className="absolute top-0 right-0 flex sm:opacity-0 sm:group-hover/voice:opacity-100 sm:group-focus-within/voice:opacity-100">
         <MessageCopyButton text={entry.text} />
       </div>
     </article>

@@ -218,12 +218,22 @@ export function interleaveVoiceConversation<T extends { readonly createdAt: stri
 ): ReadonlyArray<T> {
   if (!voice.length) return rows;
   const result: T[] = [];
+  // Legacy results can precede older turns. Anchor speech against the remaining
+  // history as well, so one late row cannot pull an entire call to the front.
+  const minimumDates: Array<string | null> = [];
+  let minimumDate: string | null = null;
+  for (let rowIndex = rows.length - 1; rowIndex >= 0; rowIndex--) {
+    const date = rows[rowIndex]!.createdAt;
+    if (date && (minimumDate === null || date < minimumDate)) minimumDate = date;
+    minimumDates[rowIndex] = minimumDate;
+  }
   let index = 0;
-  for (const row of rows) {
-    const createdAt = row.createdAt;
-    if (createdAt)
-      while (index < voice.length && voice[index]!.createdAt! < createdAt)
-        result.push(voice[index++]!);
+  for (const [rowIndex, row] of rows.entries()) {
+    const minimum = minimumDates[rowIndex]!;
+    while (index < voice.length) {
+      if (minimum && voice[index]!.createdAt! >= minimum) break;
+      result.push(voice[index++]!);
+    }
     result.push(row);
   }
   result.push(...voice.slice(index));
