@@ -285,6 +285,13 @@ public static class MorrowbyteGuardFixture {
     Assert-Equal 10 $heldGuardExit
     Assert-Equal $false $fixtureProcess.HasExited
 
+    # Renaming the incoming package must still refuse to overwrite a running
+    # previous image in the same installation, without terminating that image.
+    & $powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PSScriptRoot\morrowbyte-installer-guard.ps1" -InstallRoot $fixtureRoot -AppExecutable 'renamed-desktop.exe' -WaitSeconds 0
+    Assert-Equal 20 $LASTEXITCODE
+    Assert-FixtureCimIdentity 'post-rename-check'
+    Assert-Equal $false $fixtureProcess.HasExited
+
     $fixturePhase = 'release'
     $fixtureReleaseAttempted = $true
     $fixtureInput = $fixtureProcess.StandardInput.BaseStream

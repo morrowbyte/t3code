@@ -23,7 +23,7 @@ function Get-MorrowbyteInstallState {
     $directory = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
     $expected = [IO.Path]::GetFullPath([IO.Path]::Combine($directory, $Executable))
     foreach ($process in $Processes) {
-        # The query includes only the exact image name. An inaccessible path or
+        # The query includes only exact current/installed image names. An inaccessible path or
         # owner cannot establish that this is a different installation.
         if ([string]::IsNullOrWhiteSpace([string]$process.ExecutablePath)) {
             throw 'Cannot determine the running application path.'
@@ -58,7 +58,15 @@ try {
     if ([string]::IsNullOrWhiteSpace($AppExecutable) -or $AppExecutable.Contains("'")) {
         throw 'Invalid application executable name.'
     }
-    $query = "Name = '" + $AppExecutable + "'"
+    # A new package can rename its EXE. Derive previous names from this install,
+    # never from a personal legacy-name list, before deciding it is safe to write.
+    $images = @($AppExecutable)
+    if ([IO.Directory]::Exists($InstallRoot)) {
+        $images += @([IO.Directory]::GetFiles($InstallRoot, '*.exe') | ForEach-Object { [IO.Path]::GetFileName($_) })
+    }
+    $query = (@($images | Sort-Object -Unique | ForEach-Object {
+        "Name = '" + $_.Replace('\', '\\').Replace("'", "\'") + "'"
+    })) -join ' OR '
     $deadline = [Diagnostics.Stopwatch]::StartNew()
     do {
         $verificationStage = 'process-query'
