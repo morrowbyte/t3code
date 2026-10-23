@@ -84,6 +84,8 @@ describe("server browser element refs", () => {
       includeScreenshot: false,
     });
     expect(result.screenshot).toBeUndefined();
+    expect(result.accessibilityTree).not.toContain("[box=");
+    expect(result.accessibilityTree).toContain('button "Save"');
     expect(String(result.accessibilityTree)).not.toContain("private-value");
     expect(result.visibleText).not.toContain("private-value");
     expect(capture.mock.calls.some(([method]) => method === "Page.captureScreenshot")).toBe(false);

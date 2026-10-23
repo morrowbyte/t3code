@@ -259,12 +259,13 @@ it.effect.each([
       yield* Stream.runForEach(events, (event) => {
         if (event.type === "connected") return Deferred.succeed(connected, undefined);
         requests += 1;
+        const includeScreenshot = requests <= 6 && images;
         expect(event.request).toMatchObject({
           operation: "snapshot",
           tabId: alternateTabId,
           threadId,
         });
-        expect(event.request.input).toEqual({ includeScreenshot: images });
+        expect(event.request.input).toEqual({ includeScreenshot });
         return broker.respond({
           clientId: "mcp-image-option-client",
           connectionId: event.connectionId,
@@ -273,7 +274,7 @@ it.effect.each([
           result: {
             ...page,
             title: `Snapshot ${requests}`,
-            ...(images ? { screenshot: { ...screenshot, data: png } } : {}),
+            ...(includeScreenshot ? { screenshot: { ...screenshot, data: png } } : {}),
           },
         });
       }).pipe(Effect.forkScoped);
@@ -328,7 +329,8 @@ it.effect.each([
           Effect.provideService(McpSchema.McpServerClient, client),
         );
       expect(nextDefault.content.map((content) => content.type)).toEqual(["text", "text", "text"]);
-      expect(nextDefault.structuredContent).toMatchObject({ title: "Snapshot 7", screenshot });
+      expect(nextDefault.structuredContent).toMatchObject({ title: "Snapshot 7" });
+      expect(nextDefault.structuredContent).not.toHaveProperty("screenshot");
       expect(nextDefault.structuredContent).not.toHaveProperty("accessibilityTree");
       expect(requests).toBe(7);
     }),

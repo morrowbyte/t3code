@@ -570,7 +570,8 @@ const capture = async (
   // Leaves time for the second read; a frame that never loads holds the tree until then.
   const tree = await input.page.ariaSnapshot({
     mode: "ai",
-    boxes: true,
+    // Semantic refs resolve live; geometry is needed only for visual reads.
+    boxes: input.includeScreenshot !== false,
     timeout: Math.max(1, deadline - Date.now() - 2_000),
   });
   const after = await read(before);
