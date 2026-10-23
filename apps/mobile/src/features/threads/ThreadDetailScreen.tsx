@@ -75,7 +75,15 @@ import type { QueuedRunEdit } from "../../state/queued-run-edit";
 import type { FollowUpBehavior } from "../../lib/followUpBehavior";
 import type { ActiveTurnComposerAction } from "@t3tools/client-runtime/state/composer-dispatch";
 import * as Haptics from "expo-haptics";
-import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   AppState,
   Keyboard,
@@ -127,6 +135,13 @@ import { deviceEnvironment } from "../../state/device";
 import { useEnvironmentQuery } from "../../state/query";
 import { threadDevicePreviews } from "../devices/threadDevicePreviews";
 import { ThreadBrowserFloat } from "../browser/ThreadBrowserFloat";
+import {
+  NativeVoiceConversationProvider,
+  NativeVoiceConversationHeader,
+  NativeVoiceConversationTranscript,
+  useNativeVoiceView,
+} from "../live-voice/NativeVoiceConversation";
+import { conversationResultFeed } from "../live-voice/conversationResultFeed";
 import { useThreadServerBrowserTabs } from "../../state/preview";
 import type { QueuedThreadMessage } from "../../state/thread-outbox-model";
 import { scopedThreadKey } from "../../lib/scopedEntities";
@@ -456,7 +471,18 @@ function ThreadVisitWatermark(props: {
   return null;
 }
 
-export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetailScreenProps) {
+export function ThreadDetailScreen(props: ThreadDetailScreenProps) {
+  return (
+    <NativeVoiceConversationProvider key={`${props.environmentId}:${props.selectedThread.id}`}>
+      <ThreadDetailScreenContent {...props} />
+    </NativeVoiceConversationProvider>
+  );
+}
+
+const ThreadDetailScreenContent = function ThreadDetailScreenContent(
+  props: ThreadDetailScreenProps,
+) {
+  const { view: voiceView } = useNativeVoiceView();
   const usesNativeWorkspaceColumns = useNativeWorkspaceColumnsSupported();
   const navigation = useNavigation();
   const { session: voiceInputSession } = useGlobalVoiceInput();
@@ -804,6 +830,10 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
       (entry) => "acknowledged" in entry && entry.acknowledged === true,
     );
   const selectedThreadFeed = props.selectedThreadFeed;
+  const conversationFeed = useMemo(
+    () => conversationResultFeed(selectedThreadFeed),
+    [selectedThreadFeed],
+  );
   const hasCompactableConversation =
     selectedThreadFeed.some(
       (entry) =>
@@ -1361,6 +1391,10 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
         selectedThread={props.selectedThread}
         showContent={showContent && !props.draftMode}
       />
+      {showContent && !props.draftMode ? <NativeVoiceConversationHeader /> : null}
+      {showContent && !props.draftMode && voiceView === "conversation" ? (
+        <NativeVoiceConversationTranscript />
+      ) : null}
       {props.draftMode ? (
         props.draftMode.content(
           navigationHeaderHeight,
@@ -1405,7 +1439,7 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
               environmentId={props.environmentId}
               threadId={props.selectedThread.id}
               workspaceRoot={props.threadCwd}
-              feed={props.selectedThreadFeed}
+              feed={voiceView === "conversation" ? conversationFeed : props.selectedThreadFeed}
               pendingHandoff={props.pendingHandoff}
               worktreeSetup={props.worktreeSetup}
               setupWorkingStartedAt={props.setupWorkingStartedAt}
@@ -1422,8 +1456,8 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
               runlessWorkActive={props.runlessWorkActive ?? false}
               listRef={listRef}
               freeze={freeze}
-              anchorMessageId={anchorMessageId}
-              submittedMessageId={submittedMessageId}
+              anchorMessageId={voiceView === "chat" ? anchorMessageId : null}
+              submittedMessageId={voiceView === "chat" ? submittedMessageId : null}
               contentInsetEndAdjustment={combinedContentInsetEndAdjustment}
               keyboardOffset={composerKeyboardOffset}
               contentTopInset={0}

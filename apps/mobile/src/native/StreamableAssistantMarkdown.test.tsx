@@ -1,4 +1,5 @@
-import { act, type ComponentType, type ReactNode } from "react";
+import { act, useMemo, type ComponentType, type ReactNode } from "react";
+import type { LiveVoiceController, LiveVoiceState } from "@t3tools/client-runtime/live-voice";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import type { NativeMarkdownTextStyle } from "./SelectableMarkdownText.types";
@@ -10,11 +11,21 @@ const native = vi.hoisted(() => ({
   timing: vi.fn(),
 }));
 
+vi.mock("../components/ui/AppSymbol", () => ({ SymbolView: () => null }));
+vi.mock("../components/ui/Sheet", () => ({
+  Sheet: ({ children, onClose }: { children: ReactNode; onClose: () => void }) => (
+    <div role="dialog">
+      {children}
+      <button onClick={onClose}>Mitschrift schließen</button>
+    </div>
+  ),
+}));
 vi.mock("../connection/runtime", () => ({ connectionAtomRuntime: { fn: vi.fn() } }));
 vi.mock("../state/atom-registry", () => ({ appAtomRegistry: { set: vi.fn() } }));
 vi.mock("../state/session", () => ({ usePreparedConnection: () => ({ _tag: "None" }) }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: native.copyCsv }));
 vi.mock("react-native", () => ({
+  ActivityIndicator: () => null,
   useWindowDimensions: () => ({ width: 390, height: 844, scale: 1, fontScale: 1 }),
   processColor: () => null,
   View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
@@ -159,6 +170,13 @@ vi.mock("./SelectableMarkdownText", () => ({
 }));
 
 import { StreamableAssistantMarkdown } from "./StreamableAssistantMarkdown";
+import {
+  NativeVoiceConversationProvider,
+  NativeVoiceConversationHeader,
+  NativeVoiceConversationTranscript,
+  useNativeVoicePresentation,
+  useNativeVoiceView,
+} from "../features/live-voice/NativeVoiceConversation";
 
 const textStyle: NativeMarkdownTextStyle = {
   color: "black",
@@ -448,4 +466,72 @@ describe("native assistant streaming visuals", () => {
     expect(host.querySelector("svg")).toBeNull();
     expect(host.querySelector("button")).toBeNull();
   });
+});
+
+it("keeps live call controls available while conversation results stream and views switch", () => {
+  const end = vi.fn();
+  const mute = vi.fn();
+  const output = vi.fn();
+  const controller = {
+    end,
+    setLocalMuted: mute,
+    setOutputMuted: output,
+  } as unknown as LiveVoiceController;
+  const state: LiveVoiceState = {
+    phase: "live",
+    localMuted: false,
+    outputMuted: false,
+    transcript: [
+      { speaker: "user", text: "Vergleiche die Modelle", final: true },
+      { speaker: "assistant", text: "Der Vergleich läuft im Hintergrund", final: true },
+    ],
+    sessionStatus: "active",
+    lease: null,
+    error: null,
+  };
+  function Conversation({ markdown }: { markdown: string }) {
+    const presentation = useMemo(() => ({ controller, state, eligible: true }), []);
+    useNativeVoicePresentation(presentation);
+    const { view } = useNativeVoiceView();
+    return (
+      <>
+        <NativeVoiceConversationHeader />
+        {view === "conversation" ? <NativeVoiceConversationTranscript /> : null}
+        <StreamableAssistantMarkdown markdown={markdown} isStreaming textStyle={textStyle} />
+      </>
+    );
+  }
+  const draw = (markdown: string) =>
+    act(() =>
+      root!.render(
+        <NativeVoiceConversationProvider>
+          <Conversation markdown={markdown} />
+        </NativeVoiceConversationProvider>,
+      ),
+    );
+  render("", false);
+  draw(prefix);
+  click("Gespräch");
+  expect(host.textContent).toContain("Der Vergleich läuft im Hintergrund");
+  click("Mitschrift");
+  expect(host.querySelector('[role="dialog"]')?.textContent).toContain("Vergleiche die Modelle");
+  click("Mitschrift schließen");
+  expect(host.textContent).toContain("Queue depth42jobs");
+  expect(host.querySelectorAll("circle")).toHaveLength(1);
+  draw(prefix + '\n{"type":"point","id":"trend","label":"B","value":9.75}');
+  expect(host.querySelectorAll("circle")).toHaveLength(2);
+  click("Chat");
+  expect(host.textContent).not.toContain("Vergleiche die Modelle");
+  expect(host.textContent).toContain("Queue depth42jobs");
+  expect(end).not.toHaveBeenCalled();
+  const action = (label: string) => {
+    const button = host.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`);
+    expect(button).not.toBeNull();
+    act(() => button!.click());
+  };
+  action("Mikrofon stummschalten");
+  expect(mute).toHaveBeenCalledWith(true);
+  expect(output).not.toHaveBeenCalled();
+  action("Gespräch beenden");
+  expect(end).toHaveBeenCalledOnce();
 });

@@ -42,6 +42,7 @@ import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.
 import * as CodexLiveEventHub from "./CodexLiveEventHub.ts";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { getCodexServiceTierOptionValue } from "../codexModelOptions.ts";
+import { isVoiceWorkActive, voiceRunStatus } from "./voiceWorkStatus.ts";
 
 type LeaseRow = {
   lease_id: string;
@@ -1256,7 +1257,7 @@ export const layer: Layer.Layer<
         }),
       ).pipe(Stream.mapError(toLiveError));
 
-    function controlWork(input: {
+    const controlWork = Effect.fn("CodexLiveSessionService.controlWork")(function (input: {
       readonly principal: EnvironmentAuth.AuthenticatedSession;
       readonly leaseId: string;
       readonly generation: number;
@@ -1267,151 +1268,242 @@ export const layer: Layer.Layer<
       readonly runId?: string;
       readonly message?: string;
     }) {
-      return leaseLocks.withLock(
-        leaseKey(input.leaseId, input.generation),
-        Effect.gen(function* () {
-          yield* ensurePrincipal(input.principal);
-          const environmentId = yield* environment.getEnvironmentId;
-          const row = yield* getOwnedLease(
-            input.principal.sessionId,
-            input.leaseId,
-            input.generation,
+      const operation = Effect.gen(function* () {
+        yield* Effect.annotateCurrentSpan("voice.work.action", input.action);
+        yield* ensurePrincipal(input.principal);
+        const environmentId = yield* environment.getEnvironmentId;
+        const row = yield* getOwnedLease(
+          input.principal.sessionId,
+          input.leaseId,
+          input.generation,
+        );
+        const matchesRuntime = (current: LeaseRow) => {
+          const live = active.get(leaseKey(input.leaseId, input.generation));
+          return (
+            current.environment_id === environmentId &&
+            current.principal_subject === input.principal.subject &&
+            (current.status === "starting" || current.status === "active") &&
+            current.planner_native_thread_id === input.plannerNativeThreadId &&
+            live?.plannerNativeThreadId === input.plannerNativeThreadId &&
+            live.runtime.driver === "codex" &&
+            live.runtime.liveVoice !== undefined &&
+            live.runtime.instanceId === current.provider_instance_id &&
+            live.runtime.providerSessionId === current.provider_session_id
           );
-          const matchesRuntime = (current: LeaseRow) => {
-            const live = active.get(leaseKey(input.leaseId, input.generation));
-            return (
-              current.environment_id === environmentId &&
-              current.principal_subject === input.principal.subject &&
-              (current.status === "starting" || current.status === "active") &&
-              current.planner_native_thread_id === input.plannerNativeThreadId &&
-              live?.plannerNativeThreadId === input.plannerNativeThreadId &&
-              live.runtime.driver === "codex" &&
-              live.runtime.liveVoice !== undefined &&
-              live.runtime.instanceId === current.provider_instance_id &&
-              live.runtime.providerSessionId === current.provider_session_id
-            );
-          };
-          if (!matchesRuntime(row) || !input.plannerTurnId.trim() || !input.callId.trim())
-            return yield* liveError("stale_lease");
-          const projection = yield* threads
-            .getThreadProjection(row.thread_id as LiveVoiceSession["threadId"])
-            .pipe(Effect.mapError(() => liveError("session_not_found")));
-          const instance = yield* providerInstances.getInstance(
-            projection.thread.providerInstanceId,
-          );
-          const policy = yield* runtimePolicies
-            .resolve({
-              thread: projection.thread,
-              modelSelection: projection.thread.modelSelection,
-            })
-            .pipe(Effect.mapError(() => liveError("runtime_unavailable")));
-          if (
-            projection.thread.id !== row.thread_id ||
-            projection.thread.archivedAt !== null ||
-            projection.thread.providerInstanceId !== row.provider_instance_id ||
-            instance?.driverKind !== "codex" ||
-            encodeModelSelection(projection.thread.modelSelection) !== row.model_selection_json ||
-            encodeRuntimePolicy(policy) !== row.runtime_policy_json
-          )
-            return yield* liveError("stale_lease");
-          const current = yield* getOwnedLease(
-            input.principal.sessionId,
-            input.leaseId,
-            input.generation,
-          );
-          if (!matchesRuntime(current)) return yield* liveError("stale_lease");
-          const runs = projection.runs.filter(
-            (run) =>
-              run.threadId === row.thread_id && run.providerInstanceId === row.provider_instance_id,
-          );
-          const run =
-            input.runId === undefined
-              ? undefined
-              : runs.find((candidate) => candidate.id === input.runId);
-          if (input.runId !== undefined && run === undefined)
-            return yield* liveError("session_not_found");
-          if (input.action === "status") {
-            if (input.message !== undefined) return yield* liveError("invalid_state");
-            const selected = run ? [run] : runs.slice(-8);
-            return encodeReceipt({
-              environmentId,
-              threadId: row.thread_id,
-              leaseId: input.leaseId,
-              generation: input.generation,
-              tasks: selected.map((task) => ({
-                runId: task.id,
-                status: task.status,
-                resultReady: inspectReadback(projection, task.id).type === "ready",
-                result: readbackResult(projection, task.id)?.text.slice(0, 16_384) ?? null,
-                commentary: !["preparing", "queued", "starting", "running", "waiting"].includes(
-                  task.status,
+        };
+        if (!matchesRuntime(row) || !input.plannerTurnId.trim() || !input.callId.trim())
+          return yield* liveError("stale_lease");
+        const projection = yield* threads
+          .getThreadProjection(row.thread_id as LiveVoiceSession["threadId"])
+          .pipe(Effect.mapError(() => liveError("session_not_found")));
+        const instance = yield* providerInstances.getInstance(projection.thread.providerInstanceId);
+        const policy = yield* runtimePolicies
+          .resolve({
+            thread: projection.thread,
+            modelSelection: projection.thread.modelSelection,
+          })
+          .pipe(Effect.mapError(() => liveError("runtime_unavailable")));
+        if (
+          projection.thread.id !== row.thread_id ||
+          projection.thread.archivedAt !== null ||
+          projection.thread.providerInstanceId !== row.provider_instance_id ||
+          instance?.driverKind !== "codex" ||
+          encodeModelSelection(projection.thread.modelSelection) !== row.model_selection_json ||
+          encodeRuntimePolicy(policy) !== row.runtime_policy_json
+        )
+          return yield* liveError("stale_lease");
+        const current = yield* getOwnedLease(
+          input.principal.sessionId,
+          input.leaseId,
+          input.generation,
+        );
+        if (!matchesRuntime(current)) return yield* liveError("stale_lease");
+        const runs = projection.runs.filter(
+          (run) =>
+            run.threadId === row.thread_id && run.providerInstanceId === row.provider_instance_id,
+        );
+        const run =
+          input.runId === undefined
+            ? undefined
+            : runs.find((candidate) => candidate.id === input.runId);
+        if (input.runId !== undefined && run === undefined)
+          return yield* liveError("session_not_found");
+        if (input.action === "status") {
+          if (input.message !== undefined) return yield* liveError("invalid_state");
+          const observedAt = yield* DateTime.now;
+          const resultLimit = input.runId === undefined ? 1_000 : 16_384;
+          const selected = run
+            ? [run]
+            : [...runs]
+                .sort(
+                  (a, b) =>
+                    Number(isVoiceWorkActive(b.status)) - Number(isVoiceWorkActive(a.status)) ||
+                    b.ordinal - a.ordinal,
                 )
-                  ? null
-                  : (projection.messages
-                      .filter(
-                        (message) =>
-                          message.threadId === row.thread_id &&
-                          message.runId === task.id &&
-                          message.role === "assistant",
-                      )
-                      .slice(-1)
-                      .map((message) => message.text.slice(-2_000))[0] ?? null),
-              })),
-            });
-          }
-          if (
-            !run ||
-            typeof input.message !== "string" ||
-            !input.message.trim() ||
-            input.message.length > 8_000
-          )
-            return yield* liveError("invalid_state");
-          const key = `live-voice-control:${encodeURIComponent(input.leaseId)}:${input.generation}:${encodeURIComponent(input.plannerTurnId)}:${encodeURIComponent(input.callId)}`;
-          const commandId = CommandId.make(`command:${key}`);
-          const messageId = MessageId.make(`message:${key}`);
-          const prior = projection.messages.find((message) => message.id === messageId);
-          if (prior) {
-            if (
-              prior.threadId !== row.thread_id ||
-              prior.runId !== run.id ||
-              prior.text !== input.message.trim()
+                .slice(0, 8);
+          const children = projection.subagents
+            .filter(
+              (child) =>
+                child.threadId === row.thread_id &&
+                (input.runId === undefined || child.runId === input.runId),
             )
-              return yield* liveError("dispatch_conflict");
-            return encodeReceipt({
-              accepted: true,
-              delivery: "steered",
-              threadId: row.thread_id,
-              runId: run.id,
-            });
-          }
-          if (!["starting", "running", "waiting"].includes(run.status))
-            return yield* liveError("invalid_state");
-          yield* threads
-            .dispatch({
-              type: "message.dispatch",
-              commandId,
-              messageId,
-              threadId: projection.thread.id,
-              text: input.message.trim(),
-              attachments: [],
-              dispatchMode: {
-                type: "steer_active",
-                targetRunId: RunId.make(run.id),
-                onInactive: "reject",
-              },
-              createdBy: "user",
-              creationSource: "voice",
-            })
-            .pipe(Effect.mapError(() => liveError("dispatch_conflict")));
+            .sort(
+              (a, b) =>
+                Number(isVoiceWorkActive(b.status)) - Number(isVoiceWorkActive(a.status)) ||
+                DateTime.toEpochMillis(DateTime.makeUnsafe(b.updatedAt)) -
+                  DateTime.toEpochMillis(DateTime.makeUnsafe(a.updatedAt)),
+            )
+            .slice(0, 8);
+          const delegatedTasks = yield* Effect.forEach(
+            children,
+            (child) =>
+              Effect.gen(function* () {
+                const base = {
+                  taskId: child.id,
+                  parentRunId: child.runId,
+                  title: child.title,
+                  request: child.prompt.slice(0, 2_000),
+                  status: child.status,
+                  observedAt: DateTime.formatIso(observedAt),
+                  evidenceAt: DateTime.formatIso(DateTime.makeUnsafe(child.updatedAt)),
+                  lastUpdate: child.progress?.slice(-2_000) ?? null,
+                  currentStep: null,
+                  visibility: "unknown",
+                  resultReady: false,
+                  result: null,
+                };
+                if (child.origin !== "app_owned" || child.childThreadId === null) return base;
+                const snapshot = yield* threads
+                  .getProjectThread({
+                    projectId: projection.thread.projectId,
+                    threadId: child.childThreadId,
+                  })
+                  .pipe(
+                    Effect.timeoutOption("1 second"),
+                    Effect.catch(() => Effect.succeed(Option.none())),
+                  );
+                if (Option.isNone(snapshot)) return base;
+                const target = snapshot.value;
+                if (
+                  target.thread.id !== child.childThreadId ||
+                  target.thread.lineage.parentThreadId !== row.thread_id ||
+                  target.thread.lineage.relationshipToParent !== "subagent" ||
+                  target.thread.archivedAt !== null
+                )
+                  return base;
+                const latest = [...target.runs].sort(
+                  (a, b) =>
+                    Number(isVoiceWorkActive(b.status)) - Number(isVoiceWorkActive(a.status)) ||
+                    b.ordinal - a.ordinal,
+                )[0];
+                if (!latest) return base;
+                const result = inspectReadback(target, latest.id);
+                return {
+                  ...base,
+                  ...voiceRunStatus(target, latest, observedAt),
+                  request: child.prompt.slice(0, 2_000),
+                  resultReady: result.type === "ready",
+                  resultTruncated: result.type === "ready" && result.text.length > resultLimit,
+                  result: result.type === "ready" ? result.text.slice(0, resultLimit) : null,
+                };
+              }),
+            { concurrency: 4 },
+          );
+          yield* ensurePrincipal(input.principal);
+          if (
+            !matchesRuntime(
+              yield* getOwnedLease(input.principal.sessionId, input.leaseId, input.generation),
+            )
+          )
+            return yield* liveError("stale_lease");
+          return encodeReceipt({
+            environmentId,
+            threadId: row.thread_id,
+            leaseId: input.leaseId,
+            generation: input.generation,
+            observedAt: DateTime.formatIso(observedAt),
+            visibility: "available",
+            delegatedTasks,
+            tasks: selected.map((task) => {
+              const result = inspectReadback(projection, task.id);
+              return {
+                ...voiceRunStatus(projection, task, observedAt),
+                resultReady: result.type === "ready",
+                resultTruncated: result.type === "ready" && result.text.length > resultLimit,
+                result: result.type === "ready" ? result.text.slice(0, resultLimit) : null,
+              };
+            }),
+          });
+        }
+        if (
+          !run ||
+          typeof input.message !== "string" ||
+          !input.message.trim() ||
+          input.message.length > 8_000
+        )
+          return yield* liveError("invalid_state");
+        const key = `live-voice-control:${encodeURIComponent(input.leaseId)}:${input.generation}:${encodeURIComponent(input.plannerTurnId)}:${encodeURIComponent(input.callId)}`;
+        const commandId = CommandId.make(`command:${key}`);
+        const messageId = MessageId.make(`message:${key}`);
+        const prior = projection.messages.find((message) => message.id === messageId);
+        if (prior) {
+          if (
+            prior.threadId !== row.thread_id ||
+            prior.runId !== run.id ||
+            prior.text !== input.message.trim()
+          )
+            return yield* liveError("dispatch_conflict");
           return encodeReceipt({
             accepted: true,
             delivery: "steered",
             threadId: row.thread_id,
             runId: run.id,
           });
-        }),
-      );
-    }
+        }
+        if (!["starting", "running", "waiting"].includes(run.status))
+          return yield* liveError("invalid_state");
+        yield* threads
+          .dispatch({
+            type: "message.dispatch",
+            commandId,
+            messageId,
+            threadId: projection.thread.id,
+            text: input.message.trim(),
+            attachments: [],
+            dispatchMode: {
+              type: "steer_active",
+              targetRunId: RunId.make(run.id),
+              onInactive: "reject",
+            },
+            createdBy: "user",
+            creationSource: "voice",
+          })
+          .pipe(Effect.mapError(() => liveError("dispatch_conflict")));
+        return encodeReceipt({
+          accepted: true,
+          delivery: "steered",
+          threadId: row.thread_id,
+          runId: run.id,
+        });
+      });
+      // Reads revalidate ownership and must not wait behind native speech or admission.
+      return input.action === "status"
+        ? operation.pipe(
+            Effect.timeoutOrElse({
+              duration: "6 seconds",
+              orElse: () =>
+                Effect.succeed(
+                  encodeReceipt({
+                    visibility: "unavailable",
+                    reason: "status_timeout",
+                    tasks: [],
+                    delegatedTasks: [],
+                  }),
+                ),
+            }),
+          )
+        : leaseLocks.withLock(leaseKey(input.leaseId, input.generation), operation);
+    });
 
     function submitWork(input: {
       readonly principalSessionId: string;

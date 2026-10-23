@@ -14,7 +14,6 @@ import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AppState, Linking, Platform, View } from "react-native";
 
-import { AppText } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { liveVoiceEnvironment } from "../../state/liveVoice";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -23,7 +22,7 @@ import { unwrapLiveVoiceCommand } from "./liveVoiceCommands";
 import { createVoiceEventBridge } from "./liveVoiceEvents";
 import { nativeVoiceMedia } from "./nativeVoiceMedia";
 import { subscribeNativeVoiceStopped } from "./nativeVoiceBackground";
-import { VoiceTranscript } from "./VoiceTranscript";
+import { useNativeVoicePresentation, useNativeVoiceView } from "./NativeVoiceConversation";
 
 type VoiceProps = {
   readonly environmentId: EnvironmentId;
@@ -52,19 +51,6 @@ function EventFeed(props: {
   }, [props.bridge, result, target]);
   return null;
 }
-
-const phaseLabel: Record<LiveVoiceState["phase"], string | null> = {
-  idle: null,
-  ended: null,
-  error: null,
-  preparing: "Preparing voice…",
-  prepared: "Connecting…",
-  connecting: "Connecting…",
-  live: "Voice connected",
-  reconnecting: "Reconnecting…",
-  stopping: "Ending call…",
-  "playback-blocked": "Audio paused",
-};
 
 export function NativeLiveVoiceControl(props: VoiceProps) {
   return (
@@ -130,7 +116,7 @@ function LiveVoiceSession(props: VoiceProps) {
   }, [signaling]);
   const current = observed?.controller === controller ? observed.state : controller.currentState;
   const busy = !["idle", "ended", "error"].includes(current.phase);
-  const canMute = ["live", "reconnecting", "playback-blocked"].includes(current.phase);
+
   // Start availability may refresh on resume; it is not the active call's identity.
   const target = useMemo<LiveVoiceTarget>(
     () => ({
@@ -143,7 +129,12 @@ function LiveVoiceSession(props: VoiceProps) {
   );
   const focused = useRef(false);
   const dictation = useGlobalVoiceInput();
-  const [showTranscript, setShowTranscript] = useState(false);
+  const { select } = useNativeVoiceView();
+  const presentation = useMemo(
+    () => ({ state: current, controller, eligible: props.eligible }),
+    [current, controller, props.eligible],
+  );
+  useNativeVoicePresentation(presentation);
   const keepAwakeId = useId();
   const { onBusyChange } = props;
 
@@ -200,65 +191,20 @@ function LiveVoiceSession(props: VoiceProps) {
       {current.lease ? (
         <EventFeed environmentId={props.environmentId} lease={current.lease} bridge={bridge} />
       ) : null}
-      <View className="flex-row flex-wrap items-center gap-2">
-        {busy ? (
-          <>
-            <Button
-              label={current.localMuted ? "Unmute mic" : "Mute mic"}
-              disabled={!canMute}
-              onPress={() => controller.setLocalMuted(!current.localMuted)}
-            />
-            <Button
-              label={current.outputMuted ? "Unmute audio" : "Mute audio"}
-              disabled={!canMute}
-              onPress={() => {
-                void controller.setOutputMuted(!current.outputMuted);
-              }}
-            />
-            <Button
-              label="End call"
-              tone="danger"
-              onPress={() => {
-                void controller.end();
-              }}
-            />
-          </>
-        ) : (
-          <Button
-            label="Voice chat"
-            disabled={!props.eligible || dictation.isBusy}
-            onPress={() => {
-              if (props.eligible && focused.current && AppState.currentState === "active")
-                void controller.start(target);
-            }}
-          />
-        )}
-        {current.phase === "playback-blocked" ? (
-          <Button
-            label="Resume audio"
-            onPress={() => {
-              void controller.retryPlayback();
-            }}
-          />
-        ) : null}
-        {current.transcript.length ? (
-          <Button
-            label={showTranscript ? "Hide transcript" : "Transcript"}
-            tone="text"
-            onPress={() => setShowTranscript((value) => !value)}
-          />
-        ) : null}
-      </View>
-      {phaseLabel[current.phase] ? (
-        <AppText accessibilityLiveRegion="polite" className="text-sm text-foreground-muted">
-          {phaseLabel[current.phase]}
-        </AppText>
+      {!busy && props.eligible ? (
+        <Button
+          label="Gespräch starten"
+          disabled={dictation.isBusy}
+          onPress={() => {
+            if (focused.current && AppState.currentState === "active") {
+              select("conversation");
+              void controller.start(target);
+            }
+          }}
+        />
       ) : null}
       {current.error ? (
         <View className="gap-2">
-          <AppText accessibilityRole="alert" className="text-sm text-danger">
-            {current.error}
-          </AppText>
           <Button
             label="Microphone settings"
             tone="text"
@@ -267,9 +213,6 @@ function LiveVoiceSession(props: VoiceProps) {
             }}
           />
         </View>
-      ) : null}
-      {showTranscript && current.transcript.length ? (
-        <VoiceTranscript entries={current.transcript} />
       ) : null}
     </View>
   );
