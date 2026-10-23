@@ -1240,7 +1240,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         <TooltipTrigger
           render={
             <span
-              role="status"
+              role={props.isRouteThread ? undefined : "status"}
               aria-label={topStatus.label}
               className="inline-flex max-w-full shrink-0 flex-wrap"
             />
