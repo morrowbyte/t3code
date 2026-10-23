@@ -54,6 +54,72 @@ function makeHarness(environmentIds: ReadonlyArray<EnvironmentId> = [environment
 }
 
 describe("v2 thread shell lists", () => {
+  it.each(["user_input", "command"] as const)(
+    "keeps a settled child's old %s out of parent input until canonical reactivation",
+    (kind) => {
+      const { registry, threads, snapshotAtom } = makeHarness();
+      const child = {
+        ...v2ThreadShell,
+        id: ThreadId.make("settled-child"),
+        creationSource: "mcp" as const,
+        settledOverride: "settled" as const,
+        settledAt: v2Now,
+        status: "waiting" as const,
+        activityRunStatus: "waiting" as const,
+        pendingRuntimeRequest: { id: RuntimeRequestId.make("old-request"), kind, createdAt: v2Now },
+        lineage: {
+          ...v2ThreadShell.lineage,
+          parentThreadId: v2ThreadShell.id,
+          relationshipToParent: "subagent" as const,
+        },
+      };
+      const inputs = threads.childThreadInputsAtom({ environmentId, threadId: v2ThreadShell.id });
+      const parent = threads.threadShellAtom({ environmentId, threadId: v2ThreadShell.id });
+      const dispose = registry.mount(inputs);
+      registry.set(snapshotAtom(environmentId), {
+        ...v2ShellSnapshot,
+        threads: [v2ThreadShell, child],
+      });
+      expect(registry.get(inputs)).toEqual([]);
+      expect(registry.get(parent)?.pendingSubagentRequest).toBeNull();
+      const settled = presentThreadShell(environmentId, child, "approval");
+      expect(settled.hasPendingUserInput).toBe(false);
+      expect(settled.hasPendingApprovals).toBe(false);
+      expect(settled.pendingSubagentRequest).toBeNull();
+      expect(isThreadWorking(settled)).toBe(false);
+      expect(settled.runtime?.status).toBe("waiting");
+      expect(settled.source).toBe(child);
+      expect(child.pendingRuntimeRequest.id).toBe("old-request");
+      const reopened = {
+        ...child,
+        settledOverride: null,
+        settledAt: null,
+        pendingRuntimeRequest: {
+          ...child.pendingRuntimeRequest,
+          id: RuntimeRequestId.make("fresh-request"),
+        },
+      };
+      registry.set(snapshotAtom(environmentId), {
+        ...v2ShellSnapshot,
+        threads: [v2ThreadShell, reopened],
+      });
+      expect(registry.get(inputs).map((thread) => thread.id)).toEqual([child.id]);
+      expect(registry.get(parent)?.pendingSubagentRequest).toBe(
+        kind === "command" ? "approval" : "user_input",
+      );
+      const freshRun = presentThreadShell(environmentId, {
+        ...reopened,
+        status: "running",
+        activityRunStatus: "running",
+        pendingRuntimeRequest: null,
+        latestRunId: RunId.make("fresh-run"),
+        activeRunId: RunId.make("fresh-run"),
+      });
+      expect(isThreadWorking(freshRun)).toBe(true);
+      dispose();
+      registry.dispose();
+    },
+  );
   it("preserves native terminal status without inventing an app run", () => {
     for (const status of ["running", "waiting", "completed", "cancelled", "failed"] as const) {
       const child = presentThreadShell(environmentId, {

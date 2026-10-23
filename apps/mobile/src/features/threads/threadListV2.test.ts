@@ -291,6 +291,68 @@ describe("native thread families", () => {
     },
   );
 
+  it("keeps settled old input and idle run references out of Working across folded families and environments", () => {
+    const settled = makeThread({
+      ...working,
+      settledOverride: "settled",
+      settledAt: NOW,
+      hasPendingApprovals: true,
+    });
+    const idle = makeThread({
+      ...child,
+      runtime: { ...working.runtime!, status: "idle", activeRunId: RunId.make("old-run") },
+    });
+    const remote = makeThread({ ...working, environmentId: EnvironmentId.make("remote") });
+    const asking = makeThread({
+      ...working,
+      id: ThreadId.make("question"),
+      hasPendingUserInput: true,
+    });
+    const input = {
+      threads: [parent, idle, settled, remote, remote, asking],
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+      includeSubagents: true,
+      workingShelfEnabled: true,
+      workingShelfExpanded: true,
+      settledShelfExpanded: true,
+    };
+    const layout = buildThreadListV2Items(input);
+    expect(layout.workingCount).toBe(1);
+    expect(resolveThreadListV2Status(settled)).toBe("ready");
+    expect(resolveThreadListV2Status(idle)).toBe("ready");
+    expect(
+      buildThreadListV2Items({ ...input, environmentId: parent.environmentId }).workingCount,
+    ).toBe(0);
+    const items = itemsFor([parent, idle, settled, asking]);
+    const familyInput = {
+      items,
+      visibleKeys: new Set([parentKey]),
+      disclosure: { ...disclosure, routeKey: parentKey },
+      workingShelfEnabled: true,
+    };
+    const folded = buildThreadListV2FamilyRows(familyInput);
+    expect(folded.every((row) => row.displaySection === "active")).toBe(true);
+    expect(folded[0]?.activeDescendantCount).toBe(0);
+    expect(folded.map((row) => row.key)).not.toContain(grandchildKey);
+    const reopened = {
+      ...settled,
+      settledOverride: null,
+      settledAt: null,
+      hasPendingApprovals: false,
+    };
+    expect(
+      buildThreadListV2Items({ ...input, threads: [parent, idle, reopened] }).workingCount,
+    ).toBe(1);
+    const activeRows = buildThreadListV2FamilyRows({
+      ...familyInput,
+      items: itemsFor([parent, idle, reopened]),
+    });
+    expect(activeRows[0]).toMatchObject({ displaySection: "working", activeDescendantCount: 1 });
+    expect(settled.runtime).toBe(working.runtime);
+  });
+
   it.each(["approval", "user_input", "active_run", "route"] as const)(
     "retains a %s descendant while omitting inactive historical siblings",
     (reason) => {
@@ -299,7 +361,7 @@ describe("native thread families", () => {
         pendingSubagentRequest: reason === "approval" || reason === "user_input" ? reason : null,
         runtime: {
           ...working.runtime!,
-          status: "idle",
+          status: reason === "active_run" ? "running" : "idle",
           activeRunId: reason === "active_run" ? RunId.make("still-active") : null,
         },
       });
@@ -311,7 +373,8 @@ describe("native thread families", () => {
         disclosure: { ...disclosure, routeKey: reason === "route" ? grandchildKey : parentKey },
       });
       expect(rows.map((row) => row.key)).toEqual([parentKey, childKey, grandchildKey]);
-      expect(rows[0]?.activeDescendantCount).toBe(reason === "route" ? 0 : 1);
+      expect(rows[0]?.activeDescendantCount).toBe(reason === "active_run" ? 1 : 0);
+      expect(rows[0]?.displaySection).toBe("active");
     },
   );
 
@@ -2064,7 +2127,7 @@ describe("Working section beta", () => {
       "asks-approval",
       "finished-early",
     ]);
-    expect(layout.workingCount).toBe(1);
+    expect(layout.workingCount).toBe(2);
     expect(layout.workingShelfHeaderIndex).toBe(4);
 
     const off = build({ workingShelfEnabled: false });

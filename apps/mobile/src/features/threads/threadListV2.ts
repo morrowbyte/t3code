@@ -11,14 +11,13 @@ import {
 } from "@t3tools/client-runtime/state/thread-settled";
 import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import {
-  threadRuntimeIsActive,
-  resolveThreadProviderStack,
-} from "@t3tools/client-runtime/state/models";
+import { resolveThreadProviderStack } from "@t3tools/client-runtime/state/models";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import {
   createInboxReturnTracker,
   isThreadWorking,
+  isThreadAwaitingInput,
+  workingThreadKeys,
   sortInboxThreadsByReturn,
   sortWorkingThreadsBySend,
 } from "@t3tools/client-runtime/state/thread-inbox";
@@ -179,8 +178,9 @@ export function resolveThreadListV2Status(
     | "runtime"
     | "blockedOnThreadWait"
   > &
-    Partial<Pick<EnvironmentThreadShell, "pendingBackgroundTasks">>,
+    Partial<Pick<EnvironmentThreadShell, "pendingBackgroundTasks" | "settledOverride">>,
 ): ThreadListV2Status {
+  if (thread.settledOverride === "settled") return "ready";
   if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {
     return "approval";
   }
@@ -197,10 +197,7 @@ export function resolveThreadListV2Status(
     return "working";
   }
   if (thread.runtime?.status === "idle") {
-    return thread.runtime.activeRunId !== null ||
-      backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])
-      ? "waiting"
-      : "ready";
+    return backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []) ? "waiting" : "ready";
   }
   if (thread.runtime?.status === "failed") {
     return thread.runtime.lastErrorClass === "usage_limit" ? "limited" : "failed";
@@ -374,17 +371,10 @@ export function buildThreadListV2FamilyRows(input: {
   const rank = new Map(input.items.map((item, index) => [keyOf(item), index]));
   const parents = new Map<string, string>();
   const workingKeys = new Set(
-    input.items
-      .filter(
-        ({ thread }) =>
-          threadRuntimeIsActive(thread.runtime) ||
-          thread.hasPendingApprovals ||
-          thread.hasPendingUserInput ||
-          thread.pendingSubagentRequest != null ||
-          backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []) ||
-          (thread.runtime?.status === "idle" && thread.runtime.activeRunId !== null),
-      )
-      .map(keyOf),
+    input.items.filter(({ thread }) => isThreadWorking(thread)).map(keyOf),
+  );
+  const inputKeys = new Set(
+    input.items.filter(({ thread }) => isThreadAwaitingInput(thread)).map(keyOf),
   );
   for (const [key, { thread }] of byKey) {
     if (
@@ -436,6 +426,7 @@ export function buildThreadListV2FamilyRows(input: {
   for (const key of [
     ...(input.searching ? input.visibleKeys : []),
     ...workingKeys,
+    ...inputKeys,
     ...(input.disclosure.routeKey === null ? [] : [input.disclosure.routeKey]),
   ]) {
     let current: string | undefined = key;
@@ -472,7 +463,9 @@ export function buildThreadListV2FamilyRows(input: {
       ? input.workingShelfEnabled
         ? "working"
         : "active"
-      : sectionOf(byKey.get(anchor)!);
+      : family.some((key) => inputKeys.has(key))
+        ? "active"
+        : sectionOf(byKey.get(anchor)!);
     return [{ root, displaySection, rank: Math.min(...visible.map((key) => rank.get(key)!)) }];
   });
   groups.sort((left, right) => left.rank - right.rank);
@@ -978,7 +971,10 @@ export function buildThreadListV2Items(input: {
       isLast: false,
     });
   }
-  const workingShelfHeaderIndex = orderedWorking.length > 0 ? items.length : null;
+  const workingCount = workingShelfEnabled
+    ? workingThreadKeys([...pinned, ...active, ...working, ...snoozed, ...settled]).size
+    : 0;
+  const workingShelfHeaderIndex = workingCount > 0 ? items.length : null;
   for (const thread of visibleWorking) {
     items.push({
       thread,
@@ -1018,7 +1014,7 @@ export function buildThreadListV2Items(input: {
   return {
     items,
     hiddenSettledCount: orderedSettled.length - pagedSettled.length,
-    workingCount: orderedWorking.length,
+    workingCount,
     workingShelfHeaderIndex,
     snoozedCount: orderedSnoozed.length,
     snoozedShelfHeaderIndex,

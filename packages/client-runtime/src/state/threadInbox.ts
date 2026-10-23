@@ -1,4 +1,5 @@
 import { threadRuntimeIsActive, type EnvironmentThreadShell } from "./models.ts";
+import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { toSortableTimestamp } from "./threadSort.ts";
 
 type WorkingThreadInput = Pick<
@@ -10,12 +11,35 @@ type WorkingThreadInput = Pick<
   | "interactionMode"
   | "latestRun"
   | "runtime"
->;
+> &
+  Partial<Pick<EnvironmentThreadShell, "settledOverride" | "pendingBackgroundTasks">>;
+
+export function isThreadAwaitingInput(
+  thread: Pick<
+    WorkingThreadInput,
+    "hasPendingApprovals" | "hasPendingUserInput" | "pendingSubagentRequest" | "settledOverride"
+  >,
+): boolean {
+  return (
+    thread.settledOverride !== "settled" &&
+    (thread.hasPendingApprovals ||
+      thread.hasPendingUserInput ||
+      thread.pendingSubagentRequest != null)
+  );
+}
 
 export function isThreadWorking(thread: WorkingThreadInput): boolean {
-  if (thread.hasPendingApprovals || thread.hasPendingUserInput) return false;
-  if (thread.pendingSubagentRequest != null) return false;
-  if (!threadRuntimeIsActive(thread.runtime) && thread.runtime?.status !== "idle") return false;
+  // A new admitted run clears this override canonically; stale run/request
+  // summaries must never undo an explicit settlement on their own.
+  if (thread.settledOverride === "settled" || isThreadAwaitingInput(thread)) return false;
+  if (
+    !threadRuntimeIsActive(thread.runtime) &&
+    !(
+      thread.runtime?.status === "idle" &&
+      backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])
+    )
+  )
+    return false;
   const run = thread.latestRun;
   const runSettled =
     run !== null &&
@@ -26,6 +50,14 @@ export function isThreadWorking(thread: WorkingThreadInput): boolean {
     run.status !== "waiting" &&
     thread.runtime?.activeRunId !== run.runId;
   return !(thread.interactionMode === "plan" && thread.hasActionableProposedPlan && runSettled);
+}
+
+export function workingThreadKeys(
+  threads: ReadonlyArray<WorkingThreadInput & Pick<EnvironmentThreadShell, "environmentId" | "id">>,
+): ReadonlySet<string> {
+  return new Set(
+    threads.filter(isThreadWorking).map((thread) => `${thread.environmentId}:${thread.id}`),
+  );
 }
 
 type InboxThreadInput = Pick<

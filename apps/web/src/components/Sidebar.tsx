@@ -207,6 +207,7 @@ import {
   hasUnseenCompletion,
   isSidebarNestedLinkClick,
   isSidebarThreadWorking,
+  workingThreadKeys,
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
   planSidebarThreadDrop,
@@ -574,16 +575,7 @@ function useSidebarThreads(input: {
     ...snoozedThreads,
     ...settledThreads,
   ];
-  const workingKeys = new Set(
-    allThreads
-      .filter(
-        (thread) =>
-          isSidebarThreadWorking(thread) ||
-          thread.hasPendingApprovals ||
-          thread.hasPendingUserInput,
-      )
-      .map(threadShellKey),
-  );
+  const workingKeys = workingThreadKeys(allThreads);
   const disclosure = revealSidebarRouteAncestors(familyDisclosure, allThreads, routeThreadKey);
   if (disclosure !== familyDisclosure) setFamilyDisclosure(disclosure);
   const hierarchyRows = buildSidebarHierarchy({

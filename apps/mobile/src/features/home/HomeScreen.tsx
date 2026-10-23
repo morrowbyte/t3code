@@ -88,6 +88,7 @@ import type { HomeListFilterMenuEnvironment } from "./home-list-filter-menu";
 import {
   buildHomeProjectScopes,
   findHomeProjectScope,
+  resolveHomeThreadShelfCounts,
   type HomeProjectSortOrder,
 } from "./homeThreadList";
 import { createSwipeRowActivation } from "./swipe-row-activation";
@@ -595,20 +596,10 @@ export function HomeScreen(props: HomeScreenProps) {
       "working" | "snoozed" | "settled",
       number | null
     >;
-    const counts = {
-      working: visible.workingCount,
-      snoozed: visible.snoozedCount,
-      settled: visible.settledCount,
-    };
+    const counts = resolveHomeThreadShelfCounts(visible, families);
     for (const section of sections) {
       const rows = families.filter((row) => row.displaySection === section);
       if (section === "working" || section === "snoozed" || section === "settled") {
-        counts[section] = Math.max(
-          counts[section],
-          rows
-            .filter((row) => row.depth === 0)
-            .reduce((count, row) => count + 1 + row.descendantCount, 0),
-        );
         if (counts[section] > 0) headers[section] = items.length;
         const expanded =
           section === "working"

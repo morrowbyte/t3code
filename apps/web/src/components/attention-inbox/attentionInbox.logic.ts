@@ -38,6 +38,7 @@ export function deriveAttentionInbox(
   for (const thread of threads) {
     if (thread.deletedAt !== null || thread.archivedAt !== null) continue;
     loadedThreads++;
+    if (thread.settledOverride === "settled") continue;
     const threadRef = scopeThreadRef(environmentId, thread.id);
     const key = scopedThreadKey(threadRef);
     const base = { threadRef, threadTitle: thread.title };
@@ -84,8 +85,7 @@ export function deriveAttentionInbox(
       thread.activityRunStatus == null &&
       !backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []) &&
       (thread.status === "completed" || thread.status === "idle") &&
-      request === null &&
-      thread.settledOverride !== "settled";
+      request === null;
     if (!completed) continue;
     // Older shells omit this field. updatedAt can describe a title or visit,
     // so it cannot establish that work actually completed.

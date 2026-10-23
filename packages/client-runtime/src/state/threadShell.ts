@@ -50,6 +50,9 @@ const isChildRunLive = (
 function subagentRequest(thread: OrchestrationV2ThreadShell): PendingSubagentRequest | null {
   const kind = thread.pendingRuntimeRequest?.kind;
   if (
+    thread.settledOverride === "settled" ||
+    thread.archivedAt !== null ||
+    thread.deletedAt !== null ||
     kind === undefined ||
     kind === "auth_refresh" ||
     thread.lineage.relationshipToParent !== "subagent" ||

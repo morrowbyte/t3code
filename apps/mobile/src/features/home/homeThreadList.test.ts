@@ -5,9 +5,17 @@ import type {
 import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildHomeProjectScopes, findHomeProjectScope } from "./homeThreadList";
+import {
+  buildHomeProjectScopes,
+  findHomeProjectScope,
+  resolveHomeThreadShelfCounts,
+} from "./homeThreadList";
 import { makeThreadShellFixture } from "../../test-fixtures";
-import { buildThreadListV2Items } from "../threads/threadListV2";
+import {
+  buildThreadListV2Items,
+  buildThreadListV2FamilyRows,
+  buildThreadListV2ListItems,
+} from "../threads/threadListV2";
 
 function makeProject(
   input: Partial<EnvironmentProject> & Pick<EnvironmentProject, "environmentId" | "id" | "title">,
@@ -43,6 +51,100 @@ function makeThread(
     ...input,
   });
 }
+
+describe("home Working shelf count", () => {
+  it("keeps the collapsed header reachable with unrelated selection and multiple scoped families", () => {
+    const local = EnvironmentId.make("local");
+    const remote = EnvironmentId.make("remote");
+    const projectId = ProjectId.make("project");
+    const base = { environmentId: local, projectId, title: "Thread" };
+    const unrelated = makeThread({ ...base, id: ThreadId.make("unrelated") });
+    const families = ["one", "two"].map((name) => {
+      const parent = makeThread({
+        ...base,
+        id: ThreadId.make(`parent-${name}`),
+        settledOverride: "settled",
+      });
+      const child = makeThread({
+        ...base,
+        id: ThreadId.make(`child-${name}`),
+        runtime: {
+          status: "running",
+          activeRunId: null,
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          providerName: null,
+          lastError: null,
+          updatedAt: unrelated.updatedAt,
+        },
+        lineage: {
+          rootThreadId: parent.id,
+          parentThreadId: parent.id,
+          relationshipToParent: "subagent",
+        },
+      });
+      return [parent, child] as const;
+    });
+    const remoteChild = { ...families[0]![1], environmentId: remote };
+    const outsideProject = { ...remoteChild, projectId: ProjectId.make("outside") };
+    const options = {
+      threads: [unrelated, ...families.flat(), remoteChild, remoteChild, outsideProject],
+      environmentId: null,
+      projectRefs: [
+        { environmentId: local, projectId },
+        { environmentId: remote, projectId },
+      ],
+      searchQuery: "",
+      now: unrelated.updatedAt,
+      includeSubagents: true,
+      workingShelfEnabled: true,
+      settledShelfExpanded: false,
+    };
+    const keyOf = (thread: EnvironmentThreadShell) => `${thread.environmentId}:${thread.id}`;
+    const all = buildThreadListV2Items({
+      ...options,
+      workingShelfExpanded: true,
+      settledShelfExpanded: true,
+    });
+    for (const selectedThreadKey of [null, keyOf(unrelated)]) {
+      for (const workingShelfExpanded of [false, true]) {
+        const visible = buildThreadListV2Items({
+          ...options,
+          selectedThreadKey,
+          workingShelfExpanded,
+        });
+        const rows = buildThreadListV2FamilyRows({
+          items: all.items,
+          visibleKeys: new Set(visible.items.map(({ thread }) => keyOf(thread))),
+          disclosure: {
+            routeKey: selectedThreadKey,
+            expandedKeys: new Set<string>(),
+            closedKeys: new Set<string>(),
+          },
+          workingShelfEnabled: true,
+        });
+        if (!workingShelfExpanded)
+          expect(rows.some((row) => row.displaySection === "working")).toBe(false);
+        const counts = resolveHomeThreadShelfCounts(visible, rows);
+        expect(visible.workingCount).toBe(3);
+        expect(counts.working).toBe(3);
+        const items = buildThreadListV2ListItems({
+          items: visible.items,
+          pendingTasks: [],
+          workingCount: counts.working,
+          workingShelfHeaderIndex: visible.workingShelfHeaderIndex,
+          workingShelfExpanded,
+        });
+        expect(items).toContainEqual({
+          type: "v2-working-shelf",
+          key: "v2-working-shelf",
+          count: 3,
+          expanded: workingShelfExpanded,
+          disabled: false,
+        });
+      }
+    }
+  });
+});
 
 describe("home project scopes", () => {
   it("filters threads across both scratch hosts while retaining the selected environment boundary", () => {

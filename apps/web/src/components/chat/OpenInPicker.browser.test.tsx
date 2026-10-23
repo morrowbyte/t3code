@@ -2,10 +2,13 @@ import { AuthOrchestrationOperateScope, EnvironmentId, type EditorId } from "@t3
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { userEvent } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 
 import { act, render as renderUi } from "../../../test/render";
 import type { RemoteOpenState } from "../../remoteOpen";
+import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
+import { resolveMarkdownFileLinkMeta } from "../../markdown-links";
+import { resolveMarkdownFileHostPath } from "../../markdownFileHostPath";
 
 const state = vi.hoisted(() => ({
   allowed: new Set<string>(),
@@ -72,7 +75,7 @@ const primary = EnvironmentId.make("primary");
 const selected = EnvironmentId.make("selected");
 const editors: readonly EditorId[] = ["vscode"];
 
-async function setup() {
+async function setup(platform = "Linux") {
   state.allowed.clear();
   state.remote = { mode: "local-exec" };
   state.clientEditors = editors;
@@ -84,7 +87,7 @@ async function setup() {
   window.localStorage.clear();
 
   await using stack = new AsyncDisposableStack();
-  const _platform = vi.spyOn(navigator, "platform", "get").mockReturnValue("Linux");
+  const _platform = vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
   stack.use(_platform);
   const _storage = { [Symbol.dispose]: () => window.localStorage.clear() };
   stack.use(_storage);
@@ -92,7 +95,7 @@ async function setup() {
   async function renderPicker(
     availableEditors: readonly EditorId[] = editors,
     panel = false,
-    { openInCwd = "/work/project", revealFileManager = false } = {},
+    { openInCwd = "/work/project", revealFileManager = false, openOnSelect = false } = {},
   ) {
     await act(async () => {
       for (const listener of state.listeners) listener();
@@ -103,6 +106,7 @@ async function setup() {
           availableEditors={availableEditors}
           openInCwd={openInCwd}
           revealFileManager={revealFileManager}
+          openOnSelect={openOnSelect}
           displayMode={panel ? "panel" : "toolbar"}
           compact={!panel}
         />
@@ -162,6 +166,79 @@ async function setup() {
 }
 
 describe("host editor access", () => {
+  it.each([
+    "D:\\projects\\blain-it\\issue-8-review-20261022\\VLAN-Vorbereitung.html",
+    "D:\\projects\\blain it\\issue 8 review 20261022\\VLAN Vorbereitung.html",
+  ])("reveals %s from the file toolbar menu and retains Ctrl+O", async (filePath) => {
+    await using fixture = await setup("Win32");
+    state.allowed.add(selected);
+    const workspaceRoot = filePath.slice(0, filePath.lastIndexOf("\\"));
+    const meta = resolveMarkdownFileLinkMeta(filePath, workspaceRoot);
+    if (!meta) throw new Error("Expected the Windows file link");
+    const { absolutePath: chatPath } = await resolveMarkdownFileHostPath({
+      meta,
+      cwd: workspaceRoot,
+      findWorkspaceMatch: async () => null,
+    });
+    expect(chatPath).toBe(filePath);
+    const previewPath = resolvePathLinkTarget(filePath, workspaceRoot);
+    expect(previewPath).toBe(chatPath);
+    await fixture.renderPicker(["zed", "file-manager"], false, {
+      openInCwd: previewPath,
+      revealFileManager: true,
+      openOnSelect: true,
+    });
+
+    await userEvent.click(fixture.screen.getByRole("button", { name: "Choose editor" }));
+    await userEvent.click(page.getByRole("menuitem", { name: "File Explorer" }));
+    const revealRequest = {
+      environmentId: selected,
+      input: { cwd: chatPath, editor: "file-manager", reveal: true },
+    };
+    expect(state.run).toHaveBeenCalledExactlyOnceWith(revealRequest);
+    expect(state.openUrl).not.toHaveBeenCalled();
+
+    expect((await fixture.pressOpenFavorite()).defaultPrevented).toBe(true);
+    expect(state.run).toHaveBeenCalledTimes(2);
+    expect(state.run).toHaveBeenLastCalledWith(revealRequest);
+  });
+
+  it("keeps workspace and folder toolbar selection as a preference until Open", async () => {
+    await using fixture = await setup("Win32");
+    state.allowed.add(selected);
+    const folderPath = "D:\\projects\\workspace with spaces";
+    await fixture.renderPicker(["zed", "file-manager"], false, { openInCwd: folderPath });
+
+    await userEvent.click(fixture.screen.getByRole("button", { name: "Choose editor" }));
+    await userEvent.click(page.getByRole("menuitem", { name: "File Explorer" }));
+    expect(state.run).not.toHaveBeenCalled();
+    await userEvent.click(
+      fixture.screen.getByRole("button", { name: "Open file in preferred editor" }),
+    );
+    expect(state.run).toHaveBeenCalledExactlyOnceWith({
+      environmentId: selected,
+      input: { cwd: folderPath, editor: "file-manager" },
+    });
+  });
+
+  it("opens a file in Zed without the file-manager reveal flag", async () => {
+    await using fixture = await setup("Win32");
+    state.allowed.add(selected);
+    const filePath = "D:\\projects\\workspace with spaces\\VLAN Vorbereitung.html";
+    await fixture.renderPicker(["zed", "file-manager"], false, {
+      openInCwd: filePath,
+      revealFileManager: true,
+      openOnSelect: true,
+    });
+
+    await userEvent.click(fixture.screen.getByRole("button", { name: "Choose editor" }));
+    await userEvent.click(page.getByRole("menuitem", { name: /^Zed/ }));
+    expect(state.run).toHaveBeenCalledExactlyOnceWith({
+      environmentId: selected,
+      input: { cwd: filePath, editor: "zed" },
+    });
+  });
+
   it.each([
     ["picker", "dialog"],
     ["picker", "local"],
