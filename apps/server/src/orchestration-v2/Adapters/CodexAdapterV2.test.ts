@@ -7834,7 +7834,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                         willRetry: scenario.name === "retry",
                         error: {
                           message,
-                          codexErrorInfo: scenario.code,
+                          codexErrorInfo:
+                            "errorInfo" in scenario ? scenario.errorInfo : scenario.code,
                           additionalDetails:
                             "details" in scenario
                               ? scenario.details
@@ -7862,7 +7863,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                       scenario.name !== "matching-details" &&
                       !("details" in scenario)
                         ? {}
-                        : { codexErrorInfo: scenario.code }),
+                        : {
+                            codexErrorInfo:
+                              "errorInfo" in scenario ? scenario.errorInfo : scenario.code,
+                          }),
                     },
                   },
                 },
@@ -9302,13 +9306,29 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             type: "emit_inbound",
             frame: {
               method,
-              params: {
-                threadId: RESUME_CHILD_THREAD,
-                turnId: RESUME_CHILD_TURN_1,
-                fromModel: "gpt-6-astra",
-                toModel: model,
-                reason: "highRiskCyberActivity",
-              },
+              params:
+                method === "thread/settings/updated"
+                  ? {
+                      threadId: RESUME_CHILD_THREAD,
+                      threadSettings: {
+                        model,
+                        effort: "low",
+                        serviceTier: "ultrafast",
+                        modelProvider: "openai",
+                        cwd: "/workspace",
+                        approvalPolicy: "never",
+                        approvalsReviewer: "auto_review",
+                        collaborationMode: { mode: "default", settings: { model } },
+                        sandboxPolicy: { type: "dangerFullAccess" },
+                      },
+                    }
+                  : {
+                      threadId: RESUME_CHILD_THREAD,
+                      turnId: RESUME_CHILD_TURN_1,
+                      fromModel: "gpt-6-astra",
+                      toModel: model,
+                      reason: "highRiskCyberActivity",
+                    },
             },
           };
           const initialSettings: CodexReplay.CodexAppServerReplayEntry = {
