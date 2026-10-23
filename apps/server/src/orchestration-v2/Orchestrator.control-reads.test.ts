@@ -63,6 +63,211 @@ const layerTest = Layer.mergeAll(
   ),
 );
 
+it.effect.each([
+  {
+    name: "publishes a delegated chart in its conversation once while sibling work continues",
+    outcome: "completed",
+    streaming: false,
+    hasResult: true,
+    publishes: true,
+  },
+  {
+    name: "does not publish failed delegated work as a completed conversation result",
+    outcome: "failed",
+    streaming: false,
+    hasResult: true,
+    publishes: false,
+  },
+  {
+    name: "does not publish an unfinished delegated assistant item as a conversation result",
+    outcome: "completed",
+    streaming: true,
+    hasResult: true,
+    publishes: false,
+  },
+  {
+    name: "does not publish the missing-result fallback as a conversation result",
+    outcome: "completed",
+    streaming: false,
+    hasResult: false,
+    publishes: false,
+  },
+] as const)("$name", (scenario) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const sink = yield* EventSink.EventSinkV2;
+    const threadId = ThreadId.make("thread:voice-public-result");
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-voice-public-result"),
+      threadId,
+      projectId: ProjectId.make("project:voice-public-result"),
+      title: "Voice conversation",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const command = {
+      type: "message.dispatch" as const,
+      commandId: CommandId.make("voice-public-result"),
+      threadId,
+      messageId: MessageId.make("message:voice-public-result"),
+      text: "Show an example build-time chart while the other task keeps working.",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" as const },
+      delegation: { modelSelection },
+      createdBy: "user" as const,
+      creationSource: "voice" as const,
+    };
+    const accepted = yield* orchestrator.dispatch(command);
+    yield* orchestrator.dispatch({
+      ...command,
+      commandId: CommandId.make("voice-public-result-sibling"),
+      messageId: MessageId.make("message:voice-public-result-sibling"),
+      text: "Keep researching the independent question.",
+    });
+    const parent = yield* projections.getThreadProjection(threadId);
+    const task = parent.subagents.find((candidate) => candidate.prompt === command.text)!;
+    const child = yield* projections.getThreadProjection(task.childThreadId!);
+    const childRun = child.runs[0]!;
+    const now = yield* DateTime.now;
+    const chart = [
+      "**Example data, invented; no measurements.**",
+      "",
+      "```t3-ui",
+      '{"type":"chart","id":"build-example","title":"Example build times","kind":"bar"}',
+      '{"type":"point","id":"build-example","label":"Laptop","value":8}',
+      '{"type":"point","id":"build-example","label":"Server","value":3}',
+      '{"type":"point","id":"build-example","label":"Cloud","value":2}',
+      "```",
+    ].join("\n");
+    const childMessageId = MessageId.make("message:child-public-chart");
+    const childItemId = TurnItemId.make("item:child-public-chart");
+    yield* sink.write({
+      events: [
+        ...(scenario.hasResult
+          ? ([
+              {
+                id: EventId.make("event:child-public-chart-message"),
+                type: "message.updated",
+                threadId: child.thread.id,
+                runId: childRun.id,
+                occurredAt: now,
+                payload: {
+                  id: childMessageId,
+                  threadId: child.thread.id,
+                  runId: childRun.id,
+                  nodeId: childRun.rootNodeId,
+                  role: "assistant",
+                  text: chart,
+                  attachments: [],
+                  streaming: scenario.streaming,
+                  createdBy: "agent",
+                  creationSource: "provider",
+                  createdAt: now,
+                  updatedAt: now,
+                },
+              },
+              {
+                id: EventId.make("event:child-public-chart-item"),
+                type: "turn-item.updated",
+                threadId: child.thread.id,
+                runId: childRun.id,
+                occurredAt: now,
+                payload: {
+                  id: childItemId,
+                  type: "assistant_message",
+                  messageId: childMessageId,
+                  threadId: child.thread.id,
+                  runId: childRun.id,
+                  nodeId: childRun.rootNodeId,
+                  providerThreadId: childRun.providerThreadId,
+                  providerTurnId: null,
+                  nativeItemRef: null,
+                  parentItemId: null,
+                  ordinal: 1,
+                  status: scenario.streaming ? "running" : "completed",
+                  title: null,
+                  text: chart,
+                  streaming: scenario.streaming,
+                  startedAt: now,
+                  completedAt: now,
+                  updatedAt: now,
+                },
+              },
+            ] satisfies OrchestrationV2DomainEvent[])
+          : []),
+        {
+          id: EventId.make("event:child-public-chart-completed"),
+          type: "run.updated",
+          threadId: child.thread.id,
+          runId: childRun.id,
+          occurredAt: now,
+          payload: { ...childRun, status: scenario.outcome, startedAt: now, completedAt: now },
+        },
+      ],
+    });
+    yield* orchestrator.recoverDelegatedTasks;
+    const published = yield* projections.getThreadProjection(threadId);
+    assert.equal(
+      published.subagents.find((candidate) => candidate.id === task.id)?.status,
+      scenario.outcome,
+    );
+    if (scenario.hasResult)
+      assert.equal(
+        published.subagents.find((candidate) => candidate.id === task.id)?.result,
+        chart,
+      );
+    const message = published.messages.find((candidate) => candidate.role === "assistant");
+    if (scenario.publishes) {
+      assert.equal(message?.text, chart, "the complete public chart reaches the parent chat");
+      assert.equal(message?.senderThreadId, child.thread.id);
+      assert.isNull(message?.runId);
+      assert.isNull(message?.nodeId);
+      const item = published.turnItems.find((candidate) => candidate.type === "assistant_message");
+      assert.ok(item?.type === "assistant_message");
+      assert.equal(item.text, chart);
+      assert.equal(item.messageId, message?.id);
+      assert.notEqual(item.id, childItemId);
+      assert.isNull(item.runId);
+      assert.isNull(item.nodeId);
+      assert.isNull(item.providerThreadId);
+      assert.isNull(item.providerTurnId);
+      assert.isNull(item.nativeItemRef);
+    } else {
+      assert.isUndefined(message);
+      assert.isFalse(
+        published.turnItems.some((candidate) => candidate.type === "assistant_message"),
+      );
+    }
+    assert.equal(
+      published.subagents.find((candidate) => candidate.id !== task.id)?.status,
+      "running",
+    );
+    const transfer = published.contextTransfers.find(
+      (candidate) => candidate.type === "subagent_result",
+    );
+    assert.equal(transfer?.sourcePoint.runId, childRun.id);
+    if (scenario.hasResult) assert.equal(transfer?.sourcePoint.turnItemId, childItemId);
+    assert.equal((yield* orchestrator.dispatch(command)).sequence, accepted.sequence);
+    yield* orchestrator.recoverDelegatedTasks;
+    const retried = yield* projections.getThreadProjection(threadId);
+    assert.equal(
+      retried.messages.filter((candidate) => candidate.role === "assistant").length,
+      Number(scenario.publishes),
+    );
+    assert.equal(
+      retried.turnItems.filter((candidate) => candidate.type === "assistant_message").length,
+      Number(scenario.publishes),
+    );
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect(
   "admits three independent conversation tasks while ordinary provider work remains active",
   () =>

@@ -67,7 +67,7 @@ import {
   RuntimeMode,
   ThreadLinkedPullRequest,
   ThreadId,
-  type TurnItemId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import {
@@ -11207,6 +11207,86 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         consumedAt: now,
       };
 
+      const publicResultEvents: Array<Omit<OrchestrationV2DomainEvent, "id">> = [];
+      const resultItem = childResult.turnItems.find(
+        (item) =>
+          item.id === result.turnItemId &&
+          item.type === "assistant_message" &&
+          item.status === "completed" &&
+          !item.streaming &&
+          item.text === result.text,
+      );
+      const resultMessage = childResult.messages.find(
+        (message) =>
+          message.id === result.messageId && !message.streaming && message.text === result.text,
+      );
+      if (
+        parentRun?.delegationAdmission !== undefined &&
+        parentProjection.thread.deletedAt === null &&
+        childControls.thread.deletedAt === null &&
+        outcome === "completed" &&
+        result.text.trim().length > 0 &&
+        resultItem !== undefined &&
+        resultMessage !== undefined
+      ) {
+        // Realtime appends cannot render the conversation. Publish independently of
+        // the call lifetime, atomically with the existing replay-deduplicated transfer.
+        const messageId = yield* idAllocator.allocate.message({
+          threadId: parentThreadId,
+          ordinal: (yield* projectionStore.getMessageCount(parentThreadId)) + 1,
+        });
+        const scope = {
+          threadId: parentThreadId,
+          providerInstanceId: childRun.providerInstanceId,
+          occurredAt: now,
+        };
+        publicResultEvents.push(
+          {
+            ...scope,
+            type: "message.updated",
+            payload: {
+              id: messageId,
+              threadId: parentThreadId,
+              runId: null,
+              nodeId: null,
+              senderThreadId: childThreadId,
+              role: "assistant",
+              text: result.text,
+              attachments: [],
+              streaming: false,
+              createdBy: "system",
+              creationSource: "server",
+              createdAt: now,
+              updatedAt: now,
+            },
+          },
+          {
+            ...scope,
+            type: "turn-item.updated",
+            payload: {
+              id: TurnItemId.make(`turn-item:conversation-result:${resultTransferId}`),
+              threadId: parentThreadId,
+              runId: null,
+              nodeId: null,
+              providerThreadId: null,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: yield* nextTurnItemOrdinal(parentProjection),
+              status: "completed",
+              title: task.title,
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+              type: "assistant_message",
+              messageId,
+              text: result.text,
+              streaming: false,
+            },
+          },
+        );
+      }
+
       const completionEvents: ReadonlyArray<Omit<OrchestrationV2DomainEvent, "id">> = [
         {
           type: "subagent.updated",
@@ -11296,6 +11376,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           occurredAt: now,
           payload: resultTransfer,
         },
+        ...publicResultEvents,
       ];
       yield* writeSystemEvents(completionEvents, [], { updateDelegatedCompletionOnly: true });
 
