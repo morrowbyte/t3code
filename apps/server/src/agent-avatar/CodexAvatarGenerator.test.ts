@@ -190,7 +190,7 @@ describe("CodexAvatarGenerator", () => {
         } as unknown as CodexClient.CodexAppServerClient["Service"];
         const image = yield* generateCodexAvatar(
           client,
-          { threadId: ThreadId.make("local-thread"), theme: "weasel", name: "Wolter" },
+          { threadId: ThreadId.make("local-thread"), theme: "weasel", name: "Casey" },
           f.root,
           "selected-model",
         );

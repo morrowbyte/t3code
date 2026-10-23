@@ -221,7 +221,7 @@ describe("DesktopWslBackend", () => {
     }).pipe(
       Effect.provide(
         DesktopWslBackend.layer.pipe(
-          Layer.provideMerge(layerEnvironment("weasel")),
+          Layer.provideMerge(layerEnvironment("morrowbyte")),
           Layer.provideMerge(layerPool),
           Layer.provideMerge(layerBackendConfiguration),
           Layer.provideMerge(layerServerExposure),

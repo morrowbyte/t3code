@@ -4,10 +4,10 @@ set -euo pipefail
 script_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 guard="$script_root/verify-desktop-source.sh"
 fixture_parent="$(cd -- "${TMPDIR:-/tmp}" && pwd -P)"
-fixture="$(mktemp -d "$fixture_parent/weasel-desktop-source-test.XXXXXX")"
+fixture="$(mktemp -d "$fixture_parent/morrowbyte-desktop-source-test.XXXXXX")"
 fixture="$(cd -- "$fixture" && pwd -P)"
 case "$fixture" in
-  "$fixture_parent"/weasel-desktop-source-test.*) ;;
+  "$fixture_parent"/morrowbyte-desktop-source-test.*) ;;
   *) echo 'Unexpected fixture path.' >&2; exit 1 ;;
 esac
 trap 'rm -rf -- "$fixture"' EXIT

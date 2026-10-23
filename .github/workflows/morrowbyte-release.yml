@@ -1,5 +1,5 @@
-name: Weasel desktop nightly
-run-name: Weasel ${{ inputs.windows_only && 'Windows' || inputs.android_only && 'Android' || 'desktop' }} release ${{ inputs.source_sha }}
+name: Morrowbyte desktop nightly
+run-name: Morrowbyte ${{ inputs.windows_only && 'Windows' || inputs.android_only && 'Android' || 'desktop' }} release ${{ inputs.source_sha }}
 
 on:
   workflow_dispatch:
@@ -40,7 +40,7 @@ on:
         default: ""
 
 concurrency:
-  group: weasel-desktop-nightly
+  group: morrowbyte-desktop-nightly
   cancel-in-progress: false
 
 permissions:
@@ -49,8 +49,8 @@ permissions:
 
 jobs:
   preflight:
-    if: github.repository == (vars.WEASEL_RELEASE_REPOSITORY || 'morrowbyte/t3code')
-    runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    if: github.repository == (vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code')
+    runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 15
     outputs:
       source_sha: ${{ steps.windows_recovery.outputs.source_sha || steps.recovery.outputs.source_sha || steps.release.outputs.source_sha }}
@@ -126,7 +126,7 @@ jobs:
           import hashlib, json, os, pathlib, re, shutil, stat, subprocess, zipfile
           source = 'ce275176a119b1a2c599c23e6acd7d537cc4c336'
           origin_run = '39093205395'
-          workflow = '.github/workflows/weasel-release.yml'
+          workflow = '.github/workflows/morrowbyte-release.yml'
           workflow_ref = 'morrowbyte/t3code/' + workflow + '@refs/heads/main'
           expected_route = '4a398647bcd2507fd8aabab1ea0119b5bb635ccb880f4c73f0570f533650480e'
           repo = os.environ['GITHUB_REPOSITORY']
@@ -184,31 +184,31 @@ jobs:
           assert [s['name'] for s in android['steps'] if s['conclusion'] == 'failure'] == ['Bind source and verify standalone fork configuration']
           pins = {
               "12124275441": [
-                  "weasel-release-cli-windows",
+                  "morrowbyte-release-cli-windows",
                   "sha256:8bf29216a2b8a93b5cf4270bdd31e8e19213b95f0306d221f02e6bbb9b28840d"
               ],
               "12123931607": [
-                  "weasel-release-windows",
+                  "morrowbyte-release-windows",
                   "sha256:9ab9b193bb513c27d24cec85aabf48bd843d3e3bd9fcdc91c10d073e3c1fd8c3"
               ],
               "12123712026": [
-                  "weasel-release-linux",
+                  "morrowbyte-release-linux",
                   "sha256:86c2bcc648416611330e0bb1d3d625cc456fc1b512bf4d53d661a0763bbed686"
               ],
               "12123662231": [
-                  "weasel-release-cli-linux",
+                  "morrowbyte-release-cli-linux",
                   "sha256:abcc203b8420e3f50d17bdf0a14047b677c28fd53380df3253e83e809c41f363"
               ],
               "12123547205": [
-                  "weasel-observatory-preflight-ce275176a119b1a2c599c23e6acd7d537cc4c336-1",
+                  "morrowbyte-observatory-preflight-ce275176a119b1a2c599c23e6acd7d537cc4c336-1",
                   "sha256:7ba5df1996ca0092df64256e05fb4484994cced72e7067d322be69f25336415d"
               ],
               "12123542753": [
-                  "weasel-release-nixos",
+                  "morrowbyte-release-nixos",
                   "sha256:1ba38e4340acc30081b803aee1664ae2ba2753fcf2c0a20c7d747fa8349bba00"
               ],
               "12123229340": [
-                  "weasel-observatory-build-ce275176a119b1a2c599c23e6acd7d537cc4c336-1",
+                  "morrowbyte-observatory-build-ce275176a119b1a2c599c23e6acd7d537cc4c336-1",
                   "sha256:9dae9b78dcfc61c6895be13b95f2f5a74ee3166ebea6c69519aab375bad4b37b"
               ]
           }
@@ -233,9 +233,9 @@ jobs:
               assert archive_path.stat().st_size == artifact['size_in_bytes']
               assert 'sha256:' + digest(archive_path) == expected_digest, 'Origin artifact ZIP digest mismatch.'
               target = assets
-              if name.startswith('weasel-observatory-preflight-'):
+              if name.startswith('morrowbyte-observatory-preflight-'):
                   target = root / 'observatory-route-generation'
-              elif name.startswith('weasel-observatory-build-'):
+              elif name.startswith('morrowbyte-observatory-build-'):
                   target = root / 'observatory-release-build'
               target.mkdir(exist_ok=True)
               with zipfile.ZipFile(archive_path) as archive:
@@ -244,7 +244,7 @@ jobs:
                       assert not stat.S_ISLNK(member.external_attr >> 16)
                       destination = target / member.filename
                       if member.filename == 'builder-debug.yml':
-                          assert target == assets and name in {'weasel-release-linux', 'weasel-release-windows'}, 'Unexpected builder diagnostics producer.'
+                          assert target == assets and name in {'morrowbyte-release-linux', 'morrowbyte-release-windows'}, 'Unexpected builder diagnostics producer.'
                           destination = target / f'{name}-{member.filename}'
                       if destination.exists():
                           assert member.filename == 'builder-debug.yml', f'Unexpected duplicate artifact member: {destination.name}'
@@ -266,7 +266,7 @@ jobs:
               assert receipt['trustedWorkflowRef'] == workflow_ref
               assert receipt['lockSha256'] == digest(pathlib.Path('pnpm-lock.yaml'))
           assert pre['status'] == 'generated-unreviewed' and pre['effectiveSourceSha'] == source
-          assert pre['checkScriptSha256'] == digest(pathlib.Path('scripts/weasel/check.sh'))
+          assert pre['checkScriptSha256'] == digest(pathlib.Path('scripts/morrowbyte/check.sh'))
           assert pre['beforeSha256'] == hashlib.sha256(subprocess.check_output(['git', 'show', source + ':apps/web/src/routeTree.gen.ts'])).hexdigest()
           assert pre['generatorVersion'] == '1.167.12' and pre['config'] == {'autoCodeSplitting': True}
           assert pre['afterSha256'] == built['generatedRouteSha256'] == expected_route
@@ -307,7 +307,7 @@ jobs:
           source = 'd9e730bfa6fb363206f6b10efc5334daaa69ecc8'
           origin_run = '39182028263'
           version = '0.1.2-nightly.20261019.59'
-          workflow = '.github/workflows/weasel-release.yml'
+          workflow = '.github/workflows/morrowbyte-release.yml'
           workflow_ref = 'morrowbyte/t3code/' + workflow + '@refs/heads/main'
           packaging = 'scripts/build-desktop-artifact.ts'
           packaging_sha256 = '109cd7bf8c9c87b73bc1735486f3f57228e6944735e78b2239475b335f8f58c1'
@@ -326,10 +326,10 @@ jobs:
           assert control == os.environ['GITHUB_SHA'], 'Recovery control must still be current main.'
           subprocess.run(['git', 'merge-base', '--is-ancestor', source, control], check=True)
           changed = git('diff', '--name-only', source, control).splitlines()
-          assert set(changed) == {workflow, packaging, 'scripts/build-desktop-artifact.test.ts', 'scripts/weasel/nightly-after-ci.test.cjs'}, 'Only the reviewed packaging validation fix, workflow and their tests may differ.'
+          assert set(changed) == {workflow, packaging, 'scripts/build-desktop-artifact.test.ts', 'scripts/morrowbyte/nightly-after-ci.test.cjs'}, 'Only the reviewed packaging validation fix, workflow and their tests may differ.'
           assert hashlib.sha256(subprocess.check_output(['git', 'show', control + ':' + packaging])).hexdigest() == packaging_sha256
           assert hashlib.sha256(subprocess.check_output(['git', 'show', control + ':scripts/build-desktop-artifact.test.ts'])).hexdigest() == 'dab4ead08843340d79b1e8cd4f584ee87c29de1f64834a835d937714aa6699a4'
-          assert hashlib.sha256(subprocess.check_output(['git', 'show', control + ':scripts/weasel/nightly-after-ci.test.cjs'])).hexdigest() == '458bbeb4f0cc348e10aa7f7c2d1c9f73eab1a0e480c430a779fcb036d0494d7f'
+          assert hashlib.sha256(subprocess.check_output(['git', 'show', control + ':scripts/morrowbyte/nightly-after-ci.test.cjs'])).hexdigest() == '458bbeb4f0cc348e10aa7f7c2d1c9f73eab1a0e480c430a779fcb036d0494d7f'
           origin_workflow = subprocess.check_output(['git', 'show', source + ':' + workflow])
           assert hashlib.sha256(origin_workflow).hexdigest() == '20bb97bc06ce14695be27f62bf42e27d371efbf68e48f7bcb4090cb3a648d984'
           control_workflow_sha256 = hashlib.sha256(subprocess.check_output(['git', 'show', control + ':' + workflow])).hexdigest()
@@ -351,13 +351,13 @@ jobs:
           preflight = root / 'observatory-route-generation'
           build = root / 'observatory-release-build'
           pins = {
-              '12157300057': ('weasel-release-nixos', 'sha256:340b957b849a3d2da228960da045adda3d1f6913fd5772557b6e0801d158e9dc', assets),
-              '12157055292': ('weasel-release-linux', 'sha256:6ecaa760574e1b17b49ad3512252121ad1d3eae725e4d133809605e51185b9cf', assets),
-              '12156761220': ('weasel-js-bundle', 'sha256:5c1c01c490e5227ed1ec74180982ec2b577bc3f3facc9c67e7cad95107470f79', bundle),
-              '12156662269': ('weasel-observatory-preflight-' + source + '-1', 'sha256:309e39d4b4726f3644504f08e476c06129d08e7a93ee99ba99dab56b1f107279', preflight),
-              '12156487329': ('weasel-release-android', 'sha256:5c02e178c95a89f12c17b18bc11b0717687cf4010b1234dc70ef0e1710dd3431', assets),
-              '12156279210': ('weasel-release-cli-linux', 'sha256:b9039b2dc21202aa822c79dea7fb4e4d73a32029a175af1703c98d41125c34f9', cli),
-              '12156199343': ('weasel-observatory-build-' + source + '-1', 'sha256:30ff385545f9e749d4c904274193158f6dcfb3617be141e61c5d39138cd7cf4c', build),
+              '12157300057': ('morrowbyte-release-nixos', 'sha256:340b957b849a3d2da228960da045adda3d1f6913fd5772557b6e0801d158e9dc', assets),
+              '12157055292': ('morrowbyte-release-linux', 'sha256:6ecaa760574e1b17b49ad3512252121ad1d3eae725e4d133809605e51185b9cf', assets),
+              '12156761220': ('morrowbyte-js-bundle', 'sha256:5c1c01c490e5227ed1ec74180982ec2b577bc3f3facc9c67e7cad95107470f79', bundle),
+              '12156662269': ('morrowbyte-observatory-preflight-' + source + '-1', 'sha256:309e39d4b4726f3644504f08e476c06129d08e7a93ee99ba99dab56b1f107279', preflight),
+              '12156487329': ('morrowbyte-release-android', 'sha256:5c02e178c95a89f12c17b18bc11b0717687cf4010b1234dc70ef0e1710dd3431', assets),
+              '12156279210': ('morrowbyte-release-cli-linux', 'sha256:b9039b2dc21202aa822c79dea7fb4e4d73a32029a175af1703c98d41125c34f9', cli),
+              '12156199343': ('morrowbyte-observatory-build-' + source + '-1', 'sha256:30ff385545f9e749d4c904274193158f6dcfb3617be141e61c5d39138cd7cf4c', build),
           }
           metadata = api(f'actions/runs/{origin_run}/artifacts?per_page=100')
           assert metadata['total_count'] == len(metadata['artifacts'])
@@ -388,7 +388,7 @@ jobs:
                           destination.mkdir(parents=True, exist_ok=True)
                           continue
                       if member.filename == 'builder-debug.yml':
-                          assert target == assets and name == 'weasel-release-linux'
+                          assert target == assets and name == 'morrowbyte-release-linux'
                           destination = target / (name + '-' + member.filename)
                       destination.parent.mkdir(parents=True, exist_ok=True)
                       with archive.open(member) as incoming, destination.open('xb') as outgoing:
@@ -403,7 +403,7 @@ jobs:
               assert proof['run'] == origin_run and proof['attempt'] == '1' and proof['trustedWorkflowRef'] == workflow_ref
               assert proof['lockSha256'] == lock_sha256
           assert pre['status'] == 'generated-unreviewed' and pre['effectiveSourceSha'] == source
-          assert pre['checkScriptSha256'] == digest(pathlib.Path('scripts/weasel/check.sh'))
+          assert pre['checkScriptSha256'] == digest(pathlib.Path('scripts/morrowbyte/check.sh'))
           assert pre['beforeSha256'] == hashlib.sha256(subprocess.check_output(['git', 'show', source + ':apps/web/src/routeTree.gen.ts'])).hexdigest()
           assert pre['generatorVersion'] == '1.167.12' and pre['config'] == {'autoCodeSplitting': True}
           assert pre['afterSha256'] == built['generatedRouteSha256'] == expected_route
@@ -440,7 +440,7 @@ jobs:
         if: inputs.recover_windows_run_id != ''
         uses: actions/upload-artifact@v4
         with:
-          name: weasel-release-recovered-platforms
+          name: morrowbyte-release-recovered-platforms
           path: ${{ runner.temp }}/recovered-platforms/*
           if-no-files-found: error
           compression-level: 0
@@ -450,7 +450,7 @@ jobs:
         if: inputs.recover_windows_run_id != ''
         uses: actions/upload-artifact@v4
         with:
-          name: weasel-release-cli-linux
+          name: morrowbyte-release-cli-linux
           path: ${{ runner.temp }}/recovered-cli-linux/*
           if-no-files-found: error
           compression-level: 0
@@ -460,7 +460,7 @@ jobs:
         if: inputs.recover_windows_run_id != ''
         uses: actions/upload-artifact@v4
         with:
-          name: weasel-js-bundle
+          name: morrowbyte-js-bundle
           path: ${{ runner.temp }}/recovered-js-bundle
           if-no-files-found: error
           compression-level: 0
@@ -470,7 +470,7 @@ jobs:
         if: inputs.recover_desktop_run_id != ''
         uses: actions/upload-artifact@v4
         with:
-          name: weasel-release-recovered-desktop
+          name: morrowbyte-release-recovered-desktop
           path: ${{ runner.temp }}/recovered-desktop/*
           if-no-files-found: error
           compression-level: 0
@@ -480,7 +480,7 @@ jobs:
         if: inputs.recover_desktop_run_id != '' || inputs.recover_windows_run_id != ''
         uses: actions/upload-artifact@v4
         with:
-          name: weasel-observatory-build-${{ inputs.source_sha }}-${{ github.run_attempt }}
+          name: morrowbyte-observatory-build-${{ inputs.source_sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/observatory-release-build/*
           if-no-files-found: error
           retention-days: 7
@@ -495,7 +495,7 @@ jobs:
           DISPATCHED_SHA: ${{ github.sha }}
         run: |
           test -z "$ANDROID_SOURCE_SHA"
-          bash scripts/weasel/verify-desktop-source.sh "$SOURCE_SHA" "$PUBLISH_RELEASE" "$DISPATCHED_REF" "$DISPATCHED_SHA"
+          bash scripts/morrowbyte/verify-desktop-source.sh "$SOURCE_SHA" "$PUBLISH_RELEASE" "$DISPATCHED_REF" "$DISPATCHED_SHA"
 
       - name: Setup Vite+
         if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == ''
@@ -528,7 +528,7 @@ jobs:
           set -euo pipefail
           [[ "$EFFECTIVE_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$EFFECTIVE_SOURCE_SHA"
-          bash scripts/weasel/check.sh
+          bash scripts/morrowbyte/check.sh
 
       - id: android_ci
         name: Reuse exact main source CI before Android-only release
@@ -538,13 +538,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/weasel-ci.yml/runs?head_sha=$SOURCE_SHA&event=push&per_page=20" > "$RUNNER_TEMP/android-source-ci.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/morrowbyte-ci.yml/runs?head_sha=$SOURCE_SHA&event=push&per_page=20" > "$RUNNER_TEMP/android-source-ci.json"
           python3 - <<'PYCI'
           import json, os, pathlib
           runs = json.loads((pathlib.Path(os.environ['RUNNER_TEMP']) / 'android-source-ci.json').read_bytes())['workflow_runs']
           matching = [run for run in runs if run['head_sha'] == os.environ['SOURCE_SHA']
                       and run['head_branch'] == 'main' and run['event'] == 'push'
-                      and run['path'] == '.github/workflows/weasel-ci.yml'
+                      and run['path'] == '.github/workflows/morrowbyte-ci.yml'
                       and run['head_repository']['full_name'] == os.environ['GITHUB_REPOSITORY']]
           assert matching, 'Exact main source CI is required before Android-only compilation.'
           latest = max(matching, key=lambda run: run['id'])
@@ -578,7 +578,7 @@ jobs:
           assert receipt['trustedWorkflowSha'] == os.environ['GITHUB_WORKFLOW_SHA']
           assert receipt['trustedWorkflowRef'] == os.environ['GITHUB_WORKFLOW_REF']
           assert receipt['lockSha256'] == digest(pathlib.Path('pnpm-lock.yaml'))
-          assert receipt['checkScriptSha256'] == digest(pathlib.Path('scripts/weasel/check.sh'))
+          assert receipt['checkScriptSha256'] == digest(pathlib.Path('scripts/morrowbyte/check.sh'))
           before = subprocess.check_output(['git', 'show', source + ':apps/web/src/routeTree.gen.ts'])
           assert receipt['beforeSha256'] == hashlib.sha256(before).hexdigest()
           assert receipt['generatorVersion'] == '1.167.12' and receipt['config'] == {'autoCodeSplitting': True}
@@ -593,7 +593,7 @@ jobs:
         if: always() && hashFiles('apps/web/src/routes/observatory.tsx') != '' && ((inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '') || steps.recovery.outcome == 'success' || steps.windows_recovery.outcome == 'success') && (inputs.android_only != true || inputs.publish != true)
         uses: actions/upload-artifact@v4
         with:
-          name: weasel-observatory-preflight-${{ inputs.source_sha }}-${{ github.run_attempt }}
+          name: morrowbyte-observatory-preflight-${{ inputs.source_sha }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/observatory-route-generation/receipt.json
             ${{ runner.temp }}/observatory-route-generation/routeTree.gen.ts
@@ -609,20 +609,20 @@ jobs:
           RELEASE_RUN: ${{ github.run_number }}
           ANDROID_ONLY: ${{ inputs.android_only }}
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ vars.WEASEL_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}
+          GH_REPO: ${{ vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}
         run: |
           set -euo pipefail
           [[ "$RELEASE_RUN" =~ ^[1-9][0-9]*$ ]]
           (( RELEASE_RUN <= 2100000000 ))
           upstream_metadata="$RUNNER_TEMP/upstream-nightly.txt"
           run_created_at="$(gh api "repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID" --jq .created_at)"
-          release_date="$(bash scripts/weasel/resolve-run-date.sh "$run_created_at")"
+          release_date="$(bash scripts/morrowbyte/resolve-run-date.sh "$run_created_at")"
           node scripts/resolve-nightly-release.ts \
             --date "$release_date" \
             --run-number "$RELEASE_RUN" \
             --sha "$SOURCE_SHA" > "$upstream_metadata"
           source_nightly_base="$(sed -n 's/^base_version=//p' "$upstream_metadata")"
-          fork_version="$(bash scripts/weasel/resolve-version.sh \
+          fork_version="$(bash scripts/morrowbyte/resolve-version.sh \
             "$source_nightly_base" \
             "$release_date" \
             "$RELEASE_RUN" | sed -n 's/^version=//p')"
@@ -644,7 +644,7 @@ jobs:
   build_bundle:
     if: inputs.android_only != true && inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == ''
     needs: [preflight]
-    runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 30
     steps:
       - name: Checkout source
@@ -675,7 +675,7 @@ jobs:
         if: needs.preflight.outputs.observatory_route_sha256 != ''
         uses: actions/download-artifact@v4
         with:
-          name: weasel-observatory-preflight-${{ needs.preflight.outputs.source_sha }}-${{ github.run_attempt }}
+          name: morrowbyte-observatory-preflight-${{ needs.preflight.outputs.source_sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/observatory-release-preflight
 
       - name: Bind independently built Observatory route
@@ -718,7 +718,7 @@ jobs:
         if: always() && hashFiles('apps/web/src/routes/observatory.tsx') != ''
         uses: actions/upload-artifact@v4
         with:
-          name: weasel-observatory-build-${{ needs.preflight.outputs.source_sha }}-${{ github.run_attempt }}
+          name: morrowbyte-observatory-build-${{ needs.preflight.outputs.source_sha }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/observatory-release-build/receipt.json
             ${{ runner.temp }}/observatory-release-build/routeTree.gen.ts
@@ -728,7 +728,7 @@ jobs:
       - name: Upload shared assets
         uses: actions/upload-artifact@v4
         with:
-          name: weasel-js-bundle
+          name: morrowbyte-js-bundle
           path: |
             apps/server/dist
             apps/desktop/dist-electron
@@ -738,7 +738,7 @@ jobs:
   build_linux:
     if: inputs.windows_only != true && inputs.android_only != true && inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == ''
     needs: [preflight, build_bundle]
-    runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 80
     permissions:
       contents: read
@@ -771,7 +771,7 @@ jobs:
       - name: Download shared assets
         uses: actions/download-artifact@v4
         with:
-          name: weasel-js-bundle
+          name: morrowbyte-js-bundle
           path: apps
 
       - name: Align package versions
@@ -784,10 +784,11 @@ jobs:
 
       - name: Build Linux AppImage and updater metadata
         env:
-          T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ vars.WEASEL_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}
-          T3CODE_DESKTOP_APP_ID: com.evilweasel.t3code
-          T3CODE_DESKTOP_PRODUCT_NAME: T3 Code (Weasel Nightly)
-          T3CODE_DESKTOP_PROFILE: weasel
+          T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}
+          T3CODE_DESKTOP_APP_ID: ${{ vars.MORROWBYTE_DESKTOP_APP_ID || 'com.morrowbyte.t3code' }}
+          T3CODE_DESKTOP_INSTALLER_GUID: ${{ vars.MORROWBYTE_DESKTOP_INSTALLER_GUID }}
+          T3CODE_DESKTOP_PRODUCT_NAME: ${{ vars.MORROWBYTE_DESKTOP_PRODUCT_NAME || 'Morrowbyte' }}
+          T3CODE_DESKTOP_PROFILE: morrowbyte
           T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR: "false"
           T3CODE_DESKTOP_REUSE_LINUX_CAPTURE_HELPERS: "false"
         run: |
@@ -806,12 +807,12 @@ jobs:
       - name: Prepare NixOS download bundle
         run: |
           set -euo pipefail
-          sed "s|morrowbyte/t3code|${{ vars.WEASEL_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}|g" \
-            scripts/weasel/install-linux.sh > release-linux/install-linux.sh
+          sed "s|morrowbyte/t3code|${{ vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}|g" \
+            scripts/morrowbyte/install-linux.sh > release-linux/install-linux.sh
           appimage="$(find release-linux -maxdepth 1 -name '*.AppImage' -print -quit)"
           test -n "$appimage"
           test "$(basename "$appimage")" = "T3-Code-${{ needs.preflight.outputs.version }}-x86_64.AppImage"
-          tar -czf release-linux/weasel-linux-x64.tar.gz -C release-linux \
+          tar -czf release-linux/morrowbyte-linux-x64.tar.gz -C release-linux \
             "$(basename "$appimage")" nightly-linux.yml install-linux.sh
 
       - name: Package and smoke-test Linux CLI archive
@@ -826,7 +827,7 @@ jobs:
       - name: Upload Linux release assets
         uses: actions/upload-artifact@v4
         with:
-          name: weasel-release-linux
+          name: morrowbyte-release-linux
           path: release-linux/*
           if-no-files-found: error
           retention-days: 1
@@ -834,7 +835,7 @@ jobs:
       - name: Upload Linux CLI archive
         uses: actions/upload-artifact@v4
         with:
-          name: weasel-release-cli-linux
+          name: morrowbyte-release-cli-linux
           path: release-cli/*
           if-no-files-found: error
           retention-days: 1
@@ -843,7 +844,7 @@ jobs:
         if: ${{ failure() && hashFiles('release-linux/*.AppImage') != '' }}
         uses: actions/upload-artifact@v4
         with:
-          name: weasel-linux-built-diagnostic
+          name: morrowbyte-linux-built-diagnostic
           path: release-linux/*
           if-no-files-found: error
           retention-days: 1
@@ -851,7 +852,7 @@ jobs:
   build_nixos:
     if: inputs.windows_only != true && inputs.android_only != true && inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == ''
     needs: [preflight, build_linux]
-    runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -864,15 +865,15 @@ jobs:
         run: python3 packaging/nixos/test-updater.py
       - uses: actions/download-artifact@v4
         with:
-          name: weasel-release-linux
+          name: morrowbyte-release-linux
           path: release-linux
       - name: Build immutable NixOS closure on Blacksmith
         env:
-          T3_WEASEL_REPOSITORY: ${{ vars.WEASEL_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}
-        run: bash scripts/weasel/build-nixos-closure.sh "${{ needs.preflight.outputs.version }}" "release-linux/T3-Code-${{ needs.preflight.outputs.version }}-x86_64.AppImage" release-nixos
+          T3_MORROWBYTE_REPOSITORY: ${{ vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}
+        run: bash scripts/morrowbyte/build-nixos-closure.sh "${{ needs.preflight.outputs.version }}" "release-linux/T3-Code-${{ needs.preflight.outputs.version }}-x86_64.AppImage" release-nixos
       - uses: actions/upload-artifact@v4
         with:
-          name: weasel-release-nixos
+          name: morrowbyte-release-nixos
           path: release-nixos/*
           if-no-files-found: error
           retention-days: 1
@@ -883,7 +884,7 @@ jobs:
           ((inputs.recover_windows_run_id == '' && needs.build_bundle.result == 'success' && ((inputs.windows_only && needs.build_linux.result == 'skipped') || (!inputs.windows_only && needs.build_linux.result == 'success'))) ||
            (inputs.recover_windows_run_id == '39182028263' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'skipped')) }}
     needs: [preflight, build_bundle, build_linux]
-    runs-on: ${{ vars.WEASEL_WINDOWS_RUNNER || 'blacksmith-8vcpu-windows-2025' }}
+    runs-on: ${{ vars.MORROWBYTE_WINDOWS_RUNNER || 'blacksmith-8vcpu-windows-2025' }}
     timeout-minutes: 50
     steps:
       - name: Checkout source
@@ -945,7 +946,7 @@ jobs:
       - name: Download shared assets
         uses: actions/download-artifact@v4
         with:
-          name: weasel-js-bundle
+          name: morrowbyte-js-bundle
           path: apps
 
       - name: Align package versions
@@ -955,7 +956,7 @@ jobs:
         if: inputs.windows_only != true
         uses: actions/download-artifact@v4
         with:
-          name: weasel-release-cli-linux
+          name: morrowbyte-release-cli-linux
           path: wsl-runtime
 
       - name: Reuse the published unchanged WSL runtime for Windows-only packaging
@@ -963,7 +964,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/weasel/windows-only-release.cjs runtime wsl-runtime
+        run: node scripts/morrowbyte/windows-only-release.cjs runtime wsl-runtime
 
       - name: Build Windows CLI executable
         env:
@@ -974,10 +975,11 @@ jobs:
       - name: Build Windows x64 installer and updater metadata
         env:
           T3CODE_DESKTOP_REUSE_PUBLISHED_WSL_RUNTIME: ${{ inputs.windows_only }}
-          T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ vars.WEASEL_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}
-          T3CODE_DESKTOP_APP_ID: com.evilweasel.t3code
-          T3CODE_DESKTOP_PRODUCT_NAME: T3 Code (Weasel Nightly)
-          T3CODE_DESKTOP_PROFILE: weasel
+          T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}
+          T3CODE_DESKTOP_APP_ID: ${{ vars.MORROWBYTE_DESKTOP_APP_ID || 'com.morrowbyte.t3code' }}
+          T3CODE_DESKTOP_INSTALLER_GUID: ${{ vars.MORROWBYTE_DESKTOP_INSTALLER_GUID }}
+          T3CODE_DESKTOP_PRODUCT_NAME: ${{ vars.MORROWBYTE_DESKTOP_PRODUCT_NAME || 'Morrowbyte' }}
+          T3CODE_DESKTOP_PROFILE: morrowbyte
         shell: bash
         run: |
           set -euo pipefail
@@ -1005,7 +1007,7 @@ jobs:
       - name: Upload Windows release assets
         uses: actions/upload-artifact@v4
         with:
-          name: weasel-release-windows
+          name: morrowbyte-release-windows
           path: release-windows/*
           if-no-files-found: error
           retention-days: 1
@@ -1013,7 +1015,7 @@ jobs:
       - name: Upload Windows CLI archive
         uses: actions/upload-artifact@v4
         with:
-          name: weasel-release-cli-windows
+          name: morrowbyte-release-cli-windows
           path: release-cli/*
           if-no-files-found: error
           retention-days: 1
@@ -1022,7 +1024,7 @@ jobs:
     name: Build Morrowbyte Android APK
     if: ${{ !inputs.windows_only && !inputs.desktop_only && inputs.recover_windows_run_id == '' }}
     needs: [preflight]
-    runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 60
     outputs:
       apk_sha256: ${{ steps.apk.outputs.apk_sha256 }}
@@ -1227,7 +1229,7 @@ jobs:
       - name: Upload verified Android release payload
         uses: actions/upload-artifact@v4
         with:
-          name: weasel-release-android
+          name: morrowbyte-release-android
           path: release-android/*
           if-no-files-found: error
           retention-days: 7
@@ -1236,7 +1238,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: weasel-android-build-evidence-${{ needs.preflight.outputs.android_source_sha || needs.preflight.outputs.source_sha }}-${{ github.run_attempt }}
+          name: morrowbyte-android-build-evidence-${{ needs.preflight.outputs.android_source_sha || needs.preflight.outputs.source_sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/morrowbyte-android-dependencies.txt
           if-no-files-found: ignore
           retention-days: 7
@@ -1253,7 +1255,7 @@ jobs:
            (inputs.recover_desktop_run_id == '39093205395' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'skipped' && needs.build_nixos.result == 'skipped' && needs.build_windows.result == 'skipped') ||
            (inputs.recover_windows_run_id == '39182028263' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'skipped' && needs.build_nixos.result == 'skipped' && needs.build_windows.result == 'success')) }}
     needs: [preflight, build_bundle, build_linux, build_nixos, build_windows, build_android_apk]
-    runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 15
     permissions:
       contents: write
@@ -1267,7 +1269,7 @@ jobs:
       - name: Download dedicated release assets
         uses: actions/download-artifact@v4
         with:
-          pattern: weasel-release-*
+          pattern: morrowbyte-release-*
           merge-multiple: true
           path: release-assets
 
@@ -1275,14 +1277,14 @@ jobs:
         if: needs.preflight.outputs.observatory_route_sha256 != ''
         uses: actions/download-artifact@v4
         with:
-          name: weasel-observatory-preflight-${{ needs.preflight.outputs.source_sha }}-${{ needs.preflight.outputs.recovery_artifact_attempt || github.run_attempt }}
+          name: morrowbyte-observatory-preflight-${{ needs.preflight.outputs.source_sha }}-${{ needs.preflight.outputs.recovery_artifact_attempt || github.run_attempt }}
           path: ${{ runner.temp }}/observatory-publish-preflight
 
       - name: Download Observatory build proof for publication
         if: needs.preflight.outputs.observatory_route_sha256 != ''
         uses: actions/download-artifact@v4
         with:
-          name: weasel-observatory-build-${{ needs.preflight.outputs.source_sha }}-${{ needs.preflight.outputs.recovery_artifact_attempt || github.run_attempt }}
+          name: morrowbyte-observatory-build-${{ needs.preflight.outputs.source_sha }}-${{ needs.preflight.outputs.recovery_artifact_attempt || github.run_attempt }}
           path: ${{ runner.temp }}/observatory-publish-build
 
       - name: Require matching Observatory route proofs before publication
@@ -1434,20 +1436,20 @@ jobs:
           fi
           test -s release-assets/nightly-linux.yml
           test -s release-assets/nightly.yml
-          test -s release-assets/weasel-linux-x64.tar.gz
+          test -s release-assets/morrowbyte-linux-x64.tar.gz
           test -s "release-assets/T3-Code-${{ needs.preflight.outputs.version }}-x86_64.AppImage"
           test -s release-assets/install-linux.sh
           test -s "release-assets/T3-Code-${{ needs.preflight.outputs.version }}-x86_64-linux-nix-closure.nar.zst"
           test -s "release-assets/T3-Code-${{ needs.preflight.outputs.version }}-x86_64-linux-nix-closure.json"
-          bash scripts/weasel/verify-nixos-closure.sh "${{ needs.preflight.outputs.version }}" release-assets
+          bash scripts/morrowbyte/verify-nixos-closure.sh "${{ needs.preflight.outputs.version }}" release-assets
           test -n "$(find release-assets -maxdepth 1 -name 't3-*-linux-x64.tar.gz' -print -quit)"
           test -n "$(find release-assets -maxdepth 1 -name 't3-*-win32-x64.zip' -print -quit)"
-          bash scripts/weasel/verify-published-release.sh --write-checksums "${{ needs.preflight.outputs.version }}" release-assets
+          bash scripts/morrowbyte/verify-published-release.sh --write-checksums "${{ needs.preflight.outputs.version }}" release-assets
 
       - name: Create fork-only prerelease
         env:
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ vars.WEASEL_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}
+          GH_REPO: ${{ vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}
           OBSERVATORY_ROUTE_SHA: ${{ needs.preflight.outputs.observatory_route_sha256 }}
           DESKTOP_RUN_ID: ${{ needs.preflight.outputs.desktop_run_id }}
           DESKTOP_RUN_ATTEMPT: ${{ needs.preflight.outputs.desktop_run_attempt }}
@@ -1482,7 +1484,7 @@ jobs:
           if gh release view "$tag" >/dev/null 2>&1; then
             release_state="$(gh release view "$tag" --json isDraft,targetCommitish)"
             if [[ "$(jq -r .isDraft <<<"$release_state")" == "false" ]]; then
-              bash scripts/weasel/verify-published-release.sh \
+              bash scripts/morrowbyte/verify-published-release.sh \
                 "$tag" "$source_sha" "$version" release-assets
               exit 0
             fi
@@ -1498,7 +1500,7 @@ jobs:
             fi
             gh release create "$tag" \
               --target "$source_sha" \
-              --title "Weasel Nightly ${{ needs.preflight.outputs.version }}" \
+              --title "Morrowbyte Nightly ${{ needs.preflight.outputs.version }}" \
               --prerelease \
               --draft \
               --notes "Fork channel desktop source $source_sha. $platform_notes Linux AppImage installs include a user-local installer. NixOS installs use the dedicated package and updater launcher when available at https://github.com/$GH_REPO/tree/main/packaging/nixos. Linux auto-updates stay disabled for Nix store installs. This build has no configured T3 Connect relay backend."
@@ -1510,7 +1512,7 @@ jobs:
           gh release upload "$tag" release-assets/* --clobber
 
           lock_sha="$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)"
-          assets_json="$(bash scripts/weasel/read-draft-release-assets.sh "$tag" "$source_sha")"
+          assets_json="$(bash scripts/morrowbyte/read-draft-release-assets.sh "$tag" "$source_sha")"
           jq -e 'length > 0 and all(.[]; (.digest | type == "string") and (.digest | startswith("sha256:")))' <<<"$assets_json"
           expected_assets="$(find release-assets -maxdepth 1 -type f ! -name 'RELEASE-RECEIPT.txt' -printf '%f\n' | jq -Rsc 'split("\n") | map(select(length > 0)) | sort')"
           jq -e --argjson expected "$expected_assets" '([.[].name] | sort) == $expected' <<<"$assets_json"
@@ -1525,7 +1527,7 @@ jobs:
               "$DESKTOP_RUN_ID" "$DESKTOP_RUN_ATTEMPT" "$DESKTOP_CONTEXT_SHA" "$DESKTOP_WORKFLOW_SHA" "$DESKTOP_WORKFLOW_REF"
             printf 'publication_run_id=%s\npublication_run_attempt=%s\npublication_context_sha=%s\npublication_workflow_sha=%s\npublication_workflow_ref=%s\npublication_workflow_sha256=%s\n' \
               "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" "$GITHUB_WORKFLOW_SHA" "$GITHUB_WORKFLOW_REF" \
-              "${RECOVERY_WORKFLOW_SHA256:-$(sha256sum .github/workflows/weasel-release.yml | cut -d ' ' -f 1)}"
+              "${RECOVERY_WORKFLOW_SHA256:-$(sha256sum .github/workflows/morrowbyte-release.yml | cut -d ' ' -f 1)}"
             if [[ -n "$WINDOWS_RECOVERY_RUN_ID" ]]; then
               printf 'retained_platform_origin_run_id=%s\nretained_platform_origin_run_attempt=1\nwindows_build_run_id=%s\nwindows_build_run_attempt=%s\nwindows_application_source_sha=%s\nwindows_packaging_control_sha=%s\nwindows_packaging_script_sha256=%s\n' \
                 "$WINDOWS_RECOVERY_RUN_ID" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$source_sha" "$GITHUB_SHA" "$WINDOWS_PACKAGING_SHA256"
@@ -1547,7 +1549,7 @@ jobs:
   publish_android:
     if: inputs.android_only && inputs.publish
     needs: [preflight, build_android_apk]
-    runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 15
     permissions:
       contents: write
@@ -1570,7 +1572,7 @@ jobs:
       - name: Download only the verified Android payload
         uses: actions/download-artifact@v4
         with:
-          name: weasel-release-android
+          name: morrowbyte-release-android
           path: release-assets
 
       - name: Bind APK to this source, build and signing proof
@@ -1594,14 +1596,14 @@ jobs:
           assert proof['trustedWorkflowSha'] == os.environ['GITHUB_WORKFLOW_SHA']
           assert proof['trustedWorkflowRef'] == os.environ['GITHUB_WORKFLOW_REF']
           PYANDROID
-          bash scripts/weasel/verify-published-release.sh --android-only --write-checksums "$VERSION" release-assets
+          bash scripts/morrowbyte/verify-published-release.sh --android-only --write-checksums "$VERSION" release-assets
 
       - name: Publish the same Android bytes without changing desktop feeds
         run: |
           set -euo pipefail
           if gh release view "$RELEASE_TAG" --json isDraft,targetCommitish > "$RUNNER_TEMP/android-release-state.json" 2> "$RUNNER_TEMP/android-release-view.err"; then
             if [[ "$(jq -r .isDraft "$RUNNER_TEMP/android-release-state.json")" == false ]]; then
-              bash scripts/weasel/verify-published-release.sh --android-only "$RELEASE_TAG" "$SOURCE_SHA" "$VERSION" release-assets
+              bash scripts/morrowbyte/verify-published-release.sh --android-only "$RELEASE_TAG" "$SOURCE_SHA" "$VERSION" release-assets
               exit 0
             fi
             test "$(jq -r .targetCommitish "$RUNNER_TEMP/android-release-state.json")" = "$SOURCE_SHA"
@@ -1625,7 +1627,7 @@ jobs:
           }
           assert_draft
           gh release upload "$RELEASE_TAG" release-assets/* --clobber
-          assets="$(bash scripts/weasel/read-draft-release-assets.sh "$RELEASE_TAG" "$SOURCE_SHA")"
+          assets="$(bash scripts/morrowbyte/read-draft-release-assets.sh "$RELEASE_TAG" "$SOURCE_SHA")"
           expected="$(find release-assets -maxdepth 1 -type f -printf '%f\n' | jq -Rsc 'split("\n") | map(select(length > 0)) | sort')"
           jq -e --argjson expected "$expected" '([.[].name] | sort) == $expected and all(.[]; (.digest | type == "string") and (.digest | startswith("sha256:")))' <<< "$assets" >/dev/null
           printf '%s\n' "$assets" > "$RUNNER_TEMP/android-draft-assets.json"
@@ -1646,7 +1648,7 @@ jobs:
           assert_draft
           gh release upload "$RELEASE_TAG" release-assets/RELEASE-RECEIPT.txt --clobber
           gh release edit "$RELEASE_TAG" --draft=false --latest=false --prerelease=false
-          bash scripts/weasel/verify-published-release.sh --android-only "$RELEASE_TAG" "$SOURCE_SHA" "$VERSION" release-assets
+          bash scripts/morrowbyte/verify-published-release.sh --android-only "$RELEASE_TAG" "$SOURCE_SHA" "$VERSION" release-assets
 
   publish_windows:
     if: >-
@@ -1655,7 +1657,7 @@ jobs:
           needs.build_windows.result == 'success' && needs.build_linux.result == 'skipped' &&
           needs.build_nixos.result == 'skipped' && needs.build_android_apk.result == 'skipped' }}
     needs: [preflight, build_bundle, build_linux, build_nixos, build_windows, build_android_apk]
-    runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 15
     permissions:
       contents: write
@@ -1676,16 +1678,16 @@ jobs:
       - name: Download qualified Windows bytes
         uses: actions/download-artifact@v4
         with:
-          name: weasel-release-windows
+          name: morrowbyte-release-windows
           path: release-assets
       - name: Download qualified Windows CLI bytes
         uses: actions/download-artifact@v4
         with:
-          name: weasel-release-cli-windows
+          name: morrowbyte-release-cli-windows
           path: release-assets
       - name: Publish Windows-only payload with preserved Linux feed
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
           RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
-        run: node scripts/weasel/windows-only-release.cjs publish release-assets
+        run: node scripts/morrowbyte/windows-only-release.cjs publish release-assets

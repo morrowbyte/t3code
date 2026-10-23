@@ -1,4 +1,4 @@
-name: Weasel CI
+name: Morrowbyte CI
 
 on:
   workflow_dispatch:
@@ -24,12 +24,12 @@ on:
         default: false
         type: boolean
   push:
-    branches: [main, "weasel/**"]
+    branches: [main, "morrowbyte/**"]
   pull_request:
-    branches: [main, "weasel/**"]
+    branches: [main, "morrowbyte/**"]
 
 concurrency:
-  group: weasel-ci-${{ github.event.pull_request.number || github.ref }}
+  group: morrowbyte-ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -37,8 +37,8 @@ permissions:
 
 jobs:
   check:
-    if: github.repository == (vars.WEASEL_RELEASE_REPOSITORY || 'morrowbyte/t3code')
-    runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    if: github.repository == (vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code')
+    runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -60,7 +60,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           git fetch --no-tags --depth=1 origin b6525bb5fe4343ea5612ba5e9ec8e1a0b2482791
           if [ "$GITHUB_REF_NAME" = feature/mobile-compact-config-candidate-20261016 ]; then git fetch --no-tags --depth=1 origin a86d942da9e89ed382d2bfd7295b1e90ab2bc429; fi
-          node scripts/weasel/voice-ui-artifact.mjs "$RUNNER_TEMP/composer-mobile" --composer-mobile
+          node scripts/morrowbyte/voice-ui-artifact.mjs "$RUNNER_TEMP/composer-mobile" --composer-mobile
       - name: Preserve emulated mobile composer development evidence
         if: always() && (github.ref_name == 'feature/mobile-composer-hotfix-candidate-20261016' || github.ref_name == 'feature/mobile-compact-config-candidate-20261016')
         uses: actions/upload-artifact@v4
@@ -75,7 +75,7 @@ jobs:
         run: |
           [[ "$EFFECTIVE_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$EFFECTIVE_SOURCE_SHA"
-          bash scripts/weasel/check.sh
+          bash scripts/morrowbyte/check.sh
       - name: Preserve unreviewed Observatory route generation
         if: always() && (github.ref_name == 'feature/agent-observatory-candidate-20261016' || github.ref_name == 'feature/desktop-control-bootstrap-396-20261016')
         uses: actions/upload-artifact@v4
@@ -139,7 +139,7 @@ jobs:
   product_bundle:
     needs: [check]
     if: github.event_name == 'workflow_dispatch' && (inputs.buildCandidateCLI || inputs.probeProtonPass)
-    runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -174,7 +174,7 @@ jobs:
           sudo apt-get install -y libsecret-1-dev pkg-config
           vp run build:desktop
       - name: Capture synthetic voice UI across sizes and themes
-        run: node scripts/weasel/voice-ui-artifact.mjs
+        run: node scripts/morrowbyte/voice-ui-artifact.mjs
       - name: Preserve visual fixture evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -274,8 +274,8 @@ jobs:
           if-no-files-found: error
           retention-days: 7
   windows_installer_guard:
-    if: github.repository == (vars.WEASEL_RELEASE_REPOSITORY || 'morrowbyte/t3code')
-    runs-on: ${{ vars.WEASEL_WINDOWS_RUNNER || 'blacksmith-8vcpu-windows-2025' }}
+    if: github.repository == (vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code')
+    runs-on: ${{ vars.MORROWBYTE_WINDOWS_RUNNER || 'blacksmith-8vcpu-windows-2025' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
@@ -285,13 +285,13 @@ jobs:
 
   upstream_tests:
     if: >-
-      github.repository == (vars.WEASEL_RELEASE_REPOSITORY || 'morrowbyte/t3code') &&
+      github.repository == (vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code') &&
       ((github.event_name == 'workflow_dispatch' && inputs.qualifyUpstream) ||
       (github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       (startsWith(github.head_ref, 't3/upstream-main-') ||
       github.head_ref == 'integration/night-settings-groups-release-20261021')))
-    runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 25
     strategy:
       fail-fast: false

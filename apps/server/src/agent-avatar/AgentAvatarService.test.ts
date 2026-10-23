@@ -17,7 +17,7 @@ import * as Service from "./AgentAvatarService.ts";
 import * as Generator from "./CodexAvatarGenerator.ts";
 
 const key = { threadId: ThreadId.make("avatar-agent"), theme: "weasel" as const };
-const input = { ...key, name: "  Wolter the Bold  " };
+const input = { ...key, name: "  Casey the Bold  " };
 const image = { bytes: new Uint8Array([1, 2, 3]), mimeType: "image/png" };
 
 const fixture = Effect.gen(function* () {

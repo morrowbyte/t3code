@@ -105,7 +105,7 @@ export const make = Effect.gen(function* () {
             ...address,
             userId,
             ...(desktopEnvironment.platform === "linux" &&
-            Option.getOrUndefined(desktopEnvironment.profileId) === "weasel" &&
+            Option.isSome(desktopEnvironment.profileId) &&
             desktopEnvironment.isPackaged &&
             Option.isSome(diagnostics)
               ? {

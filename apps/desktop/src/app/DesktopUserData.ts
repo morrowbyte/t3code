@@ -41,8 +41,9 @@ export const resolveUserDataPath = Effect.fn("desktop.userData.resolveUserDataPa
   }) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    if (Option.getOrUndefined(input.profileId ?? Option.none()) === "weasel") {
-      return path.join(input.appDataDirectory, "t3code-weasel");
+    const profileId = Option.getOrUndefined(input.profileId ?? Option.none());
+    if (profileId) {
+      return path.join(input.appDataDirectory, `t3code-${profileId}`);
     }
     const names = input.isDevelopment
       ? { current: "t3code-dev", legacy: "T3 Code (Dev)" }

@@ -1,6 +1,6 @@
 "use strict";
-const CONTEXT = "weasel/nightly-dispatch";
-const WORKFLOW = "weasel-release.yml";
+const CONTEXT = "morrowbyte/nightly-dispatch";
+const WORKFLOW = "morrowbyte-release.yml";
 const REPOSITORY = "morrowbyte/t3code";
 const assert = (ok, category) => {
   if (!ok) throw Error(category);
@@ -16,7 +16,7 @@ function validateTrigger(run, repository) {
   assert(
     run.event === "push" &&
       run.head_branch === "main" &&
-      run.path === ".github/workflows/weasel-ci.yml",
+      run.path === ".github/workflows/morrowbyte-ci.yml",
     "not-normal-main-push-ci",
   );
   assert(run.status === "completed" && run.conclusion === "success", "ci-not-successful");
@@ -43,7 +43,7 @@ function decideDispatch({ source, main, statuses, runs, runCount, releases }) {
   const relevant = runs.filter(
     (r) =>
       r.head_sha === source &&
-      r.path === ".github/workflows/weasel-release.yml" &&
+      r.path === ".github/workflows/morrowbyte-release.yml" &&
       r.event === "workflow_dispatch" &&
       r.head_branch === "main",
   );

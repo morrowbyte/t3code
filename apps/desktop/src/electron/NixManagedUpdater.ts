@@ -48,7 +48,7 @@ export class NixManagedUpdater extends NodeEvents.EventEmitter {
             options.command,
             [...args],
             {
-              env: { ...process.env, T3_WEASEL_CHANNEL: channel },
+              env: { ...process.env, T3_MORROWBYTE_CHANNEL: channel },
               timeout: 30 * 60 * 1_000,
               maxBuffer: 1024 * 1024,
             },

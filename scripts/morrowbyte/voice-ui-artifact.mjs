@@ -403,7 +403,7 @@ async function captureComposerMobile() {
         if (boundaries.has(key)) return "\0composer-boundary:" + key;
         // The fixture lives in scripts; resolve its declared browser dependencies from web.
         if (
-          (importer === NodePath.join(repo, "scripts/weasel/composer-mobile-fixture.tsx") ||
+          (importer === NodePath.join(repo, "scripts/morrowbyte/composer-mobile-fixture.tsx") ||
             importer?.startsWith("\0composer-boundary:")) &&
           !request.startsWith(".") &&
           !request.startsWith("/") &&
@@ -424,11 +424,11 @@ async function captureComposerMobile() {
     );
     await NodeFSP.writeFile(
       NodePath.join(directory, "fixture.css"),
-      `@import ${JSON.stringify(NodePath.join(web, "src/index.css"))};\n@source ${JSON.stringify(NodePath.join(web, "src"))};\n@source ${JSON.stringify(NodePath.join(repo, "scripts/weasel/composer-mobile-fixture.tsx"))};\n`,
+      `@import ${JSON.stringify(NodePath.join(web, "src/index.css"))};\n@source ${JSON.stringify(NodePath.join(web, "src"))};\n@source ${JSON.stringify(NodePath.join(repo, "scripts/morrowbyte/composer-mobile-fixture.tsx"))};\n`,
     );
     await NodeFSP.writeFile(
       NodePath.join(directory, "main.tsx"),
-      `import "./fixture.css";import {mountComposerFixture} from ${JSON.stringify(NodePath.join(repo, "scripts/weasel/composer-mobile-fixture.tsx"))};mountComposerFixture();`,
+      `import "./fixture.css";import {mountComposerFixture} from ${JSON.stringify(NodePath.join(repo, "scripts/morrowbyte/composer-mobile-fixture.tsx"))};mountComposerFixture();`,
     );
     const vite = await createServer({
       configFile: false,

@@ -10,7 +10,7 @@ const run = {
   head_repository: { full_name: "morrowbyte/t3code" },
   event: "push",
   head_branch: "main",
-  path: ".github/workflows/weasel-ci.yml",
+  path: ".github/workflows/morrowbyte-ci.yml",
   status: "completed",
   conclusion: "success",
   head_sha: source,
@@ -23,7 +23,7 @@ test("only successful normal main-push CI qualifies", () => {
   for (const delta of [
     { event: "pull_request" },
     { event: "workflow_dispatch" },
-    { head_branch: "weasel/check" },
+    { head_branch: "morrowbyte/check" },
     { conclusion: "failure" },
     { repository: { full_name: "foreign/repo" } },
   ])
@@ -38,7 +38,7 @@ test("persisted intent without visible run fails closed for every marker state",
     assert.equal(
       decideDispatch({
         ...state(),
-        statuses: [{ context: "weasel/nightly-dispatch", state: markerState }],
+        statuses: [{ context: "morrowbyte/nightly-dispatch", state: markerState }],
       }).action,
       "stop",
     );
@@ -47,7 +47,7 @@ test("existing exact run is reconciled, never dispatched again", () => {
   const release = {
     id: 456,
     head_sha: source,
-    path: ".github/workflows/weasel-release.yml",
+    path: ".github/workflows/morrowbyte-release.yml",
     event: "workflow_dispatch",
     head_branch: "main",
   };
@@ -88,7 +88,7 @@ const { resolve } = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { parse } = createRequire(resolve(__dirname, "../../packages/shared/package.json"))("yaml");
 const releaseWorkflow = parse(
-  readFileSync(resolve(__dirname, "../../.github/workflows/weasel-release.yml"), "utf8"),
+  readFileSync(resolve(__dirname, "../../.github/workflows/morrowbyte-release.yml"), "utf8"),
 );
 const expression = (value, inputs, needs, cancelled = false) =>
   Function(
@@ -329,7 +329,7 @@ test("Windows-only builds no other platform and requires every Windows dependenc
 test("published WSL runtime reuse rejects backend and dependency changes", () => {
   windowsOnly.assertRuntimeSourceUnchanged([
     "apps/desktop/src/wsl/DesktopWslEnvironment.ts",
-    ".github/workflows/weasel-release.yml",
+    ".github/workflows/morrowbyte-release.yml",
   ]);
   for (const path of [
     "apps/server/src/bin.ts",
@@ -414,7 +414,7 @@ test("Windows-only feed keeps the published Linux version and original bytes rea
     ),
   );
   assert.equal(
-    "Weasel Windows Nightly 0.1.2-nightly.20261020.62".startsWith("Weasel Nightly"),
+    "Morrowbyte Windows Nightly 0.1.2-nightly.20261020.62".startsWith("Morrowbyte Nightly"),
     false,
   );
 });

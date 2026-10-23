@@ -2786,11 +2786,11 @@ export function resolveDesktopWebAssetBrand(version: string): WebAssetBrand {
 }
 
 export function resolveDesktopBuildIconAssets(version: string): DesktopBuildIconAssets {
-  if (process.env.T3CODE_DESKTOP_PROFILE?.trim() === "weasel") {
+  if (Boolean(process.env.T3CODE_DESKTOP_PROFILE?.trim())) {
     return {
-      macIconPng: "assets/weasel/fork-1024.png",
-      linuxIconPng: "assets/weasel/fork-1024.png",
-      windowsIconIco: "assets/weasel/fork.ico",
+      macIconPng: "assets/morrowbyte/fork-1024.png",
+      linuxIconPng: "assets/morrowbyte/fork-1024.png",
+      windowsIconIco: "assets/morrowbyte/fork.ico",
     };
   }
   if (resolveDesktopUpdateChannel(version) === "nightly") {
@@ -2826,17 +2826,16 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
 }
 
 export function resolveDesktopProductName(version: string): string {
-  if (process.env.T3CODE_DESKTOP_PROFILE?.trim() === "weasel") return "Morrowbyte";
   const override = process.env.T3CODE_DESKTOP_PRODUCT_NAME?.trim();
   if (override) return override;
+  if (process.env.T3CODE_DESKTOP_PROFILE?.trim()) return "Morrowbyte";
   return resolveDesktopUpdateChannel(version) === "nightly"
     ? "T3 Code (Nightly)"
     : (desktopPackageJson.productName ?? "T3 Code");
 }
 
 export function resolveWindowsExecutableName(version: string): string {
-  if (process.env.T3CODE_DESKTOP_PROFILE?.trim() === "weasel") return "T3 Code (Weasel Nightly)";
-  return resolveDesktopProductName(version);
+  return process.env.T3CODE_DESKTOP_EXECUTABLE_NAME?.trim() || resolveDesktopProductName(version);
 }
 
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
@@ -2860,9 +2859,17 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   const buildConfig: Record<string, unknown> = {
     appId,
     productName: resolveDesktopProductName(version),
-    ...(profile ? { extraMetadata: { t3codeProfile: profile } } : {}),
+    ...(profile
+      ? {
+          extraMetadata: {
+            t3codeProfile: profile,
+            t3codeProductName: resolveDesktopProductName(version),
+            t3codeAppId: appId,
+          },
+        }
+      : {}),
     artifactName:
-      profile === "weasel" && platform === "linux"
+      Boolean(profile) && platform === "linux"
         ? "T3-Code-${version}-x86_64.${ext}"
         : "T3-Code-${version}-${arch}.${ext}",
     electronLanguages: [...DESKTOP_ELECTRON_LANGUAGES],
@@ -2939,22 +2946,21 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
           },
         ],
       },
-      protocols:
-        profile === "weasel"
-          ? []
-          : [
-              {
-                name: "T3 Code",
-                schemes: ["t3code", "t3code-dev"],
-              },
-              // Lets people choose T3 Code as their default web browser, which opens
-              // each link in a new thread's browser panel.
-              {
-                name: "Web site URL",
-                schemes: ["http", "https"],
-                role: "Viewer",
-              },
-            ],
+      protocols: Boolean(profile)
+        ? []
+        : [
+            {
+              name: "T3 Code",
+              schemes: ["t3code", "t3code-dev"],
+            },
+            // Lets people choose T3 Code as their default web browser, which opens
+            // each link in a new thread's browser panel.
+            {
+              name: "Web site URL",
+              schemes: ["http", "https"],
+              role: "Viewer",
+            },
+          ],
       ...(signed ? { sign: path.join(repoRoot, "scripts/sign-macos.ts") } : {}),
       ...(macPasskeySigning
         ? {
@@ -2999,7 +3005,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       // electron-builder lists both in latest-linux.yml and writes
       // resources/package-type into the .deb only, so electron-updater updates
       // each install in its own format.
-      target: target === "AppImage" && profile !== "weasel" ? [target, "deb"] : [target],
+      target: target === "AppImage" && !profile ? [target, "deb"] : [target],
       executableName: "t3code",
       icon: "icons",
       category: "Development",
@@ -3008,15 +3014,14 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       // electron-builder turns these into MimeType=x-scheme-handler/<scheme>;
       // in the .desktop entry (Exec already gets %U), so browsers can hand
       // t3code:// OAuth callbacks to the app.
-      protocols:
-        profile === "weasel"
-          ? []
-          : [
-              {
-                name: "T3 Code",
-                schemes: ["t3code", "t3code-dev"],
-              },
-            ],
+      protocols: Boolean(profile)
+        ? []
+        : [
+            {
+              name: "T3 Code",
+              schemes: ["t3code", "t3code-dev"],
+            },
+          ],
       desktop: {
         entry: {
           StartupWMClass: "t3code",
@@ -3054,8 +3059,11 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     // in trading update bandwidth for install speed.
     buildConfig.nsis = {
       differentialPackage: true,
+      ...(process.env.T3CODE_DESKTOP_INSTALLER_GUID?.trim()
+        ? { guid: process.env.T3CODE_DESKTOP_INSTALLER_GUID.trim() }
+        : {}),
       include: "apps/desktop/resources/installer.nsh",
-      ...(profile === "weasel"
+      ...(Boolean(profile)
         ? {
             shortcutName: "Morrowbyte",
             uninstallDisplayName: "Morrowbyte",
@@ -3066,7 +3074,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     const winConfig: Record<string, unknown> = {
       target: [target],
       // Keep existing shortcuts, protocol handlers and rollout launchers working.
-      ...(profile === "weasel" ? { executableName: resolveWindowsExecutableName(version) } : {}),
+      ...(Boolean(profile) ? { executableName: resolveWindowsExecutableName(version) } : {}),
       icon: "icon.ico",
       // Smart App Control validates unpacked native addons independently from
       // the signed desktop executable. Extend release signing to every native

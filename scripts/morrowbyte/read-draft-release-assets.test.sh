@@ -19,7 +19,7 @@ fi
 EOF
 chmod +x "$fixture/gh"
 export PATH="$fixture:$PATH" GH_REPO=fixture/t3code
-actual="$(bash "$repo_root/scripts/weasel/read-draft-release-assets.sh" vtest qualified)"
+actual="$(bash "$repo_root/scripts/morrowbyte/read-draft-release-assets.sh" vtest qualified)"
 jq -e 'length == 1 and .[0].name == "app"' <<<"$actual" >/dev/null
 for scenario in wrong_source published foreign_repository; do
   unset FIXTURE_SHA FIXTURE_DRAFT FIXTURE_API_URL
@@ -28,7 +28,7 @@ for scenario in wrong_source published foreign_repository; do
     published) export FIXTURE_DRAFT=false ;;
     foreign_repository) export FIXTURE_API_URL=https://api.github.com/repos/other/t3code/releases/123 ;;
   esac
-  if bash "$repo_root/scripts/weasel/read-draft-release-assets.sh" vtest qualified >/dev/null 2>&1; then
+  if bash "$repo_root/scripts/morrowbyte/read-draft-release-assets.sh" vtest qualified >/dev/null 2>&1; then
     echo "Draft verification incorrectly accepted $scenario" >&2
     exit 1
   fi

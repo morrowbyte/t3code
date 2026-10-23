@@ -28,13 +28,30 @@ afterEach(() => {
 });
 
 describe("Windows packaged profile binding", () => {
+  it("retains an existing distribution's opaque profile, home and port without rewriting it", () => {
+    const { input, bindingPath, write } = fixture();
+    write({
+      schemaVersion: 1,
+      profile: "previous-profile",
+      t3Home: "D:\\profiles\\existing",
+      backendPort: 3775,
+    });
+    const original = Fs.readFileSync(bindingPath, "utf8");
+    expect(resolveWindowsProfileBinding({ ...input, profileId: "morrowbyte" })).toEqual({
+      t3Home: "D:\\profiles\\existing",
+      backendPort: 3775,
+      profileId: "previous-profile",
+    });
+    expect(Fs.readFileSync(bindingPath, "utf8")).toBe(original);
+  });
+
   it("retains an explicit migrated home for later shortcut launches without environment", () => {
     const { input, bindingPath } = fixture();
     const t3Home = "C:\\Users\\User\\.t3-morrowbyte-windows";
     expect(resolveWindowsProfileHome({ ...input, explicitHome: t3Home })).toBe(t3Home);
     expect(JSON.parse(Fs.readFileSync(bindingPath, "utf8"))).toEqual({
       schemaVersion: 1,
-      profile: "weasel",
+      profile: "morrowbyte",
       t3Home,
     });
     expect(resolveWindowsProfileHome(input)).toBe(t3Home);
@@ -43,7 +60,7 @@ describe("Windows packaged profile binding", () => {
 
   it("keeps the normal default when no binding exists, without writing a default binding", () => {
     const { input, bindingPath } = fixture();
-    expect(resolveWindowsProfileHome(input)).toBe("C:\\Users\\User\\.t3-weasel");
+    expect(resolveWindowsProfileHome(input)).toBe("C:\\Users\\User\\.t3-morrowbyte");
     expect(Fs.existsSync(bindingPath)).toBe(false);
   });
 
@@ -63,10 +80,10 @@ describe("Windows packaged profile binding", () => {
     const { input, write } = fixture();
     for (const value of [
       "not-json",
-      { schemaVersion: 1, profile: "weasel", t3Home: "relative" },
-      { schemaVersion: 1, profile: "weasel", t3Home: "\\drive-dependent" },
-      { schemaVersion: 1, profile: "other", t3Home: "D:\\profiles\\other" },
-      { schemaVersion: 2, profile: "weasel", t3Home: "D:\\profiles\\other" },
+      { schemaVersion: 1, profile: "morrowbyte", t3Home: "relative" },
+      { schemaVersion: 1, profile: "morrowbyte", t3Home: "\\drive-dependent" },
+      { schemaVersion: 1, profile: "../other", t3Home: "D:\\profiles\\other" },
+      { schemaVersion: 2, profile: "morrowbyte", t3Home: "D:\\profiles\\other" },
     ]) {
       write(value);
       expect(() => resolveWindowsProfileHome(input)).toThrow(
@@ -98,8 +115,13 @@ describe("Windows packaged profile binding", () => {
     expect(resolveWindowsProfileBinding({ ...input, explicitBackendPort: String(port) })).toEqual({
       t3Home,
       backendPort: port,
+      profileId: "morrowbyte",
     });
-    expect(resolveWindowsProfileBinding(input)).toEqual({ t3Home, backendPort: port });
+    expect(resolveWindowsProfileBinding(input)).toEqual({
+      t3Home,
+      backendPort: port,
+      profileId: "morrowbyte",
+    });
     expect(JSON.parse(Fs.readFileSync(bindingPath, "utf8")).schemaVersion).toBe(1);
     expect(Fs.readdirSync(Path.dirname(bindingPath))).toEqual(["desktop-profile.json"]);
   });
@@ -115,6 +137,7 @@ describe("Windows packaged profile binding", () => {
     expect(resolveWindowsProfileBinding({ ...input, explicitHome: "D:\\second" })).toEqual({
       t3Home: "D:\\second",
       backendPort: undefined,
+      profileId: "morrowbyte",
     });
     expect(
       resolveWindowsProfileBinding({
@@ -122,7 +145,7 @@ describe("Windows packaged profile binding", () => {
         explicitHome: "D:\\second",
         explicitBackendPort: "3773",
       }),
-    ).toEqual({ t3Home: "D:\\second", backendPort: 3773 });
+    ).toEqual({ t3Home: "D:\\second", backendPort: 3773, profileId: "morrowbyte" });
     expect(Fs.readFileSync(bindingPath, "utf8")).toBe(before);
   });
 
@@ -150,7 +173,7 @@ describe("Windows packaged profile binding", () => {
   it("rejects invalid saved or explicit ports before selecting a backend", () => {
     const { input, write } = fixture();
     for (const port of [0, -1, 65536, 1.5, "3775", null]) {
-      write({ schemaVersion: 1, profile: "weasel", t3Home: "D:\\first", backendPort: port });
+      write({ schemaVersion: 1, profile: "morrowbyte", t3Home: "D:\\first", backendPort: port });
       expect(() => resolveWindowsProfileBinding(input)).toThrow(
         "Saved Windows desktop profile is invalid",
       );

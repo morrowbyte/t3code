@@ -1,4 +1,4 @@
-; Weasel only. Override electron-builder's image-name kill fallback completely.
+; Morrowbyte only. Override electron-builder's image-name kill fallback completely.
 !macro customCheckAppRunning
   InitPluginsDir
   File /oname=$PLUGINSDIR\morrowbyte-installer-guard.ps1 "${BUILD_RESOURCES_DIR}\morrowbyte-installer-guard.ps1"

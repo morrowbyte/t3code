@@ -15,17 +15,17 @@ esac
 
 upstream_repo="pingdotgg/t3code"
 fork_branch="main"
-issue_title="Weasel upstream nightly merge conflict"
+issue_title="Morrowbyte upstream nightly merge conflict"
 issue_body_file="$(mktemp)"
 trap 'rm -f "$issue_body_file"' EXIT
 
 reconcile_release_dispatch() {
   local source_sha="$1"
-  local run_name="Weasel desktop release $source_sha"
+  local run_name="Morrowbyte desktop release $source_sha"
   local runs_json matching_runs active_run successful_run finished_run
 
   runs_json="$(gh run list --repo "$fork_repo" \
-    --workflow weasel-release.yml \
+    --workflow morrowbyte-release.yml \
     --branch "$fork_branch" \
     --limit 1000 \
     --json databaseId,displayTitle,status,conclusion,event)"
@@ -50,7 +50,7 @@ reconcile_release_dispatch() {
   fi
 
   echo "No active or successful release run exists for $source_sha; dispatching the missing release."
-  gh workflow run weasel-release.yml --repo "$fork_repo" --ref "$fork_branch" -f source_sha="$source_sha"
+  gh workflow run morrowbyte-release.yml --repo "$fork_repo" --ref "$fork_branch" -f source_sha="$source_sha"
 }
 
 releases_json="$(gh api --method GET "repos/$upstream_repo/releases" --paginate --slurp)"
@@ -96,7 +96,7 @@ else
     --arg base_sha "$base_sha" \
     --arg nightly_sha "$nightly_sha" \
     '{tag: $tag, base_sha: $base_sha, nightly_sha: $nightly_sha, repair_agent_status: "not_scheduled"}')"
-  issue_marker="<!-- weasel-upstream-conflict:$issue_metadata -->"
+  issue_marker="<!-- morrowbyte-upstream-conflict:$issue_metadata -->"
   issue_update="$issue_marker
 
 Nightly **$nightly_tag** ($nightly_sha) could not be cleanly merged into fork main at $base_sha. The public branch was not changed.
@@ -116,7 +116,7 @@ Repair agent status: **not scheduled**. The fork pipeline does not activate or d
 fi
 
 vp install --frozen-lockfile
-bash scripts/weasel/check.sh
+bash scripts/morrowbyte/check.sh
 
 # Fetch once more and allow only a normal fast-forward push. If another writer
 # advanced main during validation, leave it untouched for the next sync run.

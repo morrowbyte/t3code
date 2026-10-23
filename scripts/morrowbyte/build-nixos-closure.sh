@@ -7,7 +7,7 @@ set -euo pipefail
 version="$1"
 appimage="$(realpath "$2")"
 output_dir="$3"
-repo="${T3_WEASEL_REPOSITORY:-morrowbyte/t3code}"
+repo="${T3_MORROWBYTE_REPOSITORY:-morrowbyte/t3code}"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]{8}\.[0-9]+$ ]] || exit 2
 [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || exit 2
 [[ "$(basename "$appimage")" == "T3-Code-$version-x86_64.AppImage" && -s "$appimage" ]] || exit 2
@@ -18,16 +18,16 @@ manifest="${asset%.nar.zst}.json"
 work_dir="$(mktemp -d)"
 trap 'rm -rf -- "$work_dir"' EXIT
 
-export T3_WEASEL_VERSION="$version" T3_WEASEL_REPOSITORY="$repo"
-export T3_WEASEL_ARTIFACT_URL="https://github.com/$repo/releases/download/v$version/$(basename "$appimage")"
-export T3_WEASEL_ARTIFACT_SHA256="$(sha256sum "$appimage" | cut -d ' ' -f 1)"
+export T3_MORROWBYTE_VERSION="$version" T3_MORROWBYTE_REPOSITORY="$repo"
+export T3_MORROWBYTE_ARTIFACT_URL="https://github.com/$repo/releases/download/v$version/$(basename "$appimage")"
+export T3_MORROWBYTE_ARTIFACT_SHA256="$(sha256sum "$appimage" | cut -d ' ' -f 1)"
 # fetchurl uses this fixed-output path. Seed it before the draft release exists.
 nix-store --add-fixed sha256 "$appimage" >/dev/null
 nix build --extra-experimental-features 'nix-command flakes' \
   --no-write-lock-file --impure --out-link "$work_dir/package" \
-  path:./packaging/nixos#t3code-weasel
+  path:./packaging/nixos#t3code-morrowbyte
 store_path="$(readlink -f "$work_dir/package")"
-[[ "$store_path" == /nix/store/* && -x "$store_path/bin/t3code-weasel" ]]
+[[ "$store_path" == /nix/store/* && -x "$store_path/bin/t3code-morrowbyte" ]]
 mapfile -t closure_paths < <(nix-store --query --requisites "$store_path")
 [[ ${#closure_paths[@]} -gt 0 ]]
 nix-store --export "${closure_paths[@]}" | zstd -T0 -3 > "$output_dir/$asset"
@@ -41,4 +41,4 @@ jq -n --arg version "$version" --arg storePath "$store_path" \
   --arg asset "$asset" --arg sha256 "$sha256" \
   '{schemaVersion:1,version:$version,system:"x86_64-linux",storePath:$storePath,asset:$asset,sha256:$sha256,compression:"zstd"}' \
   > "$output_dir/$manifest"
-bash scripts/weasel/verify-nixos-closure.sh "$version" "$output_dir"
+bash scripts/morrowbyte/verify-nixos-closure.sh "$version" "$output_dir"

@@ -210,11 +210,11 @@ describe("DesktopLinuxUrlHandler", () => {
     },
   );
 
-  it.effect("leaves the global scheme default unchanged for the Weasel profile", () => {
+  it.effect("leaves the global scheme default unchanged for the Morrowbyte profile", () => {
     const recorded = emptyRecording();
     return Effect.gen(function* () {
       yield* runRegister(recorded, {
-        environment: { profileId: Option.some("weasel") },
+        environment: { profileId: Option.some("morrowbyte") },
       });
       assert.equal(recorded.files.length, 1);
       assert.deepEqual(recorded.commands, [
@@ -250,9 +250,9 @@ describe("DesktopLinuxUrlHandler", () => {
       const firstRegistration = emptyRecording();
       const secondRegistration = emptyRecording();
       const launchConfig = {
-        linuxUrlHandlerLauncher: Option.some("/tmp/t3code-fixture/bin/t3code-weasel"),
-        linuxUrlHandlerHome: Option.some("/tmp/t3code-fixture/home/t3code-weasel"),
-        profileId: Option.some("weasel"),
+        linuxUrlHandlerLauncher: Option.some("/tmp/t3code-fixture/bin/t3code-morrowbyte"),
+        linuxUrlHandlerHome: Option.some("/tmp/t3code-fixture/home/t3code-morrowbyte"),
+        profileId: Option.some("morrowbyte"),
       };
 
       return Effect.gen(function* () {
@@ -268,10 +268,10 @@ describe("DesktopLinuxUrlHandler", () => {
           firstEntry,
           [
             "Exec=/usr/bin/env",
-            '"T3CODE_DESKTOP_LINUX_URL_HANDLER_LAUNCHER=/tmp/t3code-fixture/bin/t3code-weasel"',
-            '"T3CODE_HOME=/tmp/t3code-fixture/home/t3code-weasel"',
-            '"T3CODE_DESKTOP_PROFILE=weasel"',
-            '"/tmp/t3code-fixture/bin/t3code-weasel" %U',
+            '"T3CODE_DESKTOP_LINUX_URL_HANDLER_LAUNCHER=/tmp/t3code-fixture/bin/t3code-morrowbyte"',
+            '"T3CODE_HOME=/tmp/t3code-fixture/home/t3code-morrowbyte"',
+            '"T3CODE_DESKTOP_PROFILE=morrowbyte"',
+            '"/tmp/t3code-fixture/bin/t3code-morrowbyte" %U',
           ].join(" "),
         );
 
@@ -287,11 +287,11 @@ describe("DesktopLinuxUrlHandler", () => {
         assert.equal(secondRegistration.files[0]?.content, firstEntry);
         assert.include(
           secondRegistration.files[0]?.content,
-          "T3CODE_HOME=/tmp/t3code-fixture/home/t3code-weasel",
+          "T3CODE_HOME=/tmp/t3code-fixture/home/t3code-morrowbyte",
         );
         assert.include(
           secondRegistration.files[0]?.content,
-          '"/tmp/t3code-fixture/bin/t3code-weasel" %U',
+          '"/tmp/t3code-fixture/bin/t3code-morrowbyte" %U',
         );
       });
     },
@@ -316,7 +316,7 @@ describe("DesktopLinuxUrlHandler", () => {
       environment: {
         T3CODE_HOME: '/tmp/t3 fixture/home "profile" 100%',
       },
-      scheme: "t3code-weasel",
+      scheme: "t3code-morrowbyte",
     });
     assert.include(
       entry,

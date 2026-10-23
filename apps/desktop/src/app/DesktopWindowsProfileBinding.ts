@@ -8,6 +8,7 @@ interface WindowsProfileInput {
   readonly appDataDirectory?: string | undefined;
   readonly explicitHome?: string | undefined;
   readonly explicitBackendPort?: string | undefined;
+  readonly profileId?: string | undefined;
 }
 
 /** Outside the installation and Electron's version/profile-specific userData.
@@ -35,6 +36,7 @@ function isAbsoluteWindowsHome(value: unknown): value is string {
 interface WindowsProfileBinding {
   readonly t3Home: string;
   readonly backendPort?: number | undefined;
+  readonly profileId: string;
 }
 
 function validPort(value: unknown): value is number {
@@ -67,7 +69,8 @@ function readBinding(
     !("schemaVersion" in value) ||
     value.schemaVersion !== 1 ||
     !("profile" in value) ||
-    value.profile !== "weasel" ||
+    typeof value.profile !== "string" ||
+    !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(value.profile) ||
     !("t3Home" in value) ||
     !isAbsoluteWindowsHome(value.t3Home) ||
     ("backendPort" in value && !validPort(value.backendPort))
@@ -78,6 +81,7 @@ function readBinding(
   }
   return {
     serialized: raw,
+    profileId: value.profile,
     t3Home: value.t3Home,
     backendPort: "backendPort" in value ? (value.backendPort as number) : undefined,
   };
@@ -89,6 +93,10 @@ function readBinding(
 export function resolveWindowsProfileBinding(input: WindowsProfileInput): WindowsProfileBinding {
   const bindingPath = windowsProfileBindingPath(input);
   const explicitHome = input.explicitHome?.trim() || undefined;
+  const profileId = input.profileId?.trim() || "morrowbyte";
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(profileId)) {
+    throw new Error("Windows desktop profile must be a simple identifier");
+  }
   const portText = input.explicitBackendPort?.trim();
   const explicitPort = portText ? Number(portText) : undefined;
   if (portText && (!/^\d+$/.test(portText) || !validPort(explicitPort))) {
@@ -104,7 +112,7 @@ export function resolveWindowsProfileBinding(input: WindowsProfileInput): Window
   } catch (error) {
     // An explicit recovery launch must not destroy the invalid original record.
     if (!explicitHome) throw error;
-    return { t3Home: explicitHome, backendPort: explicitPort };
+    return { t3Home: explicitHome, backendPort: explicitPort, profileId };
   }
   const sameHome =
     saved &&
@@ -112,8 +120,10 @@ export function resolveWindowsProfileBinding(input: WindowsProfileInput): Window
       NodePath.win32.normalize(saved.t3Home).toLowerCase() ===
         NodePath.win32.normalize(explicitHome).toLowerCase());
   const selected = {
-    t3Home: explicitHome ?? saved?.t3Home ?? NodePath.win32.join(input.homeDirectory, ".t3-weasel"),
+    t3Home:
+      explicitHome ?? saved?.t3Home ?? NodePath.win32.join(input.homeDirectory, `.t3-${profileId}`),
     backendPort: explicitPort ?? (sameHome ? saved?.backendPort : undefined),
+    profileId: sameHome ? saved.profileId : profileId,
   };
   const addPort = sameHome && saved?.backendPort === undefined && explicitPort !== undefined;
   if ((!saved && explicitHome) || addPort) {
@@ -134,7 +144,7 @@ export function resolveWindowsProfileBinding(input: WindowsProfileInput): Window
         temporary,
         JSON.stringify({
           schemaVersion: 1,
-          profile: "weasel",
+          profile: selected.profileId,
           t3Home: saved?.t3Home ?? selected.t3Home,
           ...(selected.backendPort === undefined ? {} : { backendPort: selected.backendPort }),
         }) + "\n",

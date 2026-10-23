@@ -372,13 +372,12 @@ export const make = Effect.gen(function* () {
       ),
     );
 
-    if (Option.getOrUndefined(environment.profileId ?? Option.none()) !== "weasel") {
+    if (Option.isNone(environment.profileId ?? Option.none())) {
       yield* setDefaultHandler;
     }
     yield* logInfo("registered URL scheme handler", {
       scheme,
-      defaultHandlerSelected:
-        Option.getOrUndefined(environment.profileId ?? Option.none()) !== "weasel",
+      defaultHandlerSelected: Option.isNone(environment.profileId ?? Option.none()),
     });
   }).pipe(
     Effect.catch((error) =>

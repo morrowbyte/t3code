@@ -35,7 +35,7 @@ export const resolveLinuxDesktopEntryName = (
   isDevelopment: boolean,
   profileId?: string,
 ): string => {
-  if (profileId === "weasel") return "com.evilweasel.T3Code.desktop";
+  if (profileId) return "com.morrowbyte.t3code.desktop";
   return isDevelopment ? "com.t3tools.T3Code.Development.desktop" : "com.t3tools.T3Code.desktop";
 };
 
@@ -158,8 +158,11 @@ export function resolveEarlyLinuxElectronOptions(
   return {
     isDevelopment,
     linuxWmClass:
-      profileId === "weasel" ? "t3code-weasel" : isDevelopment ? "t3code-dev" : "t3code",
-    linuxDesktopEntryName: resolveLinuxDesktopEntryName(isDevelopment, profileId ?? undefined),
+      trimNonEmpty(input.env.T3CODE_DESKTOP_LINUX_WM_CLASS) ??
+      (profileId ? `t3code-${profileId}` : isDevelopment ? "t3code-dev" : "t3code"),
+    linuxDesktopEntryName:
+      trimNonEmpty(input.env.T3CODE_DESKTOP_LINUX_DESKTOP_ENTRY) ??
+      resolveLinuxDesktopEntryName(isDevelopment, profileId ?? undefined),
     passwordStore: resolveLinuxPasswordStoreSwitch({
       preference,
       env: input.env,

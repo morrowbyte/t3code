@@ -1,7 +1,7 @@
 # Voice input
 
 Transcription edits a composer draft. Mobile transcribes locally on supported iOS
-devices; sending remains a separate action there. The Weasel web/desktop recorder
+devices; sending remains a separate action there. The Morrowbyte web/desktop recorder
 uses the selected environment's authenticated HTTP API. Stop inserts text; its
 explicit Send action uses normal message submission and retains audio until the
 server accepts the message. Navigation cancels transcription delivery but does

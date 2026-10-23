@@ -95,8 +95,8 @@ export const make = Effect.gen(function* () {
     // product token, but leaves parentheses intact. Keep the runtime name valid
     // without rewriting preview sessions (which breaks Turnstile, #7110).
     yield* electronApp.setName(
-      Option.getOrUndefined(environment.profileId ?? Option.none()) === "weasel"
-        ? "Morrowbyte"
+      Option.isSome(environment.profileId ?? Option.none())
+        ? environment.branding.baseName
         : `${environment.branding.baseName} ${environment.branding.stageLabel}`,
     );
     yield* electronApp.setAboutPanelOptions({

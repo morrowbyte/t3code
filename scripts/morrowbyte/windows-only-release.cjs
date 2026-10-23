@@ -29,12 +29,12 @@ function assertRuntimeSourceUnchanged(paths) {
     assert(
       path.startsWith("apps/desktop/") ||
         [
-          ".github/workflows/weasel-release.yml",
+          ".github/workflows/morrowbyte-release.yml",
           "scripts/build-desktop-artifact.ts",
           "scripts/windows-wsl-runtime.test.ts",
-          "scripts/weasel/check.sh",
-          "scripts/weasel/windows-only-release.cjs",
-          "scripts/weasel/nightly-after-ci.test.cjs",
+          "scripts/morrowbyte/check.sh",
+          "scripts/morrowbyte/windows-only-release.cjs",
+          "scripts/morrowbyte/nightly-after-ci.test.cjs",
         ].includes(path),
       `Published WSL runtime cannot be reused after a server/dependency change: ${path}`,
     );
@@ -134,7 +134,7 @@ function main(mode, directory) {
   assert.equal(git("rev-parse", "HEAD"), source);
   assert.equal(process.env.GITHUB_REF, "refs/heads/main");
   const tag = `v${version}`,
-    title = `Weasel Windows Nightly ${version}`;
+    title = `Morrowbyte Windows Nightly ${version}`;
   const originalFeed = downloadOriginal("nightly-linux.yml", directory, feedDigest);
   writeFileSync(originalFeed, preserveLinuxFeed(readFileSync(originalFeed)));
   const provenance = {
@@ -148,7 +148,7 @@ function main(mode, directory) {
       sha256: runtimeDigest,
     },
     linuxFeed: { version: runtimeTag.slice(1), originalSha256: feedDigest },
-    nixosDiscovery: "Windows release title excluded by existing Weasel Nightly filter",
+    nixosDiscovery: "Windows release title excluded by existing Morrowbyte Nightly filter",
     runId: process.env.GITHUB_RUN_ID,
     runAttempt: process.env.GITHUB_RUN_ATTEMPT,
   };

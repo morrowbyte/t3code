@@ -496,21 +496,21 @@ describe("DesktopBackendConfiguration", () => {
   });
 
   it.effect.each([false, true])(
-    "isolates the Weasel WSL bootstrap from Windows and upstream homes (wslOnly=%s)",
+    "isolates the Morrowbyte WSL bootstrap from Windows and upstream homes (wslOnly=%s)",
     (wslOnly) => {
       const previousT3Home = process.env.T3CODE_HOME;
       process.env.T3CODE_HOME = "C:\\Users\\Tester\\.t3-morrowbyte-windows";
       return withPackagedWslHarness(
         {
           archiveHash: "a".repeat(64),
-          profileId: "weasel",
+          profileId: "morrowbyte",
           wslOnly,
           forbidFallback: "must use packaged runtime",
           wsl: () => ({
             getUserHome: () => Option.some("/home/test user"),
             prepareRuntime: () => ({
               ok: true,
-              linuxAppRoot: "/home/test user/.t3-weasel/wsl-runtime/cache",
+              linuxAppRoot: "/home/test user/.t3-morrowbyte/wsl-runtime/cache",
             }),
           }),
         },
@@ -524,11 +524,11 @@ describe("DesktopBackendConfiguration", () => {
             const first = yield* resolve();
             const restarted = yield* resolve();
             assert.equal(first.executablePath, "wsl.exe");
-            assert.equal(first.bootstrap.t3Home, "/home/test user/.t3-weasel");
+            assert.equal(first.bootstrap.t3Home, "/home/test user/.t3-morrowbyte");
             assert.equal(restarted.bootstrap.t3Home, first.bootstrap.t3Home);
             assert.equal(first.env.T3CODE_HOME, undefined);
             const envStart = first.args.indexOf("env") + 1;
-            const runtimeEntry = "/home/test user/.t3-weasel/wsl-runtime/cache/t3";
+            const runtimeEntry = "/home/test user/.t3-morrowbyte/wsl-runtime/cache/t3";
             const commandStart = first.args.indexOf(runtimeEntry);
             assert.isAbove(commandStart, envStart);
             const inherited = NodeChildProcess.spawnSync(
@@ -545,7 +545,7 @@ describe("DesktopBackendConfiguration", () => {
             assert.equal(inherited.stdout.trim(), "unset");
             assert.equal(first.extendEnv, false);
             assert.isTrue(Option.isNone(first.preflightFailure));
-            assert.include(first.args, "/home/test user/.t3-weasel/wsl-runtime/cache/t3");
+            assert.include(first.args, "/home/test user/.t3-morrowbyte/wsl-runtime/cache/t3");
             if (wslOnly) assert.equal(yield* configuration.resolvePrimaryLabel, "WSL");
           }),
       ).pipe(Effect.ensuring(Effect.sync(() => restoreEnv("T3CODE_HOME", previousT3Home))));
@@ -559,7 +559,7 @@ describe("DesktopBackendConfiguration", () => {
       return withPackagedWslHarness(
         {
           archiveHash: "a".repeat(64),
-          profileId: "weasel",
+          profileId: "morrowbyte",
           forbidFallback: "must not stage without home",
           wsl: () => ({
             prepareRuntime: () => {

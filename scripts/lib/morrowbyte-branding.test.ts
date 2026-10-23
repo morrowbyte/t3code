@@ -20,7 +20,7 @@ describe("Morrowbyte installed branding", () => {
     expect(bytes.subarray(1, 4).toString()).toBe("PNG");
     expect(png.sizes).toBe(`${bytes.readUInt32BE(16)}x${bytes.readUInt32BE(20)}`);
     expect(bytes.readUInt32BE(16)).toBeGreaterThanOrEqual(512);
-    expect(bytes).toEqual(read("assets/weasel/fork-1024.png"));
+    expect(bytes).toEqual(read("assets/morrowbyte/fork-1024.png"));
     expect(manifest.icons).toContainEqual({
       src: "/morrowbyte-icon.svg",
       sizes: "any",
@@ -33,15 +33,15 @@ describe("Morrowbyte installed branding", () => {
     const flake = read("packaging/nixos/flake.nix").toString();
     expect(flake).toContain("Name=Morrowbyte");
     expect(flake).toContain("Icon=t3code");
-    expect(flake).toContain("Exec=t3code-weasel %U");
-    for (const installer of ["packaging/nixos/install.sh", "scripts/weasel/install-linux.sh"]) {
+    expect(flake).toContain("Exec=t3code-morrowbyte %U");
+    for (const installer of ["packaging/nixos/install.sh", "scripts/morrowbyte/install-linux.sh"]) {
       expect(read(installer).toString()).toContain("Name=Morrowbyte");
     }
   });
 
   it("uses the same existing artwork for browser, Apple install and loading surfaces", () => {
-    expect(read("apps/web/public/morrowbyte-icon.svg")).toEqual(read("assets/weasel/fork.svg"));
-    expect(read("apps/web/public/morrowbyte-icon.ico")).toEqual(read("assets/weasel/fork.ico"));
+    expect(read("apps/web/public/morrowbyte-icon.svg")).toEqual(read("assets/morrowbyte/fork.svg"));
+    expect(read("apps/web/public/morrowbyte-icon.ico")).toEqual(read("assets/morrowbyte/fork.ico"));
     const html = read("apps/web/index.html").toString();
     expect(html).toContain('<link rel="apple-touch-icon" href="/morrowbyte-icon.png"');
     expect(html).toContain('<link rel="icon" href="/morrowbyte-icon.ico"');

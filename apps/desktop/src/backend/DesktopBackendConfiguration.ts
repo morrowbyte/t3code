@@ -350,20 +350,19 @@ const runWslPreflight = Effect.fn("desktop.backendConfiguration.wslPreflight")(f
     } as const;
   }
 
-  const t3Home =
-    Option.getOrUndefined(environment.profileId) === "weasel"
-      ? yield* wslEnv
-          .getUserHome(runningDistro)
-          .pipe(
-            Effect.map(
-              Option.map(
-                (home) =>
-                  `${home.replace(/\/+$/u, "")}/${DesktopWslEnvironment.resolveWslHomeName("weasel")}`,
-              ),
+  const t3Home = Option.isSome(environment.profileId)
+    ? yield* wslEnv
+        .getUserHome(runningDistro)
+        .pipe(
+          Effect.map(
+            Option.map(
+              (home) =>
+                `${home.replace(/\/+$/u, "")}/${DesktopWslEnvironment.resolveWslHomeName(Option.getOrUndefined(environment.profileId))}`,
             ),
-          )
-      : Option.none<string>();
-  if (Option.getOrUndefined(environment.profileId) === "weasel" && Option.isNone(t3Home)) {
+          ),
+        )
+    : Option.none<string>();
+  if (Option.isSome(environment.profileId) && Option.isNone(t3Home)) {
     return {
       _tag: "Failed",
       reason: "Unable to resolve the isolated Linux home for Morrowbyte WSL.",

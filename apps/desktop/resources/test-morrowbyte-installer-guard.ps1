@@ -12,7 +12,7 @@ function Assert-Refused([scriptblock]$Action) {
     $script:tests++
 }
 $root = 'C:\Users\Tester\AppData\Local\Programs\MorrowbyteDesktop'
-$exe = 'T3 Code (Weasel Nightly).exe'
+$exe = 'T3 Code (Morrowbyte Nightly).exe'
 $sid = 'S-1-5-21-100-200-300-1001'
 $owned = { param($Process) return 'S-1-5-21-100-200-300-1001' }
 $never = { throw 'An unrelated process must not require owner lookup.' }

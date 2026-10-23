@@ -1,4 +1,4 @@
-# Weasel transcription host configuration
+# Morrowbyte transcription host configuration
 
 Configure the server belonging to the selected environment. The desktop's
 local backend inherits its launch environment; configuring a laptop does not

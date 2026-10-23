@@ -1,14 +1,14 @@
-name: Weasel main Nightly
+name: Morrowbyte main Nightly
 on:
   workflow_run:
-    workflows: [Weasel CI]
+    workflows: [Morrowbyte CI]
     types: [completed]
     branches: [main]
 
 # One writer for the durable per-source dispatch intent. Never cancel an owner
 # between intent persistence and reconciliation of its dispatch acknowledgement.
 concurrency:
-  group: weasel-main-nightly-dispatch
+  group: morrowbyte-main-nightly-dispatch
   cancel-in-progress: false
 
 permissions:
@@ -20,11 +20,12 @@ jobs:
   dispatch:
     if: >-
       github.repository == 'morrowbyte/t3code' &&
+      vars.MORROWBYTE_AUTOMATIC_NIGHTLY == 'true' &&
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.head_repository.full_name == github.repository
-    runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 5
     steps:
       - name: Dispatch or reconcile the existing Nightly workflow
@@ -35,7 +36,7 @@ jobs:
             const path = require('node:path');
             // Fetch only the CI-approved main-push helper; no checkout or Git credentials.
             const source = context.payload.workflow_run.head_sha;
-            const { data } = await github.rest.repos.getContent({ ...context.repo, path: 'scripts/weasel/nightly-after-ci.cjs', ref: source });
+            const { data } = await github.rest.repos.getContent({ ...context.repo, path: 'scripts/morrowbyte/nightly-after-ci.cjs', ref: source });
             if (data.type !== 'file' || data.encoding !== 'base64' || data.size > 65536) throw Error('Invalid dispatch helper');
             const directory = fs.mkdtempSync(path.join(process.env.RUNNER_TEMP, 'nightly-dispatch-'));
             const filename = path.join(directory, 'nightly-after-ci.cjs');

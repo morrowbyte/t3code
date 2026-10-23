@@ -390,7 +390,7 @@ describe("DesktopUpdates", () => {
       platform: "linux",
       env: {
         T3CODE_DESKTOP_MOCK_UPDATES: "false",
-        T3CODE_NIX_UPDATER: "/nix/store/package/libexec/t3code-weasel-update",
+        T3CODE_NIX_UPDATER: "/nix/store/package/libexec/t3code-morrowbyte-update",
       },
     });
     return Effect.scoped(

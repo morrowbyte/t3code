@@ -14,6 +14,7 @@ import {
 import { resolveDesktopAppControlAddress } from "@t3tools/shared/desktopAppControl";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
+import * as Config from "effect/Config";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -72,9 +73,9 @@ export async function inspectLocalMainBinding(input: {
   const pid = Number(target.slice(prefix.length));
   const executable = await NodeFSP.readlink(`/proc/${pid}/exe`);
   const version =
-    /^\/nix\/store\/[a-z0-9]{32}-t3code-weasel-([^/]+)\/lib\/t3code-weasel\/t3code$/.exec(
+    /^\/nix\/store\/[a-z0-9]{32}-(t3code-[a-z0-9-]+)-([0-9][^/]+)\/lib\/\1\/t3code$/.exec(
       executable,
-    )?.[1];
+    )?.[2];
   if (!version) throw new Error("local-main-executable-unavailable");
   const unix = await NodeFSP.readFile("/proc/net/unix", "utf8");
   const entries = await NodeFSP.readdir(`/proc/${pid}/fd`);
@@ -268,6 +269,15 @@ export const make = Effect.fn("MainRendererDiagnosticsLocalClient.make")(functio
   const platform = yield* HostProcess.Platform;
   const userId = yield* HostProcess.UserId;
   const home = yield* HostProcess.HomeDirectory;
+  const profile = yield* Config.String("T3CODE_DESKTOP_PROFILE").pipe(
+    Config.withDefault("morrowbyte"),
+  );
+  const configHome = yield* Config.String("XDG_CONFIG_HOME").pipe(
+    Config.withDefault(NodePath.join(home, ".config")),
+  );
+  const profileLockPath = yield* Config.String("T3CODE_DESKTOP_PROFILE_LOCK_PATH").pipe(
+    Config.withDefault(NodePath.join(configHome, `t3code-${profile}`, "SingletonLock")),
+  );
   let pending = false;
   return MainRendererDiagnosticsLocalClient.of({
     read: Effect.fn("MainRendererDiagnosticsLocalClient.read")((request, environmentId) =>
@@ -305,7 +315,7 @@ export const make = Effect.fn("MainRendererDiagnosticsLocalClient.make")(functio
             inspectLocalMainBinding({
               address: address.address,
               directory,
-              profileLockPath: NodePath.join(home, ".config", "t3code-weasel", "SingletonLock"),
+              profileLockPath,
               userId,
             });
           const binding = yield* Effect.tryPromise({

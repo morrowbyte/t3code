@@ -26,7 +26,7 @@ git -C "$fixture_repo" push origin main "refs/tags/$tag" >/dev/null
 for asset in \
   nightly-linux.yml \
   nightly.yml \
-  weasel-linux-x64.tar.gz \
+  morrowbyte-linux-x64.tar.gz \
   "T3-Code-$version-x86_64.AppImage" \
   "T3-Code-$version-x86_64-linux-nix-closure.nar.zst" \
   "T3-Code-$version-x86_64-linux-nix-closure.json" \
@@ -35,14 +35,14 @@ for asset in \
   "t3-$version-win32-x64.zip"; do
   printf 'fixture payload: %s\n' "$asset" > "$fixture_assets/$asset"
 done
-bash "$repo_root/scripts/weasel/verify-published-release.sh" --write-checksums "$version" "$fixture_assets"
+bash "$repo_root/scripts/morrowbyte/verify-published-release.sh" --write-checksums "$version" "$fixture_assets"
 cp "$fixture_assets/SHA256SUMS" "$test_root/fresh-checksums"
 printf 'old receipt must not hash itself\n' > "$fixture_assets/RELEASE-RECEIPT.txt"
-bash "$repo_root/scripts/weasel/verify-published-release.sh" --write-checksums "$version" "$fixture_assets"
+bash "$repo_root/scripts/morrowbyte/verify-published-release.sh" --write-checksums "$version" "$fixture_assets"
 cmp "$test_root/fresh-checksums" "$fixture_assets/SHA256SUMS"
 rm "$fixture_assets/RELEASE-RECEIPT.txt"
 sed 's/  /  .\//' "$fixture_assets/SHA256SUMS" > "$test_root/dot-prefix-checksums"
-if bash "$repo_root/scripts/weasel/verify-published-release.sh" --check-cli-checksums \
+if bash "$repo_root/scripts/morrowbyte/verify-published-release.sh" --check-cli-checksums \
   "$version" "$test_root/dot-prefix-checksums" >/dev/null 2>&1; then
   echo "Legacy CLI consumer accepted dot-prefixed archive names." >&2
   exit 1
@@ -71,8 +71,8 @@ cat > "$fake_bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "$1" == "api" ]]; then
-  printf '%s\n' "$2" >> "$WEASEL_FIXTURE_GH_LOG"
-  cat "$WEASEL_FIXTURE_API"
+  printf '%s\n' "$2" >> "$MORROWBYTE_FIXTURE_GH_LOG"
+  cat "$MORROWBYTE_FIXTURE_API"
 elif [[ "$1" == "release" && "$2" == "download" ]]; then
   destination=""
   while (($#)); do
@@ -83,7 +83,7 @@ elif [[ "$1" == "release" && "$2" == "download" ]]; then
       shift
     fi
   done
-  cp "$WEASEL_FIXTURE_ASSETS"/* "$destination/"
+  cp "$MORROWBYTE_FIXTURE_ASSETS"/* "$destination/"
 else
   echo "unexpected gh invocation: $*" >&2
   exit 2
@@ -92,25 +92,25 @@ EOF
 chmod +x "$fake_bin/gh"
 
 export PATH="$fake_bin:$PATH"
-export WEASEL_FIXTURE_API="$fixture_api"
-export WEASEL_FIXTURE_ASSETS="$fixture_assets"
-export WEASEL_FIXTURE_GH_LOG="$test_root/gh-api-calls.log"
-export WEASEL_VERIFY_GIT_REMOTE=origin
+export MORROWBYTE_FIXTURE_API="$fixture_api"
+export MORROWBYTE_FIXTURE_ASSETS="$fixture_assets"
+export MORROWBYTE_FIXTURE_GH_LOG="$test_root/gh-api-calls.log"
+export MORROWBYTE_VERIFY_GIT_REMOTE=origin
 export GH_REPO=fixture/t3code
 
 cd "$fixture_repo"
-bash "$repo_root/scripts/weasel/verify-published-release.sh" \
+bash "$repo_root/scripts/morrowbyte/verify-published-release.sh" \
   "$tag" "$source_sha" "$version" "$fixture_assets" >/dev/null
-grep -Fxq "repos/fixture/t3code/releases/tags/$tag" "$WEASEL_FIXTURE_GH_LOG"
+grep -Fxq "repos/fixture/t3code/releases/tags/$tag" "$MORROWBYTE_FIXTURE_GH_LOG"
 
-: > "$WEASEL_FIXTURE_GH_LOG"
+: > "$MORROWBYTE_FIXTURE_GH_LOG"
 unset GH_REPO
-bash "$repo_root/scripts/weasel/verify-published-release.sh" \
+bash "$repo_root/scripts/morrowbyte/verify-published-release.sh" \
   "$tag" "$source_sha" "$version" "$fixture_assets" >/dev/null
-grep -Fxq "repos/morrowbyte/t3code/releases/tags/$tag" "$WEASEL_FIXTURE_GH_LOG"
+grep -Fxq "repos/morrowbyte/t3code/releases/tags/$tag" "$MORROWBYTE_FIXTURE_GH_LOG"
 export GH_REPO=fixture/t3code
 
-if bash "$repo_root/scripts/weasel/verify-published-release.sh" \
+if bash "$repo_root/scripts/morrowbyte/verify-published-release.sh" \
   "$tag" "0000000000000000000000000000000000000000" "$version" "$fixture_assets" >/dev/null 2>&1; then
   echo "Verifier accepted a tag pointing at the wrong source SHA." >&2
   exit 1
@@ -120,7 +120,7 @@ cp "$fixture_api" "$test_root/release.good.json"
 jq '(.assets[] | select(.name == "nightly.yml").digest) = "sha256:wrong"' \
   "$fixture_api" > "$test_root/release.bad-digest.json"
 mv "$test_root/release.bad-digest.json" "$fixture_api"
-if bash "$repo_root/scripts/weasel/verify-published-release.sh" \
+if bash "$repo_root/scripts/morrowbyte/verify-published-release.sh" \
   "$tag" "$source_sha" "$version" "$fixture_assets" >/dev/null 2>&1; then
   echo "Verifier accepted a mismatched GitHub asset digest." >&2
   exit 1
@@ -128,7 +128,7 @@ fi
 mv "$test_root/release.good.json" "$fixture_api"
 
 printf 'changed payload\n' >> "$fixture_assets/nightly-linux.yml"
-if bash "$repo_root/scripts/weasel/verify-published-release.sh" \
+if bash "$repo_root/scripts/morrowbyte/verify-published-release.sh" \
   "$tag" "$source_sha" "$version" "$fixture_assets" >/dev/null 2>&1; then
   echo "Verifier accepted an asset set that differs from the published release." >&2
   exit 1
@@ -140,7 +140,7 @@ git -c tag.gpgSign=false tag "$tag" "$source_sha"
 git push origin "refs/tags/$tag" >/dev/null
 fixture_assets="$test_root/android-assets"
 mkdir -p "$fixture_assets"
-export WEASEL_FIXTURE_ASSETS="$fixture_assets"
+export MORROWBYTE_FIXTURE_ASSETS="$fixture_assets"
 apk_name="Morrowbyte-$version-android-arm64.apk"
 printf 'fixture APK bytes, not a signature test\n' > "$fixture_assets/$apk_name"
 apk_sha="$(sha256sum "$fixture_assets/$apk_name" | cut -d ' ' -f 1)"
@@ -150,7 +150,7 @@ jq -n --arg name "$apk_name" --arg digest "$apk_sha" --arg version "$version" --
     package: "com.morrowbyte.t3code", abis: ["arm64-v8a"],
     certificateSha256: "34a33c2541544bc4a96e359a33e9f71aaa449ee9a0cd725c2469b65b057aa2b2",
     signatureVerified: true, zip16KB: true, elf16KB: true}' > "$fixture_assets/$apk_name.json"
-bash "$repo_root/scripts/weasel/verify-published-release.sh" --android-only --write-checksums "$version" "$fixture_assets"
+bash "$repo_root/scripts/morrowbyte/verify-published-release.sh" --android-only --write-checksums "$version" "$fixture_assets"
 
 payload_digests='[]'
 for file in "$fixture_assets"/*; do
@@ -167,13 +167,13 @@ receipt_digest="sha256:$(sha256sum "$fixture_assets/RELEASE-RECEIPT.txt" | cut -
 all_asset_digests="$(jq -c --arg digest "$receipt_digest" '. + [{name: "RELEASE-RECEIPT.txt", digest: $digest}]' <<<"$payload_digests")"
 jq -n --arg tag "$tag" --argjson assets "$all_asset_digests" \
   '{tag_name: $tag, draft: false, prerelease: false, assets: $assets}' > "$fixture_api"
-bash "$repo_root/scripts/weasel/verify-published-release.sh" --android-only \
+bash "$repo_root/scripts/morrowbyte/verify-published-release.sh" --android-only \
   "$tag" "$source_sha" "$version" "$fixture_assets" >/dev/null
 
 cp "$fixture_api" "$test_root/android.good.json"
 jq '.prerelease = true' "$fixture_api" > "$test_root/android.bad-feed.json"
 mv "$test_root/android.bad-feed.json" "$fixture_api"
-if bash "$repo_root/scripts/weasel/verify-published-release.sh" --android-only \
+if bash "$repo_root/scripts/morrowbyte/verify-published-release.sh" --android-only \
   "$tag" "$source_sha" "$version" "$fixture_assets" >/dev/null 2>&1; then
   echo 'Android verifier accepted the desktop prerelease feed.' >&2
   exit 1
@@ -181,7 +181,7 @@ fi
 mv "$test_root/android.good.json" "$fixture_api"
 
 printf 'desktop feed must not be mixed into Android\n' > "$fixture_assets/nightly.yml"
-if bash "$repo_root/scripts/weasel/verify-published-release.sh" --android-only --write-checksums \
+if bash "$repo_root/scripts/morrowbyte/verify-published-release.sh" --android-only --write-checksums \
   "$version" "$fixture_assets" >/dev/null 2>&1; then
   echo 'Android checksum writer accepted a desktop asset.' >&2
   exit 1

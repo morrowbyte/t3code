@@ -10,7 +10,7 @@ concurrency:
 jobs:
   build_android_test:
     name: Build .55 x86_64 native test APK
-    runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 60
     outputs:
       apk_sha256: ${{ steps.apk.outputs.apk_sha256 }}
@@ -286,7 +286,7 @@ jobs:
       - name: Upload verified Android release payload
         uses: actions/upload-artifact@v4
         with:
-          name: weasel-test-android-updater-x86_64-78c21571
+          name: morrowbyte-test-android-updater-x86_64-78c21571
           path: release-android/*
           if-no-files-found: error
           retention-days: 7
@@ -295,7 +295,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: weasel-android-updater-test-evidence-78c21571-${{ github.run_attempt }}
+          name: morrowbyte-android-updater-test-evidence-78c21571-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/morrowbyte-android-dependencies.txt
             ${{ runner.temp }}/morrowbyte-config.json

@@ -843,94 +843,100 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 
-  it.effect("does not emit an upstream-identified Debian package for Weasel Linux builds", () => {
-    const previousProfile = process.env.T3CODE_DESKTOP_PROFILE;
-    process.env.T3CODE_DESKTOP_PROFILE = "weasel";
-    return Effect.gen(function* () {
-      const config = yield* createBuildConfig(
-        "linux",
-        "AppImage",
-        "1.2.3-nightly.20261013.1",
-        false,
-        false,
-        undefined,
-        undefined,
-      );
-
-      assert.deepStrictEqual((config.linux as Record<string, unknown>).target, ["AppImage"]);
-    }).pipe(
-      Effect.ensuring(
-        Effect.sync(() => {
-          if (previousProfile === undefined) delete process.env.T3CODE_DESKTOP_PROFILE;
-          else process.env.T3CODE_DESKTOP_PROFILE = previousProfile;
-        }),
-      ),
-      Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
-    );
-  });
-
   it.effect(
-    "brands Weasel installers without renaming the Windows executable or release assets",
+    "does not emit an upstream-identified Debian package for Morrowbyte Linux builds",
     () => {
       const previousProfile = process.env.T3CODE_DESKTOP_PROFILE;
-      const previousName = process.env.T3CODE_DESKTOP_PRODUCT_NAME;
-      const previousAppId = process.env.T3CODE_DESKTOP_APP_ID;
-      process.env.T3CODE_DESKTOP_PROFILE = "weasel";
-      process.env.T3CODE_DESKTOP_APP_ID = "com.evilweasel.t3code";
-      process.env.T3CODE_DESKTOP_PRODUCT_NAME = "T3 Code (Weasel Nightly)";
+      process.env.T3CODE_DESKTOP_PROFILE = "morrowbyte";
       return Effect.gen(function* () {
-        assert.equal(resolveDesktopProductName("1.2.3-nightly.20261014.1"), "Morrowbyte");
-        const win = yield* createBuildConfig(
-          "win",
-          "nsis",
-          "1.2.3-nightly.20261014.1",
-          false,
-          false,
-          undefined,
-          undefined,
-        );
-        const linux = yield* createBuildConfig(
+        const config = yield* createBuildConfig(
           "linux",
           "AppImage",
-          "1.2.3-nightly.20261014.1",
+          "1.2.3-nightly.20261013.1",
           false,
           false,
           undefined,
           undefined,
         );
-        assert.equal(win.productName, "Morrowbyte");
-        assert.equal(linux.productName, "Morrowbyte");
-        assert.equal(
-          resolveWindowsExecutableName("1.2.3-nightly.20261014.1"),
-          "T3 Code (Weasel Nightly)",
-        );
-        assert.equal(
-          (win.win as Record<string, unknown>).executableName,
-          "T3 Code (Weasel Nightly)",
-        );
-        assert.equal((linux.linux as Record<string, unknown>).executableName, "t3code");
-        assert.equal((win.nsis as Record<string, unknown>).shortcutName, "Morrowbyte");
-        assert.equal((win.nsis as Record<string, unknown>).uninstallDisplayName, "Morrowbyte");
-        assert.equal((win.nsis as Record<string, unknown>).include, "morrowbyte-installer.nsh");
-        assert.equal(win.artifactName, "T3-Code-${version}-${arch}.${ext}");
-        assert.equal(linux.artifactName, "T3-Code-${version}-x86_64.${ext}");
-        assert.equal(win.appId, "com.evilweasel.t3code");
-        assert.deepStrictEqual(win.extraMetadata, { t3codeProfile: "weasel" });
+
+        assert.deepStrictEqual((config.linux as Record<string, unknown>).target, ["AppImage"]);
       }).pipe(
         Effect.ensuring(
           Effect.sync(() => {
             if (previousProfile === undefined) delete process.env.T3CODE_DESKTOP_PROFILE;
             else process.env.T3CODE_DESKTOP_PROFILE = previousProfile;
-            if (previousName === undefined) delete process.env.T3CODE_DESKTOP_PRODUCT_NAME;
-            else process.env.T3CODE_DESKTOP_PRODUCT_NAME = previousName;
-            if (previousAppId === undefined) delete process.env.T3CODE_DESKTOP_APP_ID;
-            else process.env.T3CODE_DESKTOP_APP_ID = previousAppId;
           }),
         ),
         Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
       );
     },
   );
+
+  it.effect("brands configurable installers while retaining an explicit installer identity", () => {
+    const previousProfile = process.env.T3CODE_DESKTOP_PROFILE;
+    const previousName = process.env.T3CODE_DESKTOP_PRODUCT_NAME;
+    const previousAppId = process.env.T3CODE_DESKTOP_APP_ID;
+    const previousInstallerGuid = process.env.T3CODE_DESKTOP_INSTALLER_GUID;
+    process.env.T3CODE_DESKTOP_PROFILE = "morrowbyte";
+    process.env.T3CODE_DESKTOP_APP_ID = "com.morrowbyte.t3code";
+    process.env.T3CODE_DESKTOP_PRODUCT_NAME = "Morrowbyte";
+    process.env.T3CODE_DESKTOP_INSTALLER_GUID = "11111111-2222-3333-4444-555555555555";
+    return Effect.gen(function* () {
+      assert.equal(resolveDesktopProductName("1.2.3-nightly.20261014.1"), "Morrowbyte");
+      const win = yield* createBuildConfig(
+        "win",
+        "nsis",
+        "1.2.3-nightly.20261014.1",
+        false,
+        false,
+        undefined,
+        undefined,
+      );
+      const linux = yield* createBuildConfig(
+        "linux",
+        "AppImage",
+        "1.2.3-nightly.20261014.1",
+        false,
+        false,
+        undefined,
+        undefined,
+      );
+      assert.equal(win.productName, "Morrowbyte");
+      assert.equal(linux.productName, "Morrowbyte");
+      assert.equal(resolveWindowsExecutableName("1.2.3-nightly.20261014.1"), "Morrowbyte");
+      assert.equal((win.win as Record<string, unknown>).executableName, "Morrowbyte");
+      assert.equal((linux.linux as Record<string, unknown>).executableName, "t3code");
+      assert.equal((win.nsis as Record<string, unknown>).shortcutName, "Morrowbyte");
+      assert.equal((win.nsis as Record<string, unknown>).uninstallDisplayName, "Morrowbyte");
+      assert.equal((win.nsis as Record<string, unknown>).include, "morrowbyte-installer.nsh");
+      assert.equal(win.artifactName, "T3-Code-${version}-${arch}.${ext}");
+      assert.equal(linux.artifactName, "T3-Code-${version}-x86_64.${ext}");
+      assert.equal(win.appId, "com.morrowbyte.t3code");
+      assert.equal(
+        (win.nsis as Record<string, unknown>).guid,
+        "11111111-2222-3333-4444-555555555555",
+      );
+      assert.deepStrictEqual(win.extraMetadata, {
+        t3codeProfile: "morrowbyte",
+        t3codeProductName: "Morrowbyte",
+        t3codeAppId: "com.morrowbyte.t3code",
+      });
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (previousProfile === undefined) delete process.env.T3CODE_DESKTOP_PROFILE;
+          else process.env.T3CODE_DESKTOP_PROFILE = previousProfile;
+          if (previousName === undefined) delete process.env.T3CODE_DESKTOP_PRODUCT_NAME;
+          else process.env.T3CODE_DESKTOP_PRODUCT_NAME = previousName;
+          if (previousAppId === undefined) delete process.env.T3CODE_DESKTOP_APP_ID;
+          else process.env.T3CODE_DESKTOP_APP_ID = previousAppId;
+          if (previousInstallerGuid === undefined) delete process.env.T3CODE_DESKTOP_INSTALLER_GUID;
+          else process.env.T3CODE_DESKTOP_INSTALLER_GUID = previousInstallerGuid;
+        }),
+      ),
+      Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+    );
+  });
 
   it("excludes foreign node-pty prebuilds from macOS and Linux packages", () => {
     assert.deepStrictEqual(MAC_FILE_EXCLUSIONS, [

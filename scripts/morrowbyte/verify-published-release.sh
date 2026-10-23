@@ -82,7 +82,7 @@ source_sha="$2"
 version="$3"
 expected_dir="$4"
 repo="${GH_REPO:-morrowbyte/t3code}"
-git_remote="${WEASEL_VERIFY_GIT_REMOTE:-origin}"
+git_remote="${MORROWBYTE_VERIFY_GIT_REMOTE:-origin}"
 
 fail() {
   echo "Published release verification failed: $*" >&2
@@ -91,8 +91,8 @@ fail() {
 
 [[ -d "$expected_dir" ]] || fail "expected asset directory is missing: $expected_dir"
 
-git fetch --no-tags "$git_remote" "refs/tags/$tag:refs/weasel-verify/published-tag"
-resolved_sha="$(git rev-parse 'refs/weasel-verify/published-tag^{commit}')"
+git fetch --no-tags "$git_remote" "refs/tags/$tag:refs/morrowbyte-verify/published-tag"
+resolved_sha="$(git rev-parse 'refs/morrowbyte-verify/published-tag^{commit}')"
 [[ "$resolved_sha" == "$source_sha" ]] ||
   fail "tag $tag resolves to $resolved_sha instead of source $source_sha"
 
@@ -123,7 +123,7 @@ else
   required_assets=(
   nightly-linux.yml \
   nightly.yml \
-  weasel-linux-x64.tar.gz \
+  morrowbyte-linux-x64.tar.gz \
   "T3-Code-$version-x86_64.AppImage" \
   "T3-Code-$version-x86_64-linux-nix-closure.nar.zst" \
   "T3-Code-$version-x86_64-linux-nix-closure.json" \

@@ -80,15 +80,22 @@ import * as DesktopWslEnvironment from "./wsl/DesktopWslEnvironment.ts";
 import * as DesktopWslServerTree from "./wsl/DesktopWslServerTree.ts";
 import { resolveWindowsProfileBinding } from "./app/DesktopWindowsProfileBinding.ts";
 
-let packagedWeaselProfile = false;
+let packagedDistributionProfile = false;
 if (Electron.app.isPackaged) {
   try {
     const packageMetadata = JSON.parse(
       NodeFS.readFileSync(`${Electron.app.getAppPath()}/package.json`, "utf8"),
-    ) as { t3codeProfile?: unknown };
-    if (packageMetadata.t3codeProfile === "weasel") {
-      process.env.T3CODE_DESKTOP_PROFILE = "weasel";
-      packagedWeaselProfile = true;
+    ) as { t3codeProfile?: unknown; t3codeProductName?: unknown; t3codeAppId?: unknown };
+    if (
+      typeof packageMetadata.t3codeProfile === "string" &&
+      /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(packageMetadata.t3codeProfile)
+    ) {
+      process.env.T3CODE_DESKTOP_PROFILE ||= packageMetadata.t3codeProfile;
+      if (typeof packageMetadata.t3codeProductName === "string")
+        process.env.T3CODE_DESKTOP_PRODUCT_NAME ||= packageMetadata.t3codeProductName;
+      if (typeof packageMetadata.t3codeAppId === "string")
+        process.env.T3CODE_DESKTOP_APP_USER_MODEL_ID ||= packageMetadata.t3codeAppId;
+      packagedDistributionProfile = true;
     }
   } catch {
     // Upstream and development packages have no fork profile marker.
@@ -104,18 +111,20 @@ if (process.argv.includes("--version")) {
   Electron.app.exit(0);
 }
 
-if (packagedWeaselProfile) {
+if (packagedDistributionProfile) {
   if (Effect.runSync(HostProcess.Platform) === "win32") {
     const binding = resolveWindowsProfileBinding({
       homeDirectory: NodeOS.homedir(),
       appDataDirectory: process.env.APPDATA,
       explicitHome: process.env.T3CODE_HOME,
       explicitBackendPort: process.env.T3CODE_PORT,
+      profileId: process.env.T3CODE_DESKTOP_PROFILE,
     });
     process.env.T3CODE_HOME = binding.t3Home;
+    process.env.T3CODE_DESKTOP_PROFILE = binding.profileId;
     if (binding.backendPort !== undefined) process.env.T3CODE_PORT = String(binding.backendPort);
   } else if (!process.env.T3CODE_HOME?.trim()) {
-    process.env.T3CODE_HOME = `${NodeOS.homedir()}/.t3-weasel`;
+    process.env.T3CODE_HOME = `${NodeOS.homedir()}/.t3-${process.env.T3CODE_DESKTOP_PROFILE}`;
   }
 }
 

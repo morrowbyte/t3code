@@ -165,15 +165,15 @@ describe("DesktopAppIdentity", () => {
         const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
         assert.equal(
           yield* identity.resolveUserDataPath,
-          "/Users/alice/Library/Application Support/t3code-weasel",
+          "/Users/alice/Library/Application Support/t3code-morrowbyte",
         );
       }),
-      { environment: { env: { T3CODE_DESKTOP_PROFILE: "weasel" } }, legacyPathExists: true },
+      { environment: { env: { T3CODE_DESKTOP_PROFILE: "morrowbyte" } }, legacyPathExists: true },
     ),
   );
 
   it.effect(
-    "shows Morrowbyte while preserving existing Weasel app and user-data identities",
+    "shows Morrowbyte while preserving existing Morrowbyte app and user-data identities",
     () => {
       const calls: ElectronAppCalls = { setAboutPanelOptions: [], setDockIcon: [], setName: [] };
       return withIdentity(
@@ -183,14 +183,14 @@ describe("DesktopAppIdentity", () => {
           assert.deepEqual(calls.setName, ["Morrowbyte"]);
           assert.equal(calls.setAboutPanelOptions[0]?.applicationName, "Morrowbyte");
           const environment = yield* DesktopEnvironment.DesktopEnvironment;
-          assert.equal(environment.appUserModelId, "com.evilweasel.t3code");
-          assert.equal(environment.baseDir, "/Users/alice/.t3-weasel");
+          assert.equal(environment.appUserModelId, "com.morrowbyte.t3code");
+          assert.equal(environment.baseDir, "/Users/alice/.t3-morrowbyte");
           assert.equal(
             yield* identity.resolveUserDataPath,
-            "/Users/alice/Library/Application Support/t3code-weasel",
+            "/Users/alice/Library/Application Support/t3code-morrowbyte",
           );
         }),
-        { calls, environment: { env: { T3CODE_DESKTOP_PROFILE: "weasel" } } },
+        { calls, environment: { env: { T3CODE_DESKTOP_PROFILE: "morrowbyte" } } },
       );
     },
   );

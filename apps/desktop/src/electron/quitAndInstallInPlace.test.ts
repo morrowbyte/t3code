@@ -5,7 +5,7 @@ const input = {
   platform: "win32" as const,
   isPackaged: true,
   executable:
-    "C:\\Users\\User\\AppData\\Local\\Programs\\morrowbyte-t3-release15\\T3 Code (Weasel Nightly).exe",
+    "C:\\Users\\User\\AppData\\Local\\Programs\\morrowbyte-t3-release15\\T3 Code (Morrowbyte Nightly).exe",
   isSilent: true,
   isForceRunAfter: true,
 };

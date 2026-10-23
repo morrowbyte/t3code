@@ -1,4 +1,4 @@
-# Voice input in Weasel Nightly
+# Voice input in Morrowbyte Nightly
 
 Record a message from the chat composer. **Stop** transcribes it into editable
 prompt text. **Send** transcribes it and sends the prompt directly, including any

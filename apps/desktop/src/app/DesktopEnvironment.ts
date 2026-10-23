@@ -105,12 +105,14 @@ export function resolveDesktopAppBranding(input: {
   readonly isDevelopment: boolean;
   readonly appVersion: string;
   readonly profileId?: string;
+  readonly productName?: string;
 }): DesktopAppBranding {
   const stageLabel = resolveDesktopAppStageLabel(input);
   return {
-    baseName: input.profileId === "weasel" ? "Morrowbyte" : APP_BASE_NAME,
+    baseName: input.productName ?? (input.profileId ? "Morrowbyte" : APP_BASE_NAME),
     stageLabel,
-    displayName: input.profileId === "weasel" ? "Morrowbyte" : `${APP_BASE_NAME} (${stageLabel})`,
+    displayName:
+      input.productName ?? (input.profileId ? "Morrowbyte" : `${APP_BASE_NAME} (${stageLabel})`),
   };
 }
 
@@ -165,8 +167,8 @@ const make = Effect.fn("desktop.environment.make")(function* (
     homeDirectory,
     joinPath: path.join,
     t3Home:
-      Option.isNone(config.t3Home) && Option.getOrUndefined(profileId) === "weasel"
-        ? Option.some(path.join(homeDirectory, ".t3-weasel"))
+      Option.isNone(config.t3Home) && Option.isSome(profileId)
+        ? Option.some(path.join(homeDirectory, `.t3-${profileId.value}`))
         : config.t3Home,
   });
   const rootDir = path.resolve(input.dirname, "../../..");
@@ -179,6 +181,9 @@ const make = Effect.fn("desktop.environment.make")(function* (
     isDevelopment,
     appVersion: input.appVersion,
     ...(Option.isSome(profileId) ? { profileId: profileId.value } : {}),
+    ...(Option.isSome(config.desktopProductName)
+      ? { productName: config.desktopProductName.value }
+      : {}),
   });
   const displayName = branding.displayName;
   const stateDir = resolveDesktopStateDir({
@@ -238,22 +243,22 @@ const make = Effect.fn("desktop.environment.make")(function* (
     displayName,
     profileId,
     appUserModelId: Option.getOrElse(config.appUserModelIdOverride, () =>
-      Option.getOrUndefined(profileId) === "weasel"
-        ? "com.evilweasel.t3code"
+      Option.isSome(profileId)
+        ? "com.morrowbyte.t3code"
         : isDevelopment
           ? "com.t3tools.t3code.dev"
           : "com.t3tools.t3code",
     ),
-    linuxDesktopEntryName:
-      Option.getOrUndefined(profileId) === "weasel"
-        ? "com.evilweasel.T3Code.desktop"
-        : resolveLinuxDesktopEntryName(isDevelopment, Option.getOrUndefined(profileId)),
-    linuxWmClass:
-      Option.getOrUndefined(profileId) === "weasel"
-        ? "t3code-weasel"
+    linuxDesktopEntryName: Option.getOrElse(config.linuxDesktopEntryName, () =>
+      resolveLinuxDesktopEntryName(isDevelopment, Option.getOrUndefined(profileId)),
+    ),
+    linuxWmClass: Option.getOrElse(config.linuxWmClass, () =>
+      Option.isSome(profileId)
+        ? `t3code-${profileId.value}`
         : isDevelopment
           ? "t3code-dev"
           : "t3code",
+    ),
     linuxApplicationsDir,
     appImagePath: config.appImagePath,
     linuxUrlHandlerLauncher: Option.filter(config.linuxUrlHandlerLauncher, path.isAbsolute),

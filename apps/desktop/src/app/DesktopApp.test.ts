@@ -103,7 +103,7 @@ const makeFixture = (input: {
             DesktopConfig.layerTest({
               T3CODE_PORT: "3773",
               T3CODE_HOME: "/fixture/t3",
-              T3CODE_DESKTOP_PROFILE: "weasel",
+              T3CODE_DESKTOP_PROFILE: "morrowbyte",
             }),
           ),
         ),

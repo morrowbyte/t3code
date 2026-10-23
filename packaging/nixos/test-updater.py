@@ -22,7 +22,7 @@ class UpdaterTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as directory:
                 app = Path(directory) / 'updater-test-app'
                 (app / 'bin').mkdir(parents=True)
-                launcher = app / 'bin/t3code-weasel'
+                launcher = app / 'bin/t3code-morrowbyte'
                 launcher.write_text('#!/bin/sh\nexit 0\n')
                 launcher.chmod(0o755)
                 cls.package = subprocess.check_output(['nix-store', '--add', str(app)], text=True).strip()
@@ -65,8 +65,8 @@ elif '--add-root' in args:
 elif '--verify-path' not in args: sys.exit(88)
 ''')
         self.env = {**os.environ, 'PATH': str(self.bin)+':'+os.environ['PATH'],
-                    'T3_WEASEL_DATA_DIR': str(self.data), 'T3_WEASEL_MANAGED': '1',
-                    'T3_WEASEL_REPOSITORY': 'morrowbyte/t3code', 'T3_WEASEL_CHANNEL': 'nightly',
+                    'T3_MORROWBYTE_DATA_DIR': str(self.data), 'T3_MORROWBYTE_MANAGED': '1',
+                    'T3_MORROWBYTE_REPOSITORY': 'morrowbyte/t3code', 'T3_MORROWBYTE_CHANNEL': 'nightly',
                     'TEST_RELEASES': str(self.releases), 'TEST_ASSET': str(self.asset),
                     'TEST_MANIFEST': str(self.manifest), 'TEST_PACKAGE': self.package,
                     'TEST_NIX_LOG': str(self.log)}
@@ -84,9 +84,9 @@ elif '--verify-path' not in args: sys.exit(88)
                 digest='sha256:'+hashlib.sha256(file.read_bytes()).hexdigest()))
         self.releases.write_text(json.dumps([
             dict(draft=False, prerelease=True, tag_name='v'+VERSION,
-                 name='Weasel Nightly '+VERSION, published_at='2026-10-14T00:00:00Z', assets=assets),
+                 name='Morrowbyte Nightly '+VERSION, published_at='2026-10-14T00:00:00Z', assets=assets),
             dict(draft=True, prerelease=True, tag_name='v'+VERSION,
-                 name='Weasel Nightly draft', published_at='2099-01-01T00:00:00Z', assets=[])]))
+                 name='Morrowbyte Nightly draft', published_at='2099-01-01T00:00:00Z', assets=[])]))
 
     def stub(self, name, content):
         p=self.bin/name; p.write_text(content); p.chmod(0o755)
@@ -187,13 +187,13 @@ elif '--verify-path' not in args: sys.exit(88)
                 self.assertIn('provenance changed', r.stderr)
                 self.assertEqual(os.readlink(self.data/'current'), old)
         receipt.write_text(json.dumps(original))
-        self.env['T3_WEASEL_CHANNEL'] = 'stable'
+        self.env['T3_MORROWBYTE_CHANNEL'] = 'stable'
         r = self.run_update('--activate', VERSION)
         self.assertNotEqual(r.returncode, 0)
         self.assertEqual(os.readlink(self.data/'current'), old)
 
     def test_wrong_repository_is_rejected_without_network_or_install(self):
-        self.env['T3_WEASEL_REPOSITORY'] = 'pingdotgg/t3code'
+        self.env['T3_MORROWBYTE_REPOSITORY'] = 'pingdotgg/t3code'
         r = self.run_update('--prepare', VERSION)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn('approved fork', r.stderr)
@@ -201,7 +201,7 @@ elif '--verify-path' not in args: sys.exit(88)
         self.assertFalse(self.log.exists())
 
     def test_stable_does_not_fall_back_to_nightly(self):
-        self.env['T3_WEASEL_CHANNEL']='stable'
+        self.env['T3_MORROWBYTE_CHANNEL']='stable'
         r=self.run_update('--check'); self.assertNotEqual(r.returncode,0)
         self.assertIn('no fork-owned stable release',r.stderr)
         self.assertFalse(self.data.exists())

@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import tempfile
 
-source = Path('scripts/weasel/sync-upstream-nightly.sh').resolve()
+source = Path('scripts/morrowbyte/sync-upstream-nightly.sh').resolve()
 bash = shutil.which('bash')
 with tempfile.TemporaryDirectory(prefix='fork-sync-test-') as directory:
     root = Path(directory)
@@ -59,7 +59,7 @@ elif tool == 'git':
     else:
         assert args[0] in ['fetch', 'switch', 'config', 'merge', 'status'], args
 elif tool == 'bash':
-    assert args == ['scripts/weasel/check.sh'], args
+    assert args == ['scripts/morrowbyte/check.sh'], args
 elif tool == 'vp':
     assert args == ['install', '--frozen-lockfile'], args
 else:
@@ -100,7 +100,7 @@ else:
         assert sum(call[:3] == ['gh', 'workflow', 'run'] for call in calls) == 1
         assert sum(call[:2] == ['git', 'push'] for call in calls) == (scenario == 'merge-success')
     for status, conclusion, success in [('in_progress', '', True), ('completed', 'success', True), ('completed', 'failure', False)]:
-        runs = [{'databaseId': 123, 'displayTitle': 'Weasel desktop release ' + 'b' * 40,
+        runs = [{'databaseId': 123, 'displayTitle': 'Morrowbyte desktop release ' + 'b' * 40,
                  'status': status, 'conclusion': conclusion, 'event': 'workflow_dispatch'}]
         calls = run('contained-release-' + (conclusion or status), runs=runs, success=success)
         assert not any(call[:3] == ['gh', 'workflow', 'run'] for call in calls)

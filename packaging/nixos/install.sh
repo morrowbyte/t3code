@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo="${T3_WEASEL_REPOSITORY:-morrowbyte/t3code}"
-channel="${T3_WEASEL_CHANNEL:-nightly}"
-base_dir="${T3_WEASEL_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/t3code-weasel}"
+repo="${T3_MORROWBYTE_REPOSITORY:-morrowbyte/t3code}"
+channel="${T3_MORROWBYTE_CHANNEL:-nightly}"
+base_dir="${T3_MORROWBYTE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/t3code-morrowbyte}"
 install_dir="$base_dir/versions"
 current_link="$base_dir/current"
 mode="${1:---update}"
-managed="${T3_WEASEL_MANAGED:-0}"
-die() { printf 't3code-weasel: %s\n' "$*" >&2; exit 1; }
+managed="${T3_MORROWBYTE_MANAGED:-0}"
+die() { printf 't3code-morrowbyte: %s\n' "$*" >&2; exit 1; }
 valid_version() { [[ "$1" =~ ^[0-9A-Za-z][0-9A-Za-z.+_-]*$ ]]; }
 installed_version() { if [[ -L "$current_link" ]]; then basename "$(readlink "$current_link")"; fi; }
 valid_install() {
   local target
   target="$(readlink -f "$install_dir/$1" 2>/dev/null)" || return 1
-  [[ "$target" == /nix/store/* && -x "$target/bin/t3code-weasel" ]]
+  [[ "$target" == /nix/store/* && -x "$target/bin/t3code-morrowbyte" ]]
 }
 point_to() {
   # Both the version link and current are in the same filesystem; rename is atomic.
@@ -65,9 +65,9 @@ requested=""; [[ "$mode" != --prepare ]] || requested="$2"
 release_json="$(jq -cer --arg channel "$channel" --arg requested "$requested" '[.[] | select(.draft == false) | select(
   if $channel == "nightly" then .prerelease == true and
     (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-nightly\\.[0-9]{8}\\.[0-9]+$")) and
-    (.name | startswith("Weasel Nightly"))
+    (.name | startswith("Morrowbyte Nightly"))
   else .prerelease == false and (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) and
-    (.name | startswith("Weasel Stable")) end
+    (.name | startswith("Morrowbyte Stable")) end
 ) | select($requested == "" or .tag_name == ("v" + $requested))] | sort_by(.published_at) | last' <<<"$releases_json")" || die "no fork-owned $channel release found"
 tag="$(jq -er '.tag_name' <<<"$release_json")"
 version="${tag#v}"
@@ -118,7 +118,7 @@ if ! valid_install "$version" || [[ "$(readlink -f "$install_dir/$version")" != 
   fetch "$archive_url" --output "$work_dir/closure.nar.zst"
   [[ "$(sha256sum "$work_dir/closure.nar.zst" | cut -d ' ' -f 1)" == "$archive_digest" ]] || die 'closure download does not match SHA-256'
   zstd --decompress --stdout "$work_dir/closure.nar.zst" | nix-store --import >"$work_dir/imported"
-  [[ -x "$store_path/bin/t3code-weasel" ]] || die 'imported closure lacks the declared launcher'
+  [[ -x "$store_path/bin/t3code-morrowbyte" ]] || die 'imported closure lacks the declared launcher'
 fi
 # Verify even a previously imported version before claiming it is prepared.
 nix-store --query --requisites "$store_path" >"$work_dir/closure-paths"
@@ -143,23 +143,23 @@ if [[ "$managed" != 1 ]]; then
   desktop_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
   mkdir -p "$launcher_dir" "$desktop_dir"
   # Keep an existing user launcher: it may own a credential wrapper/profile.
-  if [[ ! -e "$launcher_dir/t3code-weasel" ]]; then
-    printf '#!/usr/bin/env bash\nset -euo pipefail\nexport T3CODE_HOME=%q\nexec %q "$@"\n' "$base_dir" "$current_link/bin/t3code-weasel" >"$work_dir/launcher"
-    install -m 0755 "$work_dir/launcher" "$launcher_dir/t3code-weasel"
+  if [[ ! -e "$launcher_dir/t3code-morrowbyte" ]]; then
+    printf '#!/usr/bin/env bash\nset -euo pipefail\nexport T3CODE_HOME=%q\nexec %q "$@"\n' "$base_dir" "$current_link/bin/t3code-morrowbyte" >"$work_dir/launcher"
+    install -m 0755 "$work_dir/launcher" "$launcher_dir/t3code-morrowbyte"
   fi
-  if [[ ! -e "$desktop_dir/t3code-weasel.desktop" ]]; then
+  if [[ ! -e "$desktop_dir/t3code-morrowbyte.desktop" ]]; then
     cat >"$work_dir/desktop" <<DESKTOP
 [Desktop Entry]
 Name=Morrowbyte
 Comment=AI coding assistant desktop app
-Exec="$launcher_dir/t3code-weasel" %U
+Exec="$launcher_dir/t3code-morrowbyte" %U
 Icon=applications-development
 Terminal=false
 Type=Application
 Categories=Development;IDE;
 StartupWMClass=T3 Code
 DESKTOP
-    install -m 0644 "$work_dir/desktop" "$desktop_dir/t3code-weasel.desktop"
+    install -m 0644 "$work_dir/desktop" "$desktop_dir/t3code-morrowbyte.desktop"
   fi
 fi
 printf 'Selected %s; the next launch uses this version. Running processes unchanged.\n' "$version"

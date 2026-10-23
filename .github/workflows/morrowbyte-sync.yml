@@ -1,4 +1,4 @@
-name: Weasel upstream nightly sync
+name: Morrowbyte upstream nightly sync
 
 on:
   schedule:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: weasel-upstream-sync
+  group: morrowbyte-upstream-sync
   cancel-in-progress: false
 
 permissions:
@@ -16,18 +16,18 @@ permissions:
 
 jobs:
   sync:
-    if: github.repository == 'morrowbyte/t3code'
-    runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    if: github.repository == 'morrowbyte/t3code' && vars.MORROWBYTE_UPSTREAM_SYNC == 'true'
+    runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 35
     steps:
       - name: Require workflow-capable upstream sync token
         env:
-          WEASEL_UPSTREAM_TOKEN: ${{ secrets.WEASEL_UPSTREAM_TOKEN }}
+          MORROWBYTE_UPSTREAM_TOKEN: ${{ secrets[vars.MORROWBYTE_UPSTREAM_TOKEN_SECRET_NAME || 'MORROWBYTE_UPSTREAM_TOKEN'] }}
         run: |
           set -euo pipefail
           test "$GITHUB_REPOSITORY" = morrowbyte/t3code
-          if [[ -z "$WEASEL_UPSTREAM_TOKEN" ]]; then
-            echo "Repository Actions secret WEASEL_UPSTREAM_TOKEN is required for sync checkout, GitHub API calls, and fast-forward promotion." >&2
+          if [[ -z "$MORROWBYTE_UPSTREAM_TOKEN" ]]; then
+            echo "Repository Actions secret MORROWBYTE_UPSTREAM_TOKEN is required for sync checkout, GitHub API calls, and fast-forward promotion." >&2
             exit 1
           fi
 
@@ -37,7 +37,7 @@ jobs:
           repository: morrowbyte/t3code
           ref: main
           fetch-depth: 0
-          token: ${{ secrets.WEASEL_UPSTREAM_TOKEN }}
+          token: ${{ secrets[vars.MORROWBYTE_UPSTREAM_TOKEN_SECRET_NAME || 'MORROWBYTE_UPSTREAM_TOKEN'] }}
 
       - name: Configure upstream remote
         run: git remote add upstream https://github.com/pingdotgg/t3code.git
@@ -51,7 +51,7 @@ jobs:
 
       - name: Sync, validate, and promote latest published nightly
         env:
-          GH_TOKEN: ${{ secrets.WEASEL_UPSTREAM_TOKEN }}
+          GH_TOKEN: ${{ secrets[vars.MORROWBYTE_UPSTREAM_TOKEN_SECRET_NAME || 'MORROWBYTE_UPSTREAM_TOKEN'] }}
         run: |
           set -euo pipefail
-          bash scripts/weasel/sync-upstream-nightly.sh
+          bash scripts/morrowbyte/sync-upstream-nightly.sh

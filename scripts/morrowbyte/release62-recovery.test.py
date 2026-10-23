@@ -35,7 +35,7 @@ def origin_fixture():
 def proof_fixture(root):
     ref = r.REPO + "/" + r.ORIGIN_WORKFLOW + "@refs/heads/main"
     common = {"source": r.SOURCE, "trustedContextSha": r.SOURCE, "trustedWorkflowSha": r.SOURCE, "run": r.ORIGIN_RUN, "attempt": "1", "trustedWorkflowRef": ref, "lockSha256": r.LOCK_SHA256}
-    pre = {**common, "status": "generated-unreviewed", "effectiveSourceSha": r.SOURCE, "generatorVersion": "1.167.12", "config": {"autoCodeSplitting": True}, "checkScriptSha256": r.digest(ROOT / "scripts/weasel/check.sh"), "beforeSha256": r.digest(ROOT / "apps/web/src/routeTree.gen.ts"), "afterSha256": r.ROUTE_SHA256}
+    pre = {**common, "status": "generated-unreviewed", "effectiveSourceSha": r.SOURCE, "generatorVersion": "1.167.12", "config": {"autoCodeSplitting": True}, "checkScriptSha256": r.digest(ROOT / "scripts/morrowbyte/check.sh"), "beforeSha256": r.digest(ROOT / "apps/web/src/routeTree.gen.ts"), "afterSha256": r.ROUTE_SHA256}
     for directory in ["observatory-route-generation", "observatory-release-build", "recovered-platforms"]:
         (root / directory).mkdir()
     (root / "observatory-route-generation/receipt.json").write_text(json.dumps(pre))
@@ -139,7 +139,7 @@ class RecoveryFixtures(unittest.TestCase):
             archive = root / "fixture.zip"
             with zipfile.ZipFile(archive, "w") as output:
                 output.writestr("fixture.apk", b"fixture, not an Android package")
-            artifact = {"name": "weasel-release-android", "size_in_bytes": archive.stat().st_size, "digest": "sha256:" + r.digest(archive)}
+            artifact = {"name": "morrowbyte-release-android", "size_in_bytes": archive.stat().st_size, "digest": "sha256:" + r.digest(archive)}
             r.extract_verified(archive, artifact, root / "out")
             self.assertEqual((root / "out/fixture.apk").read_bytes(), b"fixture, not an Android package")
             with self.assertRaises(FileExistsError):
@@ -191,10 +191,10 @@ class RecoveryFixtures(unittest.TestCase):
                     r.verify_retained()
 
     def test_workflow_has_only_recover_windows_publish_and_no_product_jobs_without_go(self):
-        command = "const {createRequire}=require('node:module'); const {resolve}=require('node:path');const y=createRequire(resolve('packages/shared/package.json'))('yaml'); console.log(JSON.stringify(y.parse(require('node:fs').readFileSync('.github/workflows/weasel-release62-recovery.yml','utf8'))));"
+        command = "const {createRequire}=require('node:module'); const {resolve}=require('node:path');const y=createRequire(resolve('packages/shared/package.json'))('yaml'); console.log(JSON.stringify(y.parse(require('node:fs').readFileSync('.github/workflows/morrowbyte-release62-recovery.yml','utf8'))));"
         workflow = json.loads(subprocess.check_output(["node", "-e", command], cwd=ROOT))
         self.assertEqual(set(workflow["jobs"]), {"recover", "build_windows", "publish"})
-        self.assertEqual(workflow["concurrency"], {"group": "weasel-desktop-nightly", "cancel-in-progress": False})
+        self.assertEqual(workflow["concurrency"], {"group": "morrowbyte-desktop-nightly", "cancel-in-progress": False})
         self.assertFalse(workflow["on"]["workflow_dispatch"]["inputs"]["publish"]["default"])
         for name, job in workflow["jobs"].items():
             self.assertIn("inputs.publish", job["if"])

@@ -119,18 +119,18 @@ describe("DesktopEnvironment", () => {
     }),
   );
 
-  it.effect("isolates packaged Weasel state defaults while honoring an explicit home", () =>
+  it.effect("isolates packaged Morrowbyte state defaults while honoring an explicit home", () =>
     Effect.gen(function* () {
-      const fork = yield* makeEnvironment({}, { T3CODE_DESKTOP_PROFILE: "weasel" });
+      const fork = yield* makeEnvironment({}, { T3CODE_DESKTOP_PROFILE: "morrowbyte" });
       const explicit = yield* makeEnvironment(
         {},
-        { T3CODE_DESKTOP_PROFILE: "weasel", T3CODE_HOME: "/custom/t3" },
+        { T3CODE_DESKTOP_PROFILE: "morrowbyte", T3CODE_HOME: "/custom/t3" },
       );
-      assert.equal(fork.baseDir, "/Users/alice/.t3-weasel");
+      assert.equal(fork.baseDir, "/Users/alice/.t3-morrowbyte");
       assert.equal(fork.displayName, "Morrowbyte");
       assert.equal(fork.branding.baseName, "Morrowbyte");
-      assert.equal(fork.appUserModelId, "com.evilweasel.t3code");
-      assert.equal(fork.linuxDesktopEntryName, "com.evilweasel.T3Code.desktop");
+      assert.equal(fork.appUserModelId, "com.morrowbyte.t3code");
+      assert.equal(fork.linuxDesktopEntryName, "com.morrowbyte.t3code.desktop");
       assert.equal(explicit.baseDir, "/custom/t3");
     }),
   );
@@ -142,18 +142,18 @@ describe("DesktopEnvironment", () => {
         const environment = yield* makeEnvironment(
           { platform: "linux", isPackaged: true },
           {
-            T3CODE_DESKTOP_PROFILE: "weasel",
-            T3CODE_HOME: "/tmp/t3code-fixture/home/t3code-weasel",
-            T3CODE_DESKTOP_LINUX_URL_HANDLER_LAUNCHER: "/tmp/t3code-fixture/bin/t3code-weasel",
+            T3CODE_DESKTOP_PROFILE: "morrowbyte",
+            T3CODE_HOME: "/tmp/t3code-fixture/home/t3code-morrowbyte",
+            T3CODE_DESKTOP_LINUX_URL_HANDLER_LAUNCHER: "/tmp/t3code-fixture/bin/t3code-morrowbyte",
           },
         );
         assert.deepEqual(
           environment.linuxUrlHandlerLauncher,
-          Option.some("/tmp/t3code-fixture/bin/t3code-weasel"),
+          Option.some("/tmp/t3code-fixture/bin/t3code-morrowbyte"),
         );
         assert.deepEqual(
           environment.linuxUrlHandlerHome,
-          Option.some("/tmp/t3code-fixture/home/t3code-weasel"),
+          Option.some("/tmp/t3code-fixture/home/t3code-morrowbyte"),
         );
       }),
   );

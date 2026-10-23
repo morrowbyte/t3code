@@ -3,9 +3,9 @@ set -euo pipefail
 
 node scripts/sync-third-party-license-notices.ts --check
 
-node --test scripts/weasel/nightly-after-ci.test.cjs
+node --test scripts/morrowbyte/nightly-after-ci.test.cjs
 
-bash scripts/weasel/test.sh
+bash scripts/morrowbyte/test.sh
 python3 packaging/nixos/test-updater.py
 
 vp_cmd() {
@@ -38,7 +38,7 @@ const receipt = { status: 'incomplete', source: git('rev-parse', 'HEAD').trim(),
   attempt: process.env.GITHUB_RUN_ATTEMPT, lockSha256: sha(readFileSync('pnpm-lock.yaml')),
   beforeSha256: sha(readFileSync(generated)), command: 'Generator({config:getConfig({autoCodeSplitting:true},appsWebRoot),root:appsWebRoot}).run()',
   config: { autoCodeSplitting: true }, generatorVersion: null, afterSha256: null,
-  checkScriptSha256: sha(readFileSync('scripts/weasel/check.sh')) };
+  checkScriptSha256: sha(readFileSync('scripts/morrowbyte/check.sh')) };
 const persist = () => writeFileSync(join(directory, 'receipt.json'), JSON.stringify(receipt, null, 2) + '\n', { mode: 0o600 });
 persist();
 try {
@@ -274,7 +274,7 @@ for voice_test in "${voice_tests[@]}"; do
   fi
   if [[ -f "$voice_test" ]]; then
     focused_tests+=("$voice_test")
-  elif [[ "${WEASEL_ALLOW_MISSING_VOICE_TESTS:-0}" == "1" ]]; then
+  elif [[ "${MORROWBYTE_ALLOW_MISSING_VOICE_TESTS:-0}" == "1" ]]; then
     echo "NOT QUALIFIED: explicitly skipping missing $voice_test for local pre-integration checks." >&2
   else
     echo "Required voice gate is missing: $voice_test" >&2

@@ -265,7 +265,7 @@ const sanitizeWslRuntimeId = (value: string): string => value.replace(/[^A-Za-z0
 
 // Keep the Linux profile independent of the Windows home and upstream T3.
 export const resolveWslHomeName = (profileId?: string): string =>
-  profileId === "weasel" ? ".t3-weasel" : ".t3";
+  profileId ? `.t3-${profileId}` : ".t3";
 
 export const buildWslRuntimeInstallScript = (
   linuxArchivePath: string,
