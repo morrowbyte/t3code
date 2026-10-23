@@ -33,7 +33,11 @@ it("opens host task delivery before any approval and preserves both drafts acros
   await screen.getByRole("button", { name: "Host-bound task", exact: true }).click();
   await screen.getByRole("combobox", { name: "Protecting host" }).click();
   await screen.getByRole("option", { name: "Protecting host" }).click();
-  await userEvent.type(screen.getByRole("textbox", { name: "Original task" }), "Exact original 🚀");
+  // The key parser splits surrogate pairs; fill passes the Unicode text intact.
+  await userEvent.fill(screen.getByRole("textbox", { name: "Original task" }), "Exact original 🚀");
+  await expect
+    .element(screen.getByRole("textbox", { name: "Original task" }))
+    .toHaveValue("Exact original 🚀");
   await screen.getByRole("button", { name: "Send host task" }).click();
   expect(submitAgent).not.toHaveBeenCalled();
   await userEvent.keyboard("{Escape}");

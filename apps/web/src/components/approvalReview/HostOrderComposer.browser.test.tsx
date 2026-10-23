@@ -475,7 +475,9 @@ it("shows expired host state and an ambiguous cancel without claiming a stop", a
     ),
   );
   await userEvent.click(screen.getByRole("button", { name: "Cancel order" }));
-  await expect.element(screen.getByRole("alert")).toHaveTextContent("Cancellation outcome unknown");
+  await expect
+    .element(screen.getByRole("alert"))
+    .toHaveTextContent("Cancellation outcome unknown: Connection lost");
   expect(screen.container.textContent).not.toContain("Cancelled");
 });
 
