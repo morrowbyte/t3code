@@ -9,7 +9,7 @@ $ErrorActionPreference='Stop'
 $Settings=Get-Content -LiteralPath $Config -Raw|ConvertFrom-Json
 $Dev=Get-Content -LiteralPath $Settings.devConfigFile -Raw|ConvertFrom-Json
 if($Action -eq 'pair') {
- $Label='Owner-personal-Blain37-'+[guid]::NewGuid()
+ $Label='Owner-personal-WindowsHost-'+[guid]::NewGuid()
  $Private=Join-Path (Split-Path -Parent $Config) ($Label+'.pairing.json')
  Push-Location $Settings.appRoot
  try {

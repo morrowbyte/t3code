@@ -35,7 +35,7 @@ vi.mock("./SettingsScopeContext", () => ({
     connectedEnvironments: [
       {
         environmentId: "host",
-        label: "WinDev",
+        label: "DevBox",
         serverConfig: { environment: { capabilities: { updateHistory: true } } },
       },
     ],
@@ -93,7 +93,7 @@ const clickDelete = () =>
 
 it("reopens the saved host result without mutating it and requires confirmation before deletion", async () => {
   await render();
-  expect(container.textContent).toContain("WinDev");
+  expect(container.textContent).toContain("DevBox");
   expect(container.textContent).toContain("1.0.0 → 1.1.0");
   expect(container.textContent).toContain("Check installer logs");
   expect(state.remove).not.toHaveBeenCalled();

@@ -37,7 +37,7 @@ afterEach(() => {
 
 describe("ApprovalActionSummary", () => {
   it("keeps exact long Unicode provider code available without interpreting OS authority", () => {
-    render({ environmentId: EnvironmentId.make("peer-heph"), runtimeMode: "auto" });
+    render({ environmentId: EnvironmentId.make("peer-node"), runtimeMode: "auto" });
     host.querySelector("summary")!.click();
     expect(host.querySelector("pre")?.textContent).toBe(approval.detail);
     expect(value("OS privilege")).toBe("Not supplied");
@@ -47,13 +47,13 @@ describe("ApprovalActionSummary", () => {
     expect(host.textContent).toContain("Verification unconfirmed");
   });
   it("updates the actual peer target and closes old details when environments switch", () => {
-    render({ environmentId: EnvironmentId.make("peer-a"), environmentLabel: "Hephaestus" });
+    render({ environmentId: EnvironmentId.make("peer-a"), environmentLabel: "RemoteHost" });
     host.querySelector("summary")!.click();
     expect(host.querySelector("details")?.open).toBe(true);
-    render({ environmentId: EnvironmentId.make("peer-b"), environmentLabel: "Blain37" });
-    expect(value("Destination environment")).toBe("Blain37");
+    render({ environmentId: EnvironmentId.make("peer-b"), environmentLabel: "NodeX37" });
+    expect(value("Destination environment")).toBe("NodeX37");
     expect(value("Environment ID")).toBe("peer-b");
-    expect(host.textContent).not.toContain("Hephaestus");
+    expect(host.textContent).not.toContain("RemoteHost");
     expect(host.querySelector("details")?.open).toBe(false);
   });
   it("preserves provider-specific scope labels and fallback warnings without inventing a grant", () => {

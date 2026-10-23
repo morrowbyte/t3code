@@ -18,7 +18,7 @@ vi.mock("../../hooks/useTheme", () => ({ useTheme: () => ({ resolvedTheme: "dark
 vi.mock("./HighlightedTokens", () => ({ HighlightedTokens: ({ code }: { code: string }) => code }));
 import { ExecutionCodePanel } from "./ExecutionCodePanel";
 
-const environmentId = EnvironmentId.make("heph");
+const environmentId = EnvironmentId.make("node");
 const base = {
   id: TurnItemId.make("execution-original"),
   threadId: ThreadId.make("thread-original"),

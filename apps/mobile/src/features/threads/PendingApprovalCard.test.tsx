@@ -166,7 +166,7 @@ function render(overrides: Partial<Props> = {}) {
       <PendingApprovalCard
         approval={approval}
         environmentId={EnvironmentId.make("env-a")}
-        environmentLabel="Hephaestus"
+        environmentLabel="RemoteHost"
         runtimeMode="auto"
         canOperateThread
         respondingApprovalId={null}
@@ -194,7 +194,7 @@ afterEach(() => {
 describe("PendingApprovalCard", () => {
   it("shows the real peer, configured mode and exact expandable code without inferring sudo rights", () => {
     render();
-    expect(host.textContent).toContain("Hephaestus");
+    expect(host.textContent).toContain("RemoteHost");
     expect(host.textContent).toContain("Auto");
     expect(host.textContent).not.toContain(approval.detail);
     act(() => button("Show provider details").click());
@@ -237,11 +237,11 @@ describe("PendingApprovalCard", () => {
     render();
     const stale = harness.presses.get("Provider allows once")!;
     act(() => button("Show provider details").click());
-    render({ environmentId: EnvironmentId.make("env-b"), environmentLabel: "Blain37" });
+    render({ environmentId: EnvironmentId.make("env-b"), environmentLabel: "NodeX37" });
     await act(async () => stale());
     expect(respond).not.toHaveBeenCalled();
-    expect(host.textContent).toContain("Blain37");
-    expect(host.textContent).not.toContain("Hephaestus");
+    expect(host.textContent).toContain("NodeX37");
+    expect(host.textContent).not.toContain("RemoteHost");
     expect(host.textContent).not.toContain(approval.detail);
     await act(async () => button("Deny").click());
     expect(respond).toHaveBeenCalledWith(requestId, "decline");

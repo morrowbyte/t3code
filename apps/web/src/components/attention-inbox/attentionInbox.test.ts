@@ -11,7 +11,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { makeThreadFixture } from "../../test-fixtures";
 import { attentionCoverageLabel, deriveAttentionInbox } from "./attentionInbox.logic";
 
-const environmentId = EnvironmentId.make("nixy");
+const environmentId = EnvironmentId.make("luna");
 const now = DateTime.makeUnsafe("2026-10-17T09:30:00.000Z");
 const runId = RunId.make("run-result");
 const request = {
@@ -157,9 +157,9 @@ describe("canonical attention inbox", () => {
     ]);
     expect(model.loadedThreads).toBe(1);
     expect(model.entries).toHaveLength(1);
-    const other = deriveAttentionInbox(EnvironmentId.make("hephaestus"), [pending]);
+    const other = deriveAttentionInbox(EnvironmentId.make("remotehost"), [pending]);
     expect(other.entries[0]?.id).not.toBe(model.entries[0]?.id);
-    expect(other.entries[0]?.threadRef.environmentId).toBe("hephaestus");
+    expect(other.entries[0]?.threadRef.environmentId).toBe("remotehost");
   });
 
   it("labels cached, reconnecting and unavailable coverage without claiming current empty state", () => {
