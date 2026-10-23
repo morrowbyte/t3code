@@ -167,8 +167,8 @@ async function setup(platform = "Linux") {
 
 describe("host editor access", () => {
   it.each([
-    "D:\\projects\\blain-it\\issue-8-review-20261022\\VLAN-Vorbereitung.html",
-    "D:\\projects\\blain it\\issue 8 review 20261022\\VLAN Vorbereitung.html",
+    "D:\\projects\\sample-project\\file-preview\\network-diagram.html",
+    "D:\\projects\\sample project\\file preview\\network diagram.html",
   ])("reveals %s from the file toolbar menu and retains Ctrl+O", async (filePath) => {
     await using fixture = await setup("Win32");
     state.allowed.add(selected);
@@ -224,7 +224,7 @@ describe("host editor access", () => {
   it("opens a file in Zed without the file-manager reveal flag", async () => {
     await using fixture = await setup("Win32");
     state.allowed.add(selected);
-    const filePath = "D:\\projects\\workspace with spaces\\VLAN Vorbereitung.html";
+    const filePath = "D:\\projects\\workspace with spaces\\network diagram.html";
     await fixture.renderPicker(["zed", "file-manager"], false, {
       openInCwd: filePath,
       revealFileManager: true,
