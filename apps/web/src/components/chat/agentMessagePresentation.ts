@@ -10,6 +10,19 @@ export function agentMessagePreview(text: string): string {
   return text.trim().split(/\r?\n[\t ]*\r?\n/u, 1)[0] ?? "";
 }
 
+const previewSentences = new Intl.Segmenter(undefined, { granularity: "sentence" });
+
+export function collapsedAgentMessageSummary(text: string): string {
+  const paragraph = agentMessagePreview(text);
+  if (paragraph.length <= 240) return paragraph;
+  const segments = previewSentences.segment(paragraph);
+  const opening = segments[Symbol.iterator]().next().value?.segment.trim();
+  if (opening && opening.length <= 240) return opening;
+  const prefix = Array.from(paragraph).slice(0, 220).join("");
+  const boundary = prefix.lastIndexOf(" ");
+  return `${(boundary > 120 ? prefix.slice(0, boundary) : prefix).trimEnd()}…`;
+}
+
 interface MessageSection {
   readonly kind: SectionKind;
   readonly label: string;

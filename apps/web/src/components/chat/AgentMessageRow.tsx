@@ -8,7 +8,11 @@ import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collaps
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { MessageCopyButton } from "./MessageCopyButton";
 import { findRevealRef } from "./markdownFindContext";
-import { agentMessagePreview, parseAgentMessage } from "./agentMessagePresentation";
+import {
+  agentMessagePreview,
+  collapsedAgentMessageSummary,
+  parseAgentMessage,
+} from "./agentMessagePresentation";
 import { AgentIdentityLabel } from "../agent-identity/AgentIdentityLabel";
 import { handleObjectActionKey } from "./objectKeyboardActions";
 
@@ -96,10 +100,11 @@ export function AgentMessageRow({
   const technical = keyed.filter((section) => section.kind === "technical");
   const outgoing = direction === "outgoing";
   const DirectionIcon = outgoing ? ArrowUpRightIcon : ArrowDownLeftIcon;
-  const summary =
+  const authoredSummary =
     previewText ??
     parsed?.summary ??
     (text ? (human ? text : agentMessagePreview(text)) : "Agentennachricht");
+  const summary = human ? authoredSummary : collapsedAgentMessageSummary(authoredSummary);
   const collapse = () => {
     setExpanded(false);
     setOriginalOpen(false);
@@ -187,7 +192,9 @@ export function AgentMessageRow({
             aria-keyshortcuts="D"
           >
             <span className="min-w-0 flex-1">
-              <span className="block text-base leading-relaxed font-medium text-foreground whitespace-pre-line [overflow-wrap:anywhere]">
+              <span
+                className={`${human ? "block" : "line-clamp-3"} text-base leading-relaxed font-medium text-foreground whitespace-pre-line [overflow-wrap:anywhere]`}
+              >
                 {summary}
               </span>
             </span>

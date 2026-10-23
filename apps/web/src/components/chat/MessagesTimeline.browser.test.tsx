@@ -457,6 +457,26 @@ const SENDER_THREAD_ID = ThreadId.make("thread-sender");
 const AGENT_MESSAGE = "Review finished\n\nThe migration drops the index before backfilling it.";
 
 describe("MessagesTimeline agent messages", () => {
+  it("bounds a long collapsed task preview and reveals its intact details on demand", async () => {
+    using _state = setup();
+    const opening = "Beendete Gespräche und Transkripte wieder öffnen.";
+    const detail = "INTERNAL_TASK_DETAIL ".repeat(150);
+    await using screen = await renderTimeline([
+      message(`${opening} ${detail}`, { createdBy: "agent", senderThreadId: SENDER_THREAD_ID }),
+    ]);
+    const row = screen.button("Details öffnen: Agentennachricht");
+    expect(row.textContent).toContain(opening);
+    expect(row.textContent).not.toContain("INTERNAL_TASK_DETAIL");
+    expect(row.getBoundingClientRect().height).toBeLessThan(100);
+    const body = screen.container.querySelector<HTMLElement>(
+      "[data-agent-message] [data-thread-find-text]",
+    )!;
+    expect(body.checkVisibility()).toBe(false);
+    await click(row);
+    expect(body.checkVisibility()).toBe(true);
+    expect(body.textContent).toContain(detail.trim());
+  });
+
   it("folds a message from another agent and keeps its sender link available", async () => {
     using _state = setup();
     await using screen = await renderTimeline([

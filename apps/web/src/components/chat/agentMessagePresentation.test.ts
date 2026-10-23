@@ -2,7 +2,22 @@ import type { OrchestrationV2TurnItem } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
-import { agentMessagePreview, parseAgentMessage, readAgentSend } from "./agentMessagePresentation";
+import {
+  agentMessagePreview,
+  collapsedAgentMessageSummary,
+  parseAgentMessage,
+  readAgentSend,
+} from "./agentMessagePresentation";
+
+it("keeps long task cards concise without changing the authored task", () => {
+  const task = `Beendete Gespräche mit ihren Transkripten wieder öffnen. ${"Interne technische Details mit vielen Vorgaben. ".repeat(30)}`;
+  expect(collapsedAgentMessageSummary(task)).toBe(
+    "Beendete Gespräche mit ihren Transkripten wieder öffnen.",
+  );
+  expect(agentMessagePreview(task)).toBe(task.trim());
+  const unbroken = "🦦".repeat(300);
+  expect(collapsedAgentMessageSummary(unbroken)).toBe(`${"🦦".repeat(220)}…`);
+});
 
 it("shows the complete authored first paragraph, including wrapped lines and long sentences", () => {
   const opening = `Prüfe die Agentennachrichten mit VK Birkenborn.\r\n${"Der Kurzauftrag bleibt vollständig sichtbar. ".repeat(8).trim()}`;
