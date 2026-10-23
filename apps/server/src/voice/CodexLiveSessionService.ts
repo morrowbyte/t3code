@@ -1331,6 +1331,7 @@ export const layer: Layer.Layer<
         if (input.action === "status") {
           if (input.message !== undefined) return yield* liveError("invalid_state");
           const observedAt = yield* DateTime.now;
+          const resultLimit = input.runId === undefined ? 1_000 : 16_384;
           const selected = run
             ? [run]
             : [...runs]
@@ -1378,7 +1379,7 @@ export const layer: Layer.Layer<
                     threadId: child.childThreadId,
                   })
                   .pipe(
-                    Effect.timeoutOption("2 seconds"),
+                    Effect.timeoutOption("1 second"),
                     Effect.catch(() => Effect.succeed(Option.none())),
                   );
                 if (Option.isNone(snapshot)) return base;
@@ -1402,7 +1403,8 @@ export const layer: Layer.Layer<
                   ...voiceRunStatus(target, latest, observedAt),
                   request: child.prompt.slice(0, 2_000),
                   resultReady: result.type === "ready",
-                  result: result.type === "ready" ? result.text.slice(0, 16_384) : null,
+                  resultTruncated: result.type === "ready" && result.text.length > resultLimit,
+                  result: result.type === "ready" ? result.text.slice(0, resultLimit) : null,
                 };
               }),
             { concurrency: 4 },
@@ -1427,7 +1429,8 @@ export const layer: Layer.Layer<
               return {
                 ...voiceRunStatus(projection, task, observedAt),
                 resultReady: result.type === "ready",
-                result: result.type === "ready" ? result.text.slice(0, 16_384) : null,
+                resultTruncated: result.type === "ready" && result.text.length > resultLimit,
+                result: result.type === "ready" ? result.text.slice(0, resultLimit) : null,
               };
             }),
           });
@@ -1487,7 +1490,7 @@ export const layer: Layer.Layer<
       return input.action === "status"
         ? operation.pipe(
             Effect.timeoutOrElse({
-              duration: "8 seconds",
+              duration: "6 seconds",
               orElse: () =>
                 Effect.succeed(
                   encodeReceipt({

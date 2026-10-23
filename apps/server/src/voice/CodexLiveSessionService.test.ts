@@ -1161,7 +1161,7 @@ it.effect.each([false, true])(
         projectionGate = stalledRead;
         const statusFiber = yield* control("status", "bounded-read").pipe(Effect.forkChild);
         yield* Deferred.await(stalledRead.started);
-        yield* TestClock.adjust("8 seconds");
+        yield* TestClock.adjust("6 seconds");
         const unavailable = decodeCurrentWorkStatus(yield* Fiber.join(statusFiber));
         assert.equal(unavailable.visibility, "unavailable");
         assert.equal(unavailable.reason, "status_timeout");
@@ -1379,6 +1379,11 @@ it.effect.each([false, true])(
         };
         assert.equal(followUp.tasks[0]!.runId, "durable-run-1");
         assert.include(followUp.tasks[0]!.result, "durable answer for durable-run-1");
+        assert.isAtMost(followUp.tasks[0]!.result.length, 1_000);
+        const fullResult = decodeJson(
+          yield* control("status", "explicit-result", "durable-run-1"),
+        ) as { tasks: Array<{ result: string }> };
+        assert.isAbove(fullResult.tasks[0]!.result.length, 1_000);
         assert.deepEqual(spoken, [
           {
             plannerNativeThreadId: "planner-native-1",
