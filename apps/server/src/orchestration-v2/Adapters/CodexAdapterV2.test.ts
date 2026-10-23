@@ -7046,6 +7046,105 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
+  it.effect(
+    "reads realtime transcripts while a late descendant interrupt awaits its response",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const releaseResponse = yield* Deferred.make<void>();
+          const received = yield* Deferred.make<ProviderAdapter.ProviderAdapterV2LiveVoiceEvent>();
+          const transcript = makeCodexReplayTranscript({
+            scenario: "codex-late-child-reader-liveness",
+            entries: [
+              ...failedRootLiveChildTranscript.entries.slice(0, -2),
+              {
+                type: "emit_inbound",
+                label: "turn/started/late-reader-child",
+                frame: {
+                  method: "turn/started",
+                  params: {
+                    threadId: INTERRUPT_CHILD_NATIVE_THREAD,
+                    turn: makeCodexReplayTurn({
+                      id: INTERRUPT_LATE_CHILD_NATIVE_TURN,
+                      status: "inProgress",
+                    }),
+                  },
+                },
+              },
+              {
+                type: "expect_outbound",
+                label: "turn/interrupt/late-reader-child",
+                frame: {
+                  id: 4,
+                  method: "turn/interrupt",
+                  params: {
+                    threadId: INTERRUPT_CHILD_NATIVE_THREAD,
+                    turnId: INTERRUPT_LATE_CHILD_NATIVE_TURN,
+                  },
+                },
+              },
+              {
+                type: "emit_inbound",
+                label: "synthetic-user-transcript",
+                frame: {
+                  method: "thread/realtime/transcript/done",
+                  params: {
+                    threadId: "synthetic-live-planner",
+                    role: "user",
+                    text: "Synthetic received speech",
+                  },
+                },
+              },
+              {
+                type: "emit_inbound",
+                label: "turn/interrupt/late-reader-response",
+                frame: { id: 4, result: {} },
+              },
+              { type: "runtime_exit", status: "success" },
+            ],
+          });
+          const harness = yield* makeCodexReplayHarness(
+            transcript,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            (entry) =>
+              entry.label === "turn/interrupt/late-reader-response"
+                ? Deferred.await(releaseResponse)
+                : Effect.void,
+          );
+          assert.isDefined(harness.runtime.liveVoice);
+          yield* harness.runtime.liveVoice!.events.pipe(
+            Stream.filter((event) => event.type === "transcript"),
+            Stream.runForEach((event) => Deferred.succeed(received, event)),
+            Effect.forkScoped,
+          );
+          yield* harness.runtime.startTurn(
+            makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("attempt-late-child-reader-liveness"),
+              text: INTERRUPT_PROMPT,
+            }),
+          );
+          const event = yield* Deferred.await(received);
+          assert.equal(
+            event.type === "transcript" ? event.text : null,
+            "Synthetic received speech",
+          );
+          assert.equal(harness.terminalEvents()[0]?.status, "failed");
+          yield* Deferred.succeed(releaseResponse, undefined);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
+  );
+
   const childTerminationResponseIndex = interruptSubagentCommandTranscript.entries.findIndex(
     (entry) =>
       entry.type === "emit_inbound" && entry.label === "thread/backgroundTerminals/terminate/child",
