@@ -543,6 +543,19 @@ export type OrchestrationV2ThreadLaunchWorkspaceStrategy =
 
 export const ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE = "workspace_preparation_failed";
 
+export const OrchestrationV2ConversationDelegation = Schema.Struct({
+  requestJson: Schema.optional(TrimmedNonEmptyString),
+  caller: Schema.optional(
+    Schema.Struct({ threadId: ThreadId, runId: RunId, providerInstanceId: ProviderInstanceId }),
+  ),
+  modelSelection: ModelSelection,
+  projectId: Schema.optional(ProjectId),
+  title: Schema.optional(TrimmedNonEmptyString),
+  workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
+  runtimeMode: Schema.optional(RuntimeMode),
+  interactionMode: Schema.optional(ProviderInteractionMode),
+});
+
 export const OrchestrationV2Run = Schema.Struct({
   id: RunId,
   threadId: ThreadId,
@@ -561,6 +574,8 @@ export const OrchestrationV2Run = Schema.Struct({
   completedAt: Schema.NullOr(Schema.DateTimeUtc),
   checkpointId: Schema.NullOr(CheckpointId),
   contextHandoffId: Schema.NullOr(ContextHandoffId),
+  /** This run records admission; execution and results belong to its delegated child. */
+  delegationAdmission: Schema.optional(OrchestrationV2ConversationDelegation),
   restartContinuationOfRunId: Schema.optional(RunId),
   delegatedTaskId: Schema.optional(NodeId),
   workStartedAt: Schema.optional(Schema.DateTimeUtc),
@@ -2841,6 +2856,7 @@ export const OrchestrationV2Command = Schema.Union([
     attachments: Schema.Array(ChatAttachment),
     titleSeed: Schema.optional(TrimmedNonEmptyString),
     modelSelection: Schema.optional(ModelSelection),
+    delegation: Schema.optional(OrchestrationV2ConversationDelegation),
     sourcePlanRef: Schema.optional(Schema.Struct({ threadId: ThreadId, planId: PlanId })),
     restartContinuationOfRunId: Schema.optional(RunId),
     usageLimitContinuationOfRunId: Schema.optional(RunId),

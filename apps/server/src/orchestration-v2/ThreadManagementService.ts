@@ -466,7 +466,9 @@ export function isTerminalRunStatus(
 export function latestRun(
   projection: Pick<OrchestrationV2ThreadProjection, "runs">,
 ): OrchestrationV2Run | undefined {
-  return projection.runs.toSorted((left, right) => right.ordinal - left.ordinal)[0];
+  return projection.runs
+    .filter((run) => run.delegationAdmission === undefined)
+    .toSorted((left, right) => right.ordinal - left.ordinal)[0];
 }
 
 /** The newest run in `run`'s restart continuation chain, or `run` itself. */
@@ -654,6 +656,19 @@ const make = Effect.gen(function* () {
               commandId: command.commandId,
               instanceId: (command.modelSelection ?? projection.thread.modelSelection).instanceId,
             }),
+          ),
+          Effect.tap(() =>
+            command.delegation === undefined
+              ? Effect.void
+              : orchestrator.getThreadRecords(command.threadId, []).pipe(
+                  Effect.flatMap((projection) =>
+                    assertProviderInstanceEnabled({
+                      projectId: command.delegation?.projectId ?? projection.thread.projectId,
+                      commandId: command.commandId,
+                      instanceId: command.delegation!.modelSelection.instanceId,
+                    }),
+                  ),
+                ),
           ),
         );
       case "delegated_task.request":

@@ -7,6 +7,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
 import * as Struct from "effect/Struct";
+import * as Option from "effect/Option";
 import type * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
 import type { Tool, Toolkit } from "effect/ai";
@@ -127,9 +128,15 @@ export const writesWithCapability = <P, A, E, R>(handle: (params: P) => Effect.E
 export const writesThreads = <P, A, E, R>(
   threads: (params: P) => ReadonlyArray<ThreadId | undefined>,
   handle: (params: P) => Effect.Effect<A, E, R>,
+  replay?: (params: P) => Effect.Effect<Option.Option<A>, E, R>,
 ) =>
   declare((params: P) =>
     Effect.gen(function* () {
+      if (replay !== undefined) {
+        yield* refuseReadOnlyClient;
+        const receipt = yield* replay(params);
+        if (Option.isSome(receipt)) return receipt.value;
+      }
       const caller = yield* writingCaller;
       for (const threadId of threads(params)) {
         if (threadId === undefined || threadId === caller.scope.thread?.threadId) continue;

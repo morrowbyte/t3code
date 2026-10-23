@@ -183,6 +183,12 @@ const handlers = {
         const service = yield* OrchestratorMcpService.OrchestratorMcpService;
         return yield* service.sendToThread(scope, input);
       }),
+    (input) =>
+      Effect.gen(function* () {
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        return yield* service.replayThreadDelegation(scope, input);
+      }),
   ),
   t3_thread_wait: McpToolAccess.reads((input) =>
     Effect.gen(function* () {

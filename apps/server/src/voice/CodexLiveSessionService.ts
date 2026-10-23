@@ -4,6 +4,8 @@ import {
   LiveVoiceError,
   latestProviderTurnForAttempt,
   MessageId,
+  NodeId,
+  ProjectId,
   ModelSelection,
   ProviderDriverKind,
   ProviderSessionId,
@@ -18,6 +20,7 @@ import {
   type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -38,6 +41,7 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as RuntimePolicy from "../orchestration-v2/RuntimePolicy.ts";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as ConversationWorkCoordinator from "../orchestration-v2/ConversationWorkCoordinator.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as CodexLiveEventHub from "./CodexLiveEventHub.ts";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
@@ -81,6 +85,7 @@ const readbackContextMatches = (
 ) =>
   projection.thread.id === row.thread_id &&
   projection.thread.archivedAt === null &&
+  projection.thread.deletedAt === null &&
   projection.thread.providerInstanceId === row.provider_instance_id &&
   encodeModelSelection(projection.thread.modelSelection) === row.model_selection_json &&
   encodeRuntimePolicy(policy) === row.runtime_policy_json;
@@ -143,6 +148,7 @@ export const layer: Layer.Layer<
     const runtimePolicies = yield* RuntimePolicy.RuntimePolicyV2;
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const threads = yield* ThreadManagementService.ThreadManagementService;
+    const conversationWork = yield* ConversationWorkCoordinator.ConversationWorkCoordinator;
     const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
     const eventHub = yield* CodexLiveEventHub.CodexLiveEventHub;
     const crypto = yield* Crypto.Crypto;
@@ -299,6 +305,25 @@ export const layer: Layer.Layer<
 
     const publicReadbackResults = (projection: OrchestrationV2ThreadProjection, runId: string) => {
       const run = projection.runs.find((candidate) => candidate.id === runId);
+      if (
+        run &&
+        ["failed", "interrupted", "cancelled"].includes(run.status) &&
+        run.activeAttemptId !== null
+      ) {
+        return [
+          {
+            attemptId: run.activeAttemptId,
+            messageId: run.userMessageId,
+            deliveryId: `state:${run.id}:${run.status}`,
+            text: encodeReceipt({
+              type: "background_task_state",
+              runId: run.id,
+              status: run.status,
+              resultReady: false,
+            }),
+          },
+        ];
+      }
       if (!run || !["running", "waiting"].includes(run.status) || run.rootNodeId === null)
         return [];
       const attempt = projection.attempts.find(
@@ -523,7 +548,18 @@ export const layer: Layer.Layer<
             messageId: result.value.finalMessageId,
             text: result.value.text,
           });
-        }).pipe(Effect.catchCause(() => Effect.void));
+        }).pipe(
+          Effect.withSpan("CodexLiveSessionService.readbackWorker"),
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.void
+              : Effect.logWarning("Live task readback stopped", {
+                  leaseId: input.leaseId,
+                  generation: input.generation,
+                  runId: input.runId,
+                }),
+          ),
+        );
         const fiber = yield* Effect.forkIn(worker, serviceScope);
         readbackWorkers.set(key, fiber);
         yield* Effect.forkIn(
@@ -637,11 +673,40 @@ export const layer: Layer.Layer<
               projectId: input.projectId,
               threadId: input.threadId,
             });
+            const sourceProjection =
+              input.threadId === row.thread_id
+                ? latestProjection
+                : yield* threads.getThreadProjection(row.thread_id as LiveVoiceSession["threadId"]);
             const policy = yield* runtimePolicies.resolve({
-              thread: latestProjection.thread,
-              modelSelection: latestProjection.thread.modelSelection,
+              thread: sourceProjection.thread,
+              modelSelection: sourceProjection.thread.modelSelection,
             });
-            if (!readbackContextMatches(row, latestProjection, policy)) return;
+            const targetMatches = (
+              projection: OrchestrationV2ThreadProjection,
+              source: OrchestrationV2ThreadProjection,
+            ) =>
+              receipt.taskId === undefined
+                ? projection.thread.id === row.thread_id
+                : receipt.threadId === projection.thread.id &&
+                  receipt.projectId === projection.thread.projectId &&
+                  projection.thread.archivedAt === null &&
+                  projection.thread.deletedAt === null &&
+                  projection.thread.lineage.parentThreadId === row.thread_id &&
+                  projection.thread.lineage.relationshipToParent === "subagent" &&
+                  projection.thread.forkedFrom?.type === "node" &&
+                  projection.thread.forkedFrom.nodeId === receipt.taskId &&
+                  source.subagents.some(
+                    (task) =>
+                      task.id === receipt.taskId &&
+                      task.origin === "app_owned" &&
+                      task.childThreadId === projection.thread.id &&
+                      task.runId === receipt.admissionRunId,
+                  );
+            if (
+              !readbackContextMatches(row, sourceProjection, policy) ||
+              !targetMatches(latestProjection, sourceProjection)
+            )
+              return;
             const finalResult = readbackResult(latestProjection, input.runId);
             const latestFinal =
               input.kind === "final"
@@ -690,26 +755,42 @@ export const layer: Layer.Layer<
               .pipe(Effect.mapError(() => liveError("runtime_unavailable")));
             // Refresh after the principal lookup: native error/closed events can
             // commit while that lookup is suspended, without taking this lease lock.
-            let stillPublic = true;
-            if (input.kind === "context") {
+            const stillPublic = yield* Effect.gen(function* () {
               const currentProjection = yield* threads.getProjectThread({
                 projectId: input.projectId,
                 threadId: input.threadId,
               });
+              const currentSource =
+                input.threadId === row.thread_id
+                  ? currentProjection
+                  : yield* threads.getThreadProjection(
+                      row.thread_id as LiveVoiceSession["threadId"],
+                    );
               const currentPolicy = yield* runtimePolicies.resolve({
-                thread: currentProjection.thread,
-                modelSelection: currentProjection.thread.modelSelection,
+                thread: currentSource.thread,
+                modelSelection: currentSource.thread.modelSelection,
               });
-              stillPublic =
-                readbackContextMatches(row, currentProjection, currentPolicy) &&
-                publicReadbackResults(currentProjection, input.runId).some(
-                  (message) =>
-                    message.messageId === input.messageId &&
-                    message.deliveryId === deliveryId &&
-                    message.attemptId === input.attemptId &&
-                    message.text === input.text,
+              if (
+                !readbackContextMatches(row, currentSource, currentPolicy) ||
+                !targetMatches(currentProjection, currentSource)
+              )
+                return false;
+              if (input.kind === "final") {
+                const current = readbackResult(currentProjection, input.runId);
+                return (
+                  current?.attemptId === input.attemptId &&
+                  current.finalMessageId === input.messageId &&
+                  current.text === input.text
                 );
-            }
+              }
+              return publicReadbackResults(currentProjection, input.runId).some(
+                (message) =>
+                  message.messageId === input.messageId &&
+                  message.deliveryId === deliveryId &&
+                  message.attemptId === input.attemptId &&
+                  message.text === input.text,
+              );
+            });
             const beforeDispatch = yield* getLease(input.leaseId, input.generation);
             const currentLease = active.get(leaseKey(input.leaseId, input.generation));
             if (
@@ -746,7 +827,18 @@ export const layer: Layer.Layer<
                 ? currentLease.runtime.liveVoice.appendSpeech
                 : currentLease.runtime.liveVoice.appendContext!)({
                 plannerNativeThreadId: input.plannerNativeThreadId,
-                text: input.text,
+                text:
+                  receipt.taskId === undefined
+                    ? input.text
+                    : encodeReceipt({
+                        type: "background_task_output",
+                        taskId: receipt.taskId,
+                        requestId: receipt.requestId,
+                        runId: input.runId,
+                        kind: input.kind === "final" ? "result" : "update",
+                        resultReady: input.kind === "final",
+                        text: input.text,
+                      }),
               }),
             );
             // Neither append has an idempotency key. This records transport acceptance,
@@ -1022,15 +1114,12 @@ export const layer: Layer.Layer<
                 modelSelection: projection.thread.modelSelection,
                 ...(serviceTier == null ? {} : { serviceTier }),
                 ...(reasoningEffort == null ? {} : { reasoningEffort }),
-                onSubmitWork: ({ plannerNativeThreadId, plannerTurnId, callId, message }) =>
+                onSubmitWork: (work) =>
                   submitWork({
+                    ...work,
                     principalSessionId: session.sessionId,
                     leaseId,
                     generation,
-                    plannerNativeThreadId,
-                    plannerTurnId,
-                    callId,
-                    message,
                   }).pipe(
                     Effect.mapError(
                       (cause) =>
@@ -1303,6 +1392,7 @@ export const layer: Layer.Layer<
       readonly callId: string;
       readonly action: "status" | "steer";
       readonly runId?: string;
+      readonly taskId?: string;
       readonly message?: string;
     }) {
       const operation = Effect.gen(function* () {
@@ -1357,8 +1447,66 @@ export const layer: Layer.Layer<
         if (!matchesRuntime(current)) return yield* liveError("stale_lease");
         const runs = projection.runs.filter(
           (run) =>
-            run.threadId === row.thread_id && run.providerInstanceId === row.provider_instance_id,
+            run.threadId === row.thread_id &&
+            run.providerInstanceId === row.provider_instance_id &&
+            run.delegationAdmission === undefined,
         );
+        if (input.taskId !== undefined) {
+          const taskId = NodeId.make(input.taskId);
+          const target = yield* conversationWork
+            .read({
+              threadId: projection.thread.id,
+              taskId,
+              ...(input.runId === undefined ? {} : { runId: RunId.make(input.runId) }),
+            })
+            .pipe(Effect.mapError(() => liveError("session_not_found")));
+          yield* ensurePrincipal(input.principal);
+          if (
+            !matchesRuntime(
+              yield* getOwnedLease(input.principal.sessionId, input.leaseId, input.generation),
+            )
+          )
+            return yield* liveError("stale_lease");
+          if (input.action === "status") {
+            if (input.message !== undefined) return yield* liveError("invalid_state");
+            const result = inspectReadback(target.projection, target.run.id);
+            return encodeReceipt({
+              environmentId,
+              threadId: row.thread_id,
+              leaseId: input.leaseId,
+              generation: input.generation,
+              visibility: "available",
+              tasks: [],
+              delegatedTasks: [
+                {
+                  taskId,
+                  parentRunId: target.task.runId,
+                  childThreadId: target.projection.thread.id,
+                  projectId: target.projection.thread.projectId,
+                  ...voiceRunStatus(target.projection, target.run, yield* DateTime.now),
+                  resultReady: result.type === "ready",
+                  result: result.type === "ready" ? result.text.slice(0, 16_384) : null,
+                  resultTruncated: result.type === "ready" && result.text.length > 16_384,
+                },
+              ],
+            });
+          }
+          if (!input.runId || !input.message?.trim() || input.message.length > 8_000)
+            return yield* liveError("invalid_state");
+          const key = `live-voice-control:${encodeURIComponent(input.leaseId)}:${input.generation}:${encodeURIComponent(input.plannerTurnId)}:${encodeURIComponent(input.callId)}`;
+          const steered = yield* conversationWork
+            .steer({
+              threadId: projection.thread.id,
+              taskId,
+              runId: RunId.make(input.runId),
+              commandId: CommandId.make(`command:${key}`),
+              messageId: MessageId.make(`message:${key}`),
+              message: input.message.trim(),
+              creationSource: "voice",
+            })
+            .pipe(Effect.mapError(() => liveError("dispatch_conflict")));
+          return encodeReceipt({ accepted: true, delivery: "steered", ...steered });
+        }
         const run =
           input.runId === undefined
             ? undefined
@@ -1410,25 +1558,24 @@ export const layer: Layer.Layer<
                   result: null,
                 };
                 if (child.origin !== "app_owned" || child.childThreadId === null) return base;
-                const snapshot = yield* threads
-                  .getProjectThread({
-                    projectId: projection.thread.projectId,
-                    threadId: child.childThreadId,
-                  })
-                  .pipe(
-                    Effect.timeoutOption("1 second"),
-                    Effect.catch(() => Effect.succeed(Option.none())),
-                  );
+                const snapshot = yield* threads.getThreadProjection(child.childThreadId).pipe(
+                  Effect.timeoutOption("1 second"),
+                  Effect.catch(() => Effect.succeed(Option.none())),
+                );
                 if (Option.isNone(snapshot)) return base;
                 const target = snapshot.value;
                 if (
                   target.thread.id !== child.childThreadId ||
                   target.thread.lineage.parentThreadId !== row.thread_id ||
                   target.thread.lineage.relationshipToParent !== "subagent" ||
+                  target.thread.deletedAt !== null ||
                   target.thread.archivedAt !== null
                 )
                   return base;
-                const latest = [...target.runs].sort(
+                const latest = ConversationWorkCoordinator.conversationTaskRuns(
+                  target,
+                  child.id,
+                ).sort(
                   (a, b) =>
                     Number(isVoiceWorkActive(b.status)) - Number(isVoiceWorkActive(a.status)) ||
                     b.ordinal - a.ordinal,
@@ -1437,6 +1584,8 @@ export const layer: Layer.Layer<
                 const result = inspectReadback(target, latest.id);
                 return {
                   ...base,
+                  childThreadId: target.thread.id,
+                  projectId: target.thread.projectId,
                   ...voiceRunStatus(target, latest, observedAt),
                   request: child.prompt.slice(0, 2_000),
                   resultReady: result.type === "ready",
@@ -1550,7 +1699,11 @@ export const layer: Layer.Layer<
       readonly plannerTurnId: string;
       readonly callId: string;
       readonly message: string;
+      readonly requestId?: string;
+      readonly projectId?: string;
     }) {
+      const intentTurnId =
+        input.requestId === undefined ? input.plannerTurnId : `request:${input.requestId}`;
       return leaseLocks.withLock(
         leaseKey(input.leaseId, input.generation),
         Effect.gen(function* () {
@@ -1576,10 +1729,10 @@ export const layer: Layer.Layer<
             return yield* liveError("stale_lease");
           }
           const commandId = CommandId.make(
-            `command:live-voice:${encodeURIComponent(input.leaseId)}:${input.generation}:${encodeURIComponent(input.plannerTurnId)}:submit-0`,
+            `command:live-voice:${encodeURIComponent(input.leaseId)}:${input.generation}:${encodeURIComponent(intentTurnId)}:submit-0`,
           );
           const messageId = MessageId.make(
-            `message:live-voice:${encodeURIComponent(input.leaseId)}:${input.generation}:${encodeURIComponent(input.plannerTurnId)}:submit-0`,
+            `message:live-voice:${encodeURIComponent(input.leaseId)}:${input.generation}:${encodeURIComponent(intentTurnId)}:submit-0`,
           );
           const now = DateTime.formatIso(yield* DateTime.now);
           const priorIntents = yield* sql<{
@@ -1588,7 +1741,7 @@ export const layer: Layer.Layer<
             SELECT dispatch_state FROM codex_live_voice_intents
             WHERE lease_id = ${input.leaseId} AND generation = ${input.generation}
               AND planner_native_thread_id = ${input.plannerNativeThreadId}
-              AND planner_turn_id = ${input.plannerTurnId} AND submit_slot = 0
+              AND planner_turn_id = ${intentTurnId} AND submit_slot = 0
           `;
           if (
             priorIntents.length === 0 &&
@@ -1600,11 +1753,11 @@ export const layer: Layer.Layer<
           yield* sql`
           INSERT OR IGNORE INTO codex_live_voice_intents (
             lease_id, generation, planner_native_thread_id, planner_turn_id, submit_slot,
-            call_id, message, command_id, message_id, dispatch_state, updated_at
+            call_id, message, command_id, message_id, dispatch_state, receipt_json, updated_at
           ) VALUES (
             ${input.leaseId}, ${input.generation}, ${input.plannerNativeThreadId},
-            ${input.plannerTurnId}, 0, ${input.callId}, ${input.message.trim()},
-            ${commandId}, ${messageId}, 'reserved', ${now}
+            ${intentTurnId}, 0, ${input.callId}, ${input.message.trim()},
+            ${commandId}, ${messageId}, 'reserved', ${input.requestId === undefined ? null : encodeReceipt({ requestedProjectId: input.projectId ?? null })}, ${now}
           )
         `;
           const intents = yield* sql<{
@@ -1618,22 +1771,46 @@ export const layer: Layer.Layer<
           FROM codex_live_voice_intents
           WHERE lease_id = ${input.leaseId} AND generation = ${input.generation}
             AND planner_native_thread_id = ${input.plannerNativeThreadId}
-            AND planner_turn_id = ${input.plannerTurnId} AND submit_slot = 0
+            AND planner_turn_id = ${intentTurnId} AND submit_slot = 0
         `;
           const intent = intents[0];
           if (intent === undefined) return yield* liveError("runtime_unavailable");
           if (intent.message !== input.message.trim()) {
             return yield* liveError("dispatch_conflict");
           }
+          if (
+            input.requestId !== undefined &&
+            intent.receipt_json !== null &&
+            (decodeReceipt(intent.receipt_json) as Record<string, unknown>).requestedProjectId !==
+              (input.projectId ?? null)
+          )
+            return yield* liveError("dispatch_conflict");
           if (intent.dispatch_state === "conflict") {
             return yield* liveError("dispatch_conflict");
           }
           if (intent.dispatch_state === "admitted" && intent.receipt_json !== null) {
             const priorReceipt = decodeReceipt(intent.receipt_json) as Record<string, unknown>;
+            if (
+              input.requestId !== undefined &&
+              priorReceipt.requestedProjectId !== (input.projectId ?? null)
+            )
+              return yield* liveError("dispatch_conflict");
             return encodeReceipt({
               accepted: priorReceipt.accepted,
               delivery: priorReceipt.delivery,
               runId: priorReceipt.runId,
+              ...(input.requestId === undefined
+                ? {}
+                : {
+                    requestId: priorReceipt.requestId,
+                    requestedProjectId: priorReceipt.requestedProjectId,
+                    taskId: priorReceipt.taskId,
+                    threadId: priorReceipt.threadId,
+                    projectId: priorReceipt.projectId,
+                    admissionRunId: priorReceipt.admissionRunId,
+                    status: priorReceipt.status,
+                    resultReady: false,
+                  }),
             });
           }
           const projection = yield* threads
@@ -1666,44 +1843,86 @@ export const layer: Layer.Layer<
                 updated_at = ${DateTime.formatIso(yield* DateTime.now)}
               WHERE lease_id = ${input.leaseId} AND generation = ${input.generation}
                 AND planner_native_thread_id = ${input.plannerNativeThreadId}
-                AND planner_turn_id = ${input.plannerTurnId} AND submit_slot = 0
+                AND planner_turn_id = ${intentTurnId} AND submit_slot = 0
                 AND dispatch_state = 'reserved'
             `;
             return yield* liveError("stale_lease");
           }
-          const result = yield* threads
-            .sendToThread({
-              projectId: projection.thread.projectId,
-              threadId: projection.thread.id,
-              commandId: CommandId.make(intent.command_id),
-              messageId: MessageId.make(intent.message_id),
-              text: input.message.trim(),
-              attachments: [],
-              mode: "queue",
-              createdBy: "user",
-              creationSource: "voice",
-            })
-            .pipe(Effect.mapError(() => liveError("runtime_unavailable")));
+          const result =
+            input.requestId === undefined
+              ? yield* threads
+                  .sendToThread({
+                    projectId: projection.thread.projectId,
+                    threadId: projection.thread.id,
+                    commandId: CommandId.make(intent.command_id),
+                    messageId: MessageId.make(intent.message_id),
+                    text: input.message.trim(),
+                    attachments: [],
+                    mode: "queue",
+                    createdBy: "user",
+                    creationSource: "voice",
+                  })
+                  .pipe(
+                    Effect.map((sent) => ({
+                      delivery: sent.delivery,
+                      runId: sent.run.id,
+                      threadId: projection.thread.id,
+                      projectId: projection.thread.projectId,
+                    })),
+                    Effect.mapError(() => liveError("runtime_unavailable")),
+                  )
+              : yield* conversationWork
+                  .delegate({
+                    projectId: projection.thread.projectId,
+                    threadId: projection.thread.id,
+                    commandId: CommandId.make(intent.command_id),
+                    messageId: MessageId.make(intent.message_id),
+                    text: input.message.trim(),
+                    createdBy: "user",
+                    creationSource: "voice",
+                    delegation: {
+                      modelSelection: projection.thread.modelSelection,
+                      ...(input.projectId === undefined
+                        ? {}
+                        : { projectId: ProjectId.make(input.projectId) }),
+                    },
+                  })
+                  .pipe(
+                    Effect.map((admitted) => ({
+                      delivery: "delegated",
+                      runId: admitted.childRunId,
+                      threadId: admitted.childThreadId,
+                      projectId: admitted.projectId,
+                      taskId: admitted.taskId,
+                      admissionRunId: admitted.admissionRunId,
+                      status: admitted.status,
+                      requestId: input.requestId,
+                      requestedProjectId: input.projectId ?? null,
+                      resultReady: false,
+                    })),
+                    Effect.mapError(() => liveError("dispatch_conflict")),
+                  );
           const receipt = encodeReceipt({
             accepted: true,
             delivery: result.delivery,
-            runId: result.run.id,
+            runId: result.runId,
+            ...("taskId" in result ? result : {}),
           });
           yield* sql`
           UPDATE codex_live_voice_intents SET dispatch_state = 'admitted', receipt_json = ${receipt},
             updated_at = ${DateTime.formatIso(yield* DateTime.now)}
           WHERE lease_id = ${input.leaseId} AND generation = ${input.generation}
             AND planner_native_thread_id = ${input.plannerNativeThreadId}
-            AND planner_turn_id = ${input.plannerTurnId} AND submit_slot = 0
+            AND planner_turn_id = ${intentTurnId} AND submit_slot = 0
         `;
           yield* startReadbackWorker({
             leaseId: input.leaseId,
             generation: input.generation,
-            threadId: currentRow.thread_id as LiveVoiceSession["threadId"],
-            projectId: projection.thread.projectId,
+            threadId: result.threadId,
+            projectId: result.projectId,
             plannerNativeThreadId: input.plannerNativeThreadId,
-            plannerTurnId: input.plannerTurnId,
-            runId: result.run.id,
+            plannerTurnId: intentTurnId,
+            runId: result.runId,
           });
           return receipt;
         }),
@@ -1828,9 +2047,10 @@ export const layer: Layer.Layer<
           planner_turn_id: string;
           call_id: string;
           message: string;
+          receipt_json: string | null;
           principal_session_id: string;
         }>`
-          SELECT i.planner_native_thread_id, i.planner_turn_id, i.call_id, i.message,
+          SELECT i.planner_native_thread_id, i.planner_turn_id, i.call_id, i.message, i.receipt_json,
             l.principal_session_id
           FROM codex_live_voice_intents i
           JOIN codex_live_voice_leases l USING (lease_id, generation)
@@ -1849,6 +2069,20 @@ export const layer: Layer.Layer<
               plannerTurnId: intent.planner_turn_id,
               callId: intent.call_id,
               message: intent.message,
+              ...(intent.planner_turn_id.startsWith("request:")
+                ? {
+                    requestId: intent.planner_turn_id.slice("request:".length),
+                    ...(intent.receipt_json !== null &&
+                    typeof (decodeReceipt(intent.receipt_json) as Record<string, unknown>)
+                      .requestedProjectId === "string"
+                      ? {
+                          projectId: (
+                            decodeReceipt(intent.receipt_json) as { requestedProjectId: string }
+                          ).requestedProjectId,
+                        }
+                      : {}),
+                  }
+                : {}),
             }).pipe(Effect.ignore),
           { concurrency: 1, discard: true },
         );
@@ -1857,4 +2091,7 @@ export const layer: Layer.Layer<
 
     return CodexLiveSessionService.of({ prepare, start, stop, status, subscribe });
   }),
-).pipe(Layer.provideMerge(CodexLiveEventHub.layer));
+).pipe(
+  Layer.provideMerge(CodexLiveEventHub.layer),
+  Layer.provide(ConversationWorkCoordinator.layer),
+);

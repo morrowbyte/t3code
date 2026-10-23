@@ -42,6 +42,7 @@ import { CodexOrchestratorReplayHarness } from "../orchestration-v2/Adapters/Cod
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
+import * as EffectWorker from "../orchestration-v2/EffectWorker.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
@@ -84,7 +85,7 @@ import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv
 import { type JsonSchemaType } from "@modelcontextprotocol/sdk/validation";
 import { threadShellFromProjection } from "../orchestration-v2/ProjectionStore.ts";
 import { delegatedTaskRun } from "./OrchestratorMcpService.ts";
-import { hasPendingChildRuns } from "./OrchestratorMcpService.ts";
+import { hasPendingChildRuns, isLiveCallerShell } from "./OrchestratorMcpService.ts";
 import { OrchestratorMcpCreateThreadsResult } from "@t3tools/contracts";
 import { ThreadMetadataMcpUpdateResult } from "@t3tools/contracts";
 import { OrchestratorMcpThreadListResult } from "@t3tools/contracts";
@@ -546,6 +547,376 @@ const layerUnusedScheduledTaskStub = Layer.succeed(
 );
 
 describe("orchestrator MCP toolkit", () => {
+  it.live(
+    "admits three explicit text-tool tasks and starts their children alongside an active provider run",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const cwd = yield* checkpointWorkspace("conversation-work-admission");
+          const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
+          const registry = ProviderAdapterRegistry.layerFromAdapters([
+            makeDeterministicAdapter({
+              instanceId: codexInstanceId,
+              driver: ProviderDriverKind.make("codex"),
+              capabilities: CodexProviderCapabilitiesV2,
+              capturedTurns,
+              shouldComplete: () => false,
+              response: () => "No result has completed.",
+            }),
+          ]);
+          const runtime = ProviderReplayHarness.layerWithRegistry(
+            {
+              name: "conversation-work-admission",
+              runtimePolicyOverride: { cwd, approvalPolicy: "never" },
+            },
+            registry,
+            { runEffectWorker: false },
+          );
+          const domain = Layer.merge(
+            runtime,
+            ThreadManagementService.layer.pipe(
+              Layer.provide(runtime),
+              Layer.provide(ServerSettings.layerTest()),
+              Layer.provide(
+                CommandReceiptStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+              ),
+            ),
+          );
+          const layer = McpHttpServer.layerOrchestratorToolkit.pipe(
+            Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
+            Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+            Layer.provideMerge(McpServer.McpServer.layer),
+            Layer.provideMerge(domain),
+            Layer.provide(registry),
+            Layer.provide(
+              ProviderRegistryMock.layer([
+                {
+                  ...makeProviderSnapshot({
+                    instanceId: codexInstanceId,
+                    driver: ProviderDriverKind.make("codex"),
+                    model: codexModel,
+                  }),
+                  supportedRuntimeModes: ["approval-required", "auto", "full-access"],
+                },
+              ]),
+            ),
+            Layer.provide(ServerSettings.layerTest()),
+            Layer.provide(layerUnusedScheduledTaskStub),
+            Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
+            Layer.provide(
+              Layer.mock(ProjectService.ProjectService)({
+                getById: (id) =>
+                  Effect.succeed(
+                    id === projectId
+                      ? Option.some({
+                          id,
+                          workspaceRoot: cwd,
+                          defaultModelSelection: null,
+                        } as never)
+                      : Option.none(),
+                  ),
+              }),
+            ),
+            Layer.provideMerge(
+              SecretRequests.layer.pipe(
+                Layer.provide(layerMemorySecretStore),
+                Layer.provide(domain),
+              ),
+            ),
+            Layer.provide(NodeServices.layer),
+          );
+          yield* Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            const threads = yield* ThreadManagementService.ThreadManagementService;
+            const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+            const server = yield* McpServer.McpServer;
+            yield* orchestrator.dispatch({
+              type: "thread.create",
+              commandId: CommandId.make("conversation-work:create"),
+              threadId: parentThreadId,
+              projectId,
+              title: "Ongoing conversation",
+              modelSelection: codexSelection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: cwd,
+              createdBy: "user",
+              creationSource: "web",
+            });
+            yield* orchestrator.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make("conversation-work:expert"),
+              threadId: parentThreadId,
+              messageId: MessageId.make("conversation-work:expert"),
+              text: "Keep the expert task active",
+              attachments: [],
+              dispatchMode: { type: "start_immediately" },
+              createdBy: "user",
+              creationSource: "web",
+            });
+            const waitRunning = (threadId: ThreadId, runId: RunId) =>
+              threads
+                .streamStoredEventsFrom({ threadId, afterSequence: 0, eventType: "run.updated" })
+                .pipe(
+                  Stream.filter(
+                    ({ event }) =>
+                      event.type === "run.updated" &&
+                      event.payload.id === runId &&
+                      event.payload.status === "running",
+                  ),
+                  Stream.runHead,
+                );
+            const original = (yield* orchestrator.getThreadProjection(parentThreadId)).runs[0]!;
+            yield* worker.drain();
+            yield* waitRunning(parentThreadId, original.id);
+            const scope: McpInvocationContext.McpInvocationScope = {
+              environmentId: EnvironmentId.make("conversation-work-test"),
+              requestNamespace: "conversation-work-test",
+              capabilities: new Set(["orchestration"]),
+              issuedAt: 1,
+              client: undefined,
+              thread: {
+                threadId: parentThreadId,
+                providerSessionId: "mcp-provider-session-parent",
+                providerInstanceId: codexInstanceId,
+              },
+            };
+            const invoke = (args: Record<string, unknown>, invocation = scope) =>
+              server
+                .callTool({ name: "t3_thread_send", arguments: args })
+                .pipe(
+                  Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+                  Effect.provideService(McpSchema.McpServerClient, client),
+                );
+            for (const invalid of [
+              { threadId: "missing-thread", delegation: {} },
+              { threadId: parentThreadId, delegation: { projectId: "missing-project" } },
+              {
+                threadId: parentThreadId,
+                delegation: {
+                  target: { providerInstanceId: "missing-provider", model: "unknown" },
+                },
+              },
+              { threadId: parentThreadId, delegation: {}, mode: "steer" },
+            ])
+              expect(
+                (yield* invoke({
+                  message: "Must be refused",
+                  clientRequestId: `invalid-${JSON.stringify(invalid)}`,
+                  ...invalid,
+                })).isError,
+              ).toBe(true);
+            expect(
+              (yield* invoke(
+                {
+                  threadId: parentThreadId,
+                  message: "Unauthorized",
+                  clientRequestId: "unauthorized",
+                  delegation: {},
+                },
+                { ...scope, capabilities: new Set() },
+              )).isError,
+            ).toBe(true);
+            const admitted = [];
+            for (const [index, message] of [
+              "Research releases",
+              "Inspect another issue",
+              "Check the requested posts",
+            ].entries()) {
+              const request = {
+                threadId: parentThreadId,
+                message,
+                clientRequestId: `independent-${index}`,
+                delegation: {},
+              };
+              const response = yield* invoke(request);
+              expect(response.isError).not.toBe(true);
+              const result = yield* decodeThreadSendResult(response.structuredContent);
+              expect(result.delivery).toBe("delegated");
+              expect(result.admissionStatus).toBe("completed");
+              expect(result.status).toBe("starting");
+              expect(result.childThreadId).toBeDefined();
+              expect(result.childRunId).toBeDefined();
+              expect((yield* invoke(request)).structuredContent).toEqual(
+                response.structuredContent,
+              );
+              expect(
+                (yield* invoke({ ...request, message: "Changed request under the same identity" }))
+                  .isError,
+              ).toBe(true);
+              admitted.push(result);
+            }
+            yield* worker.drain();
+            for (const task of admitted) {
+              yield* waitRunning(task.childThreadId!, task.childRunId!);
+              const child = yield* orchestrator.getThreadProjection(task.childThreadId!);
+              expect(child.runs[0]!.status).toBe("running");
+              expect(child.messages).toHaveLength(1);
+              const status = yield* server
+                .callTool({ name: "task_status", arguments: { taskId: task.taskId } })
+                .pipe(
+                  Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+                  Effect.provideService(McpSchema.McpServerClient, client),
+                );
+              expect(status.isError).not.toBe(true);
+              expect(status.structuredContent).toMatchObject({
+                taskId: task.taskId,
+                childThreadId: task.childThreadId,
+                workState: "working",
+              });
+            }
+            const parent = yield* orchestrator.getThreadProjection(parentThreadId);
+            expect(parent.subagents).toHaveLength(3);
+            expect(parent.runs.find((run) => run.id === original.id)!.status).toBe("running");
+            expect(parent.runs.filter((run) => run.status === "queued")).toHaveLength(0);
+            expect(yield* Ref.get(capturedTurns)).toHaveLength(4);
+            yield* orchestrator.dispatch({
+              type: "thread.interaction-mode.set",
+              commandId: CommandId.make("change-conversation-default"),
+              threadId: parentThreadId,
+              interactionMode: "plan",
+            });
+            const retry = yield* invoke({
+              threadId: parentThreadId,
+              message: "Research releases",
+              clientRequestId: "independent-0",
+              delegation: {},
+            });
+            expect(retry.isError).not.toBe(true);
+            expect(retry.structuredContent).toMatchObject({
+              taskId: admitted[0]!.taskId,
+              childThreadId: admitted[0]!.childThreadId,
+              childRunId: admitted[0]!.childRunId,
+            });
+            yield* orchestrator.dispatch({
+              type: "thread.runtime-mode.set",
+              commandId: CommandId.make("change-conversation-runtime-default"),
+              threadId: parentThreadId,
+              runtimeMode: "auto-accept-edits",
+            });
+            const inherited = yield* invoke({
+              threadId: parentThreadId,
+              message: "Use a supported narrower inherited mode",
+              clientRequestId: "supported-inheritance",
+              delegation: {},
+            });
+            expect(inherited.isError).not.toBe(true);
+            const inheritedReceipt = yield* decodeThreadSendResult(inherited.structuredContent);
+            expect(
+              (yield* orchestrator.getThreadProjection(inheritedReceipt.childThreadId!)).thread
+                .runtimeMode,
+            ).toBe("approval-required");
+            yield* orchestrator.dispatch({
+              type: "thread.stop",
+              commandId: CommandId.make("stop-conversation-before-late-tool"),
+              threadId: parentThreadId,
+              stopDelegatedTasks: false,
+            });
+            // The replay harness supplies a minimal worker-side thread service.
+            // Exercise the real tree-stop service before draining its provider effects.
+            yield* threads.stopDelegatedTasks({
+              threadId: parentThreadId,
+              commandId: CommandId.make("stop-conversation-before-late-tool"),
+            });
+            const stoppedRunIds = [
+              original.id,
+              ...admitted.map((task) => task.childRunId!),
+              inheritedReceipt.childRunId!,
+            ];
+            yield* worker.drain();
+            for (const [index, runId] of stoppedRunIds.entries()) {
+              const stoppedThread =
+                index === 0
+                  ? parentThreadId
+                  : index <= admitted.length
+                    ? admitted[index - 1]!.childThreadId!
+                    : inheritedReceipt.childThreadId!;
+              yield* threads
+                .streamStoredEventsFrom({
+                  threadId: stoppedThread,
+                  afterSequence: 0,
+                  eventType: "run.updated",
+                })
+                .pipe(
+                  Stream.filter(
+                    ({ event }) =>
+                      event.type === "run.updated" &&
+                      event.payload.id === runId &&
+                      ["interrupted", "cancelled"].includes(event.payload.status),
+                  ),
+                  Stream.runHead,
+                );
+            }
+            for (const taskId of [
+              ...admitted.map((task) => task.taskId!),
+              inheritedReceipt.taskId!,
+            ])
+              yield* threads
+                .streamStoredEventsFrom({
+                  threadId: parentThreadId,
+                  afterSequence: 0,
+                  eventType: "subagent.updated",
+                })
+                .pipe(
+                  Stream.filter(
+                    ({ event }) =>
+                      event.type === "subagent.updated" &&
+                      event.payload.id === taskId &&
+                      ["completed", "failed", "cancelled", "interrupted"].includes(
+                        event.payload.status,
+                      ),
+                  ),
+                  Stream.runHead,
+                );
+            expect(
+              isLiveCallerShell(yield* threads.getThreadShell(parentThreadId), codexInstanceId),
+            ).toBe(false);
+            expect(
+              (yield* invoke({
+                threadId: parentThreadId,
+                message: "A late provider must not escape Stop",
+                clientRequestId: "late-after-stop",
+                delegation: {},
+              })).isError,
+            ).toBe(true);
+            expect(
+              (yield* orchestrator.getThreadProjection(parentThreadId)).subagents,
+            ).toHaveLength(4);
+            expect(
+              (yield* invoke({
+                threadId: parentThreadId,
+                message: "Research releases",
+                clientRequestId: "independent-0",
+                delegation: {},
+              })).isError,
+            ).not.toBe(true);
+            for (const unauthorizedScope of [
+              { ...scope, capabilities: new Set<McpInvocationContext.McpCapability>() },
+              {
+                ...scope,
+                client: {
+                  sessionId: "read-only",
+                  label: "Read only",
+                  access: "read-only" as const,
+                },
+              },
+            ])
+              expect(
+                (yield* invoke(
+                  {
+                    threadId: parentThreadId,
+                    message: "Research releases",
+                    clientRequestId: "independent-0",
+                    delegation: {},
+                  },
+                  unauthorizedScope,
+                )).isError,
+              ).toBe(true);
+          }).pipe(Effect.provide(layer));
+        }),
+      ),
+  );
   it.live(
     "binds external delegation, retry, snapshot recovery and cancellation to a real parent without a provider caller",
     () =>

@@ -188,6 +188,103 @@ const addRolledBackRecoveryCandidate = Effect.fn("addRolledBackRecoveryCandidate
 it.effect.each([
   ["memory", ProjectionStore.layerMemory],
   ["SQL", layerTest],
+] as const)("%s shells keep delegation admissions out of provider status", ([, layer]) =>
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const originalId = yield* addRolledBackRecoveryCandidate("delegation-admission-shell");
+    const original = yield* store.getThreadProjection(originalId);
+    const template = original.runs[0]!;
+    const at = yield* DateTime.now;
+    for (const withProvider of [true, false]) {
+      const threadId = withProvider
+        ? originalId
+        : ThreadId.make("thread:only-delegation-admission");
+      if (!withProvider)
+        yield* store.apply({
+          id: EventId.make("create-admission-only-thread"),
+          type: "thread.created",
+          threadId,
+          occurredAt: at,
+          payload: {
+            ...original.thread,
+            id: threadId,
+            activeProviderThreadId: null,
+            lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+          },
+        });
+      if (withProvider)
+        yield* store.apply({
+          id: EventId.make("fail-real-provider-before-admission"),
+          type: "run.updated",
+          threadId,
+          occurredAt: at,
+          payload: { ...template, status: "failed", completedAt: at },
+        });
+      const admission = {
+        ...template,
+        threadId,
+        id: RunId.make(`admission:${withProvider}`),
+        ordinal: 2,
+        status: "completed" as const,
+        completedAt: at,
+        delegationAdmission: { modelSelection },
+      };
+      yield* store.apply({
+        id: EventId.make(`create-admission:${withProvider}`),
+        type: "run.created",
+        threadId,
+        occurredAt: at,
+        payload: admission,
+      });
+      for (const withHeldQueue of [false, true]) {
+        if (withHeldQueue)
+          yield* store.apply({
+            id: EventId.make(`held-after-admission:${withProvider}`),
+            type: "run.created",
+            threadId,
+            occurredAt: at,
+            payload: {
+              ...template,
+              threadId,
+              id: RunId.make(`held:${withProvider}`),
+              ordinal: 3,
+              status: "queued",
+              startedAt: null,
+              completedAt: null,
+              queueHeld: true,
+            },
+          });
+        const projection = yield* store.getThreadProjection(threadId);
+        const listed = (yield* store.getShellSnapshot()).threads.find(
+          (candidate) => candidate.id === threadId,
+        );
+        for (const shell of [
+          ProjectionStore.threadShellFromProjection(projection),
+          yield* store.getThreadShell(threadId),
+          listed,
+        ]) {
+          assert.equal(shell?.latestRunId, withProvider ? template.id : null);
+          assert.equal(shell?.status, withProvider ? "failed" : "idle");
+          assert.isNull(shell?.activeRunId);
+        }
+        if (!withHeldQueue) {
+          const candidate = (yield* store.getSettlementCandidates(threadId))[0];
+          assert.equal(candidate?.latestRunId, withProvider ? template.id : null);
+          const recovery = yield* store.getRuntimeRecoveryProjection(threadId);
+          if (withProvider)
+            assert.ok(
+              recovery.runs.some((run) => run.id === template.id),
+              "recovery retains the real provider history",
+            );
+        }
+      }
+    }
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  ["memory", ProjectionStore.layerMemory],
+  ["SQL", layerTest],
 ] as const)("%s shells flag only an active turn blocked solely on T3 thread waits", ([, layer]) =>
   Effect.gen(function* () {
     const store = yield* ProjectionStore.ProjectionStoreV2;

@@ -8,6 +8,7 @@ import {
   OrchestratorMcpThreadListInput,
   OrchestratorMcpThreadReadInput,
   OrchestratorMcpThreadSendInput,
+  OrchestratorMcpThreadSendResult,
   OrchestratorMcpThreadWaitInput,
   OrchestratorMcpExternalDelegateTaskInput,
   OrchestratorMcpExternalTaskEventsInput,
@@ -18,6 +19,33 @@ const decodeDelegateTaskInput = Schema.decodeUnknownSync(OrchestratorMcpDelegate
 const decodeDelegateTaskResult = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskResult);
 
 describe("orchestrator MCP contracts", () => {
+  it("keeps independent admission and actual child execution identities distinct", () => {
+    const decodeInput = Schema.decodeUnknownSync(OrchestratorMcpThreadSendInput);
+    const decodeResult = Schema.decodeUnknownSync(OrchestratorMcpThreadSendResult);
+    const input = {
+      threadId: "conversation",
+      message: "Inspect the requested issue",
+      clientRequestId: "task-one",
+      delegation: { target: { providerInstanceId: "codex", model: "gpt-6.1-sol" } },
+    };
+    expect(decodeInput(input).delegation).toEqual(input.delegation);
+    expect(
+      decodeInput({ threadId: "conversation", message: "A direct answer" }).delegation,
+    ).toBeUndefined();
+    expect(
+      decodeResult({
+        threadId: "conversation",
+        messageId: "request",
+        runId: "admission",
+        taskId: "task",
+        childThreadId: "child",
+        childRunId: "execution",
+        admissionStatus: "completed",
+        status: "running",
+        delivery: "delegated",
+      }),
+    ).toMatchObject({ runId: "admission", childRunId: "execution", status: "running" });
+  });
   const externalParent = {
     environmentId: "environment-one",
     projectId: "project-one",

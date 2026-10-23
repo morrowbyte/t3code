@@ -40,6 +40,29 @@ const decodeOrchestrationV2ProviderCapabilities = Schema.decodeUnknownSync(
 );
 
 describe("orchestration V2 contracts", () => {
+  it("retains explicit independent delegation without changing ordinary message intent", () => {
+    const decode = Schema.decodeUnknownSync(OrchestrationV2Command);
+    const message = {
+      type: "message.dispatch",
+      commandId: "command:delegation",
+      threadId: "thread:conversation",
+      messageId: "message:delegation",
+      text: "Inspect the requested issue",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" },
+      createdBy: "user",
+      creationSource: "voice",
+    };
+    const delegation = {
+      modelSelection: { instanceId: "codex", model: "gpt-6.1-sol" },
+      projectId: "project:other",
+    };
+    expect(decode({ ...message, delegation })).toMatchObject({ delegation });
+    expect(decode(message)).not.toHaveProperty("delegation");
+    expect(() =>
+      decode({ ...message, delegation: { modelSelection: { instanceId: "codex" } } }),
+    ).toThrow();
+  });
   it("decodes thread event types from a newer server as skippable items", () => {
     const decodeWireItems = Schema.decodeUnknownSync(
       Schema.toCodecJson(Schema.Array(OrchestrationV2RpcSchemas.subscribeThread.output)),

@@ -677,6 +677,8 @@ export interface ProviderAdapterV2LiveVoiceRuntime {
       readonly plannerTurnId: string;
       readonly callId: string;
       readonly message: string;
+      readonly requestId?: string;
+      readonly projectId?: string;
     }) => Effect.Effect<string, ProviderAdapterV2Error>;
     readonly onWorkControl?: (input: {
       readonly plannerNativeThreadId: string;
@@ -684,6 +686,7 @@ export interface ProviderAdapterV2LiveVoiceRuntime {
       readonly callId: string;
       readonly action: "status" | "steer";
       readonly runId?: string;
+      readonly taskId?: string;
       readonly message?: string;
     }) => Effect.Effect<string, ProviderAdapterV2Error>;
   }) => Effect.Effect<{ readonly plannerNativeThreadId: string }, ProviderAdapterV2Error>;

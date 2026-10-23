@@ -532,10 +532,22 @@ export const OrchestratorMcpThreadReadResult = Schema.Struct({
 });
 export type OrchestratorMcpThreadReadResult = typeof OrchestratorMcpThreadReadResult.Type;
 
+export const OrchestratorMcpConversationDelegation = Schema.Struct({
+  target: Schema.optional(OrchestratorMcpTarget),
+  projectId: Schema.optional(ProjectId),
+  title: Schema.optional(OrchestratorMcpTitle),
+  runtimeMode: Schema.optional(OrchestratorMcpRuntimeMode),
+  interactionMode: Schema.optional(OrchestratorMcpInteractionMode),
+}).annotate({
+  description:
+    "Explicit independent work: admit a fresh real child immediately, even while this conversation has an active provider run. Use a stable clientRequestId. Follow-ups should target the existing task/child instead.",
+});
+
 export const OrchestratorMcpThreadSendInput = Schema.Struct({
   threadId: ThreadId,
   message: OrchestratorMcpPrompt,
   mode: Schema.optional(Schema.Literals(["auto", "queue", "steer", "restart"])),
+  delegation: Schema.optional(OrchestratorMcpConversationDelegation),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });
 export type OrchestratorMcpThreadSendInput = typeof OrchestratorMcpThreadSendInput.Type;
@@ -545,8 +557,11 @@ export const OrchestratorMcpThreadSendResult = Schema.Struct({
   messageId: MessageId,
   runId: RunId,
   taskId: Schema.optional(NodeId),
+  childThreadId: Schema.optional(ThreadId),
+  childRunId: Schema.optional(RunId),
+  admissionStatus: Schema.optional(Schema.Literal("completed")),
   status: OrchestrationV2RunStatus,
-  delivery: Schema.Literals(["started", "queued", "steered", "restarted"]),
+  delivery: Schema.Literals(["started", "queued", "steered", "restarted", "delegated"]),
 });
 export type OrchestratorMcpThreadSendResult = typeof OrchestratorMcpThreadSendResult.Type;
 

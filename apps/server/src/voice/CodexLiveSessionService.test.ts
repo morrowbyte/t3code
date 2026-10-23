@@ -2,6 +2,9 @@ import { assert, it } from "@effect/vitest";
 import {
   AuthOrchestrationOperateScope,
   AuthSessionId,
+  NodeId,
+  RunId,
+  ThreadId,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionId,
@@ -13,6 +16,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -106,6 +110,8 @@ it.effect.each([false, true])(
             plannerTurnId: string;
             callId: string;
             message: string;
+            requestId?: string;
+            projectId?: string;
           }) => Effect.Effect<string, ProviderAdapter.ProviderAdapterV2Error>)
         | undefined;
       let plannerOptions:
@@ -153,6 +159,19 @@ it.effect.each([false, true])(
       let gateReadResolvers: Array<() => void> = [];
       let durableProjection: OrchestrationV2ThreadProjection;
       let childProjection: OrchestrationV2ThreadProjection | undefined;
+      const independentJobs = new Map<string, OrchestrationV2ThreadProjection>();
+      const independentQueues = new Map<
+        string,
+        Map<string, Queue.Queue<OrchestrationV2StoredEvent>>
+      >();
+      let admitIndependent:
+        | ((
+            command: Extract<
+              Parameters<ThreadManagementService.ThreadManagementServiceShape["dispatch"]>[0],
+              { type: "message.dispatch" }
+            >,
+          ) => Effect.Effect<unknown>)
+        | undefined;
       let projectionGate:
         | { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> }
         | undefined;
@@ -257,10 +276,10 @@ it.effect.each([false, true])(
           appendContext: (input: { plannerNativeThreadId: string; text: string }) =>
             Effect.gen(function* () {
               contexts.push(input);
-              const signal = contextSignals.get(input.text);
-              if (signal) yield* Deferred.succeed(signal, undefined);
               const gate = contextAppendGate;
               contextAppendGate = undefined;
+              const signal = contextSignals.get(input.text);
+              if (signal) yield* Deferred.succeed(signal, undefined);
               if (gate) yield* Deferred.await(gate);
             }),
           appendSpeech: (input: { plannerNativeThreadId: string; text: string }) =>
@@ -329,6 +348,7 @@ it.effect.each([false, true])(
           activeProviderThreadId: null,
           modelSelection,
           archivedAt: null,
+          deletedAt: null,
           runtimeMode: "approval-required",
           interactionMode: "default",
           worktreePath: "/private/test-worktree",
@@ -414,6 +434,8 @@ it.effect.each([false, true])(
         Layer.succeed(ThreadManagementService.ThreadManagementService, {
           getThreadProjection: (id: typeof threadId) =>
             Effect.gen(function* () {
+              if (independentJobs.has(id)) return independentJobs.get(id)!;
+              if (childProjection?.thread.id === id) return childProjection;
               const gate = projectionGate;
               projectionGate = undefined;
               if (gate) {
@@ -426,14 +448,17 @@ it.effect.each([false, true])(
             }),
           getProjectThread: (input: { threadId: string }) =>
             Effect.sync(() => {
+              if (independentJobs.has(input.threadId)) return independentJobs.get(input.threadId)!;
               if (childProjection?.thread.id === input.threadId) return childProjection;
               const resolve = gateReadResolvers.shift();
               resolve?.();
               return durableProjection;
             }),
           getThreadEventSequence: () => Effect.succeed(0),
-          streamStoredEventsFrom: (input: { eventType?: string }) =>
-            Stream.fromQueue(t3EventQueues.get(input.eventType ?? "")!),
+          streamStoredEventsFrom: (input: { threadId: string; eventType?: string }) =>
+            Stream.fromQueue(
+              (independentQueues.get(input.threadId) ?? t3EventQueues).get(input.eventType ?? "")!,
+            ),
           sendToThread: () =>
             Effect.gen(function* () {
               sends += 1;
@@ -456,6 +481,8 @@ it.effect.each([false, true])(
             >,
           ) =>
             Effect.gen(function* () {
+              if (command.delegation !== undefined && admitIndependent)
+                return yield* admitIndependent(command);
               if (
                 command.dispatchMode.type !== "steer_active" ||
                 command.dispatchMode.onInactive !== "reject"
@@ -466,7 +493,8 @@ it.effect.each([false, true])(
                   cause: "Expected exact, fail-closed steering.",
                 });
               const targetRunId = command.dispatchMode.targetRunId;
-              const run = durableProjection.runs.find((candidate) => candidate.id === targetRunId);
+              const target = independentJobs.get(command.threadId) ?? durableProjection;
+              const run = target.runs.find((candidate) => candidate.id === targetRunId);
               if (
                 rejectSteerAtAdmission ||
                 !run ||
@@ -478,19 +506,22 @@ it.effect.each([false, true])(
                   cause: "Target run ended at admission.",
                 });
               steers += 1;
-              durableProjection = {
-                ...durableProjection,
+              const updated = {
+                ...target,
                 messages: [
-                  ...durableProjection.messages,
+                  ...target.messages,
                   {
                     id: command.messageId,
-                    threadId,
+                    threadId: command.threadId,
                     runId: run.id,
                     role: "user",
                     text: command.text,
                   } as never,
                 ],
               };
+              if (independentJobs.has(command.threadId))
+                independentJobs.set(command.threadId, updated);
+              else durableProjection = updated;
               return { events: [] };
             }),
         } as unknown as ThreadManagementService.ThreadManagementServiceShape),
@@ -1175,6 +1206,7 @@ it.effect.each([false, true])(
           thread: {
             ...durableProjection.thread,
             id: childThreadId,
+            forkedFrom: { type: "node", nodeId: durableProjection.subagents[0]!.id },
             lineage: {
               parentThreadId: threadId,
               relationshipToParent: "subagent",
@@ -2273,6 +2305,428 @@ it.effect.each([false, true])(
           assert.equal(result.value.status, "prepared");
           yield* endPrepared(result.value, previousClient);
         }
+
+        durableProjection = {
+          ...durableProjection,
+          thread: { ...durableProjection.thread, deletedAt: null },
+          runs: [],
+          attempts: [],
+          nodes: [],
+          messages: [],
+          turnItems: [],
+          providerTurns: [],
+          subagents: [],
+          checkpoints: [],
+        };
+        const independentSeeds = new Map<string, OrchestrationV2ThreadProjection>();
+        let admissions = 0;
+        admitIndependent = (command) =>
+          Effect.gen(function* () {
+            const index = ++admissions;
+            const childId = ThreadId.make(`independent-child-${index}`);
+            const childRunId = RunId.make(`independent-run-${index}`);
+            const taskId = NodeId.make(`independent-task-${index}`);
+            const admissionId = RunId.make(`independent-admission-${index}`);
+            const seed = makeRunProjection(
+              childRunId,
+              "completed",
+              `Final findings for task ${index}.`,
+            );
+            const completed = {
+              ...seed,
+              thread: {
+                ...seed.thread,
+                id: childId,
+                deletedAt: null,
+                lineage: {
+                  parentThreadId: threadId,
+                  relationshipToParent: "subagent" as const,
+                  rootThreadId: threadId,
+                },
+                forkedFrom: { type: "node" as const, nodeId: taskId },
+              },
+              runs: seed.runs.map((run) => ({ ...run, threadId: childId })),
+              messages: seed.messages.map((message) => ({ ...message, threadId: childId })),
+              turnItems: seed.turnItems.map((item) => ({ ...item, threadId: childId })),
+              nodes: seed.nodes.map((node) => ({ ...node, threadId: childId })),
+              subagents: [],
+            } as OrchestrationV2ThreadProjection;
+            independentSeeds.set(childId, completed);
+            independentJobs.set(childId, {
+              ...completed,
+              runs: completed.runs.map((run) => ({ ...run, status: "running", completedAt: null })),
+              providerTurns: completed.providerTurns.map((turn) => ({
+                ...turn,
+                status: "running",
+                completedAt: null,
+              })),
+              turnItems: completed.turnItems.map((item) =>
+                item.type === "assistant_message" && item.ordinal === 2
+                  ? { ...item, status: "running", streaming: true, text: "Still generating" }
+                  : item,
+              ),
+              nodes: completed.nodes.map((node) =>
+                node.id === completed.messages[1]!.nodeId ? { ...node, status: "running" } : node,
+              ),
+            });
+            const queues = new Map<string, Queue.Queue<OrchestrationV2StoredEvent>>();
+            for (const eventType of t3EventQueues.keys())
+              queues.set(eventType, yield* Queue.unbounded<OrchestrationV2StoredEvent>());
+            independentQueues.set(childId, queues);
+            const task = {
+              ...seed.subagents[0]!,
+              id: taskId,
+              threadId,
+              runId: admissionId,
+              parentNodeId: NodeId.make(`admission-root-${index}`),
+              origin: "app_owned" as const,
+              childThreadId: childId,
+              prompt: command.text,
+              status: "running" as const,
+              title: command.text,
+            };
+            durableProjection = {
+              ...durableProjection,
+              runs: [
+                ...durableProjection.runs,
+                {
+                  ...seed.runs[0]!,
+                  id: admissionId,
+                  threadId,
+                  delegationAdmission: command.delegation,
+                  providerThreadId: null,
+                  activeAttemptId: null,
+                },
+              ],
+              subagents: [...durableProjection.subagents, task],
+            };
+            return {
+              sequence: admissions,
+              storedEvents: [
+                eventFor({ type: "subagent.updated", threadId, payload: task } as never),
+                eventFor({
+                  type: "run.created",
+                  threadId: childId,
+                  payload: independentJobs.get(childId)!.runs[0]!,
+                } as never),
+              ],
+            };
+          });
+        const parallelLease = yield* service.prepare(session, {
+          threadId,
+          clientRequestId: "parallel-voice-replay",
+        });
+        const ready = yield* service.subscribe(session, parallelLease).pipe(
+          Stream.filter((event) => event.type === "status" && event.session.status === "active"),
+          Stream.runHead,
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* service.start(session, {
+          ...parallelLease,
+          clientRequestId: "parallel-start",
+          offerSdp: "synthetic-offer",
+        });
+        const replayEvents = runtimeEvents.get(parallelLease.providerSessionId!)!;
+        yield* Queue.offer(replayEvents, {
+          type: "started",
+          plannerNativeThreadId: parallelLease.plannerNativeThreadId!,
+          realtimeSessionId: `${parallelLease.leaseId}:${parallelLease.generation}`,
+        });
+        yield* Queue.offer(replayEvents, {
+          type: "sdp",
+          plannerNativeThreadId: parallelLease.plannerNativeThreadId!,
+          sdp: "synthetic-answer",
+        });
+        yield* Fiber.join(ready);
+        const submit = (
+          index: number,
+          plannerTurnId = "one-native-start-or-steer-turn",
+          message = `Independent request ${index}`,
+        ) =>
+          submitWork!({
+            plannerNativeThreadId: parallelLease.plannerNativeThreadId!,
+            plannerTurnId,
+            callId: `native-call-${index}-${plannerTurnId}`,
+            requestId: `logical-task-${index}`,
+            message,
+          });
+        const receipts: Array<Record<string, string>> = [];
+        for (let index = 1; index <= 3; index++)
+          receipts.push(decodeJson(yield* submit(index)) as Record<string, string>);
+        assert.equal(admissions, 3, "one native turn can admit three independent logical tasks");
+        assert.deepEqual(decodeJson(yield* submit(1, "repeated-native-handoff")), receipts[0]);
+        assert.equal(admissions, 3, "repeated handoffs retain the same logical task identity");
+        assert.isTrue(
+          Exit.isFailure(
+            yield* Effect.exit(
+              submit(1, "changed-handoff", "Different task under the same identity"),
+            ),
+          ),
+        );
+        const taskControl = (
+          index: number,
+          action: "status" | "steer",
+          callId: string,
+          message?: string,
+          runId = receipts[index]!.runId!,
+        ) =>
+          controlWork!({
+            plannerNativeThreadId: parallelLease.plannerNativeThreadId!,
+            plannerTurnId: `control-${callId}`,
+            callId,
+            taskId: receipts[index]!.taskId!,
+            runId,
+            action,
+            ...(message === undefined ? {} : { message }),
+          });
+        const parallelStatus = decodeJson(
+          yield* controlWork!({
+            plannerNativeThreadId: parallelLease.plannerNativeThreadId!,
+            plannerTurnId: "status-all",
+            callId: "status-all",
+            action: "status",
+          }),
+        ) as { tasks: unknown[]; delegatedTasks: Array<{ status: string; resultReady: boolean }> };
+        assert.deepEqual(
+          parallelStatus.tasks,
+          [],
+          "completed admissions are not finished provider work",
+        );
+        assert.deepEqual(
+          parallelStatus.delegatedTasks.map((task) => [task.status, task.resultReady]),
+          Array.from({ length: 3 }, () => ["running", false]),
+        );
+        const chunk = "First useful finding while the other tasks are still running.";
+        const chunkArrived = yield* Deferred.make<void>();
+        contextSignals.set(
+          JSON.stringify({
+            type: "background_task_output",
+            taskId: receipts[0]!.taskId,
+            requestId: receipts[0]!.requestId,
+            runId: receipts[0]!.runId,
+            kind: "update",
+            resultReady: false,
+            text: chunk,
+          }),
+          chunkArrived,
+        );
+        const firstChild = receipts[0]!.threadId!;
+        const streaming = independentJobs.get(firstChild)!;
+        independentJobs.set(firstChild, {
+          ...streaming,
+          turnItems: streaming.turnItems.map((item) =>
+            item.type === "assistant_message" && item.ordinal === 2
+              ? { ...item, text: `${chunk}\n\nUnfinished tail` }
+              : item,
+          ),
+        });
+        const publishChild = (index: number, eventType: "run.updated" | "turn-item.updated") => {
+          const childId = receipts[index]!.threadId!;
+          const child = independentJobs.get(childId)!;
+          return Queue.offer(
+            independentQueues.get(childId)!.get(eventType)!,
+            eventFor({
+              type: eventType,
+              threadId: childId,
+              runId: receipts[index]!.runId,
+              payload: eventType === "run.updated" ? child.runs[0]! : child.turnItems[0]!,
+            } as never),
+          );
+        };
+        yield* publishChild(0, "turn-item.updated");
+        yield* Deferred.await(chunkArrived);
+        const steersBefore = steers;
+        yield* taskControl(1, "steer", "refine-second", "Focus on the smaller issue.");
+        yield* taskControl(1, "steer", "refine-second", "Focus on the smaller issue.");
+        assert.equal(steers, steersBefore + 1);
+        assert.equal(
+          independentJobs.get(receipts[1]!.threadId!)!.messages.at(-1)!.text,
+          "Focus on the smaller issue.",
+        );
+        assert.isTrue(
+          Exit.isFailure(
+            yield* Effect.exit(
+              taskControl(
+                1,
+                "steer",
+                "foreign-run",
+                "Must not reach task three",
+                receipts[2]!.runId,
+              ),
+            ),
+          ),
+        );
+        speechObserved = new Promise<void>((resolve) => {
+          resolveSpeech = resolve;
+        });
+        independentJobs.set(firstChild, independentSeeds.get(firstChild)!);
+        yield* publishChild(0, "run.updated");
+        yield* Effect.promise(() => speechObserved);
+        assert.deepEqual(decodeJson(spoken.at(-1)!.text), {
+          type: "background_task_output",
+          taskId: receipts[0]!.taskId,
+          requestId: receipts[0]!.requestId,
+          runId: receipts[0]!.runId,
+          kind: "result",
+          resultReady: true,
+          text: "Final findings for task 1.",
+        });
+        assert.equal(independentJobs.get(receipts[1]!.threadId!)!.runs[0]!.status, "running");
+        assert.equal(independentJobs.get(receipts[2]!.threadId!)!.runs[0]!.status, "running");
+        const completedChild = independentJobs.get(firstChild)!;
+        const completedRun = completedChild.runs[0]!;
+        independentJobs.set(firstChild, {
+          ...completedChild,
+          runs: [
+            ...completedChild.runs,
+            {
+              ...completedRun,
+              id: RunId.make("nested-admission-status-only"),
+              ordinal: completedRun.ordinal + 1,
+              delegationAdmission: { modelSelection: completedChild.thread.modelSelection },
+            },
+            {
+              ...completedRun,
+              id: RunId.make("foreign-followup-task-run"),
+              ordinal: completedRun.ordinal + 2,
+              status: "running",
+              delegatedTaskId: NodeId.make("foreign-followup-task"),
+            },
+          ],
+        });
+        const exactTask = decodeJson(
+          yield* controlWork!({
+            plannerNativeThreadId: parallelLease.plannerNativeThreadId!,
+            plannerTurnId: "exact-task-status",
+            callId: "exact-task-status",
+            action: "status",
+            taskId: receipts[0]!.taskId!,
+          }),
+        ) as { delegatedTasks: Array<{ runId: string; resultReady: boolean }> };
+        assert.equal(
+          exactTask.delegatedTasks[0]!.runId,
+          receipts[0]!.runId,
+          "task status skips nested admission runs",
+        );
+        assert.isTrue(exactTask.delegatedTasks[0]!.resultReady);
+        assert.isTrue(
+          Exit.isFailure(
+            yield* Effect.exit(
+              taskControl(
+                0,
+                "steer",
+                "foreign-followup",
+                "Do not steer another task in the same child",
+                "foreign-followup-task-run",
+              ),
+            ),
+          ),
+        );
+        const originalTask = durableProjection.subagents.find(
+          (task) => task.id === receipts[0]!.taskId,
+        )!;
+        durableProjection = {
+          ...durableProjection,
+          subagents: [
+            ...durableProjection.subagents,
+            { ...originalTask, id: NodeId.make("foreign-followup-task") },
+          ],
+        };
+        const followupStatus = decodeJson(
+          yield* controlWork!({
+            plannerNativeThreadId: parallelLease.plannerNativeThreadId!,
+            plannerTurnId: "followup-task-status",
+            callId: "followup-task-status",
+            action: "status",
+            taskId: "foreign-followup-task",
+          }),
+        ) as { delegatedTasks: Array<{ runId: string }> };
+        assert.equal(
+          followupStatus.delegatedTasks[0]!.runId,
+          "foreign-followup-task-run",
+          "persisted follow-up ownership remains readable",
+        );
+        const aggregateAfterAdmission = decodeJson(
+          yield* controlWork!({
+            plannerNativeThreadId: parallelLease.plannerNativeThreadId!,
+            plannerTurnId: "aggregate-after-admission",
+            callId: "aggregate-after-admission",
+            action: "status",
+          }),
+        ) as { delegatedTasks: Array<{ taskId: string; resultReady: boolean }> };
+        assert.isTrue(
+          aggregateAfterAdmission.delegatedTasks.find(
+            (task) => task.taskId === receipts[0]!.taskId,
+          )!.resultReady,
+        );
+        const finished = decodeJson(yield* taskControl(0, "status", "first-result")) as {
+          delegatedTasks: Array<{ resultReady: boolean; result: string }>;
+        };
+        assert.isTrue(finished.delegatedTasks[0]!.resultReady);
+        assert.equal(finished.delegatedTasks[0]!.result, "Final findings for task 1.");
+        const beforeDelete = independentJobs.get(firstChild)!;
+        independentJobs.set(firstChild, {
+          ...beforeDelete,
+          thread: { ...beforeDelete.thread, deletedAt: yield* DateTime.now },
+        });
+        const afterDelete = decodeJson(
+          yield* controlWork!({
+            plannerNativeThreadId: parallelLease.plannerNativeThreadId!,
+            plannerTurnId: "deleted-child-status",
+            callId: "deleted-child-status",
+            action: "status",
+          }),
+        ) as {
+          delegatedTasks: Array<{ taskId: string; resultReady: boolean; result: string | null }>;
+        };
+        assert.isFalse(
+          afterDelete.delegatedTasks.find((task) => task.taskId === receipts[0]!.taskId)!
+            .resultReady,
+        );
+        assert.isNull(
+          afterDelete.delegatedTasks.find((task) => task.taskId === receipts[0]!.taskId)!.result,
+        );
+        const failedChild = receipts[2]!.threadId!;
+        const failedState = JSON.stringify({
+          type: "background_task_state",
+          runId: receipts[2]!.runId,
+          status: "failed",
+          resultReady: false,
+        });
+        const failureArrived = yield* Deferred.make<void>();
+        contextSignals.set(
+          JSON.stringify({
+            type: "background_task_output",
+            taskId: receipts[2]!.taskId,
+            requestId: receipts[2]!.requestId,
+            runId: receipts[2]!.runId,
+            kind: "update",
+            resultReady: false,
+            text: failedState,
+          }),
+          failureArrived,
+        );
+        const third = independentJobs.get(failedChild)!;
+        independentJobs.set(failedChild, {
+          ...third,
+          runs: third.runs.map((run) => ({ ...run, status: "failed" })),
+        });
+        yield* publishChild(2, "run.updated");
+        yield* Deferred.await(failureArrived);
+        assert.isTrue(
+          Exit.isFailure(
+            yield* Effect.exit(
+              taskControl(2, "steer", "failed-task", "Do not replace failed work"),
+            ),
+          ),
+        );
+        assert.equal(admissions, 3, "failure and rejected steering never create replacement tasks");
+        yield* service.stop(session, { ...parallelLease, clientRequestId: "parallel-end" });
+        assert.equal(
+          independentJobs.get(receipts[1]!.threadId!)!.runs[0]!.status,
+          "running",
+          "EndCall does not cancel independent work",
+        );
       });
       yield* program.pipe(
         Effect.withTracer(deliveryTracer),

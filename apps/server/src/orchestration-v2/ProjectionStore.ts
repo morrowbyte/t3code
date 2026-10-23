@@ -4424,6 +4424,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   OR run.run_id = (
                     SELECT latest.run_id FROM orchestration_v2_projection_runs AS latest
                     WHERE latest.thread_id = ${threadId}
+                      AND json_extract(latest.payload_json, '$.delegationAdmission') IS NULL
                     ORDER BY latest.ordinal DESC LIMIT 1
                   )
                   -- Retain the latest run for each provider thread with lost
@@ -5946,6 +5947,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               SELECT candidate.run_id
               FROM orchestration_v2_projection_runs candidate
               WHERE candidate.thread_id = t.thread_id
+                AND json_extract(candidate.payload_json, '$.delegationAdmission') IS NULL
                 AND NOT (
                   candidate.status = 'queued'
                   AND json_extract(candidate.payload_json, '$.queueHeld') IS 1
@@ -5957,6 +5959,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               SELECT candidate.run_id
               FROM orchestration_v2_projection_runs candidate
               WHERE candidate.thread_id = t.thread_id
+                AND json_extract(candidate.payload_json, '$.delegationAdmission') IS NULL
                 AND candidate.status <> 'queued'
                 AND NOT (
                   candidate.status = 'cancelled'
@@ -6168,6 +6171,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             LEFT JOIN orchestration_v2_projection_runs r ON r.run_id = (
               SELECT latest.run_id FROM orchestration_v2_projection_runs latest
               WHERE latest.thread_id = t.thread_id
+                AND json_extract(latest.payload_json, '$.delegationAdmission') IS NULL
               ORDER BY latest.ordinal DESC, latest.run_id DESC
               LIMIT 1
             )

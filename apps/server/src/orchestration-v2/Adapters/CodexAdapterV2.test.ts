@@ -10,6 +10,7 @@ import {
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
+  LiveVoiceError,
   CheckpointId,
   CodexSettings,
   EnvironmentId,
@@ -25,6 +26,7 @@ import {
   ProjectId,
   type ProviderApprovalDecision,
   ProviderInstanceId,
+  ProviderDriverKind,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
@@ -133,6 +135,39 @@ describe("original LiveVoice transcript segments", () => {
 });
 
 describe("restricted conversational LiveVoice tools", () => {
+  it.effect(
+    "returns bounded refusal reasons without native failure details or replacement work",
+    () =>
+      Effect.gen(function* () {
+        for (const code of ["stale_lease", "dispatch_conflict"] as const) {
+          const result = yield* CodexAdapterV2.routeCodexLiveVoiceTool(
+            {
+              onSubmitWork: () =>
+                Effect.fail(
+                  new ProviderAdapter.ProviderAdapterProtocolError({
+                    driver: ProviderDriverKind.make("codex"),
+                    detail: "Private runtime detail",
+                    cause: new LiveVoiceError({ code }),
+                  }),
+                ),
+            },
+            {
+              threadId: "planner",
+              turnId: "turn",
+              callId: "call",
+              namespace: "t3",
+              tool: "t3_submit_voice_work",
+              arguments: { message: "Existing logical task", requestId: "stable-task" },
+            },
+          );
+          assert.isFalse(result.success);
+          assert.deepEqual(result.contentItems, [
+            { type: "inputText", text: JSON.stringify({ accepted: false, reason: code }) },
+          ]);
+        }
+      }),
+  );
+
   it.effect("keeps correlated status and steering available while submitted work is held", () =>
     Effect.gen(function* () {
       const completion = yield* Deferred.make<void>();

@@ -19,6 +19,8 @@ import {
   TurnItemId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
@@ -32,6 +34,8 @@ import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as ProjectStore from "./ProjectStore.ts";
+import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -47,14 +51,297 @@ const adapter = {
 } as ProviderAdapter.ProviderAdapterV2["Service"];
 const layerDatabase = SqlitePersistence.layerMemory;
 const layerTest = Layer.mergeAll(
+  ThreadCommandExecutor.layer,
   layerDatabase,
   ProjectionStore.layer.pipe(Layer.provide(layerDatabase)),
+  ProjectStore.layer.pipe(Layer.provide(layerDatabase)),
   EffectOutbox.layer.pipe(Layer.provide(layerDatabase)),
   ProviderReplayHarness.layerWithRegistry(
     { name: "control-reads" },
     ProviderAdapterRegistry.layerFromAdapters([adapter]),
     { databaseLayer: layerDatabase, runEffectWorker: false },
   ),
+);
+
+it.effect(
+  "admits three independent conversation tasks while ordinary provider work remains active",
+  () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const projects = yield* ProjectStore.ProjectStoreV2;
+      const destinationProject = ProjectId.make("project:independent-destination");
+      yield* projects.apply({
+        sequence: 1,
+        eventId: EventId.make("create-independent-destination"),
+        aggregateKind: "project",
+        aggregateId: destinationProject,
+        occurredAt: "2026-10-23T18:00:00Z",
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        type: "project.created",
+        payload: {
+          projectId: destinationProject,
+          title: "Destination",
+          workspaceRoot: "/destination-project",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: "2026-10-23T18:00:00Z",
+          updatedAt: "2026-10-23T18:00:00Z",
+        },
+      });
+      const threadId = ThreadId.make("thread:parallel-conversation-work");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("create-parallel-conversation-work"),
+        threadId,
+        projectId: ProjectId.make("project:parallel-conversation-work"),
+        title: "Conversation",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("ordinary-work-before-delegations"),
+        threadId,
+        messageId: MessageId.make("message:ordinary-work"),
+        text: "Keep the existing expert task running.",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const original = (yield* projections.getThreadProjection(threadId)).runs[0]!;
+      for (const [index, text] of [
+        "Research the requested releases.",
+        "Inspect the unrelated project issue.",
+        "Check today's requested posts.",
+      ].entries()) {
+        const command = {
+          type: "message.dispatch" as const,
+          commandId: CommandId.make(`independent-conversation-task-${index}`),
+          threadId,
+          messageId: MessageId.make(`message:independent-conversation-task-${index}`),
+          text,
+          attachments: [],
+          dispatchMode: { type: "start_immediately" as const },
+          delegation: { modelSelection, ...(index === 2 ? { projectId: destinationProject } : {}) },
+          createdBy: "user" as const,
+          creationSource: "voice" as const,
+        };
+        const accepted = yield* orchestrator.dispatch(command);
+        const parent = yield* projections.getThreadProjection(threadId);
+        assert.deepEqual(
+          parent.runs.find((run) => run.id === original.id),
+          original,
+        );
+        const task = parent.subagents.find((child) => child.prompt === text);
+        assert.ok(task?.childThreadId);
+        assert.equal(task.status, "running");
+        const admission = parent.runs.find((run) => run.id === task.runId)!;
+        assert.equal(admission.status, "completed");
+        assert.isNull(admission.providerThreadId);
+        assert.isNull(admission.activeAttemptId);
+        assert.ok(parent.nodes.some((node) => node.id === admission.rootNodeId));
+        const child = yield* projections.getThreadProjection(task.childThreadId);
+        if (index === 2) {
+          assert.equal(child.thread.projectId, destinationProject);
+          assert.isNull(child.thread.worktreePath);
+          assert.isNull(child.thread.branch);
+        }
+        assert.equal(child.runs[0]!.status, "starting");
+        assert.equal(child.messages[0]!.text, text);
+        assert.equal(child.messages.length, 1, "only the concrete brief reaches a fresh child");
+        const effects = yield* outbox.listByCommandId(command.commandId);
+        const starts = effects.filter((effect) => effect.request.type === "provider-turn.start");
+        assert.equal(starts.length, 1);
+        assert.equal(starts[0]!.threadId, child.thread.id);
+        const replay = yield* orchestrator.dispatch(command);
+        assert.equal(replay.sequence, accepted.sequence);
+        const changed = yield* orchestrator
+          .dispatch({ ...command, text: "A different task." })
+          .pipe(Effect.result);
+        assert.isTrue(Result.isFailure(changed), "a reused logical request cannot change its task");
+        assert.isTrue(
+          Result.isFailure(
+            yield* orchestrator
+              .dispatch({ ...command, dispatchMode: { type: "queue_after_active" } })
+              .pipe(Effect.result),
+          ),
+          "a retry cannot change delegation into a queued send",
+        );
+        const { delegation: _delegation, ...ordinaryRetry } = command;
+        assert.isTrue(
+          Result.isFailure(yield* orchestrator.dispatch(ordinaryRetry).pipe(Effect.result)),
+          "a retry must retain the explicit delegation intent",
+        );
+      }
+      const parent = yield* projections.getThreadProjection(threadId);
+      assert.equal(parent.subagents.length, 3);
+      assert.equal(parent.runs.filter((run) => run.status === "queued").length, 0);
+      assert.equal(parent.runs.filter((run) => run.status === "starting").length, 1);
+      const firstTask = parent.subagents[0]!;
+      const sink = yield* EventSink.EventSinkV2;
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make("finish-original-task-for-nested-admission"),
+            type: "subagent.updated",
+            threadId,
+            runId: firstTask.runId!,
+            occurredAt: yield* DateTime.now,
+            payload: { ...firstTask, status: "completed", result: "Original result" },
+          },
+        ],
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("nested-conversation-admission"),
+        threadId: firstTask.childThreadId!,
+        messageId: MessageId.make("nested-conversation-admission"),
+        text: "A separate nested task",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        delegation: { modelSelection },
+        createdBy: "user",
+        creationSource: "voice",
+      });
+      const nested = yield* projections.getThreadProjection(firstTask.childThreadId!);
+      assert.equal(
+        nested.subagents.length,
+        1,
+        "the task remains owned by the destination conversation",
+      );
+      assert.notEqual(nested.subagents[0]!.childThreadId, nested.thread.id);
+      assert.equal(
+        (yield* projections.getThreadProjection(threadId)).subagents.length,
+        3,
+        "no follow-up overwrites the new task identity",
+      );
+      const otherId = ThreadId.make("thread:z-other-conversation");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("create-opposite-conversation"),
+        threadId: otherId,
+        projectId: parent.thread.projectId,
+        title: "Other conversation",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("start-opposite-conversation"),
+        threadId: otherId,
+        messageId: MessageId.make("start-opposite-conversation"),
+        text: "Existing direct work",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const otherRun = (yield* projections.getThreadProjection(otherId)).runs[0]!;
+      const cross = (source: ThreadId, sourceRun: RunId, destination: ThreadId, key: string) => ({
+        type: "message.dispatch" as const,
+        commandId: CommandId.make(key),
+        threadId: destination,
+        senderThreadId: source,
+        messageId: MessageId.make(key),
+        text: key,
+        attachments: [],
+        dispatchMode: { type: "start_immediately" as const },
+        delegation: {
+          modelSelection,
+          caller: { threadId: source, runId: sourceRun, providerInstanceId: instanceId },
+        },
+        createdBy: "agent" as const,
+        creationSource: "mcp" as const,
+      });
+      yield* Effect.all(
+        [
+          orchestrator.dispatch(cross(threadId, original.id, otherId, "cross-a-to-b")),
+          orchestrator.dispatch(cross(otherId, otherRun.id, threadId, "cross-b-to-a")),
+        ],
+        { concurrency: "unbounded" },
+      );
+      const locks = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+      const held = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const holding = yield* locks
+        .withLock(
+          threadId,
+          Deferred.succeed(held, undefined).pipe(Effect.andThen(Deferred.await(release))),
+        )
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(held);
+      const stopping = yield* orchestrator
+        .dispatch({
+          type: "thread.stop",
+          threadId,
+          commandId: CommandId.make("stop-before-cross-admission"),
+        })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      const late = yield* orchestrator
+        .dispatch(cross(threadId, original.id, otherId, "late-cross-after-source-stop"))
+        .pipe(Effect.result, Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(holding);
+      yield* Fiber.join(stopping);
+      assert.isTrue(
+        Result.isFailure(yield* Fiber.join(late)),
+        "source Stop wins even when the destination is still live",
+      );
+      assert.equal(
+        (yield* projections.getThreadProjection(otherId)).subagents.length,
+        1,
+        "the stopped caller adds no destination task",
+      );
+      yield* orchestrator.dispatch({
+        type: "thread.stop",
+        threadId,
+        commandId: CommandId.make("stop-before-late-conversation-admission"),
+      });
+      const afterStop = {
+        type: "message.dispatch" as const,
+        threadId,
+        commandId: CommandId.make("late-conversation-admission"),
+        messageId: MessageId.make("late-conversation-admission"),
+        text: "Late provider tool",
+        senderThreadId: threadId,
+        attachments: [],
+        dispatchMode: { type: "start_immediately" as const },
+        delegation: {
+          modelSelection,
+          caller: { threadId, runId: original.id, providerInstanceId: instanceId },
+        },
+        createdBy: "agent" as const,
+        creationSource: "mcp" as const,
+      };
+      assert.isTrue(
+        Result.isFailure(yield* orchestrator.dispatch(afterStop).pipe(Effect.result)),
+        "a fresh MCP admission cannot escape a committed Stop",
+      );
+      yield* orchestrator.dispatch({
+        ...afterStop,
+        commandId: CommandId.make("fresh-user-after-stop"),
+        messageId: MessageId.make("fresh-user-after-stop"),
+        createdBy: "user",
+        creationSource: "voice",
+        delegation: { modelSelection },
+      });
+    }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect(
@@ -1437,6 +1724,25 @@ it.effect.each([false, true])("rejects thread.create for an existing id (deleted
       },
     } as const;
     yield* orchestrator.dispatch(create);
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make(`fork-source:${threadId}`),
+      threadId,
+      messageId: MessageId.make(`fork-source:${threadId}`),
+      text: "Completed fork source",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const sourceRun = (yield* projections.getThreadProjection(threadId)).runs[0]!;
+    yield* projections.apply({
+      id: EventId.make(`complete-fork-source:${threadId}`),
+      type: "run.updated",
+      threadId,
+      occurredAt: yield* DateTime.now,
+      payload: { ...sourceRun, status: "completed", completedAt: yield* DateTime.now },
+    });
     if (deleted) {
       yield* orchestrator.dispatch({
         type: "thread.delete",
@@ -1465,6 +1771,23 @@ it.effect.each([false, true])("rejects thread.create for an existing id (deleted
     const retried = yield* orchestrator.dispatch(duplicate).pipe(Effect.flip);
     assert.equal(retried._tag, "OrchestratorCommandPreviouslyRejectedError");
     assert.include(retried.message, refused.message);
+    const duplicateFork = yield* orchestrator
+      .dispatch({
+        type: "thread.fork",
+        commandId: CommandId.make(`duplicate-fork:${threadId}`),
+        sourceThreadId: threadId,
+        targetThreadId: threadId,
+        sourcePoint: { type: "run", runId: sourceRun.id },
+        createdBy: "user",
+        creationSource: "web",
+      })
+      .pipe(Effect.result);
+    assert.ok(
+      Result.isFailure(duplicateFork),
+      "fork cannot overwrite a live or tombstoned identity",
+    );
+    assert.equal(duplicateFork.failure._tag, "OrchestratorThreadAlreadyExistsError");
+    assert.deepEqual(yield* projections.getThread(threadId), before);
   }).pipe(Effect.provide(layerTest)),
 );
 

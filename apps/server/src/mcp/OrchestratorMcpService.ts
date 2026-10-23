@@ -14,6 +14,7 @@ import {
   type OrchestrationV2ThreadLaunchWorkspaceStrategy,
   type OrchestrationV2TurnItem,
   OrchestratorMcpFailure,
+  OrchestratorMcpConversationDelegation,
   type OrchestratorMcpCapabilitiesInput,
   type OrchestratorMcpCapabilitiesResult,
   type OrchestratorMcpModelOption,
@@ -103,6 +104,7 @@ import {
 } from "../orchestration-v2/DispatchModeLimit.ts";
 import { runOutcome } from "../orchestration-v2/RestartBackgroundNote.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as ConversationWorkCoordinator from "../orchestration-v2/ConversationWorkCoordinator.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import { buildBoundedThreadStreamSnapshot } from "../orchestration-v2/ThreadStream.ts";
 import { THREAD_HISTORY_SNAPSHOT_ROW_LIMIT } from "../orchestration-v2/threadHistoryPaging.ts";
@@ -123,6 +125,9 @@ import * as Metrics from "../observability/Metrics.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
+const encodeConversationRequest = Schema.encodeSync(
+  Schema.fromJsonString(OrchestratorMcpConversationDelegation),
+);
 const MAX_WAIT_TIMEOUT_MS = 60 * 60 * 1_000;
 const TASK_WAKE_EVENTS = [
   { thread: "parent", eventType: "subagent.updated" },
@@ -223,6 +228,10 @@ export interface OrchestratorMcpServiceShape {
     scope: McpInvocationScope,
     input: OrchestratorMcpThreadSendInput,
   ) => Effect.Effect<OrchestratorMcpThreadSendResult, OrchestratorMcpFailure>;
+  readonly replayThreadDelegation: (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpThreadSendInput,
+  ) => Effect.Effect<Option.Option<OrchestratorMcpThreadSendResult>, OrchestratorMcpFailure>;
   readonly waitForThread: (
     scope: McpInvocationScope,
     input: OrchestratorMcpThreadWaitInput,
@@ -1090,6 +1099,7 @@ function timelineItem(input: {
 const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
+  const conversationWork = yield* ConversationWorkCoordinator.ConversationWorkCoordinator;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
@@ -2413,7 +2423,95 @@ const make = Effect.gen(function* () {
       }),
   );
 
+  const replayThreadDelegation = Effect.fn("OrchestratorMcpService.replayThreadDelegation")(
+    function* (scope: McpInvocationScope, input: OrchestratorMcpThreadSendInput) {
+      yield* requireCapability(scope);
+      if (scope.client?.access === "read-only")
+        return yield* failure("capability_denied", "This MCP client has read-only access.");
+      if (
+        input.delegation === undefined ||
+        input.clientRequestId === undefined ||
+        (input.mode !== undefined && input.mode !== "auto")
+      )
+        return Option.none();
+      const commandId = stableCommandId({
+        scope,
+        requestKey: input.clientRequestId,
+        operation: "thread-send",
+      });
+      if (!(yield* threadManagement.hasReceipt(commandId))) return Option.none();
+      const messageId = stableOperationMessageId({
+        scope,
+        requestKey: input.clientRequestId,
+        operation: "thread-send",
+      });
+      const target = yield* loadTargetThread(input.threadId);
+      const admission = target.runs.find(
+        (run) => run.userMessageId === messageId && run.delegationAdmission !== undefined,
+      );
+      const message = target.messages.find((candidate) => candidate.id === messageId);
+      const task = target.subagents.find(
+        (candidate) =>
+          candidate.runId === admission?.id &&
+          candidate.origin === "app_owned" &&
+          candidate.parentNodeId === admission?.rootNodeId,
+      );
+      const caller = admission?.delegationAdmission?.caller;
+      if (
+        admission?.delegationAdmission?.requestJson !==
+          encodeConversationRequest(input.delegation) ||
+        message?.text !== input.message ||
+        message.createdBy !== "agent" ||
+        message.creationSource !== "mcp" ||
+        message.senderThreadId !== scope.thread?.threadId ||
+        (scope.thread === undefined
+          ? caller !== undefined
+          : caller?.threadId !== scope.thread.threadId ||
+            caller.providerInstanceId !== scope.thread.providerInstanceId) ||
+        task?.childThreadId == null
+      )
+        return yield* failure(
+          "invalid_request",
+          "The accepted delegation has a different request.",
+        );
+      if (scope.thread !== undefined) {
+        const source = yield* threadManagement
+          .getThreadShell(scope.thread.threadId)
+          .pipe(Effect.mapError(threadManagementFailure));
+        if (source === null || source.deletedAt !== null)
+          return yield* failure("thread_not_found", "The calling conversation is unavailable.");
+      }
+      const child = yield* threadManagement
+        .getThreadProjection(task.childThreadId)
+        .pipe(Effect.mapError(threadManagementFailure));
+      const childRun = child.runs.find(
+        (run) => run.ordinal === 1 && run.delegationAdmission === undefined,
+      );
+      if (
+        child.thread.deletedAt !== null ||
+        child.thread.lineage.parentThreadId !== target.thread.id ||
+        child.thread.lineage.relationshipToParent !== "subagent" ||
+        child.thread.forkedFrom?.type !== "node" ||
+        child.thread.forkedFrom.nodeId !== task.id ||
+        childRun === undefined
+      )
+        return yield* failure("task_not_found", "The admitted child binding is unavailable.");
+      return Option.some({
+        threadId: input.threadId,
+        messageId,
+        runId: admission!.id,
+        taskId: task.id,
+        childThreadId: child.thread.id,
+        childRunId: childRun.id,
+        admissionStatus: "completed" as const,
+        status: childRun.status,
+        delivery: "delegated" as const,
+      });
+    },
+  );
+
   return OrchestratorMcpService.of({
+    replayThreadDelegation,
     externalDelegateTask: Effect.fn("OrchestratorMcpService.externalDelegateTask")((scope, input) =>
       Effect.gen(function* () {
         const { parent, run } = yield* loadExternalParent(scope, input, true, false);
@@ -3237,6 +3335,8 @@ const make = Effect.gen(function* () {
       } satisfies OrchestratorMcpThreadReadResult;
     }),
     sendToThread: Effect.fn("OrchestratorMcpService.sendToThread")(function* (scope, input) {
+      const replayed = yield* replayThreadDelegation(scope, input);
+      if (Option.isSome(replayed)) return replayed.value;
       const { parent, limits, target } = yield* loadScopedThread(scope, input.threadId);
       yield* assertLiveCallerForOtherThread(scope, parent, target);
       yield* resolveRuntimeMode(limits.runtimeMode, target.thread.runtimeMode);
@@ -3249,6 +3349,116 @@ const make = Effect.gen(function* () {
         requestKey: key,
         operation: "thread-send",
       });
+      if (input.delegation !== undefined) {
+        if (
+          input.clientRequestId === undefined ||
+          (input.mode !== undefined && input.mode !== "auto")
+        )
+          return yield* failure(
+            "invalid_request",
+            "Independent delegation requires clientRequestId and cannot be combined with a send/steer mode.",
+          );
+        const requestJson = encodeConversationRequest(input.delegation);
+        const accepted = target.runs.find(
+          (run) => run.userMessageId === messageId,
+        )?.delegationAdmission;
+        if (accepted !== undefined && accepted.requestJson !== requestJson)
+          return yield* failure(
+            "invalid_request",
+            "The accepted delegation has a different request.",
+          );
+        if (accepted === undefined && parent !== undefined) yield* assertLiveCaller(scope, parent);
+        const callerRun =
+          parent === undefined
+            ? undefined
+            : (ThreadManagementService.latestActiveRun(parent) ??
+              parent.runs
+                .filter(
+                  (run) =>
+                    run.delegationAdmission === undefined &&
+                    run.providerInstanceId === scope.thread?.providerInstanceId &&
+                    parent.subagents.some(
+                      (task) =>
+                        task.runId === run.id &&
+                        task.origin === "provider_native" &&
+                        isOrchestrationV2WorkActive(task.status),
+                    ),
+                )
+                .toSorted((a, b) => b.ordinal - a.ordinal)[0]);
+        if (parent !== undefined && callerRun === undefined)
+          return yield* failure(
+            "parent_not_active",
+            "The calling provider has no active source run.",
+          );
+        const projectId =
+          accepted?.projectId ?? input.delegation.projectId ?? target.thread.projectId;
+        yield* assertLiveCallerForOtherProject(scope, parent, projectId);
+        yield* requireProject(projectId);
+        const destination = { ...target, thread: { ...target.thread, projectId } };
+        const commandId = stableCommandId({ scope, requestKey: key, operation: "thread-send" });
+        const delegation =
+          accepted ??
+          (yield* Effect.gen(function* () {
+            const selected = yield* resolveTargetRechecking({
+              parent: destination,
+              target: input.delegation!.target,
+              providers: yield* loadProviders,
+              skipProjectEnablementFilter: yield* threadManagement.hasReceipt(commandId),
+            });
+            const runtimeMode = yield* resolveRuntimeMode(
+              target.thread.runtimeMode,
+              input.delegation!.runtimeMode,
+              selected,
+            );
+            yield* resolveRuntimeMode(limits.runtimeMode, runtimeMode);
+            const interactionMode = yield* resolveInteractionMode(
+              target.thread.interactionMode,
+              input.delegation!.interactionMode,
+            );
+            yield* resolveInteractionMode(limits.interactionMode, interactionMode);
+            return {
+              requestJson,
+              ...(parent === undefined || callerRun === undefined
+                ? {}
+                : {
+                    caller: {
+                      threadId: parent.thread.id,
+                      runId: callerRun.id,
+                      providerInstanceId: scope.thread!.providerInstanceId,
+                    },
+                  }),
+              modelSelection: selected.modelSelection,
+              projectId,
+              runtimeMode,
+              interactionMode,
+              ...(input.delegation!.title === undefined ? {} : { title: input.delegation!.title }),
+            };
+          }));
+        const admitted = yield* conversationWork
+          .delegate({
+            projectId: target.thread.projectId,
+            commandId,
+            threadId: input.threadId,
+            messageId,
+            text: input.message,
+            createdBy: "agent",
+            creationSource: "mcp",
+            ...(parent === undefined ? {} : { senderThreadId: parent.thread.id }),
+            delegation,
+          })
+          .pipe(Effect.mapError(threadManagementFailure));
+        return {
+          threadId: input.threadId,
+          messageId,
+          runId: admitted.admissionRunId,
+          taskId: admitted.taskId,
+          childThreadId: admitted.childThreadId,
+          childRunId: admitted.childRunId,
+          admissionStatus: "completed",
+          status: admitted.status,
+          delivery: "delegated",
+        } satisfies OrchestratorMcpThreadSendResult;
+      }
       const result = yield* threadManagement
         .sendToThread({
           projectId: target.thread.projectId,
@@ -3362,4 +3572,6 @@ export const layer: Layer.Layer<
   | ProjectService.ProjectService
   | SecretRequests.SecretRequests
   | ServerSettings.ServerSettingsService
-> = Layer.effect(OrchestratorMcpService, make);
+> = Layer.effect(OrchestratorMcpService, make).pipe(
+  Layer.provide(ConversationWorkCoordinator.layer),
+);
