@@ -130,8 +130,28 @@ const targetPoint = async (
   locator: Locator | null,
   input: { readonly x?: number | undefined; readonly y?: number | undefined },
   timeout: number,
+  locatorWillCheckActionability = false,
 ) => {
   if (locator === null) return { x: input.x ?? 0, y: input.y ?? 0 };
+  if (locatorWillCheckActionability) {
+    const box = await locator.boundingBox({ timeout });
+    const viewport =
+      page.viewportSize() ??
+      (await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight })));
+    if (
+      box &&
+      box.width > 0 &&
+      box.height > 0 &&
+      box.x >= 0 &&
+      box.y >= 0 &&
+      box.x + box.width <= viewport.width &&
+      box.y + box.height <= viewport.height
+    ) {
+      // This point only places the visual cursor. Locator.click still performs
+      // its complete stability, enabled, hit-target and scrolling checks.
+      return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    }
+  }
   await locator.scrollIntoViewIfNeeded({ timeout });
   const box = await locator.boundingBox({ timeout });
   if (box) return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
@@ -662,7 +682,7 @@ export const click = async (
 ): Promise<{ readonly x: number; readonly y: number }> => {
   const timeout = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const locator = targetLocator(page, input);
-  const point = await targetPoint(page, locator, input, timeout);
+  const point = await targetPoint(page, locator, input, timeout, true);
   await pointer(point, "click");
   const options = { button: input.button ?? "left", clickCount: input.clickCount ?? 1 } as const;
   const clicked =

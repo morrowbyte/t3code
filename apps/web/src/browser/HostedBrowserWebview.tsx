@@ -62,6 +62,8 @@ export function HostedBrowserWebview(props: {
   readonly profileId: string | undefined;
   readonly zoomFactor: number;
   readonly serverDriven?: boolean;
+  /** Keeps an agent-created native server guest compositing without revealing it. */
+  readonly automationOwned?: boolean;
   readonly serverRendering?: {
     readonly colorScheme: DesktopPreviewColorScheme;
     readonly zoomFactor: number;
@@ -77,6 +79,7 @@ export function HostedBrowserWebview(props: {
     zoomFactor,
     profileId,
     serverDriven = false,
+    automationOwned = false,
     serverRendering,
   } = props;
   const clientSettingsHydrated = useClientSettingsHydrated();
@@ -295,7 +298,15 @@ export function HostedBrowserWebview(props: {
 
   if (!clientSettingsHydrated || !config) return null;
 
-  const renderingActive = active || backgroundActivity || pictureInPicture || recordingActive;
+  // Offscreen/visibility:hidden guests stop producing animation frames and
+  // accepting compositor input. Keep the agent's page paintable behind the app;
+  // this changes presentation only and does not grant control or focus it.
+  const renderingActive =
+    active ||
+    backgroundActivity ||
+    pictureInPicture ||
+    recordingActive ||
+    (serverDriven && automationOwned);
   const wrapperStyle = resolveHostedBrowserWebviewWrapperStyle({
     active,
     renderingActive,
@@ -337,7 +348,11 @@ export function HostedBrowserWebview(props: {
           {...({ allowpopups: "true" } as unknown as { readonly allowpopups?: boolean })}
           src={webviewGeneration === 0 ? initialSrc : recoverySrc}
           partition={config.partition}
-          webpreferences={config.webPreferences}
+          webpreferences={
+            serverDriven && automationOwned
+              ? `${config.webPreferences},backgroundThrottling=false`
+              : config.webPreferences
+          }
           {...(config.preloadUrl ? { preload: config.preloadUrl } : {})}
           data-preview-tab={runtimeTabId}
           data-preview-server-tab={tabId}

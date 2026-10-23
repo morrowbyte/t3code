@@ -371,11 +371,13 @@ beforeEach(() => {
   desktopConnections.length = 0;
 });
 
-it.live("hidden agent tabs avoid the attach timeout and retain ownership", () =>
+it.live("hidden agent tabs retain the desktop handshake and agent ownership", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const { broker, tabId } = yield* ready;
-      expect(desktopAttachWaits).toEqual([]);
+      // The renderer may attach after manager.open. Do not race it with a second
+      // independently stateful browser page that the user would not be viewing.
+      expect(desktopAttachWaits).toContain(tabId);
       expect(contexts).toHaveLength(1);
       expect(desktopConnections).toHaveLength(0);
       const status = yield* broker.invoke<PreviewAutomationStatus>({

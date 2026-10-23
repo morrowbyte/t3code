@@ -972,17 +972,15 @@ const make = Effect.gen(function* () {
     }
   };
 
-  const desktopRenders = (snapshot: PreviewSessionSnapshot) => {
-    if (!desktopChannel.available) return Promise.resolve(false);
-    const key = { threadId: snapshot.threadId, tabId: snapshot.tabId };
-    // A hidden agent tab need not wait for a renderer that may never attach.
-    // Preserve a real existing attachment and the normal visible/user-tab wait.
-    return Effect.runPromise(
-      snapshot.automationOwner !== undefined && snapshot.reveal === false
-        ? desktopChannel.isAttached(key)
-        : desktopChannel.awaitAttached(key, DESKTOP_ATTACH_TIMEOUT),
-    );
-  };
+  const desktopRenders = (snapshot: PreviewSessionSnapshot) =>
+    desktopChannel.available
+      ? Effect.runPromise(
+          desktopChannel.awaitAttached(
+            { threadId: snapshot.threadId, tabId: snapshot.tabId },
+            DESKTOP_ATTACH_TIMEOUT,
+          ),
+        )
+      : Promise.resolve(false);
 
   const connectDesktop = async (snapshot: PreviewSessionSnapshot) => {
     const scope = await Effect.runPromise(Scope.make());

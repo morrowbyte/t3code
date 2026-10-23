@@ -58,6 +58,7 @@ import {
 import { reconcilePreviewServerSessions, resetPreviewStateForTests } from "~/previewStateStore";
 import { AppAtomRegistryProvider } from "~/rpc/atomRegistry";
 import { ElectronBrowserHost } from "./ElectronBrowserHost";
+import { HostedBrowserWebview } from "./HostedBrowserWebview";
 
 const threadRef = scopeThreadRef(
   EnvironmentId.make("host-webview-order"),
@@ -93,14 +94,10 @@ function setup(): Disposable {
   };
 }
 
-async function renderHost() {
+async function renderHost(element = <ElectronBrowserHost />) {
   await using stack = new AsyncDisposableStack();
   const screen = stack.use(
-    await render(
-      <AppAtomRegistryProvider>
-        <ElectronBrowserHost />
-      </AppAtomRegistryProvider>,
-    ),
+    await render(<AppAtomRegistryProvider>{element}</AppAtomRegistryProvider>),
   );
   // Unmounting releases each tab on a close timer; run it now so it never fires in a later test.
   stack.defer(async () => {
@@ -114,6 +111,38 @@ async function renderHost() {
 }
 
 describe("ElectronBrowserHost", () => {
+  it.each([
+    { serverDriven: true, automationOwned: true, paintable: true },
+    { serverDriven: true, automationOwned: false, paintable: false },
+    { serverDriven: false, automationOwned: true, paintable: false },
+  ])("keeps only hidden agent-created server guests paintable: %j", async (input) => {
+    using _state = setup();
+    await using screen = await renderHost(
+      <HostedBrowserWebview
+        threadRef={threadRef}
+        tabId="agent-paintability"
+        runtimeTabId="agent-paintability"
+        initialUrl="https://example.com/owned"
+        viewport={{ _tag: "fill" }}
+        pictureInPicture={false}
+        profileId={undefined}
+        zoomFactor={1}
+        serverDriven={input.serverDriven}
+        automationOwned={input.automationOwned}
+      />,
+    );
+    const wrapper = screen.container.querySelector<HTMLElement>("[data-preview-rendering]")!;
+    expect(wrapper).not.toBeNull();
+    expect(wrapper.dataset.previewRendering).toBe(input.paintable ? "active" : "suspended");
+    expect(wrapper.style.left).toBe(input.paintable ? "0px" : "-100000px");
+    expect(wrapper.style.pointerEvents).toBe("none");
+    expect(wrapper.style.zIndex).toBe("-1");
+    expect(wrapper.querySelector("webview")?.getAttribute("aria-hidden")).toBe("true");
+    expect(wrapper.querySelector("webview")?.getAttribute("webpreferences")).toBe(
+      input.paintable ? "contextIsolation=yes,backgroundThrottling=false" : "contextIsolation=yes",
+    );
+  });
+
   it("never moves a tab's webview when the server reorders tabs by last update", async () => {
     using _state = setup();
     reconcilePreviewServerSessions(threadRef, {

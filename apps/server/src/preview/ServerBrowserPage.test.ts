@@ -225,6 +225,33 @@ describe("server browser element refs", () => {
     ]);
   });
 
+  it.each(["covered", "disabled"])(
+    "refuses an in-viewport %s target without dispatching its click",
+    async (kind) => {
+      await page.setContent(
+        `<button id="target" ${kind === "disabled" ? "disabled" : ""} style="position:absolute;left:20px;top:20px;width:150px;height:50px" onclick="window.hits++">Save</button>${kind === "covered" ? '<div style="position:fixed;inset:0;z-index:10;background:white">Blocking dialog</div>' : ""}<script>window.hits=0</script>`,
+      );
+      await expect(
+        ServerBrowserPage.click(page, { locator: "#target", timeoutMs: 200 }),
+      ).rejects.toThrow();
+      expect(await page.evaluate("window.hits")).toBe(0);
+    },
+  );
+
+  it("scrolls an offscreen semantic target into view and clicks only that target", async () => {
+    await page.setContent(
+      '<button onclick="window.wrong++">Decoy</button><div style="height:2000px"></div><button id="target" onclick="window.hits++">Save</button><script>window.hits=0;window.wrong=0</script>',
+    );
+    await ServerBrowserPage.click(page, { locator: "#target", timeoutMs: 2_000 });
+    expect(
+      await page.evaluate("({hits:window.hits,wrong:window.wrong,scrolled:scrollY>0})"),
+    ).toEqual({
+      hits: 1,
+      wrong: 0,
+      scrolled: true,
+    });
+  });
+
   it("returns from a click once it opens a dialog", async () => {
     await page.setContent(
       `<button onclick="document.body.dataset.answer = String(confirm('sure?'))">Confirm</button>`,

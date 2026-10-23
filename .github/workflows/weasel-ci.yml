@@ -132,7 +132,10 @@ jobs:
           packages/client-runtime/src/state/backgroundWorkPresentation.test.ts
       - name: Test background process controls in Chromium
         working-directory: apps/web
-        run: vp test run src/components/chat/BackgroundWorkActivity.browser.test.tsx
+        run: >-
+          vp test run
+          src/components/chat/BackgroundWorkActivity.browser.test.tsx
+          src/browser/ElectronBrowserHost.browser.test.tsx
   product_bundle:
     needs: [check]
     if: github.event_name == 'workflow_dispatch'
