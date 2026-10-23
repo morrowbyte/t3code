@@ -19,6 +19,8 @@ import * as AuthHttp from "../auth/http.ts";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ApprovalReviewHttp from "./ApprovalReviewHttp.ts";
 import * as ApprovalReviewService from "./ApprovalReviewService.ts";
+import * as HostOrders from "./ApprovalReviewHostOrders.ts";
+import * as Receiver from "./ApprovalReviewOrderReceiver.ts";
 
 class TestApi extends HttpApi.make("environment").add(EnvironmentHttpApi.groups.approvalReview) {}
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -31,7 +33,8 @@ it.effect(
         ready: {},
         read: { threadId: "thread", requestId: "request" },
         submit: {
-          threadId: "thread",
+          orderId: "order:one",
+          excerpt: { startUtf16: 0, endUtf16: 1, text: "x" },
           submissionId: "one",
           expiresAt: 1,
           action: {
@@ -87,11 +90,30 @@ it.effect(
           Layer.provide(ApprovalReviewHttp.layer),
           Layer.provide(
             Layer.mock(ApprovalReviewService.ApprovalReviewService)({
-              submit: (_input, subject) => record("submit", subject),
-              read: (_input, subject, worker) => record("read", subject, worker),
+              submit: (_input, actor) => record("submit", actor.subject),
+              read: (_input, actor, worker) =>
+                record("read", typeof actor === "string" ? actor : actor.subject, worker),
               claim: (_input, subject) => record("claim", subject),
               receipt: (_input, subject) => record("receipt", subject),
               ready: (subject) => record("ready", subject),
+            }),
+          ),
+          Layer.provide(
+            Layer.mock(HostOrders.ApprovalReviewHostOrders)({
+              create: (_input, actor) => record("orderCreate", actor.subject),
+              read: (_id, actor) => record("orderRead", actor.subject),
+              cancel: (_id, actor) => record("orderCancel", actor.subject),
+              readiness: () =>
+                Effect.succeed({
+                  enabled: false,
+                  reason: "human-authority-unconfigured",
+                  channels: [],
+                }),
+            }),
+          ),
+          Layer.provide(
+            Layer.mock(Receiver.ApprovalReviewOrderReceiver)({
+              receive: (_input, actor) => record("orderReceive", actor.subject),
             }),
           ),
           Layer.provide(AuthHttp.layerAuthenticatedAuth),

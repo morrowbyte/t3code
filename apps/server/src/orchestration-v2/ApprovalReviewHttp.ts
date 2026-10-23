@@ -1,6 +1,7 @@
 import {
   AuthApprovalReviewRequestScope,
   AuthOrchestrationOperateScope,
+  AuthOrchestrationReadScope,
   AuthApprovalReviewExecuteScope,
   EnvironmentHttpApi,
   EnvironmentAuthenticatedPrincipal,
@@ -9,13 +10,47 @@ import * as Effect from "effect/Effect";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import { requireEnvironmentScope } from "../auth/http.ts";
 import * as ApprovalReviewService from "./ApprovalReviewService.ts";
+import * as HostOrders from "./ApprovalReviewHostOrders.ts";
+import * as Receiver from "./ApprovalReviewOrderReceiver.ts";
 
 export const layer = HttpApiBuilder.group(
   EnvironmentHttpApi,
   "approvalReview",
   Effect.fnUntraced(function* (handlers) {
     const service = yield* ApprovalReviewService.ApprovalReviewService;
+    const orders = yield* HostOrders.ApprovalReviewHostOrders;
+    const receiver = yield* Receiver.ApprovalReviewOrderReceiver;
     return handlers
+      .handle("orderCreate", ({ payload }) =>
+        requireEnvironmentScope(AuthOrchestrationOperateScope).pipe(
+          Effect.flatMap((actor) => orders.create(payload, actor)),
+        ),
+      )
+      .handle("orderRead", ({ payload }) =>
+        EnvironmentAuthenticatedPrincipal.pipe(
+          Effect.flatMap((actor) => orders.read(payload.orderId, actor)),
+        ),
+      )
+      .handle("orderCancel", ({ payload }) =>
+        requireEnvironmentScope(AuthOrchestrationOperateScope).pipe(
+          Effect.flatMap((actor) => orders.cancel(payload.orderId, actor)),
+        ),
+      )
+      .handle("orderReadiness", () =>
+        requireEnvironmentScope(AuthOrchestrationReadScope).pipe(
+          Effect.flatMap((actor) => orders.readiness(actor)),
+        ),
+      )
+      .handle("orderReceiverReadiness", ({ payload }) =>
+        requireEnvironmentScope(AuthOrchestrationOperateScope).pipe(
+          Effect.flatMap((actor) => receiver.readiness(payload, actor)),
+        ),
+      )
+      .handle("orderReceive", ({ payload }) =>
+        requireEnvironmentScope(AuthOrchestrationOperateScope).pipe(
+          Effect.flatMap((actor) => receiver.receive(payload, actor)),
+        ),
+      )
       .handle("identity", () =>
         Effect.gen(function* () {
           const principal = yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
@@ -31,7 +66,7 @@ export const layer = HttpApiBuilder.group(
       .handle("submit", ({ payload }) =>
         Effect.gen(function* () {
           const principal = yield* requireEnvironmentScope(AuthApprovalReviewRequestScope);
-          return yield* service.submit(payload, principal.subject);
+          return yield* service.submit(payload, principal);
         }),
       )
       .handle("read", ({ payload }) =>
@@ -41,7 +76,10 @@ export const layer = HttpApiBuilder.group(
           yield* requireEnvironmentScope(
             worker ? AuthApprovalReviewExecuteScope : AuthApprovalReviewRequestScope,
           );
-          return { ...payload, authority: yield* service.read(payload, principal.subject, worker) };
+          return {
+            ...payload,
+            authority: yield* service.read(payload, worker ? principal.subject : principal, worker),
+          };
         }),
       )
       .handle("claim", ({ payload }) =>

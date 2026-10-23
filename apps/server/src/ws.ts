@@ -19,6 +19,8 @@ import {
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
+import * as ApprovalReviewHostOrders from "./orchestration-v2/ApprovalReviewHostOrders.ts";
+import * as ApprovalReviewProvenance from "./orchestration-v2/ApprovalReviewProvenance.ts";
 import * as AgentObservatory from "./observatory/AgentObservatoryService.ts";
 
 import * as DateTime from "effect/DateTime";
@@ -1541,6 +1543,8 @@ const layerCoreWsRpc = (
       const deviceHostContext =
         yield* Effect.context<Effect.Services<ReturnType<typeof remoteSshDeviceHosts>>>();
       const orchestrationEngine = yield* Orchestrator.OrchestratorV2;
+      const hostOrders = yield* ApprovalReviewHostOrders.ApprovalReviewHostOrders;
+      const orderPrincipal = { ...currentSession, scopes: new Set(currentSession.scopes) };
       const crypto = yield* Crypto.Crypto;
       const serverCommandId = (tag: string) =>
         crypto.randomUUIDv4().pipe(
@@ -2127,6 +2131,12 @@ const layerCoreWsRpc = (
           ),
         [WS_METHODS.agentAvatarCancel]: (input) =>
           Effect.flatMap(AgentAvatarService.AgentAvatarService, (service) => service.cancel(input)),
+        [WS_METHODS.approvalReviewOrderCreate]: (input) => hostOrders.create(input, orderPrincipal),
+        [WS_METHODS.approvalReviewOrderRead]: (input) =>
+          hostOrders.read(input.orderId, orderPrincipal),
+        [WS_METHODS.approvalReviewOrderCancel]: (input) =>
+          hostOrders.cancel(input.orderId, orderPrincipal),
+        [WS_METHODS.approvalReviewOrderReadiness]: () => hostOrders.readiness(orderPrincipal),
         [WS_METHODS.nativeAuthorRead]: nativeAuthorRpcHandler,
         [WS_METHODS.nativeAuthorWrite]: nativeAuthorRpcHandler,
         ...agentObservatoryReadHandlers(observatoryService),
@@ -3548,6 +3558,8 @@ export const WS_RPC_SERVER_OPTIONS = {
 
 export const layer = Layer.unwrap(
   Effect.gen(function* () {
+    const hostOrders = yield* ApprovalReviewHostOrders.ApprovalReviewHostOrders;
+    const orderProvenance = yield* ApprovalReviewProvenance.ApprovalReviewProvenance;
     const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
     const serverBrowser = yield* ServerBrowser.ServerBrowser;
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
@@ -3631,6 +3643,12 @@ export const layer = Layer.unwrap(
               serverBrowser,
             ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
+              Layer.provide(
+                Layer.succeed(ApprovalReviewHostOrders.ApprovalReviewHostOrders, hostOrders),
+              ),
+              Layer.provide(
+                Layer.succeed(ApprovalReviewProvenance.ApprovalReviewProvenance, orderProvenance),
+              ),
               // Request fibers run in the handlers' context, so this reporter sees
               // their defects, not the rest of the server's.
               Layer.provide(DefectReporter.layer),

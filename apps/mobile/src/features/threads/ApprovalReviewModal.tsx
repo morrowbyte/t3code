@@ -1,5 +1,9 @@
 /* oxlint-disable react/no-array-index-key -- This immutable package preserves supplied positions and duplicate entries without IDs. */
-import { verifyReviewBundle, type ReviewBundle } from "@t3tools/client-runtime/approvalReview";
+import {
+  reviewBundleHasVerifiedOrderChannel,
+  verifyReviewBundle,
+  type ReviewBundle,
+} from "@t3tools/client-runtime/approvalReview";
 import type { ApprovalReviewAuthority } from "@t3tools/contracts";
 import {
   useEffect,
@@ -15,6 +19,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
+import { AgentMessage } from "./AgentMessage";
 
 const SOURCE_PAGE_LINES = 100;
 
@@ -35,23 +40,32 @@ export function ApprovalReviewModal(props: {
   const [source, setSource] = useState({ path: props.bundle?.files[0]?.path ?? "", line: 1 });
   const [showOriginal, setShowOriginal] = useState(false);
   const onVerification = useEffectEvent(props.onVerification);
-  const [verification, setVerification] = useState<Awaited<
-    ReturnType<typeof verifyReviewBundle>
-  > | null>(null);
+  const [verification, setVerification] = useState<{
+    readonly bundle: ReviewBundle;
+    readonly result: Awaited<ReturnType<typeof verifyReviewBundle>>;
+  } | null>(null);
+  const verificationResult =
+    verification !== null && verification.bundle === props.bundle ? verification.result : null;
   useEffect(() => {
-    if (!props.bundle) return;
+    onVerification(false);
+    setVerification(null);
+    const currentBundle = props.bundle;
+    if (!currentBundle) return;
     let active = true;
-    void verifyReviewBundle(props.bundle)
+    void verifyReviewBundle(currentBundle)
       .then((result) => {
         if (active) {
           onVerification(result.valid);
-          setVerification(result);
+          setVerification({ bundle: currentBundle, result });
         }
       })
       .catch(() => {
         if (active) {
           onVerification(false);
-          setVerification({ valid: false, error: "Package integrity could not be checked." });
+          setVerification({
+            bundle: currentBundle,
+            result: { valid: false, error: "Package integrity could not be checked." },
+          });
         }
       });
     return () => {
@@ -68,6 +82,17 @@ export function ApprovalReviewModal(props: {
     bodyScroll.current?.scrollTo({ y: 0, animated: false });
   };
   const { bundle } = props;
+  const verifiedChannel = useMemo(
+    () =>
+      verificationResult?.valid === true &&
+      bundle !== null &&
+      reviewBundleHasVerifiedOrderChannel(bundle, props.authority),
+    [verificationResult, bundle, props.authority],
+  );
+  const originalOrder = verifiedChannel ? props.authority?.originalOrder : undefined;
+  const receipt = originalOrder?.receipt.version === 2 ? originalOrder.receipt : undefined;
+  const synthetic =
+    receipt?.version === 2 && (receipt.sourceKind === "synthetic" || receipt.testOnly);
 
   return (
     <Modal visible presentationStyle="fullScreen" onRequestClose={props.onClose}>
@@ -103,6 +128,122 @@ export function ApprovalReviewModal(props: {
           </View>
         </View>
         <ScrollView ref={bodyScroll} className="flex-1" contentContainerClassName="gap-4 p-4">
+          {bundle || props.authority ? (
+            <View className="gap-2">
+              <Text accessibilityRole="header" className="font-t3-medium">
+                {verifiedChannel
+                  ? synthetic
+                    ? "Synthetic test order"
+                    : "Original human order"
+                  : "Original order"}
+              </Text>
+              <Text
+                accessibilityRole={verifiedChannel ? "text" : "alert"}
+                className={
+                  verifiedChannel
+                    ? "text-sm text-foreground-muted"
+                    : "text-sm text-warning-foreground"
+                }
+              >
+                {bundle?.exampleOnly
+                  ? "Example only · original order unverified"
+                  : props.authority?.originalOrder?.receipt.version === 1
+                    ? "Legacy original order · unverified"
+                    : verificationResult === null && bundle !== null
+                      ? "Checking host order and request channel…"
+                      : verifiedChannel
+                        ? "Host order and request channel verified"
+                        : `Original order unverified · ${props.authority?.provenance?.status === "unverified" ? props.authority.provenance.reason : !props.authority?.originalOrder ? "no source supplied" : props.authority.provenance === undefined ? "no backend verification supplied" : "source does not match the authoritative package"}`}
+              </Text>
+              {synthetic ? (
+                <Text accessibilityRole="alert" className="text-sm text-warning-foreground">
+                  Synthetic test order · ACCEPT disabled
+                </Text>
+              ) : null}
+              {originalOrder && receipt ? (
+                <AgentMessage
+                  key={`${receipt.messageId}:${receipt.orderId}:${receipt.orderRevision}:${receipt.forwardRevision}:${receipt.fullTextHash}`}
+                  attribution={synthetic ? "synthetic" : "human"}
+                  principalLabel={receipt.principal}
+                  messageId={String(receipt.messageId)}
+                  environmentId={receipt.sourceEnvironmentId}
+                  text={receipt.fullText}
+                  previewText={originalOrder.excerpt.text}
+                  timestampLabel={new Date(receipt.createdAt).toLocaleString()}
+                  streaming={false}
+                  attachments={
+                    <View className="gap-1">
+                      <Text selectable className="text-xs text-foreground-muted">
+                        Principal: {receipt.principal}
+                      </Text>
+                      <Text selectable className="text-xs text-foreground-muted">
+                        Source environment: {receipt.sourceEnvironmentId}
+                      </Text>
+                      <Text selectable className="text-xs text-foreground-muted">
+                        Context thread: {receipt.threadId} · Registry record: {receipt.messageId}
+                      </Text>
+                      <Text selectable className="text-xs text-foreground-muted">
+                        Host order: {receipt.orderId} · Order revision: {receipt.orderRevision} ·
+                        Forward revision: {receipt.forwardRevision}
+                      </Text>
+                      <Text selectable className="text-xs text-foreground-muted">
+                        Source: {receipt.sourceKind} · Test only: {receipt.testOnly ? "Yes" : "No"}
+                      </Text>
+                      <Text selectable className="text-xs text-foreground-muted">
+                        Assigned environment: {receipt.assignment.environmentId} · Thread:{" "}
+                        {receipt.assignment.threadId} · Message: {receipt.assignment.messageId}
+                      </Text>
+                      <Text selectable className="text-xs text-foreground-muted">
+                        Actual VM run: {receipt.assignment.runId} · Run ordinal:{" "}
+                        {receipt.assignment.runOrdinal} · Accepted sequence:{" "}
+                        {receipt.assignment.acceptedSequence}
+                      </Text>
+                      <Text selectable className="text-xs text-foreground-muted">
+                        Forward command: {receipt.assignment.commandId} · Assigned order:{" "}
+                        {receipt.assignment.orderId} · Revision: {receipt.assignment.orderRevision}
+                      </Text>
+                      <Text selectable className="font-mono text-xs text-foreground-muted">
+                        Assigned full order SHA-256: {receipt.assignment.fullTextHash}
+                      </Text>
+                      <Text selectable className="font-mono text-xs text-foreground-muted">
+                        Forwarded instruction SHA-256: {receipt.assignment.instructionHash}
+                      </Text>
+                      <Text selectable className="font-mono text-xs text-foreground-muted">
+                        Full order SHA-256: {receipt.fullTextHash}
+                      </Text>
+                      <Text selectable className="text-xs text-foreground-muted">
+                        Excerpt UTF-16: {originalOrder.excerpt.startUtf16}–
+                        {originalOrder.excerpt.endUtf16}
+                      </Text>
+                      <Text selectable className="text-xs text-foreground-muted">
+                        Destination thread: {originalOrder.destination.threadId} · Actual run:{" "}
+                        {originalOrder.destination.runId}
+                      </Text>
+                      <Text selectable className="text-xs text-foreground-muted">
+                        Session: {receipt.sessionId} · Created: {receipt.createdAt} · Expires:{" "}
+                        {receipt.expiresAt}
+                      </Text>
+                      <Text selectable className="text-xs text-foreground-muted">
+                        Original link: {receipt.originalLink}
+                      </Text>
+                    </View>
+                  }
+                >
+                  {(text) => <Text selectable>{text}</Text>}
+                </AgentMessage>
+              ) : null}
+            </View>
+          ) : null}
+          {bundle?.agentRationale ? (
+            <View className="gap-2">
+              <Text accessibilityRole="header" className="font-t3-medium">
+                Agent rationale
+              </Text>
+              <Text selectable className="text-sm">
+                {bundle.agentRationale}
+              </Text>
+            </View>
+          ) : null}
           {bundle ? (
             <View className="gap-2">
               <Text selectable className="text-xs text-foreground-muted">
@@ -113,16 +254,16 @@ export function ApprovalReviewModal(props: {
               </Text>
               <Text
                 className={
-                  verification?.valid === false
+                  verificationResult?.valid === false
                     ? "text-xs text-warning-foreground"
                     : "text-xs text-foreground-muted"
                 }
               >
-                {verification === null
+                {verificationResult === null
                   ? "Checking package integrity…"
-                  : verification.valid
+                  : verificationResult.valid
                     ? "Package integrity verified"
-                    : verification.error}
+                    : verificationResult.error}
               </Text>
               <Text className="text-sm">Target: {bundle.target.label}</Text>
               {bundle.target.identity ? (
@@ -140,7 +281,7 @@ export function ApprovalReviewModal(props: {
                   </Text>
                   <Text className="text-xs text-foreground-muted">
                     Host approval: {props.authority.state} · Expires{" "}
-                    {new Date(props.authority.expiresAt).toISOString()}
+                    {new Date(props.authority.expiresAt).toLocaleString()}
                   </Text>
                 </View>
               ) : null}
@@ -289,7 +430,7 @@ export function ApprovalReviewModal(props: {
           <Text selectable className="text-xs text-foreground-muted">
             Request: {props.requestId}
           </Text>
-          {props.renderResponseControls(verification?.valid === true)}
+          {props.renderResponseControls(verificationResult?.valid === true)}
         </ScrollView>
       </View>
     </Modal>

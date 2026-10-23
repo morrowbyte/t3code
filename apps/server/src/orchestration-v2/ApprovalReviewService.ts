@@ -6,6 +6,8 @@ import {
   ApprovalReviewClaim,
   ApprovalReviewReport,
   type ApprovalReviewReady,
+  type EnvironmentSessionPrincipalShape,
+  type ApprovalReviewOriginalOrder,
   OrchestrationV2RuntimeRequestJson,
   ApprovalReviewAuthority,
   AuthSessionId,
@@ -23,7 +25,10 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Orchestrator from "./Orchestrator.ts";
+import { canonical, hash, frozenReview } from "./ApprovalReviewPackage.ts";
+import * as Provenance from "./ApprovalReviewProvenance.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as HostOrders from "./ApprovalReviewHostOrders.ts";
 
 const Target = Schema.Struct({
   verifiedTargetId: Schema.String,
@@ -54,124 +59,13 @@ export const layerTargets = Layer.effect(
   }),
 );
 
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    return `{${Object.entries(value)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-      .map(([key, entry]) => `${JSON.stringify(key)}:${canonical(entry)}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
-const hash = (value: string) => NodeCrypto.createHash("sha256").update(value, "utf8").digest("hex");
-
-function frozenReview(
-  input: Omit<ApprovalReviewSubmit, "submissionId"> & { readonly requestId: RuntimeRequestId },
-  target: typeof Target.Type,
-) {
-  const inputs = JSON.stringify(
-    {
-      ...input,
-      requesterSubject: target.requesterSubject,
-      workerSubject: target.workerSubject,
-      approverSessionId: target.approverSessionId,
-      approverSubject: target.approverSubject,
-    },
-    null,
-    2,
-  );
-  const snapshot = {
-    schemaVersion: 1,
-    title: "Create one new file",
-    packageId: `create-file-${hash(String(input.requestId)).slice(0, 24)}`,
-    version: input.action.implementationVersion,
-    files: [
-      { path: "request.json", content: inputs, sha256: hash(inputs), language: "json" },
-      {
-        path: "implementation/create_file_once.py",
-        content: target.implementationSource,
-        language: "python",
-        sha256: hash(target.implementationSource),
-      },
-      {
-        path: "artifact-before.txt",
-        content: "",
-        sha256: hash(""),
-        presentation: { artifact: "new-file", role: "original" },
-      },
-      {
-        path: "artifact-after.txt",
-        content: input.action.content,
-        sha256: hash(input.action.content),
-        presentation: { artifact: "new-file", role: "revised" },
-      },
-    ],
-    steps: [
-      {
-        id: "approval",
-        title: "Approve frozen request",
-        description: "A human approves this request ID and exact package hash.",
-        source: { path: "request.json", line: 1 },
-      },
-      {
-        id: "claim",
-        title: "Claim once",
-        description:
-          "The configured worker claims the unexpired approved package for the verified target.",
-      },
-      {
-        id: "create",
-        title: "Create new file",
-        description:
-          "Run the included implementation with the frozen path, content and mode. Fail if the file exists.",
-        source: { path: "implementation/create_file_once.py", line: 1 },
-      },
-      {
-        id: "receipt",
-        title: "Report execution",
-        description: "Record the worker report. A claim alone never proves execution.",
-      },
-    ],
-    edges: [
-      { from: "approval", to: "claim" },
-      { from: "claim", to: "create" },
-      { from: "create", to: "receipt" },
-    ],
-    symbols: target.implementationSource
-      .split("\n")
-      .flatMap((line, index) => {
-        const definition = /^(?:def|class)\s+([A-Za-z_][A-Za-z0-9_]*)\b/u.exec(line);
-        return definition?.[1] === undefined
-          ? []
-          : [{ name: definition[1], path: "implementation/create_file_once.py", line: index + 1 }];
-      })
-      .slice(0, 128),
-    target: {
-      label: target.verifiedTargetId,
-      identity: target.verifiedTargetId,
-      rights: ["create_file_once"],
-    },
-    warnings: [
-      "Execution reports are worker attestations. An interrupted worker can leave the outcome unknown.",
-    ],
-    exampleOnly: false,
-  };
-  const packageHash = hash(canonical(snapshot));
-  return {
-    packageHash,
-    prompt: JSON.stringify({ approvalReview: { ...snapshot, hash: packageHash } }),
-  };
-}
-
 export class ApprovalReviewService extends Context.Service<
   ApprovalReviewService,
   {
     readonly ready: (subject: string) => Effect.Effect<ApprovalReviewReady, ApprovalReviewError>;
     readonly submit: (
       input: ApprovalReviewSubmit,
-      subject: string,
+      actor: EnvironmentSessionPrincipalShape,
     ) => Effect.Effect<
       {
         readonly threadId: ThreadId;
@@ -182,7 +76,7 @@ export class ApprovalReviewService extends Context.Service<
     >;
     readonly read: (
       input: { readonly threadId: ThreadId; readonly requestId: RuntimeRequestId },
-      subject: string,
+      actor: string | EnvironmentSessionPrincipalShape,
       worker?: boolean,
     ) => Effect.Effect<ApprovalReviewAuthority, ApprovalReviewError>;
     readonly claim: (
@@ -207,22 +101,23 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const orders = yield* HostOrders.ApprovalReviewHostOrders;
+  const provenanceAuthority = yield* Provenance.ApprovalReviewProvenance;
   const dispatch = Effect.fn("ApprovalReviewService.dispatch")(function* (
     command: Parameters<typeof orchestrator.dispatch>[0],
   ) {
-    return yield* orchestrator
-      .dispatch(command)
-      .pipe(
-        Effect.mapError((cause) =>
-          cause._tag === "ApprovalReviewError"
-            ? cause
-            : new ApprovalReviewError({ reason: "storage" }),
-        ),
-      );
+    return yield* orchestrator.dispatch(command).pipe(
+      Effect.provideService(Provenance.ApprovalReviewProvenance, provenanceAuthority),
+      Effect.mapError((cause) =>
+        cause._tag === "ApprovalReviewError"
+          ? cause
+          : new ApprovalReviewError({ reason: "storage" }),
+      ),
+    );
   });
   const read = Effect.fn("ApprovalReviewService.read")(function* (
     input: { readonly threadId: ThreadId; readonly requestId: RuntimeRequestId },
-    subject: string,
+    actor: string | EnvironmentSessionPrincipalShape,
     worker = false,
   ) {
     if (targets.length === 0) return yield* new ApprovalReviewError({ reason: "disabled" });
@@ -232,6 +127,11 @@ const make = Effect.gen(function* () {
     const authority = request?.approvalReview;
     if (request?.responseCapability.type !== "external" || authority === undefined)
       return yield* new ApprovalReviewError({ reason: "missing" });
+    const subject = typeof actor === "string" ? actor : actor.subject;
+    if (!worker && typeof actor === "string")
+      return yield* new ApprovalReviewError({ reason: "forbidden" });
+    if (!worker && typeof actor !== "string" && authority.originalOrder?.receipt.version === 2)
+      yield* orders.read(authority.originalOrder.receipt.orderId, actor);
     if ((worker ? authority.workerSubject : authority.requesterSubject) !== subject)
       return yield* new ApprovalReviewError({ reason: "forbidden" });
     if (
@@ -249,21 +149,45 @@ const make = Effect.gen(function* () {
       )
     )
       return yield* new ApprovalReviewError({ reason: "forbidden" });
-    return authority;
+    return {
+      ...authority,
+      provenance: yield* Provenance.verifyAuthority({ ...input, authority }).pipe(
+        Effect.provideService(Provenance.ApprovalReviewProvenance, provenanceAuthority),
+      ),
+    };
   });
   const submit = Effect.fn("ApprovalReviewService.submit")(function* (
     raw: ApprovalReviewSubmit,
-    subject: string,
+    actor: EnvironmentSessionPrincipalShape,
   ) {
-    const decoded = yield* decodeSubmit(raw, {
-      onExcessProperty: "error",
-    }).pipe(Effect.mapError(() => new ApprovalReviewError({ reason: "invalid-action" })));
-    const { submissionId, ...fields } = decoded;
+    const decoded = yield* decodeSubmit(raw, { onExcessProperty: "error" }).pipe(
+      Effect.mapError(() => new ApprovalReviewError({ reason: "invalid-action" })),
+    );
+    const hostOrder = yield* orders.forProposal(decoded.orderId, actor);
+    if (hostOrder.assignment === null)
+      return yield* new ApprovalReviewError({ reason: "order-inactive" });
+    const subject = actor.subject;
+    const originalOrder: ApprovalReviewOriginalOrder = {
+      receipt: { ...hostOrder.source, forwardRevision: 1, assignment: hostOrder.assignment },
+      excerpt: decoded.excerpt,
+      destination: { threadId: hostOrder.assignment.threadId, runId: hostOrder.assignment.runId },
+    };
+    if (
+      decoded.excerpt.startUtf16 >= decoded.excerpt.endUtf16 ||
+      decoded.excerpt.endUtf16 > hostOrder.source.fullText.length ||
+      hostOrder.source.fullText.slice(decoded.excerpt.startUtf16, decoded.excerpt.endUtf16) !==
+        decoded.excerpt.text ||
+      !decoded.excerpt.text.isWellFormed()
+    )
+      return yield* new ApprovalReviewError({ reason: "unverified-original" });
     const input = {
-      ...fields,
-      action: Object.freeze({ ...fields.action }),
+      threadId: hostOrder.source.threadId,
+      expiresAt: Math.min(decoded.expiresAt, hostOrder.source.expiresAt),
+      action: Object.freeze({ ...decoded.action }),
+      originalOrder,
+      ...(decoded.agentRationale === undefined ? {} : { agentRationale: decoded.agentRationale }),
       requestId: RuntimeRequestId.make(
-        `approval-review:${hash(canonical([fields.threadId, subject, submissionId]))}`,
+        `approval-review:${hash(canonical([decoded.orderId, decoded.submissionId]))}`,
       ),
     };
     if (targets.length === 0) return yield* new ApprovalReviewError({ reason: "disabled" });
@@ -287,7 +211,24 @@ const make = Effect.gen(function* () {
     const now = DateTime.toEpochMillis(yield* DateTime.now);
     if (input.expiresAt <= now || input.expiresAt > now + 3_600_000)
       return yield* new ApprovalReviewError({ reason: "expired" });
+    if (input.agentRationale !== undefined && !input.agentRationale.isWellFormed())
+      return yield* new ApprovalReviewError({ reason: "invalid-action" });
     const review = frozenReview(input, target);
+    yield* orders.registerProposal({
+      orderId: decoded.orderId,
+      submissionId: decoded.submissionId,
+      requestId: input.requestId,
+      packageHash: review.packageHash,
+    });
+    const sourceAuthority = provenanceAuthority;
+    const provenance = yield* sourceAuthority.verify(
+      originalOrder,
+      input.threadId,
+      input.requestId,
+      review.packageHash,
+    );
+    if (provenance.status !== "verified")
+      return yield* new ApprovalReviewError({ reason: "unverified-original" });
     const authority = yield* decodeAuthority({
       packageHash: review.packageHash,
       verifiedTargetId: target.verifiedTargetId,
@@ -299,6 +240,9 @@ const make = Effect.gen(function* () {
       workerSubject: target.workerSubject,
       action: input.action,
       implementationSource: target.implementationSource,
+      ...(input.originalOrder === undefined ? {} : { originalOrder: input.originalOrder }),
+      ...(input.agentRationale === undefined ? {} : { agentRationale: input.agentRationale }),
+      provenance,
     }).pipe(Effect.mapError(() => new ApprovalReviewError({ reason: "invalid-action" })));
     yield* dispatch({
       type: "approval-review.submit",
@@ -313,7 +257,7 @@ const make = Effect.gen(function* () {
     return {
       threadId: input.threadId,
       requestId: input.requestId,
-      authority: yield* read(input, subject),
+      authority: yield* read(input, actor),
     };
   });
   const ready = Effect.fn("ApprovalReviewService.ready")(function* (subject: string) {
@@ -322,6 +266,7 @@ const make = Effect.gen(function* () {
     if (configured.length === 0) return yield* new ApprovalReviewError({ reason: "forbidden" });
     const now = DateTime.toEpochMillis(yield* DateTime.now);
     const requests: ApprovalReviewReady["requests"][number][] = [];
+    const sourceAuthority = provenanceAuthority;
     for (const target of configured) {
       const rows = yield* sql<{ readonly thread_id: string; readonly payload_json: string }>`
         SELECT thread_id, payload_json FROM orchestration_v2_projection_runtime_requests
@@ -347,16 +292,27 @@ const make = Effect.gen(function* () {
           request.approvalReview === undefined
         )
           continue;
+        if (
+          request.approvalReview.originalOrder?.receipt.version === 2 &&
+          request.approvalReview.originalOrder.receipt.testOnly
+        )
+          continue;
+        const provenance = yield* Provenance.verifyAuthority({
+          threadId: ThreadId.make(row.thread_id),
+          requestId: request.id,
+          authority: request.approvalReview,
+        }).pipe(Effect.provideService(Provenance.ApprovalReviewProvenance, provenanceAuthority));
+        if (provenance.status !== "verified") continue;
         requests.push({
           threadId: ThreadId.make(row.thread_id),
           requestId: request.id,
           packageHash: request.approvalReview.packageHash,
           verifiedTargetId: target.verifiedTargetId,
         });
-        if (requests.length === 10) return { requests };
+        if (requests.length === 10) return { requests, provenance: sourceAuthority.readiness };
       }
     }
-    return { requests };
+    return { requests, provenance: sourceAuthority.readiness };
   });
   const claim = Effect.fn("ApprovalReviewService.claim")(function* (
     input: ApprovalReviewClaim,

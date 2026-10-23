@@ -1,3 +1,11 @@
+import {
+  ApprovalReviewOrderCreate,
+  ApprovalReviewOrderRead,
+  ApprovalReviewHostOrder,
+  ApprovalReviewOrderCancelResult,
+  ApprovalReviewOrderReadiness,
+  ApprovalReviewError,
+} from "./approvalReviewAuthority.ts";
 import { WindowsCuaStatus, WindowsCuaStatusError } from "./windowsCua.ts";
 import {
   AgentAvatarKey,
@@ -490,6 +498,10 @@ export const WS_METHODS = {
   liveVoiceStop: "liveVoice.stop",
   liveVoiceStatus: "liveVoice.status",
   liveVoiceSubscribe: "liveVoice.subscribe",
+  approvalReviewOrderCreate: "approvalReview.orderCreate",
+  approvalReviewOrderRead: "approvalReview.orderRead",
+  approvalReviewOrderCancel: "approvalReview.orderCancel",
+  approvalReviewOrderReadiness: "approvalReview.orderReadiness",
   nativeAuthorRead: "nativeAuthor.read",
   nativeAuthorWrite: "nativeAuthor.write",
   agentAvatarRead: "agentAvatar.read",
@@ -1796,6 +1808,27 @@ const WsAgentAvatarCancelRpc = Rpc.make(WS_METHODS.agentAvatarCancel, {
   error: Schema.Union([AgentAvatarError, EnvironmentAuthorizationError]),
 });
 
+const WsApprovalReviewOrderCreateRpc = Rpc.make(WS_METHODS.approvalReviewOrderCreate, {
+  payload: ApprovalReviewOrderCreate,
+  success: ApprovalReviewHostOrder,
+  error: Schema.Union([ApprovalReviewError, EnvironmentAuthorizationError]),
+});
+const WsApprovalReviewOrderReadRpc = Rpc.make(WS_METHODS.approvalReviewOrderRead, {
+  payload: ApprovalReviewOrderRead,
+  success: ApprovalReviewHostOrder,
+  error: Schema.Union([ApprovalReviewError, EnvironmentAuthorizationError]),
+});
+const WsApprovalReviewOrderCancelRpc = Rpc.make(WS_METHODS.approvalReviewOrderCancel, {
+  payload: ApprovalReviewOrderRead,
+  success: ApprovalReviewOrderCancelResult,
+  error: Schema.Union([ApprovalReviewError, EnvironmentAuthorizationError]),
+});
+const WsApprovalReviewOrderReadinessRpc = Rpc.make(WS_METHODS.approvalReviewOrderReadiness, {
+  payload: Schema.Struct({}),
+  success: ApprovalReviewOrderReadiness,
+  error: Schema.Union([ApprovalReviewError, EnvironmentAuthorizationError]),
+});
+
 const WsNativeAuthorReadRpc = Rpc.make(WS_METHODS.nativeAuthorRead, {
   payload: Schema.Union([NativeAuthorRead, NativeAuthorOpenResults]),
   success: NativeAuthorState,
@@ -2287,6 +2320,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsSearchContentsRpc,
   WsProjectsSearchEntriesRpc,
   WsProjectsEnsureScratchRpc,
+  WsApprovalReviewOrderCreateRpc,
+  WsApprovalReviewOrderReadRpc,
+  WsApprovalReviewOrderCancelRpc,
+  WsApprovalReviewOrderReadinessRpc,
   WsNativeAuthorReadRpc,
   WsNativeAuthorWriteRpc,
   WsAgentAvatarReadRpc,

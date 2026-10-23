@@ -35,6 +35,13 @@ export function canRespondToThreadApproval(
     authority.state === "pending" &&
     authority.expiresAt > now &&
     authority.packageHash === packageHash &&
+    (decision !== "accept" ||
+      (authority.provenance?.status === "verified" &&
+        authority.originalOrder !== undefined &&
+        authority.originalOrder.receipt.version === 2 &&
+        authority.originalOrder.receipt.sourceKind === "human" &&
+        !authority.originalOrder.receipt.testOnly &&
+        authority.originalOrder.receipt.expiresAt > now)) &&
     (decision === "accept" || decision === "decline" || decision === "cancel")
   );
 }

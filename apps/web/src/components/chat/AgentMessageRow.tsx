@@ -47,6 +47,7 @@ export function AgentMessageRow({
   peerThreadId,
   peerTitle,
   attribution,
+  principalLabel,
   direction = "incoming",
   environmentId,
   createdAt,
@@ -58,6 +59,7 @@ export function AgentMessageRow({
   loading = false,
   error,
   onRequestText,
+  originLabel,
   children,
 }: {
   messageId: string;
@@ -65,7 +67,6 @@ export function AgentMessageRow({
   previewText?: string | undefined;
   peerThreadId: ThreadId | undefined;
   peerTitle: string | null;
-  attribution: "agent" | "unknown";
   direction?: "incoming" | "outgoing";
   environmentId: EnvironmentId;
   createdAt: string;
@@ -77,13 +78,18 @@ export function AgentMessageRow({
   loading?: boolean;
   error?: string | null;
   onRequestText?: () => void;
+  originLabel?: string;
   children: (bodyText: string) => ReactNode;
-}) {
+} & (
+  | { attribution: "agent" | "unknown"; principalLabel?: never }
+  | { attribution: "human"; principalLabel: string }
+)) {
   const [expanded, setExpanded] = useState(false);
   const [originalOpen, setOriginalOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
   const originalPanelId = useId();
-  const parsed = text === null ? null : parseAgentMessage(text);
+  const human = attribution === "human";
+  const parsed = text === null || human ? null : parseAgentMessage(text);
   const status = parsed?.status && parsed.status !== "info" ? STATUS[parsed.status] : null;
   const keyed = keyedSections(parsed?.sections ?? []);
   const sections = keyed.filter((section) => section.kind !== "technical");
@@ -91,7 +97,9 @@ export function AgentMessageRow({
   const outgoing = direction === "outgoing";
   const DirectionIcon = outgoing ? ArrowUpRightIcon : ArrowDownLeftIcon;
   const summary =
-    previewText ?? parsed?.summary ?? (text ? agentMessagePreview(text) : "Agentennachricht");
+    previewText ??
+    parsed?.summary ??
+    (text ? (human ? text : agentMessagePreview(text)) : "Agentennachricht");
   const collapse = () => {
     setExpanded(false);
     setOriginalOpen(false);
@@ -102,7 +110,7 @@ export function AgentMessageRow({
     <article
       data-keyboard-object="Message"
       tabIndex={-1}
-      aria-label={`Agent message: ${summary}`}
+      aria-label={`${human ? "Original order" : "Agent message"}: ${summary}`}
       data-keyboard-help="C: copy this message · D: toggle details · J/K: messages · H/L: actions"
       onKeyDown={(event) => handleObjectActionKey(event, { c: "copy", d: "details" })}
       className="min-w-0 border border-border/60 bg-muted/20 px-3 py-2.5"
@@ -112,16 +120,24 @@ export function AgentMessageRow({
       data-agent-message-format={parsed?.kind ?? "loading"}
       data-user-message-attribution={attribution}
     >
-      <div className="mb-1.5 flex min-w-0 items-center gap-1.5 text-base leading-5 text-muted-foreground">
+      <div
+        className={`mb-1.5 flex min-w-0 items-center gap-1.5 text-base leading-5 text-muted-foreground ${human ? "flex-wrap" : ""}`}
+      >
         <DirectionIcon className="size-5 shrink-0" aria-hidden />
-        <span className="shrink-0">{outgoing ? "An" : "Von"}</span>
+        <span className="shrink-0">{human ? "Auftrag von" : outgoing ? "An" : "Von"}</span>
+        {human ? (
+          <span className="min-w-0 flex-1 font-medium text-foreground [overflow-wrap:anywhere]">
+            {principalLabel}
+          </span>
+        ) : null}
         {peerThreadId ? (
           <Link
             to="/$environmentId/$threadId"
             params={{ environmentId, threadId: peerThreadId }}
-            className="min-w-0 truncate rounded-sm font-medium text-foreground/85 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring"
-            aria-label={`${outgoing ? "Zielthread" : "Absenderthread"} öffnen: ${peerTitle ?? peerThreadId}`}
+            className={`min-w-0 truncate rounded-sm font-medium text-foreground/85 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring ${human ? "order-2 basis-full" : ""}`}
+            aria-label={`${human ? "Ursprungsthread" : outgoing ? "Zielthread" : "Absenderthread"} öffnen: ${peerTitle ?? peerThreadId}`}
           >
+            {human ? <span className="mr-1.5 text-muted-foreground">Ursprung:</span> : null}
             <AgentIdentityLabel
               threadRef={{ environmentId, threadId: peerThreadId }}
               featureTitle={peerTitle}
@@ -130,7 +146,13 @@ export function AgentMessageRow({
           </Link>
         ) : (
           <span className="min-w-0 truncate">
-            {outgoing ? "Agent" : attribution === "unknown" ? "MCP" : "Agent"}
+            {human
+              ? (originLabel ?? "Ursprung unbekannt")
+              : outgoing
+                ? "Agent"
+                : attribution === "unknown"
+                  ? "MCP"
+                  : "Agent"}
           </span>
         )}
         <span className="ml-auto shrink-0 text-xs">
@@ -154,7 +176,7 @@ export function AgentMessageRow({
         <CollapsibleTrigger
           ref={trigger}
           className="flex w-full items-start gap-2.5 rounded-sm text-left focus-visible:outline-2 focus-visible:outline-ring pointer-coarse:min-h-11"
-          aria-label={`${expanded ? "Zuklappen" : "Details öffnen"}: Agentennachricht`}
+          aria-label={`${expanded ? "Zuklappen" : "Details öffnen"}: ${human ? "Originalauftrag" : "Agentennachricht"}`}
           data-keyboard-action="details"
           aria-keyshortcuts="D"
         >
@@ -231,7 +253,10 @@ export function AgentMessageRow({
                 </div>
               ) : text !== null ? (
                 <div className="space-y-3">
-                  {legacyParagraphs(text).map((paragraph) => (
+                  {(human
+                    ? [{ key: "order", text: previewText ?? text }]
+                    : legacyParagraphs(text)
+                  ).map((paragraph) => (
                     <div key={paragraph.key}>{children(paragraph.text)}</div>
                   ))}
                 </div>
@@ -247,7 +272,7 @@ export function AgentMessageRow({
                     onRequestText?.();
                   }}
                 >
-                  <FileTextIcon /> Original
+                  <FileTextIcon /> {human ? "Originalauftrag" : "Original"}
                 </Button>
                 {text !== null ? (
                   <MessageCopyButton text={text} label="Original kopieren" variant="ghost" />

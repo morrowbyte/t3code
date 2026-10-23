@@ -1,6 +1,7 @@
 import { Button } from "../../components/ui/Button";
 import {
   parseApprovalReviewDetail,
+  reviewBundleHasVerifiedOriginalOrder,
   type ReviewBundle,
 } from "@t3tools/client-runtime/approvalReview";
 import { canRespondToThreadApproval } from "@t3tools/client-runtime/state/thread-requests";
@@ -52,15 +53,20 @@ const modeLabels: Record<RuntimeMode, string> = {
 
 export function PendingApprovalCard(props: PendingApprovalCardProps) {
   const [now, setNow] = useState(Date.now);
-  const expiresAt = props.approval.approvalReview?.expiresAt;
+  const authority = props.approval.approvalReview;
+  const expiresAt = authority?.expiresAt;
+  const originalExpiresAt = authority?.originalOrder?.receipt.expiresAt;
   useEffect(() => {
-    if (expiresAt === undefined) return;
-    const timer = setTimeout(
-      () => setNow(Date.now()),
-      Math.max(0, Math.min(expiresAt - Date.now(), 2_147_483_647)),
-    );
-    return () => clearTimeout(timer);
-  }, [expiresAt]);
+    const timers = [...new Set([expiresAt, originalExpiresAt])]
+      .filter((deadline): deadline is number => deadline !== undefined)
+      .map((deadline) =>
+        setTimeout(
+          () => setNow(Date.now()),
+          Math.max(0, Math.min(deadline - Date.now(), 2_147_483_647)),
+        ),
+      );
+    return () => timers.forEach(clearTimeout);
+  }, [expiresAt, originalExpiresAt]);
   const options = props.approval.options ?? DEFAULT_APPROVAL_OPTIONS;
   const key = `${props.environmentId ?? "unknown"}:${props.approval.requestId}`;
   const latest = useRef(props);
@@ -90,6 +96,19 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
     () => parseApprovalReviewDetail(props.approval.detail),
     [props.approval.detail],
   );
+  const verifiedOriginal = useMemo(
+    () =>
+      review.kind === "bundle" && reviewBundleHasVerifiedOriginalOrder(review.bundle, authority),
+    [review, authority],
+  );
+  const originalReceipt = authority?.originalOrder?.receipt;
+  const originalIssue =
+    originalReceipt?.version === 1
+      ? "Approval disabled: legacy original orders are unverified."
+      : originalReceipt?.version === 2 &&
+          (originalReceipt.sourceKind === "synthetic" || originalReceipt.testOnly)
+        ? "Approval disabled: synthetic test orders cannot authorize actions."
+        : "Approval disabled: the original human order is missing, unverified or does not match this package.";
   const reviewIssue =
     review.kind === "bundle"
       ? review.bundle.exampleOnly
@@ -99,7 +118,9 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
           : review.bundle.hash !== props.approval.approvalReview.packageHash ||
               review.bundle.target.identity !== props.approval.approvalReview.verifiedTargetId
             ? "Approval disabled: this package does not match the authoritative request."
-            : null
+            : !verifiedOriginal
+              ? originalIssue
+              : null
       : review.kind === "invalid"
         ? `Approval disabled: invalid review package. ${review.error}`
         : props.approval.approvalReview
@@ -138,7 +159,12 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
       (reviewedBundle !== undefined && verifiedReview.current !== reviewedBundle) ||
       (reviewedBundle !== undefined &&
         (current.approval.approvalReview?.packageHash !== reviewedBundle.hash ||
-          current.approval.approvalReview?.verifiedTargetId !== reviewedBundle.target.identity)) ||
+          current.approval.approvalReview?.verifiedTargetId !== reviewedBundle.target.identity ||
+          (decision === "accept" &&
+            !reviewBundleHasVerifiedOriginalOrder(
+              reviewedBundle,
+              current.approval.approvalReview,
+            )))) ||
       !(current.approval.options ?? DEFAULT_APPROVAL_OPTIONS).some(
         (option) => option.decision === decision,
       ) ||
@@ -198,7 +224,8 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
       ) : null}
       {props.approval.approvalReview &&
       (props.approval.approvalReview.state !== "pending" ||
-        props.approval.approvalReview.expiresAt <= now) ? (
+        props.approval.approvalReview.expiresAt <= now ||
+        (props.approval.approvalReview.originalOrder?.receipt.expiresAt ?? Infinity) <= now) ? (
         <Text accessibilityRole="alert" className="text-sm text-warning-foreground">
           This review request is no longer pending or has expired.
         </Text>

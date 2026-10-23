@@ -296,6 +296,8 @@ export type OrchestratorV2Error = typeof OrchestratorV2Error.Type;
 export interface OrchestratorV2DispatchResult {
   readonly sequence: number;
   readonly storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>;
+  /** Only a fresh acceptance may enter the externally isolated original-order capture port. */
+  readonly replayed?: boolean;
 }
 
 export interface OrchestratorV2Shape {
@@ -11536,6 +11538,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return {
         sequence: receipt.resultSequence,
         storedEvents,
+        replayed: true,
       } satisfies OrchestratorV2DispatchResult;
     }
 
@@ -11630,7 +11633,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             }),
         ),
       );
-      return { sequence: resultSequence, storedEvents: [] } satisfies OrchestratorV2DispatchResult;
+      return {
+        sequence: resultSequence,
+        storedEvents: [],
+        replayed: false,
+      } satisfies OrchestratorV2DispatchResult;
     }
     const acceptedAt = plan.events.at(-1)?.occurredAt ?? (yield* DateTime.now);
     const committed = yield* eventSink
@@ -11676,6 +11683,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     return {
       sequence: committed.receipt.resultSequence,
       storedEvents: committed.storedEvents,
+      replayed: !committed.committed,
     } satisfies OrchestratorV2DispatchResult;
   });
 

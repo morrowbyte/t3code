@@ -211,9 +211,19 @@ for automatic_update_test in "${automatic_update_tests[@]}"; do
   focused_tests+=("$automatic_update_test")
 done
 approval_tests=(
+  packages/client-runtime/src/approvalReview.test.ts
+  packages/client-runtime/src/state/threadRequests.test.ts
+  packages/client-runtime/src/state/approvalOrders.test.ts
+  apps/server/src/orchestration-v2/ApprovalReviewService.test.ts
+  apps/server/src/orchestration-v2/ApprovalReviewHttp.test.ts
+  apps/server/src/orchestration-v2/ApprovalReviewHostOrders.test.ts
+  apps/server/src/orchestration-v2/ApprovalReviewOrderAgent.test.ts
+  apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts
+  apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts
   apps/web/src/components/chat/ComposerPendingApprovalActions.test.tsx
   apps/web/src/components/chat/ApprovalActionSummary.test.tsx
   apps/mobile/src/features/threads/PendingApprovalCard.test.tsx
+  apps/mobile/src/state/use-selected-thread-requests.test.tsx
 )
 for approval_test in "${approval_tests[@]}"; do
   if [[ ! -f "$approval_test" ]]; then
@@ -378,6 +388,9 @@ focused_tests+=(
   apps/web/src/components/settings/UpdateHistoryPanel.test.tsx
 )
 renderer_tests=(
+  apps/web/src/components/approvalReview/HostOrderComposer.browser.test.tsx
+  apps/web/src/components/approvalReview/HostOrderChatMode.browser.test.tsx
+  apps/web/src/components/approvalReview/ApprovalReview.browser.test.tsx
   "$transcript_ui_test"
   apps/web/src/voice/LiveVoiceControl.browser.test.tsx
   "$mobile_composer_test"

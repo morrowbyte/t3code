@@ -93,3 +93,18 @@ it("guards the Yazi chooser, including file reads, with terminal operation autho
     expect(clientRpcRequiredScopes(method, {})).toEqual([AuthTerminalOperateScope]);
   }
 });
+
+it("guards host-order UI aliases without granting VM request sessions human control", () => {
+  expect(clientRpcRequiredScopes(WS_METHODS.approvalReviewOrderCreate, {})).toEqual([
+    AuthOrchestrationOperateScope,
+  ]);
+  expect(clientRpcRequiredScopes(WS_METHODS.approvalReviewOrderCancel, {})).toEqual([
+    AuthOrchestrationOperateScope,
+  ]);
+  expect(clientRpcRequiredScopes(WS_METHODS.approvalReviewOrderRead, {})).toEqual([
+    AuthOrchestrationReadScope,
+  ]);
+  expect(clientRpcRequiredScopes(WS_METHODS.approvalReviewOrderReadiness, {})).toEqual([
+    AuthOrchestrationReadScope,
+  ]);
+});

@@ -4,10 +4,12 @@ import { insertAttachmentReferencesForDraft } from "./composerAttachmentReferenc
 import { DESKTOP_PASTE_AS_TEXT_EVENT } from "../../lib/desktopPasteAsText";
 import { runtimeModeConfig, runtimeModeOptions as runtimeModes } from "./runtimeModeConfig";
 import { isLocalEnvironmentDisabled } from "../../localEnvironment";
-import { usePrimaryEnvironmentId } from "../../state/environments";
+import { useEnvironments, usePrimaryEnvironmentId } from "../../state/environments";
 import { useRightPanelStore } from "~/rightPanelStore";
 import { AttachmentFilePreview } from "../files/AttachmentFilePreview";
 import { Dialog, DialogPopup, DialogTitle } from "../ui/dialog";
+import { HostOrderChatMode } from "../approvalReview/HostOrderChatMode";
+import { hasLocalShortcutOwner } from "../keyboard/keyboardFocus";
 import { Popover, PopoverTrigger, PopoverPopup, PopoverTitle, PopoverClose } from "../ui/popover";
 import {
   composerPullRequestsFromLinks,
@@ -2178,6 +2180,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onRemoveEditingQueuedAttachment,
   } = props;
   const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const { environments: hostOrderEnvironments } = useEnvironments();
   const composerDraftTargetKey = composerTargetKey(composerDraftTarget);
   const {
     heldRequestIds,
@@ -5712,6 +5715,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
   useEffect(() => {
     const handler = (event: globalThis.KeyboardEvent) => {
+      if (hasLocalShortcutOwner(event)) return;
       const command = resolveShortcutCommand(event, keybindings, {
         context: {
           terminalFocus: getTerminalFocusOwner() !== null,
@@ -6888,7 +6892,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ],
   );
 
-  return (
+  const composer = (
     <form
       ref={composerFormRef}
       onSubmit={submitComposerStable}
@@ -7361,7 +7365,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                                   alt={image.name}
                                   className="h-full w-full object-cover"
                                   fallback={
-                                    isHeicImageFile({ name: image.name, type: image.mimeType }) ? (
+                                    isHeicImageFile({
+                                      name: image.name,
+                                      type: image.mimeType,
+                                    }) ? (
                                       <AttachmentImage
                                         name={image.name}
                                         mimeType={image.mimeType}
@@ -7971,5 +7978,22 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         </ComposerSurface.Main>
       </div>
     </form>
+  );
+
+  return (
+    <HostOrderChatMode
+      key={`${environmentId}:${activeThreadId ?? "draft"}`}
+      destination={
+        activeThreadId
+          ? { environmentId: activeThreadEnvironmentId ?? environmentId, threadId: activeThreadId }
+          : null
+      }
+      hosts={hostOrderEnvironments.map((entry) => ({
+        environmentId: entry.environmentId,
+        label: entry.label,
+      }))}
+    >
+      {composer}
+    </HostOrderChatMode>
   );
 });

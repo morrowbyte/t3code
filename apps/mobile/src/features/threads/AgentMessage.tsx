@@ -12,23 +12,28 @@ import { useThreadShell } from "../../state/entities";
 import { AgentIdentityLabel } from "../agent-identity/AgentIdentityLabel";
 import { agentMessagePreview, parseAgentMessage } from "./agent-message-presentation";
 
-export const AgentMessage = memo(function AgentMessage(props: {
-  readonly messageId: string;
-  readonly attribution: "agent" | "unknown";
-  readonly text: string;
-  readonly previewText?: string;
-  readonly environmentId: EnvironmentId;
-  readonly senderThreadId?: ThreadId;
-  readonly direction?: "incoming" | "outgoing";
-  readonly deliveryLabel?: string;
-  readonly attachments?: ReactNode;
-  readonly timestampLabel: string;
-  readonly streaming: boolean;
-  readonly children: (bodyText: string) => ReactNode;
-}) {
+export const AgentMessage = memo(function AgentMessage(
+  props: {
+    readonly messageId: string;
+    readonly text: string;
+    readonly previewText?: string;
+    readonly environmentId: EnvironmentId;
+    readonly senderThreadId?: ThreadId;
+    readonly direction?: "incoming" | "outgoing";
+    readonly deliveryLabel?: string;
+    readonly attachments?: ReactNode;
+    readonly timestampLabel: string;
+    readonly streaming: boolean;
+    readonly children: (bodyText: string) => ReactNode;
+  } & (
+    | { readonly attribution: "agent" | "unknown" }
+    | { readonly attribution: "human" | "synthetic"; readonly principalLabel: string }
+  ),
+) {
+  const originalOrder = props.attribution === "human" || props.attribution === "synthetic";
   const navigation = useNavigation();
   const sender = useThreadShell(
-    props.senderThreadId
+    props.senderThreadId && !originalOrder
       ? { environmentId: props.environmentId, threadId: props.senderThreadId }
       : null,
   );
@@ -36,7 +41,7 @@ export const AgentMessage = memo(function AgentMessage(props: {
   const [raw, setRaw] = useState(false);
   const [technical, setTechnical] = useState(false);
   const trigger = useRef<ComponentRef<typeof View>>(null);
-  const structured = parseAgentMessage(props.text);
+  const structured = originalOrder ? null : parseAgentMessage(props.text);
   const collapse = () => {
     setExpanded(false);
     setRaw(false);
@@ -44,19 +49,30 @@ export const AgentMessage = memo(function AgentMessage(props: {
     trigger.current?.focus();
   };
   const [copiedText, setCopiedText] = useState<string | null>(null);
-  const actor = props.attribution === "agent" ? "Agent" : "MCP";
+  const actor =
+    props.attribution === "synthetic"
+      ? "Synthetic test order"
+      : originalOrder
+        ? "Human order"
+        : props.attribution === "agent"
+          ? "Agent"
+          : "MCP";
   const direction = props.direction === "outgoing" ? "An" : "Von";
   const metadata = (
     <View className="w-full min-w-0 flex-row items-center gap-1.5">
-      <View className="shrink-0">
-        <SymbolView
-          name={props.direction === "outgoing" ? "arrow.up.right" : "arrow.down.left"}
-          size={20}
-          tintColorClassName="accent-foreground-muted"
-        />
-      </View>
-      <Text className="text-base leading-5 text-foreground-muted">{direction}</Text>
-      {props.senderThreadId ? (
+      {!originalOrder ? (
+        <View className="shrink-0">
+          <SymbolView
+            name={props.direction === "outgoing" ? "arrow.up.right" : "arrow.down.left"}
+            size={20}
+            tintColorClassName="accent-foreground-muted"
+          />
+        </View>
+      ) : null}
+      <Text className="text-base leading-5 text-foreground-muted">
+        {originalOrder ? "Host order" : direction}
+      </Text>
+      {props.senderThreadId && !originalOrder ? (
         <View className="min-w-0 flex-1">
           <AgentIdentityLabel
             threadRef={{ environmentId: props.environmentId, threadId: props.senderThreadId }}
@@ -70,7 +86,7 @@ export const AgentMessage = memo(function AgentMessage(props: {
           className="min-w-0 flex-1 text-base leading-5 text-foreground-muted"
           numberOfLines={1}
         >
-          {actor}
+          {originalOrder ? `Principal: ${props.principalLabel}` : actor}
         </Text>
       )}
     </View>
@@ -79,17 +95,19 @@ export const AgentMessage = memo(function AgentMessage(props: {
   return (
     <View className="mb-3 w-full rounded border border-border bg-grouped-card px-3 py-2.5">
       <View className="min-h-11 flex-row items-center gap-3">
-        {props.senderThreadId ? (
+        {props.senderThreadId && !originalOrder ? (
           <Pressable
             className="min-h-11 min-w-0 flex-1 justify-center"
             accessibilityRole="button"
             accessibilityLabel={`Open ${props.direction === "outgoing" ? "receiving" : "sending"} thread, ${sender?.title ?? actor}`}
-            onPress={() =>
-              navigation.navigate("Thread", {
-                environmentId: String(props.environmentId),
-                threadId: String(props.senderThreadId),
-              })
-            }
+            onPress={() => {
+              if (props.senderThreadId) {
+                navigation.navigate("Thread", {
+                  environmentId: String(props.environmentId),
+                  threadId: String(props.senderThreadId),
+                });
+              }
+            }}
           >
             {metadata}
           </Pressable>
@@ -98,7 +116,7 @@ export const AgentMessage = memo(function AgentMessage(props: {
         )}
         <Text className="text-xs tabular-nums text-foreground-muted">{props.timestampLabel}</Text>
       </View>
-      {structured.status && structured.status !== "info" ? (
+      {structured?.status && structured.status !== "info" ? (
         <Text
           accessibilityLabel={`Nachrichtenstatus: ${structured.status}`}
           className="text-sm font-t3-medium text-foreground-muted"
@@ -110,13 +128,16 @@ export const AgentMessage = memo(function AgentMessage(props: {
         ref={trigger}
         className="min-h-12 flex-row items-start gap-3 py-2"
         accessibilityRole="button"
-        accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${props.attribution === "agent" ? "agent" : "MCP"} message`}
+        accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${props.attribution === "synthetic" ? "synthetic test order" : originalOrder ? "human order" : props.attribution === "agent" ? "agent message" : "MCP message"}`}
         accessibilityState={{ expanded }}
         onPress={() => (expanded ? collapse() : setExpanded(true))}
       >
-        <Text className="min-w-0 flex-1 text-base font-t3-medium leading-6 text-foreground">
+        <Text
+          selectable={originalOrder}
+          className="min-w-0 flex-1 text-base font-t3-medium leading-6 text-foreground"
+        >
           {props.previewText ??
-            structured.summary ??
+            (originalOrder ? props.text : structured?.summary) ??
             (agentMessagePreview(props.text) ||
               (props.attribution === "agent" ? "Agent message" : "MCP message"))}
         </Text>
@@ -133,27 +154,33 @@ export const AgentMessage = memo(function AgentMessage(props: {
       {expanded ? (
         <View className="gap-4 pt-3">
           {props.attachments}
-          {structured.kind === "structured"
-            ? structured.sections.map((section, index) =>
-                section.kind === "technical" ? (
-                  <View key={index}>
-                    <Button
-                      label={technical ? "Technik verbergen" : "Technik"}
-                      tone="text"
-                      onPress={() => setTechnical((value) => !value)}
-                    />
-                    {technical ? props.children(section.text) : null}
-                  </View>
-                ) : (
-                  <View key={index} className="gap-2">
-                    <Text className="font-t3-medium text-sm text-foreground-muted">
-                      {section.label}
-                    </Text>
-                    {props.children(section.text)}
-                  </View>
-                ),
-              )
-            : props.children(props.text)}
+          {originalOrder ? (
+            <Text selectable className="text-base leading-6 text-foreground">
+              {props.text}
+            </Text>
+          ) : structured?.kind === "structured" ? (
+            structured.sections.map((section, index) =>
+              section.kind === "technical" ? (
+                <View key={index}>
+                  <Button
+                    label={technical ? "Technik verbergen" : "Technik"}
+                    tone="text"
+                    onPress={() => setTechnical((value) => !value)}
+                  />
+                  {technical ? props.children(section.text) : null}
+                </View>
+              ) : (
+                <View key={index} className="gap-2">
+                  <Text className="font-t3-medium text-sm text-foreground-muted">
+                    {section.label}
+                  </Text>
+                  {props.children(section.text)}
+                </View>
+              ),
+            )
+          ) : (
+            props.children(props.text)
+          )}
         </View>
       ) : null}
       {expanded ? (

@@ -20,10 +20,21 @@ not prevent the agent from asking questions about the task.
 
 ## Review an action
 
+To send an order through a protecting host, open the VM thread and choose **Host-bound task**
+in the composer. Select the host, then send the original task through its configured VM channel.
+The host records the task before forwarding it. This requires a configured host control thread
+and paired VM channel; the host needs no local model. Synthetic test channels cannot execute actions.
+
 Choose **Review action** on a pending request to inspect it full screen. Requests with a frozen
 package include the process, complete source files, available changes and execution evidence.
 Opening or closing a review never approves it. Examples and packages that fail verification cannot
 be approved.
+
+The **Order** view shows the exact captured original and selected excerpt separately from the
+agent's rationale. Expand the original to read the complete stored host order. The context thread
+is separate from that immutable original. Host actions require a verified order and request channel bound to the package. Older
+requests and unsupported remote sources remain inspectable, but cannot be approved. A verified
+original does not replace reviewing the proposed code or giving your one-time approval.
 
 An action submitted to the host review service requires approval for that exact package from its
 configured approver session, regardless of the agent's permission mode. A changed or expired package needs a new

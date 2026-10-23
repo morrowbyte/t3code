@@ -12,6 +12,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as Provenance from "./ApprovalReviewProvenance.ts";
 
 type ReviewCommand = Extract<
   OrchestrationV2InternalCommand,
@@ -27,6 +28,10 @@ export const plan = Effect.fn("ApprovalReviewCommands.plan")(function* (command:
     .pipe(Effect.mapError(() => new ApprovalReviewError({ reason: "storage" })));
   const events: Array<Omit<OrchestrationV2DomainEvent, "id">> = [];
   if (command.type === "approval-review.submit") {
+    const provenance = yield* Provenance.verifyAuthority(command);
+    const authority = { ...command.authority, provenance };
+    if (command.authority.originalOrder !== undefined && provenance.status !== "verified")
+      return yield* new ApprovalReviewError({ reason: "unverified-original" });
     if (current.request !== undefined) {
       if (
         current.request.responseCapability.type !== "external" ||
@@ -100,7 +105,7 @@ export const plan = Effect.fn("ApprovalReviewCommands.plan")(function* (command:
         requestId: command.requestId,
         requestKind: "file-change",
         prompt: command.prompt,
-        approvalReview: command.authority,
+        approvalReview: authority,
       },
     });
     events.push({
@@ -118,7 +123,7 @@ export const plan = Effect.fn("ApprovalReviewCommands.plan")(function* (command:
         responseCapability: { type: "external" },
         createdAt: now,
         resolvedAt: null,
-        approvalReview: command.authority,
+        approvalReview: authority,
       },
     });
     return events;
@@ -137,6 +142,15 @@ export const plan = Effect.fn("ApprovalReviewCommands.plan")(function* (command:
   if (command.type === "approval-review.claim") {
     if (authority.expiresAt <= DateTime.toEpochMillis(now))
       return yield* new ApprovalReviewError({ reason: "expired" });
+    if (
+      authority.originalOrder?.receipt.version === 2 &&
+      (authority.originalOrder.receipt.testOnly ||
+        authority.originalOrder.receipt.sourceKind !== "human")
+    )
+      return yield* new ApprovalReviewError({ reason: "synthetic-order" });
+    const provenance = yield* Provenance.verifyAuthority({ ...command, authority });
+    if (provenance.status !== "verified")
+      return yield* new ApprovalReviewError({ reason: "unverified-original" });
     if (authority.state === "claimed" || authority.state === "completed")
       return yield* new ApprovalReviewError({ reason: "replayed" });
     if (
@@ -221,6 +235,17 @@ export const resolve = Effect.fn("ApprovalReviewCommands.resolve")(function* (
     return yield* new ApprovalReviewError({ reason: "hash-mismatch" });
   if (authority.expiresAt <= DateTime.toEpochMillis(now))
     return yield* new ApprovalReviewError({ reason: "expired" });
+  if (command.decision === "accept" || command.decision === "acceptForSession") {
+    if (
+      authority.originalOrder?.receipt.version === 2 &&
+      (authority.originalOrder.receipt.testOnly ||
+        authority.originalOrder.receipt.sourceKind !== "human")
+    )
+      return yield* new ApprovalReviewError({ reason: "synthetic-order" });
+    const provenance = yield* Provenance.verifyAuthority({ ...command, authority });
+    if (provenance.status !== "verified")
+      return yield* new ApprovalReviewError({ reason: "unverified-original" });
+  }
   if (authority.state !== "pending") return yield* new ApprovalReviewError({ reason: "replayed" });
   if (
     command.decision !== "accept" &&

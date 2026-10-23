@@ -9,6 +9,7 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import { v2Now, v2Projection } from "./orchestrationV2TestFixtures.ts";
+import { syntheticOriginalOrder } from "../approvalReviewTestFixtures.ts";
 import {
   createQuestionHistoryProjector,
   canRespondToThreadApproval,
@@ -40,6 +41,8 @@ const reviewAuthority: ApprovalReviewAuthority = {
     implementationHash: "b".repeat(64),
   },
   implementationSource: "fixture only",
+  originalOrder: syntheticOriginalOrder(),
+  provenance: { status: "verified", reason: "trusted-original" },
 };
 
 describe("approval response authority", () => {
@@ -107,6 +110,29 @@ describe("approval response authority", () => {
       canRespondToThreadApproval(providerApproval, "accept", reviewAuthority.packageHash),
     ).toBe(false);
     expect(canRespondToThreadApproval(undefined, "accept")).toBe(false);
+  });
+
+  it("requires current verified original authority for acceptance but preserves rejection", () => {
+    for (const source of [
+      { originalOrder: undefined, provenance: undefined },
+      { originalOrder: syntheticOriginalOrder(), provenance: undefined },
+      {
+        originalOrder: syntheticOriginalOrder(),
+        provenance: { status: "unverified" as const, reason: "unsupported-lineage" as const },
+      },
+      { originalOrder: syntheticOriginalOrder(1), provenance: reviewAuthority.provenance },
+    ]) {
+      const approval = { ...hostApproval, approvalReview: { ...reviewAuthority, ...source } };
+      expect(canRespondToThreadApproval(approval, "accept", reviewAuthority.packageHash, 1)).toBe(
+        false,
+      );
+      expect(canRespondToThreadApproval(approval, "decline", reviewAuthority.packageHash, 1)).toBe(
+        true,
+      );
+      expect(canRespondToThreadApproval(approval, "cancel", reviewAuthority.packageHash, 1)).toBe(
+        true,
+      );
+    }
   });
 });
 

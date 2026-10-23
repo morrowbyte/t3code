@@ -1,4 +1,6 @@
 import { hashTelemetryId as sha256 } from "@t3tools/shared/telemetryId";
+import { AuthSessionId, RunId, type ApprovalReviewAuthority } from "@t3tools/contracts";
+import { syntheticOriginalOrder } from "./approvalReviewTestFixtures.ts";
 
 import { describe, expect, it } from "vite-plus/test";
 
@@ -7,6 +9,8 @@ import {
   isStructuredApprovalReviewDetail,
   parseApprovalReviewDetail,
   reviewBundleAllowsAcceptance,
+  reviewBundleHasVerifiedOriginalOrder,
+  reviewBundleHasVerifiedOrderChannel,
   verifyReviewBundle,
   type ReviewBundle,
 } from "./approvalReview.js";
@@ -41,6 +45,136 @@ function sample(): ReviewBundle {
   };
   return { ...data, hash: sha256(canonicalReviewBundleSnapshot(data)) };
 }
+
+function withOriginal() {
+  const originalOrder = syntheticOriginalOrder();
+  const snapshot = {
+    ...sample(),
+    originalOrder,
+    agentRationale: "Agent suggestion, not authorization.",
+    exampleOnly: false,
+    target: { label: "Synthetic target", identity: "synthetic-target" },
+  };
+  const bundle = { ...snapshot, hash: sha256(canonicalReviewBundleSnapshot(snapshot)) };
+  const authority: ApprovalReviewAuthority = {
+    packageHash: bundle.hash,
+    verifiedTargetId: "synthetic-target",
+    expiresAt: 60_000,
+    state: "pending",
+    approverSessionId: AuthSessionId.make("synthetic-approver"),
+    approverSubject: "synthetic-approver",
+    requesterSubject: "synthetic-requester",
+    workerSubject: "synthetic-worker",
+    implementationSource: "never executed",
+    action: {
+      kind: "create_file_once",
+      verifiedTargetId: "synthetic-target",
+      path: "/synthetic/new.txt",
+      content: "test",
+      mode: 384,
+      expectedAbsent: true,
+      implementationVersion: "test-v1",
+      implementationHash: sha256("never executed"),
+    },
+    originalOrder,
+    agentRationale: snapshot.agentRationale,
+    provenance: { status: "verified", reason: "trusted-original" },
+  };
+  return { bundle, authority };
+}
+
+describe("immutable original order display binding", () => {
+  it("preserves Unicode, CRLF and exact UTF-16 selections without fetching a source DB", async () => {
+    const { bundle, authority } = withOriginal();
+    const parsed = parseApprovalReviewDetail({ approvalReview: bundle });
+    if (parsed.kind !== "bundle") throw new Error("Expected immutable original");
+    expect(parsed.bundle.originalOrder).toEqual(bundle.originalOrder);
+    expect(Object.isFrozen(parsed.bundle.originalOrder?.receipt)).toBe(true);
+    expect(await verifyReviewBundle(parsed.bundle)).toEqual({ valid: true });
+    expect(reviewBundleHasVerifiedOriginalOrder(parsed.bundle, authority)).toBe(true);
+  });
+
+  it("rejects invented excerpts, changed original bytes and split surrogate selections", () => {
+    const { bundle } = withOriginal();
+    const order = bundle.originalOrder!;
+    for (const originalOrder of [
+      { ...order, excerpt: { ...order.excerpt, text: "Agent invented this" } },
+      {
+        ...order,
+        receipt: { ...order.receipt, fullText: order.receipt.fullText.replaceAll("\r\n", "\n") },
+      },
+      {
+        ...order,
+        excerpt: {
+          startUtf16: order.receipt.fullText.indexOf("🚀"),
+          endUtf16: order.receipt.fullText.indexOf("🚀") + 1,
+          text: "\ud83d",
+        },
+      },
+      { ...order, receipt: { ...order.receipt, originalLink: "https://untrusted.test/source" } },
+    ]) {
+      expect(parseApprovalReviewDetail({ approvalReview: { ...bundle, originalOrder } }).kind).toBe(
+        "invalid",
+      );
+    }
+  });
+
+  it("binds displayed principal, revision, lineage, receipt and rationale even after rehashing", () => {
+    const { bundle, authority } = withOriginal();
+    const original = bundle.originalOrder!;
+    for (const receipt of [
+      { ...original.receipt, principal: "forged-human" },
+      { ...original.receipt, orderId: "guest-made-order" },
+      { ...original.receipt, sourceEnvironmentId: original.receipt.assignment.environmentId },
+      {
+        ...original.receipt,
+        assignment: {
+          ...original.receipt.assignment,
+          runId: RunId.make(original.destination.runId + "-forged"),
+        },
+      },
+      { ...original.receipt, assignment: { ...original.receipt.assignment, acceptedSequence: 2 } },
+    ]) {
+      const snapshot = { ...bundle, originalOrder: { ...original, receipt } };
+      const changed = { ...snapshot, hash: sha256(canonicalReviewBundleSnapshot(snapshot)) };
+      expect(
+        reviewBundleHasVerifiedOriginalOrder(changed, { ...authority, packageHash: changed.hash }),
+      ).toBe(false);
+    }
+    const snapshot = { ...bundle, agentRationale: "Changed justification" };
+    const changed = { ...snapshot, hash: sha256(canonicalReviewBundleSnapshot(snapshot)) };
+    expect(
+      reviewBundleHasVerifiedOriginalOrder(changed, { ...authority, packageHash: changed.hash }),
+    ).toBe(false);
+    expect(
+      reviewBundleHasVerifiedOriginalOrder(bundle, {
+        ...authority,
+        provenance: { status: "unverified", reason: "untrusted-issuer" },
+      }),
+    ).toBe(false);
+    expect(
+      reviewBundleHasVerifiedOriginalOrder(bundle, { ...authority, originalOrder: undefined }),
+    ).toBe(false);
+    expect(reviewBundleHasVerifiedOriginalOrder(sample(), authority)).toBe(false);
+  });
+
+  it("labels a bound synthetic channel without granting human execution authority", () => {
+    const { bundle, authority } = withOriginal();
+    const originalOrder = {
+      ...bundle.originalOrder,
+      receipt: {
+        ...bundle.originalOrder.receipt,
+        sourceKind: "synthetic" as const,
+        testOnly: true,
+      },
+    };
+    const snapshot = { ...bundle, originalOrder };
+    const testBundle = { ...snapshot, hash: sha256(canonicalReviewBundleSnapshot(snapshot)) };
+    const testAuthority = { ...authority, originalOrder, packageHash: testBundle.hash };
+    expect(reviewBundleHasVerifiedOrderChannel(testBundle, testAuthority)).toBe(true);
+    expect(reviewBundleHasVerifiedOriginalOrder(testBundle, testAuthority)).toBe(false);
+  });
+});
 
 describe("approval review bundles", () => {
   it("preserves ordinary unstructured requests", () => {

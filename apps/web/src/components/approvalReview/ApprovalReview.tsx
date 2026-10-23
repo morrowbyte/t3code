@@ -6,6 +6,8 @@ import { FileCodeIcon, ShieldCheckIcon, XIcon } from "lucide-react";
 import {
   parseApprovalReviewDetail,
   verifyReviewBundle,
+  reviewBundleHasVerifiedOriginalOrder,
+  reviewBundleHasVerifiedOrderChannel,
   type ReviewBundle,
   type ReviewBundleVerification,
 } from "@t3tools/client-runtime/approvalReview";
@@ -16,6 +18,7 @@ import { Dialog } from "../ui/dialog";
 import { KeyboardLayerContext } from "../ui/keyboardLayer";
 import { Button } from "../ui/button";
 import { ReviewActivity } from "./ReviewActivity";
+import { ReviewOriginalOrder } from "./ReviewOriginalOrder";
 import { useRenderedAppearance } from "~/hooks/useTheme";
 import { resolveDiffThemeName } from "~/lib/diffRendering";
 import { RenderErrorBoundary } from "../RenderErrorBoundary";
@@ -24,7 +27,7 @@ import styles from "./approvalReview.module.css";
 const SourceEditor = lazy(() =>
   import("./ReviewSourceEditor").then((module) => ({ default: module.ReviewSourceEditor })),
 );
-type ReviewTab = "process" | "source" | "changes" | "evidence";
+type ReviewTab = "process" | "order" | "source" | "changes" | "evidence";
 interface ReviewPosition {
   tab: ReviewTab;
   selectedId: string;
@@ -120,17 +123,18 @@ function ReviewContent(props: ApprovalReviewProps) {
     if (reviewPositions.size > 12) reviewPositions.delete(reviewPositions.keys().next().value!);
   }, [positionKey, tab, selectedId, location]);
   const [verification, setVerification] = useState<ReviewBundleVerification | null>(null);
+  const decisionExpiresAt = Math.min(
+    authority?.expiresAt ?? Infinity,
+    authority?.originalOrder?.receipt.expiresAt ?? Infinity,
+  );
   const [expired, setExpired] = useState(
-    () => authority !== undefined && Date.now() >= authority.expiresAt,
+    () => Number.isFinite(decisionExpiresAt) && Date.now() >= decisionExpiresAt,
   );
   useEffect(() => {
-    if (!authority || expired) return;
-    const timeout = setTimeout(
-      () => setExpired(true),
-      Math.max(0, authority.expiresAt - Date.now()),
-    );
+    if (!Number.isFinite(decisionExpiresAt) || expired) return;
+    const timeout = setTimeout(() => setExpired(true), Math.max(0, decisionExpiresAt - Date.now()));
     return () => clearTimeout(timeout);
-  }, [authority, expired]);
+  }, [decisionExpiresAt, expired]);
   const [busy, setBusy] = useState(false);
   const [response, setResponse] = useState<string | null>(null);
   const inFlight = useRef(false);
@@ -184,12 +188,20 @@ function ReviewContent(props: ApprovalReviewProps) {
       : !!bundle &&
         !bundle.exampleOnly &&
         verification?.valid === true &&
+        reviewBundleHasVerifiedOriginalOrder(bundle, authority) &&
         !!authority &&
         props.approval.responseCapability === "external" &&
         authority.state === "pending" &&
         !expired &&
         authority.packageHash === bundle.hash &&
         authority.verifiedTargetId === bundle.target.identity;
+  const syntheticOrder =
+    !!bundle &&
+    verification?.valid === true &&
+    reviewBundleHasVerifiedOrderChannel(bundle, authority) &&
+    authority?.originalOrder?.receipt.version === 2 &&
+    (authority.originalOrder.receipt.sourceKind === "synthetic" ||
+      authority.originalOrder.receipt.testOnly);
   const respond = async (decision: ProviderApprovalDecision) => {
     const live = current.current;
     if (
@@ -201,7 +213,10 @@ function ReviewContent(props: ApprovalReviewProps) {
       live.disabled ||
       !canRespondToThreadApproval(live.approval, decision, authority?.packageHash) ||
       bundle?.exampleOnly ||
-      (decision === "accept" && (!canApprove || (authority && Date.now() >= authority.expiresAt)))
+      (decision === "accept" &&
+        (!canApprove ||
+          (bundle && !reviewBundleHasVerifiedOriginalOrder(bundle, live.approval.approvalReview)) ||
+          Date.now() >= decisionExpiresAt))
     )
       return;
     if (
@@ -305,6 +320,7 @@ function ReviewContent(props: ApprovalReviewProps) {
           {(
             [
               ["process", "Process"],
+              ["order", "Order"],
               ["source", "Source"],
               ["changes", "Changes"],
               ["evidence", "Evidence"],
@@ -332,7 +348,27 @@ function ReviewContent(props: ApprovalReviewProps) {
             Invalid review package: {parsed.error}. Approval is blocked.
           </div>
         ) : null}
+        {(authority || bundle) &&
+        !canApprove &&
+        !bundle?.exampleOnly &&
+        !changed &&
+        !syntheticOrder ? (
+          <div role="status" className={styles["review-warning"]}>
+            {!bundle?.originalOrder || authority?.provenance?.status !== "verified"
+              ? "Original order unverified. Approval is blocked."
+              : "Approval requires this exact verified original, package and current host authority."}
+          </div>
+        ) : null}
         <main className={styles["review-main"]}>
+          {tab === "order" ? (
+            <div className={styles["review-scroll"]}>
+              <ReviewOriginalOrder
+                bundle={bundle}
+                authority={authority}
+                integrityChecked={verification?.valid === true}
+              />
+            </div>
+          ) : null}
           <div className={styles["review-process"]} hidden={tab !== "process"}>
             {bundle && bundle.steps.length ? (
               <>
@@ -345,6 +381,14 @@ function ReviewContent(props: ApprovalReviewProps) {
                   sessionKey={positionKey}
                 />
                 <aside className={styles["review-inspector"]}>
+                  {bundle.originalOrder ? (
+                    <ReviewOriginalOrder
+                      bundle={bundle}
+                      authority={authority}
+                      integrityChecked={verification?.valid === true}
+                      compact
+                    />
+                  ) : null}
                   <span className={styles["review-eyebrow"]}>
                     Selected step · {bundle.steps.findIndex((step) => step.id === selected?.id) + 1}{" "}
                     / {bundle.steps.length}
@@ -587,7 +631,9 @@ function ReviewContent(props: ApprovalReviewProps) {
                     ? `Approve once · ${bundle?.hash.slice(0, 16)} · ${authority?.verifiedTargetId}`
                     : expired
                       ? "Approval expired · prepare a fresh request"
-                      : "Package approval blocked · trusted binding unavailable or integrity check failed"
+                      : syntheticOrder
+                        ? "Synthetic test · execution disabled"
+                        : "Package approval blocked · trusted binding unavailable or integrity check failed"
                   : props.approval.responseCapability === "not_resumable"
                     ? "Provider disconnected · decisions unavailable"
                     : "Applies only to this pending request. Execution remains unconfirmed.")}

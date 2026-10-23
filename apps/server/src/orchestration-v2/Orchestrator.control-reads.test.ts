@@ -1355,7 +1355,9 @@ it.effect("replays a thread.create receipt without changing the thread", () =>
     const before = yield* projections.getThread(threadId);
     const replayed = yield* orchestrator.dispatch(create);
     assert.equal(replayed.sequence, original.sequence);
-    assert.deepEqual(replayed, original);
+    assert.equal(original.replayed, false);
+    assert.equal(replayed.replayed, true);
+    assert.deepEqual(replayed.storedEvents, original.storedEvents);
     assert.deepEqual(yield* projections.getThread(threadId), before);
     assert.equal(yield* orchestrator.getThreadEventSequence(threadId), original.sequence);
   }).pipe(Effect.provide(layerTest)),

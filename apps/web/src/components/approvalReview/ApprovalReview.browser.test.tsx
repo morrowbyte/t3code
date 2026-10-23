@@ -1,5 +1,8 @@
 import { AuthSessionId, RuntimeRequestId, type ApprovalReviewAuthority } from "@t3tools/contracts";
-import { canonicalReviewBundleSnapshot } from "@t3tools/client-runtime/approvalReview";
+import {
+  canonicalReviewBundleSnapshot,
+  type ReviewBundle,
+} from "@t3tools/client-runtime/approvalReview";
 import { hashTelemetryId as sha256 } from "@t3tools/shared/telemetryId";
 import { expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
@@ -9,12 +12,23 @@ import { ComposerPendingApprovalPanel } from "../chat/ComposerPendingApprovalPan
 import { usePendingApprovalSelection } from "../chat/usePendingApprovalSelection";
 import type { PendingApproval } from "../../session-logic";
 import { gitlabExampleBundle } from "./gitlabExample";
+import { syntheticOriginalOrder } from "../../../../../packages/client-runtime/src/approvalReviewTestFixtures.ts";
 
-function externalApproval() {
+function externalApproval(sourceKind: "human" | "synthetic" = "human") {
+  const original = syntheticOriginalOrder(Date.now() + 60_000);
+  const originalOrder =
+    sourceKind === "human"
+      ? original
+      : {
+          ...original,
+          receipt: { ...original.receipt, sourceKind, testOnly: true },
+        };
   const snapshot = {
     ...gitlabExampleBundle,
     exampleOnly: false,
     target: { label: "Isolated test target", identity: "test-target" },
+    originalOrder,
+    agentRationale: "Synthetic agent rationale; no execution.",
   };
   const bundle = { ...snapshot, hash: sha256(canonicalReviewBundleSnapshot(snapshot)) };
   const authority: ApprovalReviewAuthority = {
@@ -27,6 +41,9 @@ function externalApproval() {
     approverSessionId: AuthSessionId.make("test-human-session"),
     approverSubject: "test-human",
     implementationSource: "Synthetic test; never executed",
+    originalOrder,
+    agentRationale: snapshot.agentRationale,
+    provenance: { status: "verified", reason: "trusted-original" },
     action: {
       kind: "create_file_once",
       verifiedTargetId: "test-target",
@@ -79,6 +96,119 @@ function PendingQueue({
     </>
   );
 }
+
+it("shows the immutable human excerpt and complete original separately from the agent rationale", async () => {
+  const approval = externalApproval();
+  const onRespond = vi.fn(async () => undefined);
+  await using screen = await render(<PendingQueue approvals={[approval]} onRespond={onRespond} />);
+  await userEvent.click(screen.getByRole("button", { name: "Review action" }));
+  const dialog = document.querySelector<HTMLElement>('[role="dialog"][data-keyboard-local]')!;
+  await act(async () =>
+    [...dialog.querySelectorAll("button")]
+      .find((button) => button.textContent === "Order")!
+      .click(),
+  );
+  const order = dialog.querySelector<HTMLElement>('[aria-label="Original host order"]')!;
+  await expect.poll(() => order.textContent).toContain("Host order and request channel verified");
+  expect(order.textContent).toContain(approval.approvalReview.originalOrder!.excerpt.text);
+  expect(order.textContent).toContain("synthetic-human-principal");
+  expect(order.querySelector('[aria-label="Agent rationale"]')!.textContent).toContain(
+    approval.approvalReview.agentRationale,
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Details öffnen: Originalauftrag" }));
+  await userEvent.click(screen.getByRole("button", { name: "Originalauftrag", exact: true }));
+  expect(order.querySelector("[data-agent-message-original]")!.textContent).toBe(
+    approval.approvalReview.originalOrder!.receipt.fullText,
+  );
+  expect(onRespond).not.toHaveBeenCalled();
+});
+
+it("keeps verified synthetic provenance distinct from failed package integrity", async () => {
+  const onRespond = vi.fn(async () => undefined);
+  await using screen = await render(
+    <PendingQueue approvals={[externalApproval("synthetic")]} onRespond={onRespond} />,
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Review action" }));
+  await userEvent.click(screen.getByRole("button", { name: "Order", exact: true }));
+  await expect
+    .element(screen.getByText("Synthetic test · execution disabled", { exact: true }))
+    .toBeVisible();
+  expect(document.querySelector('[role="dialog"][data-keyboard-local]')?.textContent).not.toContain(
+    "integrity check failed",
+  );
+  await expect
+    .element(screen.getByRole("button", { name: "Approve once", exact: true }))
+    .toBeDisabled();
+  expect(onRespond).not.toHaveBeenCalled();
+});
+
+it("keeps an unsigned legacy host request inspectable but blocks approval", async () => {
+  const approval = externalApproval();
+  const { originalOrder: _original, ...snapshot } = (
+    JSON.parse(approval.detail) as { approvalReview: ReviewBundle }
+  ).approvalReview;
+  const bundle = { ...snapshot, hash: sha256(canonicalReviewBundleSnapshot(snapshot)) };
+  const legacy = {
+    ...approval,
+    detail: JSON.stringify({ approvalReview: bundle }),
+    approvalReview: {
+      ...approval.approvalReview,
+      packageHash: bundle.hash,
+      originalOrder: undefined,
+      provenance: undefined,
+    },
+  };
+  const onRespond = vi.fn(async () => undefined);
+  await using screen = await render(<PendingQueue approvals={[legacy]} onRespond={onRespond} />);
+  await userEvent.click(screen.getByRole("button", { name: "Review action" }));
+  const dialog = document.querySelector<HTMLElement>('[role="dialog"][data-keyboard-local]')!;
+  await act(async () =>
+    [...dialog.querySelectorAll("button")]
+      .find((button) => button.textContent === "Order")!
+      .click(),
+  );
+  expect(dialog.textContent).toContain("No independently captured original order was supplied");
+  expect(
+    [...dialog.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Approve once",
+    )!.disabled,
+  ).toBe(true);
+  expect(
+    [...dialog.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Reject",
+    )!.disabled,
+  ).toBe(false);
+  expect(onRespond).not.toHaveBeenCalled();
+});
+
+it("invalidates an open review when authoritative original metadata changes without a new hash", async () => {
+  const approval = externalApproval();
+  const onRespond = vi.fn(async () => undefined);
+  await using screen = await render(<PendingQueue approvals={[approval]} onRespond={onRespond} />);
+  await userEvent.click(screen.getByRole("button", { name: "Review action" }));
+  const dialog = document.querySelector<HTMLElement>('[role="dialog"][data-keyboard-local]')!;
+  const approve = [...dialog.querySelectorAll<HTMLButtonElement>("button")].find(
+    (button) => button.textContent === "Approve once",
+  )!;
+  await expect.poll(() => approve.disabled).toBe(false);
+  const changed = {
+    ...approval,
+    approvalReview: {
+      ...approval.approvalReview,
+      originalOrder: {
+        ...approval.approvalReview.originalOrder!,
+        receipt: {
+          ...approval.approvalReview.originalOrder!.receipt,
+          principal: "changed-principal",
+        },
+      },
+    },
+  };
+  await screen.rerender(<PendingQueue approvals={[changed]} onRespond={onRespond} />);
+  await expect.poll(() => approve.disabled).toBe(true);
+  await act(async () => approve.click());
+  expect(onRespond).not.toHaveBeenCalled();
+});
 
 it("can review a second request while an earlier disconnected example remains pending", async () => {
   const next = externalApproval();

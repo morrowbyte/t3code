@@ -1,7 +1,8 @@
 import type { AuthSessionId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 
-// Only authenticated transport middleware supplies this; it never comes from command payloads.
+// Transport-authenticated credentials only: this does not prove human message authorship.
+// Host-order creation has its own explicitly pinned human ingress; general RPC metadata cannot create an order.
 export class ApprovalReviewHumanAuthority extends Context.Reference<
   | {
       readonly sessionId: AuthSessionId;

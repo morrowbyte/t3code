@@ -1,4 +1,6 @@
 import { hashTelemetryId as sha256Utf8 } from "@t3tools/shared/telemetryId";
+import { ApprovalReviewOriginalOrder, type ApprovalReviewAuthority } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 
 export interface ReviewSource {
   readonly path: string;
@@ -53,6 +55,8 @@ export interface ReviewBundle {
   };
   readonly warnings: readonly string[];
   readonly exampleOnly: boolean;
+  readonly originalOrder?: ApprovalReviewOriginalOrder;
+  readonly agentRationale?: string;
 }
 
 export type ApprovalReviewDetail =
@@ -190,6 +194,39 @@ function freeze<T>(value: T): T {
   return value;
 }
 
+function parseOriginalOrder(value: unknown): ApprovalReviewOriginalOrder {
+  const order = Schema.decodeUnknownSync(ApprovalReviewOriginalOrder)(value, {
+    onExcessProperty: "error",
+  });
+  const fullText = text(order.receipt.fullText, "Original order", 65_536);
+  text(order.excerpt.text, "Original excerpt", 65_536);
+  if (sha256Utf8(fullText) !== order.receipt.fullTextHash) fail("Original order SHA-256 mismatch");
+  if (
+    order.excerpt.endUtf16 <= order.excerpt.startUtf16 ||
+    order.excerpt.endUtf16 > fullText.length ||
+    fullText.slice(order.excerpt.startUtf16, order.excerpt.endUtf16) !== order.excerpt.text
+  )
+    fail("Original excerpt does not match the immutable order");
+  const originalLink =
+    order.receipt.version === 2
+      ? `host-order:${order.receipt.orderId}`
+      : `t3-thread://v1/${order.receipt.threadId}`;
+  if (order.receipt.originalLink !== originalLink)
+    fail("Original order reference does not match its source");
+  return {
+    receipt:
+      order.receipt.version === 1
+        ? {
+            ...order.receipt,
+            revision: { ...order.receipt.revision },
+            lineage: { ...order.receipt.lineage },
+          }
+        : { ...order.receipt, assignment: { ...order.receipt.assignment } },
+    excerpt: { ...order.excerpt },
+    destination: { ...order.destination },
+  };
+}
+
 function validateBundle(value: unknown): ReviewBundle {
   const item = record(value, "Review bundle", [
     "schemaVersion",
@@ -204,6 +241,8 @@ function validateBundle(value: unknown): ReviewBundle {
     "target",
     "warnings",
     "exampleOnly",
+    "originalOrder",
+    "agentRationale",
   ]);
   if (item.schemaVersion !== 1) fail("Unsupported review schema version");
   if (typeof item.exampleOnly !== "boolean") fail("exampleOnly must be a boolean");
@@ -299,6 +338,12 @@ function validateBundle(value: unknown): ReviewBundle {
     },
     warnings: strings(item.warnings, "Warnings", 64),
     exampleOnly: item.exampleOnly,
+    ...(item.originalOrder === undefined
+      ? {}
+      : { originalOrder: parseOriginalOrder(item.originalOrder) }),
+    ...(item.agentRationale === undefined
+      ? {}
+      : { agentRationale: text(item.agentRationale, "Agent rationale", 65_536, true) }),
   };
   if (new TextEncoder().encode(JSON.stringify(bundle)).length > MAX_PAYLOAD_BYTES)
     fail("Review payload exceeds 2 MiB");
@@ -361,6 +406,58 @@ function canonical(value: unknown): string {
 // no whitespace or Unicode/newline normalization; omit only the top-level hash field.
 export function canonicalReviewBundleSnapshot(bundle: Omit<ReviewBundle, "hash">): string {
   return canonical(Object.fromEntries(Object.entries(bundle).filter(([key]) => key !== "hash")));
+}
+
+// The server verifies the host order and paired channel. This binds its decision
+// to the exact immutable original shown by the client, without fetching a chat DB.
+export function reviewBundleHasVerifiedOrderChannel(
+  bundle: ReviewBundle,
+  authority: ApprovalReviewAuthority | undefined,
+): boolean {
+  if (
+    !authority?.originalOrder ||
+    authority.provenance?.status !== "verified" ||
+    !bundle.originalOrder ||
+    authority.packageHash !== bundle.hash ||
+    authority.verifiedTargetId !== bundle.target.identity ||
+    authority.agentRationale !== bundle.agentRationale
+  )
+    return false;
+  try {
+    const order = parseOriginalOrder(bundle.originalOrder);
+    const receipt = order.receipt;
+    if (
+      receipt.version !== 2 ||
+      receipt.forwardRevision !== 1 ||
+      receipt.assignment.orderId !== receipt.orderId ||
+      receipt.assignment.orderRevision !== receipt.orderRevision ||
+      receipt.assignment.fullTextHash !== receipt.fullTextHash ||
+      receipt.assignment.threadId !== order.destination.threadId ||
+      receipt.assignment.runId !== order.destination.runId ||
+      receipt.assignment.environmentId === receipt.sourceEnvironmentId
+    )
+      return false;
+    return (
+      canonical(order) === canonical(authority.originalOrder) &&
+      sha256Utf8(canonicalReviewBundleSnapshot(bundle)) === bundle.hash
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function reviewBundleHasVerifiedOriginalOrder(
+  bundle: ReviewBundle,
+  authority: ApprovalReviewAuthority | undefined,
+): boolean {
+  const receipt = bundle.originalOrder?.receipt;
+  return (
+    !bundle.exampleOnly &&
+    receipt?.version === 2 &&
+    receipt.sourceKind === "human" &&
+    !receipt.testOnly &&
+    reviewBundleHasVerifiedOrderChannel(bundle, authority)
+  );
 }
 
 export async function verifyReviewBundle(bundle: ReviewBundle): Promise<ReviewBundleVerification> {

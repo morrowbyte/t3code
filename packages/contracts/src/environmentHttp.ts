@@ -6,6 +6,15 @@ import {
   ApprovalReviewResult,
   ApprovalReviewReady,
   ApprovalReviewError,
+  ApprovalReviewReceiverReadinessInput,
+  ApprovalReviewReceiverReadiness,
+  ApprovalReviewOrderCreate,
+  ApprovalReviewOrderRead,
+  ApprovalReviewOrderCancelResult,
+  ApprovalReviewHostOrder,
+  ApprovalReviewOrderReadiness,
+  ApprovalReviewOrderReceive,
+  ApprovalReviewForwardAck,
 } from "./approvalReviewAuthority.ts";
 import * as Context from "effect/Context";
 import type * as DateTime from "effect/DateTime";
@@ -1075,6 +1084,76 @@ class EnvironmentAndroidAppUpdatesHttpApi extends HttpApiGroup.make("androidAppU
   ) {}
 
 class EnvironmentApprovalReviewHttpApi extends HttpApiGroup.make("approvalReview")
+  .add(
+    HttpApiEndpoint.post("orderCreate", "/api/approval-review/orders/create", {
+      headers: OptionalBearerHeaders,
+      payload: ApprovalReviewOrderCreate,
+      success: ApprovalReviewHostOrder,
+      error: [
+        ...EnvironmentScopedOperationErrors,
+        ApprovalReviewError.pipe(HttpApiSchema.status(409)),
+      ],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("orderRead", "/api/approval-review/orders/read", {
+      headers: OptionalBearerHeaders,
+      payload: ApprovalReviewOrderRead,
+      success: ApprovalReviewHostOrder,
+      error: [
+        ...EnvironmentScopedOperationErrors,
+        ApprovalReviewError.pipe(HttpApiSchema.status(409)),
+      ],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("orderCancel", "/api/approval-review/orders/cancel", {
+      headers: OptionalBearerHeaders,
+      payload: ApprovalReviewOrderRead,
+      success: ApprovalReviewOrderCancelResult,
+      error: [
+        ...EnvironmentScopedOperationErrors,
+        ApprovalReviewError.pipe(HttpApiSchema.status(409)),
+      ],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("orderReadiness", "/api/approval-review/orders/readiness", {
+      headers: OptionalBearerHeaders,
+      payload: Schema.Struct({}),
+      success: ApprovalReviewOrderReadiness,
+      error: [
+        ...EnvironmentScopedOperationErrors,
+        ApprovalReviewError.pipe(HttpApiSchema.status(409)),
+      ],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post(
+      "orderReceiverReadiness",
+      "/api/approval-review/orders/receiver-readiness",
+      {
+        headers: OptionalBearerHeaders,
+        payload: ApprovalReviewReceiverReadinessInput,
+        success: ApprovalReviewReceiverReadiness,
+        error: [
+          ...EnvironmentScopedOperationErrors,
+          ApprovalReviewError.pipe(HttpApiSchema.status(409)),
+        ],
+      },
+    ).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("orderReceive", "/api/approval-review/orders/receive", {
+      headers: OptionalBearerHeaders,
+      payload: ApprovalReviewOrderReceive,
+      success: ApprovalReviewForwardAck,
+      error: [
+        ...EnvironmentScopedOperationErrors,
+        ApprovalReviewError.pipe(HttpApiSchema.status(409)),
+      ],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
   .add(
     HttpApiEndpoint.get("identity", "/api/approval-review/identity", {
       headers: OptionalBearerHeaders,

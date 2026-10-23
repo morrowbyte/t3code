@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./state/approval-orders": {
+      "types": "./src/state/approvalOrders.ts",
+      "default": "./src/state/approvalOrders.ts"
+    },
     "./approvalReview": {
       "types": "./src/approvalReview.ts",
       "default": "./src/approvalReview.ts"

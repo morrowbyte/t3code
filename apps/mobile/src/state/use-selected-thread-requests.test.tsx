@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { syntheticOriginalOrder } from "../../../../packages/client-runtime/src/approvalReviewTestFixtures.ts";
 
 const fixture = vi.hoisted(() => ({
   drafts: {} as Record<string, unknown>,
@@ -294,6 +295,8 @@ describe("descendant request origin", () => {
         implementationHash: "b".repeat(64),
       },
       implementationSource: "fixture only",
+      originalOrder: syntheticOriginalOrder(Date.now() + 60_000),
+      provenance: { status: "verified", reason: "trusted-original" },
     };
     const hostPending = {
       ...pending,
@@ -310,7 +313,15 @@ describe("descendant request origin", () => {
     await result.onRespondToApproval(requestId, "accept");
     await result.onRespondToApproval(requestId, "accept", "c".repeat(64));
     await result.onRespondToApproval(requestId, "acceptForSession", authority.packageHash);
+    fixture.pending = {
+      ...hostPending,
+      approvals: [
+        { ...hostPending.approvals[0]!, approvalReview: { ...authority, provenance: undefined } },
+      ],
+    };
+    await result.onRespondToApproval(requestId, "accept", authority.packageHash);
     expect(fixture.commands).toEqual([]);
+    fixture.pending = hostPending;
     await result.onRespondToApproval(requestId, "accept", authority.packageHash);
     expect(fixture.commands).toEqual([
       {

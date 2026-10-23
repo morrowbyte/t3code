@@ -1,5 +1,10 @@
 import * as ApprovalReviewHttp from "./orchestration-v2/ApprovalReviewHttp.ts";
 import * as ApprovalReviewService from "./orchestration-v2/ApprovalReviewService.ts";
+import * as ApprovalReviewHostOrders from "./orchestration-v2/ApprovalReviewHostOrders.ts";
+import * as ApprovalReviewOrderForward from "./orchestration-v2/ApprovalReviewOrderForward.ts";
+import * as ApprovalReviewOrderReceiver from "./orchestration-v2/ApprovalReviewOrderReceiver.ts";
+import * as ApprovalReviewOrderPolicy from "./orchestration-v2/ApprovalReviewOrderPolicy.ts";
+import * as ApprovalReviewProvenance from "./orchestration-v2/ApprovalReviewProvenance.ts";
 import * as CuaRuntime from "./cua/CuaRuntime.ts";
 import * as MainRendererDiagnosticsLocalClient from "./diagnostics/MainRendererDiagnosticsLocalClient.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
@@ -770,6 +775,14 @@ const layerMakeRoutes = Layer.mergeAll(
     Layer.provide(McpOAuth.layerMcpClientAuthenticator),
   ),
 ).pipe(
+  Layer.provide(ApprovalReviewProvenance.layer),
+  Layer.provideMerge(
+    ApprovalReviewHostOrders.layer.pipe(
+      Layer.provide(ApprovalReviewOrderForward.layer),
+      Layer.provide(ProjectionStoreV2.layer),
+    ),
+  ),
+  Layer.provide(ApprovalReviewOrderReceiver.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
   Layer.provide(
     PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
   ),
@@ -780,6 +793,7 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.provide(PreviewBrowser.layer),
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(layerDesktopAppUpdate))),
+  Layer.provide(ApprovalReviewOrderPolicy.layer),
   Layer.provide(layerCommandReadiness),
   Layer.provide(ServerHttp.layerBrowserApiCors),
   Layer.provide(ServerHttp.layerHttpCompression),
