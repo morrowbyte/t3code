@@ -28,6 +28,8 @@ import {
 import * as Context from "effect/Context";
 import type * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
+import { LiveVoiceCallHistory, LiveVoiceCallTranscript } from "./liveVoiceHistory.ts";
+import { LiveVoiceLeaseId } from "./liveVoice.ts";
 import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
 import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
@@ -910,6 +912,34 @@ export class VoiceTranscriptionHttpError extends Schema.TaggedError<VoiceTranscr
     return this.detail;
   }
 }
+class EnvironmentLiveVoiceHistoryHttpApi extends HttpApiGroup.make("liveVoiceHistory").add(
+  HttpApiEndpoint.get("calls", "/api/voice/threads/:threadId/calls", {
+    params: { threadId: ThreadId },
+    query: { before: Schema.optional(Schema.String.check(Schema.isPattern(/^[1-9][0-9]{0,14}$/))) },
+    headers: OptionalBearerHeaders,
+    success: LiveVoiceCallHistory,
+    error: [
+      EnvironmentAuthInvalidError,
+      ...EnvironmentScopedOperationErrors,
+      EnvironmentResourceNotFoundError,
+    ],
+  }).middleware(EnvironmentAuthenticatedAuth),
+  HttpApiEndpoint.get("transcript", "/api/voice/threads/:threadId/calls/:leaseId/:generation", {
+    params: {
+      threadId: ThreadId,
+      leaseId: LiveVoiceLeaseId,
+      generation: Schema.String.check(Schema.isPattern(/^[1-9][0-9]{0,14}$/)),
+    },
+    headers: OptionalBearerHeaders,
+    success: LiveVoiceCallTranscript,
+    error: [
+      EnvironmentAuthInvalidError,
+      ...EnvironmentScopedOperationErrors,
+      EnvironmentResourceNotFoundError,
+    ],
+  }).middleware(EnvironmentAuthenticatedAuth),
+) {}
+
 class EnvironmentVoiceHttpApi extends HttpApiGroup.make("voice").add(
   HttpApiEndpoint.get("voiceSettings", "/api/voice/settings", {
     headers: OptionalBearerHeaders,
@@ -1303,6 +1333,7 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentPullRequestsHttpApi)
   .add(EnvironmentVoiceHttpApi)
   .add(EnvironmentVoiceRecordingHttpApi)
+  .add(EnvironmentLiveVoiceHistoryHttpApi)
   .add(EnvironmentProjectsHttpApi)
   .add(EnvironmentConnectHttpApi)
   .add(EnvironmentWebhooksHttpApi) {}

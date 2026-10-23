@@ -268,6 +268,7 @@ import {
 import type { AssistantCitationRequest } from "./chat/AssistantCitationSource";
 import type { MessagesTimelineHistoryControls } from "./chat/MessagesTimeline";
 import { ThreadTimeline } from "./chat/ThreadTimeline";
+import { WebVoiceCallHistory } from "../voice/WebVoiceCallHistory";
 import { ProviderSubagentBar } from "./chat/ProviderSubagentBar";
 import { getTriggerDisplayModelName } from "./chat/providerIconUtils";
 import {
@@ -3514,18 +3515,24 @@ export default function ChatView(props: ChatViewProps) {
                 {...(onOpenWorktreeSetupTerminal ? { onOpenWorktreeSetupTerminal } : {})}
                 isPreparingWorktree={!paintOnlyDisplayedTimeline && isPreparingWorktree}
                 footer={
-                  paintOnlyDisplayedTimeline ? null : pendingHandoff === null ? (
-                    threadStatusLine
-                  ) : (
+                  paintOnlyDisplayedTimeline ? null : (
                     <>
-                      <div className="chat-content-lane">
-                        <HandoffRow
-                          environmentId={environmentId}
-                          endpoints={pendingHandoff}
-                          providers={providerStatuses}
-                          pending
+                      {isServerThread && (
+                        <WebVoiceCallHistory
+                          environmentId={activeThread.environmentId}
+                          threadId={activeThread.id}
                         />
-                      </div>
+                      )}
+                      {pendingHandoff !== null && (
+                        <div className="chat-content-lane">
+                          <HandoffRow
+                            environmentId={environmentId}
+                            endpoints={pendingHandoff}
+                            providers={providerStatuses}
+                            pending
+                          />
+                        </div>
+                      )}
                       {threadStatusLine}
                     </>
                   )

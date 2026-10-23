@@ -78,6 +78,8 @@ import Migration0069 from "./Migrations/068_ApprovalReviewReadyIndex.ts";
 import Migration0070 from "./Migrations/069_ApprovalReviewHostOrders.ts";
 import Migration0071 from "./Migrations/068_ShellStopRequestIndex.ts";
 
+import Migration0072 from "./Migrations/072_LiveVoiceHistoryEvents.ts";
+
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
   [2, "OrchestrationCommandReceipts", Migration0002],
@@ -151,6 +153,7 @@ const migrationEntries = [
   [69, "ApprovalReviewReadyIndex", Migration0069],
   [70, "ApprovalReviewHostOrders", Migration0070],
   [71, "ShellStopRequestIndex", Migration0071],
+  [72, "LiveVoiceHistoryEvents", Migration0072],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

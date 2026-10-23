@@ -7,6 +7,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import type { LiveVoiceEvent, LiveVoiceSession } from "@t3tools/contracts";
+import * as LiveVoiceHistory from "./LiveVoiceHistory.ts";
 
 type LeaseKey = `${string}:${number}`;
 const keyOf = (leaseId: string, generation: number): LeaseKey => `${leaseId}:${generation}`;
@@ -25,6 +26,7 @@ export class CodexLiveEventHub extends Context.Service<
 >()("t3/voice/CodexLiveEventHub") {}
 
 export const make = Effect.gen(function* () {
+  const history = yield* LiveVoiceHistory.LiveVoiceHistory;
   const lock = yield* Semaphore.make(1);
   const sessions = yield* Ref.make(new Map<LeaseKey, LiveVoiceSession>());
   const events = yield* PubSub.unbounded<LiveVoiceEvent>();
@@ -32,6 +34,14 @@ export const make = Effect.gen(function* () {
   const publish = (event: LiveVoiceEvent) =>
     lock.withPermits(1)(
       Effect.gen(function* () {
+        const identity = event.type === "status" ? event.session : event;
+        const session =
+          event.type === "status"
+            ? event.session
+            : (yield* Ref.get(sessions)).get(keyOf(identity.leaseId, identity.generation));
+        if (session && (event.type === "status" || event.type === "transcript")) {
+          yield* history.record(session, event);
+        }
         if (event.type === "status") {
           yield* Ref.update(sessions, (current) => {
             const next = new Map(current);
@@ -46,11 +56,13 @@ export const make = Effect.gen(function* () {
   return CodexLiveEventHub.of({
     register: (session) =>
       lock.withPermits(1)(
-        Ref.update(sessions, (current) => {
-          if (current.has(keyOf(session.leaseId, session.generation))) return current;
+        Effect.gen(function* () {
+          const current = yield* Ref.get(sessions);
+          if (current.has(keyOf(session.leaseId, session.generation))) return;
+          yield* history.record(session, { type: "status", session });
           const next = new Map(current);
           next.set(keyOf(session.leaseId, session.generation), session);
-          return next;
+          yield* Ref.set(sessions, next);
         }),
       ),
     publish,
@@ -80,4 +92,6 @@ export const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(CodexLiveEventHub, make);
+export const layer = Layer.effect(CodexLiveEventHub, make).pipe(
+  Layer.provide(LiveVoiceHistory.layer),
+);

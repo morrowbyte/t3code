@@ -511,6 +511,10 @@
     "./state/voice-recording": {
       "types": "./src/state/voiceRecordingHttp.ts",
       "default": "./src/state/voiceRecordingHttp.ts"
+    },
+    "./state/live-voice-history": {
+      "types": "./src/state/liveVoiceHistory.ts",
+      "default": "./src/state/liveVoiceHistory.ts"
     }
   },
   "scripts": {
