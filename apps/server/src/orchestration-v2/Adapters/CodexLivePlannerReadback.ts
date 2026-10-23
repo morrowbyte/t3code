@@ -31,11 +31,11 @@ export const appendCodexLivePlannerAnswer = Effect.fn("CodexLivePlannerReadback.
     "voice.planner.turn_id": input.turnId,
     "voice.planner.answer_item_id": item.id,
   });
-  yield* append(item.text).pipe(Effect.onError(() => Effect.sync(() => delivered.delete(key))));
+  // The native append API has no idempotency key. A failed acknowledgement
+  // can follow acceptance, so retain this session's claim even on failure.
+  yield* append(item.text).pipe(
+    Effect.onError(() => Effect.annotateCurrentSpan("voice.planner.answer_delivery", "unknown")),
+  );
   yield* Effect.annotateCurrentSpan("voice.planner.answer_appended", true);
-  if (delivered.size > 128) {
-    const oldest = delivered.values().next().value;
-    if (oldest !== undefined) delivered.delete(oldest);
-  }
   return true;
 });

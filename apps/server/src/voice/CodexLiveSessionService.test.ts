@@ -124,6 +124,22 @@ it.effect.each([false, true])(
       const spoken: Array<{ plannerNativeThreadId: string; text: string }> = [];
       const contexts: Array<{ plannerNativeThreadId: string; text: string }> = [];
       const contextSignals = new Map<string, Deferred.Deferred<void>>();
+      let contextAppendGate: Deferred.Deferred<void> | undefined;
+      const deliveryWaiters = new Map<string, () => void>();
+      const waitForDelivery = (messageId: string) =>
+        new Promise<void>((resolve) => deliveryWaiters.set(messageId, resolve));
+      const deliveryTracer = Tracer.make({
+        span: (options) => {
+          const span = new Tracer.NativeSpan(options);
+          const end = span.end.bind(span);
+          span.end = (time, exit) => {
+            end(time, exit);
+            if (span.attributes.has("voice.output.delivery"))
+              deliveryWaiters.get(String(span.attributes.get("voice.output.message_id")))?.();
+          };
+          return span;
+        },
+      });
       let appendAttempts = 0;
       let appendSpeechFails = false;
       let resolveAppendAttempt: (() => void) | undefined;
@@ -243,6 +259,9 @@ it.effect.each([false, true])(
               contexts.push(input);
               const signal = contextSignals.get(input.text);
               if (signal) yield* Deferred.succeed(signal, undefined);
+              const gate = contextAppendGate;
+              contextAppendGate = undefined;
+              if (gate) yield* Deferred.await(gate);
             }),
           appendSpeech: (input: { plannerNativeThreadId: string; text: string }) =>
             Effect.gen(function* () {
@@ -838,6 +857,8 @@ it.effect.each([false, true])(
           ),
         };
         const firstContext = yield* Deferred.make<void>();
+        const heldContext = yield* Deferred.make<void>();
+        contextAppendGate = heldContext;
         contextSignals.set("commentary for durable-run-1", firstContext);
         const updateEvent = () =>
           eventFor({
@@ -852,6 +873,13 @@ it.effect.each([false, true])(
           } as never);
         yield* Queue.offer(t3EventQueues.get("turn-item.updated")!, updateEvent());
         yield* Deferred.await(firstContext);
+        assert.equal(
+          yield* invoke("call-while-native-append-is-held", "Implement the requested change"),
+          firstReceipt,
+          "native output acknowledgement must not hold work admission",
+        );
+        assert.isFalse(yield* Deferred.isDone(heldContext));
+        yield* Deferred.succeed(heldContext, undefined);
         assert.deepEqual(
           contexts.map((message) => message.text),
           ["commentary for durable-run-1"],
@@ -1266,7 +1294,9 @@ it.effect.each([false, true])(
         );
         currentPolicy = { ...policy, cwd: "/changed-during-public-delivery" };
         contextLookup.release();
-        // Mutating control still serializes with the pending append; status no longer does.
+        const afterRefusal = waitForGateRead();
+        yield* Queue.offer(t3EventQueues.get("turn-item.updated")!, updateEvent());
+        yield* afterRefusal;
         assert.isTrue(
           Exit.isFailure(
             yield* Effect.exit(
@@ -1578,6 +1608,28 @@ it.effect.each([false, true])(
           "planner-turn-4",
         );
         assert.equal(sends, 4);
+        const beforeEnd = makeRunProjection("durable-run-4", "running");
+        durableProjection = {
+          ...beforeEnd,
+          runs: beforeEnd.runs.map((run) => ({ ...run, status: "running" })),
+        };
+        const contextBeforeEnd = yield* Deferred.make<void>();
+        const heldAtEnd = yield* Deferred.make<void>();
+        contextAppendGate = heldAtEnd;
+        contextSignals.set("commentary for durable-run-4", contextBeforeEnd);
+        yield* Queue.offer(
+          t3EventQueues.get("run.updated")!,
+          eventFor({
+            type: "run.updated",
+            id: "event-held-at-end",
+            threadId,
+            runId: "durable-run-4",
+            providerInstanceId,
+            occurredAt: "2026-10-14T00:00:03.000Z",
+            payload: durableProjection.runs[0]!,
+          } as never),
+        );
+        yield* Deferred.await(contextBeforeEnd);
         durableProjection = makeReadyProjection("durable-run-4", 4);
         const stopped = yield* service.stop(session, {
           leaseId: prepared.leaseId,
@@ -1585,6 +1637,10 @@ it.effect.each([false, true])(
           clientRequestId: "stop-1",
         });
         assert.equal(stopped.status, "stopping");
+        assert.isFalse(
+          yield* Deferred.isDone(heldAtEnd),
+          "End remains reachable during native I/O",
+        );
         assert.isTrue(Exit.isFailure(yield* Effect.exit(control("status", "after-end"))));
         assert.equal(stops, 1);
         assert.equal(sends, 4);
@@ -1754,6 +1810,7 @@ it.effect.each([false, true])(
             event.session.generation === secondPrepared.generation &&
             event.session.status === "failed",
         );
+        const refusalSettled = waitForDelivery(`final-${raceRunId}`);
         principalGate.release();
         const duplicateRaceReceipt = yield* invokeWithPlanner(
           "planner-native-2",
@@ -1762,6 +1819,7 @@ it.effect.each([false, true])(
           "planner-turn-native-error-race",
         );
         assert.equal(duplicateRaceReceipt, raceReceipt);
+        yield* Effect.promise(() => refusalSettled);
         assert.equal(sends, 5);
         assert.equal(
           appendAttempts,
@@ -2217,6 +2275,7 @@ it.effect.each([false, true])(
         }
       });
       yield* program.pipe(
+        Effect.withTracer(deliveryTracer),
         Effect.provide(Layer.provideMerge(CodexLiveSessionService.layer, dependencies)),
       );
     }),

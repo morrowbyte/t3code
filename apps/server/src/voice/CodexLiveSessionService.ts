@@ -148,6 +148,8 @@ export const layer: Layer.Layer<
     const crypto = yield* Crypto.Crypto;
     const serviceScope = yield* Effect.scope;
     const leaseLocks = yield* KeyedLock.make<string>();
+    // Native append acknowledgements must not hold admission, steering or End.
+    const outputLocks = yield* KeyedLock.make<string>();
     const readbackWorkers = new Map<string, Fiber.Fiber<void, never>>();
     const nativeEventRuntimes = new Set<ProviderAdapter.ProviderAdapterV2SessionRuntime>();
     let transcriptSequence = 0;
@@ -549,209 +551,220 @@ export const layer: Layer.Layer<
         { discard: true },
       );
 
-    const appendDurableOutput = (input: {
-      readonly leaseId: string;
-      readonly generation: number;
-      readonly threadId: LiveVoiceSession["threadId"];
-      readonly projectId: OrchestrationV2ThreadProjection["thread"]["projectId"];
-      readonly plannerNativeThreadId: string;
-      readonly plannerTurnId: string;
-      readonly runId: string;
-      readonly attemptId: string;
-      readonly messageId: string;
-      readonly deliveryId?: string;
-      readonly kind: "final" | "context";
-      readonly text: string;
-    }) =>
-      leaseLocks.withLock(
-        leaseKey(input.leaseId, input.generation),
-        Effect.gen(function* () {
-          const row = yield* getLease(input.leaseId, input.generation);
-          const lease = active.get(leaseKey(input.leaseId, input.generation));
-          if (
-            row === undefined ||
-            row.planner_native_thread_id !== input.plannerNativeThreadId ||
-            (row.status !== "active" && row.status !== "starting") ||
-            lease?.plannerNativeThreadId !== input.plannerNativeThreadId ||
-            lease.runtime.liveVoice === undefined ||
-            lease.runtime.driver !== "codex" ||
-            lease.runtime.instanceId !== row.provider_instance_id ||
-            lease.runtime.providerSessionId !== row.provider_session_id
-          )
-            return;
-          const intents = yield* sql<{ receipt_json: string | null }>`
+    const appendDurableOutput = Effect.fn("CodexLiveSessionService.appendOutput")(
+      (input: {
+        readonly leaseId: string;
+        readonly generation: number;
+        readonly threadId: LiveVoiceSession["threadId"];
+        readonly projectId: OrchestrationV2ThreadProjection["thread"]["projectId"];
+        readonly plannerNativeThreadId: string;
+        readonly plannerTurnId: string;
+        readonly runId: string;
+        readonly attemptId: string;
+        readonly messageId: string;
+        readonly deliveryId?: string;
+        readonly kind: "final" | "context";
+        readonly text: string;
+      }) =>
+        outputLocks.withLock(
+          leaseKey(input.leaseId, input.generation),
+          Effect.gen(function* () {
+            yield* Effect.annotateCurrentSpan({
+              "voice.output.kind": input.kind,
+              "voice.output.message_id": input.messageId,
+            });
+            const row = yield* getLease(input.leaseId, input.generation);
+            const lease = active.get(leaseKey(input.leaseId, input.generation));
+            if (
+              row === undefined ||
+              row.planner_native_thread_id !== input.plannerNativeThreadId ||
+              (row.status !== "active" && row.status !== "starting") ||
+              lease?.plannerNativeThreadId !== input.plannerNativeThreadId ||
+              lease.runtime.liveVoice === undefined ||
+              lease.runtime.driver !== "codex" ||
+              lease.runtime.instanceId !== row.provider_instance_id ||
+              lease.runtime.providerSessionId !== row.provider_session_id
+            )
+              return;
+            const intents = yield* sql<{ receipt_json: string | null }>`
             SELECT receipt_json FROM codex_live_voice_intents
             WHERE lease_id = ${input.leaseId} AND generation = ${input.generation}
               AND planner_native_thread_id = ${input.plannerNativeThreadId}
               AND planner_turn_id = ${input.plannerTurnId} AND dispatch_state = 'admitted'
           `;
-          const stored = intents[0]?.receipt_json;
-          if (stored === undefined || stored === null) return;
-          const receipt = decodeReceipt(stored) as Record<string, unknown>;
-          if (receipt.runId !== input.runId) return;
-          const publicReadbacks =
-            typeof receipt.publicReadbacks === "object" &&
-            receipt.publicReadbacks !== null &&
-            !Array.isArray(receipt.publicReadbacks)
-              ? (receipt.publicReadbacks as Record<string, unknown>)
-              : {};
-          const deliveryId = input.deliveryId ?? input.messageId;
-          if (
-            input.kind === "final"
-              ? receipt.readback !== undefined
-              : Object.hasOwn(publicReadbacks, deliveryId) ||
-                lease.runtime.liveVoice.appendContext === undefined
-          )
-            return;
-          const receiptWithState = (state: "claimed" | "refused" | "sent" | "unknown") => {
-            const delivery = { state, runId: input.runId, attemptId: input.attemptId };
-            return encodeReceipt(
+            const stored = intents[0]?.receipt_json;
+            if (stored === undefined || stored === null) return;
+            const receipt = decodeReceipt(stored) as Record<string, unknown>;
+            if (receipt.runId !== input.runId) return;
+            const publicReadbacks =
+              typeof receipt.publicReadbacks === "object" &&
+              receipt.publicReadbacks !== null &&
+              !Array.isArray(receipt.publicReadbacks)
+                ? (receipt.publicReadbacks as Record<string, unknown>)
+                : {};
+            const deliveryId = input.deliveryId ?? input.messageId;
+            if (
               input.kind === "final"
-                ? { ...receipt, readback: { ...delivery, finalMessageId: input.messageId } }
-                : {
-                    ...receipt,
-                    publicReadbacks: { ...publicReadbacks, [deliveryId]: delivery },
-                  },
-            );
-          };
-          const activePrincipals = yield* authSessions
-            .listActive()
-            .pipe(Effect.mapError(() => liveError("runtime_unavailable")));
-          if (
-            !activePrincipals.some(
-              (principal) =>
-                principal.sessionId === row.principal_session_id &&
-                principal.subject === row.principal_subject &&
-                principal.scopes.includes(AuthOrchestrationOperateScope),
+                ? receipt.readback !== undefined
+                : Object.hasOwn(publicReadbacks, deliveryId) ||
+                  lease.runtime.liveVoice.appendContext === undefined
             )
-          )
-            return;
-          const latestProjection = yield* threads.getProjectThread({
-            projectId: input.projectId,
-            threadId: input.threadId,
-          });
-          const policy = yield* runtimePolicies.resolve({
-            thread: latestProjection.thread,
-            modelSelection: latestProjection.thread.modelSelection,
-          });
-          if (!readbackContextMatches(row, latestProjection, policy)) return;
-          const finalResult = readbackResult(latestProjection, input.runId);
-          const latestFinal =
-            input.kind === "final"
-              ? finalResult && { ...finalResult, messageId: finalResult.finalMessageId }
-              : publicReadbackResults(latestProjection, input.runId).find(
-                  (message) => message.deliveryId === deliveryId,
-                );
-          if (
-            latestFinal === undefined ||
-            latestFinal.attemptId !== input.attemptId ||
-            latestFinal.messageId !== input.messageId ||
-            latestFinal.text !== input.text
-          )
-            return;
-          const beforeClaim = yield* getLease(input.leaseId, input.generation);
-          const leaseBeforeClaim = active.get(leaseKey(input.leaseId, input.generation));
-          if (
-            beforeClaim === undefined ||
-            beforeClaim.status !== "active" ||
-            beforeClaim.planner_native_thread_id !== input.plannerNativeThreadId ||
-            leaseBeforeClaim?.plannerNativeThreadId !== input.plannerNativeThreadId ||
-            leaseBeforeClaim.runtime.liveVoice === undefined ||
-            leaseBeforeClaim.runtime.driver !== "codex" ||
-            leaseBeforeClaim.runtime.instanceId !== beforeClaim.provider_instance_id ||
-            leaseBeforeClaim.runtime.providerSessionId !== beforeClaim.provider_session_id
-          )
-            return;
-          const claimed = receiptWithState("claimed");
-          const now = DateTime.formatIso(yield* DateTime.now);
-          yield* sql`
+              return;
+            const receiptWithState = (state: "claimed" | "refused" | "sent" | "unknown") => {
+              const delivery = { state, runId: input.runId, attemptId: input.attemptId };
+              return encodeReceipt(
+                input.kind === "final"
+                  ? { ...receipt, readback: { ...delivery, finalMessageId: input.messageId } }
+                  : {
+                      ...receipt,
+                      publicReadbacks: { ...publicReadbacks, [deliveryId]: delivery },
+                    },
+              );
+            };
+            const activePrincipals = yield* authSessions
+              .listActive()
+              .pipe(Effect.mapError(() => liveError("runtime_unavailable")));
+            if (
+              !activePrincipals.some(
+                (principal) =>
+                  principal.sessionId === row.principal_session_id &&
+                  principal.subject === row.principal_subject &&
+                  principal.scopes.includes(AuthOrchestrationOperateScope),
+              )
+            )
+              return;
+            const latestProjection = yield* threads.getProjectThread({
+              projectId: input.projectId,
+              threadId: input.threadId,
+            });
+            const policy = yield* runtimePolicies.resolve({
+              thread: latestProjection.thread,
+              modelSelection: latestProjection.thread.modelSelection,
+            });
+            if (!readbackContextMatches(row, latestProjection, policy)) return;
+            const finalResult = readbackResult(latestProjection, input.runId);
+            const latestFinal =
+              input.kind === "final"
+                ? finalResult && { ...finalResult, messageId: finalResult.finalMessageId }
+                : publicReadbackResults(latestProjection, input.runId).find(
+                    (message) => message.deliveryId === deliveryId,
+                  );
+            if (
+              latestFinal === undefined ||
+              latestFinal.attemptId !== input.attemptId ||
+              latestFinal.messageId !== input.messageId ||
+              latestFinal.text !== input.text
+            )
+              return;
+            const beforeClaim = yield* getLease(input.leaseId, input.generation);
+            const leaseBeforeClaim = active.get(leaseKey(input.leaseId, input.generation));
+            if (
+              beforeClaim === undefined ||
+              beforeClaim.status !== "active" ||
+              beforeClaim.planner_native_thread_id !== input.plannerNativeThreadId ||
+              leaseBeforeClaim?.plannerNativeThreadId !== input.plannerNativeThreadId ||
+              leaseBeforeClaim.runtime.liveVoice === undefined ||
+              leaseBeforeClaim.runtime.driver !== "codex" ||
+              leaseBeforeClaim.runtime.instanceId !== beforeClaim.provider_instance_id ||
+              leaseBeforeClaim.runtime.providerSessionId !== beforeClaim.provider_session_id
+            )
+              return;
+            const claimed = receiptWithState("claimed");
+            const now = DateTime.formatIso(yield* DateTime.now);
+            yield* sql`
             UPDATE codex_live_voice_intents SET receipt_json = ${claimed}, updated_at = ${now}
             WHERE lease_id = ${input.leaseId} AND generation = ${input.generation}
               AND planner_native_thread_id = ${input.plannerNativeThreadId}
               AND planner_turn_id = ${input.plannerTurnId} AND dispatch_state = 'admitted'
               AND receipt_json = ${stored}
           `;
-          const afterClaim = yield* sql<{ receipt_json: string | null }>`
+            const afterClaim = yield* sql<{ receipt_json: string | null }>`
             SELECT receipt_json FROM codex_live_voice_intents
             WHERE lease_id = ${input.leaseId} AND generation = ${input.generation}
               AND planner_native_thread_id = ${input.plannerNativeThreadId}
               AND planner_turn_id = ${input.plannerTurnId} AND dispatch_state = 'admitted'
           `;
-          if (afterClaim[0]?.receipt_json !== claimed) return;
-          const dispatchPrincipals = yield* authSessions
-            .listActive()
-            .pipe(Effect.mapError(() => liveError("runtime_unavailable")));
-          // Refresh after the principal lookup: native error/closed events can
-          // commit while that lookup is suspended, without taking this lease lock.
-          let stillPublic = true;
-          if (input.kind === "context") {
-            const currentProjection = yield* threads.getProjectThread({
-              projectId: input.projectId,
-              threadId: input.threadId,
-            });
-            const currentPolicy = yield* runtimePolicies.resolve({
-              thread: currentProjection.thread,
-              modelSelection: currentProjection.thread.modelSelection,
-            });
-            stillPublic =
-              readbackContextMatches(row, currentProjection, currentPolicy) &&
-              publicReadbackResults(currentProjection, input.runId).some(
-                (message) =>
-                  message.messageId === input.messageId &&
-                  message.deliveryId === deliveryId &&
-                  message.attemptId === input.attemptId &&
-                  message.text === input.text,
-              );
-          }
-          const beforeDispatch = yield* getLease(input.leaseId, input.generation);
-          const currentLease = active.get(leaseKey(input.leaseId, input.generation));
-          if (
-            !stillPublic ||
-            beforeDispatch === undefined ||
-            beforeDispatch.status !== "active" ||
-            beforeDispatch.planner_native_thread_id !== input.plannerNativeThreadId ||
-            currentLease?.plannerNativeThreadId !== input.plannerNativeThreadId ||
-            currentLease.runtime.liveVoice === undefined ||
-            (input.kind === "context" &&
-              currentLease.runtime.liveVoice.appendContext === undefined) ||
-            currentLease.runtime.driver !== "codex" ||
-            currentLease.runtime.instanceId !== beforeDispatch.provider_instance_id ||
-            currentLease.runtime.providerSessionId !== beforeDispatch.provider_session_id ||
-            !dispatchPrincipals.some(
-              (principal) =>
-                principal.sessionId === beforeDispatch.principal_session_id &&
-                principal.subject === beforeDispatch.principal_subject &&
-                principal.scopes.includes(AuthOrchestrationOperateScope),
-            )
-          ) {
-            const refused = receiptWithState("refused");
-            yield* sql`
+            if (afterClaim[0]?.receipt_json !== claimed) return;
+            const dispatchPrincipals = yield* authSessions
+              .listActive()
+              .pipe(Effect.mapError(() => liveError("runtime_unavailable")));
+            // Refresh after the principal lookup: native error/closed events can
+            // commit while that lookup is suspended, without taking this lease lock.
+            let stillPublic = true;
+            if (input.kind === "context") {
+              const currentProjection = yield* threads.getProjectThread({
+                projectId: input.projectId,
+                threadId: input.threadId,
+              });
+              const currentPolicy = yield* runtimePolicies.resolve({
+                thread: currentProjection.thread,
+                modelSelection: currentProjection.thread.modelSelection,
+              });
+              stillPublic =
+                readbackContextMatches(row, currentProjection, currentPolicy) &&
+                publicReadbackResults(currentProjection, input.runId).some(
+                  (message) =>
+                    message.messageId === input.messageId &&
+                    message.deliveryId === deliveryId &&
+                    message.attemptId === input.attemptId &&
+                    message.text === input.text,
+                );
+            }
+            const beforeDispatch = yield* getLease(input.leaseId, input.generation);
+            const currentLease = active.get(leaseKey(input.leaseId, input.generation));
+            if (
+              !stillPublic ||
+              beforeDispatch === undefined ||
+              beforeDispatch.status !== "active" ||
+              beforeDispatch.planner_native_thread_id !== input.plannerNativeThreadId ||
+              currentLease?.plannerNativeThreadId !== input.plannerNativeThreadId ||
+              currentLease.runtime.liveVoice === undefined ||
+              (input.kind === "context" &&
+                currentLease.runtime.liveVoice.appendContext === undefined) ||
+              currentLease.runtime.driver !== "codex" ||
+              currentLease.runtime.instanceId !== beforeDispatch.provider_instance_id ||
+              currentLease.runtime.providerSessionId !== beforeDispatch.provider_session_id ||
+              !dispatchPrincipals.some(
+                (principal) =>
+                  principal.sessionId === beforeDispatch.principal_session_id &&
+                  principal.subject === beforeDispatch.principal_subject &&
+                  principal.scopes.includes(AuthOrchestrationOperateScope),
+              )
+            ) {
+              const refused = receiptWithState("refused");
+              yield* sql`
               UPDATE codex_live_voice_intents SET receipt_json = ${refused}, updated_at = ${now}
               WHERE lease_id = ${input.leaseId} AND generation = ${input.generation}
                 AND planner_native_thread_id = ${input.plannerNativeThreadId}
                 AND planner_turn_id = ${input.plannerTurnId} AND receipt_json = ${claimed}
             `;
-            return;
-          }
-          const state = yield* Effect.exit(
-            (input.kind === "final"
-              ? currentLease.runtime.liveVoice.appendSpeech
-              : currentLease.runtime.liveVoice.appendContext!)({
-              plannerNativeThreadId: input.plannerNativeThreadId,
-              text: input.text,
-            }),
-          );
-          // Neither append has an idempotency key. This records transport acceptance,
-          // not audible playback, and ambiguous outcomes are never blindly replayed.
-          const settled = receiptWithState(Exit.isSuccess(state) ? "sent" : "unknown");
-          yield* sql`
+              yield* Effect.annotateCurrentSpan("voice.output.delivery", "refused");
+              return;
+            }
+            const state = yield* Effect.exit(
+              (input.kind === "final"
+                ? currentLease.runtime.liveVoice.appendSpeech
+                : currentLease.runtime.liveVoice.appendContext!)({
+                plannerNativeThreadId: input.plannerNativeThreadId,
+                text: input.text,
+              }),
+            );
+            // Neither append has an idempotency key. This records transport acceptance,
+            // not audible playback, and ambiguous outcomes are never blindly replayed.
+            const settled = receiptWithState(Exit.isSuccess(state) ? "sent" : "unknown");
+            yield* sql`
             UPDATE codex_live_voice_intents SET receipt_json = ${settled}, updated_at = ${now}
             WHERE lease_id = ${input.leaseId} AND generation = ${input.generation}
               AND planner_native_thread_id = ${input.plannerNativeThreadId}
               AND planner_turn_id = ${input.plannerTurnId} AND receipt_json = ${claimed}
           `;
-        }),
-      );
+            yield* Effect.annotateCurrentSpan(
+              "voice.output.delivery",
+              Exit.isSuccess(state) ? "sent" : "unknown",
+            );
+          }),
+        ),
+    );
 
     const markUnknown = Effect.fn("CodexLiveSessionService.markUnknown")(
       (leaseId: string, generation: number) =>

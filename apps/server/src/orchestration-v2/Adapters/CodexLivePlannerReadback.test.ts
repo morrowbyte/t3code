@@ -53,7 +53,7 @@ it.effect(
     }),
 );
 
-it.effect("claims an in-flight answer once and permits retry after failed delivery", () =>
+it.effect("claims an in-flight answer once and retains ambiguous delivery without replay", () =>
   Effect.gen(function* () {
     const delivered = new Set<string>();
     const entered = yield* Deferred.make<void>();
@@ -73,6 +73,21 @@ it.effect("claims an in-flight answer once and permits retry after failed delive
     yield* appendCodexLivePlannerAnswer(delivered, failedAnswer, () => Effect.fail("offline")).pipe(
       Effect.flip,
     );
-    assert.isTrue(yield* appendCodexLivePlannerAnswer(delivered, failedAnswer, () => Effect.void));
+    assert.isFalse(yield* appendCodexLivePlannerAnswer(delivered, failedAnswer, () => Effect.void));
+  }),
+);
+
+it.effect("retains answer identities until the live session ends", () =>
+  Effect.gen(function* () {
+    const delivered = new Set<string>();
+    const answer = (index: number) => ({
+      turnId: "same-native-turn",
+      item: { id: `answer-${index}`, type: "agentMessage", phase: "final_answer", text: "Answer" },
+    });
+    for (let index = 0; index < 130; index++)
+      assert.isTrue(
+        yield* appendCodexLivePlannerAnswer(delivered, answer(index), () => Effect.void),
+      );
+    assert.isFalse(yield* appendCodexLivePlannerAnswer(delivered, answer(0), () => Effect.void));
   }),
 );
