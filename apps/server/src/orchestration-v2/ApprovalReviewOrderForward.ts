@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - Existing provisioned DPoP keys sign transport proofs; no key is generated or exported.
 import * as NodeCrypto from "node:crypto";
-import { computeDpopJwkThumbprint } from "@t3tools/shared/dpop";
+import { computeDpopJwkThumbprint, DpopPublicJwk } from "@t3tools/shared/dpop";
 import {
   ApprovalReviewError,
   ApprovalReviewForwardAck,
@@ -19,6 +19,27 @@ import * as Schema from "effect/Schema";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { readFleetConnections, publicConnection } from "../auth/fleet.ts";
 import type { PairedVm, ForwardDestination } from "./ApprovalReviewOrderPolicy.ts";
+
+const encodeProofHeader = Schema.encodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      typ: Schema.Literal("dpop+jwt"),
+      alg: Schema.Literal("ES256"),
+      jwk: DpopPublicJwk,
+    }),
+  ),
+);
+const encodeProofPayload = Schema.encodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      htm: Schema.Literal("POST"),
+      htu: Schema.String,
+      iat: Schema.Number,
+      jti: Schema.String,
+      ath: Schema.String,
+    }),
+  ),
+);
 
 // Tests replace the HTTP boundary, never the authenticated receiver or host-order rules.
 export class ApprovalReviewOrderHttp extends Context.Reference<typeof fetch>(
@@ -44,7 +65,7 @@ export class ApprovalReviewOrderForward extends Context.Service<
       input: ApprovalReviewOrderReceive,
     ) => Effect.Effect<ApprovalReviewForwardAck, ApprovalReviewError>;
   }
->()("t3/ApprovalReviewOrderForward") {}
+>()("t3/orchestration-v2/ApprovalReviewOrderForward") {}
 
 const make = Effect.gen(function* () {
   const store = yield* ServerSecretStore.ServerSecretStore;
@@ -134,20 +155,30 @@ const make = Effect.gen(function* () {
     const transport = yield* load(channel, testOnly);
     const url = new URL(path, transport.origin).href;
     const now = DateTime.toEpochMillis(yield* DateTime.now);
+    const header = yield* encodeProofHeader({
+      typ: "dpop+jwt",
+      alg: "ES256",
+      jwk: transport.publicJwk,
+    }).pipe(
+      Effect.map((json) => Buffer.from(json).toString("base64url")),
+      Effect.mapError(() => new ApprovalReviewError({ reason: "channel-unconfigured" })),
+    );
+    const payload = yield* Effect.try({
+      try: () => ({
+        htm: "POST" as const,
+        htu: url,
+        iat: Math.floor(now / 1_000),
+        jti: NodeCrypto.randomUUID(),
+        ath: NodeCrypto.createHash("sha256").update(transport.credential).digest("base64url"),
+      }),
+      catch: () => new ApprovalReviewError({ reason: "channel-unconfigured" }),
+    }).pipe(
+      Effect.flatMap(encodeProofPayload),
+      Effect.map((json) => Buffer.from(json).toString("base64url")),
+      Effect.mapError(() => new ApprovalReviewError({ reason: "channel-unconfigured" })),
+    );
     const proof = yield* Effect.try({
       try: () => {
-        const header = Buffer.from(
-          JSON.stringify({ typ: "dpop+jwt", alg: "ES256", jwk: transport.publicJwk }),
-        ).toString("base64url");
-        const payload = Buffer.from(
-          JSON.stringify({
-            htm: "POST",
-            htu: url,
-            iat: Math.floor(now / 1_000),
-            jti: NodeCrypto.randomUUID(),
-            ath: NodeCrypto.createHash("sha256").update(transport.credential).digest("base64url"),
-          }),
-        ).toString("base64url");
         const signature = NodeCrypto.sign("sha256", Buffer.from(`${header}.${payload}`), {
           key: transport.privateKey,
           dsaEncoding: "ieee-p1363",
@@ -156,6 +187,9 @@ const make = Effect.gen(function* () {
       },
       catch: () => new ApprovalReviewError({ reason: "channel-unconfigured" }),
     });
+    const bodyJson = yield* Schema.encodeEffect(Schema.UnknownFromJsonString)(body).pipe(
+      Effect.mapError(() => new ApprovalReviewError({ reason: "forward-unknown" })),
+    );
     const response = yield* Effect.tryPromise({
       try: () =>
         http(url, {
@@ -167,7 +201,7 @@ const make = Effect.gen(function* () {
             DPoP: proof,
             "Content-Type": "application/json",
           },
-          body: JSON.stringify(body),
+          body: bodyJson,
         }),
       catch: () => new ApprovalReviewError({ reason: "forward-unknown" }),
     });

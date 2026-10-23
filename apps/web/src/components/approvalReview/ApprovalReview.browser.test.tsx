@@ -12,7 +12,7 @@ import { ComposerPendingApprovalPanel } from "../chat/ComposerPendingApprovalPan
 import { usePendingApprovalSelection } from "../chat/usePendingApprovalSelection";
 import type { PendingApproval } from "../../session-logic";
 import { gitlabExampleBundle } from "./gitlabExample";
-import { syntheticOriginalOrder } from "../../../../../packages/client-runtime/src/approvalReviewTestFixtures.ts";
+import { syntheticOriginalOrder } from "@t3tools/client-runtime/testing/approval-review";
 
 function externalApproval(sourceKind: "human" | "synthetic" = "human") {
   const original = syntheticOriginalOrder(Date.now() + 60_000);

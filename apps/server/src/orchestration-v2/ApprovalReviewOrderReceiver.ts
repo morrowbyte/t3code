@@ -32,7 +32,7 @@ export class ApprovalReviewOrderReceiver extends Context.Service<
       actor: EnvironmentSessionPrincipalShape,
     ) => Effect.Effect<ApprovalReviewForwardAck, ApprovalReviewError>;
   }
->()("t3/ApprovalReviewOrderReceiver") {}
+>()("t3/orchestration-v2/ApprovalReviewOrderReceiver") {}
 const make = Effect.gen(function* () {
   const policy = yield* Policy.ApprovalReviewOrderPolicy;
   const sql = yield* SqlClient.SqlClient;

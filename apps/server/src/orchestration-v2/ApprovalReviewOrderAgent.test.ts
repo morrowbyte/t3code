@@ -1,8 +1,8 @@
+import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import { assert, it } from "@effect/vitest";
 import {
   ApprovalReviewError,
   AuthSessionId,
-  CodexProviderCapabilitiesV2,
   CommandId,
   EnvironmentId,
   EventId,

@@ -1,3 +1,4 @@
+import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import { assert, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import {
@@ -9,7 +10,6 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
-  CodexProviderCapabilitiesV2,
   ApprovalReviewSubmit,
   ApprovalReviewOriginalOrder,
   type ApprovalReviewOrderReceive,

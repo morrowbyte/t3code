@@ -73,7 +73,7 @@ export class ApprovalReviewHostOrders extends Context.Service<
       packageHash: string,
     ) => Effect.Effect<ApprovalReviewProvenance>;
   }
->()("t3/ApprovalReviewHostOrders") {}
+>()("t3/orchestration-v2/ApprovalReviewHostOrders") {}
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;

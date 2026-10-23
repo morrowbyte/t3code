@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { syntheticOriginalOrder } from "../../../../packages/client-runtime/src/approvalReviewTestFixtures.ts";
+import { syntheticOriginalOrder } from "@t3tools/client-runtime/testing/approval-review";
 
 const fixture = vi.hoisted(() => ({
   drafts: {} as Record<string, unknown>,

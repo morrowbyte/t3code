@@ -17,6 +17,9 @@ import {
   ThreadId,
   TurnItemId,
   type OrchestrationV2ThreadProjection,
+  type ApprovalReviewAuthority,
+  type AuthEnvironmentScope,
+  type EnvironmentSessionPrincipalShape,
 } from "@t3tools/contracts";
 import { hashTelemetryId as hash } from "@t3tools/shared/telemetryId";
 import * as DateTime from "effect/DateTime";
@@ -35,6 +38,8 @@ import * as Sqlite from "../persistence/Sqlite.ts";
 import * as HumanAuthority from "../auth/ApprovalReviewHumanAuthority.ts";
 import * as ApprovalReviewCommands from "./ApprovalReviewCommands.ts";
 import * as ApprovalReviewService from "./ApprovalReviewService.ts";
+import * as HostOrders from "./ApprovalReviewHostOrders.ts";
+import { frozenReview } from "./ApprovalReviewPackage.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
@@ -55,6 +60,7 @@ const layerExternalRecovery = Layer.mergeAll(
   ProviderRuntimeRecovery.layer,
   ApprovalReviewService.layer,
 ).pipe(
+  Layer.provide(Layer.mock(HostOrders.ApprovalReviewHostOrders)({})),
   Layer.provideMerge(
     Layer.mergeAll(
       recoveryDatabase,
@@ -100,24 +106,56 @@ it.effect.each([false, true] as const)(
         creationSource: "web",
       });
       const createdAt = yield* DateTime.now;
-      const submitted = yield* service.submit(
-        {
-          threadId,
-          submissionId: "recovery-one",
-          expiresAt: DateTime.toEpochMillis(createdAt) + 60_000,
-          action: {
-            kind: "create_file_once",
-            verifiedTargetId: recoveryTarget.verifiedTargetId,
-            path: recoveryTarget.allowedPath,
-            content: "inert fixture",
-            mode: 384,
-            expectedAbsent: true,
-            implementationVersion: recoveryTarget.implementationVersion,
-            implementationHash: hash(recoverySource),
-          },
+      // Existing external requests must survive recovery even when their legacy source
+      // cannot enter the current host-bound submission endpoint.
+      const requestId = RuntimeRequestId.make("approval-review:legacy-recovery-one");
+      const input = {
+        threadId,
+        requestId,
+        expiresAt: DateTime.toEpochMillis(createdAt) + 60_000,
+        action: {
+          kind: "create_file_once" as const,
+          verifiedTargetId: recoveryTarget.verifiedTargetId,
+          path: recoveryTarget.allowedPath,
+          content: "inert fixture",
+          mode: 384,
+          expectedAbsent: true as const,
+          implementationVersion: recoveryTarget.implementationVersion,
+          implementationHash: hash(recoverySource),
         },
-        recoveryTarget.requesterSubject,
-      );
+      };
+      const review = frozenReview(input, recoveryTarget);
+      const authority = {
+        packageHash: review.packageHash,
+        verifiedTargetId: recoveryTarget.verifiedTargetId,
+        expiresAt: input.expiresAt,
+        state: "pending",
+        approverSessionId: recoveryTarget.approverSessionId,
+        approverSubject: recoveryTarget.approverSubject,
+        requesterSubject: recoveryTarget.requesterSubject,
+        workerSubject: recoveryTarget.workerSubject,
+        action: input.action,
+        implementationSource: recoverySource,
+        provenance: { status: "unverified", reason: "missing-original" },
+      } satisfies ApprovalReviewAuthority;
+      yield* orchestrator.dispatch({
+        type: "approval-review.submit",
+        commandId: CommandId.make("submit:legacy-recovery-one"),
+        threadId,
+        requestId,
+        nodeId: NodeId.make("node:legacy-recovery-one"),
+        turnItemId: TurnItemId.make("item:legacy-recovery-one"),
+        authority,
+        prompt: review.prompt,
+      });
+      const submitted = { threadId, requestId, authority };
+      const requester: EnvironmentSessionPrincipalShape = {
+        sessionId: AuthSessionId.make("legacy-recovery-reader"),
+        subject: recoveryTarget.requesterSubject,
+        method: "dpop-access-token",
+        proofKeyThumbprint: "r".repeat(43),
+        scopes: new Set<AuthEnvironmentScope>(["approval-review:request"]),
+      };
       const nativeId = RuntimeRequestId.make("native-request:lost-callback");
       yield* eventSink.write({
         events: [
@@ -154,10 +192,7 @@ it.effect.each([false, true] as const)(
       assert.equal(request.status, "pending");
       assert.equal(request.responseCapability.type, "external");
       assert.isNull(request.resolvedAt);
-      assert.deepEqual(
-        yield* service.read(submitted, recoveryTarget.requesterSubject),
-        submitted.authority,
-      );
+      assert.deepEqual(yield* service.read(submitted, requester), submitted.authority);
       const context = yield* projections.getRuntimeResponseContext(threadId, submitted.requestId);
       assert.equal(context.node?.status, "waiting");
       assert.equal(context.item?.status, "waiting");

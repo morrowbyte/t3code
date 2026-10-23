@@ -26,7 +26,7 @@ export class ApprovalReviewOrderAgent extends Context.Service<
       input: ApprovalReviewAgentPropose,
     ) => Effect.Effect<typeof ApprovalReviewResult.Type, ApprovalReviewError>;
   }
->()("t3/ApprovalReviewOrderAgent") {}
+>()("t3/orchestration-v2/ApprovalReviewOrderAgent") {}
 const make = Effect.gen(function* () {
   const policy = yield* Policy.ApprovalReviewOrderPolicy;
   const projections = yield* ProjectionStore.ProjectionStoreV2;

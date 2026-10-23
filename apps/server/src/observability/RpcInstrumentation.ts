@@ -14,6 +14,10 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
  * even where they differ from the method prefix.
  */
 const RPC_AGGREGATES = {
+  [WS_METHODS.approvalReviewOrderCreate]: "approvalReview",
+  [WS_METHODS.approvalReviewOrderRead]: "approvalReview",
+  [WS_METHODS.approvalReviewOrderCancel]: "approvalReview",
+  [WS_METHODS.approvalReviewOrderReadiness]: "approvalReview",
   [WS_METHODS.agentAvatarRead]: "agentAvatar",
   [WS_METHODS.agentAvatarGenerate]: "agentAvatar",
   [WS_METHODS.agentAvatarCancel]: "agentAvatar",

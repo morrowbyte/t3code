@@ -1,3 +1,4 @@
+import * as ApprovalReviewHostOrders from "./orchestration-v2/ApprovalReviewHostOrders.ts";
 import * as AgentObservatory from "./observatory/AgentObservatoryService.ts";
 import * as CodexLiveSessionService from "./voice/CodexLiveSessionService.ts";
 import * as DesktopTelemetryReceiver from "./resourceTelemetry/DesktopTelemetryReceiver.ts";
@@ -497,6 +498,7 @@ it.effect(
 
 // Build the production RPC layer; unrelated capabilities fail if this test calls them.
 const layerUnusedConfigRpcServices = Layer.mergeAll(
+  Layer.mock(ApprovalReviewHostOrders.ApprovalReviewHostOrders)({}),
   Layer.mock(AgentObservatory.AgentObservatoryService)({}),
   Layer.mock(CodexLiveSessionService.CodexLiveSessionService)({}),
   Layer.mock(DesktopTelemetryReceiver.DesktopTelemetryReceiver)({}),

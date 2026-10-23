@@ -93,6 +93,20 @@ it.effect(
           });
         }
         assert.equal(new URL(String(url)).pathname, "/api/approval-review/orders/receive");
+        assert.equal(init?.body, JSON.stringify(input));
+        assert.equal(
+          Buffer.from((headers.get("dpop") ?? "").split(".")[0]!, "base64url").toString("utf8"),
+          JSON.stringify({
+            typ: "dpop+jwt",
+            alg: "ES256",
+            jwk: {
+              kty: publicJwk.kty,
+              crv: publicJwk.crv,
+              x: publicJwk.x,
+              y: publicJwk.y,
+            },
+          }),
+        );
         assert.deepEqual(JSON.parse(String(init?.body)), input);
         return Response.json({
           orderId: input.orderId,

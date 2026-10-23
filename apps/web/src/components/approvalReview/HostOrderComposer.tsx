@@ -13,7 +13,11 @@ import type {
   EnvironmentId as HostEnvironmentId,
   ScopedThreadRef,
 } from "@t3tools/contracts";
+import * as Crypto from "effect/Crypto";
+import * as Effect from "effect/Effect";
 import { useEffect, useEffectEvent, useId, useRef, useState } from "react";
+
+import * as BrowserDpop from "../../cloud/dpop";
 
 import { approvalOrderEnvironment } from "../../state/approvalOrders";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -222,17 +226,20 @@ function HostOrderComposerSession({
     busy.current = true;
     setPending(true);
     try {
-      const result = await (action === "read" ? read : cancel)({
-        environmentId,
-        input: { orderId: entry.order.source.orderId },
-      });
+      const command = { environmentId, input: { orderId: entry.order.source.orderId } };
+      let alreadyClaimedActions:
+        | ApprovalReviewOrderCancelResult["alreadyClaimedActions"]
+        | undefined;
+      const result =
+        action === "read"
+          ? await read(command)
+          : await cancel(command).then((result) => {
+              if (result._tag === "Success")
+                alreadyClaimedActions = result.value.alreadyClaimedActions;
+              return result;
+            });
       if (result._tag === "Success")
-        updateSent(
-          entry.input,
-          result.value,
-          null,
-          "alreadyClaimedActions" in result.value ? result.value.alreadyClaimedActions : undefined,
-        );
+        updateSent(entry.input, result.value, null, alreadyClaimedActions);
       else
         updateSent(
           entry.input,
@@ -281,7 +288,13 @@ function HostOrderComposerSession({
           event.preventDefault();
           if (!canSend || channel === undefined) return;
           const input = draft.current ?? {
-            clientRequestId: crypto.randomUUID(),
+            clientRequestId: Effect.runSync(
+              Crypto.Crypto.pipe(
+                Effect.flatMap((crypto) => crypto.randomUUIDv4()),
+                Effect.provide(BrowserDpop.layer),
+                Effect.orDie,
+              ),
+            ),
             sourceThreadId: channel.hostThreadId,
             vmId: channel.vmId,
             text,
