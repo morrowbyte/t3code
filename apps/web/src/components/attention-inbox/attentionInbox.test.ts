@@ -123,9 +123,15 @@ describe("canonical attention inbox", () => {
         deriveAttentionInbox(environmentId, [{ ...completed, ...patch }]).counts.completed,
       ).toBe(0);
     }
+    const settledQuestion = shell({
+      pendingRuntimeRequest: request,
+      settledOverride: "settled",
+      settledAt: now,
+    });
+    expect(deriveAttentionInbox(environmentId, [settledQuestion]).counts.questions).toBe(0);
     expect(
       deriveAttentionInbox(environmentId, [
-        shell({ pendingRuntimeRequest: request, settledOverride: "settled" }),
+        { ...settledQuestion, settledOverride: "active", settledAt: null },
       ]).counts.questions,
     ).toBe(1);
   });
