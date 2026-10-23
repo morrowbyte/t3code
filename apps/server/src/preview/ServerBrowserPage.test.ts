@@ -160,12 +160,12 @@ describe("server browser element refs", () => {
     using replaced = vi.spyOn(handle, "inputValue").mockImplementation(async () => {
       const value = await read();
       if (++reads === 2)
-        await page.evaluate(() => {
+        await page.evaluate(`(() => {
           const replacement = document.createElement("textarea");
           replacement.id = "source";
           replacement.value = "different";
-          document.querySelector("#source")!.replaceWith(replacement);
-        });
+          document.querySelector("#source").replaceWith(replacement);
+        })()`);
       return value;
     });
     await expect(

@@ -137,7 +137,10 @@ const targetPoint = async (
     const box = await locator.boundingBox({ timeout });
     const viewport =
       page.viewportSize() ??
-      (await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight })));
+      (await page.evaluate(() => {
+        const viewport = globalThis as unknown as { innerWidth: number; innerHeight: number };
+        return { width: viewport.innerWidth, height: viewport.innerHeight };
+      }));
     if (
       box &&
       box.width > 0 &&
@@ -709,9 +712,9 @@ export const patchText = async (page: Page, input: PreviewAutomationPatchTextInp
   if (!input.edits.length || input.edits.length > 8) refuse("Use 1-8 exact text edits.");
   const field = targetLocator(page, input);
   if (field === null || (await field.count()) !== 1 || !(await field.isVisible()))
-    refuse("An exact, unique visible text field is required.");
+    return refuse("An exact, unique visible text field is required.");
   const handle = await field.elementHandle();
-  if (handle === null) refuse("The text field disappeared before planning.");
+  if (handle === null) return refuse("The text field disappeared before planning.");
   try {
     const data = await handle.evaluate((element) => {
       const control = element as unknown as {
