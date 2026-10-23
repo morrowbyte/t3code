@@ -1,3 +1,4 @@
+import * as CuaControl from "../cua/CuaControl.ts";
 import { vi } from "vite-plus/test";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as CodexInstallation from "./CodexInstallation.ts";
@@ -1841,7 +1842,11 @@ it.layer(
         const scope = yield* Scope.make();
         yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
         const layerProviderRegistry = ProviderRegistry.layer.pipe(
-          Layer.provideMerge(ProviderInstanceRegistryHydration.layer),
+          Layer.provideMerge(
+            ProviderInstanceRegistryHydration.layer.pipe(
+              Layer.provide(Layer.mock(CuaControl.CuaControl)({})),
+            ),
+          ),
           Layer.provideMerge(AntigravityInstallation.AntigravityInstallation.layer),
           Layer.provideMerge(
             Layer.succeed(ServerSettingsModule.ServerSettingsService, serverSettings),
@@ -1962,7 +1967,11 @@ it.layer(
         const scope = yield* Scope.make();
         yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
         const layerProviderRegistry = ProviderRegistry.layer.pipe(
-          Layer.provideMerge(ProviderInstanceRegistryHydration.layer),
+          Layer.provideMerge(
+            ProviderInstanceRegistryHydration.layer.pipe(
+              Layer.provide(Layer.mock(CuaControl.CuaControl)({})),
+            ),
+          ),
           Layer.provideMerge(AntigravityInstallation.AntigravityInstallation.layer),
           Layer.provideMerge(
             Layer.succeed(ServerSettingsModule.ServerSettingsService, serverSettings),
@@ -2095,9 +2104,11 @@ it.layer(
         ),
       );
       readSeed = false;
-      const services = yield* Layer.build(ProviderInstanceRegistryHydration.layer).pipe(
-        Effect.provide(dependencies),
-      );
+      const services = yield* Layer.build(
+        ProviderInstanceRegistryHydration.layer.pipe(
+          Layer.provide(Layer.mock(CuaControl.CuaControl)({})),
+        ),
+      ).pipe(Effect.provide(dependencies));
       failCurrentRead = input.failCurrentRead ?? false;
       yield* PubSub.publish(changes, undefined);
       yield* Deferred.succeed(consume, undefined);
