@@ -2278,10 +2278,18 @@ export default function ChatView(props: ChatViewProps) {
       scopeThreadRef(EnvironmentId.make(context.target.environmentId), context.thread.threadId),
     );
   });
+  const persistLiveVoiceModelSelection = useStableCallback(
+    async (input: Pick<CreateThreadInput, "threadId" | "modelSelection">) => {
+      const result = await updateThreadMetadata({ environmentId, input });
+      if (result._tag === "Failure")
+        throw new Error("The selected voice model could not be saved. Reconnect and try again.");
+    },
+  );
   const [prepareLiveVoiceThread] = useState(() =>
     createLiveVoiceThreadPreparer({
       readContext: readLiveVoiceThreadContext,
       createThread: createLiveVoiceThread,
+      updateModelSelection: persistLiveVoiceModelSelection,
       onCreated: markLiveVoiceThreadCreated,
     }),
   );

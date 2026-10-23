@@ -40,6 +40,9 @@ function matchesTarget(left: LiveVoiceTarget, right: LiveVoiceTarget): boolean {
 export function createLiveVoiceThreadPreparer(dependencies: {
   readonly readContext: () => LiveVoiceThreadContext | null;
   readonly createThread: (input: CreateThreadInput) => Promise<void>;
+  readonly updateModelSelection: (
+    input: Pick<CreateThreadInput, "threadId" | "modelSelection">,
+  ) => Promise<void>;
   readonly onCreated: (context: LiveVoiceThreadContext) => void;
 }) {
   const creations = new Map<
@@ -55,7 +58,16 @@ export function createLiveVoiceThreadPreparer(dependencies: {
       return context;
     };
     const context = readCurrent();
-    if (context.persisted) return;
+    if (context.persisted) {
+      const selection = JSON.stringify(context.thread.modelSelection);
+      await dependencies.updateModelSelection({
+        threadId: context.thread.threadId,
+        modelSelection: context.thread.modelSelection,
+      });
+      if (JSON.stringify(readCurrent().thread.modelSelection) !== selection)
+        throw new Error(LIVE_VOICE_THREAD_CHANGED);
+      return;
+    }
     const key = JSON.stringify([target.environmentId, target.threadId]);
     const fingerprint = JSON.stringify(context.thread);
     let creation = creations.get(key);

@@ -44,14 +44,17 @@ function harness(initial = draftContext()) {
   let context: LiveVoiceThreadContext | null = initial;
   const createThread = vi.fn(async (_input: LiveVoiceThreadContext["thread"]): Promise<void> => {});
   const onCreated = vi.fn();
+  const updateModelSelection = vi.fn(async () => {});
   const prepare = createLiveVoiceThreadPreparer({
     readContext: () => context,
     createThread,
+    updateModelSelection,
     onCreated,
   });
   return {
     prepare,
     createThread,
+    updateModelSelection,
     onCreated,
     setContext: (next: LiveVoiceThreadContext | null) => {
       context = next;
@@ -60,6 +63,58 @@ function harness(initial = draftContext()) {
 }
 
 describe("Live voice draft persistence", () => {
+  it("persists the selected model and options before preparing an existing thread", async () => {
+    const initial = draftContext();
+    const context = {
+      ...initial,
+      persisted: true,
+      thread: {
+        ...initial.thread,
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("native-codex"),
+          model: "gpt-6.1-sol",
+          options: [
+            { id: "reasoningEffort", value: "medium" },
+            { id: "serviceTier", value: "priority" },
+          ],
+        },
+      },
+    };
+    const h = harness(context);
+    const saved = deferred();
+    h.updateModelSelection.mockImplementation(() => saved.promise);
+    let readyForLease = false;
+    const preparing = h.prepare(context.target, new AbortController().signal).then(() => {
+      readyForLease = true;
+    });
+    expect(readyForLease).toBe(false);
+    expect(h.createThread).not.toHaveBeenCalled();
+    expect(h.updateModelSelection).toHaveBeenCalledExactlyOnceWith({
+      threadId: context.thread.threadId,
+      modelSelection: context.thread.modelSelection,
+    });
+    saved.resolve();
+    await preparing;
+    expect(readyForLease).toBe(true);
+  });
+
+  it("does not prepare a lease after the selected model changes during persistence", async () => {
+    const context = { ...draftContext(), persisted: true };
+    const h = harness(context);
+    const saved = deferred();
+    h.updateModelSelection.mockImplementation(() => saved.promise);
+    const preparing = h.prepare(context.target, new AbortController().signal);
+    h.setContext({
+      ...context,
+      thread: {
+        ...context.thread,
+        modelSelection: { ...context.thread.modelSelection, model: "other-model" },
+      },
+    });
+    saved.resolve();
+    await expect(preparing).rejects.toThrow(LIVE_VOICE_THREAD_CHANGED);
+  });
+
   it("waits for the empty thread receipt and preserves its destination and settings", async () => {
     const context = draftContext();
     const saved = deferred();
