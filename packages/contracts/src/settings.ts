@@ -1129,6 +1129,9 @@ export const StorageCleanupSettings = Schema.Struct({
 export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 
 export const ServerSettings = Schema.Struct({
+  /** Explicit cross-platform switch; absent in settings written by older clients. */
+  enableComputerUse: Schema.optionalKey(Schema.Boolean),
+  /** Compatibility field for clients released before cross-platform computer control. */
   enableWindowsCua: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   // Null means no client has migrated this preference yet; an empty value is
   // authoritative so another device cannot resurrect cleared preferences.
@@ -1476,6 +1479,7 @@ const ModelSelectionPatch = Schema.Struct({
 });
 
 export const ServerSettingsPatch = Schema.Struct({
+  enableComputerUse: Schema.optionalKey(Schema.Boolean),
   enableWindowsCua: Schema.optionalKey(Schema.Boolean),
   setModelFavorites: Schema.optionalKey(
     Schema.Array(Schema.Struct({ ...ModelFavorite.fields, favorite: Schema.Boolean })),

@@ -1,6 +1,6 @@
-// @effect-diagnostics nodeBuiltinImport:off - Effect has no incremental digest.
-import * as NodeCrypto from "node:crypto";
-import * as NodeStream from "@effect/platform-node/NodeStream";
+import * as NodeModule from "node:module";
+import * as NodePath from "node:path";
+import { cuaArchiveMembers, stageCuaRuntime, verifyCuaBytes } from "@trycua/cua-driver/runtime";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -12,9 +12,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import * as ServerConfig from "../config.ts";
-import { openZipArchive } from "../zipArchive.ts";
-
-import { WINDOWS_CUA_RELEASE } from "./cuaRelease.ts";
+import { CUA_RELEASE, cuaRelease } from "./cuaRelease.ts";
 
 export class CuaInstallationError extends Schema.TaggedError<CuaInstallationError>()(
   "CuaInstallationError",
@@ -24,13 +22,14 @@ export class CuaInstallationError extends Schema.TaggedError<CuaInstallationErro
   },
 ) {
   override get message() {
-    return `Windows Cua Driver installation failed at ${this.stage}.`;
+    return `Cua Driver installation failed at ${this.stage}.`;
   }
 }
-
 export class CuaInstallation extends Context.Service<
   CuaInstallation,
-  { readonly acquire: Effect.Effect<string, CuaInstallationError> }
+  {
+    readonly acquire: Effect.Effect<string, CuaInstallationError>;
+  }
 >()("t3/cua/CuaInstallation") {}
 
 const isInstallationError = Schema.is(CuaInstallationError);
@@ -42,91 +41,107 @@ const make = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient;
   const platform = yield* HostProcess.Platform;
   const arch = yield* HostProcess.Architecture;
+  const libc = yield* HostProcess.Libc;
   const gate = yield* Semaphore.make(1);
-  const release = WINDOWS_CUA_RELEASE;
-  const directory = path.join(config.baseDir, "cua", release.version, release.executableSha256);
-  const executable = path.join(directory, "cua-driver.exe");
+  const release = cuaRelease(platform, arch);
   const cacheError = (cause: unknown) => new CuaInstallationError({ stage: "cache", cause });
-
-  const verify = Effect.fn("CuaInstallation.verify")(function* (file: string) {
-    const bytes = yield* fs.readFile(file).pipe(Effect.mapError(cacheError));
-    if (
-      bytes.byteLength !== release.executableBytes ||
-      NodeCrypto.createHash("sha256").update(bytes).digest("hex") !== release.executableSha256
-    )
-      return yield* new CuaInstallationError({ stage: "verify" });
-  });
-
   const acquire = Effect.gen(function* () {
-    if (platform !== "win32" || arch !== "x64")
+    if (!release || (platform === "linux" && libc !== "glibc"))
       return yield* new CuaInstallationError({ stage: "platform" });
-    if (yield* fs.exists(executable).pipe(Effect.mapError(cacheError))) {
-      yield* verify(executable);
+    // Release packages contain the whole SDK/native closure. Never redownload over
+    // corrupt shipped bytes or silently resolve another driver on PATH.
+    const packaged = yield* Effect.try({
+      try: () => {
+        try {
+          return NodeModule.findPackageJSON(
+            `@trycua/cua-driver-${release.triple}`,
+            import.meta.url.replace(/\.asar\//u, ".asar.unpacked/"),
+          );
+        } catch (cause) {
+          if (
+            typeof cause === "object" &&
+            cause !== null &&
+            "code" in cause &&
+            cause.code === "ERR_MODULE_NOT_FOUND"
+          )
+            return undefined;
+          throw cause;
+        }
+      },
+      catch: cacheError,
+    });
+    const directory = path.join(
+      config.baseDir,
+      "cua",
+      CUA_RELEASE.version,
+      release.executable.sha256,
+    );
+    const nativeRoot = packaged
+      ? NodePath.dirname(packaged)
+      : path.join(directory, "node_modules", "@trycua", `cua-driver-${release.triple}`);
+    const executable = path.join(nativeRoot, release.executable.name);
+    const verify = Effect.gen(function* () {
+      for (const member of [release.executable, release.library, release.addon]) {
+        const bytes = yield* fs
+          .readFile(path.join(nativeRoot, member.name))
+          .pipe(Effect.mapError(cacheError));
+        yield* Effect.try({
+          try: () => verifyCuaBytes(bytes, member),
+          catch: (cause) => new CuaInstallationError({ stage: "verify", cause }),
+        });
+      }
+    });
+    if (packaged || (yield* fs.exists(executable).pipe(Effect.mapError(cacheError)))) {
+      yield* verify;
       return executable;
     }
     yield* fs.makeDirectory(directory, { recursive: true }).pipe(Effect.mapError(cacheError));
     const staging = yield* fs
       .makeTempDirectoryScoped({ directory, prefix: "download-" })
       .pipe(Effect.mapError(cacheError));
-    const archivePath = path.join(staging, "driver.zip");
+    const archivePath = path.join(staging, release.archive);
     let received = 0;
-    const hash = NodeCrypto.createHash("sha256");
-    yield* client.get(release.url).pipe(
-      Effect.flatMap(HttpClientResponse.filterStatusOk),
-      Effect.flatMap((response) =>
-        response.stream.pipe(
-          Stream.tap((chunk) =>
-            Effect.gen(function* () {
-              received += chunk.byteLength;
-              if (received > release.archiveBytes)
-                return yield* new CuaInstallationError({ stage: "verify" });
-              hash.update(chunk);
-            }),
+    yield* client
+      .get(
+        `https://github.com/trycua/cua/releases/download/cua-driver-rs-v${CUA_RELEASE.version}/${release.archive}`,
+      )
+      .pipe(
+        Effect.flatMap(HttpClientResponse.filterStatusOk),
+        Effect.flatMap((response) =>
+          response.stream.pipe(
+            Stream.tap((chunk) =>
+              Effect.gen(function* () {
+                received += chunk.byteLength;
+                if (received > release.archiveBytes)
+                  return yield* new CuaInstallationError({ stage: "verify" });
+              }),
+            ),
+            Stream.run(fs.sink(archivePath, { flag: "wx", mode: 0o600 })),
           ),
-          Stream.run(fs.sink(archivePath, { flag: "wx", mode: 0o600 })),
         ),
-      ),
-      Effect.mapError((cause) =>
-        isInstallationError(cause) ? cause : new CuaInstallationError({ stage: "download", cause }),
-      ),
-      Effect.timeoutOrElse({
-        duration: "60 seconds",
-        orElse: () => Effect.fail(new CuaInstallationError({ stage: "download" })),
-      }),
-    );
-    if (received !== release.archiveBytes || hash.digest("hex") !== release.archiveSha256)
-      return yield* new CuaInstallationError({ stage: "verify" });
-    const stagedExecutable = path.join(staging, "cua-driver.exe");
-    yield* Effect.gen(function* () {
-      const archive = yield* openZipArchive(
-        archivePath,
-        (_detail, cause) => new CuaInstallationError({ stage: "extract", cause }),
+        Effect.mapError((cause) =>
+          isInstallationError(cause)
+            ? cause
+            : new CuaInstallationError({ stage: "download", cause }),
+        ),
+        Effect.timeoutOrElse({
+          duration: "60 seconds",
+          orElse: () => Effect.fail(new CuaInstallationError({ stage: "download" })),
+        }),
       );
-      let extracted = false;
-      for (;;) {
-        const entry = yield* archive.next;
-        if (!entry) break;
-        if (entry.fileName !== "cua-driver.exe") continue;
-        if (extracted || entry.uncompressedSize !== release.executableBytes)
-          return yield* new CuaInstallationError({ stage: "extract" });
-        extracted = true;
-        const readable = yield* archive.streamEntry(entry);
-        yield* NodeStream.fromReadable({
-          evaluate: () => readable,
-          onError: (cause) => new CuaInstallationError({ stage: "extract", cause }),
-        }).pipe(
-          Stream.run(fs.sink(stagedExecutable, { flag: "wx", mode: 0o700 })),
-          Effect.mapError((cause) => new CuaInstallationError({ stage: "extract", cause })),
-        );
-      }
-      if (!extracted) return yield* new CuaInstallationError({ stage: "extract" });
-    }).pipe(Effect.scoped);
-    yield* verify(stagedExecutable);
-    yield* fs.rename(stagedExecutable, executable).pipe(Effect.mapError(cacheError));
+    const bytes = Buffer.from(yield* fs.readFile(archivePath).pipe(Effect.mapError(cacheError)));
+    yield* Effect.try({
+      try: () => cuaArchiveMembers(bytes, release),
+      catch: (cause) => new CuaInstallationError({ stage: "verify", cause }),
+    });
+    yield* Effect.tryPromise({
+      try: (signal) =>
+        stageCuaRuntime({ destination: directory, platform, arch, archivePath, signal }),
+      catch: (cause) => new CuaInstallationError({ stage: "extract", cause }),
+    });
+    yield* verify;
     return executable;
   }).pipe(Effect.scoped, gate.withPermits(1));
-
   return CuaInstallation.of({ acquire });
 });
-
 export const layer = Layer.effect(CuaInstallation, make);

@@ -14,9 +14,15 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeModule from "node:module";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 
 const root = NodePath.resolve(import.meta.dirname, "..");
+// spawnSync cannot execute the Windows vp.cmd shim without a shell. Invoke the
+// installed CLI through Node on both platforms, keeping file arguments literal.
+const vpPackage = NodeModule.findPackageJSON("vite-plus", import.meta.url);
+if (!vpPackage) throw new Error("The workspace Vite+ installation is missing.");
+const vpEntry = NodePath.join(NodePath.dirname(vpPackage), "bin", "vp");
 const CODE = /\.[cm]?[jt]sx?$/;
 
 const git = (...args: Array<string>) =>
@@ -117,8 +123,8 @@ const checkPatches = (): boolean => {
       if (NodeFS.existsSync(NodePath.join(root, extra))) copy(extra);
     }
     const { status, stdout, stderr, error } = NodeChildProcess.spawnSync(
-      "vp",
-      ["install", "--lockfile-only", "--ignore-scripts"],
+      process.execPath,
+      [vpEntry, "install", "--lockfile-only", "--ignore-scripts"],
       { cwd: temp, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
     );
     if (status === 0) return true;
@@ -175,7 +181,10 @@ const results = steps.map((step) => {
   const started = performance.now();
   const status =
     "args" in step
-      ? NodeChildProcess.spawnSync("vp", step.args, { cwd: root, stdio: "inherit" }).status
+      ? NodeChildProcess.spawnSync(process.execPath, [vpEntry, ...step.args], {
+          cwd: root,
+          stdio: "inherit",
+        }).status
       : step.run()
         ? 0
         : 1;

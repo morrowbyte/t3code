@@ -26,10 +26,10 @@ const reconcile = Effect.gen(function* () {
   const update = (enabled: boolean) =>
     control
       .setEnabled({ environmentId, enabled })
-      .pipe(Effect.catch((cause) => Effect.logError("Windows CUA configuration failed", cause)));
-  yield* update(initial.enableWindowsCua);
+      .pipe(Effect.catch((cause) => Effect.logError("Computer-use configuration failed", cause)));
+  yield* update(initial.enableComputerUse ?? initial.enableWindowsCua);
   yield* changes.pipe(
-    Stream.map((value) => value.enableWindowsCua),
+    Stream.map((value) => value.enableComputerUse ?? value.enableWindowsCua),
     Stream.changes,
     Stream.runForEach(update),
     Effect.forkScoped,

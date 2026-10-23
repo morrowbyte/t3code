@@ -22,6 +22,7 @@ import { fromYaml } from "@t3tools/shared/schemaYaml";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import rootPackageJson from "../package.json" with { type: "json" };
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
+import { cuaRuntimeDependencies, stageCuaRuntime } from "../packages/cua-driver/runtime.mjs";
 
 import {
   createStagePatchedDependencies,
@@ -153,10 +154,10 @@ const stageRuntimeExternals = Effect.fn("stageRuntimeExternals")(function* (inpu
       hint: "The archive stages fff's platform binary from this version.",
     });
   }
-  const dependencies = {
+  const dependencies = cuaRuntimeDependencies({
     ...selectCliRuntimeExternalDependencies(serverDependencies),
     ...resolveFffNativeDependencies(input.platform, input.arch, fffNodeVersion),
-  };
+  });
   const patchedDependencies = createStagePatchedDependencies(
     workspace.patchedDependencies ?? {},
     dependencies,
@@ -198,6 +199,9 @@ const stageRuntimeExternals = Effect.fn("stageRuntimeExternals")(function* (inpu
       stderr: "inherit",
     }),
     "vp install --prod (cli archive runtime externals)",
+  );
+  yield* Effect.tryPromise(() =>
+    stageCuaRuntime({ destination: input.stageDir, platform: input.platform, arch: input.arch }),
   );
 
   const platformKey = cliArchivePlatformKey(input.platform, input.arch);

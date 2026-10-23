@@ -25,6 +25,27 @@ import {
 
 const FOLDED_SERVER_SETTINGS = { ...DEFAULT_SERVER_SETTINGS, projectSettingsFolded: true };
 
+describe("computer-use settings compatibility", () => {
+  it("accepts switches from old and new clients after either representation was saved", () => {
+    const enabled = applyServerSettingsPatch(FOLDED_SERVER_SETTINGS, { enableWindowsCua: true });
+    expect(enabled).toMatchObject({ enableComputerUse: true, enableWindowsCua: true });
+    const disabled = applyServerSettingsPatch(enabled, { enableComputerUse: false });
+    expect(disabled).toMatchObject({ enableComputerUse: false, enableWindowsCua: false });
+    expect(applyServerSettingsPatch(disabled, { enableWindowsCua: true })).toMatchObject({
+      enableComputerUse: true,
+      enableWindowsCua: true,
+    });
+  });
+
+  it("preserves the switch on unrelated edits and honors an explicit cross-platform disable", () => {
+    const current = { ...FOLDED_SERVER_SETTINGS, enableWindowsCua: true };
+    expect(applyServerSettingsPatch(current, {})).toMatchObject({ enableWindowsCua: true });
+    expect(
+      applyServerSettingsPatch(current, { enableComputerUse: false, enableWindowsCua: true }),
+    ).toMatchObject({ enableComputerUse: false, enableWindowsCua: false });
+  });
+});
+
 describe("fallbackTextGenerationModelSelection", () => {
   it("ignores a configured non-default instance at machine scope, matching no fallback", () => {
     const configured = ProviderInstanceId.make("codex_work");

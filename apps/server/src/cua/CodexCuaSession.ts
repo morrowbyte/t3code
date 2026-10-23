@@ -18,7 +18,7 @@ export const make = Effect.fn("CodexCuaSession.make")(function* (input: {
   const release = control.release(caller);
   yield* Effect.addFinalizer(() =>
     release.pipe(
-      Effect.catch((cause) => Effect.logError("Windows CUA session cleanup failed", cause)),
+      Effect.catch((cause) => Effect.logError("Computer-use session cleanup failed", cause)),
     ),
   );
   return {

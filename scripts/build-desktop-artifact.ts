@@ -4,6 +4,7 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodeCrypto from "node:crypto";
 import * as NodeModule from "node:module";
+import { cuaRuntimeDependencies, stageCuaRuntime } from "../packages/cua-driver/runtime.mjs";
 // plist is CommonJS; Node cannot load its named exports from an ES module.
 import Plist from "plist";
 
@@ -1466,11 +1467,11 @@ export function resolveMergedStageDependencies(input: {
   readonly arch: typeof BuildArch.Type;
   readonly fffNodeVersion: string;
 }) {
-  return {
+  return cuaRuntimeDependencies({
     ...selectCliRuntimeExternalDependencies(input.serverDependencies),
     ...input.desktopDependencies,
     ...resolveFffNativeDependencies(input.platform, input.arch, input.fffNodeVersion),
-  };
+  });
 }
 
 /** Cursor's helper lookup falls through the archive to this real resources tree. */
@@ -2889,7 +2890,9 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     // not inflate the loose-file count and slow NSIS installation.
     ...(platform === "win"
       ? { asar: { smartUnpack: false }, asarUnpack: [WINDOWS_NATIVE_ASAR_UNPACK_GLOB] }
-      : {}),
+      : platform === "linux"
+        ? { asarUnpack: ["**/node_modules/@trycua/**", "**/node_modules/@ubjs/**"] }
+        : {}),
     extraResources: [
       ...DESKTOP_EXTRA_RESOURCES,
       ...(platform === "linux" ? LINUX_CAPTURE_EXTRA_RESOURCES : []),
@@ -3079,7 +3082,15 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       // Smart App Control validates unpacked native addons independently from
       // the signed desktop executable. Extend release signing to every native
       // Windows library that Electron or the server sidecar loads at runtime.
-      signExts: [".node", ".dll"],
+      // Cua's official native inputs are verified by their release hashes at
+      // runtime. Preserve their bytes; signing them again changes that identity.
+      signExts: [
+        ".node",
+        ".dll",
+        "!cua-driver.exe",
+        "!cua_driver_sdk.dll",
+        "!cua_driver_node_runtime.node",
+      ],
       // Resource editing applies the product metadata and icon independently
       // of code signing. Disabling it for local unsigned builds leaves the
       // packaged executable with Electron's stock icon.
@@ -3249,10 +3260,10 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
   yield* fs.makeDirectory(path.join(serverStageDir, "apps/server"), { recursive: true });
   yield* fs.copy(input.serverDistDir, path.join(serverStageDir, "apps/server/dist"));
 
-  const sidecarDependencies = {
+  const sidecarDependencies = cuaRuntimeDependencies({
     ...input.runtimeExternalDependencies,
     ...resolveFffNativeDependencies("win", input.arch, input.fffNodeVersion),
-  };
+  });
   const sidecarPatchedDependencies = createStagePatchedDependencies(
     input.patchedDependencies,
     sidecarDependencies,
@@ -3298,6 +3309,9 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
       shell: installCommand.shell,
     }),
     { label: "vp install --prod (server sidecar)", verbose: input.verbose },
+  );
+  yield* Effect.tryPromise(() =>
+    stageCuaRuntime({ destination: serverStageDir, platform: "win32", arch: input.arch }),
   );
 
   yield* Effect.log("[desktop-artifact] Packing server.asar...");
@@ -4082,6 +4096,11 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   );
   yield* stageClerkPasskeyNativeBinaries(stageAppDir, options.platform, options.arch);
   yield* stageKeyringNativeBinaries(stageAppDir, options.platform, options.arch);
+  if (options.platform === "linux") {
+    yield* Effect.tryPromise(() =>
+      stageCuaRuntime({ destination: stageAppDir, platform: "linux", arch: options.arch }),
+    );
+  }
 
   if (options.platform === "win" && windowsServerAsarPath) {
     yield* stageWindowsServerSidecar({

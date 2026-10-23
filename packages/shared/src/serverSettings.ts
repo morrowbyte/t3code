@@ -382,7 +382,18 @@ export function applyServerSettingsPatch(
   current: ServerSettings,
   rawPatch: ServerSettingsPatch,
 ): ServerSettings {
-  const patch = translateLegacyProjectOverridePatch(current, rawPatch);
+  const translatedPatch = translateLegacyProjectOverridePatch(current, rawPatch);
+  // Older clients still write the Windows-named switch. Keep both representations
+  // in sync; an explicit cross-platform setting wins when a client supplies both.
+  const computerUse = rawPatch.enableComputerUse ?? rawPatch.enableWindowsCua;
+  const patch =
+    computerUse === undefined
+      ? translatedPatch
+      : {
+          ...translatedPatch,
+          enableComputerUse: computerUse,
+          enableWindowsCua: computerUse,
+        };
   const selectionPatch = patch.textGenerationModelSelection;
   const {
     migrateModelPreferences,

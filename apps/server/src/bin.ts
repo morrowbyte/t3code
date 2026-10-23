@@ -17,7 +17,10 @@ if (
   // Guard sockets before either dispatch path can load outbound-capable modules.
   const { ignoreMacosTypeOfServiceEinval } = await import("./outboundHttp.ts");
   ignoreMacosTypeOfServiceEinval();
-  if (command === "editor-follow-acp") {
+  if (command === "cua-session-mcp") {
+    const { runCuaSessionMcp } = await import("./cua/CuaSessionMcp.ts");
+    await runCuaSessionMcp(process.argv.slice(3));
+  } else if (command === "editor-follow-acp") {
     const { runEditorFollowAcp } = await import("./integrations/editorLink/EditorFollowAcp.ts");
     if (process.argv.length !== 5)
       throw new Error("Usage: t3 editor-follow-acp PROJECT PRIVATE_QUEUE");

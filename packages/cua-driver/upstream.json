@@ -1,0 +1,21 @@
+{
+  "repository": "https://github.com/trycua/cua",
+  "sourceCommit": "85e2b1318bd77ccf3cfa88ccdf875a4bb7eaed19",
+  "release": "cua-driver-rs-v0.38.0",
+  "generatedSourceUnmodified": true,
+  "files": {
+    "src/daemon.ts": "4a532d9ce4a3f4949518c67540652715ebd7b0cc93f263e8023a8c115e66dc67",
+    "src/electron.ts": "ee9294be49e99cf887615e98c42e9817e2279ce8738335e1ccf663627cdcb37c",
+    "src/embedded.ts": "500280a7929f20ef1cddd025b1a67f2e15b680d628ab643334549d2dd3adcbdc",
+    "src/index.ts": "7cf62ab0bc66a3d6d6479a8fbb514e7ebd721856b66b59de114c8075f0e79a7b",
+    "src/native/cua_driver_contract-ffi.ts": "fd9e0f198e49d1a47339c4c47d329897113dbb837dffad42c735a205d9aac890",
+    "src/native/cua_driver_contract.ts": "12de1703d05e941c653a795b3378364c3239d45ad8dc7dd6695a1a7ab016d6b6",
+    "src/native/cua_driver_sdk-ffi.ts": "d6e75fd1a10352344fbb8048f17b5eafe301b35536e6ae8724c80815d91415a8",
+    "src/native/cua_driver_sdk.ts": "f3a380a4c97e61c9852ce97f032c42f361866140c30b291a8780463f741fee95",
+    "src/native/index.ts": "0b03ec4b1a17162a81f26cd4042e4fa8bea9a10b9b5def0878567748ce11ff12",
+    "src/native/node-runtime.ts": "1a6af54641eae5ada3249fa142f788edb31f36f4afbb6fd28d84b519a6fe9b65",
+    "node-runtime-NOTICE.md": "66a466cc022b4bf4a41f678e4d31d9b82098cc55cc364d6e9295366dfd02cef2",
+    "LICENSE.md": "c0779290c1d4783169aa3dbfb55feb505e563ef8a004bbf55298ceffcfbda8d9",
+    "THIRD_PARTY_NOTICES.md": "82470c85cb48dd084fccbf192d4a9f0b9d0afe614ab9b63e0fceac0eb315f412"
+  }
+}

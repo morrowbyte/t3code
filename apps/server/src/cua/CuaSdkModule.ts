@@ -2,7 +2,7 @@
 import * as NodeFS from "node:fs";
 import * as NodeModule from "node:module";
 import * as NodePath from "node:path";
-import { WINDOWS_CUA_RELEASE } from "./cuaRelease.ts";
+import { CUA_RELEASE } from "./cuaRelease.ts";
 
 type CuaSdkModule = Pick<typeof import("@trycua/cua-driver/embedded"), "EmbeddedCuaDriverHost">;
 
@@ -11,17 +11,19 @@ type CuaSdkModule = Pick<typeof import("@trycua/cua-driver/embedded"), "Embedded
 const moduleBase = import.meta.url.replace(/\.asar\//u, ".asar.unpacked/");
 const requireForCua = NodeModule.createRequire(moduleBase);
 
-export const loadCuaSdk = (): CuaSdkModule => {
+export const loadCuaSdk = (binaryPath?: string): CuaSdkModule => {
   // The published package has only an `import` export condition. Resolve its real
   // entry before require(esm), which also works with file-backed modules in SEA.
-  const manifestPath = NodeModule.findPackageJSON("@trycua/cua-driver", moduleBase);
+  const manifestPath = binaryPath
+    ? NodePath.resolve(NodePath.dirname(binaryPath), "../cua-driver/package.json")
+    : NodeModule.findPackageJSON("@trycua/cua-driver", moduleBase);
   if (!manifestPath) throw new Error("The packaged Cua SDK is missing.");
   const manifest: unknown = JSON.parse(NodeFS.readFileSync(manifestPath, "utf8"));
   if (
     typeof manifest !== "object" ||
     manifest === null ||
     !("version" in manifest) ||
-    manifest.version !== WINDOWS_CUA_RELEASE.sdkVersion
+    manifest.version !== CUA_RELEASE.sdkVersion
   )
     throw new Error("The packaged Cua SDK does not match the pinned driver.");
   const sdk: unknown = requireForCua(

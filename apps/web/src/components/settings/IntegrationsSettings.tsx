@@ -1656,7 +1656,7 @@ export function IntegrationsSettingsPanel() {
   );
 }
 
-async function runWindowsCuaUpdate(
+async function runComputerUseUpdate(
   update: () => Promise<unknown>,
   setPending: (pending: boolean) => void,
 ) {
@@ -1668,7 +1668,7 @@ async function runWindowsCuaUpdate(
   }
 }
 
-function WindowsCuaSetting() {
+function ComputerUseSetting() {
   const { scope, environment } = useSettingsScope();
   const target = scope.kind === "environment" ? environment : null;
   const environmentId = target?.environmentId ?? null;
@@ -1677,8 +1677,10 @@ function WindowsCuaSetting() {
   const [pending, setPending] = useState(false);
   const connected = target?.connection.phase === "connected";
   const platform = target?.serverConfig?.environment.platform;
-  const supported = platform?.os === "windows" && platform.arch === "x64";
-  const enabled = target?.serverConfig?.settings.enableWindowsCua === true;
+  const supported =
+    (platform?.os === "windows" || platform?.os === "linux") && platform.arch === "x64";
+  const settings = target?.serverConfig?.settings;
+  const enabled = (settings?.enableComputerUse ?? settings?.enableWindowsCua) === true;
   const status = useWindowsCuaStatus(environmentId);
   const phase = status.data?.phase;
   const statusText =
@@ -1700,20 +1702,20 @@ function WindowsCuaSetting() {
                 : null);
 
   return (
-    <SettingsSection id="computer-control" title="Computer control (experimental)">
+    <SettingsSection id="computer-control" title="Computer control">
       <SettingsRow
         {...searchableSetting("windows-cua")}
         status={statusText}
         description={
           target === null
-            ? "Choose one Windows environment."
+            ? "Choose the environment whose computer the agent should control."
             : !supported
-              ? "Requires a Windows x64 environment."
+              ? "Requires a supported Windows or Linux environment."
               : "Available to new or resumed Codex sessions. Turning off stops this environment's managed driver."
         }
         control={
           <Switch
-            aria-label="Windows computer control"
+            aria-label="Computer control"
             checked={enabled}
             disabled={!connected || (!supported && !enabled) || !canConfigure || pending}
             onCheckedChange={(checked) => {
@@ -1725,11 +1727,16 @@ function WindowsCuaSetting() {
                 pending
               )
                 return;
-              return runWindowsCuaUpdate(
+              return runComputerUseUpdate(
                 () =>
                   update({
                     environmentId,
-                    input: { patch: { enableWindowsCua: Boolean(checked) } },
+                    input: {
+                      patch: {
+                        enableComputerUse: Boolean(checked),
+                        enableWindowsCua: Boolean(checked),
+                      },
+                    },
                   }),
                 setPending,
               );
@@ -1745,7 +1752,7 @@ export function DevicesSettingsPanel() {
   return (
     <SettingsPageContainer>
       <DeviceIntegrationSettings />
-      <WindowsCuaSetting />
+      <ComputerUseSetting />
     </SettingsPageContainer>
   );
 }

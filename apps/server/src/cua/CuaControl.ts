@@ -15,7 +15,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as CuaDriverHost from "./CuaDriverHost.ts";
-import { WINDOWS_CUA_RELEASE } from "./cuaRelease.ts";
+import { CUA_RELEASE, cuaRelease } from "./cuaRelease.ts";
 
 export interface CuaCaller {
   readonly environmentId: EnvironmentId;
@@ -42,7 +42,7 @@ export class CuaUnavailableError extends Schema.TaggedError<CuaUnavailableError>
   },
 ) {
   override get message() {
-    return `Windows computer control is unavailable: ${this.reason}.`;
+    return `Computer control is unavailable: ${this.reason}.`;
   }
 }
 
@@ -93,8 +93,10 @@ const make = Effect.gen(function* () {
   const host = yield* CuaDriverHost.CuaDriverHost;
   const identity = yield* ServerEnvironment.ServerEnvironmentIdentity;
   const environmentId = yield* identity.getEnvironmentId;
+  const platform = yield* HostProcess.Platform;
   const supported =
-    (yield* HostProcess.Platform) === "win32" && (yield* HostProcess.Architecture) === "x64";
+    cuaRelease(platform, yield* HostProcess.Architecture) !== undefined &&
+    (platform !== "linux" || (yield* HostProcess.Libc) === "glibc");
   const scope = yield* Effect.scope;
   const gate = yield* Semaphore.make(1);
   const state = yield* SubscriptionRef.make<CuaStatus>({
@@ -163,8 +165,8 @@ const make = Effect.gen(function* () {
           );
           if (revision !== ticket) return yield* new CuaUnavailableError({ reason: "stopped" });
           if (
-            started.driverVersion !== WINDOWS_CUA_RELEASE.version ||
-            started.contractVersion !== WINDOWS_CUA_RELEASE.contractVersion
+            started.driverVersion !== CUA_RELEASE.version ||
+            started.contractVersion !== CUA_RELEASE.contractVersion
           )
             return yield* new CuaUnavailableError({ reason: "incompatibleDriver" });
           connection = started;

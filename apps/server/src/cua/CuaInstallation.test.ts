@@ -7,13 +7,14 @@ import * as Layer from "effect/Layer";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import * as ServerConfig from "../config.ts";
 import * as CuaInstallation from "./CuaInstallation.ts";
-import { WINDOWS_CUA_RELEASE } from "./cuaRelease.ts";
+import { CUA_RELEASE, cuaRelease } from "./cuaRelease.ts";
 
 it.effect("refuses corrupted cached bytes and never substitutes a PATH binary or download", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cua-install-" });
-    const cache = `${directory}/cua/${WINDOWS_CUA_RELEASE.version}/${WINDOWS_CUA_RELEASE.executableSha256}`;
+    const release = cuaRelease("win32", "x64")!;
+    const cache = `${directory}/cua/${CUA_RELEASE.version}/${release.executable.sha256}/node_modules/@trycua/cua-driver-${release.triple}`;
     yield* fs.makeDirectory(cache, { recursive: true });
     yield* fs.writeFileString(`${cache}/cua-driver.exe`, "corrupted");
     let downloads = 0;

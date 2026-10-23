@@ -15,6 +15,25 @@ export const Architecture = Context.Reference<NodeJS.Architecture>(
   },
 );
 
+/** Published Cua Linux libraries currently target glibc only. */
+export const Libc = Context.Reference<"glibc" | "musl" | undefined>(
+  "@t3tools/shared/HostProcess/Libc",
+  {
+    defaultValue: () => {
+      if (process.platform !== "linux") return undefined;
+      const report = process.report?.getReport();
+      return typeof report === "object" &&
+        report !== null &&
+        "header" in report &&
+        typeof report.header === "object" &&
+        report.header !== null &&
+        "glibcVersionRuntime" in report.header
+        ? "glibc"
+        : "musl";
+    },
+  },
+);
+
 export const Hostname = Context.Reference<string>("@t3tools/shared/HostProcess/Hostname", {
   defaultValue: () => NodeOS.hostname(),
 });

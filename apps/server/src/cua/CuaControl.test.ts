@@ -21,7 +21,7 @@ const caller: CuaControl.CuaCaller = {
 };
 const connection: CuaDriverHost.CuaConnection = {
   generation: "generation-one",
-  driverVersion: "0.37.0",
+  driverVersion: "0.38.0",
   contractVersion: "0.8.0",
   mcpProtocolVersion: "fixture-protocol",
   mcp: { command: "C:\\private\\cua-driver.exe", args: ["mcp", "--embedded"], environment: [] },
@@ -30,6 +30,8 @@ const connection: CuaDriverHost.CuaConnection = {
 const harness = Effect.fn("test.cuaHarness")(function* (
   options: {
     platform?: NodeJS.Platform;
+    arch?: NodeJS.Architecture;
+    libc?: "glibc" | "musl";
     start?: Effect.Effect<CuaDriverHost.CuaConnection, CuaDriverHost.CuaDriverError>;
     stop?: Effect.Effect<void, CuaDriverHost.CuaDriverError>;
   } = {},
@@ -56,7 +58,11 @@ const harness = Effect.fn("test.cuaHarness")(function* (
         }),
       ),
     ),
-  ).pipe(Effect.provideService(HostProcess.Platform, options.platform ?? "win32"));
+  ).pipe(
+    Effect.provideService(HostProcess.Platform, options.platform ?? "win32"),
+    Effect.provideService(HostProcess.Architecture, options.arch ?? "x64"),
+    Effect.provideService(HostProcess.Libc, options.libc ?? "glibc"),
+  );
   const control = Context.get(services, CuaControl.CuaControl);
   return { control, exit, watched, starts: () => starts, stops: () => stops };
 });
@@ -93,13 +99,28 @@ it.effect(
     }).pipe(Effect.scoped),
 );
 
-it.effect("refuses Linux hosts even when a Cua Driver is installed there", () =>
+it.effect("supports Linux hosts with a matching Cua release", () =>
   Effect.gen(function* () {
     const h = yield* harness({ platform: "linux" });
-    expect(
-      yield* Effect.flip(h.control.setEnabled({ environmentId, enabled: true })),
-    ).toMatchObject({ reason: "unsupportedPlatform" });
+    yield* h.control.setEnabled({ environmentId, enabled: true });
+    expect(yield* h.control.status).toMatchObject({ supported: true, enabled: true });
     expect(h.starts()).toBe(0);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("refuses unsupported architectures and Linux musl before driver startup", () =>
+  Effect.gen(function* () {
+    for (const options of [
+      { platform: "linux" as const, libc: "musl" as const },
+      { platform: "win32" as const, arch: "arm64" as const },
+      { platform: "darwin" as const },
+    ]) {
+      const h = yield* harness(options);
+      expect(
+        yield* Effect.flip(h.control.setEnabled({ environmentId, enabled: true })),
+      ).toMatchObject({ reason: "unsupportedPlatform" });
+      expect(h.starts()).toBe(0);
+    }
   }).pipe(Effect.scoped),
 );
 

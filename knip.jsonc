@@ -29,6 +29,7 @@
         "setup-worktree.ts",
         "sign-macos.ts",
         "verify-windows-desktop-artifact.ts",
+        "smoke-cua-runtime.mjs",
       ],
       "ignoreDependencies": ["esbuild"],
       // The `t3` npm package's files: copied into the package, never imported.
@@ -115,6 +116,12 @@
     },
     "infra/relay": {
       "entry": ["alchemy.run.ts!", "src/persistence/schema.ts!"],
+    },
+    "packages/cua-driver": {
+      // Keep the exact upstream generated ABI, including its public exports.
+      "ignore": ["src/**"],
+      "entry": ["build.mjs", "runtime.mjs", "runtime.test.mjs"],
+      "ignoreDependencies": ["@ubjs/core", "@ubjs/node"],
     },
     "packages/*": {
       // These workspace packages are private to this monorepo.
