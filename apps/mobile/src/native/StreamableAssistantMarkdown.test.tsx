@@ -12,7 +12,14 @@ const native = vi.hoisted(() => ({
 }));
 
 vi.mock("../components/ui/AppSymbol", () => ({ SymbolView: () => null }));
-vi.mock("../features/live-voice/VoiceTranscript", () => ({ VoiceTranscript: () => null }));
+vi.mock("../components/ui/Sheet", () => ({
+  Sheet: ({ children, onClose }: { children: ReactNode; onClose: () => void }) => (
+    <div role="dialog">
+      {children}
+      <button onClick={onClose}>Mitschrift schließen</button>
+    </div>
+  ),
+}));
 vi.mock("../connection/runtime", () => ({ connectionAtomRuntime: { fn: vi.fn() } }));
 vi.mock("../state/atom-registry", () => ({ appAtomRegistry: { set: vi.fn() } }));
 vi.mock("../state/session", () => ({ usePreparedConnection: () => ({ _tag: "None" }) }));
@@ -505,7 +512,10 @@ it("keeps live call controls available while conversation results stream and vie
   render("", false);
   draw(prefix);
   click("Gespräch");
-  expect(host.textContent).toContain("Vergleiche die Modelle");
+  expect(host.textContent).toContain("Der Vergleich läuft im Hintergrund");
+  click("Mitschrift");
+  expect(host.querySelector('[role="dialog"]')?.textContent).toContain("Vergleiche die Modelle");
+  click("Mitschrift schließen");
   expect(host.textContent).toContain("Queue depth42jobs");
   expect(host.querySelectorAll("circle")).toHaveLength(1);
   draw(prefix + '\n{"type":"point","id":"trend","label":"B","value":9.75}');

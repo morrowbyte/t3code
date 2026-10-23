@@ -1,9 +1,10 @@
 import type { LiveVoiceController, LiveVoiceState } from "@t3tools/client-runtime/live-voice";
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Pressable, View } from "react-native";
+import { Pressable, ScrollView, View } from "react-native";
 import { AppText } from "../../components/ui/AppText";
 import { IconButton } from "../../components/ui/IconButton";
 import { Button } from "../../components/ui/Button";
+import { Sheet } from "../../components/ui/Sheet";
 import { SymbolView } from "../../components/ui/AppSymbol";
 
 type VoicePresentation = {
@@ -76,14 +77,16 @@ export function NativeVoiceConversationHeader() {
             accessibilityState={{ selected: view === mode }}
             accessibilityLabel={mode === "chat" ? "Chat" : "Gespräch"}
             onPress={() => select(mode)}
-            className={`min-h-11 flex-1 flex-row items-center justify-center gap-2 rounded-xl ${view === mode ? "bg-secondary" : ""}`}
+            className={`min-h-11 flex-1 flex-row items-center justify-center gap-2 rounded-xl ${view === mode ? "bg-primary" : ""}`}
           >
             <SymbolView
               name={mode === "chat" ? "text.bubble" : "mic"}
               size={18}
-              tintColorClassName="accent-foreground"
+              tintColorClassName={view === mode ? "accent-primary-foreground" : "accent-foreground"}
             />
-            <AppText className="text-sm font-t3-medium text-foreground">
+            <AppText
+              className={`text-sm font-t3-medium ${view === mode ? "text-primary-foreground" : "text-foreground"}`}
+            >
               {mode === "chat" ? "Chat" : "Gespräch"}
             </AppText>
           </Pressable>
@@ -166,39 +169,44 @@ export function NativeVoiceConversationHeader() {
 export function NativeVoiceConversationTranscript() {
   const presentation = useContext(PresentationContext);
   const [expanded, setExpanded] = useState(false);
-  if (!presentation) return null;
-  const entries = expanded
-    ? presentation.state.transcript
-    : presentation.state.transcript.slice(-2);
+  const latest = presentation?.state.transcript.at(-1);
+  if (!presentation || !latest) return null;
   return (
-    <View className="gap-5 px-2 py-5" testID="voice-conversation-transcript">
-      {entries.length ? (
-        entries.map((entry, index) => (
-          <View key={entry.segmentId ?? index} className="gap-1.5">
-            <AppText className="text-xs font-t3-medium text-foreground-muted">
-              {entry.speaker === "user" ? "Du · Voice" : "Voice"}
-              {entry.final ? "" : "…"}
-            </AppText>
-            <AppText selectable className="text-xl leading-8 text-foreground">
-              {!expanded && entry.text.length > 600 ? `…${entry.text.slice(-600)}` : entry.text}
-            </AppText>
-          </View>
-        ))
-      ) : (
-        <AppText className="text-base text-foreground-muted">
-          {labels[presentation.state.phase]}
+    <View
+      className="border-b border-border bg-thread-canvas px-5 pb-3"
+      testID="voice-conversation-transcript"
+    >
+      <View className="min-h-11 flex-row items-center justify-between">
+        <AppText className="text-xs font-t3-medium text-foreground-muted">
+          {latest.speaker === "user" ? "Du · Voice" : "Voice"}
+          {latest.final ? "" : "…"}
         </AppText>
-      )}
-      {presentation.state.transcript.length ? (
-        <Button
-          label={expanded ? "Mitschrift schließen" : "Mitschrift"}
-          tone="text"
-          onPress={() => setExpanded((value) => !value)}
-        />
-      ) : null}
-      <AppText className="pt-2 text-xs font-t3-medium text-foreground-muted">
-        Ergebnisse & Arbeit
+        <Button label="Mitschrift" tone="text" onPress={() => setExpanded(true)} />
+      </View>
+      <AppText selectable numberOfLines={3} className="text-lg leading-7 text-foreground">
+        {latest.text}
       </AppText>
+      {expanded ? (
+        <Sheet title="Mitschrift" onClose={() => setExpanded(false)}>
+          <ScrollView
+            contentInsetAdjustmentBehavior="automatic"
+            className="flex-1"
+            contentContainerStyle={{ padding: 20, gap: 20 }}
+          >
+            {presentation.state.transcript.map((entry, index) => (
+              <View key={entry.segmentId ?? index} className="gap-2">
+                <AppText className="text-xs font-t3-medium text-foreground-muted">
+                  {entry.speaker === "user" ? "Du · Voice" : "Voice"}
+                  {entry.final ? "" : "…"}
+                </AppText>
+                <AppText selectable className="text-base leading-6 text-foreground">
+                  {entry.text}
+                </AppText>
+              </View>
+            ))}
+          </ScrollView>
+        </Sheet>
+      ) : null}
     </View>
   );
 }

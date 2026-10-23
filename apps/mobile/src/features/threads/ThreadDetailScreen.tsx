@@ -1307,6 +1307,7 @@ const ThreadDetailScreenContent = function ThreadDetailScreenContent(
         showContent={showContent}
       />
       {showContent ? <NativeVoiceConversationHeader /> : null}
+      {showContent && voiceView === "conversation" ? <NativeVoiceConversationTranscript /> : null}
       {showContent ? (
         <View
           style={{ flex: 1 }}
@@ -1342,9 +1343,6 @@ const ThreadDetailScreenContent = function ThreadDetailScreenContent(
               threadId={props.selectedThread.id}
               workspaceRoot={props.threadCwd}
               feed={voiceView === "conversation" ? conversationFeed : props.selectedThreadFeed}
-              conversationHeader={
-                voiceView === "conversation" ? <NativeVoiceConversationTranscript /> : undefined
-              }
               pendingHandoff={props.pendingHandoff}
               worktreeSetup={props.worktreeSetup}
               setupWorkingStartedAt={props.setupWorkingStartedAt}
