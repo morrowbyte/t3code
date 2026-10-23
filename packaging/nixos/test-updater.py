@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline updater behavior. Run on Namespace; never downloads or builds a package."""
 import hashlib
+import copy
 import json
 import os
 from pathlib import Path
@@ -194,6 +195,26 @@ elif '--verify-path' not in args: sys.exit(88)
         r = self.run_update('--check')
         self.assertNotEqual(r.returncode, 0)
         self.assertIn('SHA-256', r.stderr)
+        self.assertFalse(self.data.exists())
+
+    def test_previous_release_brand_preserves_checks_and_prefers_newest_release(self):
+        releases = json.loads(self.releases.read_text())
+        previous = copy.deepcopy(releases[0])
+        previous['name'] = 'Previous Product Nightly ' + VERSION
+        previous['published_at'] = '2026-10-13T00:00:00Z'
+        previous['assets'] = []
+        self.releases.write_text(json.dumps([previous, *releases]))
+        self.env['T3_MORROWBYTE_PREVIOUS_RELEASE_NAME_PREFIX'] = 'Previous Product'
+        r = self.run_update('--check')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)['available'], VERSION)
+        previous['assets'] = releases[0]['assets']
+        self.releases.write_text(json.dumps([previous, releases[1]]))
+        r = self.run_update('--check')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        del self.env['T3_MORROWBYTE_PREVIOUS_RELEASE_NAME_PREFIX']
+        r = self.run_update('--check')
+        self.assertNotEqual(r.returncode, 0)
         self.assertFalse(self.data.exists())
 
     def test_prepare_never_replaces_an_existing_version_identity(self):
