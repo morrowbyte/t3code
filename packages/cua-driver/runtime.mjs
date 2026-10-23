@@ -161,7 +161,7 @@ export async function stageCuaRuntime({
     "THIRD_PARTY_NOTICES.md",
     "node-runtime-NOTICE.md",
     "runtime.mjs",
-    "runtime.d.ts",
+    "runtime.d.mts",
     "src",
     "dist",
   ])

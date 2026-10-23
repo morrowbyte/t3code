@@ -65,9 +65,9 @@ jobs:
       - name: Verify Linux native SDK and managed MCP transport
         if: runner.os == 'Linux'
         run: xvfb-run -a dbus-run-session -- node scripts/smoke-cua-runtime.mjs
-      - name: Verify Windows native SDK and managed MCP transport
+      - name: Verify Windows native SDK and interactive-session boundary
         if: runner.os == 'Windows'
-        run: node scripts/smoke-cua-runtime.mjs
+        run: node scripts/smoke-cua-runtime.mjs --expect-windows-session-zero
   check:
     if: github.repository == (vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code')
     runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}

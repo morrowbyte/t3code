@@ -9,6 +9,7 @@ import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as CodexInstallation from "../provider/CodexInstallation.ts";
+import * as CodexManagedTokenBroker from "../provider/CodexManagedTokenBroker.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as VoiceService from "./VoiceTranscriptionService.ts";
 import { makeVoiceSettings } from "./VoiceSettings.ts";
@@ -483,6 +484,9 @@ it.effect("forces redirect rejection for provider HTTP requests", () =>
 function recoveryServiceLayer(calls: { spawns: number }) {
   const unexpected = Effect.die("Unexpected provider runtime access");
   return VoiceService.layer.pipe(
+    Layer.provide(
+      Layer.mock(CodexManagedTokenBroker.CodexManagedTokenBroker)({ endpoint: unexpected }),
+    ),
     Layer.provideMerge(ServerSettings.layerTest()),
     Layer.provide(
       Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {

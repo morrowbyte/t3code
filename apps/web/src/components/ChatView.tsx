@@ -3256,7 +3256,10 @@ export default function ChatView(props: ChatViewProps) {
       executionItem={
         renderedRightPanelSurface?.kind === "execution"
           ? serverProjection?.turnItems.find(
-              (item) =>
+              (
+                item,
+              ): item is Extract<typeof item, { type: "command_execution" | "dynamic_tool" }> =>
+                (item.type === "command_execution" || item.type === "dynamic_tool") &&
                 item.id === renderedRightPanelSurface.target.itemId &&
                 item.threadId === renderedRightPanelSurface.target.threadId,
             )

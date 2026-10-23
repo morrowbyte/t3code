@@ -662,7 +662,14 @@ describe("PreviewManager", () => {
         const preview = makeFaviconWebContents();
         fromId.mockReturnValue(preview.webContents);
         const opened: Array<{ tabId: string; url: string; background: boolean }> = [];
-        yield* manager.subscribeOpenLinks((event) => Effect.sync(() => void opened.push(event)));
+        const openedReady = yield* Deferred.make<void>();
+        yield* manager.subscribeOpenLinks((event) =>
+          Effect.sync(() => void opened.push(event)).pipe(
+            Effect.andThen(() =>
+              opened.length === 2 ? Deferred.succeed(openedReady, undefined) : Effect.void,
+            ),
+          ),
+        );
         yield* manager.createTab("tab_links");
         yield* manager.registerWebview("tab_links", 42);
         const openHandler = (preview.webContents as Electron.WebContents).setWindowOpenHandler as
@@ -679,7 +686,7 @@ describe("PreviewManager", () => {
           action: "deny",
         });
         handler({ url: "https://github.com/issues/2", disposition: "background-tab" });
-        yield* settle(() => opened.length === 2);
+        yield* Deferred.await(openedReady);
 
         expect(preview.loadURL).not.toHaveBeenCalled();
         expect(opened).toEqual([
@@ -1701,15 +1708,22 @@ describe("PreviewManager", () => {
         Object.assign(preview.webContents, { isLoading: () => true });
         fromId.mockReturnValue(preview.webContents);
         const states: PreviewManager.PreviewTabState[] = [];
+        const loaded = yield* Deferred.make<void>();
         yield* manager.subscribeStateChanges((_tabId, state) =>
-          Effect.sync(() => void states.push(state)),
+          Effect.sync(() => void states.push(state)).pipe(
+            Effect.andThen(() =>
+              state.navStatus.kind === "Success"
+                ? Deferred.succeed(loaded, undefined)
+                : Effect.void,
+            ),
+          ),
         );
         yield* manager.createTab("tab_iframe");
         yield* manager.registerWebview("tab_iframe", 42);
 
         preview.listeners.get("did-start-loading")?.();
         preview.listeners.get("did-stop-loading")?.();
-        yield* settle(() => states.length > 2);
+        yield* Deferred.await(loaded);
         expect(states.at(-1)?.navStatus.kind).toBe("Success");
       }),
     ),

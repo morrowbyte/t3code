@@ -1,3 +1,4 @@
+import type { ThreadStructure } from "@t3tools/client-runtime/state/models";
 import { pendingBackgroundTurnItems } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
@@ -81,7 +82,7 @@ interface ThreadLifecycleInput {
   readonly serverConfig: EnvironmentServerConfig | null;
   readonly runtimeMode: RuntimeMode;
   readonly isWorking: boolean;
-  readonly serverProjection: Parameters<typeof pendingBackgroundTurnItems>[0] | null | undefined;
+  readonly serverProjection: Pick<ThreadStructure, "turnItems" | "runs"> | null | undefined;
   readonly pendingBackgroundTasks: Parameters<typeof backgroundWorkBannerItem>[0]["tasks"];
   readonly activePendingApproval: PendingThreadRequests["activePendingApproval"];
   readonly activePendingUserInput: PendingThreadRequests["activePendingUserInput"];
@@ -401,7 +402,8 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
                 {
                   taskId: item.nativeItemRef?.nativeId ?? item.id,
                   kind: "command" as const,
-                  description: item.input,
+                  description:
+                    typeof item.input === "string" ? item.input : (item.title ?? undefined),
                 },
               ]
             : [],

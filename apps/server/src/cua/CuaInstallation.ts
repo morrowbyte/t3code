@@ -1,5 +1,4 @@
 import * as NodeModule from "node:module";
-import * as NodePath from "node:path";
 import { cuaArchiveMembers, stageCuaRuntime, verifyCuaBytes } from "@trycua/cua-driver/runtime";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
@@ -77,7 +76,7 @@ const make = Effect.gen(function* () {
       release.executable.sha256,
     );
     const nativeRoot = packaged
-      ? NodePath.dirname(packaged)
+      ? path.dirname(packaged)
       : path.join(directory, "node_modules", "@trycua", `cua-driver-${release.triple}`);
     const executable = path.join(nativeRoot, release.executable.name);
     const verify = Effect.gen(function* () {

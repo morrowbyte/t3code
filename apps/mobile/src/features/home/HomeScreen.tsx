@@ -977,7 +977,9 @@ export function HomeScreen(props: HomeScreenProps) {
         <SwipeableScrollGateProvider enabled={swipeEnabled} activation={swipeRowActivation}>
           <GestureDetector gesture={homeScrollGesture}>
             <AnimatedLegendList
-              itemLayoutAnimation={primaryColumn ? THREAD_SIDEBAR_ROW_LAYOUT : undefined}
+              itemLayoutAnimation={
+                primaryColumn ? THREAD_SIDEBAR_ROW_LAYOUT : THREAD_FAMILY_LAYOUT_TRANSITION
+              }
               ref={listRef}
               onLoad={() => activateVisibleRows(threadListV2Items)}
               onTouchStart={(event) => trackListTouches(event, true)}
@@ -985,7 +987,6 @@ export function HomeScreen(props: HomeScreenProps) {
               onTouchCancel={(event) => trackListTouches(event, false)}
               renderScrollComponent={Platform.OS === "ios" ? renderHomeScrollView : undefined}
               data={threadListV2Items}
-              itemLayoutAnimation={THREAD_FAMILY_LAYOUT_TRANSITION}
               renderItem={renderV2Item}
               keyExtractor={v2KeyExtractor}
               getItemType={(item) => item.type}

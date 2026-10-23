@@ -55,6 +55,7 @@ import { createModelSelection, normalizeModelSlug } from "@t3tools/shared/model"
 import { USAGE_LIMITS_COMMAND } from "@t3tools/shared/usageLimits";
 import {
   memo,
+  type ComponentProps,
   type ReactNode,
   useEffect,
   useEffectEvent,

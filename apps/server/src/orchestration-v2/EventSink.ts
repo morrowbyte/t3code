@@ -796,7 +796,7 @@ const layerBase: Layer.Layer<
               });
               const stored = events[0];
               if (!stored) return yield* Effect.die("Observatory append produced no event.");
-              yield* applyStoredEvents(events);
+              const outcomes = yield* applyStoredEvents(events);
               const inserted = yield* commandReceipts.insertIfAbsent({
                 commandId: input.update.requestId,
                 threadId: owner.threadId,
@@ -813,9 +813,11 @@ const layerBase: Layer.Layer<
                 snapshot: { ...metadata, sequence: stored.sequence },
                 replayed: false,
                 events,
+                outcomes,
               };
             }),
-            (result) => publishStoredEvents(result.events),
+            (result) =>
+              publishStoredEvents(result.events, "outcomes" in result ? result.outcomes : []),
           );
           if (result.status === "refused")
             return yield* new AgentObservatoryRefusal({ reason: result.reason });

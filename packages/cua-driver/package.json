@@ -19,7 +19,7 @@
       "import": "./dist/electron.js"
     },
     "./runtime": {
-      "types": "./runtime.d.ts",
+      "types": "./runtime.d.mts",
       "import": "./runtime.mjs"
     }
   },

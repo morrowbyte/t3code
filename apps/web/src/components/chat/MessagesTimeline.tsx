@@ -175,7 +175,7 @@ export interface MessagesTimelineHistoryControls {
   readonly onLoadEarlier: (throughEntryId?: string) => void;
 }
 
-interface MessagesTimelineProps {
+export interface MessagesTimelineProps {
   citationRequest?: AssistantCitationRequest | null;
   citationHistoryLoading?: boolean;
   onCiteAssistantText?: (

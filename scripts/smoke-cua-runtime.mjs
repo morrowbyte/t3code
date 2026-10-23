@@ -10,6 +10,7 @@ import { stageCuaRuntime, cuaRelease } from "../packages/cua-driver/runtime.mjs"
 
 const prefix = NodePath.join(NodeOS.tmpdir(), "t3-cua-smoke-");
 const probing = process.argv[2] === "--probe";
+const expectSessionZero = process.argv.includes("--expect-windows-session-zero");
 const directory = probing ? process.argv[3] : await NodeFSP.mkdtemp(prefix);
 if (!directory || !NodePath.resolve(directory).startsWith(NodePath.resolve(prefix)))
   throw Error("Unexpected Cua smoke path");
@@ -22,11 +23,46 @@ if (!probing) {
     });
     const result = NodeChildProcess.spawnSync(
       process.execPath,
-      [NodeURL.fileURLToPath(import.meta.url), "--probe", directory],
-      { stdio: "inherit", windowsHide: true, timeout: 60000 },
+      [
+        NodeURL.fileURLToPath(import.meta.url),
+        "--probe",
+        directory,
+        ...(expectSessionZero ? ["--expect-windows-session-zero"] : []),
+      ],
+      {
+        stdio: expectSessionZero ? ["ignore", "pipe", "pipe"] : "inherit",
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 60000,
+      },
     );
     if (result.error) throw result.error;
-    if (result.status !== 0) throw Error("Cua native probe subprocess failed");
+    if (expectSessionZero) {
+      const session = NodeChildProcess.spawnSync(
+        "powershell.exe",
+        [
+          "-NoLogo",
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `(Get-Process -Id ${process.pid}).SessionId`,
+        ],
+        { encoding: "utf8", windowsHide: true, timeout: 10000 },
+      );
+      if (process.platform !== "win32" || session.status !== 0 || session.stdout.trim() !== "0")
+        throw Error("Session 0 assertion requires the actual Windows service session");
+      if (
+        result.status !== 78 ||
+        !result.stdout.includes("Cua native SDK initialized") ||
+        !result.stderr.includes(
+          "requires an interactive Windows user session: running in Windows Session 0",
+        )
+      )
+        throw Error("Expected initialized native SDK and explicit Session 0 refusal");
+      console.log(
+        "Native SDK initialized; interactive startup correctly refused in Windows Session 0. Interactive MCP requires a desktop session.",
+      );
+    } else if (result.status !== 0) throw Error("Cua native probe subprocess failed");
   } finally {
     await NodeFSP.rm(directory, { recursive: true, force: true });
   }
@@ -51,6 +87,7 @@ if (!probing) {
       NodeURL.pathToFileURL(NodePath.join(stage.sdkRoot, "dist/embedded.js")).href
     );
     host = new EmbeddedCuaDriverHost(stage.executable, "com.morrowbyte.t3code");
+    if (expectSessionZero) console.log("Cua native SDK initialized");
     const connection = await host.start({ signal: AbortSignal.timeout(15000) });
     if (connection.driverVersion !== "0.38.0" || connection.contractVersion !== "0.8.0")
       throw Error("Cua version mismatch");
@@ -128,6 +165,10 @@ if (!probing) {
         nativeInputDispatched: false,
       }),
     );
+  } catch (cause) {
+    if (expectSessionZero && cause?.tag === "ExitedBeforeReady" && cause.inner?.code === 1)
+      process.exitCode = 78;
+    else throw cause;
   } finally {
     if (child?.exitCode === null) child.kill();
     if (host) {

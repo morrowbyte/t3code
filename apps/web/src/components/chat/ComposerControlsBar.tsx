@@ -208,8 +208,8 @@ export function ComposerControlsBar(props: {
       multipleModelSelections={multipleModelSelections}
       onMultipleModelSelectionsChange={onMultipleModelSelectionsChange}
       selectedModelSelection={selectedModelSelection}
-      onProviderModelSelect={(selection) => {
-        onProviderModelSelect(selection);
+      onProviderModelSelect={(instanceId, model, options) => {
+        onProviderModelSelect(instanceId, model, options);
         props.onModelPickerCommit?.();
       }}
       activeInstanceId={
