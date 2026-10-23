@@ -5,7 +5,6 @@ import { AppText } from "../../components/ui/AppText";
 import { IconButton } from "../../components/ui/IconButton";
 import { Button } from "../../components/ui/Button";
 import { SymbolView } from "../../components/ui/AppSymbol";
-import { VoiceTranscript } from "./VoiceTranscript";
 
 type VoicePresentation = {
   readonly state: LiveVoiceState;
@@ -168,7 +167,9 @@ export function NativeVoiceConversationTranscript() {
   const presentation = useContext(PresentationContext);
   const [expanded, setExpanded] = useState(false);
   if (!presentation) return null;
-  const entries = presentation.state.transcript.slice(-2);
+  const entries = expanded
+    ? presentation.state.transcript
+    : presentation.state.transcript.slice(-2);
   return (
     <View className="gap-5 px-2 py-5" testID="voice-conversation-transcript">
       {entries.length ? (
@@ -179,7 +180,7 @@ export function NativeVoiceConversationTranscript() {
               {entry.final ? "" : "…"}
             </AppText>
             <AppText selectable className="text-xl leading-8 text-foreground">
-              {entry.text.length > 600 ? `…${entry.text.slice(-600)}` : entry.text}
+              {!expanded && entry.text.length > 600 ? `…${entry.text.slice(-600)}` : entry.text}
             </AppText>
           </View>
         ))
@@ -195,7 +196,6 @@ export function NativeVoiceConversationTranscript() {
           onPress={() => setExpanded((value) => !value)}
         />
       ) : null}
-      {expanded ? <VoiceTranscript entries={presentation.state.transcript} /> : null}
       <AppText className="pt-2 text-xs font-t3-medium text-foreground-muted">
         Ergebnisse & Arbeit
       </AppText>

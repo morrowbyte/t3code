@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
-import { NativeClientError, prebuildAndroid } from "./mobile-native-client.ts";
+import { NativeClientError, prebuildAndroid, installedBinary } from "./mobile-native-client.ts";
 
 const caches = [".gradle/history", "app/.cxx/object"];
 
@@ -63,3 +63,24 @@ it.layer(NodeServices.layer)("prebuildAndroid", (it) => {
     }),
   );
 });
+
+it.effect("recognizes the fork Android development APK before considering a rebuild", () =>
+  Effect.gen(function* () {
+    const calls: string[][] = [];
+    const binary = yield* installedBinary("android", "emulator-5554", (_program, args) => {
+      calls.push(args);
+      return Effect.succeed(
+        args.includes("list")
+          ? "package:com.morrowbyte.t3code.dev"
+          : args.includes("path")
+            ? "package:/data/app/morrowbyte/base.apk"
+            : `${"a".repeat(64)}  /data/app/morrowbyte/base.apk`,
+      );
+    });
+    assert.strictEqual(typeof binary, "string");
+    assert.deepStrictEqual(calls.slice(0, 2), [
+      ["-s", "emulator-5554", "shell", "pm", "list", "packages", "com.morrowbyte.t3code.dev"],
+      ["-s", "emulator-5554", "shell", "pm", "path", "com.morrowbyte.t3code.dev"],
+    ]);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
