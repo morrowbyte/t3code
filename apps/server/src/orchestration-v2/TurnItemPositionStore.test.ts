@@ -11,6 +11,40 @@ const layerTest = TurnItemPositionStore.layer.pipe(
   Layer.provideMerge(SqlitePersistence.layerMemory),
 );
 
+it.effect(
+  "places a runless result at the explicit tail while preserving historical positions",
+  () =>
+    Effect.gen(function* () {
+      const positions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
+      const threadId = ThreadId.make("thread:runless-result-tail");
+      const tail = {
+        threadId,
+        runId: RunId.make("run:current-parent-work"),
+        runOrdinal: 12,
+      };
+      yield* positions.allocate({ ...tail, turnItemId: TurnItemId.make("item:parent-input") });
+      assert.equal(
+        yield* positions.allocate({ ...tail, turnItemId: TurnItemId.make("item:parent-task") }),
+        12_000_002,
+      );
+      const result = {
+        threadId,
+        turnItemId: TurnItemId.make("item:runless-public-result"),
+        runId: null,
+        runOrdinal: 12,
+      };
+      assert.equal(yield* positions.allocate(result), 12_000_003);
+      assert.equal(yield* positions.allocate(result), 12_000_003);
+      const history = {
+        threadId,
+        turnItemId: TurnItemId.make("item:runless-historical-message"),
+        runId: null,
+      };
+      assert.equal(yield* positions.allocate(history), 1);
+      assert.equal(yield* positions.allocate(history), 1);
+    }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("reuses an item's position without attempting another allocation insert", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;

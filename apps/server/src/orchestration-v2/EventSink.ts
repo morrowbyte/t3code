@@ -363,6 +363,18 @@ const layerBase: Layer.Layer<
       });
 
     const normalizeEvents = (events: ReadonlyArray<OrchestrationV2DomainEvent>) => {
+      const conversationResults = new Map(
+        events.flatMap((event) =>
+          event.type === "message.updated" &&
+          event.payload.role === "assistant" &&
+          event.payload.createdBy === "system" &&
+          event.payload.creationSource === "server" &&
+          event.payload.runId === null &&
+          event.payload.senderThreadId !== undefined
+            ? [[event.payload.id, event.threadId] as const]
+            : [],
+        ),
+      );
       const runOrdinals = new Map(
         events.flatMap((event) =>
           event.type === "run.created" || event.type === "run.updated"
@@ -377,7 +389,15 @@ const layerBase: Layer.Layer<
             ? turnItemPositions
                 .normalize(
                   event.payload,
-                  event.payload.runId === null ? undefined : runOrdinals.get(event.payload.runId),
+                  event.payload.runId === null
+                    ? event.payload.type === "assistant_message" &&
+                      event.payload.id.startsWith("turn-item:conversation-result:") &&
+                      conversationResults.get(event.payload.messageId) === event.threadId
+                      ? // Ownership stays with the child; only placement follows the
+                        // proposed parent tail rather than the historical runless bucket.
+                        Math.floor(event.payload.ordinal / 1_000_000)
+                      : undefined
+                    : runOrdinals.get(event.payload.runId),
                 )
                 .pipe(Effect.map((payload) => ({ ...event, payload })))
             : Effect.succeed(event),

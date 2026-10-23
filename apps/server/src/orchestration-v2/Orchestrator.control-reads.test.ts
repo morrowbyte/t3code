@@ -232,6 +232,7 @@ it.effect.each([
       const item = published.turnItems.find((candidate) => candidate.type === "assistant_message");
       assert.ok(item?.type === "assistant_message");
       assert.equal(item.text, chart);
+      assert.isAbove(item.ordinal, Math.max(...parent.turnItems.map((row) => row.ordinal)));
       assert.equal(item.messageId, message?.id);
       assert.notEqual(item.id, childItemId);
       assert.isNull(item.runId);
