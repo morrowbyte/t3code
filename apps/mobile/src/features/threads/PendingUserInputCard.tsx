@@ -1,5 +1,12 @@
 import { Button } from "../../components/ui/Button";
 import { QuestionAttachments } from "./QuestionAttachments";
+import {
+  questionDictationBlocksSubmission,
+  questionDictationOwnerKey,
+  questionDictationRequestKey,
+} from "./questionDictationDraft";
+import { useGlobalVoiceInput } from "../voice-input/VoiceInputProvider";
+import { useThreadSelection } from "../../state/use-thread-selection";
 import type { RuntimeRequestId, ScopedThreadRef } from "@t3tools/contracts";
 import type { ThreadUserInputQuestion } from "@t3tools/client-runtime/state/thread-requests";
 import { useCallback, useRef } from "react";
@@ -86,6 +93,19 @@ function QuestionText(props: { readonly markdown: string; readonly origin?: Scop
 }
 
 export function PendingUserInputCard(props: PendingUserInputCardProps) {
+  const { selectedThread } = useThreadSelection();
+  const origin =
+    props.origin ??
+    (selectedThread
+      ? { environmentId: selectedThread.environmentId, threadId: selectedThread.id }
+      : null);
+  const voice = useGlobalVoiceInput();
+  const dictatingAnswer = questionDictationBlocksSubmission(
+    origin,
+    props.pendingUserInput.requestId,
+    voice.ownerKey,
+    voice.state,
+  );
   const questionCount = props.pendingUserInput.questions.length;
   const canRespond = props.pendingUserInput.responseCapability !== "not_resumable";
   const isResponding = props.respondingUserInputId === props.pendingUserInput.requestId;
@@ -296,11 +316,21 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
               </View>
               {question.allowCustomAnswer !== false ? (
                 <QuestionAttachments
-                  origin={props.origin}
+                  key={
+                    origin
+                      ? questionDictationOwnerKey(
+                          origin,
+                          props.pendingUserInput.requestId,
+                          question.id,
+                        )
+                      : question.id
+                  }
+                  origin={origin ?? undefined}
                   requestId={props.pendingUserInput.requestId}
                   question={question}
                   questions={props.pendingUserInput.questions}
                   disabled={responseDisabled}
+                  dictationDisabled={!props.canOperateThread || props.collapsed}
                   value={draft?.customAnswer ?? ""}
                   onChangeText={(value) =>
                     props.onChangeCustomAnswer(props.pendingUserInput.requestId, question.id, value)
@@ -316,15 +346,37 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
         label="Submit answers"
         fullWidth
         tone={props.answers ? "primary" : "secondary"}
-        disabled={!props.canOperateThread || responseDisabled || props.answers === null}
-        onPress={() => void props.onSubmit()}
+        disabled={
+          !props.canOperateThread || responseDisabled || dictatingAnswer || props.answers === null
+        }
+        onPress={() => {
+          if (
+            questionDictationBlocksSubmission(
+              origin,
+              props.pendingUserInput.requestId,
+              voice.session.ownerKey,
+              voice.session.controller.currentState,
+            )
+          )
+            return;
+          void props.onSubmit();
+        }}
       />
       {props.pendingUserInput.dismissible ? (
         <Button
           label="Dismiss without answering"
           tone="text"
           disabled={isResponding || !props.canOperateThread}
-          onPress={() => void props.onDismiss()}
+          onPress={() => {
+            if (
+              origin &&
+              voice.session.ownerKey?.startsWith(
+                questionDictationRequestKey(origin, props.pendingUserInput.requestId),
+              )
+            )
+              voice.session.cancel(voice.session.ownerKey);
+            void props.onDismiss();
+          }}
         />
       ) : null}
       {!props.canOperateThread ? (

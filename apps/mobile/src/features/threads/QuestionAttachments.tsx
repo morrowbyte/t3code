@@ -2,7 +2,7 @@ import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime
 import { AsyncResult } from "effect/reactivity";
 import * as Dialog from "../../components/ui/Dialog";
 import { TextInputWrapper } from "expo-paste-input";
-import { AppTextInput as TextInput } from "../../components/ui/AppText";
+import { QuestionAnswerInput } from "./QuestionAnswerInput";
 import { useNativePaste } from "../../lib/useNativePaste";
 import { convertPastedImagesToAttachments } from "../../lib/composerImages";
 import {
@@ -40,6 +40,7 @@ export function QuestionAttachments(props: {
   question: UserInputQuestion;
   questions: ReadonlyArray<UserInputQuestion>;
   disabled: boolean;
+  dictationDisabled: boolean;
   value: string;
   onChangeText: (value: string) => void;
   onInputFocusChange?: ((focused: boolean) => void) | undefined;
@@ -212,11 +213,15 @@ export function QuestionAttachments(props: {
       <FilePreviewModal source={previewFile} onRequestClose={() => setPreviewFile(null)} />
       <VideoPreviewModal source={previewVideo} onRequestClose={() => setPreviewVideo(null)} />
       <TextInputWrapper onPaste={paste}>
-        <TextInput
+        <QuestionAnswerInput
+          origin={origin}
+          requestId={props.requestId}
+          questionId={props.question.id}
+          label={props.question.header}
           value={props.value}
           multiline={props.question.initialAnswer !== undefined}
-          submitBehavior={props.question.initialAnswer !== undefined ? "newline" : undefined}
-          editable={!props.disabled}
+          disabled={props.disabled}
+          dictationDisabled={props.dictationDisabled}
           onChangeText={props.onChangeText}
           onFocus={() => {
             focusedRef.current = true;
@@ -226,8 +231,6 @@ export function QuestionAttachments(props: {
             focusedRef.current = false;
             onInputFocusChange?.(false);
           }}
-          placeholder="Or type a custom answer"
-          className="min-h-[54px] rounded-2xl border border-input-border bg-input px-3.5 py-3 font-sans text-base text-foreground"
         />
       </TextInputWrapper>
     </View>
