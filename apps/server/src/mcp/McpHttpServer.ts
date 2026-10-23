@@ -421,6 +421,15 @@ const decodeAsAdvertised = <Tools extends Record<string, Tool.Any>>(
 
 const isPreviewAutomationError = Schema.is(PreviewAutomationError);
 
+class PreviewSnapshotImageMissingError extends Schema.TaggedError<PreviewSnapshotImageMissingError>()(
+  "PreviewSnapshotImageMissingError",
+  {},
+) {
+  override get message(): string {
+    return "The visual snapshot did not return its requested screenshot.";
+  }
+}
+
 const previewSnapshotFailure = <E>(cause: Cause.Cause<E>) => {
   if (Cause.hasInterrupts(cause) || cause.reasons.some(Cause.isDieReason)) {
     return Effect.failCause(cause).pipe(Effect.orDie);
@@ -510,9 +519,7 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
               const { screenshot, ...page } = snapshot;
               const includeImage = payload?.includeImage === true;
               if ((includeImage || payload?.save === true) && !screenshot) {
-                return yield* Effect.fail(
-                  new Error("The visual snapshot did not return its requested screenshot."),
-                );
+                return yield* Effect.fail(new PreviewSnapshotImageMissingError());
               }
               const png = screenshot
                 ? new Uint8Array(Buffer.from(screenshot.data, "base64"))

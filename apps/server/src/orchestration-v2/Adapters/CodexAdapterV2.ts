@@ -5276,6 +5276,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
             if (payload.item.type === "fileChange") {
               context.fileChangeKindsByItem.delete(payload.item.id);
+              const completedFileChange = payload.item;
               const editorQueue = adapterOptions.environment.T3CODE_EDITOR_LINK_QUEUE;
               const selectedThreadId = adapterOptions.environment.T3CODE_EDITOR_LINK_THREAD;
               const workspaceRoot = context.input.runtimePolicy.cwd;
@@ -5291,8 +5292,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     selectedThreadId,
                     threadId: context.projectionThreadId,
                     workspaceRoot,
-                    itemId: payload.item.id,
-                    changes: payload.item.changes,
+                    itemId: completedFileChange.id,
+                    changes: completedFileChange.changes,
                   }),
                 ).pipe(
                   Effect.catch(() =>

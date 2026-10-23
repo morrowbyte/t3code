@@ -47,7 +47,7 @@ test("all changed files are session-bound, line-addressed and published once", a
   assert.deepEqual(await publishEditorFileChanges(f.input), { queued: 2, skipped: 0 });
   const names = (await fs.readdir(f.queue)).filter((n) => n.endsWith(".request.json"));
   const original = await Promise.all(names.map((n) => fs.readFile(path.join(f.queue, n), "utf8")));
-  const rows = original.map(JSON.parse);
+  const rows = original.map((text) => JSON.parse(text));
   assert.deepEqual(
     rows.map((r) => r.line).sort((a, b) => a - b),
     [5, 8],

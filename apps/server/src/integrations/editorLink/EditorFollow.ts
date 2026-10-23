@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off - Explicit local ACP queue transport; no shell, editor activation or file contents.
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off - Local ACP boundary; lease timestamps must share the peer process and filesystem's OS wall clock.
 import * as Crypto from "node:crypto";
 import * as Fs from "node:fs/promises";
 import * as Path from "node:path";
