@@ -80,7 +80,7 @@ export function NativeVoiceConversationHeader() {
             className={`min-h-11 flex-1 flex-row items-center justify-center gap-2 rounded-xl ${view === mode ? "bg-secondary" : ""}`}
           >
             <SymbolView
-              name={mode === "chat" ? "chat_bubble" : "mic"}
+              name={mode === "chat" ? "text.bubble" : "mic"}
               size={18}
               tintColorClassName="accent-foreground"
             />
