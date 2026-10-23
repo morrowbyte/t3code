@@ -37,7 +37,7 @@ permissions:
 
 jobs:
   check:
-    if: github.repository == (vars.WEASEL_RELEASE_REPOSITORY || 'EvilWeasel/t3code')
+    if: github.repository == (vars.WEASEL_RELEASE_REPOSITORY || 'morrowbyte/t3code')
     runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 45
     steps:
@@ -274,7 +274,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
   windows_installer_guard:
-    if: github.repository == (vars.WEASEL_RELEASE_REPOSITORY || 'EvilWeasel/t3code')
+    if: github.repository == (vars.WEASEL_RELEASE_REPOSITORY || 'morrowbyte/t3code')
     runs-on: ${{ vars.WEASEL_WINDOWS_RUNNER || 'blacksmith-8vcpu-windows-2025' }}
     timeout-minutes: 5
     steps:
@@ -285,7 +285,7 @@ jobs:
 
   upstream_tests:
     if: >-
-      github.repository == (vars.WEASEL_RELEASE_REPOSITORY || 'EvilWeasel/t3code') &&
+      github.repository == (vars.WEASEL_RELEASE_REPOSITORY || 'morrowbyte/t3code') &&
       ((github.event_name == 'workflow_dispatch' && inputs.qualifyUpstream) ||
       (github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&

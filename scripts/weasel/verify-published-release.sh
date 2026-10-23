@@ -81,7 +81,7 @@ tag="$1"
 source_sha="$2"
 version="$3"
 expected_dir="$4"
-repo="${GH_REPO:-EvilWeasel/t3code}"
+repo="${GH_REPO:-morrowbyte/t3code}"
 git_remote="${WEASEL_VERIFY_GIT_REMOTE:-origin}"
 
 fail() {

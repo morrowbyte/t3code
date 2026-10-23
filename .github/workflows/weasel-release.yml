@@ -49,7 +49,7 @@ permissions:
 
 jobs:
   preflight:
-    if: github.repository == (vars.WEASEL_RELEASE_REPOSITORY || 'EvilWeasel/t3code')
+    if: github.repository == (vars.WEASEL_RELEASE_REPOSITORY || 'morrowbyte/t3code')
     runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 15
     outputs:
@@ -609,7 +609,7 @@ jobs:
           RELEASE_RUN: ${{ github.run_number }}
           ANDROID_ONLY: ${{ inputs.android_only }}
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ vars.WEASEL_RELEASE_REPOSITORY || 'EvilWeasel/t3code' }}
+          GH_REPO: ${{ vars.WEASEL_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}
         run: |
           set -euo pipefail
           [[ "$RELEASE_RUN" =~ ^[1-9][0-9]*$ ]]
@@ -784,7 +784,7 @@ jobs:
 
       - name: Build Linux AppImage and updater metadata
         env:
-          T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ vars.WEASEL_RELEASE_REPOSITORY || 'EvilWeasel/t3code' }}
+          T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ vars.WEASEL_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}
           T3CODE_DESKTOP_APP_ID: com.evilweasel.t3code
           T3CODE_DESKTOP_PRODUCT_NAME: T3 Code (Weasel Nightly)
           T3CODE_DESKTOP_PROFILE: weasel
@@ -806,7 +806,7 @@ jobs:
       - name: Prepare NixOS download bundle
         run: |
           set -euo pipefail
-          sed "s|EvilWeasel/t3code|${{ vars.WEASEL_RELEASE_REPOSITORY || 'EvilWeasel/t3code' }}|g" \
+          sed "s|morrowbyte/t3code|${{ vars.WEASEL_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}|g" \
             scripts/weasel/install-linux.sh > release-linux/install-linux.sh
           appimage="$(find release-linux -maxdepth 1 -name '*.AppImage' -print -quit)"
           test -n "$appimage"
@@ -868,7 +868,7 @@ jobs:
           path: release-linux
       - name: Build immutable NixOS closure on Blacksmith
         env:
-          T3_WEASEL_REPOSITORY: ${{ vars.WEASEL_RELEASE_REPOSITORY || 'EvilWeasel/t3code' }}
+          T3_WEASEL_REPOSITORY: ${{ vars.WEASEL_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}
         run: bash scripts/weasel/build-nixos-closure.sh "${{ needs.preflight.outputs.version }}" "release-linux/T3-Code-${{ needs.preflight.outputs.version }}-x86_64.AppImage" release-nixos
       - uses: actions/upload-artifact@v4
         with:
@@ -974,7 +974,7 @@ jobs:
       - name: Build Windows x64 installer and updater metadata
         env:
           T3CODE_DESKTOP_REUSE_PUBLISHED_WSL_RUNTIME: ${{ inputs.windows_only }}
-          T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ vars.WEASEL_RELEASE_REPOSITORY || 'EvilWeasel/t3code' }}
+          T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ vars.WEASEL_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}
           T3CODE_DESKTOP_APP_ID: com.evilweasel.t3code
           T3CODE_DESKTOP_PRODUCT_NAME: T3 Code (Weasel Nightly)
           T3CODE_DESKTOP_PROFILE: weasel
@@ -1447,7 +1447,7 @@ jobs:
       - name: Create fork-only prerelease
         env:
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ vars.WEASEL_RELEASE_REPOSITORY || 'EvilWeasel/t3code' }}
+          GH_REPO: ${{ vars.WEASEL_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}
           OBSERVATORY_ROUTE_SHA: ${{ needs.preflight.outputs.observatory_route_sha256 }}
           DESKTOP_RUN_ID: ${{ needs.preflight.outputs.desktop_run_id }}
           DESKTOP_RUN_ATTEMPT: ${{ needs.preflight.outputs.desktop_run_attempt }}

@@ -107,7 +107,7 @@ grep -Fxq "repos/fixture/t3code/releases/tags/$tag" "$WEASEL_FIXTURE_GH_LOG"
 unset GH_REPO
 bash "$repo_root/scripts/weasel/verify-published-release.sh" \
   "$tag" "$source_sha" "$version" "$fixture_assets" >/dev/null
-grep -Fxq "repos/EvilWeasel/t3code/releases/tags/$tag" "$WEASEL_FIXTURE_GH_LOG"
+grep -Fxq "repos/morrowbyte/t3code/releases/tags/$tag" "$WEASEL_FIXTURE_GH_LOG"
 export GH_REPO=fixture/t3code
 
 if bash "$repo_root/scripts/weasel/verify-published-release.sh" \

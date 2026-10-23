@@ -82,7 +82,7 @@ class WorkerTests(unittest.TestCase):
                 self.assertFalse(any(row["event"] == "http_submit_start" for row in trace))
 
     def test_development_http_requires_literal_private_address_and_opt_in(self):
-        for host in ("127.0.0.1", "100.96.239.170", "172.17.160.1", "10.145.5.50", "192.168.1.5"):
+        for host in ("127.0.0.1", "100.64.0.10", "172.16.0.10", "10.0.0.10", "192.168.1.5"):
             worker.Api({"authorityUrl": "http://"+host, "allowPrivateHttp": True, "tokenFile": "unused"})
             with self.assertRaises(ValueError):
                 worker.Api({"authorityUrl": "http://"+host, "tokenFile": "unused"})

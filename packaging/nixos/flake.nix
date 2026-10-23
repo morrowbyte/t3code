@@ -88,7 +88,7 @@
           '';
 
           meta = {
-            description = "EvilWeasel's T3 Code fork (Weasel Nightly)";
+            description = "Morrowbyte coding agent desktop (Nightly)";
             homepage = "https://github.com/${repository}";
             license = lib.licenses.mit;
             mainProgram = "t3code-weasel";

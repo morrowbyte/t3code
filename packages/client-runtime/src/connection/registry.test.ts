@@ -2124,7 +2124,7 @@ describe("EnvironmentRegistry routes", () => {
     () =>
       Effect.gen(function* () {
         const reachable = "http://192.168.10.8:3773/";
-        const unreachable = "http://100.96.62.207:3780/";
+        const unreachable = "http://100.64.0.10:3780/";
         const rejected = "http://192.168.10.9:3773/";
         const harness = yield* makeHarness(
           [LAN_TARGET],
@@ -2166,14 +2166,14 @@ describe("EnvironmentRegistry routes", () => {
     "removes an unreachable learned route saved by an earlier version without replacing the live session",
     () =>
       Effect.gen(function* () {
-        const httpBaseUrl = "http://100.96.62.207:3780/";
-        const connectionId = `learned:${LAN_TARGET.environmentId}:http://100.96.62.207:3780@${LAN_TARGET.connectionId}`;
+        const httpBaseUrl = "http://100.64.0.10:3780/";
+        const connectionId = `learned:${LAN_TARGET.environmentId}:http://100.64.0.10:3780@${LAN_TARGET.connectionId}`;
         const learned = new BearerConnectionTarget({ ...LAN_TARGET, connectionId });
         const learnedProfile = new BearerConnectionProfile({
           ...LAN_PROFILE,
           connectionId,
           httpBaseUrl,
-          wsBaseUrl: "ws://100.96.62.207:3780/",
+          wsBaseUrl: "ws://100.64.0.10:3780/",
           learned: true,
         });
         const harness = yield* makeHarness(

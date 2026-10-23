@@ -38,14 +38,13 @@ or transport stores. Storing them outside the VM alone does not establish this b
 standard account also does not protect against a guest administrator. Preserve existing working
 management connections; isolate the execution service and provision narrow channels separately.
 
-For the paused Blain37 rollout, prepare its host policy and the VM receiver/callback policy with
+Provision the host policy and the VM receiver/callback policy with
 separate scoped sessions, fixed target identities and private-store references. The owner must
 perform host setup and personally pair before any real package is generated. Keep execution
 disabled until source/channel and worker isolation are verified. Rollback removes only those
 feature policy entries and revokes the newly provisioned feature sessions; preserve original
-profiles, keys and management sessions. No Blain37 command, installation, configuration or test
-is authorized during the current implementation task.
+profiles, keys and management sessions.
 
 Local two-environment tests establish development transport and binding behavior only. They do
 not establish human presence, actual VM isolation, real external execution or independent SSH
-readback. The separately rejected credential transfer remains blocked.
+readback.

@@ -4,7 +4,7 @@ set -euo pipefail
 [[ $# -eq 2 ]] || { echo 'Usage: read-draft-release-assets.sh <tag> <source-sha>' >&2; exit 2; }
 tag="$1"
 source_sha="$2"
-repo="${GH_REPO:-EvilWeasel/t3code}"
+repo="${GH_REPO:-morrowbyte/t3code}"
 release="$(gh release view "$tag" --repo "$repo" --json apiUrl,isDraft,targetCommitish,tagName)"
 jq -e --arg tag "$tag" --arg source "$source_sha" \
   '.isDraft == true and .tagName == $tag and .targetCommitish == $source' \
