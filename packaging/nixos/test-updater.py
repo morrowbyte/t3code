@@ -17,6 +17,7 @@ class UpdaterTests(unittest.TestCase):
     def setUpClass(cls):
         cls.real_store = shutil.which('nix-store') is not None
         cls.package = '/nix/store/' + '0' * 32 + '-updater-fixture'
+        cls.legacy_package = None
         if cls.real_store:
             # Register a tiny local fixture, without evaluation, network or compilation.
             with tempfile.TemporaryDirectory() as directory:
@@ -26,6 +27,8 @@ class UpdaterTests(unittest.TestCase):
                 launcher.write_text('#!/bin/sh\nexit 0\n')
                 launcher.chmod(0o755)
                 cls.package = subprocess.check_output(['nix-store', '--add', str(app)], text=True).strip()
+                launcher.rename(launcher.with_name('previous-desktop'))
+                cls.legacy_package = subprocess.check_output(['nix-store', '--add', str(app)], text=True).strip()
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -153,6 +156,44 @@ elif '--verify-path' not in args: sys.exit(88)
 
     def test_unprepared_activation_is_rejected(self):
         r=self.run_update('--activate',VERSION); self.assertNotEqual(r.returncode,0)
+        self.assertFalse(self.data.exists())
+
+    def test_configured_previous_launcher_retains_offline_rollback(self):
+        if not self.real_store: self.skipTest('Nix fixture needed for Store path validation')
+        old = self.previous()
+        old_path = Path(old)
+        old_path.unlink()
+        old_path.symlink_to(self.legacy_package)
+        self.env['TEST_NETWORK_FAIL'] = '1'
+        r = self.run_update('--rollback', old_path.name)
+        self.assertNotEqual(r.returncode, 0)
+        self.env['T3_MORROWBYTE_LEGACY_EXECUTABLE_NAME'] = 'previous-desktop'
+        r = self.run_update('--rollback', old_path.name)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.data/'current').resolve(), Path(self.legacy_package))
+        self.assertFalse(self.log.exists())
+
+    def test_legacy_launcher_cannot_escape_package_bin(self):
+        self.env['T3_MORROWBYTE_LEGACY_EXECUTABLE_NAME'] = '../other'
+        r = self.run_update('--status')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('simple file name', r.stderr)
+        self.assertFalse(self.data.exists())
+
+    def test_release_brand_can_be_configured_without_relaxing_provenance(self):
+        releases = json.loads(self.releases.read_text())
+        releases[0]['name'] = 'Previous Product Nightly ' + VERSION
+        self.releases.write_text(json.dumps(releases))
+        r = self.run_update('--check')
+        self.assertNotEqual(r.returncode, 0)
+        self.env['T3_MORROWBYTE_RELEASE_NAME_PREFIX'] = 'Previous Product'
+        r = self.run_update('--check')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)['available'], VERSION)
+        self.manifest.write_text('{}')
+        r = self.run_update('--check')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('SHA-256', r.stderr)
         self.assertFalse(self.data.exists())
 
     def test_prepare_never_replaces_an_existing_version_identity(self):

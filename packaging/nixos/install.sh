@@ -8,13 +8,16 @@ install_dir="$base_dir/versions"
 current_link="$base_dir/current"
 mode="${1:---update}"
 managed="${T3_MORROWBYTE_MANAGED:-0}"
+legacy_executable="${T3_MORROWBYTE_LEGACY_EXECUTABLE_NAME:-}"
+release_prefix="${T3_MORROWBYTE_RELEASE_NAME_PREFIX:-Morrowbyte}"
 die() { printf 't3code-morrowbyte: %s\n' "$*" >&2; exit 1; }
 valid_version() { [[ "$1" =~ ^[0-9A-Za-z][0-9A-Za-z.+_-]*$ ]]; }
 installed_version() { if [[ -L "$current_link" ]]; then basename "$(readlink "$current_link")"; fi; }
 valid_install() {
   local target
   target="$(readlink -f "$install_dir/$1" 2>/dev/null)" || return 1
-  [[ "$target" == /nix/store/* && -x "$target/bin/t3code-morrowbyte" ]]
+  [[ "$target" == /nix/store/* ]] || return 1
+  [[ -x "$target/bin/t3code-morrowbyte" || ( -n "$legacy_executable" && -x "$target/bin/$legacy_executable" ) ]]
 }
 point_to() {
   # Both the version link and current are in the same filesystem; rename is atomic.
@@ -32,6 +35,8 @@ point_to() {
 [[ "$repo" == morrowbyte/t3code ]] || die 'release repository is not the approved fork'
 [[ "$channel" == nightly || "$channel" == stable ]] || die 'channel must be nightly or stable'
 [[ "$base_dir" == /* ]] || die 'data directory must be absolute'
+[[ -z "$legacy_executable" || "$legacy_executable" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die 'legacy executable must be a simple file name'
+[[ -n "$release_prefix" ]] || die 'release name prefix must not be empty'
 case "$mode" in
   --status)
     printf 'Installed version: %s\nChannel: %s\nRepository: %s\n' "$(installed_version)" "$channel" "$repo"
@@ -62,12 +67,12 @@ for tool in curl jq sha256sum nix-store zstd flock; do command -v "$tool" >/dev/
 fetch() { curl --proto '=https' --fail --silent --show-error --location --connect-timeout 10 --max-time 1800 --retry 2 "$@"; }
 releases_json="$(fetch "https://api.github.com/repos/$repo/releases?per_page=100")" || die 'could not read releases'
 requested=""; [[ "$mode" != --prepare ]] || requested="$2"
-release_json="$(jq -cer --arg channel "$channel" --arg requested "$requested" '[.[] | select(.draft == false) | select(
+release_json="$(jq -cer --arg channel "$channel" --arg requested "$requested" --arg prefix "$release_prefix" '[.[] | select(.draft == false) | select(
   if $channel == "nightly" then .prerelease == true and
     (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-nightly\\.[0-9]{8}\\.[0-9]+$")) and
-    (.name | startswith("Morrowbyte Nightly"))
+    (.name | startswith($prefix + " Nightly"))
   else .prerelease == false and (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) and
-    (.name | startswith("Morrowbyte Stable")) end
+    (.name | startswith($prefix + " Stable")) end
 ) | select($requested == "" or .tag_name == ("v" + $requested))] | sort_by(.published_at) | last' <<<"$releases_json")" || die "no fork-owned $channel release found"
 tag="$(jq -er '.tag_name' <<<"$release_json")"
 version="${tag#v}"

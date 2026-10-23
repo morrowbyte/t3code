@@ -27,6 +27,13 @@ An existing launcher is preserved because it may supply a private credential wra
 or an explicit `T3CODE_HOME`. New standalone installs get a user-local launcher.
 `T3_MORROWBYTE_DATA_DIR` controls the version/GC-root directory independently of the
 application's `T3CODE_HOME`; changing versions never migrates a profile.
+When upgrading an existing differently named installation, retain its data directory
+and credential wrapper. Set `T3_MORROWBYTE_LEGACY_EXECUTABLE_NAME` to its previous
+package launcher name to keep offline rollback available. The private launcher must
+choose `current/bin/t3code-morrowbyte` for new packages and retain its existing profile
+configuration (`T3CODE_HOME` and `T3CODE_DESKTOP_PROFILE`, including the previous
+Electron profile identifier). `T3_MORROWBYTE_RELEASE_NAME_PREFIX` can select a previous release brand;
+repository, channel, manifest and digest checks still apply.
 
 Other operations:
 

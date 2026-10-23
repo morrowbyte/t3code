@@ -23,6 +23,11 @@ on:
         required: false
         default: false
         type: boolean
+      qualifyNixUpdater:
+        description: Verify updater and configured legacy rollback against a real Nix Store fixture
+        required: false
+        default: false
+        type: boolean
   push:
     branches: [main, "morrowbyte/**"]
   pull_request:
@@ -273,6 +278,16 @@ jobs:
             product-evidence
           if-no-files-found: error
           retention-days: 7
+  nix_updater:
+    if: github.event_name == 'workflow_dispatch' && inputs.qualifyNixUpdater
+    runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@3c6342b75005b9cc7c7d4069c3e9179247c89012 # v31
+      - name: Verify offline updater and previous launcher rollback
+        run: python3 packaging/nixos/test-updater.py
+
   windows_installer_guard:
     if: github.repository == (vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code')
     runs-on: ${{ vars.MORROWBYTE_WINDOWS_RUNNER || 'blacksmith-8vcpu-windows-2025' }}
