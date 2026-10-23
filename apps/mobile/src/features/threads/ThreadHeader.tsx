@@ -1,4 +1,6 @@
 import { useMemo } from "react";
+import { useNavigationState } from "@react-navigation/native";
+import { androidWorkspaceBackReturnsToThread } from "../../lib/android-workspace-navigation";
 import { AppBar } from "../../components/ui/AppBar";
 import { ScreenHeaderButton } from "../../components/ui/ScreenHeaderButton";
 import type { AppBarAction } from "../../components/ui/AppBar.types";
@@ -20,6 +22,7 @@ export function ThreadHeader(
   },
 ) {
   const goBack = useWorkspaceBackNavigation("threads");
+  const backReturnsToThread = useNavigationState(androidWorkspaceBackReturnsToThread);
   const { layout, panes, toggleAuxiliaryPane, composerKeyboardActive } =
     useAdaptiveWorkspaceLayout();
   const { onOpenTerminal, onMergeBack } = props.gitControls;
@@ -98,7 +101,7 @@ export function ThreadHeader(
             />
           ) : null
         }
-        onBack={layout.usesSplitView ? undefined : goBack}
+        onBack={layout.usesSplitView && !backReturnsToThread ? undefined : goBack}
         actions={androidHeaderActions}
         hideBottomBorder
         compact={composerKeyboardActive}

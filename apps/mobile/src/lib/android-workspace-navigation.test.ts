@@ -202,6 +202,47 @@ describe("Android workspace navigation", () => {
     });
   });
 
+  it("unwinds a chain of linked threads across environments before returning to the list", () => {
+    const origin = select(router.getInitialState(options), thread);
+    const linked = apply(
+      origin,
+      StackActions.push("Thread", {
+        environmentId: "environment-b",
+        threadId: "thread-b",
+      }),
+    );
+    let state = apply(
+      linked,
+      StackActions.push("Thread", {
+        environmentId: "environment-c",
+        threadId: "thread-c",
+      }),
+    );
+    let listSelections = 0;
+    const navigation = {
+      dispatch: (action: AndroidWorkspaceResetAction) => {
+        state = apply(state, action);
+      },
+      getParent: () => undefined,
+      getState: () => state,
+      goBack: () => {
+        state = apply(state, StackActions.pop());
+      },
+    };
+    const back = () =>
+      returnToAndroidWorkspaceList(navigation, () => {
+        listSelections++;
+      });
+    back();
+    expect(state.routes).toEqual(linked.routes);
+    back();
+    expect(state.routes).toEqual(origin.routes);
+    expect(listSelections).toBe(0);
+    back();
+    expect(names(state)).toEqual(["Home"]);
+    expect(listSelections).toBe(1);
+  });
+
   it("recognizes a parent only when its environment and thread are immediately below", () => {
     const parent = select(router.getInitialState(options), thread);
     const child = apply(

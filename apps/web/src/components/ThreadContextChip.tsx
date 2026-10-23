@@ -4,6 +4,7 @@ import { Link } from "@tanstack/react-router";
 import { MessagesSquareIcon } from "lucide-react";
 
 import { useProject, useThreadShell } from "~/state/entities";
+import { useThreadRouteRef } from "~/hooks/useThreadRouteTarget";
 import { ContextChip, ContextChipLabel } from "./ContextChip";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
@@ -14,6 +15,9 @@ export function ThreadContextChip(props: {
   unreadable?: boolean;
 }) {
   const { environmentId, threadId } = props.record;
+  const origin = useThreadRouteRef();
+  const fromOtherThread =
+    origin !== null && (origin.environmentId !== environmentId || origin.threadId !== threadId);
   const shell = useThreadShell({ environmentId, threadId });
   const project = useProject(shell ? scopeProjectRef(environmentId, shell.projectId) : null);
   const title = shell?.title?.trim() || props.record.title;
@@ -24,7 +28,13 @@ export function ThreadContextChip(props: {
           <ContextChip
             kind="thread"
             {...(props.unreadable ? { state: "invalid" as const } : {})}
-            render={<Link to="/$environmentId/$threadId" params={{ environmentId, threadId }} />}
+            render={
+              <Link
+                to="/$environmentId/$threadId"
+                params={{ environmentId, threadId }}
+                state={{ threadLinkOrigin: fromOtherThread }}
+              />
+            }
             aria-label={`Thread, ${title}`}
             data-markdown-copy={props.copyMarkdown}
             className="no-underline"

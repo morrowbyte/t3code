@@ -81,7 +81,7 @@ import { imageMimeType } from "@t3tools/shared/image";
 import { videoMimeType } from "@t3tools/shared/video";
 import { SymbolView, type AppSymbolName } from "../../components/ui/AppSymbol";
 import { HeaderHeightContext } from "@react-navigation/elements";
-import { useFocusEffect, useNavigation } from "@react-navigation/native";
+import { StackActions, useFocusEffect, useNavigation } from "@react-navigation/native";
 import { useNativeWorkspaceColumnsSupported } from "../../native/NativeWorkspaceColumns";
 import { useDeviceType } from "../../native/native-layout-metrics";
 import { isDuoDevice } from "../../lib/device-type";
@@ -1904,10 +1904,14 @@ function UserMessageContent(props: UserMessageContentProps) {
       return;
     }
     if (record?.kind === "thread" && "threadId" in record) {
-      navigation.navigate("Thread", {
-        environmentId: String(record.environmentId),
-        threadId: String(record.threadId),
-      });
+      if (record.environmentId === props.environmentId && record.threadId === selectedThread?.id)
+        return;
+      navigation.dispatch(
+        StackActions.push("Thread", {
+          environmentId: String(record.environmentId),
+          threadId: String(record.threadId),
+        }),
+      );
       return;
     }
     const document = composerDocumentAttachmentRecord(record);
@@ -2296,10 +2300,14 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     }
     const target = resolveLinkedThread(href);
     if (target) {
-      navigation.navigate("Thread", {
-        environmentId: String(target.environmentId),
-        threadId: String(target.threadId),
-      });
+      if (target.environmentId === props.environmentId && target.threadId === props.threadId)
+        return;
+      navigation.dispatch(
+        StackActions.push("Thread", {
+          environmentId: String(target.environmentId),
+          threadId: String(target.threadId),
+        }),
+      );
       return;
     }
     const media = resolveMarkdownMediaPreview(href, {

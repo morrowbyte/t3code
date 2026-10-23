@@ -16,7 +16,7 @@ interface WorkspaceNavigation {
   readonly getRootState?: () => NavigationState | undefined;
 }
 
-function androidWorkspaceBackReturnsToThread(state: NavigationState) {
+export function androidWorkspaceBackReturnsToThread(state: NavigationState) {
   const current = state.routes[state.index];
   const params = current?.params as ReactNavigation.RootParamList["Thread"] | undefined;
   return (
