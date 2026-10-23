@@ -1,5 +1,6 @@
 import * as CuaControl from "../../cua/CuaControl.ts";
 import * as CodexCuaSession from "../../cua/CodexCuaSession.ts";
+import { publishEditorFileChanges } from "../../integrations/editorLink/EditorFollow.ts";
 import { codexCuaConfig } from "../../cua/codexCuaConfig.ts";
 import type { CuaConnection } from "../../cua/CuaDriverHost.ts";
 import { AgentObservatoryIntent, AgentObservatoryInvocationResult } from "@t3tools/contracts";
@@ -5275,6 +5276,31 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
             if (payload.item.type === "fileChange") {
               context.fileChangeKindsByItem.delete(payload.item.id);
+              const completedFileChange = payload.item;
+              const editorQueue = adapterOptions.environment.T3CODE_EDITOR_LINK_QUEUE;
+              const selectedThreadId = adapterOptions.environment.T3CODE_EDITOR_LINK_THREAD;
+              const workspaceRoot = context.input.runtimePolicy.cwd;
+              if (
+                payload.item.status === "completed" &&
+                editorQueue &&
+                selectedThreadId &&
+                workspaceRoot
+              ) {
+                yield* Effect.tryPromise(() =>
+                  publishEditorFileChanges({
+                    queueDirectory: editorQueue,
+                    selectedThreadId,
+                    threadId: context.projectionThreadId,
+                    workspaceRoot,
+                    itemId: completedFileChange.id,
+                    changes: completedFileChange.changes,
+                  }),
+                ).pipe(
+                  Effect.catch(() =>
+                    Effect.logWarning("Editor follow notification was not delivered."),
+                  ),
+                );
+              }
               const artifacts = yield* buildFileChangeArtifacts(context, payload.item);
               if (artifacts === null) {
                 return;

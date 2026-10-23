@@ -8,6 +8,7 @@ import {
   type PreviewAutomationEvaluateInput,
   type PreviewAutomationHoverInput,
   type PreviewAutomationNetworkEntry,
+  type PreviewAutomationPatchTextInput,
   type PreviewAutomationPressInput,
   type PreviewAutomationScrollInput,
   type PreviewAutomationSelectInput,
@@ -129,8 +130,31 @@ const targetPoint = async (
   locator: Locator | null,
   input: { readonly x?: number | undefined; readonly y?: number | undefined },
   timeout: number,
+  locatorWillCheckActionability = false,
 ) => {
   if (locator === null) return { x: input.x ?? 0, y: input.y ?? 0 };
+  if (locatorWillCheckActionability) {
+    const box = await locator.boundingBox({ timeout });
+    const viewport =
+      page.viewportSize() ??
+      (await page.evaluate(() => {
+        const viewport = globalThis as unknown as { innerWidth: number; innerHeight: number };
+        return { width: viewport.innerWidth, height: viewport.innerHeight };
+      }));
+    if (
+      box &&
+      box.width > 0 &&
+      box.height > 0 &&
+      box.x >= 0 &&
+      box.y >= 0 &&
+      box.x + box.width <= viewport.width &&
+      box.y + box.height <= viewport.height
+    ) {
+      // This point only places the visual cursor. Locator.click still performs
+      // its complete stability, enabled, hit-target and scrolling checks.
+      return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    }
+  }
   await locator.scrollIntoViewIfNeeded({ timeout });
   const box = await locator.boundingBox({ timeout });
   if (box) return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
@@ -512,6 +536,7 @@ type SnapshotInput = {
   readonly consoleEntries: ReadonlyArray<PreviewAutomationConsoleEntry>;
   readonly networkEntries: ReadonlyArray<PreviewAutomationNetworkEntry>;
   readonly actionTimeline: PreviewAutomationSnapshot["actionTimeline"];
+  readonly includeScreenshot?: boolean;
 };
 
 /** The scale a page renders at and its viewport in device-independent pixels, a clip's units. */
@@ -536,10 +561,9 @@ const capture = async (
   input: SnapshotInput,
   deadline: number,
 ): Promise<PreviewAutomationSnapshot> => {
-  const { renderScale, viewport, offset } = await renderingOf(input);
+  const rendering = input.includeScreenshot === false ? undefined : await renderingOf(input);
   // A late metrics reply must not begin a capture after viewers have resumed.
   if (Date.now() >= deadline) throw tooBusy();
-  const scale = Math.min(1, MAX_SCREENSHOT_WIDTH / (viewport.width * renderScale));
   const state = refsFor(input.page);
   invalidateRefs(input.page);
   const generation = state.generation;
@@ -554,13 +578,24 @@ const capture = async (
         "url" | "title" | "loading" | "visibleText" | "interactiveElements"
       >
     >,
-    captureViewport(input.page, input.cdp, { format: "png", scale, viewport, offset }),
+    rendering === undefined
+      ? Promise.resolve(undefined)
+      : captureViewport(input.page, input.cdp, {
+          format: "png",
+          scale: Math.min(
+            1,
+            MAX_SCREENSHOT_WIDTH / (rendering.viewport.width * rendering.renderScale),
+          ),
+          viewport: rendering.viewport,
+          offset: rendering.offset,
+        }),
   ]);
   void pageAndScreenshot.catch(constVoid);
   // Leaves time for the second read; a frame that never loads holds the tree until then.
   const tree = await input.page.ariaSnapshot({
     mode: "ai",
-    boxes: true,
+    // Semantic refs resolve live; geometry is needed only for visual reads.
+    boxes: input.includeScreenshot !== false,
     timeout: Math.max(1, deadline - Date.now() - 2_000),
   });
   const after = await read(before);
@@ -601,11 +636,11 @@ const capture = async (
     consoleEntries: [...input.consoleEntries],
     networkEntries: [...input.networkEntries],
     actionTimeline: [...input.actionTimeline],
-    screenshot: {
-      mimeType: "image/png",
-      data,
-      ...pngSize(data),
-    },
+    ...(data === undefined
+      ? {}
+      : {
+          screenshot: { mimeType: "image/png" as const, data, ...pngSize(data) },
+        }),
   };
 };
 
@@ -650,7 +685,7 @@ export const click = async (
 ): Promise<{ readonly x: number; readonly y: number }> => {
   const timeout = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const locator = targetLocator(page, input);
-  const point = await targetPoint(page, locator, input, timeout);
+  const point = await targetPoint(page, locator, input, timeout, true);
   await pointer(point, "click");
   const options = { button: input.button ?? "left", clickCount: input.clickCount ?? 1 } as const;
   const clicked =
@@ -668,6 +703,79 @@ export const click = async (
     page.off("dialog", onDialog);
   }
   return point;
+};
+
+export const patchText = async (page: Page, input: PreviewAutomationPatchTextInput) => {
+  const refuse = (message: string): never => {
+    throw new ServerBrowserOperationError("PreviewAutomationInvalidArgumentError", message);
+  };
+  if (!input.edits.length || input.edits.length > 8) refuse("Use 1-8 exact text edits.");
+  const field = targetLocator(page, input);
+  if (field === null || (await field.count()) !== 1 || !(await field.isVisible()))
+    return refuse("An exact, unique visible text field is required.");
+  const handle = await field.elementHandle();
+  if (handle === null) return refuse("The text field disappeared before planning.");
+  try {
+    const data = await handle.evaluate((element) => {
+      const control = element as unknown as {
+        readonly type?: string;
+        readonly disabled?: boolean;
+        readonly readOnly?: boolean;
+      };
+      return {
+        tag: element.tagName,
+        type: control.type ?? "",
+        disabled: control.disabled,
+        readOnly: control.readOnly,
+      };
+    });
+    // Inspect the kind before reading the value: a password is never read.
+    if (
+      !(
+        data.tag === "TEXTAREA" ||
+        (data.tag === "INPUT" && ["text", "search", "url", "email", "tel"].includes(data.type))
+      ) ||
+      data.disabled ||
+      data.readOnly
+    )
+      refuse("Only writable visible plain-text fields support exact patches.");
+    const original = await handle.inputValue();
+    if (original.length > 100_000) refuse("The text field exceeds 100000 characters.");
+    let text = original;
+    // Plan every edit before any UI write. A later ambiguous match leaves the
+    // complete original value intact. Text outside the supplied matches is kept.
+    for (const edit of input.edits) {
+      if (
+        !edit.old ||
+        edit.old.length > 20_000 ||
+        edit.text.length > 20_000 ||
+        !Number.isInteger(edit.count) ||
+        edit.count < 1 ||
+        edit.count > 8 ||
+        !["replace", "insert_before"].includes(edit.kind)
+      )
+        refuse("Invalid exact text edit.");
+      const parts = text.split(edit.old);
+      if (parts.length - 1 !== edit.count)
+        refuse("Exact occurrence count mismatch; no text was written.");
+      const replacement = edit.kind === "insert_before" ? edit.text + edit.old : edit.text;
+      if (replacement === edit.old) refuse("A no-op text edit is not an action.");
+      text = parts.join(replacement);
+      if (text.length > 100_000) refuse("Patched text exceeds 100000 characters.");
+    }
+    if ((await handle.inputValue()) !== original)
+      refuse("The field changed while planning; no text was written.");
+    // Normal UI fill, retaining this exact node so a replacement cannot receive it.
+    await handle.fill(text, { timeout: input.timeoutMs ?? DEFAULT_TIMEOUT_MS });
+    if ((await handle.inputValue()) !== text)
+      throw new ServerBrowserOperationError(
+        "PreviewAutomationActionError",
+        "Text delivery is uncertain. Read the field before considering another edit.",
+      );
+    return { editsApplied: input.edits.length, taskSuccessVerified: false as const };
+  } finally {
+    await handle.dispose();
+  }
 };
 
 export const type = async (page: Page, input: PreviewAutomationTypeInput) => {

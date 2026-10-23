@@ -109,6 +109,16 @@ jobs:
           apps/server/src/voice/CodexLiveSessionService.test.ts
           apps/server/src/voice/CodexLiveSessionService.ts
           packages/provider-core/src/server/ProviderAdapter.ts
+      - name: Test computer-use browser and editor boundaries
+        working-directory: apps/server
+        run: >-
+          vp test run
+          src/preview/ServerBrowserPage.test.ts
+          src/preview/ServerBrowser.test.ts
+          src/mcp/toolkits/preview/PreviewBatch.test.ts
+          src/mcp/McpHttpServer.test.ts
+          src/integrations/editorLink/EditorFollow.test.ts
+          src/integrations/editorLink/EditorFollowAcp.test.ts
       - name: Test voice dictation request deferral
         working-directory: apps/web
         run: >-
@@ -122,10 +132,13 @@ jobs:
           packages/client-runtime/src/state/backgroundWorkPresentation.test.ts
       - name: Test background process controls in Chromium
         working-directory: apps/web
-        run: vp test run src/components/chat/BackgroundWorkActivity.browser.test.tsx
+        run: >-
+          vp test run
+          src/components/chat/BackgroundWorkActivity.browser.test.tsx
+          src/browser/ElectronBrowserHost.browser.test.tsx
   product_bundle:
     needs: [check]
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && (inputs.buildCandidateCLI || inputs.probeProtonPass)
     runs-on: ${{ vars.WEASEL_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 30
     steps:

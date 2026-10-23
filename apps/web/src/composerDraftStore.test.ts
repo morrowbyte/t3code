@@ -254,11 +254,11 @@ describe("speech transcription provenance", () => {
   it("clears provenance on replacement, clear and history recall, including identical pasted replacement", () => {
     const target = DraftId.make("speech-reset");
     const store = useComposerDraftStore.getState();
-    store.appendSpeechTranscript(target, "Blain37");
-    store.setPrompt(target, "Blain37", { edit: true, replacement: { start: 0, end: 7 } });
+    store.appendSpeechTranscript(target, "NodeX37");
+    store.setPrompt(target, "NodeX37", { edit: true, replacement: { start: 0, end: 7 } });
     expect(store.getComposerDraft(target)?.speechTranscription).toBeUndefined();
     store.appendSpeechTranscript(target, "nochmal");
-    store.setPrompt(target, "Dies ist eine Transkription: Blain37");
+    store.setPrompt(target, "Dies ist eine Transkription: NodeX37");
     expect(store.getComposerDraft(target)?.speechTranscription).toBeUndefined();
     store.appendSpeechTranscript(target, "Aufnahme");
     store.clearComposerContent(target);
@@ -330,15 +330,15 @@ describe("speech transcription provenance", () => {
   it("shifts dictated spans after terminal insertion and clears them when only the reference remains", () => {
     const target = scopeThreadRef(TEST_ENVIRONMENT_ID, ThreadId.make("speech-terminal-insertion"));
     const store = useComposerDraftStore.getState();
-    store.appendSpeechTranscript(target, "Blain37");
+    store.appendSpeechTranscript(target, "NodeX37");
     const terminal = makeTerminalContext({ id: "speech-terminal" });
     const insertion = insertInlineContextReference(
-      "Blain37",
+      "NodeX37",
       0,
       terminalContextReference(terminal),
     );
     expect(store.insertTerminalContext(target, insertion.prompt, terminal, 0)).toBe(true);
-    const start = insertion.prompt.indexOf("Blain37");
+    const start = insertion.prompt.indexOf("NodeX37");
     expect
       .soft(store.getComposerDraft(target)?.speechTranscription?.ranges)
       .toEqual([{ start, end: start + 7 }]);
@@ -351,23 +351,23 @@ describe("speech transcription provenance", () => {
     expect(store.getComposerDraft(target)?.speechTranscription).toBeUndefined();
   });
 
-  it.each(["  Blain37  ", "  Blain37", "Blain37  ", "Blain37", "\tBlain37\n"])(
+  it.each(["  NodeX37  ", "  NodeX37", "NodeX37  ", "NodeX37", "\tNodeX37\n"])(
     "keeps dictated spans when preparing a trimmed send or queued edit: %j",
     (prompt) => {
-      const start = prompt.indexOf("Blain37");
+      const start = prompt.indexOf("NodeX37");
       const prepared = trimComposerPrompt(prompt, { ranges: [{ start, end: start + 7 }] });
       expect(prepared).toEqual({
-        prompt: "Blain37",
+        prompt: "NodeX37",
         speechTranscription: { ranges: [{ start: 0, end: 7 }] },
       });
     },
   );
 
   it("keeps trim provenance scoped to dictated words without marking typed or empty sends", () => {
-    const prompt = "  Bitte Blain37 prüfen  ";
+    const prompt = "  Bitte NodeX37 prüfen  ";
     const prepared = trimComposerPrompt(prompt, { ranges: [{ start: 8, end: 15 }] });
     expect(prepared).toEqual({
-      prompt: "Bitte Blain37 prüfen",
+      prompt: "Bitte NodeX37 prüfen",
       speechTranscription: { ranges: [{ start: 6, end: 13 }] },
     });
     expect(trimComposerPrompt(prompt).speechTranscription).toBeUndefined();

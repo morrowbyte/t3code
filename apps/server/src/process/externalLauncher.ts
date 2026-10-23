@@ -123,6 +123,7 @@ const CommandLookupEnvConfig = Config.all({
   path: Config.String("path").pipe(Config.option),
   PATHEXT: Config.String("PATHEXT").pipe(Config.option),
   HOME: Config.String("HOME").pipe(Config.option),
+  USER: Config.String("USER").pipe(Config.option),
   LOCALAPPDATA: Config.String("LOCALAPPDATA").pipe(Config.option),
   ProgramFiles: Config.String("ProgramFiles").pipe(Config.option),
   ProgramW6432: Config.String("ProgramW6432").pipe(Config.option),

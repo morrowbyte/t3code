@@ -94,6 +94,80 @@ const layerTest = (input: {
   );
 };
 
+it.effect.skipIf(windowsHost)("discovers and launches Windows Zed in the selected WSL distro", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const binDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-wsl-zed-" });
+    const executable = path.join(binDir, "zed.exe");
+    yield* fs.writeFileString(executable, "#!/bin/sh\n");
+    yield* fs.chmod(executable, 0o755);
+    let spawned: ChildProcess.StandardCommand | undefined;
+    yield* Effect.gen(function* () {
+      const launcher = yield* ExternalLauncher.ExternalLauncher;
+      assert.include(yield* launcher.resolveAvailableEditors(), "zed");
+      yield* launcher.launchEditor({
+        editor: "zed",
+        cwd: "/home/developer/projects/linux-server@host",
+      });
+    }).pipe(
+      Effect.provide(
+        layerTest({
+          platform: "linux",
+          env: { PATH: binDir, WSL_DISTRO_NAME: "Ubuntu", USER: "developer" },
+          onSpawn: (command) => {
+            spawned = command;
+          },
+        }),
+      ),
+    );
+    assert.ok(spawned);
+    assert.equal(spawned.command, "zed.exe");
+    assert.deepEqual(spawned.args, [
+      "--wsl",
+      "developer@Ubuntu",
+      "/home/developer/projects/linux-server@host",
+    ]);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect.skipIf(windowsHost)("keeps native Linux and SSH Zed launches unchanged", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const binDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-native-zed-" });
+    for (const name of ["zed", "zed.exe"]) {
+      const executable = path.join(binDir, name);
+      yield* fs.writeFileString(executable, "#!/bin/sh\n");
+      yield* fs.chmod(executable, 0o755);
+    }
+    const cases: ReadonlyArray<Record<string, string>> = [
+      {},
+      { WSL_DISTRO_NAME: "Ubuntu", SSH_CONNECTION: "client server" },
+    ];
+    for (const extraEnv of cases) {
+      let spawned: ChildProcess.StandardCommand | undefined;
+      yield* Effect.gen(function* () {
+        const launcher = yield* ExternalLauncher.ExternalLauncher;
+        yield* launcher.launchEditor({ editor: "zed", cwd: "/workspace/project" });
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            platform: "linux",
+            env: { PATH: binDir, ...extraEnv },
+            onSpawn: (command) => {
+              spawned = command;
+            },
+          }),
+        ),
+      );
+      assert.ok(spawned);
+      assert.equal(spawned.command, "zed");
+      assert.deepEqual(spawned.args, ["/workspace/project"]);
+    }
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
 it.effect.skipIf(windowsHost)(
   "launched browsers and editors do not inherit ELECTRON_RUN_AS_NODE",
   () =>

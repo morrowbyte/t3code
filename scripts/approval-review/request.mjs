@@ -1,4 +1,4 @@
-// WinDev has Node but no usable Python. This client has no execute/approve operation.
+// WindowsWorkstation has Node but no usable Python. This client has no execute/approve operation.
 import fs from "node:fs";
 import process from "node:process";
 import { createHash } from "node:crypto";

@@ -17,7 +17,7 @@ import { AttentionInboxView } from "./AttentionInboxView";
 import { deriveAttentionInbox } from "./attentionInbox.logic";
 
 const now = DateTime.makeUnsafe("2026-10-17T09:30:00.000Z");
-const environmentId = EnvironmentId.make("nixy");
+const environmentId = EnvironmentId.make("luna");
 const base = makeThreadFixture().source;
 function question(id: string): OrchestrationV2ThreadShell {
   return {
@@ -52,7 +52,7 @@ describe("attention inbox user workflow", () => {
     const view = (threads: OrchestrationV2ThreadShell[], status: "live" | "cached" = "live") => (
       <AttentionInboxView
         model={deriveAttentionInbox(environmentId, threads)}
-        environmentLabel="Nixy"
+        environmentLabel="Luna"
         status={status}
         hasSnapshot
         synchronizationError={null}
@@ -72,7 +72,7 @@ describe("attention inbox user workflow", () => {
       await act(async () => button("Open thread").click());
       expect(open).toHaveBeenCalledWith({ environmentId, threadId: pending.id });
       expect(container.textContent).toContain("Questions (1)");
-      expect(container.querySelector('[aria-label="Attention in Nixy"]')).not.toBeNull();
+      expect(container.querySelector('[aria-label="Attention in Luna"]')).not.toBeNull();
       expect(container.textContent).not.toContain("Live environment data");
       expect(container.textContent).not.toContain("Other environments are not included");
 
@@ -108,7 +108,7 @@ describe("attention inbox user workflow", () => {
         root.render(
           <AttentionInboxView
             model={deriveAttentionInbox(environmentId, threads)}
-            environmentLabel="Nixy"
+            environmentLabel="Luna"
             status="live"
             hasSnapshot
             synchronizationError={null}

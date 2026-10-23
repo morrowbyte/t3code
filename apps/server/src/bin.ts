@@ -1,7 +1,7 @@
 /**
  * Every ACP agent spawns `t3 acp-mcp-bridge` while opening its session, and terminal-fallback
  * agents run `t3 acp-mcp-call` per tool call, so their startup sits on first-message latency.
- * Both dispatch here before the full CLI module graph (seconds of evaluation) loads; everything
+ * These and the view-only editor-follow ACP agent dispatch here before the full CLI graph loads; everything
  * else defers to the real CLI in ./binCli.ts.
  */
 import { isEntrypoint } from "./entrypoint.ts";
@@ -17,7 +17,12 @@ if (
   // Guard sockets before either dispatch path can load outbound-capable modules.
   const { ignoreMacosTypeOfServiceEinval } = await import("./outboundHttp.ts");
   ignoreMacosTypeOfServiceEinval();
-  if (command === "acp-mcp-bridge" || command === "acp-mcp-call") {
+  if (command === "editor-follow-acp") {
+    const { runEditorFollowAcp } = await import("./integrations/editorLink/EditorFollowAcp.ts");
+    if (process.argv.length !== 5)
+      throw new Error("Usage: t3 editor-follow-acp PROJECT PRIVATE_QUEUE");
+    await runEditorFollowAcp(process.argv[3]!, process.argv[4]!);
+  } else if (command === "acp-mcp-bridge" || command === "acp-mcp-call") {
     const { runAcpMcpCliFastPath } = await import("./mcp/AcpMcpStdioBridge.ts");
     await runAcpMcpCliFastPath(command, process.argv.slice(3));
   } else {

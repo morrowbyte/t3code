@@ -1,75 +1,95 @@
 # Morrowbyte
 
-Morrowbyte is an independent fork of [T3 Code](https://github.com/pingdotgg/t3code) for working with coding agents on your own computer. It provides a desktop app and a web client for your local server. The upstream license and copyright notices remain in [LICENSE](./LICENSE).
+**One workspace for coding agents, remote machines, and the work happening between them.**
 
-Use your own provider account and local projects. A maintainer's accounts, devices, network or preferences are not prerequisites.
+Morrowbyte is an independent fork of [T3 Code](https://github.com/pingdotgg/t3code).
+It keeps T3 Code's local-first agent server and desktop, web, and mobile clients,
+while exploring richer conversations, visible background work, and practical
+multi-machine workflows. Bring your own supported provider account; the machine
+hosting an environment runs its agents and owns its project files.
 
-## Installation
+## What this fork adds
 
-### Download
+- **Answers you can explore.** Agents can stream charts, comparison cards,
+  timelines, workflows, and UML diagrams directly into a conversation. The
+  [visuals](docs/user/streamable-ui.md) render locally and retain their source data.
+- **Work that stays findable.** Thread organization, activity history, and
+  attention surfaces help you return to results, questions, and approvals without
+  losing the original conversation. See [working with threads](docs/user/thread-sidebar.md)
+  and the [activity log](docs/user/activity-log.md).
+- **Remote environments as part of the workspace.** Connect desktop and mobile
+  clients to the machine that owns a project, and use the integrated
+  [browser](docs/user/default-browser.md) and [device panel](docs/user/devices.md)
+  to inspect work where it runs.
+- **Voice and desktop-assistant experiments.** [Jarvis conversations](docs/user/jarvis.md)
+  can hand work to a durable T3 conversation while you continue talking. Voice,
+  native integration, and background behavior are evolving; a feature on `main`
+  is not a promise of identical behavior on every device or released build.
+- **A separate release and update path.** The fork publishes Windows x64,
+  Linux x64, NixOS packaging, and Android ARM64 artifacts through its own
+  [nightly releases](https://github.com/morrowbyte/t3code/releases).
 
-Install the Morrowbyte Windows x64 installer or Linux x64 AppImage supplied with your Morrowbyte release. If you have repository access, use [Morrowbyte releases](https://github.com/morrowbyte/t3code/releases). Other users need the release files from their distributor, not access to the maintainer's repository or machines. Upstream T3 Code installers, package registries and `npx t3@latest` install upstream T3 Code.
+Morrowbyte also retains upstream support for providers including Codex, Claude
+Code, Cursor, Grok, OpenCode, and Antigravity. Availability depends on the provider
+installation, authentication, and client version. Provider subscriptions and
+third-party services are separate from this project.
 
-Release files may still be named `T3-Code-…`; the installed product is Morrowbyte. Existing installations retain their profiles and update path.
+## Install Morrowbyte
 
-### First run on your computer
+Start with the [Morrowbyte releases](https://github.com/morrowbyte/t3code/releases)
+and read the notes for the version you choose. These are development builds;
+keep a working version available when updating.
 
-1. Open Morrowbyte and use the local environment. A remote server is optional.
-2. In provider setup, choose your provider and add or sign in to **your own account**. Follow the available installation and sign-in steps. Provider availability and model access depend on that provider and your account; Morrowbyte does not include a subscription or guarantee entitlement.
-3. Add a local project folder, choose an available provider/model and start a thread.
+- **Windows x64:** download the Windows installer from the selected release.
+- **Linux x64:** download the AppImage. The release includes an optional
+  `install-linux.sh` helper; inspect it before running it.
+- **NixOS x64:** use the dedicated [NixOS package and updater](packaging/nixos/README.md).
+  The generic AppImage installer is not the NixOS installation path.
+- **Android ARM64:** download the signed `Morrowbyte-…-android-arm64.apk` from a
+  release that includes it. The phone connects to a running environment server;
+  it does not run desktop provider CLIs itself.
 
-The app supports Codex, Claude Code, Cursor, Grok Build, OpenCode and Antigravity. Setup differs by provider; the [provider guides](./docs/user/install.md) describe the available paths. You do not need to sign in to a maintainer's account or copy their authentication files.
+The upstream app stores, package-manager entries, `npx t3`, and installers at
+`t3.codes` install **upstream T3 Code**, not this fork. macOS, iOS, and desktop
+ARM64 artifacts are not currently published by the Morrowbyte release workflow.
+Do not assume upstream and fork profiles or update channels are interchangeable.
 
-### Optional remote access
+## Get started
 
-Use your own server and devices over a LAN or your own NetBird, Tailscale or Headscale network. Pair the client with that server using its normal pairing flow; see [remote access](./docs/user/remote-access.md). A Morrowbyte cloud account or Morrowbyte-operated T3 Connect service is not required for local use or direct access to your own server.
+1. Install and authenticate a supported provider on the environment host.
+2. Open Morrowbyte, add a project, and start a thread.
+3. To work from another device, follow [remote access](docs/user/remote-access.md).
+4. Review [permission modes](docs/user/permission-modes.md) before granting agents
+   access to files, commands, browsers, or devices.
 
-## Documentation
+Further guides: [composer](docs/user/composer.md),
+[keyboard shortcuts](docs/user/keybindings.md),
+[project settings](docs/user/project-settings.md),
+[outside agents and MCP](docs/user/outside-agents.md),
+[updating](docs/user/updating.md), and [provider setup](docs/user/providers-codex.md).
+Some inherited guides describe upstream distribution channels; use the fork
+release links above when installing Morrowbyte.
 
-Docs live in [docs/](./docs). Some guides still use upstream T3 Code names and distribution links; use the Morrowbyte download instructions above for this fork.
+## Develop
 
-- [Install and first run](./docs/user/install.md)
-- [Permission modes](./docs/user/permission-modes.md)
-- [Keyboard shortcuts](./docs/user/keybindings.md)
-- [Project settings](./docs/user/project-settings.md)
-- [Appearance preferences](./docs/user/appearance.md)
-- [Remote access from a phone or another machine](./docs/user/remote-access.md)
-- [Connect Claude Code, Codex, ChatGPT and other agents over MCP](./docs/user/outside-agents.md)
-- [Keeping app and server in sync](./docs/user/updating.md)
-- [Source control integrations](./docs/user/source-control.md)
-- Multiple accounts: [Codex](./docs/user/providers-codex.md) · [Claude](./docs/user/providers-claude.md)
-- [Run T3 Code as a background service](./docs/user/background-service.md)
+Install [Vite+](https://viteplus.dev/guide/), then:
 
-Building from source? Start at [docs/internals/overview.md](./docs/internals/overview.md).
-
-## If you REALLY want to contribute still.... read this first
-
-### Install `vp`
-
-T3 Code uses Vite+ so you'll need to install the global `vp` command-line tool.
-
-#### macOS / Linux
-
-```bash
-curl -fsSL https://vite.plus | bash
+```sh
+git clone https://github.com/morrowbyte/t3code.git
+cd t3code
+vp install
+vp run dev
 ```
 
-#### Windows
+Use isolated development state and keep credentials, personal transcripts, and
+machine-specific configuration out of Git. See [development](docs/operations/development.md),
+[architecture](docs/internals/overview.md), and [AGENTS.md](AGENTS.md).
+Report fork-specific issues in [this repository](https://github.com/morrowbyte/t3code/issues).
+When reporting upstream issues, reproduce them on upstream T3 Code first.
 
-```bash
-irm https://vite.plus/ps1 | iex
-```
+## Upstream and license
 
-Checkout their getting started guide for more information: https://viteplus.dev/guide/
-
-### Install dependencies
-
-```bash
-vp i
-```
-
-Read [CONTRIBUTING.md](./CONTRIBUTING.md) before reporting a bug or opening a PR.
-
-Have a feature request? Start an [Ideas discussion](https://github.com/pingdotgg/t3code/discussions/categories/ideas).
-
-Need support? Join the [Discord](https://discord.gg/jn4EGJjrvv).
+Morrowbyte builds on the work of the T3 Code maintainers and contributors. It is
+not an official T3 Code release and is not endorsed by the upstream project.
+The original [MIT license](LICENSE) and third-party notices remain in place;
+see [open-source licenses](docs/user/open-source-licenses.md).

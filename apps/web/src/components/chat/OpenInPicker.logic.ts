@@ -9,11 +9,7 @@ export function shouldShowOpenInPicker(input: {
   readonly remoteOpenMode: RemoteOpenMode;
 }): boolean {
   if (!input.activeProjectName) return false;
-  if (
-    input.primaryEnvironmentId !== null &&
-    input.activeThreadEnvironmentId === input.primaryEnvironmentId
-  ) {
-    return true;
-  }
-  return input.remoteOpenMode !== "local-exec";
+  // Local execution targets the selected environment, including secondary WSL
+  // backends. The picker handles missing editors and unavailable SSH routes.
+  return true;
 }

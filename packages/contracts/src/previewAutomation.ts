@@ -54,6 +54,7 @@ export const PREVIEW_AUTOMATION_SERVER_OPERATIONS = [
   "hover",
   "select",
   "drag",
+  "patchText",
 ] as const;
 export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_SERVER_OPERATIONS);
 export type PreviewAutomationOperation = typeof PreviewAutomationOperation.Type;
@@ -546,6 +547,23 @@ export const PreviewAutomationTypeInput = Schema.Struct({
   });
 export type PreviewAutomationTypeInput = typeof PreviewAutomationTypeInput.Type;
 
+export const PreviewTextEdit = Schema.Struct({
+  kind: Schema.Literals(["replace", "insert_before"]),
+  old: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(20_000)),
+  text: Schema.String.check(Schema.isMaxLength(20_000)),
+  count: Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(8)),
+});
+export type PreviewTextEdit = typeof PreviewTextEdit.Type;
+
+/** Exact edits to visible plain text, never to rendered HTML or password fields. */
+export const PreviewAutomationPatchTextInput = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
+  locator: Locator,
+  edits: Schema.Array(PreviewTextEdit).check(Schema.isMinLength(1), Schema.isMaxLength(8)),
+  timeoutMs: OptionalTimeoutMs,
+});
+export type PreviewAutomationPatchTextInput = typeof PreviewAutomationPatchTextInput.Type;
+
 export const PreviewAutomationPressInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
   key: Schema.String.check(Schema.isTrimmed())
@@ -724,12 +742,14 @@ export const PreviewAutomationSnapshot = Schema.Struct({
   consoleEntries: Schema.Array(PreviewAutomationConsoleEntry),
   networkEntries: Schema.Array(PreviewAutomationNetworkEntry),
   actionTimeline: Schema.Array(PreviewAutomationActionEvent),
-  screenshot: Schema.Struct({
-    mimeType: Schema.Literal("image/png"),
-    data: Schema.String,
-    width: Schema.Int,
-    height: Schema.Int,
-  }),
+  screenshot: Schema.optional(
+    Schema.Struct({
+      mimeType: Schema.Literal("image/png"),
+      data: Schema.String,
+      width: Schema.Int,
+      height: Schema.Int,
+    }),
+  ),
 });
 export type PreviewAutomationSnapshot = typeof PreviewAutomationSnapshot.Type;
 
