@@ -37,6 +37,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as HumanAuthority from "../auth/ApprovalReviewHumanAuthority.ts";
 import * as ApprovalReviewCommands from "./ApprovalReviewCommands.ts";
+import * as ApprovalReviewOrderPolicy from "./ApprovalReviewOrderPolicy.ts";
 import * as ApprovalReviewService from "./ApprovalReviewService.ts";
 import * as HostOrders from "./ApprovalReviewHostOrders.ts";
 import { frozenReview } from "./ApprovalReviewPackage.ts";
@@ -79,6 +80,13 @@ const layerExternalRecovery = Layer.mergeAll(
     ),
   ),
   Layer.provide(Layer.succeed(ApprovalReviewService.ApprovalReviewTargets, [recoveryTarget])),
+  Layer.provide(
+    Layer.succeed(ApprovalReviewOrderPolicy.ApprovalReviewOrderPolicy, {
+      enabled: true,
+      humans: [],
+      channels: [],
+    }),
+  ),
 );
 
 it.effect.each([false, true] as const)(

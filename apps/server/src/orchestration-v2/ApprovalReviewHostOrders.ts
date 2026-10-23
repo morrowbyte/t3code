@@ -122,6 +122,7 @@ const make = Effect.gen(function* () {
   const active = Effect.fn("ApprovalReviewHostOrders.active")(function* (
     order: ApprovalReviewHostOrder,
   ) {
+    if (!policy.enabled) return yield* new ApprovalReviewError({ reason: "disabled" });
     if (order.source.expiresAt <= DateTime.toEpochMillis(yield* DateTime.now))
       return yield* new ApprovalReviewError({ reason: "expired" });
     if (order.state !== "active" || order.assignment === null)
@@ -130,6 +131,13 @@ const make = Effect.gen(function* () {
   const readiness = Effect.fn("ApprovalReviewHostOrders.readiness")(function* (
     actor: EnvironmentSessionPrincipalShape,
   ) {
+    if (!policy.enabled)
+      return {
+        enabled: false,
+        configured: policy.humans.length > 0 && policy.channels.length > 0,
+        reason: "feature-disabled",
+        channels: [],
+      } satisfies ApprovalReviewOrderReadiness;
     const human = Policy.humanFor(policy, actor);
     if (human === undefined)
       return {
@@ -206,6 +214,7 @@ const make = Effect.gen(function* () {
     raw: ApprovalReviewOrderCreate,
     actor: EnvironmentSessionPrincipalShape,
   ) {
+    if (!policy.enabled) return yield* new ApprovalReviewError({ reason: "disabled" });
     const human = Policy.humanFor(policy, actor);
     if (human === undefined || !actor.scopes.has("orchestration:operate"))
       return yield* new ApprovalReviewError({ reason: "forbidden" });

@@ -170,7 +170,8 @@ const fixture = Effect.fn("ApprovalReviewOrderAgentTest.fixture")(function* () {
       { databaseLayer: database, runEffectWorker: false },
     ),
   );
-  const policy = Layer.succeed(Policy.ApprovalReviewOrderPolicy, {
+  const policyValue = {
+    enabled: true,
     humans: [],
     channels: [],
     receiver: {
@@ -181,7 +182,8 @@ const fixture = Effect.fn("ApprovalReviewOrderAgentTest.fixture")(function* () {
       testOnly: true,
       host,
     },
-  });
+  };
+  const policy = Layer.succeed(Policy.ApprovalReviewOrderPolicy, policyValue);
   const layer = Layer.mergeAll(Agent.layer, Receiver.layer).pipe(
     Layer.provideMerge(runtime),
     Layer.provide(policy),
@@ -195,6 +197,9 @@ const fixture = Effect.fn("ApprovalReviewOrderAgentTest.fixture")(function* () {
   return {
     cwd,
     layer,
+    deactivate: () => {
+      policyValue.enabled = false;
+    },
     started,
     reads,
     proposals,
@@ -346,6 +351,13 @@ it.effect(
           assert.equal(result.threadId, hostThreadId);
           assert.deepEqual(f.reads, [ack.orderId]);
           assert.deepEqual(f.proposals, [{ ...proposal, orderId: ack.orderId }]);
+          f.deactivate();
+          assert.equal(
+            (yield* agent.propose(scope, proposal).pipe(Effect.flip)).reason,
+            "disabled",
+          );
+          assert.equal((yield* agent.current(scope)).source.orderId, ack.orderId);
+          assert.equal(f.proposals.length, 1);
         }).pipe(Effect.provide(f.layer));
       }),
     ),

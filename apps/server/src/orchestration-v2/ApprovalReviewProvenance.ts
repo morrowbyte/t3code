@@ -36,7 +36,7 @@ const make = Effect.gen(function* () {
   const policy = yield* Policy.ApprovalReviewOrderPolicy;
   return {
     readiness:
-      policy.channels.length === 0
+      !policy.enabled || policy.channels.length === 0
         ? ({ mode: "disabled", reason: "trust-unconfigured" } as const)
         : ({ mode: "host-channel", reason: "paired-channel" } as const),
     verify: orders.verify,

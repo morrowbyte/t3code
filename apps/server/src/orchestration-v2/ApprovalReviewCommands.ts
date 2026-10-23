@@ -13,6 +13,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as Provenance from "./ApprovalReviewProvenance.ts";
+import * as Policy from "./ApprovalReviewOrderPolicy.ts";
 
 type ReviewCommand = Extract<
   OrchestrationV2InternalCommand,
@@ -21,6 +22,9 @@ type ReviewCommand = Extract<
 
 // Runs under the orchestrator's thread lock and commits through its existing event sink.
 export const plan = Effect.fn("ApprovalReviewCommands.plan")(function* (command: ReviewCommand) {
+  const policy = yield* Policy.ApprovalReviewOrderPolicy;
+  if (!policy.enabled && command.type !== "approval-review.receipt")
+    return yield* new ApprovalReviewError({ reason: "disabled" });
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const now = yield* DateTime.now;
   const current = yield* projections
@@ -236,6 +240,8 @@ export const resolve = Effect.fn("ApprovalReviewCommands.resolve")(function* (
   if (authority.expiresAt <= DateTime.toEpochMillis(now))
     return yield* new ApprovalReviewError({ reason: "expired" });
   if (command.decision === "accept" || command.decision === "acceptForSession") {
+    const policy = yield* Policy.ApprovalReviewOrderPolicy;
+    if (!policy.enabled) return yield* new ApprovalReviewError({ reason: "disabled" });
     if (
       authority.originalOrder?.receipt.version === 2 &&
       (authority.originalOrder.receipt.testOnly ||

@@ -10,7 +10,7 @@ import { runtimeModeConfig, runtimeModeOptions as runtimeModes } from "./runtime
 import { isLocalEnvironmentDisabled } from "../../localEnvironment";
 import { useEnvironments, usePrimaryEnvironmentId } from "../../state/environments";
 import { useRightPanelStore } from "~/rightPanelStore";
-import { HostOrderChatMode } from "../approvalReview/HostOrderChatMode";
+import { ConfiguredHostOrderChatMode } from "../approvalReview/HostOrderChatMode";
 import { Popover, PopoverTrigger, PopoverPopup, PopoverTitle, PopoverClose } from "../ui/popover";
 import { importPastedComposerText, readPastedComposerContext } from "../composerInlineTokenPaste";
 import {
@@ -4571,7 +4571,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   );
 
   return (
-    <HostOrderChatMode
+    <ConfiguredHostOrderChatMode
       key={`${environmentId}:${activeThreadId ?? "draft"}`}
       destination={
         activeThreadId
@@ -4581,9 +4581,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       hosts={hostOrderEnvironments.map((entry) => ({
         environmentId: entry.environmentId,
         label: entry.label,
+        connected: entry.connection.phase === "connected",
       }))}
+      destinationLabel={`${hostOrderEnvironments.find((entry) => entry.environmentId === (activeThreadEnvironmentId ?? environmentId))?.label ?? "Execution environment"} · ${activeThread?.title ?? "Current conversation"}`}
     >
       {composer}
-    </HostOrderChatMode>
+    </ConfiguredHostOrderChatMode>
   );
 });

@@ -27,6 +27,18 @@ const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
 
+it("keeps protected task entry opt-in when upgrading stored settings", () => {
+  expect(decodeClientSettings({}).hostOrderEntryEnabled).toBe(false);
+  expect(decodeClientSettingsPatch({ hostOrderEntryEnabled: true })).toEqual({
+    hostOrderEntryEnabled: true,
+  });
+  const stored = decodeClientSettings({ hostOrderEntryEnabled: true });
+  expect(decodeClientSettings(encodeClientSettings(stored)).hostOrderEntryEnabled).toBe(true);
+  expect(decodeClientSettingsPatch({ hostOrderEntryEnabled: false })).toEqual({
+    hostOrderEntryEnabled: false,
+  });
+});
+
 describe("storage cleanup settings", () => {
   it("keeps cleanup disabled for existing installations", () => {
     expect(decodeServerSettings({}).worktreeCleanup).toBeNull();

@@ -19,6 +19,7 @@ import * as Schema from "effect/Schema";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { readFleetConnections, publicConnection } from "../auth/fleet.ts";
 import type { PairedVm, ForwardDestination } from "./ApprovalReviewOrderPolicy.ts";
+import * as Policy from "./ApprovalReviewOrderPolicy.ts";
 
 const encodeProofHeader = Schema.encodeEffect(
   Schema.fromJsonString(
@@ -68,6 +69,7 @@ export class ApprovalReviewOrderForward extends Context.Service<
 >()("t3/orchestration-v2/ApprovalReviewOrderForward") {}
 
 const make = Effect.gen(function* () {
+  const policy = yield* Policy.ApprovalReviewOrderPolicy;
   const store = yield* ServerSecretStore.ServerSecretStore;
   const http = yield* ApprovalReviewOrderHttp;
   const load = Effect.fn("ApprovalReviewOrderForward.load")(function* (
@@ -218,6 +220,7 @@ const make = Effect.gen(function* () {
     channel: PairedVm,
     testOnly: boolean,
   ) {
+    if (!policy.enabled) return false;
     return yield* Effect.gen(function* () {
       const transport = yield* load(channel, testOnly);
       const text = yield* request(
@@ -245,6 +248,7 @@ const make = Effect.gen(function* () {
     channel: PairedVm,
     input: ApprovalReviewOrderReceive,
   ) {
+    if (!policy.enabled) return yield* new ApprovalReviewError({ reason: "disabled" });
     const text = yield* request(
       channel,
       input.testOnly,
@@ -273,6 +277,7 @@ const make = Effect.gen(function* () {
     testOnly: boolean,
     input: ApprovalReviewSubmit,
   ) {
+    if (!policy.enabled) return yield* new ApprovalReviewError({ reason: "disabled" });
     const text = yield* request(destination, testOnly, "/api/approval-review/submit", input);
     return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(ApprovalReviewResult))(
       text,

@@ -29,6 +29,7 @@ import { canonical, hash, frozenReview } from "./ApprovalReviewPackage.ts";
 import * as Provenance from "./ApprovalReviewProvenance.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as HostOrders from "./ApprovalReviewHostOrders.ts";
+import * as Policy from "./ApprovalReviewOrderPolicy.ts";
 
 const Target = Schema.Struct({
   verifiedTargetId: Schema.String,
@@ -97,6 +98,7 @@ const decodeRuntimeRequest = Schema.decodeUnknownEffect(
 );
 
 const make = Effect.gen(function* () {
+  const policy = yield* Policy.ApprovalReviewOrderPolicy;
   const targets = yield* ApprovalReviewTargets;
   const sql = yield* SqlClient.SqlClient;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -264,6 +266,7 @@ const make = Effect.gen(function* () {
     if (targets.length === 0) return yield* new ApprovalReviewError({ reason: "disabled" });
     const configured = targets.filter((target) => target.workerSubject === subject);
     if (configured.length === 0) return yield* new ApprovalReviewError({ reason: "forbidden" });
+    if (!policy.enabled) return { requests: [], provenance: provenanceAuthority.readiness };
     const now = DateTime.toEpochMillis(yield* DateTime.now);
     const requests: ApprovalReviewReady["requests"][number][] = [];
     const sourceAuthority = provenanceAuthority;

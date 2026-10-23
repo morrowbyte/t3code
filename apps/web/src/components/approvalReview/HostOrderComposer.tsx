@@ -24,22 +24,25 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Textarea } from "../ui/textarea";
+import {
+  EMPTY_HOST_ORDER_SESSION,
+  useHostOrderComposerStore,
+  type HostOrderSession,
+  type SentOrder,
+} from "./HostOrderComposerStore";
 
 interface HostOrderComposerProps {
   environmentId: HostEnvironmentId;
   destination: ScopedThreadRef;
+  hostLabel?: string;
+  active?: boolean;
+  connected?: boolean;
   onCreated?: (order: ApprovalReviewHostOrder) => void;
-}
-
-interface SentOrder {
-  input: ApprovalReviewOrderCreate;
-  order: ApprovalReviewHostOrder | null;
-  error: string | null;
-  alreadyClaimedActions: ApprovalReviewOrderCancelResult["alreadyClaimedActions"];
 }
 
 const readinessReasons = {
   ready: "Ready",
+  "feature-disabled": "Protected tasks are disabled by the host operator.",
   "human-authority-unconfigured": "Human send is not configured on this host.",
   "human-authority-required": "A qualified human session is required.",
   "channel-unconfigured": "No authorized VM destination is configured.",
@@ -73,6 +76,9 @@ export function HostOrderComposer(props: HostOrderComposerProps) {
 function HostOrderComposerSession({
   environmentId,
   destination,
+  hostLabel = "Protecting host",
+  active = true,
+  connected = true,
   onCreated,
 }: HostOrderComposerProps) {
   const create = useAtomCommand(approvalOrderEnvironment.create, { reportFailure: false });
@@ -87,14 +93,27 @@ function HostOrderComposerSession({
   const canCheck = useAtomValue(approvalOrderEnvironment.readiness.permissionAtom(environmentId));
   const [readiness, setReadiness] = useState<ApprovalReviewOrderReadiness | null>(null);
   const [readinessError, setReadinessError] = useState<string | null>(null);
-  const [text, setText] = useState("");
-  const [selectedVmId, setSelectedVmId] = useState("");
-  const [sent, setSent] = useState<SentOrder[]>([]);
-  const [pending, setPending] = useState(false);
+  const sessionKey = JSON.stringify([
+    environmentId,
+    destination.environmentId,
+    destination.threadId,
+  ]);
+  const session = useHostOrderComposerStore(
+    (state) => state.sessions[sessionKey] ?? EMPTY_HOST_ORDER_SESSION,
+  );
+  const { text, selectedVmId, sent, pending, draft } = session;
+  const updateSession = (update: (session: HostOrderSession) => HostOrderSession) =>
+    useHostOrderComposerStore.getState().update(sessionKey, update);
+  const setText = (text: string) => updateSession((current) => ({ ...current, text }));
+  const setSelectedVmId = (selectedVmId: string) =>
+    updateSession((current) => ({ ...current, selectedVmId }));
+  const setDraft = (draft: ApprovalReviewOrderCreate | null) =>
+    updateSession((current) => ({ ...current, draft }));
+  const setPending = (pending: boolean) => updateSession((current) => ({ ...current, pending }));
+  const isPending = () =>
+    useHostOrderComposerStore.getState().sessions[sessionKey]?.pending === true;
   const [now, setNow] = useState(Date.now);
-  const busy = useRef(false);
   const mounted = useRef(true);
-  const draft = useRef<ApprovalReviewOrderCreate | null>(null);
   const textareaId = useId();
   const reasonId = useId();
   const channels = approvalOrderDestinationChannels(readiness, destination);
@@ -103,9 +122,10 @@ function HostOrderComposerSession({
   );
   const sourceReady = approvalOrderSourceIsReady(readiness);
   const pendingDraft =
-    draft.current !== null &&
-    sent.some((entry) => entry.input.clientRequestId === draft.current?.clientRequestId);
+    draft !== null && sent.some((entry) => entry.input.clientRequestId === draft?.clientRequestId);
   const canSend =
+    active &&
+    connected &&
     canCreate &&
     canCheck &&
     sourceReady &&
@@ -135,8 +155,7 @@ function HostOrderComposerSession({
   }, [sent, now]);
 
   async function refreshReadiness() {
-    if (!canCheck || busy.current) return;
-    busy.current = true;
+    if (!mounted.current || !active || !connected || !canCheck || isPending()) return;
     setPending(true);
     setReadiness(null);
     setReadinessError(null);
@@ -148,15 +167,22 @@ function HostOrderComposerSession({
     } catch (error) {
       if (mounted.current) setReadinessError(errorMessage(error));
     } finally {
-      busy.current = false;
-      if (mounted.current) setPending(false);
+      setPending(false);
     }
   }
 
   const initialReadiness = useEffectEvent(refreshReadiness);
   useEffect(() => {
-    if (canCheck) void initialReadiness();
-  }, [canCheck]);
+    if (
+      active &&
+      connected &&
+      canCheck &&
+      !pending &&
+      readiness === null &&
+      readinessError === null
+    )
+      queueMicrotask(() => void initialReadiness());
+  }, [active, connected, canCheck, pending, readiness, readinessError]);
 
   function updateSent(
     input: ApprovalReviewOrderCreate,
@@ -164,26 +190,30 @@ function HostOrderComposerSession({
     error: string | null,
     alreadyClaimedActions?: ApprovalReviewOrderCancelResult["alreadyClaimedActions"],
   ) {
-    if (!mounted.current) return;
-    setSent((current) => [
-      ...current.filter((entry) => entry.input.clientRequestId !== input.clientRequestId),
-      {
-        input,
-        order,
-        error,
-        alreadyClaimedActions:
-          alreadyClaimedActions ??
-          current.find((entry) => entry.input.clientRequestId === input.clientRequestId)
-            ?.alreadyClaimedActions ??
-          [],
-      },
-    ]);
-    setNow(Date.now());
+    updateSession((session) => ({
+      ...session,
+      sent: [
+        ...session.sent.filter((entry) => entry.input.clientRequestId !== input.clientRequestId),
+        {
+          input,
+          order,
+          error,
+          alreadyClaimedActions:
+            alreadyClaimedActions ??
+            session.sent.find((entry) => entry.input.clientRequestId === input.clientRequestId)
+              ?.alreadyClaimedActions ??
+            [],
+        },
+      ],
+    }));
+    if (mounted.current) setNow(Date.now());
   }
 
   async function send(input: ApprovalReviewOrderCreate) {
     if (
-      busy.current ||
+      !active ||
+      !connected ||
+      isPending() ||
       !canCreate ||
       !canCheck ||
       !sourceReady ||
@@ -196,35 +226,43 @@ function HostOrderComposerSession({
       )
     )
       return;
-    busy.current = true;
     setPending(true);
+    // Persist the exact request before dispatch, so navigation cannot turn a lost response into a new send.
+    updateSent(input, null, null);
     let created: ApprovalReviewHostOrder | null = null;
     try {
       const result = await create({ environmentId, input });
-      if (!mounted.current) return;
       if (result._tag === "Failure") {
         updateSent(input, null, errorMessage(squashAtomCommandFailure(result)));
         return;
       }
       updateSent(input, result.value, null);
-      if (draft.current?.clientRequestId === input.clientRequestId) {
-        draft.current = null;
-        setText("");
-      }
+      updateSession((current) =>
+        current.draft?.clientRequestId === input.clientRequestId
+          ? { ...current, draft: null, text: "" }
+          : current,
+      );
       created = result.value;
     } catch (error) {
       updateSent(input, null, errorMessage(error));
     } finally {
-      busy.current = false;
-      if (mounted.current) setPending(false);
+      setPending(false);
     }
     if (mounted.current && created !== null) onCreated?.(created);
   }
 
   async function updateOrder(entry: SentOrder, action: "read" | "cancel") {
-    if (busy.current || entry.order === null || !(action === "read" ? canRead : canCancel)) return;
-    busy.current = true;
+    if (
+      !active ||
+      !connected ||
+      isPending() ||
+      entry.order === null ||
+      !(action === "read" ? canRead : canCancel)
+    )
+      return;
     setPending(true);
+    if (action === "cancel")
+      updateSent(entry.input, entry.order, "Cancellation requested · outcome not yet confirmed");
     try {
       const command = { environmentId, input: { orderId: entry.order.source.orderId } };
       let alreadyClaimedActions:
@@ -253,17 +291,19 @@ function HostOrderComposerSession({
         `${action === "cancel" ? "Cancellation outcome unknown" : "Status unavailable"}: ${errorMessage(error)}`,
       );
     } finally {
-      busy.current = false;
-      if (mounted.current) setPending(false);
+      setPending(false);
     }
   }
 
-  const disabledReason =
-    !canCheck || !canCreate
+  const disabledReason = !connected
+    ? "Protecting host is offline."
+    : !canCheck || !canCreate
       ? "This connection does not have the required order permissions."
       : (readinessError ??
         (readiness === null
-          ? "Host authorization has not been confirmed."
+          ? pending
+            ? "Checking host authorization…"
+            : "Host authorization has not been confirmed."
           : !readiness.enabled || readiness.reason !== "ready"
             ? readiness.reason === "ready"
               ? "Human send is unavailable on this host."
@@ -287,7 +327,7 @@ function HostOrderComposerSession({
         onSubmit={(event) => {
           event.preventDefault();
           if (!canSend || channel === undefined) return;
-          const input = draft.current ?? {
+          const input = draft ?? {
             clientRequestId: Effect.runSync(
               Crypto.Crypto.pipe(
                 Effect.flatMap((crypto) => crypto.randomUUIDv4()),
@@ -300,14 +340,22 @@ function HostOrderComposerSession({
             text,
             expiresAt: Date.now() + 15 * 60_000,
           };
-          draft.current = input;
+          setDraft(input);
           void send(input);
         }}
       >
-        <p className="break-words text-sm">Host: {environmentId}</p>
-        <p className="break-words text-sm">
-          VM thread: {destination.environmentId} · {destination.threadId}
-        </p>
+        <p className="break-words text-sm">Host: {hostLabel}</p>
+        <details className="text-sm text-muted-foreground">
+          <summary>Connection details</summary>
+          <dl className="break-all">
+            <dt>Host environment</dt>
+            <dd>{environmentId}</dd>
+            <dt>Execution environment</dt>
+            <dd>{destination.environmentId}</dd>
+            <dt>Execution thread</dt>
+            <dd>{destination.threadId}</dd>
+          </dl>
+        </details>
         {readiness?.sourceKind === "synthetic" && (
           <p className="text-sm text-muted-foreground">
             Synthetic test · cannot approve or claim actions
@@ -316,10 +364,10 @@ function HostOrderComposerSession({
         {channels.length > 1 ? (
           <Select
             value={selectedVmId}
-            disabled={pending || !sourceReady}
+            disabled={!active || pending || !sourceReady}
             onValueChange={(value) => {
               setSelectedVmId(value ?? "");
-              draft.current = null;
+              setDraft(null);
             }}
           >
             <SelectTrigger aria-label="VM channel">
@@ -343,11 +391,11 @@ function HostOrderComposerSession({
           aria-describedby={reasonId}
           value={text}
           maxLength={65_536}
-          disabled={pending}
+          disabled={!active || pending}
           placeholder="Write the original task"
           onChange={(event) => {
             setText(event.target.value);
-            draft.current = null;
+            setDraft(null);
           }}
         />
         <p id={reasonId} role="status" className="text-sm text-muted-foreground">
@@ -364,7 +412,7 @@ function HostOrderComposerSession({
           <Button
             type="button"
             variant="outline"
-            disabled={pending || !canCheck}
+            disabled={!active || !connected || pending || !canCheck}
             onClick={() => void refreshReadiness()}
           >
             Check readiness
@@ -379,7 +427,17 @@ function HostOrderComposerSession({
         >
           {entry.order === null ? (
             <>
-              <p role="status">Send outcome unknown · request {entry.input.clientRequestId}</p>
+              <p role="status">
+                {pending && draft?.clientRequestId === entry.input.clientRequestId
+                  ? "Sending task…"
+                  : entry.input.expiresAt <= now
+                    ? "Expired · send outcome unknown"
+                    : "Send outcome unknown"}
+              </p>
+              <details>
+                <summary>Request details</summary>
+                <p className="break-all">{entry.input.clientRequestId}</p>
+              </details>
               <p className="text-muted-foreground">{entry.error}</p>
               {readiness !== null &&
                 !channels.some(
@@ -395,6 +453,8 @@ function HostOrderComposerSession({
                   type="button"
                   variant="outline"
                   disabled={
+                    !active ||
+                    !connected ||
                     pending ||
                     !canCreate ||
                     !canCheck ||
@@ -452,19 +512,24 @@ function HostOrderComposerSession({
                   ))}
                 </details>
               ) : null}
-              <p className="break-words text-muted-foreground">
-                Order {entry.order.source.orderId} · {entry.order.vmId} · expires{" "}
-                {new Date(entry.order.source.expiresAt).toLocaleString()}
+              <p className="text-muted-foreground">
+                Expires {new Date(entry.order.source.expiresAt).toLocaleString()}
               </p>
-              {entry.order.assignment === null ? (
-                <p>No VM receive acknowledgement.</p>
-              ) : (
-                <p className="break-words">
-                  VM thread: {entry.order.assignment.threadId}
-                  <br />
-                  VM run: {entry.order.assignment.runId}
+              {entry.order.assignment === null ? <p>No VM receive acknowledgement.</p> : null}
+              <details>
+                <summary>Delivery details</summary>
+                <p className="break-words text-muted-foreground">
+                  Order {entry.order.source.orderId} · {entry.order.vmId} · expires{" "}
+                  {new Date(entry.order.source.expiresAt).toLocaleString()}
                 </p>
-              )}
+                {entry.order.assignment !== null ? (
+                  <p className="break-words">
+                    VM thread: {entry.order.assignment.threadId}
+                    <br />
+                    VM run: {entry.order.assignment.runId}
+                  </p>
+                ) : null}
+              </details>
               {entry.error !== null && <p role="alert">{entry.error}</p>}
               <div className="flex flex-wrap gap-2">
                 <Link
@@ -480,7 +545,7 @@ function HostOrderComposerSession({
                 <Button
                   type="button"
                   variant="outline"
-                  disabled={pending || !canRead}
+                  disabled={!active || !connected || pending || !canRead}
                   onClick={() => void updateOrder(entry, "read")}
                 >
                   Read current order
@@ -488,7 +553,13 @@ function HostOrderComposerSession({
                 <Button
                   type="button"
                   variant="outline"
-                  disabled={pending || !canCancel || entry.order.state === "cancelled"}
+                  disabled={
+                    !active ||
+                    !connected ||
+                    pending ||
+                    !canCancel ||
+                    entry.order.state === "cancelled"
+                  }
                   onClick={() => void updateOrder(entry, "cancel")}
                 >
                   Cancel order

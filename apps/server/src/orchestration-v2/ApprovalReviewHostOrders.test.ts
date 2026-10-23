@@ -21,6 +21,7 @@ import * as Option from "effect/Option";
 import * as Secrets from "../auth/ServerSecretStore.ts";
 import * as Forward from "./ApprovalReviewOrderForward.ts";
 import type { PairedVm } from "./ApprovalReviewOrderPolicy.ts";
+import * as Policy from "./ApprovalReviewOrderPolicy.ts";
 import { hash, forwardedOrderText } from "./ApprovalReviewPackage.ts";
 
 it.effect(
@@ -122,7 +123,9 @@ it.effect(
           acceptedSequence: 1,
         });
       };
+      const policyValue = { enabled: true, humans: [], channels: [] };
       const layer = Forward.layer.pipe(
+        Layer.provide(Layer.succeed(Policy.ApprovalReviewOrderPolicy, policyValue)),
         Layer.provide(Layer.succeed(Forward.ApprovalReviewOrderHttp, http)),
         Layer.provide(
           Layer.mock(Secrets.ServerSecretStore)({
@@ -174,6 +177,10 @@ it.effect(
             true,
           ),
         );
+        assert.equal(calls, 7);
+        policyValue.enabled = false;
+        assert.isFalse(yield* service.ready(channel, true));
+        assert.equal((yield* service.send(channel, input).pipe(Effect.flip)).reason, "disabled");
         assert.equal(calls, 7);
       }).pipe(Effect.provide(layer));
     }),

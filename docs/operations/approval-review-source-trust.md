@@ -1,15 +1,20 @@
 # Host-bound approval orders
 
 The host records the exact original task before forwarding it to a configured VM. The normal
-chat composer offers **Host-bound task** independently of pending approvals. The host needs
-no local model. An order can produce several proposals; each proposal requires its own frozen
+chat stays unchanged by default. **Settings → Integrations → Protected tasks** opts this client
+into the secondary **Protected task** entry, independently of pending approvals. Task delivery
+does not require selecting a host model; this does not disable other host agent runtimes.
+An order can produce several proposals; each proposal requires its own frozen
 package, human decision and single claim. Unknown forwarding or execution is never retried
 automatically.
 
 `T3CODE_APPROVAL_REVIEW_HOST_POLICY` explicitly qualifies source browser sessions and paired
 VM channels. Its schema is in
 [`ApprovalReviewOrderPolicy.ts`](../../apps/server/src/orchestration-v2/ApprovalReviewOrderPolicy.ts).
-All lists default empty. Pairing alone, general `orchestration:operate`, `role=user`, a copied
+`enabled` defaults to `false`, including for existing policies without that field. Set
+`enabled: true` explicitly in both the host policy and VM receiver/callback policy, then restart
+their servers to apply the operator configuration. All lists default empty. The client visibility
+switch never provisions or activates this policy. Pairing alone, general `orchestration:operate`, `role=user`, a copied
 order ID, or caller-supplied environment and thread IDs do not qualify a source. The configured
 human ingress must itself be inaccessible to the requester. The UI's agent test browser must
 use `sourceKind: synthetic` and `testOnly: true`; those orders cannot be accepted or claimed.
@@ -41,9 +46,12 @@ management connections; isolate the execution service and provision narrow chann
 Provision the host policy and the VM receiver/callback policy with
 separate scoped sessions, fixed target identities and private-store references. The owner must
 perform host setup and personally pair before any real package is generated. Keep execution
-disabled until source/channel and worker isolation are verified. Rollback removes only those
-feature policy entries and revokes the newly provisioned feature sessions; preserve original
-profiles, keys and management sessions.
+disabled until source/channel and worker isolation are verified. To deactivate while retaining
+setup, set `enabled: false` and restart. New orders, forwarding, proposals, human accepts and
+worker claims are blocked; authorized reads, rejection, cancellation and receipts remain available.
+Already claimed actions may still complete. Hiding the client entry retains its drafts and requests
+and does not deactivate the server. Removing setup should affect only feature policy entries and
+newly provisioned feature sessions; preserve original profiles, keys and management sessions.
 
 Local two-environment tests establish development transport and binding behavior only. They do
 not establish human presence, actual VM isolation, real external execution or independent SSH

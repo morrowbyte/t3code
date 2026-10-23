@@ -1,5 +1,6 @@
 import { ApprovalReviewError } from "@t3tools/contracts";
 import * as ApprovalReviewCommands from "./ApprovalReviewCommands.ts";
+import * as ApprovalReviewOrderPolicy from "./ApprovalReviewOrderPolicy.ts";
 import { firstDelegationParagraph } from "@t3tools/shared/delegationMessage";
 import type {
   OrchestrationV2SearchThreadInput,
@@ -931,6 +932,7 @@ function lastDeliveredRunForProviderThread(
 }
 
 const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(function* () {
+  const approvalReviewOrderPolicy = yield* ApprovalReviewOrderPolicy.ApprovalReviewOrderPolicy;
   const checkpointService = yield* CheckpointServiceV2;
   const commandPolicy = yield* CommandPolicyV2;
   const contextHandoffService = yield* ContextHandoffServiceV2;
@@ -7778,7 +7780,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const now = yield* DateTime.now;
       const approvalReview =
         runtimeRequest.responseCapability.type === "external"
-          ? yield* ApprovalReviewCommands.resolve(runtimeRequest, command, now)
+          ? yield* ApprovalReviewCommands.resolve(runtimeRequest, command, now).pipe(
+              Effect.provideService(
+                ApprovalReviewOrderPolicy.ApprovalReviewOrderPolicy,
+                approvalReviewOrderPolicy,
+              ),
+            )
           : undefined;
       const resolvedRequest = {
         ...runtimeRequest,
@@ -11558,6 +11565,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "approval-review.receipt": {
         const planned = yield* ApprovalReviewCommands.plan(command).pipe(
           Effect.provideService(ProjectionStoreV2, projectionStore),
+          Effect.provideService(
+            ApprovalReviewOrderPolicy.ApprovalReviewOrderPolicy,
+            approvalReviewOrderPolicy,
+          ),
         );
         for (const event of planned) yield* emit(events, command)(event);
         break;

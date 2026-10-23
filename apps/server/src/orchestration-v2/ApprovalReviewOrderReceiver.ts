@@ -44,6 +44,7 @@ const make = Effect.gen(function* () {
     input: ApprovalReviewReceiverReadinessInput,
     actor: EnvironmentSessionPrincipalShape,
   ) {
+    if (!policy.enabled) return yield* new ApprovalReviewError({ reason: "disabled" });
     const receiver = policy.receiver;
     if (
       receiver === undefined ||
@@ -75,6 +76,7 @@ const make = Effect.gen(function* () {
     raw: ApprovalReviewOrderReceive,
     actor: EnvironmentSessionPrincipalShape,
   ) {
+    if (!policy.enabled) return yield* new ApprovalReviewError({ reason: "disabled" });
     const receiver = policy.receiver;
     if (
       receiver === undefined ||

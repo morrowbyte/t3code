@@ -20,10 +20,13 @@ not prevent the agent from asking questions about the task.
 
 ## Review an action
 
-To send an order through a protecting host, open the VM thread and choose **Host-bound task**
+To send an order through a protecting host, enable **Settings → Integrations → Protected tasks →
+Show protected tasks**, then open the VM thread and choose **Protected task**
 in the composer. Select the host, then send the original task through its configured VM channel.
 The host records the task before forwarding it. This requires a configured host control thread
-and paired VM channel; the host needs no local model. Synthetic test channels cannot execute actions.
+and paired VM channel activated by the host operator. Delivery does not require a host model
+selection. Hiding the entry retains saved tasks and does not deactivate the host policy. Synthetic
+test channels cannot execute actions.
 
 Choose **Review action** on a pending request to inspect it full screen. Requests with a frozen
 package include the process, complete source files, available changes and execution evidence.

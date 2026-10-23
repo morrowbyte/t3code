@@ -112,6 +112,7 @@ function scenario(
     readonly synthetic?: boolean;
     readonly loseAck?: boolean;
     readonly beforeAck?: Effect.Effect<void>;
+    readonly enabled?: boolean;
   } = {},
 ) {
   const synthetic = options.synthetic ?? true;
@@ -128,6 +129,7 @@ function scenario(
     ),
   );
   const policyValue = {
+    enabled: options.enabled ?? true,
     humans: [
       synthetic
         ? {
@@ -209,7 +211,14 @@ function scenario(
     Layer.provide(policyLayer),
     Layer.provide(Layer.succeed(Service.ApprovalReviewTargets, [target])),
   );
-  return { layer, calls, receiverLayer };
+  return {
+    layer,
+    calls,
+    receiverLayer,
+    deactivate: () => {
+      policyValue.enabled = false;
+    },
+  };
 }
 const setup = Effect.fn("ApprovalReviewHostOrderTest.setup")(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -650,186 +659,181 @@ it.effect(
   },
 );
 
-for (const operation of ["accept", "claim"] as const)
-  it.effect(
-    `cancel waits for an in-flight ${operation} commit and reports irreversible claims`,
-    () => {
-      const fixture = scenario({ synthetic: false });
-      return Effect.scoped(
-        Effect.gen(function* () {
-          const { orders, service, proposal, orchestrator } = yield* setup();
-          const first = yield* service.submit(proposal, vmActor);
-          const second = yield* service.submit(
-            {
-              ...proposal,
-              submissionId: "separate-before-cancel",
-              action: { ...proposal.action, content: "another package\n" },
-            },
-            vmActor,
-          );
-          for (const submitted of operation === "claim" ? [first, second] : [second])
-            yield* orchestrator.dispatch({
-              type: "runtime-request.respond",
-              commandId: CommandId.make(`preapprove:${submitted.requestId}`),
-              threadId: hostThreadId,
-              requestId: submitted.requestId,
-              packageHash: submitted.authority.packageHash,
-              decision: "accept",
-            });
-          const beforeCommit = yield* Deferred.make<void>();
-          const releaseCommit = yield* Deferred.make<void>();
-          const cancelQueued = yield* Deferred.make<void>();
-          const eventSink = yield* EventSink.EventSinkV2;
-          const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
-          const commit = eventSink.commitCommand;
-          const withLock = executor.withLock;
-          const acceptId = CommandId.make("racing-accept");
-          const commitSpy = vi
-            .spyOn(eventSink, "commitCommand")
-            .mockImplementation((input) =>
-              (
-                operation === "claim"
-                  ? input.commandType === "approval-review.claim"
-                  : input.commandId === acceptId
-              )
-                ? Deferred.succeed(beforeCommit, undefined).pipe(
-                    Effect.andThen(Deferred.await(releaseCommit)),
-                    Effect.andThen(commit(input)),
-                  )
-                : commit(input),
-            );
-          let lockRequests = 0;
-          const observeLock: ThreadCommandExecutor.ThreadCommandExecutor["Service"]["withLock"] = (
-            key,
-            effect,
-          ) =>
-            key === hostThreadId && ++lockRequests === 2
-              ? Deferred.succeed(cancelQueued, undefined).pipe(
-                  Effect.andThen(withLock(key, effect)),
+it.effect.each(["accept", "claim"] as const)(
+  "cancel waits for an in-flight %s commit and reports irreversible claims",
+  (operation) => {
+    const fixture = scenario({ synthetic: false });
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { orders, service, proposal, orchestrator } = yield* setup();
+        const first = yield* service.submit(proposal, vmActor);
+        const second = yield* service.submit(
+          {
+            ...proposal,
+            submissionId: "separate-before-cancel",
+            action: { ...proposal.action, content: "another package\n" },
+          },
+          vmActor,
+        );
+        for (const submitted of operation === "claim" ? [first, second] : [second])
+          yield* orchestrator.dispatch({
+            type: "runtime-request.respond",
+            commandId: CommandId.make(`preapprove:${submitted.requestId}`),
+            threadId: hostThreadId,
+            requestId: submitted.requestId,
+            packageHash: submitted.authority.packageHash,
+            decision: "accept",
+          });
+        const beforeCommit = yield* Deferred.make<void>();
+        const releaseCommit = yield* Deferred.make<void>();
+        const cancelQueued = yield* Deferred.make<void>();
+        const eventSink = yield* EventSink.EventSinkV2;
+        const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+        const commit = eventSink.commitCommand;
+        const withLock = executor.withLock;
+        const acceptId = CommandId.make("racing-accept");
+        const commitSpy = vi
+          .spyOn(eventSink, "commitCommand")
+          .mockImplementation((input) =>
+            (
+              operation === "claim"
+                ? input.commandType === "approval-review.claim"
+                : input.commandId === acceptId
+            )
+              ? Deferred.succeed(beforeCommit, undefined).pipe(
+                  Effect.andThen(Deferred.await(releaseCommit)),
+                  Effect.andThen(commit(input)),
                 )
-              : withLock(key, effect);
-          const lockSpy = vi.spyOn(executor, "withLock").mockImplementation(observeLock);
-          yield* Effect.gen(function* () {
-            const firstOperation =
-              operation === "claim"
-                ? service
-                    .claim(
-                      {
-                        threadId: hostThreadId,
-                        requestId: first.requestId,
-                        packageHash: first.authority.packageHash,
-                        verifiedTargetId: target.verifiedTargetId,
-                        claimId: "committed-before-cancel",
-                      },
-                      target.workerSubject,
-                    )
-                    .pipe(Effect.asVoid)
-                : orchestrator
-                    .dispatch({
-                      type: "runtime-request.respond",
-                      commandId: acceptId,
-                      threadId: hostThreadId,
-                      requestId: first.requestId,
-                      packageHash: first.authority.packageHash,
-                      decision: "accept",
-                    })
-                    .pipe(Effect.asVoid);
-            const operationFiber = yield* firstOperation.pipe(Effect.forkScoped);
-            yield* Effect.raceFirst(
-              Deferred.await(beforeCommit),
-              Fiber.join(operationFiber).pipe(
-                Effect.andThen(Effect.die("Operation bypassed the commit barrier")),
-              ),
-            );
-            const cancelFiber = yield* orders
-              .cancel(proposal.orderId, human)
-              .pipe(Effect.forkScoped);
-            yield* Effect.raceFirst(
-              Deferred.await(cancelQueued),
-              Fiber.join(cancelFiber).pipe(
-                Effect.andThen(Effect.die("Cancel bypassed the in-flight thread lock")),
-              ),
-            );
-            assert.equal((yield* orders.read(proposal.orderId, human)).state, "active");
-            assert.equal(
-              (yield* service.read(first, target.workerSubject, true)).state,
-              operation === "claim" ? "approved" : "pending",
-            );
-            yield* Deferred.succeed(releaseCommit, undefined);
-            yield* Fiber.join(operationFiber);
-            const cancelled = yield* Fiber.join(cancelFiber);
-            assert.equal(cancelled.state, "cancelled");
-            assert.deepEqual(
-              cancelled.alreadyClaimedActions,
-              operation === "claim"
-                ? [
-                    {
-                      threadId: hostThreadId,
-                      requestId: first.requestId,
-                      packageHash: first.authority.packageHash,
-                      claimId: "committed-before-cancel",
-                      state: "claimed",
-                      action: first.authority.action,
-                    },
-                  ]
-                : [],
-            );
-            for (const submitted of [first, second])
-              assert.equal(
-                (yield* service
+              : commit(input),
+          );
+        let lockRequests = 0;
+        const observeLock: ThreadCommandExecutor.ThreadCommandExecutor["Service"]["withLock"] = (
+          key,
+          effect,
+        ) =>
+          key === hostThreadId && ++lockRequests === 2
+            ? Deferred.succeed(cancelQueued, undefined).pipe(Effect.andThen(withLock(key, effect)))
+            : withLock(key, effect);
+        const lockSpy = vi.spyOn(executor, "withLock").mockImplementation(observeLock);
+        yield* Effect.gen(function* () {
+          const firstOperation =
+            operation === "claim"
+              ? service
                   .claim(
                     {
                       threadId: hostThreadId,
-                      requestId: submitted.requestId,
-                      packageHash: submitted.authority.packageHash,
+                      requestId: first.requestId,
+                      packageHash: first.authority.packageHash,
                       verifiedTargetId: target.verifiedTargetId,
-                      claimId: "after-cancel",
+                      claimId: "committed-before-cancel",
                     },
                     target.workerSubject,
                   )
-                  .pipe(Effect.flip)).reason,
-                "unverified-original",
-              );
-            assert.equal(
-              (yield* service
-                .submit({ ...proposal, submissionId: "after-cancel" }, vmActor)
-                .pipe(Effect.flip)).reason,
-              "order-inactive",
-            );
-            if (operation === "claim") {
-              yield* service.receipt(
-                {
-                  threadId: hostThreadId,
-                  requestId: first.requestId,
-                  packageHash: first.authority.packageHash,
-                  verifiedTargetId: target.verifiedTargetId,
-                  claimId: "committed-before-cancel",
-                  receipt: { outcome: "unknown" },
-                },
-                target.workerSubject,
-              );
-              const repeated = yield* orders.cancel(proposal.orderId, human);
-              assert.equal(repeated.alreadyClaimedActions[0]?.state, "completed");
-              assert.equal(repeated.alreadyClaimedActions[0]?.claimId, "committed-before-cancel");
-            }
-          }).pipe(
-            Effect.ensuring(
-              Effect.sync(() => {
-                commitSpy.mockRestore();
-                lockSpy.mockRestore();
-              }),
+                  .pipe(Effect.asVoid)
+              : orchestrator
+                  .dispatch({
+                    type: "runtime-request.respond",
+                    commandId: acceptId,
+                    threadId: hostThreadId,
+                    requestId: first.requestId,
+                    packageHash: first.authority.packageHash,
+                    decision: "accept",
+                  })
+                  .pipe(Effect.asVoid);
+          const operationFiber = yield* firstOperation.pipe(Effect.forkScoped);
+          yield* Effect.raceFirst(
+            Deferred.await(beforeCommit),
+            Fiber.join(operationFiber).pipe(
+              Effect.andThen(Effect.die("Operation bypassed the commit barrier")),
             ),
           );
-        }),
-      ).pipe(
-        Effect.provide(fixture.layer),
-        Effect.provideService(HumanAuthority.ApprovalReviewHumanAuthority, {
-          sessionId: human.sessionId,
-          subject: human.subject,
-        }),
-      );
-    },
-  );
+          const cancelFiber = yield* orders.cancel(proposal.orderId, human).pipe(Effect.forkScoped);
+          yield* Effect.raceFirst(
+            Deferred.await(cancelQueued),
+            Fiber.join(cancelFiber).pipe(
+              Effect.andThen(Effect.die("Cancel bypassed the in-flight thread lock")),
+            ),
+          );
+          assert.equal((yield* orders.read(proposal.orderId, human)).state, "active");
+          assert.equal(
+            (yield* service.read(first, target.workerSubject, true)).state,
+            operation === "claim" ? "approved" : "pending",
+          );
+          yield* Deferred.succeed(releaseCommit, undefined);
+          yield* Fiber.join(operationFiber);
+          const cancelled = yield* Fiber.join(cancelFiber);
+          assert.equal(cancelled.state, "cancelled");
+          assert.deepEqual(
+            cancelled.alreadyClaimedActions,
+            operation === "claim"
+              ? [
+                  {
+                    threadId: hostThreadId,
+                    requestId: first.requestId,
+                    packageHash: first.authority.packageHash,
+                    claimId: "committed-before-cancel",
+                    state: "claimed",
+                    action: first.authority.action,
+                  },
+                ]
+              : [],
+          );
+          for (const submitted of [first, second])
+            assert.equal(
+              (yield* service
+                .claim(
+                  {
+                    threadId: hostThreadId,
+                    requestId: submitted.requestId,
+                    packageHash: submitted.authority.packageHash,
+                    verifiedTargetId: target.verifiedTargetId,
+                    claimId: "after-cancel",
+                  },
+                  target.workerSubject,
+                )
+                .pipe(Effect.flip)).reason,
+              "unverified-original",
+            );
+          assert.equal(
+            (yield* service
+              .submit({ ...proposal, submissionId: "after-cancel" }, vmActor)
+              .pipe(Effect.flip)).reason,
+            "order-inactive",
+          );
+          if (operation === "claim") {
+            yield* service.receipt(
+              {
+                threadId: hostThreadId,
+                requestId: first.requestId,
+                packageHash: first.authority.packageHash,
+                verifiedTargetId: target.verifiedTargetId,
+                claimId: "committed-before-cancel",
+                receipt: { outcome: "unknown" },
+              },
+              target.workerSubject,
+            );
+            const repeated = yield* orders.cancel(proposal.orderId, human);
+            assert.equal(repeated.alreadyClaimedActions[0]?.state, "completed");
+            assert.equal(repeated.alreadyClaimedActions[0]?.claimId, "committed-before-cancel");
+          }
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              commitSpy.mockRestore();
+              lockSpy.mockRestore();
+            }),
+          ),
+        );
+      }),
+    ).pipe(
+      Effect.provide(fixture.layer),
+      Effect.provideService(HumanAuthority.ApprovalReviewHumanAuthority, {
+        sessionId: human.sessionId,
+        subject: human.subject,
+      }),
+    );
+  },
+);
 
 it.effect("cancel winning the thread lock denies both a waiting accept and a waiting claim", () => {
   const fixture = scenario({ synthetic: false });
@@ -1019,5 +1023,136 @@ it.effect(
         ),
       );
     }).pipe(Effect.provide(fixture.layer));
+  },
+);
+
+it.effect("keeps configured host and receiver closed until the operator activates them", () => {
+  const fixture = scenario({ enabled: false });
+  return Effect.gen(function* () {
+    const orders = yield* HostOrders.ApprovalReviewHostOrders;
+    assert.deepEqual(yield* orders.readiness(human), {
+      enabled: false,
+      configured: true,
+      reason: "feature-disabled",
+      channels: [],
+    });
+    const error = yield* orders
+      .create(
+        {
+          clientRequestId: "disabled-create",
+          sourceThreadId: hostThreadId,
+          vmId: channel.vmId,
+          text: "Must not forward",
+          expiresAt: DateTime.toEpochMillis(yield* DateTime.now) + 60_000,
+        },
+        human,
+      )
+      .pipe(Effect.flip);
+    assert.equal(error.reason, "disabled");
+    assert.deepEqual(fixture.calls, []);
+    const receiver = yield* Receiver.ApprovalReviewOrderReceiver;
+    assert.equal(
+      (yield* receiver
+        .readiness({ targetThreadId: vmThreadId, testOnly: true }, hostSender)
+        .pipe(Effect.flip)).reason,
+      "disabled",
+    );
+  }).pipe(Effect.provide(fixture.layer));
+});
+
+it.effect(
+  "deactivation blocks new accept, claim and proposal while retaining reads, reject, cancel and claimed receipts",
+  () => {
+    const fixture = scenario({ synthetic: false });
+    return Effect.gen(function* () {
+      const { orders, service, proposal, orchestrator, create, projections, order } =
+        yield* setup();
+      const pending = yield* service.submit(proposal, vmActor);
+      const approved = yield* service.submit({ ...proposal, submissionId: "approved" }, vmActor);
+      const claimed = yield* service.submit({ ...proposal, submissionId: "claimed" }, vmActor);
+      const respond = (submitted: typeof pending, decision: "accept" | "decline") =>
+        orchestrator.dispatch({
+          type: "runtime-request.respond",
+          commandId: CommandId.make(`${decision}:${submitted.requestId}`),
+          threadId: hostThreadId,
+          requestId: submitted.requestId,
+          packageHash: submitted.authority.packageHash,
+          decision,
+        });
+      yield* respond(approved, "accept");
+      yield* respond(claimed, "accept");
+      const claim = {
+        threadId: hostThreadId,
+        requestId: claimed.requestId,
+        packageHash: claimed.authority.packageHash,
+        verifiedTargetId: target.verifiedTargetId,
+        claimId: "claimed-before-off",
+      };
+      yield* service.claim(claim, target.workerSubject);
+      fixture.deactivate();
+      assert.equal((yield* orders.readiness(human)).reason, "feature-disabled");
+      assert.equal((yield* orders.read(order.source.orderId, human)).state, "active");
+      assert.equal(
+        (yield* orders
+          .create({ ...create, clientRequestId: "new-while-off" }, human)
+          .pipe(Effect.flip)).reason,
+        "disabled",
+      );
+      assert.equal(
+        (yield* service
+          .submit({ ...proposal, submissionId: "new-while-off" }, vmActor)
+          .pipe(Effect.flip)).reason,
+        "disabled",
+      );
+      const acceptError = yield* respond(pending, "accept").pipe(Effect.flip);
+      assert.equal(acceptError._tag, "ApprovalReviewError");
+      if (acceptError._tag === "ApprovalReviewError") assert.equal(acceptError.reason, "disabled");
+      assert.equal(
+        (yield* projections.getRuntimeRequest(hostThreadId, pending.requestId))?.approvalReview
+          ?.state,
+        "pending",
+      );
+      assert.equal(
+        (yield* service
+          .claim(
+            {
+              ...claim,
+              requestId: approved.requestId,
+              packageHash: approved.authority.packageHash,
+              claimId: "blocked-after-off",
+            },
+            target.workerSubject,
+          )
+          .pipe(Effect.flip)).reason,
+        "disabled",
+      );
+      assert.equal((yield* service.read(approved, target.workerSubject, true)).state, "approved");
+      assert.deepEqual((yield* service.ready(target.workerSubject)).requests, []);
+      const receiver = yield* Receiver.ApprovalReviewOrderReceiver;
+      assert.equal(
+        (yield* receiver.receive(fixture.calls[0]!, hostSender).pipe(Effect.flip)).reason,
+        "disabled",
+      );
+      yield* respond(pending, "decline");
+      assert.equal((yield* service.read(pending, target.workerSubject, true)).state, "rejected");
+      assert.equal(
+        (yield* service.receipt(
+          { ...claim, receipt: { outcome: "unknown" } },
+          target.workerSubject,
+        )).receipt?.outcome,
+        "unknown",
+      );
+      const cancelled = yield* orders.cancel(order.source.orderId, human);
+      assert.equal(cancelled.state, "cancelled");
+      assert.equal(cancelled.alreadyClaimedActions.length, 1);
+      assert.equal(cancelled.alreadyClaimedActions[0]?.state, "completed");
+      assert.equal(fixture.calls.length, 1);
+    }).pipe(
+      Effect.provide(fixture.layer),
+      Effect.provideService(HumanAuthority.ApprovalReviewHumanAuthority, {
+        sessionId: human.sessionId,
+        subject: human.subject,
+      }),
+    );
   },
 );

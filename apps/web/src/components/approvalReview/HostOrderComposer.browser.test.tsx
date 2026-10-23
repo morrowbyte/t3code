@@ -18,10 +18,10 @@ import { page, userEvent } from "vite-plus/test/browser";
 
 import { act, render } from "../../../test/render";
 import { approvalOrderEnvironment } from "../../state/approvalOrders";
+import { useHostOrderComposerStore } from "./HostOrderComposerStore";
 import { HostOrderComposer } from "./HostOrderComposer";
 
 vi.mock("../../state/approvalOrders", async () => {
-  const { Atom } = await import("effect/reactivity");
   const command = () => ({ label: "test-order", run: vi.fn(), permissionAtom: vi.fn() });
   return {
     approvalOrderEnvironment: {
@@ -70,7 +70,7 @@ function makeOrder(input: ApprovalReviewOrderCreate): ApprovalReviewHostOrder {
       principal: "synthetic-subject",
       threadId: input.sourceThreadId,
       messageId: MessageId.make("host-message"),
-      createdAt: Date.now(),
+      createdAt: input.expiresAt - 15 * 60_000,
       expiresAt: input.expiresAt,
       fullText: input.text,
       fullTextHash: "a".repeat(64),
@@ -97,6 +97,7 @@ function makeOrder(input: ApprovalReviewOrderCreate): ApprovalReviewHostOrder {
 }
 
 function setup(readiness: ApprovalReviewOrderReadiness = ready) {
+  useHostOrderComposerStore.setState({ sessions: {}, selectedHosts: {} });
   for (const command of Object.values(approvalOrderEnvironment)) {
     vi.mocked(command.run).mockReset();
     vi.mocked(command.permissionAtom).mockReset().mockReturnValue(Atom.make(true));
@@ -172,10 +173,11 @@ it("allows the explicitly qualified human session without any provider selection
     <HostOrderComposer environmentId={environmentId} destination={destination} />,
   );
   await expect.element(screen.getByText("VM: Isolated test VM")).toBeVisible();
-  expect(screen.container.textContent).toContain(`Host: ${environmentId}`);
-  expect(screen.container.textContent).toContain(
-    `VM thread: ${destination.environmentId} · ${destination.threadId}`,
-  );
+  await expect.element(screen.getByText("Host: Protecting host", { exact: true })).toBeVisible();
+  await expect.element(screen.getByText(environmentId, { exact: true })).not.toBeVisible();
+  await screen.getByText("Connection details", { exact: true }).click();
+  await expect.element(screen.getByText(environmentId, { exact: true })).toBeVisible();
+  await expect.element(screen.getByText(destination.threadId, { exact: true })).toBeVisible();
   expect(screen.container.textContent).not.toContain("Foreign environment");
   expect(screen.container.textContent).not.toContain("Foreign thread");
   expect(screen.container.querySelector('[role="combobox"]')).toBeNull();
@@ -453,7 +455,7 @@ it("shows expired host state and an ambiguous cancel without claiming a stop", a
     const order = makeOrder(target.input);
     return AsyncResult.success({
       ...order,
-      source: { ...order.source, expiresAt: Date.now() - 1 },
+      source: { ...order.source, expiresAt: 1 },
     });
   });
   await using screen = await render(
@@ -525,3 +527,93 @@ it.each(["host", "vm-environment", "vm-thread"] as const)(
     expect(screen.container.querySelector("textarea")?.value).toBe("");
   },
 );
+
+it("retains an unknown request across opt-out without sending or retrying until explicitly requested", async () => {
+  setup();
+  vi.mocked(approvalOrderEnvironment.create.run).mockResolvedValueOnce(
+    AsyncResult.failure(
+      Cause.fail(new EnvironmentRpcUnavailableError({ environmentId, message: "Response lost" })),
+    ),
+  );
+  const content = (active: boolean) => (
+    <HostOrderComposer environmentId={environmentId} destination={destination} active={active} />
+  );
+  await using screen = await render(content(false));
+  expect(approvalOrderEnvironment.readiness.run).not.toHaveBeenCalled();
+  await screen.rerender(content(true));
+  await expect.element(screen.getByText("VM: Isolated test VM")).toBeVisible();
+  await userEvent.fill(screen.getByRole("textbox", { name: "Task" }), "Exact retained task");
+  await screen.getByRole("button", { name: "Send synthetic task" }).click();
+  await expect.element(screen.getByText("Send outcome unknown", { exact: true })).toBeVisible();
+  const original = vi.mocked(approvalOrderEnvironment.create.run).mock.calls[0]![1];
+  await screen.rerender(content(false));
+  await expect.element(screen.getByRole("button", { name: "Retry same send" })).toBeDisabled();
+  await expect
+    .element(screen.getByRole("textbox", { name: "Task" }))
+    .toHaveValue("Exact retained task");
+  expect(approvalOrderEnvironment.create.run).toHaveBeenCalledTimes(1);
+  await screen.rerender(content(true));
+  await expect.element(screen.getByRole("button", { name: "Retry same send" })).toBeEnabled();
+  expect(approvalOrderEnvironment.create.run).toHaveBeenCalledTimes(1);
+  await screen.getByRole("button", { name: "Retry same send" }).click();
+  expect(vi.mocked(approvalOrderEnvironment.create.run).mock.calls[1]![1]).toEqual(original);
+});
+
+it("distinguishes an offline host without checking or creating an order", async () => {
+  setup();
+  await using screen = await render(
+    <HostOrderComposer environmentId={environmentId} destination={destination} connected={false} />,
+  );
+  await expect.element(screen.getByText("Protecting host is offline.")).toBeVisible();
+  expect(approvalOrderEnvironment.readiness.run).not.toHaveBeenCalled();
+  await userEvent.fill(screen.getByRole("textbox", { name: "Task" }), "Saved offline draft");
+  await expect
+    .element(screen.getByRole("button", { name: "Send task", exact: true }))
+    .toBeDisabled();
+  expect(approvalOrderEnvironment.create.run).not.toHaveBeenCalled();
+});
+
+it("hydrates an unknown request after reload without generating a new send identity", async () => {
+  setup();
+  vi.mocked(approvalOrderEnvironment.create.run).mockResolvedValueOnce(
+    AsyncResult.failure(
+      Cause.fail(
+        new EnvironmentRpcUnavailableError({
+          environmentId,
+          message: "Lost response before reload",
+        }),
+      ),
+    ),
+  );
+  await using originalScreen = await render(
+    <HostOrderComposer environmentId={environmentId} destination={destination} />,
+  );
+  await expect.element(originalScreen.getByText("VM: Isolated test VM")).toBeVisible();
+  await userEvent.fill(
+    originalScreen.getByRole("textbox", { name: "Task" }),
+    "Reload keeps exact input",
+  );
+  await originalScreen.getByRole("button", { name: "Send synthetic task" }).click();
+  await expect
+    .element(originalScreen.getByText("Send outcome unknown", { exact: true }))
+    .toBeVisible();
+  const original = vi.mocked(approvalOrderEnvironment.create.run).mock.calls[0]![1];
+  await originalScreen.unmount();
+  const storageKey = "t3code:host-order-drafts:v1";
+  const persisted = sessionStorage.getItem(storageKey)!;
+  useHostOrderComposerStore.setState({ sessions: {}, selectedHosts: {} });
+  sessionStorage.setItem(storageKey, persisted);
+  await useHostOrderComposerStore.persist.rehydrate();
+  await using restoredScreen = await render(
+    <HostOrderComposer environmentId={environmentId} destination={destination} />,
+  );
+  await expect
+    .element(restoredScreen.getByRole("button", { name: "Retry same send" }))
+    .toBeEnabled();
+  await expect
+    .element(restoredScreen.getByRole("textbox", { name: "Task" }))
+    .toHaveValue("Reload keeps exact input");
+  expect(approvalOrderEnvironment.create.run).toHaveBeenCalledTimes(1);
+  await restoredScreen.getByRole("button", { name: "Retry same send" }).click();
+  expect(vi.mocked(approvalOrderEnvironment.create.run).mock.calls[1]![1]).toEqual(original);
+});

@@ -1,6 +1,7 @@
 import { useWindowsCuaStatus } from "~/state/windowsCua";
 import { DeviceHostUpdates } from "../device/DeviceHostUpdates";
 import { LinearSettingsPanel } from "./LinearSettings";
+import { HostOrderSettings } from "../approvalReview/HostOrderSettings";
 import { DeviceToolVersions } from "../device/DeviceToolVersions";
 import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
 import { ScopedSwitch } from "./ScopedSwitch";
@@ -1651,6 +1652,7 @@ export function BrowserSettingsPanel() {
 export function IntegrationsSettingsPanel() {
   return (
     <SettingsPageContainer>
+      <HostOrderSettings />
       <LinearSettingsPanel />
     </SettingsPageContainer>
   );

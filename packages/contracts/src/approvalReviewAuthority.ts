@@ -137,8 +137,10 @@ export type ApprovalReviewReceiverReadiness = typeof ApprovalReviewReceiverReadi
 
 export const ApprovalReviewOrderReadiness = Schema.Struct({
   enabled: Schema.Boolean,
+  configured: Schema.optional(Schema.Boolean),
   reason: Schema.Literals([
     "ready",
+    "feature-disabled",
     "human-authority-unconfigured",
     "human-authority-required",
     "channel-unconfigured",

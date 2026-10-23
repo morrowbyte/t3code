@@ -219,6 +219,7 @@ for automatic_update_test in "${automatic_update_tests[@]}"; do
   focused_tests+=("$automatic_update_test")
 done
 approval_tests=(
+  packages/contracts/src/settings.test.ts
   packages/client-runtime/src/approvalReview.test.ts
   packages/client-runtime/src/state/threadRequests.test.ts
   packages/client-runtime/src/state/approvalOrders.test.ts
@@ -226,6 +227,7 @@ approval_tests=(
   apps/server/src/orchestration-v2/ApprovalReviewHttp.test.ts
   apps/server/src/orchestration-v2/ApprovalReviewHostOrders.test.ts
   apps/server/src/orchestration-v2/ApprovalReviewOrderAgent.test.ts
+  apps/server/src/orchestration-v2/ApprovalReviewOrderPolicy.test.ts
   apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts
   apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts
   apps/web/src/components/chat/ComposerPendingApprovalActions.test.tsx
@@ -396,6 +398,7 @@ focused_tests+=(
   apps/web/src/components/settings/UpdateHistoryPanel.test.tsx
 )
 renderer_tests=(
+  apps/web/src/components/approvalReview/HostOrderSettings.browser.test.tsx
   apps/web/src/components/approvalReview/HostOrderComposer.browser.test.tsx
   apps/web/src/components/approvalReview/HostOrderChatMode.browser.test.tsx
   apps/web/src/components/approvalReview/ApprovalReview.browser.test.tsx

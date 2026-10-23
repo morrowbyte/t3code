@@ -48,6 +48,7 @@ export const PairedVm = Schema.Struct({
 });
 export type PairedVm = typeof PairedVm.Type;
 const Policy = Schema.Struct({
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   humans: Schema.Array(Human).check(Schema.isMaxLength(16)),
   channels: Schema.Array(PairedVm).check(Schema.isMaxLength(16)),
   receiver: Schema.optional(
@@ -63,13 +64,13 @@ const Policy = Schema.Struct({
 });
 export class ApprovalReviewOrderPolicy extends Context.Reference<typeof Policy.Type>(
   "t3/ApprovalReviewOrderPolicy",
-  { defaultValue: () => ({ humans: [], channels: [] }) },
+  { defaultValue: () => ({ enabled: false, humans: [], channels: [] }) },
 ) {}
 export const layer = Layer.effect(
   ApprovalReviewOrderPolicy,
   Effect.gen(function* () {
     const json = yield* Config.String("T3CODE_APPROVAL_REVIEW_HOST_POLICY").pipe(
-      Config.withDefault('{"humans":[],"channels":[]}'),
+      Config.withDefault('{"enabled":false,"humans":[],"channels":[]}'),
     );
     return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Policy))(json, {
       onExcessProperty: "error",

@@ -87,6 +87,7 @@ const make = Effect.gen(function* () {
     scope: McpInvocationScope,
     input: ApprovalReviewAgentPropose,
   ) {
+    if (!policy.enabled) return yield* new ApprovalReviewError({ reason: "disabled" });
     const { ack, receiver, host } = yield* bound(scope);
     return yield* forward.propose(host, receiver.testOnly, { ...input, orderId: ack.orderId });
   });
