@@ -1,6 +1,7 @@
 import { RegistryContext } from "@effect/atom-react";
 import {
   EnvironmentId,
+  ProviderInstanceId,
   ThreadId,
   type LiveVoiceCallHistory,
   type LiveVoiceCallSummary,
@@ -19,6 +20,7 @@ vi.mock("~/rpc/liveVoiceHistory", () => ({
   voiceCallTranscriptQuery: queries.transcript,
 }));
 import { WebVoiceCallHistory } from "./WebVoiceCallHistory";
+import { VoiceConversationProvider, useVoiceConversationPresentation } from "./VoiceConversation";
 
 const environmentId = EnvironmentId.make("fixture-env");
 const threadId = ThreadId.make("fixture-thread");
@@ -68,7 +70,10 @@ function setup() {
                 speaker: "user",
                 text: `${input.leaseId}: actual received speech`,
                 final: true,
-                occurredAt: "2026-10-23T18:00:01.000Z",
+                occurredAt:
+                  input.leaseId === "second-call"
+                    ? "2026-10-23T18:02:01.000Z"
+                    : "2026-10-23T18:00:01.000Z",
                 updatedAt: "2026-10-23T18:00:02.000Z",
               },
             ],
@@ -83,6 +88,7 @@ function setup() {
   return {
     registry,
     head,
+    transcripts,
     ui: () => (
       <RegistryContext.Provider value={registry}>
         <WebVoiceCallHistory environmentId={environmentId} threadId={threadId} />
@@ -92,37 +98,20 @@ function setup() {
   };
 }
 
-it("keeps ended calls available, opens separate transcripts and retrieves them again after remount", async () => {
+it("renders received speech directly across ended calls and reload, without opening a card", async () => {
   using fixture = setup();
+  fixture.registry.set(fixture.head, AsyncResult.success(history([newCall, oldCall])));
   await using screen = await render(fixture.ui());
-  expect(screen.container.querySelectorAll("[aria-expanded]")).toHaveLength(0);
-  await act(() =>
-    fixture.registry.set(
-      fixture.head,
-      AsyncResult.success(history([{ ...newCall, status: "active", endedAt: null }, oldCall])),
-    ),
-  );
-  expect(screen.container.textContent).toContain("Live");
-  await act(() =>
-    fixture.registry.set(fixture.head, AsyncResult.success(history([newCall, oldCall]))),
-  );
-  const buttons = screen.container.querySelectorAll<HTMLButtonElement>("[aria-expanded]");
-  expect(buttons).toHaveLength(2);
-  expect(buttons[0]?.textContent).toContain("3:10Ended");
-  await userEvent.click(buttons[0]!);
   await expect.element(screen.getByText("first-call: actual received speech")).toBeVisible();
-  expect(screen.container.textContent).not.toContain("second-call: actual received speech");
-  await userEvent.click(buttons[1]!);
   await expect.element(screen.getByText("second-call: actual received speech")).toBeVisible();
+  expect(screen.container.querySelectorAll("[aria-expanded]")).toHaveLength(0);
+  expect(screen.container.querySelectorAll("article")).toHaveLength(2);
+  expect(screen.container.textContent).toContain("Call ended");
   await screen.unmount();
 
-  // A fresh registry has no mounted query state; the server's history remains available.
   using reloaded = setup();
   reloaded.registry.set(reloaded.head, AsyncResult.success(history([newCall, oldCall])));
   await using afterReload = await render(reloaded.ui());
-  const restored = afterReload.container.querySelectorAll<HTMLButtonElement>("[aria-expanded]");
-  expect(restored).toHaveLength(2);
-  await userEvent.click(restored[0]!);
   await expect.element(afterReload.getByText("first-call: actual received speech")).toBeVisible();
   expect(queries.transcript).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -132,25 +121,27 @@ it("keeps ended calls available, opens separate transcripts and retrieves them a
   );
 });
 
-it("loads earlier calls above recent calls and supports keyboard expansion", async () => {
+it("loads earlier calls into chronological scrollback and retains them as the recent page changes", async () => {
   using fixture = setup();
   fixture.registry.set(
     fixture.head,
     AsyncResult.success({ ...history([newCall]), nextBefore: "21" }),
   );
   await using screen = await render(fixture.ui());
+  await expect.element(screen.getByText("second-call: actual received speech")).toBeVisible();
   await userEvent.click(screen.getByRole("button", { name: "Earlier voice calls" }));
-  const buttons = screen.container.querySelectorAll<HTMLButtonElement>("[aria-expanded]");
-  expect(buttons).toHaveLength(2);
-  await act(() => buttons[0]!.focus());
-  await userEvent.keyboard("{Enter}");
   await expect.element(screen.getByText("first-call: actual received speech")).toBeVisible();
-  await userEvent.keyboard("{Enter}");
-  expect(buttons[0]!.getAttribute("aria-expanded")).toBe("false");
   expect(queries.earlier).toHaveBeenCalledWith({
     environmentId,
     input: { threadId, before: "21" },
   });
+  await act(() => fixture.registry.set(fixture.head, AsyncResult.success(history([newCall]))));
+  await expect.element(screen.getByText("first-call: actual received speech")).toBeVisible();
+  const articles = [...screen.container.querySelectorAll("article")];
+  expect(articles.map((node) => node.textContent)).toEqual([
+    expect.stringContaining("first-call: actual received speech"),
+    expect.stringContaining("second-call: actual received speech"),
+  ]);
 });
 
 it("hides retained content when authorization fails and shows storage loss honestly", async () => {
@@ -160,6 +151,7 @@ it("hides retained content when authorization fails and shows storage loss hones
     AsyncResult.success({ ...history([oldCall]), persistenceAvailable: false }),
   );
   await using screen = await render(fixture.ui());
+  await expect.element(screen.getByText("first-call: actual received speech")).toBeVisible();
   await expect
     .element(screen.getByRole("alert"))
     .toHaveTextContent("Voice call history could not be saved completely.");
@@ -172,29 +164,74 @@ it("hides retained content when authorization fails and shows storage loss hones
   await expect
     .element(screen.getByText("Voice call history is unavailable.", { exact: true }))
     .toBeVisible();
-  expect(screen.container.querySelectorAll("[aria-expanded]")).toHaveLength(0);
+  expect(screen.container.querySelectorAll("article")).toHaveLength(0);
 });
 
-it("keeps newly loaded calls visible at the end and preserves intentional scrollback", async () => {
+it("updates a received segment in place rather than appending its revision", async () => {
   using fixture = setup();
-  await using screen = await render(
-    <div className="messages-timeline-scroll" style={{ height: 180, overflowY: "auto" }}>
-      {fixture.ui()}
-    </div>,
-  );
-  const scroll = screen.container.querySelector<HTMLElement>(".messages-timeline-scroll")!;
-  const calls = Array.from({ length: 20 }, (_, index) => call(`call-${index}`, oldCall.startedAt));
-  await act(() => fixture.registry.set(fixture.head, AsyncResult.success(history(calls))));
-  await vi.waitFor(() =>
-    expect(scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop).toBeLessThan(2),
-  );
-  await act(() => {
-    scroll.scrollTop = 0;
-    scroll.dispatchEvent(new Event("scroll"));
-  });
+  fixture.registry.set(fixture.head, AsyncResult.success(history([oldCall])));
+  await using screen = await render(fixture.ui());
+  await expect.element(screen.getByText("first-call: actual received speech")).toBeVisible();
+  const original = screen.container.querySelector("article");
+  const atom = fixture.transcripts.get("first-call")!;
+  const saved = fixture.registry.get(atom);
+  if (!AsyncResult.isSuccess(saved)) throw new Error("fixture transcript not ready");
   await act(() =>
-    fixture.registry.set(fixture.head, AsyncResult.success(history([newCall, ...calls]))),
+    fixture.registry.set(
+      atom,
+      AsyncResult.success({
+        ...saved.value,
+        entries: saved.value.entries.map((entry) => ({
+          ...entry,
+          text: "Corrected received speech",
+          updatedAt: "2026-10-23T18:00:04.000Z",
+        })),
+      }),
+    ),
   );
-  await vi.waitFor(() => expect(scroll.querySelectorAll("[aria-expanded]")).toHaveLength(21));
-  expect(scroll.scrollTop).toBe(0);
+  await expect.element(screen.getByText("Corrected received speech")).toBeVisible();
+  expect(screen.container.querySelector("article")).toBe(original);
+  expect(screen.container.querySelectorAll("article")).toHaveLength(1);
+  expect(screen.container.textContent).not.toContain("first-call: actual received speech");
+});
+
+it("shows a live segment immediately, revises it, and merges its persisted copy once", async () => {
+  using fixture = setup();
+  function LiveFeed({ text, final }: { text: string; final: boolean }) {
+    useVoiceConversationPresentation({
+      phase: "live",
+      localMuted: false,
+      outputMuted: false,
+      error: null,
+      sessionStatus: "active",
+      lease: {
+        leaseId: oldCall.leaseId,
+        generation: 1,
+        threadId,
+        environmentId,
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        providerSessionId: null,
+        plannerNativeThreadId: null,
+        status: "active",
+      },
+      transcript: [{ segmentId: "segment", speaker: "user", text, final }],
+    });
+    return fixture.ui();
+  }
+  const draw = (text: string, final: boolean) => (
+    <VoiceConversationProvider>
+      <LiveFeed text={text} final={final} />
+    </VoiceConversationProvider>
+  );
+  await using screen = await render(draw("first-call: actual", false));
+  await expect.element(screen.getByText("first-call: actual", { exact: true })).toBeVisible();
+  const original = screen.container.querySelector("article");
+  await screen.rerender(draw("first-call: actual received speech", true));
+  await expect
+    .element(screen.getByText("first-call: actual received speech", { exact: true }))
+    .toBeVisible();
+  expect(screen.container.querySelector("article")).toBe(original);
+  await act(() => fixture.registry.set(fixture.head, AsyncResult.success(history([oldCall]))));
+  await expect.element(screen.getByText("Call ended", { exact: true })).toBeVisible();
+  expect(screen.container.querySelectorAll("article")).toHaveLength(1);
 });

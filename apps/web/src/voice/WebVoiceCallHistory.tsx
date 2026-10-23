@@ -1,6 +1,12 @@
-import { useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { EnvironmentId, LiveVoiceCallSummary, ThreadId } from "@t3tools/contracts";
-import { ChevronDownIcon, ChevronRightIcon, PhoneIcon } from "lucide-react";
+import {
+  retainVoiceCalls,
+  voiceCallKey,
+  voiceConversationItems,
+  type VoiceConversationItem,
+  type VoiceTranscriptSnapshot,
+} from "@t3tools/client-runtime/live-voice";
 import { Button } from "~/components/ui/button";
 import { useEnvironmentQuery } from "~/state/query";
 import {
@@ -8,43 +14,20 @@ import {
   voiceCallHistoryQuery,
   voiceCallTranscriptQuery,
 } from "~/rpc/liveVoiceHistory";
-import { LiveVoiceTranscriptContent } from "./LiveVoiceTranscript";
-import { useVoiceCallHistoryFollow } from "./useVoiceCallHistoryFollow";
+import { useObservedVoiceConversation } from "./VoiceConversation";
+import { VoiceConversationRow } from "./VoiceConversationRow";
 
-function callStatus(status: LiveVoiceCallSummary["status"]) {
-  switch (status) {
-    case "closed":
-      return "Ended";
-    case "failed":
-      return "Failed";
-    case "active":
-      return "Live";
-    case "preparing":
-    case "prepared":
-    case "starting":
-      return "Connecting";
-    case "stopping":
-      return "Ending";
-    case "unknown":
-      return "Interrupted";
-  }
-}
+type Snapshot = VoiceTranscriptSnapshot | "error";
+type HistoryProps = { readonly environmentId: EnvironmentId; readonly threadId: ThreadId };
 
-function callDuration(call: LiveVoiceCallSummary) {
-  if (!call.activeAt || !call.endedAt) return null;
-  const seconds = Math.max(
-    0,
-    Math.floor((Date.parse(call.endedAt) - Date.parse(call.activeAt)) / 1_000),
-  );
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-}
-
-function CallTranscript({
+function TranscriptLoader({
   environmentId,
   call,
+  register,
 }: {
-  environmentId: EnvironmentId;
-  call: LiveVoiceCallSummary;
+  readonly environmentId: EnvironmentId;
+  readonly call: LiveVoiceCallSummary;
+  readonly register: (key: string, snapshot: Snapshot) => void;
 }) {
   const query = useEnvironmentQuery(
     voiceCallTranscriptQuery({
@@ -57,35 +40,63 @@ function CallTranscript({
       },
     }),
   );
-  if (query.error)
-    return <HistoryError onRetry={query.refresh} text="Couldn’t load this transcript." />;
-  if (!query.data)
-    return (
-      <p role="status" className="px-3 py-2 text-xs text-muted-foreground">
-        Loading transcript…
-      </p>
-    );
-  return (
-    <div className="border-t border-border/60 px-3 py-3 sm:px-4">
-      {query.data.incomplete && (
-        <p role="status" className="mb-3 text-xs text-muted-foreground">
-          Some transcript segments are incomplete.
-        </p>
-      )}
-      {query.data.entries.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No transcript was received.</p>
-      ) : (
-        <LiveVoiceTranscriptContent transcript={query.data.entries} />
-      )}
-    </div>
-  );
+  const snapshot = query.error ? "error" : query.data;
+  useEffect(() => {
+    if (snapshot)
+      register(
+        voiceCallKey(call),
+        snapshot === "error" ? "error" : { transcript: snapshot, throughEventId: call.lastEventId },
+      );
+  }, [call, register, snapshot]);
+  return null;
 }
 
-function HistoryError({ text, onRetry }: { text: string; onRetry: () => void }) {
+function EarlierCalls({
+  environmentId,
+  threadId,
+  before,
+  register,
+}: HistoryProps & {
+  readonly before: string;
+  readonly register: (calls: ReadonlyArray<LiveVoiceCallSummary>) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const query = useEnvironmentQuery(
+    expanded ? earlierVoiceCallHistoryQuery({ environmentId, input: { threadId, before } }) : null,
+  );
+  const calls = query.error ? null : query.data?.calls;
+  useEffect(() => {
+    if (calls) register(calls);
+  }, [calls, register]);
+  if (!expanded)
+    return (
+      <Button variant="ghost" size="xs" onClick={() => setExpanded(true)}>
+        Earlier voice calls
+      </Button>
+    );
+  if (query.error)
+    return <HistoryError text="Earlier voice calls are unavailable." onRetry={query.refresh} />;
+  if (!query.data)
+    return (
+      <p role="status" className="py-2 text-xs text-muted-foreground">
+        Loading earlier calls…
+      </p>
+    );
+  return query.data.nextBefore ? (
+    <EarlierCalls
+      environmentId={environmentId}
+      threadId={threadId}
+      before={query.data.nextBefore}
+      register={register}
+    />
+  ) : null;
+}
+
+function HistoryError({ text, onRetry }: { readonly text: string; readonly onRetry: () => void }) {
   return (
     <div
       role="alert"
-      className="flex flex-wrap items-center gap-2 px-3 py-2 text-xs text-muted-foreground"
+      className="flex flex-wrap items-center gap-2 py-2 text-xs text-muted-foreground"
     >
       <span>{text}</span>
       <Button size="xs" variant="ghost" onClick={onRetry}>
@@ -95,130 +106,74 @@ function HistoryError({ text, onRetry }: { text: string; onRetry: () => void }) 
   );
 }
 
-function VoiceCall({
-  environmentId,
-  call,
-}: {
-  environmentId: EnvironmentId;
-  call: LiveVoiceCallSummary;
-}) {
-  const [open, setOpen] = useState(false);
-  const duration = callDuration(call);
-  const time = new Date(call.startedAt).toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-  return (
-    <li className="overflow-hidden rounded-lg border border-border/60 bg-card/30">
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen(!open)}
-        aria-label={`Voice call, ${time}, ${callStatus(call.status)}${duration ? `, ${duration}` : ""}`}
-        className="flex w-full flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2 text-left text-xs outline-none hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:px-4"
-      >
-        {open ? (
-          <ChevronDownIcon className="size-3.5 shrink-0 text-muted-foreground" />
-        ) : (
-          <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground" />
-        )}
-        <PhoneIcon className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="font-medium">Voice call</span>
-        <time dateTime={call.startedAt} className="text-muted-foreground">
-          {time}
-        </time>
-        <span className="ml-auto flex gap-2 text-muted-foreground">
-          {duration && (
-            <span className="tabular-nums" aria-label="Call duration">
-              {duration}
-            </span>
-          )}
-          <span>{callStatus(call.status)}</span>
-        </span>
-      </button>
-      {open && <CallTranscript environmentId={environmentId} call={call} />}
-    </li>
-  );
-}
-
-function HistoryPage({
-  environmentId,
-  threadId,
-  before,
-}: {
-  environmentId: EnvironmentId;
-  threadId: ThreadId;
-  before?: string;
-}) {
-  const [showEarlier, setShowEarlier] = useState(false);
-  const query = useEnvironmentQuery(
-    (before ? earlierVoiceCallHistoryQuery : voiceCallHistoryQuery)({
-      environmentId,
-      input: { threadId, ...(before ? { before } : {}) },
-    }),
-  );
-  if (query.error)
-    return <HistoryError text="Voice call history is unavailable." onRetry={query.refresh} />;
-  if (!query.data)
-    return before ? (
-      <p role="status" className="text-xs text-muted-foreground">
-        Loading earlier calls…
-      </p>
-    ) : null;
-  const history = query.data;
-  return (
-    <>
-      {!history.persistenceAvailable && (
-        <p role="alert" className="py-2 text-xs text-destructive">
-          Voice call history could not be saved completely.
-        </p>
-      )}
-      {history.nextBefore &&
-        (showEarlier ? (
-          <HistoryPage
-            environmentId={environmentId}
-            threadId={threadId}
-            before={history.nextBefore}
-          />
-        ) : (
-          <div className="mb-2">
-            <Button variant="ghost" size="xs" onClick={() => setShowEarlier(true)}>
-              Earlier voice calls
-            </Button>
-          </div>
-        ))}
-      {history.calls.length > 0 && (
-        <ol aria-label="Voice calls" className="space-y-2 py-2">
-          {history.calls.toReversed().map((call) => (
-            <VoiceCall
-              key={`${call.leaseId}:${call.generation}`}
-              environmentId={environmentId}
-              call={call}
-            />
-          ))}
-        </ol>
-      )}
-    </>
-  );
-}
-
 export function WebVoiceCallHistory({
   environmentId,
   threadId,
-}: {
-  environmentId: EnvironmentId;
-  threadId: ThreadId;
+  children,
+}: HistoryProps & {
+  readonly children?: (
+    items: ReadonlyArray<VoiceConversationItem>,
+    controls: ReactNode,
+  ) => ReactNode;
 }) {
-  const historyRef = useVoiceCallHistoryFollow();
+  const query = useEnvironmentQuery(voiceCallHistoryQuery({ environmentId, input: { threadId } }));
+  const [retained, setRetained] = useState<ReadonlyArray<LiveVoiceCallSummary>>([]);
+  const [transcripts, setTranscripts] = useState<ReadonlyMap<string, Snapshot>>(new Map());
+  const observed = useObservedVoiceConversation(environmentId, threadId);
+  const incoming = query.error ? null : query.data?.calls;
+  const registerCalls = (calls: ReadonlyArray<LiveVoiceCallSummary>) =>
+    setRetained((previous) => retainVoiceCalls(previous, calls));
+  const registerTranscript = (key: string, snapshot: Snapshot) =>
+    setTranscripts((previous) =>
+      previous.get(key) === snapshot ? previous : new Map(previous).set(key, snapshot),
+    );
+  const calls = query.error ? [] : retainVoiceCalls(retained, incoming ?? []);
+  if (!query.error && calls !== retained) setRetained(calls);
+  const items = query.error ? [] : voiceConversationItems(calls, transcripts, observed);
+  const controls = (
+    <div className="chat-content-lane">
+      {query.error ? (
+        <HistoryError text="Voice call history is unavailable." onRetry={query.refresh} />
+      ) : (
+        <>
+          {query.data?.persistenceAvailable === false && (
+            <p role="alert" className="py-2 text-xs text-destructive">
+              Voice call history could not be saved completely.
+            </p>
+          )}
+          {query.data?.nextBefore && (
+            <EarlierCalls
+              key={query.data.nextBefore}
+              environmentId={environmentId}
+              threadId={threadId}
+              before={query.data.nextBefore}
+              register={registerCalls}
+            />
+          )}
+        </>
+      )}
+    </div>
+  );
   return (
-    <section ref={historyRef} aria-label="Voice call history" className="chat-content-lane">
-      <HistoryPage
-        key={`${environmentId}:${threadId}`}
-        environmentId={environmentId}
-        threadId={threadId}
-      />
-    </section>
+    <>
+      {calls.map((call) => (
+        <TranscriptLoader
+          key={voiceCallKey(call)}
+          environmentId={environmentId}
+          call={call}
+          register={registerTranscript}
+        />
+      ))}
+      {children ? (
+        children(items, controls)
+      ) : (
+        <section aria-label="Voice conversation">
+          {controls}
+          {items.map((item) => (
+            <VoiceConversationRow key={item.id} item={item} />
+          ))}
+        </section>
+      )}
+    </>
   );
 }

@@ -53,7 +53,7 @@ import { Button } from "~/components/ui/button";
 import { toastManager } from "~/components/ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { randomUUID } from "~/lib/utils";
-import { LiveVoiceTranscript } from "./LiveVoiceTranscript";
+import { useVoiceConversationPresentation } from "./VoiceConversation";
 import { unwrapLiveVoiceCommand } from "./LiveVoiceCommands";
 import { useKeyboardCommands } from "~/components/keyboard/keyboardCommands";
 import {
@@ -836,15 +836,7 @@ export function LiveVoiceControl(props: {
     setState(controller.currentState);
   }
 
-  const transcriptLease = state.lease;
-  const transcriptMatchesTarget =
-    transcriptLease !== null &&
-    transcriptLease.environmentId === props.environmentId &&
-    transcriptLease.threadId === props.threadId &&
-    transcriptLease.providerInstanceId === props.providerInstanceId;
-  const currentTranscript: LiveVoiceState["transcript"] = transcriptMatchesTarget
-    ? state.transcript
-    : [];
+  useVoiceConversationPresentation(state);
 
   useLayoutEffect(() => {
     stateObserver.setActive(true);
@@ -1041,14 +1033,6 @@ export function LiveVoiceControl(props: {
           </a>
         </span>
       ) : null}
-      <LiveVoiceTranscript
-        key={
-          transcriptMatchesTarget && transcriptLease
-            ? `${transcriptLease.environmentId}:${transcriptLease.threadId}:${transcriptLease.providerInstanceId}:${transcriptLease.leaseId}:${transcriptLease.generation}`
-            : "no-live-transcript"
-        }
-        transcript={currentTranscript}
-      />
     </div>
   );
 }

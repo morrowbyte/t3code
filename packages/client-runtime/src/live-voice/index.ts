@@ -17,3 +17,14 @@ export {
   type LiveVoiceTarget,
 } from "./controller.ts";
 export { acquireMicrophoneOwnership } from "./microphoneOwnership.ts";
+export {
+  observeVoiceConversation,
+  retainVoiceCalls,
+  voiceCallKey,
+  voiceConversationItems,
+  interleaveVoiceConversation,
+  sameVoiceConversationItem,
+  type ObservedVoiceCall,
+  type VoiceConversationItem,
+  type VoiceTranscriptSnapshot,
+} from "./conversation.ts";

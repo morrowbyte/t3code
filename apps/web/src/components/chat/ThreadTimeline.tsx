@@ -10,6 +10,7 @@ import {
   timelineHasEphemeralPreviewUrls,
 } from "../ChatView.logic";
 import { MessagesTimeline } from "./MessagesTimeline";
+import { WebVoiceCallHistory } from "../../voice/WebVoiceCallHistory";
 
 /**
  * The timeline with the streamed text. ChatView reads the thread through its quiet
@@ -61,5 +62,22 @@ export function ThreadTimeline({
       workspaceRoot: readyWorkspaceRoot,
     });
   }, [activeThreadKey, detailLoading, entries, readyMarkdownCwd, readyWorkspaceRoot]);
-  return <MessagesTimeline {...timelineProps} timelineEntries={displayed.entries} />;
+  if (!threadDetailRef || timelineProps.paintOnly)
+    return <MessagesTimeline {...timelineProps} timelineEntries={displayed.entries} />;
+  return (
+    <WebVoiceCallHistory
+      key={`${threadDetailRef.environmentId}:${threadDetailRef.threadId}`}
+      environmentId={threadDetailRef.environmentId}
+      threadId={threadDetailRef.threadId}
+    >
+      {(voiceItems, voiceHistoryControls) => (
+        <MessagesTimeline
+          {...timelineProps}
+          timelineEntries={displayed.entries}
+          voiceItems={voiceItems}
+          voiceHistoryControls={voiceHistoryControls}
+        />
+      )}
+    </WebVoiceCallHistory>
+  );
 }

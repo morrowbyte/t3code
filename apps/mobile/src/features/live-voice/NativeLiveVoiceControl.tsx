@@ -22,7 +22,7 @@ import { unwrapLiveVoiceCommand } from "./liveVoiceCommands";
 import { createVoiceEventBridge } from "./liveVoiceEvents";
 import { nativeVoiceMedia } from "./nativeVoiceMedia";
 import { subscribeNativeVoiceStopped } from "./nativeVoiceBackground";
-import { useNativeVoicePresentation, useNativeVoiceView } from "./NativeVoiceConversation";
+import { useNativeVoicePresentation } from "./NativeVoiceConversation";
 
 type VoiceProps = {
   readonly environmentId: EnvironmentId;
@@ -129,7 +129,6 @@ function LiveVoiceSession(props: VoiceProps) {
   );
   const focused = useRef(false);
   const dictation = useGlobalVoiceInput();
-  const { select } = useNativeVoiceView();
   const presentation = useMemo(
     () => ({ state: current, controller, eligible: props.eligible }),
     [current, controller, props.eligible],
@@ -197,7 +196,6 @@ function LiveVoiceSession(props: VoiceProps) {
           disabled={dictation.isBusy}
           onPress={() => {
             if (focused.current && AppState.currentState === "active") {
-              select("conversation");
               void controller.start(target);
             }
           }}

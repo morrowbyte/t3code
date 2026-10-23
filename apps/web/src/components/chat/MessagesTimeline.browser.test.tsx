@@ -13,6 +13,7 @@ import { LeaderNavigation } from "../keyboard/LeaderNavigation";
 import { leaveNavigationMode } from "../keyboard/navigationMode";
 import { parseMarkdownWithMath } from "@t3tools/shared/markdownMath";
 import { collectThreadFindRanges } from "./threadFindHighlights";
+import type { VoiceConversationItem } from "@t3tools/client-runtime/live-voice";
 
 const environmentQuery = vi.hoisted(() => ({
   error: "Pull request not found",
@@ -132,6 +133,66 @@ function setup({
   leaveNavigationMode();
   return { [Symbol.dispose]: leaveNavigationMode };
 }
+
+it("keeps revised Voice speech and a normal t3-ui result in one chronological timeline", async () => {
+  using _state = setup();
+  const props = baseProps();
+  const speech = (
+    id: string,
+    speaker: "user" | "assistant",
+    second: number,
+    text: string,
+    final: boolean,
+  ): VoiceConversationItem => ({
+    id: `voice:call:1:speech:${id}`,
+    callKey: "call:1",
+    kind: "speech",
+    createdAt: `2026-03-17T19:12:${second}.000Z`,
+    entry: {
+      id,
+      speaker,
+      text,
+      final,
+      occurredAt: `2026-03-17T19:12:${second}.000Z`,
+      updatedAt: CREATED_AT,
+    },
+  });
+  const voice = [
+    speech("user", "user", 26, "Bitte vergleiche die Varianten.", true),
+    speech("live", "assistant", 29, "Der Vergleich", false),
+  ];
+  const result = message(
+    'Ergebnis\n\n```t3-ui\n{"type":"chart","id":"comparison","title":"Vergleich","kind":"bar"}\n{"type":"point","id":"comparison","label":"A","value":3}\n```',
+    { role: "assistant" },
+  );
+  const draw = (voiceItems: ReadonlyArray<VoiceConversationItem>) => (
+    <MessagesTimeline {...props} timelineEntries={[result]} voiceItems={voiceItems} />
+  );
+  await using screen = await renderElement(draw(voice));
+  await expect.element(screen.getByRole("article", { name: "You · Voice" })).toBeVisible();
+  await expect.element(screen.getByRole("article", { name: "Live · Voice" })).toBeVisible();
+  await expect
+    .element(screen.getByRole("region", { name: "Vergleich", exact: true }))
+    .toBeVisible();
+  const original = screen.container.querySelector(
+    '[data-timeline-row-id="voice:call:1:speech:live"]',
+  );
+  expect(
+    [...screen.container.querySelectorAll("[data-timeline-row-kind]")].map((row) =>
+      row.getAttribute("data-timeline-row-kind"),
+    ),
+  ).toEqual(["voice", "message", "voice"]);
+  await screen.rerender(
+    draw([voice[0]!, speech("live", "assistant", 29, "Der Vergleich ist fertig.", true)]),
+  );
+  await expect
+    .element(screen.getByText("Der Vergleich ist fertig.", { exact: true }))
+    .toBeVisible();
+  expect(screen.container.querySelector('[data-timeline-row-id="voice:call:1:speech:live"]')).toBe(
+    original,
+  );
+  expect(screen.container.querySelectorAll("[data-streamable-ui]")).toHaveLength(1);
+});
 
 it("shows the initiating agent identity and a link on the initial message", async () => {
   using _state = setup();

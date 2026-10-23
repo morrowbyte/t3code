@@ -1,4 +1,6 @@
 import { act, useMemo, type ComponentType, type ReactNode } from "react";
+import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { voiceConversationItems } from "@t3tools/client-runtime/live-voice";
 import type { LiveVoiceController, LiveVoiceState } from "@t3tools/client-runtime/live-voice";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
@@ -24,6 +26,12 @@ vi.mock("../connection/runtime", () => ({ connectionAtomRuntime: { fn: vi.fn() }
 vi.mock("../state/atom-registry", () => ({ appAtomRegistry: { set: vi.fn() } }));
 vi.mock("../state/session", () => ({ usePreparedConnection: () => ({ _tag: "None" }) }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: native.copyCsv }));
+vi.mock("../lib/copyTextWithHaptic", () => ({
+  tryCopyTextWithHaptic: async (text: string) => {
+    await native.copyCsv(text);
+    return true;
+  },
+}));
 vi.mock("react-native", () => ({
   ActivityIndicator: () => null,
   useWindowDimensions: () => ({ width: 390, height: 844, scale: 1, fontScale: 1 }),
@@ -173,10 +181,11 @@ import { StreamableAssistantMarkdown } from "./StreamableAssistantMarkdown";
 import {
   NativeVoiceConversationProvider,
   NativeVoiceConversationHeader,
-  NativeVoiceConversationTranscript,
   useNativeVoicePresentation,
-  useNativeVoiceView,
+  useNativeVoiceObserved,
 } from "../features/live-voice/NativeVoiceConversation";
+
+import { NativeVoiceConversationRow } from "../features/live-voice/NativeVoiceConversationRow";
 
 const textStyle: NativeMarkdownTextStyle = {
   color: "black",
@@ -468,7 +477,7 @@ describe("native assistant streaming visuals", () => {
   });
 });
 
-it("keeps live call controls available while conversation results stream and views switch", () => {
+it("keeps voice speech and streamed results together while call controls remain available", () => {
   const end = vi.fn();
   const mute = vi.fn();
   const output = vi.fn();
@@ -482,21 +491,38 @@ it("keeps live call controls available while conversation results stream and vie
     localMuted: false,
     outputMuted: false,
     transcript: [
-      { speaker: "user", text: "Vergleiche die Modelle", final: true },
-      { speaker: "assistant", text: "Der Vergleich läuft im Hintergrund", final: true },
+      { segmentId: "question", speaker: "user", text: "Vergleiche die Modelle", final: true },
+      {
+        segmentId: "reply",
+        speaker: "assistant",
+        text: "Der Vergleich läuft im Hintergrund",
+        final: true,
+      },
     ],
     sessionStatus: "active",
-    lease: null,
+    lease: {
+      leaseId: "call",
+      generation: 1,
+      environmentId: EnvironmentId.make("env"),
+      threadId: ThreadId.make("thread"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      providerSessionId: null,
+      plannerNativeThreadId: null,
+      status: "active",
+    },
     error: null,
   };
   function Conversation({ markdown }: { markdown: string }) {
     const presentation = useMemo(() => ({ controller, state, eligible: true }), []);
     useNativeVoicePresentation(presentation);
-    const { view } = useNativeVoiceView();
+    const observed = useNativeVoiceObserved();
+    const voiceItems = voiceConversationItems([], new Map(), observed);
     return (
       <>
         <NativeVoiceConversationHeader />
-        {view === "conversation" ? <NativeVoiceConversationTranscript /> : null}
+        {voiceItems.map((item) => (
+          <NativeVoiceConversationRow key={item.id} item={item} />
+        ))}
         <StreamableAssistantMarkdown markdown={markdown} isStreaming textStyle={textStyle} />
       </>
     );
@@ -511,17 +537,15 @@ it("keeps live call controls available while conversation results stream and vie
     );
   render("", false);
   draw(prefix);
-  click("Gespräch");
   expect(host.textContent).toContain("Der Vergleich läuft im Hintergrund");
-  click("Mitschrift");
-  expect(host.querySelector('[role="dialog"]')?.textContent).toContain("Vergleiche die Modelle");
-  click("Mitschrift schließen");
+  expect(host.textContent).toContain("Vergleiche die Modelle");
+  expect(host.querySelector('[role="tablist"]')).toBeNull();
+  expect(host.querySelector('[role="dialog"]')).toBeNull();
   expect(host.textContent).toContain("Queue depth42jobs");
   expect(host.querySelectorAll("circle")).toHaveLength(1);
   draw(prefix + '\n{"type":"point","id":"trend","label":"B","value":9.75}');
   expect(host.querySelectorAll("circle")).toHaveLength(2);
-  click("Chat");
-  expect(host.textContent).not.toContain("Vergleiche die Modelle");
+  expect(host.textContent).toContain("Vergleiche die Modelle");
   expect(host.textContent).toContain("Queue depth42jobs");
   expect(end).not.toHaveBeenCalled();
   const action = (label: string) => {

@@ -1,4 +1,7 @@
 import { useThreadShell } from "../../state/entities";
+import { useAtomValue } from "@effect/atom-react";
+import { environmentThreadDetails } from "../../state/threads";
+import { delegatedTaskStatus } from "@t3tools/client-runtime/state/subagent-display";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   turnItemDetailRevision,
@@ -105,6 +108,16 @@ export function OutgoingAgentTimelineRow({
     fetchedItem?.type === wireItem.type && fetchedItem.id === wireItem.id ? fetchedItem : wireItem;
   const send = item.type === "dynamic_tool" ? readAgentSend(item) : null;
   const delegation = item.type === "subagent" ? item.delegationMessage : undefined;
+  const liveTask = useAtomValue(
+    environmentThreadDetails.threadAtom(
+      scopeThreadRef(ctx.activeThreadEnvironmentId, row.projectedItem.sourceThreadId),
+    ),
+    (thread) =>
+      item.type === "subagent"
+        ? (thread?.projection.subagents.find((agent) => agent.id === item.subagentId) ?? null)
+        : null,
+  );
+  const taskStatus = item.type === "subagent" ? delegatedTaskStatus(liveTask ?? item) : null;
   const targetThreadId =
     item.type === "subagent"
       ? (item.childThreadId ?? undefined)
@@ -116,7 +129,7 @@ export function OutgoingAgentTimelineRow({
   );
   const live = ["idle", "pending", "running", "waiting"].includes(item.status);
   const receipt = delegation
-    ? "Auftrag erteilt"
+    ? taskStatus?.label
     : send?.failed
       ? "Aufruf fehlgeschlagen"
       : send?.accepted
@@ -141,7 +154,11 @@ export function OutgoingAgentTimelineRow({
       timestamp={formatDayAwareTimestamp(row.createdAt, ctx.timestampFormat)}
       timestampTitle={formatChatTimestampTooltip(row.createdAt, ctx.timestampFormat)}
       streaming={false}
-      delivery={<span className={send?.failed ? "text-destructive" : undefined}>{receipt}</span>}
+      delivery={
+        <span className={send?.failed || taskStatus?.failed ? "text-destructive" : undefined}>
+          {receipt}
+        </span>
+      }
       loading={requested && send?.text === null && detail.isPending}
       error={
         requested && item === wireItem && turnItemNeedsDetailFetch(wireItem)

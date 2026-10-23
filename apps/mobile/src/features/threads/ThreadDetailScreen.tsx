@@ -75,15 +75,7 @@ import type { QueuedRunEdit } from "../../state/queued-run-edit";
 import type { FollowUpBehavior } from "../../lib/followUpBehavior";
 import type { ActiveTurnComposerAction } from "@t3tools/client-runtime/state/composer-dispatch";
 import * as Haptics from "expo-haptics";
-import {
-  useCallback,
-  useContext,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   AppState,
   Keyboard,
@@ -138,10 +130,7 @@ import { ThreadBrowserFloat } from "../browser/ThreadBrowserFloat";
 import {
   NativeVoiceConversationProvider,
   NativeVoiceConversationHeader,
-  NativeVoiceConversationTranscript,
-  useNativeVoiceView,
 } from "../live-voice/NativeVoiceConversation";
-import { conversationResultFeed } from "../live-voice/conversationResultFeed";
 import { useThreadServerBrowserTabs } from "../../state/preview";
 import type { QueuedThreadMessage } from "../../state/thread-outbox-model";
 import { scopedThreadKey } from "../../lib/scopedEntities";
@@ -482,7 +471,6 @@ export function ThreadDetailScreen(props: ThreadDetailScreenProps) {
 const ThreadDetailScreenContent = function ThreadDetailScreenContent(
   props: ThreadDetailScreenProps,
 ) {
-  const { view: voiceView } = useNativeVoiceView();
   const usesNativeWorkspaceColumns = useNativeWorkspaceColumnsSupported();
   const navigation = useNavigation();
   const { session: voiceInputSession } = useGlobalVoiceInput();
@@ -830,10 +818,6 @@ const ThreadDetailScreenContent = function ThreadDetailScreenContent(
       (entry) => "acknowledged" in entry && entry.acknowledged === true,
     );
   const selectedThreadFeed = props.selectedThreadFeed;
-  const conversationFeed = useMemo(
-    () => conversationResultFeed(selectedThreadFeed),
-    [selectedThreadFeed],
-  );
   const hasCompactableConversation =
     selectedThreadFeed.some(
       (entry) =>
@@ -1392,9 +1376,6 @@ const ThreadDetailScreenContent = function ThreadDetailScreenContent(
         showContent={showContent && !props.draftMode}
       />
       {showContent && !props.draftMode ? <NativeVoiceConversationHeader /> : null}
-      {showContent && !props.draftMode && voiceView === "conversation" ? (
-        <NativeVoiceConversationTranscript />
-      ) : null}
       {props.draftMode ? (
         props.draftMode.content(
           navigationHeaderHeight,
@@ -1439,7 +1420,7 @@ const ThreadDetailScreenContent = function ThreadDetailScreenContent(
               environmentId={props.environmentId}
               threadId={props.selectedThread.id}
               workspaceRoot={props.threadCwd}
-              feed={voiceView === "conversation" ? conversationFeed : props.selectedThreadFeed}
+              feed={props.selectedThreadFeed}
               pendingHandoff={props.pendingHandoff}
               worktreeSetup={props.worktreeSetup}
               setupWorkingStartedAt={props.setupWorkingStartedAt}
@@ -1456,8 +1437,8 @@ const ThreadDetailScreenContent = function ThreadDetailScreenContent(
               runlessWorkActive={props.runlessWorkActive ?? false}
               listRef={listRef}
               freeze={freeze}
-              anchorMessageId={voiceView === "chat" ? anchorMessageId : null}
-              submittedMessageId={voiceView === "chat" ? submittedMessageId : null}
+              anchorMessageId={anchorMessageId}
+              submittedMessageId={submittedMessageId}
               contentInsetEndAdjustment={combinedContentInsetEndAdjustment}
               keyboardOffset={composerKeyboardOffset}
               contentTopInset={0}

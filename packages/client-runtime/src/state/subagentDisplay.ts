@@ -8,6 +8,32 @@ import { formatModelSlugName, resolveSelectableModel } from "@t3tools/shared/mod
 import { fileBasename } from "@t3tools/shared/path";
 import { isTerminalSubagentStatus } from "./subagentRuntime.ts";
 
+export function delegatedTaskStatus(input: {
+  readonly status: OrchestrationV2TurnItemStatus;
+  readonly result: string | null;
+}) {
+  const result = input.result?.trim();
+  const resultReady =
+    input.status === "completed" &&
+    Boolean(result) &&
+    !/^Child task ended with status\b/iu.test(result!);
+  const labels: Record<OrchestrationV2TurnItemStatus, string> = {
+    idle: "Inaktiv",
+    pending: "In Warteschlange",
+    running: "Wird ausgeführt",
+    waiting: "Wartet auf Rückmeldung",
+    completed: "Abgeschlossen",
+    failed: "Fehlgeschlagen",
+    cancelled: "Gestoppt",
+    interrupted: "Unterbrochen",
+  };
+  return {
+    label: resultReady ? "Ergebnis verfügbar" : labels[input.status],
+    resultReady,
+    failed: input.status === "failed",
+  };
+}
+
 export function subagentGroupSummary(
   members: ReadonlyArray<{ readonly status: OrchestrationV2TurnItemStatus }>,
 ) {

@@ -6,6 +6,10 @@ import { memo, type ReactNode } from "react";
 import { AppText as Text } from "../../components/ui/AppText";
 import { useTurnItemDetail } from "../../state/queries";
 import { AgentMessage } from "./AgentMessage";
+import { useAtomValue } from "@effect/atom-react";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { delegatedTaskStatus } from "@t3tools/client-runtime/state/subagent-display";
+import { environmentThreadDetails } from "../../state/threads";
 import { readAgentSend } from "./agent-message-presentation";
 
 export const AgentSendMessage = memo(function AgentSendMessage(props: {
@@ -22,6 +26,15 @@ export const AgentSendMessage = memo(function AgentSendMessage(props: {
   );
   const item = detail.data?.item ?? projected;
   const delegation = item.type === "subagent" ? item.delegationMessage : undefined;
+  const liveTask = useAtomValue(
+    environmentThreadDetails.threadAtom(
+      scopeThreadRef(props.environmentId, props.row.sourceThreadId),
+    ),
+    (thread) =>
+      item.type === "subagent"
+        ? (thread?.projection.subagents.find((agent) => agent.id === item.subagentId) ?? null)
+        : null,
+  );
   if (item.type !== "dynamic_tool" && !delegation) return null;
   const send = item.type === "dynamic_tool" ? readAgentSend(item) : null;
   const text = delegation?.firstParagraph ?? send?.text ?? null;
@@ -44,7 +57,9 @@ export const AgentSendMessage = memo(function AgentSendMessage(props: {
       streaming={!delegation && item.status === "running"}
       deliveryLabel={
         delegation
-          ? "Auftrag erteilt"
+          ? item.type === "subagent"
+            ? delegatedTaskStatus(liveTask ?? item).label
+            : "Sendestatus offen"
           : send?.failed
             ? "Sendung fehlgeschlagen"
             : send?.accepted

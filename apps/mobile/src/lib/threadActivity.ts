@@ -208,6 +208,12 @@ export type ThreadFeedEntry = ThreadFeedEntryContent & {
 };
 
 type ThreadFeedEntryContent =
+  | {
+      readonly type: "voice";
+      readonly id: string;
+      readonly createdAt: string;
+      readonly voice: import("@t3tools/client-runtime/live-voice").VoiceConversationItem;
+    }
   | Extract<RawThreadFeedEntry, { type: "message" | "html-render" | "mcp-app" | "agent-send" }>
   | {
       readonly type: "activity-group";
@@ -1296,6 +1302,7 @@ function latestRunsEqual(left: ThreadFeedLatestRun | null, right: ThreadFeedLate
 }
 
 function feedEntryRunId(entry: ThreadFeedEntry): RunId | null {
+  if (entry.type === "voice") return null;
   return entry.type === "message" ? (entry.message.runId ?? null) : entry.runId;
 }
 

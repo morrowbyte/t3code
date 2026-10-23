@@ -268,7 +268,7 @@ import {
 import type { AssistantCitationRequest } from "./chat/AssistantCitationSource";
 import type { MessagesTimelineHistoryControls } from "./chat/MessagesTimeline";
 import { ThreadTimeline } from "./chat/ThreadTimeline";
-import { WebVoiceCallHistory } from "../voice/WebVoiceCallHistory";
+import { VoiceConversationProvider } from "../voice/VoiceConversation";
 import { ProviderSubagentBar } from "./chat/ProviderSubagentBar";
 import { getTriggerDisplayModelName } from "./chat/providerIconUtils";
 import {
@@ -411,6 +411,14 @@ const noopHeldRevert = (_targetTurnCount: number) => {};
 const noopHeldAttachment = (_attachment: ChatFileAttachment) => {};
 
 export default function ChatView(props: ChatViewProps) {
+  return (
+    <VoiceConversationProvider key={`${props.environmentId}:${props.threadId}`}>
+      <ChatViewContent {...props} />
+    </VoiceConversationProvider>
+  );
+}
+
+function ChatViewContent(props: ChatViewProps) {
   const {
     environmentId,
     threadId,
@@ -3517,12 +3525,6 @@ export default function ChatView(props: ChatViewProps) {
                 footer={
                   paintOnlyDisplayedTimeline ? null : (
                     <>
-                      {isServerThread && (
-                        <WebVoiceCallHistory
-                          environmentId={activeThread.environmentId}
-                          threadId={activeThread.id}
-                        />
-                      )}
                       {pendingHandoff !== null && (
                         <div className="chat-content-lane">
                           <HandoffRow

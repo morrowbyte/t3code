@@ -3,6 +3,7 @@ export { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setu
 import { isLiveSubagentTurnItem } from "@t3tools/client-runtime/state/subagentRuntime";
 import * as DateTime from "effect/DateTime";
 import * as Equal from "effect/Equal";
+import { sameVoiceConversationItem } from "@t3tools/client-runtime/live-voice";
 import {
   assistantCitationLabel,
   collectAssistantCitations,
@@ -504,6 +505,12 @@ export type MessagesTimelineRow = MessagesTimelineRowContent & {
 };
 
 type MessagesTimelineRowContent =
+  | {
+      kind: "voice";
+      id: string;
+      createdAt: string;
+      voice: import("@t3tools/client-runtime/live-voice").VoiceConversationItem;
+    }
   | {
       kind: "worktree-setup";
       id: string;
@@ -2270,6 +2277,8 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
   if (a.kind !== b.kind || a.id !== b.id) return false;
 
   switch (a.kind) {
+    case "voice":
+      return sameVoiceConversationItem(a.voice, (b as typeof a).voice);
     case "working":
       return a.createdAt === (b as typeof a).createdAt;
     case "thinking": {

@@ -1,4 +1,10 @@
 import type { SendImageAnnotation } from "../../lib/imageAnnotation";
+import {
+  interleaveVoiceConversation,
+  type VoiceConversationItem,
+} from "@t3tools/client-runtime/live-voice";
+import { NativeVoiceCallHistory } from "../live-voice/NativeVoiceCallHistory";
+import { NativeVoiceConversationRow } from "../live-voice/NativeVoiceConversationRow";
 import { AgentIdentityLabel } from "../agent-identity/AgentIdentityLabel";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
@@ -1192,6 +1198,8 @@ function renderFeedEntry(
   const entry = info.item;
   const { markdownStyles, iconSubtleColor, userBubbleColor } = props;
 
+  if (entry.type === "voice") return <NativeVoiceConversationRow item={entry.voice} />;
+
   if (entry.type === "run-fold") {
     return (
       <View className="mb-1 flex-row items-center border-b border-border-subtle px-2">
@@ -2111,6 +2119,29 @@ function useThreadFeedPresentation(
 }
 
 export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
+  return (
+    <NativeVoiceCallHistory
+      key={`${props.environmentId}:${props.threadId}`}
+      environmentId={props.environmentId}
+      threadId={props.threadId}
+    >
+      {(voiceItems, voiceHistoryControls) => (
+        <ThreadFeedContent
+          {...props}
+          voiceItems={voiceItems}
+          voiceHistoryControls={voiceHistoryControls}
+        />
+      )}
+    </NativeVoiceCallHistory>
+  );
+});
+
+const ThreadFeedContent = memo(function ThreadFeedContent(
+  props: ThreadFeedProps & {
+    readonly voiceItems: ReadonlyArray<VoiceConversationItem>;
+    readonly voiceHistoryControls: ReactNode;
+  },
+) {
   const { listRef, onEndFollowEnabledChange, onHeaderMaterialVisibilityChange } = props;
   const workflowOpening = useWorkflowOpening(props.environmentId, props.threadId);
   const deviceType = useDeviceType();
@@ -2706,7 +2737,14 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     reportHeaderMaterialVisibility(false);
   }, [feedThreadKey, reportHeaderMaterialVisibility]);
 
-  const presentedFeed = useThreadFeedPresentation(props, expandedTurnIds, expandedWorkGroups);
+  const workFeed = useThreadFeedPresentation(props, expandedTurnIds, expandedWorkGroups);
+  const voiceFeed = props.voiceItems.map((voice): PendingThreadFeedEntry => ({
+    type: "voice",
+    id: voice.id,
+    createdAt: voice.createdAt,
+    voice,
+  }));
+  const presentedFeed = interleaveVoiceConversation(workFeed, voiceFeed);
   const setupAnchorIndex = presentedFeed.findIndex(
     (entry) => entry.type === "message" && entry.message.role === "user",
   );
@@ -3227,6 +3265,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
                 {props.historyControls ? (
                   <ThreadFeedLoadEarlierControl {...props.historyControls} />
                 ) : null}
+                {props.voiceHistoryControls}
               </>
             }
             ListFooterComponent={

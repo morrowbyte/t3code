@@ -1,4 +1,9 @@
 import { OutgoingAgentTimelineRow } from "./TimelineUserMessageRow";
+import {
+  interleaveVoiceConversation,
+  type VoiceConversationItem,
+} from "@t3tools/client-runtime/live-voice";
+import { VoiceConversationRow } from "../../voice/VoiceConversationRow";
 import { ThreadFindTimelineContext } from "./ThreadFindProvider";
 import { MarkdownFindContext } from "./markdownFindContext";
 import { useChatCanvas } from "./ChatCanvasContext";
@@ -163,6 +168,7 @@ const TIMELINE_MAINTAIN_SCROLL_AT_END = {
   },
 } as const satisfies MaintainScrollAtEndOptions;
 const EMPTY_RUN_IDS: ReadonlySet<RunId> = new Set();
+const EMPTY_VOICE_ITEMS: ReadonlyArray<VoiceConversationItem> = [];
 const TIMELINE_MAINTAIN_SCROLL_AT_END_SMOOTH = {
   ...TIMELINE_MAINTAIN_SCROLL_AT_END,
   animated: true,
@@ -176,6 +182,8 @@ export interface MessagesTimelineHistoryControls {
 }
 
 export interface MessagesTimelineProps {
+  voiceItems?: ReadonlyArray<VoiceConversationItem>;
+  voiceHistoryControls?: ReactNode;
   citationRequest?: AssistantCitationRequest | null;
   citationHistoryLoading?: boolean;
   onCiteAssistantText?: (
@@ -302,6 +310,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
   activeTurnStartedAt = null,
   worktreeSetup = null,
   footer = null,
+  voiceItems = EMPTY_VOICE_ITEMS,
+  voiceHistoryControls = null,
   onCancelWorktreeSetup,
   retryableWorkspacePreparationRunIds = EMPTY_RUN_IDS,
   onRetryWorkspacePreparation,
@@ -613,7 +623,13 @@ const ConversationTimeline = memo(function ConversationTimeline({
     availableRevertTurnCounts,
     worktreeSetup,
   });
-  const rows = useStableRows(rawRows, listIdentityKey);
+  const voiceRows = voiceItems.map((voice): MessagesTimelineRow => ({
+    kind: "voice",
+    id: voice.id,
+    createdAt: voice.createdAt,
+    voice,
+  }));
+  const rows = useStableRows([...interleaveVoiceConversation(rawRows, voiceRows)], listIdentityKey);
   // Run status/timestamps churn on every stream event; the shared row context
   // must not change with them or every timeline row re-renders per event.
   const runs = useStableHandoffRuns(runsProp);
@@ -1002,6 +1018,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     <>
       {parentThreadLink === null ? listHeaderLeadingContent : null}
       {historyControls ? <TimelineHistoryControl {...historyControls} /> : null}
+      {voiceHistoryControls}
       {parentThreadLink !== null ? listHeaderLeadingContent : null}
     </>
   );
@@ -1269,6 +1286,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       }
       data-message-role={row.kind === "message" ? row.message.role : undefined}
     >
+      {row.kind === "voice" ? <VoiceConversationRow item={row.voice} /> : null}
       {isWorkLogRow ? (
         <WorkLogBlock
           continues={row.continuesWorkLog}
