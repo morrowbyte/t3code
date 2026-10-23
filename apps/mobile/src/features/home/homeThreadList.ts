@@ -18,6 +18,28 @@ import * as Order from "effect/Order";
 
 import { scopedProjectKey } from "../../lib/scopedEntities";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
+import type { ThreadListV2FamilyRow, ThreadListV2Layout } from "../threads/threadListV2";
+
+export function resolveHomeThreadShelfCounts(
+  layout: Pick<ThreadListV2Layout, "workingCount" | "snoozedCount" | "settledCount">,
+  families: readonly ThreadListV2FamilyRow[],
+) {
+  const counts = {
+    working: layout.workingCount,
+    snoozed: layout.snoozedCount,
+    settled: layout.settledCount,
+  };
+  // Working counts scoped thread identities before disclosure hides rows.
+  for (const section of ["snoozed", "settled"] as const) {
+    counts[section] = Math.max(
+      counts[section],
+      families
+        .filter((row) => row.displaySection === section && row.depth === 0)
+        .reduce((count, row) => count + 1 + row.descendantCount, 0),
+    );
+  }
+  return counts;
+}
 
 export type HomeProjectSortOrder = Exclude<SidebarProjectSortOrder, "manual">;
 

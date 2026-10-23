@@ -97,6 +97,7 @@ focused_tests=(
   apps/web/src/components/Sidebar.logic.test.ts
   apps/web/src/components/attention-inbox/attentionInbox.test.ts
   apps/mobile/src/features/threads/threadListV2.test.ts
+  apps/mobile/src/features/home/homeThreadList.test.ts
   scripts/windows-wsl-runtime.test.ts \
   packages/contracts/src/ipc.test.ts \
   packages/contracts/src/server.test.ts \
