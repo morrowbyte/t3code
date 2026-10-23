@@ -2535,6 +2535,13 @@ it.effect.each([false, true])(
         };
         yield* publishChild(0, "turn-item.updated");
         yield* Deferred.await(chunkArrived);
+        const firstSteerReceipt = yield* taskControl(
+          0,
+          "steer",
+          "refine-first",
+          "Keep the findings concise.",
+        );
+        const firstSteerMessage = independentJobs.get(firstChild)!.messages.at(-1)!;
         const steersBefore = steers;
         yield* taskControl(1, "steer", "refine-second", "Focus on the smaller issue.");
         yield* taskControl(1, "steer", "refine-second", "Focus on the smaller issue.");
@@ -2559,7 +2566,11 @@ it.effect.each([false, true])(
         speechObserved = new Promise<void>((resolve) => {
           resolveSpeech = resolve;
         });
-        independentJobs.set(firstChild, independentSeeds.get(firstChild)!);
+        const firstCompletedSeed = independentSeeds.get(firstChild)!;
+        independentJobs.set(firstChild, {
+          ...firstCompletedSeed,
+          messages: [...firstCompletedSeed.messages, firstSteerMessage],
+        });
         yield* publishChild(0, "run.updated");
         yield* Effect.promise(() => speechObserved);
         assert.deepEqual(decodeJson(spoken.at(-1)!.text), {
@@ -2664,6 +2675,38 @@ it.effect.each([false, true])(
         };
         assert.isTrue(finished.delegatedTasks[0]!.resultReady);
         assert.equal(finished.delegatedTasks[0]!.result, "Final findings for task 1.");
+        const steersAfterCompletion = steers;
+        const messagesAfterCompletion = independentJobs.get(firstChild)!.messages;
+        assert.equal(
+          yield* taskControl(0, "steer", "refine-first", "Keep the findings concise."),
+          firstSteerReceipt,
+          "an accepted steer receipt still replays after its exact run completes",
+        );
+        const inactiveReceipt = decodeJson(
+          yield* taskControl(0, "steer", "completed-task", "Add more detail to the findings."),
+        ) as Record<string, unknown>;
+        assert.include(inactiveReceipt, {
+          accepted: false,
+          reason: "task_inactive",
+          delivery: "not_steered",
+          taskId: receipts[0]!.taskId,
+          threadId: firstChild,
+          runId: receipts[0]!.runId,
+          status: "completed",
+          resultReady: true,
+          result: "Final findings for task 1.",
+        });
+        assert.deepEqual(
+          decodeJson(
+            yield* taskControl(0, "steer", "completed-task", "Add more detail to the findings."),
+          ),
+          inactiveReceipt,
+          "an inactive-task retry retains the exact completed task and its result",
+        );
+        assert.equal(steers, steersAfterCompletion);
+        assert.equal(admissions, 3, "completed-task steering never admits replacement work");
+        assert.strictEqual(independentJobs.get(firstChild)!.messages, messagesAfterCompletion);
+        assert.equal(independentJobs.get(firstChild)!.runs[0]!.status, "completed");
         const beforeDelete = independentJobs.get(firstChild)!;
         independentJobs.set(firstChild, {
           ...beforeDelete,
@@ -2713,13 +2756,22 @@ it.effect.each([false, true])(
         });
         yield* publishChild(2, "run.updated");
         yield* Deferred.await(failureArrived);
-        assert.isTrue(
-          Exit.isFailure(
-            yield* Effect.exit(
-              taskControl(2, "steer", "failed-task", "Do not replace failed work"),
-            ),
-          ),
-        );
+        const failedReceipt = decodeJson(
+          yield* taskControl(2, "steer", "failed-task", "Do not replace failed work"),
+        ) as Record<string, unknown>;
+        assert.include(failedReceipt, {
+          accepted: false,
+          reason: "task_inactive",
+          delivery: "not_steered",
+          taskId: receipts[2]!.taskId,
+          threadId: failedChild,
+          runId: receipts[2]!.runId,
+          status: "failed",
+          resultReady: false,
+          result: null,
+        });
+        assert.equal(steers, steersAfterCompletion);
+        assert.equal(independentJobs.get(failedChild)!.runs[0]!.status, "failed");
         assert.equal(admissions, 3, "failure and rejected steering never create replacement tasks");
         yield* service.stop(session, { ...parallelLease, clientRequestId: "parallel-end" });
         assert.equal(

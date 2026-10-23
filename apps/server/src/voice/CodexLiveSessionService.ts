@@ -78,6 +78,7 @@ const encodeRuntimePolicy = Schema.encodeSync(
 );
 const encodeReceipt = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeReceipt = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown));
+const isLiveVoiceError = Schema.is(LiveVoiceError);
 const readbackContextMatches = (
   row: LeaseRow,
   projection: OrchestrationV2ThreadProjection,
@@ -1494,7 +1495,7 @@ export const layer: Layer.Layer<
           if (!input.runId || !input.message?.trim() || input.message.length > 8_000)
             return yield* liveError("invalid_state");
           const key = `live-voice-control:${encodeURIComponent(input.leaseId)}:${input.generation}:${encodeURIComponent(input.plannerTurnId)}:${encodeURIComponent(input.callId)}`;
-          const steered = yield* conversationWork
+          return yield* conversationWork
             .steer({
               threadId: projection.thread.id,
               taskId,
@@ -1504,8 +1505,48 @@ export const layer: Layer.Layer<
               message: input.message.trim(),
               creationSource: "voice",
             })
-            .pipe(Effect.mapError(() => liveError("dispatch_conflict")));
-          return encodeReceipt({ accepted: true, delivery: "steered", ...steered });
+            .pipe(
+              Effect.map((steered) =>
+                encodeReceipt({ accepted: true, delivery: "steered", ...steered }),
+              ),
+              Effect.catchTags({
+                ConversationWorkError: (error) =>
+                  Effect.gen(function* () {
+                    if (error.reason !== "inactive") return yield* liveError("dispatch_conflict");
+                    const latest = yield* conversationWork.read({
+                      threadId: projection.thread.id,
+                      taskId,
+                      runId: RunId.make(input.runId!),
+                    });
+                    yield* ensurePrincipal(input.principal);
+                    if (
+                      !matchesRuntime(
+                        yield* getOwnedLease(
+                          input.principal.sessionId,
+                          input.leaseId,
+                          input.generation,
+                        ),
+                      )
+                    )
+                      return yield* liveError("stale_lease");
+                    const result = inspectReadback(latest.projection, latest.run.id);
+                    return encodeReceipt({
+                      accepted: false,
+                      reason: "task_inactive",
+                      delivery: "not_steered",
+                      taskId,
+                      threadId: latest.projection.thread.id,
+                      ...voiceRunStatus(latest.projection, latest.run, yield* DateTime.now),
+                      resultReady: result.type === "ready",
+                      result: result.type === "ready" ? result.text.slice(0, 16_384) : null,
+                      resultTruncated: result.type === "ready" && result.text.length > 16_384,
+                    });
+                  }),
+              }),
+              Effect.mapError((error) =>
+                isLiveVoiceError(error) ? error : liveError("dispatch_conflict"),
+              ),
+            );
         }
         const run =
           input.runId === undefined
