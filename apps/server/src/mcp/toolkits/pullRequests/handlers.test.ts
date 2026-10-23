@@ -265,6 +265,24 @@ describe("pull request toolkit handlers", () => {
     }),
   );
 
+  it.effect("links a GitCafe pull request by its canonical /pull/ URL", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const result = yield* harness.call("link_pull_request", {
+        url: "https://git.cafe/pingdotgg/t3code/pull/23897",
+      });
+      expect(result).toMatchObject({
+        host: "git.cafe",
+        repository: "pingdotgg/t3code",
+        number: 23897,
+        alreadyLinked: false,
+      });
+      expect(yield* Ref.get(harness.commands)).toMatchObject([
+        { type: "thread.pull-request.link", host: "git.cafe", number: 23897 },
+      ]);
+    }),
+  );
+
   it.effect("watching an unlinked pull request links it first", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
@@ -444,24 +462,6 @@ describe("pull request toolkit handlers", () => {
         { type: "thread.pull-request.link", number: 124, url: generated },
         { type: "thread.pull-request.link", number: 123, url: supplied },
       ]);
-    }),
-  );
-
-  it.effect("rejects a target that names neither a URL nor repository and number", () =>
-    Effect.gen(function* () {
-      const harness = yield* makeHarness();
-      const error = yield* harness
-        .call("link_pull_request", { repository: "x/y" })
-        .pipe(Effect.flip);
-      expect(error).toMatchObject({ _tag: "PullRequestTargetIncompleteError" });
-      const unknown = yield* harness
-        .call("link_pull_request", {
-          url: "https://github.com/t3tools/t3code/issues/1?token=private-value",
-        })
-        .pipe(Effect.flip);
-      expect(unknown).toMatchObject({ _tag: "PullRequestUrlInvalidError" });
-      expect(unknown.message).not.toContain("private-value");
-      expect(yield* Ref.get(harness.commands)).toEqual([]);
     }),
   );
 

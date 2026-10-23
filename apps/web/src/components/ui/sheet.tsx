@@ -1,11 +1,9 @@
-"use client";
-
 import { Dialog as SheetPrimitive } from "@base-ui/react/dialog";
 import { XIcon } from "lucide-react";
 import { use, type CSSProperties } from "react";
 import { cn } from "~/lib/utils";
 import { Button } from "~/components/ui/button";
-import { Dialog } from "./dialog";
+import { Dialog, renderRetainedPopup } from "./dialog";
 import { KeyboardLayerContext } from "./keyboardLayer";
 
 const Sheet = Dialog;
@@ -105,6 +103,7 @@ function SheetPopup({
           )}
           data-slot="sheet-popup"
           data-keyboard-layer={keyboardLayer ?? undefined}
+          render={keepMounted ? undefined : renderRetainedPopup}
           style={{ ...transitionStyle, ...style }}
           {...props}
         >

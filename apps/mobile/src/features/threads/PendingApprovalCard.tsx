@@ -13,7 +13,11 @@ import type {
   RuntimeRequestId,
 } from "@t3tools/contracts";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { View } from "react-native";
+import { Pressable, View } from "react-native";
+import {
+  FULL_ACCESS_OVERRIDE_QUESTION,
+  fullAccessOverrideExplanation,
+} from "@t3tools/client-runtime/state/thread-requests";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import type { PendingApproval } from "../../lib/threadActivity";
@@ -53,6 +57,7 @@ const modeLabels: Record<RuntimeMode, string> = {
 
 export function PendingApprovalCard(props: PendingApprovalCardProps) {
   const [now, setNow] = useState(Date.now);
+  const [explanationOpen, setExplanationOpen] = useState(false);
   const authority = props.approval.approvalReview;
   const expiresAt = authority?.expiresAt;
   const originalExpiresAt = authority?.originalOrder?.receipt.expiresAt;
@@ -300,6 +305,22 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
       </View>
       {props.approval.appName ? (
         <Text className="text-sm text-foreground-secondary">{props.approval.appName}</Text>
+      ) : null}
+      {props.approval.fullAccessOverride ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded: explanationOpen }}
+          onPress={() => setExplanationOpen((open) => !open)}
+        >
+          <Text className="font-t3-bold text-xs text-foreground-secondary underline">
+            {FULL_ACCESS_OVERRIDE_QUESTION}
+          </Text>
+          {explanationOpen ? (
+            <Text className="mt-1 font-sans text-xs leading-normal text-foreground-muted">
+              {fullAccessOverrideExplanation(props.approval.fullAccessOverride)}
+            </Text>
+          ) : null}
+        </Pressable>
       ) : null}
       <View className="flex-row flex-wrap gap-x-3 gap-y-1">
         <Text className="text-xs text-warning-foreground">Requested</Text>

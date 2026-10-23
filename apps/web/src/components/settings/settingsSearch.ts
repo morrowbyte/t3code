@@ -354,10 +354,10 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "compact-idle-threads",
-    title: "Compact idle Claude threads (beta)",
+    title: "Compact idle threads",
     to: "/settings/threads",
     scope: "environment-defaults",
-    searchTerms: ["context compaction idle cache tokens usage summary beta experimental"],
+    searchTerms: ["claude context compaction idle cache tokens usage summary resume"],
   },
   {
     id: "auto-settle-merged-threads",
@@ -549,6 +549,13 @@ export const SETTINGS_SEARCH_ITEMS = [
       "current last previous update result results host server desktop restart failure rollback",
       "Updatehistorie Aktualisierungen Verlauf letztes Update Ergebnis Ergebnisse Fehler Neustart",
     ],
+  },
+  {
+    id: "thread-title-instructions",
+    title: "Thread title instructions",
+    to: "/settings/agent-defaults",
+    scope: "project-defaults",
+    searchTerms: ["generated thread titles prompt custom style naming rename regenerate"],
   },
   {
     id: "app-version",

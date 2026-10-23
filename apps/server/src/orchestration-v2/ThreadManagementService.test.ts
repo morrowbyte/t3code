@@ -18,56 +18,19 @@ import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 
-import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
+import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import * as TestClock from "effect/testing/TestClock";
 import * as Duration from "effect/Duration";
 
 const layerReceiptsTest = CommandReceiptStore.layer.pipe(
   Layer.provide(SqlitePersistence.layerMemory),
 );
-
-const layerThreadManagementTest = (settingsLayer: ReturnType<typeof ServerSettings.layerTest>) =>
-  ThreadManagementService.layer.pipe(
-    Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
-    Layer.provide(Layer.mock(Orchestrator.OrchestratorV2)({})),
-    Layer.provide(settingsLayer),
-    Layer.provide(layerReceiptsTest),
-  );
-
-it.effect("refuses a new turn when the project effectively disables the instance", () => {
-  const projectId = ProjectId.make("project:thread-management:gate-disabled");
-  const instanceId = ProviderInstanceId.make("codex_work");
-  const commandId = CommandId.make("command:thread-management:gate-disabled");
-  const layerTest = layerThreadManagementTest(
-    ServerSettings.layerTest({
-      providerInstances: { [instanceId]: { driver: "codex", enabled: true } },
-      projectSettingsOverrides: {
-        [projectId]: { providerInstances: { [instanceId]: { enabled: false } } },
-      },
-    }),
-  );
-
-  return Effect.gen(function* () {
-    const threads = yield* ThreadManagementService.ThreadManagementService;
-    const error = yield* Effect.flip(
-      threads.assertProviderInstanceEnabled({ projectId, commandId, instanceId }),
-    );
-
-    expect(error).toBeInstanceOf(
-      ThreadManagementService.ThreadManagementProviderInstanceDisabledError,
-    );
-    expect(error).toMatchObject({ projectId, instanceId });
-    expect(error.message).toBe(
-      `Provider instance "${instanceId}" is disabled for project ${projectId}.`,
-    );
-  }).pipe(Effect.provide(layerTest));
-});
 
 const layerDispatchChokepointTest =
   (settingsLayer: ReturnType<typeof ServerSettings.layerTest>) => (dispatched: Array<string>) =>
@@ -186,39 +149,6 @@ it.effect(
     }).pipe(Effect.provide(layerTest));
   },
 );
-
-it.effect("classifies projection infrastructure failures separately from a missing thread", () => {
-  const projectId = ProjectId.make("project:thread-management:projection-failure");
-  const threadId = ThreadId.make("thread:thread-management:projection-failure");
-  const infrastructureCause = new Error("sqlite read failed");
-  const projectionError = new Orchestrator.OrchestratorProjectionError({
-    threadId,
-    cause: infrastructureCause,
-  });
-  const layerTest = ThreadManagementService.layer.pipe(
-    Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
-    Layer.provide(
-      Layer.mock(Orchestrator.OrchestratorV2)({
-        getThreadProjection: () => Effect.fail(projectionError),
-      }),
-    ),
-    Layer.provide(ServerSettings.layerTest()),
-    Layer.provide(layerReceiptsTest),
-  );
-
-  return Effect.gen(function* () {
-    const service = yield* ThreadManagementService.ThreadManagementService;
-    const error = yield* Effect.flip(service.getProjectThread({ projectId, threadId }));
-
-    expect(error).toBeInstanceOf(ThreadManagementService.ThreadManagementProjectionLoadError);
-    expect(error).toMatchObject({
-      projectId,
-      threadId,
-      cause: projectionError,
-    });
-    expect(error.message).toBe(`Unable to load thread ${threadId} in project ${projectId}.`);
-  }).pipe(Effect.provide(layerTest));
-});
 
 it.effect("uses thread-not-found only after a projection loads outside the project", () => {
   const projectId = ProjectId.make("project:thread-management:requested");

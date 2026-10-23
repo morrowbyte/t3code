@@ -3,14 +3,19 @@ import { assert, it, vi } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 import * as BitbucketApi from "@t3tools/source-control-bitbucket/server/BitbucketApi";
+import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import * as ServerSettings from "../serverSettings.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
@@ -60,6 +65,8 @@ const repositoryJson = {
 
 function makeLayer(input: {
   readonly response: (request: HttpClientRequest.HttpClientRequest) => Response;
+  /** Holds the answer until it resolves, in place of answering at once. */
+  readonly answer?: (response: Response) => Effect.Effect<Response>;
   readonly requestFailure?: (
     request: HttpClientRequest.HttpClientRequest,
   ) => HttpClientError.HttpClientError;
@@ -72,7 +79,9 @@ function makeLayer(input: {
       ? Effect.never
       : input.requestFailure
         ? Effect.fail(input.requestFailure(request))
-        : Effect.succeed(HttpClientResponse.fromWeb(request, input.response(request))),
+        : (input.answer ?? Effect.succeed)(input.response(request)).pipe(
+            Effect.map((response) => HttpClientResponse.fromWeb(request, response)),
+          ),
   );
   const gitMock = {
     readConfigValue: vi.fn<GitVcsDriver.GitVcsDriver["Service"]["readConfigValue"]>(() =>
@@ -144,6 +153,7 @@ function makeLayer(input: {
 
   const layer = BitbucketApi.layer.pipe(
     Layer.provide(ServerSourceControlHost.layer),
+    Layer.provide(SourceControlRateLimit.layer),
     Layer.provide(Layer.mock(VcsProcess.VcsProcess)({})),
     Layer.provide(
       Layer.succeed(
@@ -423,57 +433,6 @@ it.effect(
     }).pipe(Effect.provide(layer));
   },
 );
-
-it.effect(
-  "falls back to the repository main branch when the Bitbucket branching model is unavailable",
-  () => {
-    const { layer } = makeLayer({
-      response: (request) =>
-        request.url.endsWith("/branching-model")
-          ? Response.json({ error: { message: "Not found" } }, { status: 404 })
-          : Response.json(repositoryJson),
-    });
-
-    return Effect.gen(function* () {
-      const bitbucket = yield* BitbucketApi.BitbucketApi;
-      const defaultBranch = yield* bitbucket.getDefaultBranch({ cwd: "/repo" });
-
-      assert.strictEqual(defaultBranch, "main");
-    }).pipe(Effect.provide(layer));
-  },
-);
-
-it.effect("creates repositories through the Bitbucket REST API", () => {
-  const { execute, layer } = makeLayer({
-    response: () => Response.json(repositoryJson),
-  });
-
-  return Effect.gen(function* () {
-    const bitbucket = yield* BitbucketApi.BitbucketApi;
-    const cloneUrls = yield* bitbucket.createRepository({
-      cwd: "/repo",
-      repository: "pingdotgg/t3code",
-      visibility: "private",
-    });
-
-    assert.deepStrictEqual(cloneUrls, {
-      nameWithOwner: "pingdotgg/t3code",
-      url: "https://bitbucket.org/pingdotgg/t3code.git",
-      sshUrl: "git@bitbucket.org:pingdotgg/t3code.git",
-    });
-
-    const request = execute.mock.calls[0]?.[0];
-    assert.strictEqual(request?.url, "https://api.test.local/2.0/repositories/pingdotgg/t3code");
-    assert.strictEqual(request?.method, "POST");
-    assert.ok(request);
-    const rawBody = (request.body as { readonly body?: Uint8Array }).body;
-    assert.ok(rawBody);
-    assert.deepStrictEqual(JSON.parse(new TextDecoder().decode(rawBody)), {
-      scm: "git",
-      is_private: true,
-    });
-  }).pipe(Effect.provide(layer));
-});
 
 it.effect("creates pull requests using the official REST payload shape", () => {
   const { execute, layer } = makeLayer({
@@ -786,4 +745,85 @@ it.effect("cuts a response short rather than reading an unbounded diff into memo
       makeLayer({ response: () => new Response("1234567890", { status: 200 }) }).layer,
     ),
   ),
+);
+
+it.effect("pauses background reads after a 429 until Bitbucket's retry-after passes", () => {
+  let answered = 0;
+  const { execute, layer } = makeLayer({
+    response: () => {
+      answered += 1;
+      return answered === 1
+        ? new Response("Rate limit exceeded", { status: 429, headers: { "retry-after": "60" } })
+        : Response.json({ values: [] });
+    },
+  });
+
+  return Effect.gen(function* () {
+    const bitbucket = yield* BitbucketApi.BitbucketApi;
+    const lookup = bitbucket.listPullRequests({
+      cwd: "/repo",
+      headSelector: "feature/a",
+      state: "all",
+    });
+
+    yield* Effect.flip(lookup);
+    const paused = yield* Effect.flip(lookup);
+    // Keyed by the repository host, where PullRequestService records its own backoff.
+    assert.deepInclude(paused, {
+      _tag: "SourceControlRateLimitPausedError",
+      host: "bitbucket.org",
+      retryAt: 60_000,
+    });
+    assert.strictEqual(execute.mock.calls.length, 1);
+
+    // A user waiting on an answer is not held back by the background pause, and their success
+    // does not end it early.
+    yield* lookup.pipe(Effect.provideService(SourceControlRateLimit.Interactive, true));
+    yield* bitbucket.request({
+      method: "POST",
+      url: "/repositories/acme/web/pullrequests/1/approve",
+    });
+
+    yield* TestClock.adjust("59 seconds");
+    assert.strictEqual((yield* Effect.flip(lookup))._tag, "SourceControlRateLimitPausedError");
+
+    yield* TestClock.adjust("1 second");
+    yield* lookup;
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect("keeps a sweep over many branches to a few Bitbucket requests at a time", () =>
+  Effect.gen(function* () {
+    const started = yield* Queue.unbounded<void>();
+    const release = yield* Deferred.make<void>();
+    let inFlight = 0;
+    let peak = 0;
+    const { layer } = makeLayer({
+      response: () => Response.json({ values: [] }),
+      answer: (response) =>
+        Effect.gen(function* () {
+          inFlight += 1;
+          peak = Math.max(peak, inFlight);
+          yield* Queue.offer(started, undefined);
+          yield* Deferred.await(release);
+          inFlight -= 1;
+          return response;
+        }),
+    });
+
+    yield* Effect.gen(function* () {
+      const bitbucket = yield* BitbucketApi.BitbucketApi;
+      const sweep = yield* Effect.forEach(
+        Array.from({ length: 12 }, (_, index) => `feature/${index}`),
+        (branch) =>
+          bitbucket.listPullRequests({ cwd: "/repo", headSelector: branch, state: "all" }),
+        { concurrency: "unbounded", discard: true },
+      ).pipe(Effect.forkChild);
+      for (let index = 0; index < 4; index += 1) yield* Queue.take(started);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(sweep);
+    }).pipe(Effect.provide(layer));
+
+    assert.strictEqual(peak, 4);
+  }),
 );

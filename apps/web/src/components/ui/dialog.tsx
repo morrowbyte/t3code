@@ -1,8 +1,15 @@
-"use client";
-
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { XIcon } from "lucide-react";
-import { use, useId, useLayoutEffect, useRef } from "react";
+import {
+  type ComponentProps,
+  createContext,
+  type ReactNode,
+  use,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { cn } from "~/lib/utils";
 import { Button } from "~/components/ui/button";
 import {
@@ -15,6 +22,26 @@ import {
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { KeyboardLayerContext, registerKeyboardLayer } from "./keyboardLayer";
 
+const ControlledOpenContext = createContext<boolean | undefined>(undefined);
+
+function RetainedWhileClosed({ open, children }: { open: boolean; children: ReactNode }) {
+  const controlledOpen = use(ControlledOpenContext);
+  const isOpen = open && controlledOpen !== false;
+  const [retained, setRetained] = useState(children);
+  if (isOpen && retained !== children) {
+    setRetained(children);
+  }
+  return isOpen ? children : retained;
+}
+
+function renderRetainedPopup(props: ComponentProps<"div">, state: { open: boolean }) {
+  return (
+    <div {...props}>
+      <RetainedWhileClosed open={state.open}>{props.children}</RetainedWhileClosed>
+    </div>
+  );
+}
+
 function Dialog<Payload>(props: DialogPrimitive.Root.Props<Payload>) {
   const id = useId();
   const localActions = useRef<DialogPrimitive.Root.Actions | null>(null);
@@ -22,9 +49,11 @@ function Dialog<Payload>(props: DialogPrimitive.Root.Props<Payload>) {
   // Use the root's close action even when a popup supplies its own close controls.
   useLayoutEffect(() => registerKeyboardLayer(id, () => actions.current?.close()), [actions, id]);
   return (
-    <KeyboardLayerContext value={id}>
-      <DialogPrimitive.Root {...props} actionsRef={actions} />
-    </KeyboardLayerContext>
+    <ControlledOpenContext value={props.open}>
+      <KeyboardLayerContext value={id}>
+        <DialogPrimitive.Root {...props} actionsRef={actions} />
+      </KeyboardLayerContext>
+    </ControlledOpenContext>
   );
 }
 
@@ -106,6 +135,7 @@ function DialogPopup({
           )}
           data-slot="dialog-popup"
           data-keyboard-layer={keyboardLayer ?? undefined}
+          render={renderRetainedPopup}
           {...props}
         >
           {children}
@@ -199,6 +229,8 @@ function DialogPanel({
 }
 
 export {
+  ControlledOpenContext,
+  renderRetainedPopup,
   Dialog,
   DialogTrigger,
   DialogPortal,

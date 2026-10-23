@@ -9,6 +9,7 @@ import { TestClock } from "effect/testing";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as NodeEvents from "node:events";
+import * as NodePath from "node:path";
 
 import * as DesktopBrowserHost from "./DesktopBrowserHost.ts";
 
@@ -18,36 +19,58 @@ const decodeCdpReply = Schema.decodeUnknownSync(
   Schema.fromJsonString(Schema.Struct({ id: Schema.Number })),
 );
 const key = { threadId: "thread-1", tabId: "tab-1" };
+/** Sends a page command whose id the fake debugger records as it receives it. */
+const command = (
+  connection: DesktopBrowserHost.DesktopBrowserConnection,
+  id: number,
+  method: string,
+) =>
+  connection.handleCommandLine(
+    encodeJson({
+      type: "cdp",
+      ...key,
+      message: encodeJson({ id, method, params: { id }, sessionId: "t3-preview-page" }),
+    }),
+  );
 
 const makeDebuggee = () => {
   const emitter = new NodeEvents.EventEmitter();
   const pending: Array<() => void> = [];
-  const sent: string[] = [];
+  const sent: Array<number> = [];
+  const sentMethods: Array<string> = [];
+  const sendWaiters: Array<() => void> = [];
   const debuggee = Object.assign(emitter, {
-    sendCommand: (method: string) =>
+    sendCommand: (method: string, params?: { id?: number }) =>
       new Promise((resolve) => {
-        sent.push(method);
+        sentMethods.push(method);
         if (method === "Target.getTargetInfo") {
           resolve({ targetInfo: { targetId: "GUEST" } });
           return;
         }
+        if (params?.id !== undefined) sent.push(params.id);
         pending.push(() => resolve({ method }));
+        sendWaiters.shift()?.();
       }),
   });
-  const webContents = {
+  const webContents = Object.assign(new NodeEvents.EventEmitter(), {
     isDestroyed: () => false,
     getURL: () => "http://localhost/",
     getTitle: () => "Page",
     getUserAgent: () => "Electron",
-  };
+  });
   return {
     tab: {
       webContents: webContents as unknown as Electron.WebContents,
       debugger: debuggee as unknown as Electron.Debugger,
     },
     emit: (method: string, params: unknown) => emitter.emit("message", {}, method, params, ""),
-    release: () => pending.splice(0).forEach((resolve) => resolve()),
+    navigate: () => webContents.emit("did-navigate"),
+    /** Ids of the commands the debugger received, in order. */
     sent,
+    sentMethods,
+    nextSend: () => new Promise<void>((resolve) => sendWaiters.push(resolve)),
+    release: () => pending.splice(0).forEach((resolve) => resolve()),
+    releaseFirst: () => pending.shift()?.(),
   };
 };
 
@@ -90,6 +113,25 @@ const grant = Effect.fn(function* (
   yield* backend.connection.handleCommandLine(encodeJson(response));
   return { lease: yield* Fiber.join(acquiring), request, response };
 });
+/**
+ * Ids of the replies the host sends, in order. A screenshot's reply leaves after its turn
+ * has passed on, so by then the next waiting screenshot, if any, has been sent. Subscribe
+ * before sending commands: a new subscriber releases the tab's relay.
+ */
+const watchReplies = (host: DesktopBrowserHost.DesktopBrowserHost["Service"]) =>
+  Effect.gen(function* () {
+    const replies = yield* Queue.unbounded<number>();
+    const connection = host.createConnection();
+    yield* connection.events.pipe(
+      Stream.map((line) => decodeEvent(new TextDecoder().decode(line))),
+      Stream.runForEach((event) =>
+        event.type === "cdp" ? Queue.offer(replies, decodeCdpReply(event.message).id) : Effect.void,
+      ),
+      Effect.forkScoped,
+    );
+    yield* Effect.yieldNow;
+    return { connection, replies };
+  });
 
 describe("DesktopBrowserHost", () => {
   it.effect("refuses unknown/unattached authority without sending an acquire", () =>
@@ -285,7 +327,7 @@ describe("DesktopBrowserHost", () => {
         ).toEqual([2, 3]);
         expect(JSON.stringify(events)).toContain("private during credential entry");
         expect(JSON.stringify(events)).not.toContain("fake-secret-must-not-relay");
-        expect(debuggee.sent).not.toContain("DOM.getDocument");
+        expect(debuggee.sentMethods).not.toContain("DOM.getDocument");
       }).pipe(Effect.scoped),
   );
 
@@ -358,11 +400,72 @@ describe("DesktopBrowserHost", () => {
       yield* host.handleCommandLine(encodeJson({ type: "release", ...key }));
       yield* command(2, "DOM.enable");
       debuggee.release();
-      yield* Effect.promise(() => new Promise((resolve) => setImmediate(resolve)));
       const [, reply] = yield* Fiber.join(reader);
 
       expect(reply).toMatchObject({ type: "cdp" });
       expect(decodeCdpReply((reply as { message: string }).message).id).toBe(2);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("sends a page one screenshot at a time", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const debuggee = makeDebuggee();
+      host.attach(key, debuggee.tab);
+      const { connection, replies } = yield* watchReplies(host);
+
+      yield* command(connection, 1, "Page.captureScreenshot");
+      yield* command(connection, 2, "Page.captureScreenshot");
+      yield* command(connection, 3, "DOM.enable");
+      expect(debuggee.sent).toEqual([1, 3]);
+
+      debuggee.releaseFirst();
+      expect(yield* Queue.take(replies)).toBe(1);
+      expect(debuggee.sent).toEqual([1, 3, 2]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("stops waiting on a screenshot the page navigated away from", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const debuggee = makeDebuggee();
+      host.attach(key, debuggee.tab);
+      const { connection, replies } = yield* watchReplies(host);
+
+      yield* command(connection, 1, "Page.captureScreenshot");
+      yield* command(connection, 2, "Page.captureScreenshot");
+      yield* command(connection, 3, "Page.captureScreenshot");
+      debuggee.navigate();
+      expect(debuggee.sent).toEqual([1, 2]);
+
+      // The superseded screenshot answering late must not start a third beside the second.
+      debuggee.releaseFirst();
+      expect(yield* Queue.take(replies)).toBe(1);
+      expect(debuggee.sent).toEqual([1, 2]);
+
+      debuggee.releaseFirst();
+      expect(yield* Queue.take(replies)).toBe(2);
+      expect(debuggee.sent).toEqual([1, 2, 3]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("drops screenshots a released relay left waiting", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const debuggee = makeDebuggee();
+      host.attach(key, debuggee.tab);
+
+      const { connection } = yield* watchReplies(host);
+      yield* command(connection, 1, "Page.captureScreenshot");
+      yield* command(connection, 2, "Page.captureScreenshot");
+      yield* connection.handleCommandLine(encodeJson({ type: "release", ...key }));
+      yield* command(connection, 3, "Page.captureScreenshot");
+      expect(debuggee.sent).toEqual([1]);
+
+      const sent = debuggee.nextSend();
+      debuggee.release();
+      yield* Effect.promise(() => sent);
+      expect(debuggee.sent).toEqual([1, 3]);
     }).pipe(Effect.scoped),
   );
 
@@ -390,7 +493,7 @@ describe("DesktopBrowserHost", () => {
       );
       debuggee.emit("Browser.downloadWillBegin", { guid: "guid-1", suggestedFilename: "r.csv" });
       expect(host.placeDownload(debuggee.tab.webContents, item)).toBe(true);
-      expect(paths).toEqual(["/srv/downloads/guid-1"]);
+      expect(paths).toEqual([NodePath.join("/srv/downloads", "guid-1")]);
     }),
   );
 

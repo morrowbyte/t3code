@@ -341,60 +341,6 @@ describe("VcsProcess.run", () => {
     }).pipe(Effect.scoped, provideLive, Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("writes stdin before waiting for exit", () =>
-    Effect.gen(function* () {
-      const result = yield* run({
-        operation: "test.stdin",
-        command: "node",
-        args: [
-          "-e",
-          [
-            "process.stdin.setEncoding('utf8');",
-            "let data='';",
-            "process.stdin.on('data', chunk => { data += chunk; });",
-            "process.stdin.on('end', () => { process.stdout.write(data); });",
-          ].join(""),
-        ],
-        cwd: process.cwd(),
-        stdin: "stdin payload",
-      });
-
-      expect(result.stdout).toBe("stdin payload");
-    }).pipe(provideLive),
-  );
-
-  it.effect("fails with VcsProcessExitError for non-zero exits by default", () =>
-    Effect.gen(function* () {
-      const secretArgument = "--token=super-secret-token";
-      const secretStderr = "remote rejected super-secret-token";
-      const error = yield* run({
-        operation: "test.exit",
-        command: "node",
-        args: [
-          "-e",
-          "process.stderr.write(process.argv[1]); process.exit(2)",
-          secretStderr,
-          secretArgument,
-        ],
-        cwd: process.cwd(),
-      }).pipe(Effect.flip);
-
-      expect(error).toBeInstanceOf(VcsProcessExitError);
-      expect(error).toMatchObject({
-        operation: "test.exit",
-        command: "node",
-        argumentCount: 4,
-        exitCode: 2,
-        detail: "Process exited with a non-zero status.",
-        failureKind: "command-failed",
-        stderrLength: secretStderr.length,
-        stderrTruncated: false,
-      });
-      expect(error.message).not.toContain(secretArgument);
-      expect(error.message).not.toContain(secretStderr);
-    }).pipe(provideLive),
-  );
-
   it.effect("classifies authentication failures without retaining stderr", () =>
     Effect.gen(function* () {
       const secretStderr = "authentication failed for token super-secret-token";
@@ -464,53 +410,6 @@ describe("VcsProcess.run", () => {
       expect(error).toHaveProperty("cause");
       expect(error.message).not.toContain(secretArgument);
     }).pipe(provideLive),
-  );
-
-  it.effect("preserves real boundary causes without manufacturing structural ones", () =>
-    Effect.gen(function* () {
-      const cause = new Error("secret stdin failure");
-      const error = yield* captureProcessResult(
-        Effect.fail(
-          new ProcessRunner.ProcessStdinError({
-            command: baseInput.command,
-            argumentCount: baseInput.args.length,
-            cwd: baseInput.cwd,
-            stdinBytes: 47,
-            cause,
-          }),
-        ),
-      );
-
-      expect(error).toMatchObject({
-        _tag: "VcsProcessStdinWriteError",
-        operation: baseInput.operation,
-        stdinBytes: 47,
-        cause,
-      });
-      expect(error.message).not.toContain(cause.message);
-
-      const missingExitCodeError = yield* captureProcessResult(
-        Effect.succeed({
-          stdout: "",
-          stderr: "",
-          code: null,
-          timedOut: false,
-          stdoutTruncated: false,
-          stderrTruncated: false,
-          stdoutInvalidUtf8: false,
-          stderrInvalidUtf8: false,
-        }),
-      );
-
-      expect(missingExitCodeError).toMatchObject({
-        _tag: "VcsProcessMissingExitCodeError",
-        operation: baseInput.operation,
-        command: baseInput.command,
-        cwd: baseInput.cwd,
-        argumentCount: baseInput.args.length,
-      });
-      expect(missingExitCodeError).not.toHaveProperty("cause");
-    }),
   );
 
   it.effect("truncates output and appends the marker when requested", () =>

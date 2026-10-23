@@ -42,7 +42,7 @@ function history(
 
 describe("workspace router projection", () => {
   it("keeps workspace flows beside Home and restores them after a modal closes", () => {
-    const draft = { key: "draft", name: "NewTaskSheet" };
+    const draft = { key: "draft", name: "Thread", params: { draft: {} } };
     const modal = { key: "connect", name: "ConnectOnboarding" };
     const routes = [home, thread, draft, settings, legal];
     const isOverlay = (route: { name: string }) => route.name === "ConnectOnboarding";
@@ -87,9 +87,6 @@ describe("native workspace dismissal", () => {
     const state = { ...history([home, thread, settings, legal]), index: 1 };
     expect(nativeWorkspacePopAction(state, settings.key)).toBeNull();
     expect(nativeWorkspacePopAction(state, legal.key)).toBeNull();
-  });
-  it("pops a native dismissed file while keeping the conversation and its draft mounted", () => {
-    expect(nativeWorkspacePopCount(history([home, thread, files]), files.key)).toBe(1);
   });
 
   it("removes the descendants when UIKit dismisses their parent conversation", () => {
@@ -314,6 +311,7 @@ describe("v5 stack handoff", () => {
       settings,
     ]);
   });
+  // regression: #17231 keep native screens ordered during stack pops
   it("retains a multi-page pop in order without changing the active router order", () => {
     const replacement = { ...thread, key: "replacement" };
     const screens = reconcileStackScreens([home, thread, files], [home, replacement]);

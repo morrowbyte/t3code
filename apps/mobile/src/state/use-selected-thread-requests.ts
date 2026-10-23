@@ -254,6 +254,7 @@ export function useThreadRequests(
       requestId: RuntimeRequestId,
       decision: ProviderApprovalDecision,
       packageHash?: string,
+      feedback?: string,
     ) => {
       if (!origin || !readEnvironmentScope(origin.environmentId, AuthOrchestrationOperateScope)) {
         return;
@@ -276,6 +277,7 @@ export function useThreadRequests(
           requestId,
           decision,
           ...(packageHash === undefined ? {} : { packageHash }),
+          ...(feedback === undefined ? {} : { feedback }),
         },
       });
       setRespondingApprovalId((current) => (current === requestId ? null : current));
@@ -398,6 +400,7 @@ export function useThreadRequests(
 
   return {
     activePendingApproval,
+    activePendingApprovals,
     activePendingUserInput,
     activePendingUserInputDrafts,
     activePendingUserInputAnswers,
