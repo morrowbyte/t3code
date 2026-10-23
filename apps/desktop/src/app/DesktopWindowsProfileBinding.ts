@@ -123,7 +123,7 @@ export function resolveWindowsProfileBinding(input: WindowsProfileInput): Window
     t3Home:
       explicitHome ?? saved?.t3Home ?? NodePath.win32.join(input.homeDirectory, `.t3-${profileId}`),
     backendPort: explicitPort ?? (sameHome ? saved?.backendPort : undefined),
-    profileId: sameHome ? saved.profileId : profileId,
+    profileId: sameHome && saved ? saved.profileId : profileId,
   };
   const addPort = sameHome && saved?.backendPort === undefined && explicitPort !== undefined;
   if ((!saved && explicitHome) || addPort) {

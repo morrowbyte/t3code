@@ -20,6 +20,10 @@ on:
         description: Build only Windows; reuse the unchanged published .61 WSL runtime and preserve other platform feeds
         type: boolean
         default: false
+      windows_candidate_only:
+        description: Build an unpublished Windows installer with a fresh current-source WSL runtime
+        type: boolean
+        default: false
       android_only:
         description: Build and publish only the signed Android ARM64 APK, leaving desktop feeds unchanged
         type: boolean
@@ -74,6 +78,11 @@ jobs:
       recovered_apk_sha256: ${{ steps.windows_recovery.outputs.apk_sha256 }}
       recovered_apk_receipt_sha256: ${{ steps.windows_recovery.outputs.apk_receipt_sha256 }}
     steps:
+      - name: Require artifact-only mode for a Windows candidate
+        if: inputs.windows_candidate_only && (inputs.publish || inputs.windows_only || inputs.android_only || inputs.recover_desktop_run_id != '' || inputs.recover_windows_run_id != '')
+        run: |
+          echo "Windows candidates require publish=false." >&2
+          exit 1
       - name: Checkout promoted source
         uses: actions/checkout@v4
         with:
@@ -607,12 +616,15 @@ jobs:
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
           RELEASE_RUN: ${{ github.run_number }}
+          RELEASE_SEQUENCE_OFFSET: ${{ vars.MORROWBYTE_RELEASE_SEQUENCE_OFFSET || '0' }}
           ANDROID_ONLY: ${{ inputs.android_only }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}
         run: |
           set -euo pipefail
           [[ "$RELEASE_RUN" =~ ^[1-9][0-9]*$ ]]
+          [[ "$RELEASE_SEQUENCE_OFFSET" =~ ^[0-9]+$ ]]
+          RELEASE_RUN=$(( RELEASE_RUN + 10#$RELEASE_SEQUENCE_OFFSET ))
           (( RELEASE_RUN <= 2100000000 ))
           upstream_metadata="$RUNNER_TEMP/upstream-nightly.txt"
           run_created_at="$(gh api "repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID" --jq .created_at)"
@@ -783,6 +795,7 @@ jobs:
         run: node apps/server/scripts/cli.ts build-exe --verbose
 
       - name: Build Linux AppImage and updater metadata
+        if: inputs.windows_candidate_only != true
         env:
           T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}
           T3CODE_DESKTOP_APP_ID: ${{ vars.MORROWBYTE_DESKTOP_APP_ID || 'com.morrowbyte.t3code' }}
@@ -805,6 +818,7 @@ jobs:
           grep -Fq "repo: $expected_repo" "$update_config"
 
       - name: Prepare NixOS download bundle
+        if: inputs.windows_candidate_only != true
         run: |
           set -euo pipefail
           sed "s|morrowbyte/t3code|${{ vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}|g" \
@@ -825,6 +839,7 @@ jobs:
           node scripts/smoke-cli-archive.ts --archive release-cli/* --expect-version "${{ needs.preflight.outputs.version }}"
 
       - name: Upload Linux release assets
+        if: inputs.windows_candidate_only != true
         uses: actions/upload-artifact@v4
         with:
           name: morrowbyte-release-linux
@@ -850,7 +865,7 @@ jobs:
           retention-days: 1
 
   build_nixos:
-    if: inputs.windows_only != true && inputs.android_only != true && inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == ''
+    if: inputs.windows_candidate_only != true && inputs.windows_only != true && inputs.android_only != true && inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == ''
     needs: [preflight, build_linux]
     runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 40
@@ -1022,7 +1037,7 @@ jobs:
 
   build_android_apk:
     name: Build Morrowbyte Android APK
-    if: ${{ !inputs.windows_only && !inputs.desktop_only && inputs.recover_windows_run_id == '' }}
+    if: ${{ !inputs.windows_candidate_only && !inputs.windows_only && !inputs.desktop_only && inputs.recover_windows_run_id == '' }}
     needs: [preflight]
     runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 60
