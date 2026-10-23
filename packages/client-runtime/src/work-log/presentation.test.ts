@@ -6,6 +6,8 @@ import * as DateTime from "effect/DateTime";
 import {
   resolveWorkEntryToolPresentation,
   workEntryIntentLabel,
+  workEntryExplicitIntentLabel,
+  precedingPublicActivity,
   workEntryExecutionStatus,
   toolItemForDisplay,
   type WorkLogPresentationEntry,
@@ -251,4 +253,75 @@ it("keeps execution status independent of intent and quoted error text", () => {
   };
   expect(workEntryExecutionStatus(entry)).toBe("Completed");
   expect(workEntryIntentLabel(entry)).toBe("Investigate failed checks");
+});
+
+describe("public activity context", () => {
+  it("uses current public progress immediately and never crosses a round, steer or attempt", () => {
+    const labels = precedingPublicActivity(
+      [
+        {
+          kind: "message",
+          role: "assistant",
+          text: "Inspect Tibo's OpenAI posts",
+          runId: "r1",
+          attemptId: "a1",
+        },
+        { kind: "work", id: "first", runId: "r1", attemptId: "a1" },
+        { kind: "work", id: "fast-completed", runId: "r1", attemptId: "a1" },
+        { kind: "work", id: "retry", runId: "r1", attemptId: "a2" },
+        {
+          kind: "message",
+          role: "assistant",
+          text: "Compare the linked announcements",
+          runId: "r1",
+          attemptId: "a2",
+        },
+        { kind: "work", id: "next-step", runId: "r1", attemptId: "a2" },
+        { kind: "message", role: "user", text: "Now inspect pricing", runId: "r1" },
+        { kind: "work", id: "after-steer", runId: "r1", attemptId: "a2" },
+        { kind: "work", id: "new-round", runId: "r2" },
+      ] as const,
+      (entry) => entry,
+    );
+    expect([...labels]).toEqual([
+      ["first", "Inspect Tibo's OpenAI posts"],
+      ["fast-completed", "Inspect Tibo's OpenAI posts"],
+      ["next-step", "Compare the linked announcements"],
+    ]);
+  });
+
+  it("bounds public text without reading reasoning, outputs or opaque arguments", () => {
+    const entries = [
+      { kind: "message", role: "assistant", text: "  Inspect\n" + "x".repeat(1000), runId: null },
+      { kind: "work", id: "unknown", runId: null },
+    ] as const;
+    const labels = precedingPublicActivity(entries, (entry) => entry);
+    expect(labels.get("unknown")).toHaveLength(240);
+    expect(entries[0].text).toContain("\n");
+  });
+
+  it("prefers concrete native metadata over generic command capabilities", () => {
+    const item = commandItem({
+      title: "Extract Tibo’s OpenAI X posts",
+      input: "python3 - <<'PY'\nopaque()\nPY",
+    });
+    expect(
+      workEntryExplicitIntentLabel({
+        id: "call",
+        createdAt: "",
+        label: "",
+        tone: "tool",
+        structuredPayload: item,
+      }),
+    ).toBe(item.title);
+    expect(
+      workEntryExplicitIntentLabel({
+        id: "call",
+        createdAt: "",
+        label: "",
+        tone: "tool",
+        structuredPayload: { ...item, title: "Run shell commands" },
+      }),
+    ).toBeUndefined();
+  });
 });

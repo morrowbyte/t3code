@@ -63,6 +63,17 @@ describe("tool intent generation", () => {
         expect(
           Service.toolIntentInput({ ...item, input: { code: "x".repeat(100_000) } }).length,
         ).toBeLessThanOrEqual(4096);
+        for (const title of ["Run shell commands", "Running Python code", "Run JavaScript"]) {
+          expect(Service.isToolIntentMissing({ ...item, title })).toBe(true);
+          expect(
+            Service.isToolIntentMissing({
+              ...item,
+              type: "command_execution",
+              input: "opaque()",
+              title,
+            }),
+          ).toBe(true);
+        }
         expect(
           Service.isToolIntentMissing({ ...item, title: "Compare selected shipment quotes" }),
         ).toBe(false);

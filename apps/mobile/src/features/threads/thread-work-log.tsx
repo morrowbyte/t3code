@@ -1425,6 +1425,7 @@ export function ThreadWorkGroupToggle(props: {
   readonly hiddenCount: number;
   readonly iconSubtleColor: import("react-native").ColorValue;
   readonly summary: string;
+  readonly executionStatus?: string | undefined;
   readonly summaryKind: ToolGroupSummaryKind;
   readonly summaryToolIcon?: "browser" | "device" | "t3-code" | "pull-request" | "brain";
   readonly themeAppearance: "light" | "dark";
@@ -1436,7 +1437,11 @@ export function ThreadWorkGroupToggle(props: {
   readonly trailing?: ReactNode;
   readonly onToggle: () => void;
 }) {
-  const statusLabel = props.hasFailure ? `${props.summary}, tool call failed` : props.summary;
+  const statusLabel = props.executionStatus
+    ? `${props.summary}, ${props.executionStatus}`
+    : props.hasFailure
+      ? `${props.summary}, tool call failed`
+      : props.summary;
   const accessibilityLabel = props.thought ? `${props.thought} ${statusLabel}` : statusLabel;
   const icon =
     props.summaryToolIcon ??
@@ -1479,7 +1484,7 @@ export function ThreadWorkGroupToggle(props: {
             }}
             rowSizing={props.rowSizing}
           >
-            {props.shimmer ? (
+            {props.shimmer && !props.executionStatus ? (
               <ShimmeringWorkContent
                 key={props.rowSizing.textSizeKey}
                 environmentId={props.environmentId}
@@ -1501,9 +1506,22 @@ export function ThreadWorkGroupToggle(props: {
                     themeAppearance={props.themeAppearance}
                   />
                 </WorkLogIconSlot>
-                <WorkLogLabel key={props.rowSizing.textSizeKey}>{props.summary}</WorkLogLabel>
+                {props.executionStatus ? (
+                  <Text
+                    key={props.rowSizing.textSizeKey}
+                    numberOfLines={3}
+                    className="min-w-0 flex-1 text-sm text-foreground-muted"
+                  >
+                    {props.summary}
+                  </Text>
+                ) : (
+                  <WorkLogLabel key={props.rowSizing.textSizeKey}>{props.summary}</WorkLogLabel>
+                )}
               </>
             )}
+            {props.executionStatus ? (
+              <Text className="pr-1 text-3xs text-foreground-muted">{props.executionStatus}</Text>
+            ) : null}
             <ThreadDisclosureChevron
               expanded={props.expanded}
               collapsedDirection="down"

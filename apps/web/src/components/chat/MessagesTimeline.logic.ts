@@ -13,6 +13,8 @@ import { renderCodexDirectivesForCopy } from "@t3tools/shared/codexMarkdownDirec
 import {
   liveActivityToolStatus,
   workEntryIntentLabel,
+  workEntryExplicitIntentLabel,
+  precedingPublicActivity,
   normalizeCompactToolLabel,
   resolveWorkEntryToolPresentation,
   summarizeToolGroup,
@@ -88,6 +90,8 @@ function workEntryIsActiveTurnActivity(entry: WorkLogEntry): boolean {
 
 function singleToolCallLabel(entry: WorkLogEntry): string {
   if (entry.itemType === "reasoning") return entry.detail?.trim().replace(/\s+/g, " ") || "Thought";
+  const explicitIntent = workEntryExplicitIntentLabel(entry);
+  if (explicitIntent) return explicitIntent;
   const toolPresentation = resolveWorkEntryToolPresentation(entry, "completed");
   if (toolPresentation) return toolPresentation.displayName;
   const item = entry.structuredPayload;
@@ -129,6 +133,8 @@ export function workEntryDisplayLabel(entry: WorkLogEntry, workspaceRoot: string
     const thought = entry.detail?.trim().replace(/\s+/g, " ");
     return thought || entry.label;
   }
+  const explicitIntent = workEntryExplicitIntentLabel(entry);
+  if (explicitIntent) return explicitIntent;
   const toolPresentation = resolveWorkEntryToolPresentation(entry);
   if (toolPresentation) return toolPresentation.displayName;
   const intent = workEntryIntentLabel(entry);
@@ -236,6 +242,8 @@ export function liveWorkEntryLabel(
       (status === "inProgress" ? "Thinking" : "Thought")
     );
   }
+  const explicitIntent = workEntryExplicitIntentLabel(entry);
+  if (explicitIntent) return explicitIntent;
   const toolPresentation = resolveWorkEntryToolPresentation({
     ...entry,
     toolLifecycleStatus: status,
@@ -521,6 +529,7 @@ type MessagesTimelineRowContent =
       expanded: boolean;
       active: boolean;
       thought?: WorkLogEntry;
+      activityIntent?: string | undefined;
     }
   | {
       kind: "working";
@@ -1415,6 +1424,24 @@ export function deriveMessagesTimelineRows(input: {
   worktreeSetup?: WorktreeSetupSnapshot | null;
 }): MessagesTimelineRow[] {
   const timelineEntries = timelineRowEntries(input.timelineEntries);
+  const activityIntents = precedingPublicActivity(timelineEntries, (entry) =>
+    entry.kind === "message"
+      ? {
+          kind: "message",
+          role: entry.message.role,
+          text: entry.message.text,
+          runId: entry.message.runId,
+          attemptId: entry.attempt?.id,
+        }
+      : entry.kind === "work"
+        ? {
+            kind: "work",
+            id: entry.id,
+            runId: entry.entry.runId ?? null,
+            attemptId: entry.attempt?.id,
+          }
+        : { kind: "boundary" },
+  );
   const turnDiffSummaryByAssistantMessageId = new Map<MessageId, TurnDiffSummary>();
   for (const summary of input.turnDiffSummaries) {
     if (summary.assistantMessageId) {
@@ -1558,6 +1585,7 @@ export function deriveMessagesTimelineRows(input: {
             groupId,
             expanded: input.expandedWorkGroupIds?.has(groupId) ?? false,
             active: latestToolKeepsActivityLive,
+            activityIntent: activityIntents.get(activeWorkAnchor.id),
             ...(latestThoughtEntry ? { thought: latestThoughtEntry.entry } : {}),
           };
         })()
@@ -1725,6 +1753,7 @@ export function deriveMessagesTimelineRows(input: {
             id: `work-live:${timelineEntry.id}`,
             createdAt: timelineEntry.createdAt,
             entry: latestActiveToolEntry,
+            activityIntent: activityIntents.get(timelineEntry.id),
             groupedEntries: visibleGroupedEntries,
             groupId,
             expanded,
@@ -2189,6 +2218,9 @@ function replaceStreamingMessageRows(
     replacements.set(previousEntry.message, entry);
   }
   if (replacements.size === 0) return previous.rows;
+  // Public text can also supply a live work group's context.
+  if (previous.rows.some((row) => row.kind === "work-live" && row.activityIntent !== undefined))
+    return null;
   return previous.rows.map((row) => {
     if (row.kind !== "message" && row.kind !== "assistant-meta") return row;
     const entry = replacements.get(row.message);
@@ -2321,6 +2353,7 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.groupId === bw.groupId &&
         a.expanded === bw.expanded &&
         a.active === bw.active &&
+        a.activityIntent === bw.activityIntent &&
         Equal.equals(a.entry, bw.entry) &&
         Equal.equals(a.groupedEntries, bw.groupedEntries)
       );

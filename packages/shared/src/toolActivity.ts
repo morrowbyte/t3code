@@ -61,6 +61,12 @@ export function dynamicToolSurface(toolName: string | null | undefined, input: u
     : undefined;
 }
 
+export function isGenericToolActivityTitle(title: string | null | undefined): boolean {
+  return /^(?:command|(?:running|ran) [\w./\\-]+|(?:run|running) (?:javascript|python(?: code)?|shell commands)|computer use)$/iu.test(
+    title ?? "",
+  );
+}
+
 export function dynamicToolTitle(
   toolName: string | null | undefined,
   input: unknown,

@@ -16,6 +16,9 @@ import {
 import {
   contextCompactionLabel,
   workEntryIntentLabel,
+  workEntryExplicitIntentLabel,
+  workEntryExecutionStatus,
+  precedingPublicActivity,
   liveThoughtLine,
   toolItemForDisplay,
   workEntryDisplayIndicatesToolFailure,
@@ -130,6 +133,7 @@ export interface ThreadFeedMessage {
   readonly context?: import("@t3tools/contracts").OrchestrationMessageContext | undefined;
   readonly id: MessageId;
   readonly role: "user" | "assistant";
+  readonly attemptId?: RunAttemptId | null;
   readonly text: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
   readonly runId: RunId | null;
@@ -228,6 +232,7 @@ type ThreadFeedEntryContent =
       readonly hasFailure: boolean;
       readonly live: boolean;
       readonly shimmer: boolean;
+      readonly executionStatus?: string | undefined;
       readonly thought?: string;
     }
   | {
@@ -280,6 +285,8 @@ function compactWorkEntryText(value: string): string {
 export function workEntryRowLabel(entry: WorkLogPresentationEntry, expanded = false): string {
   if (expanded && entry.itemType === "reasoning")
     return entry.toolLifecycleStatus === "inProgress" ? "Thinking" : "Thought";
+  const explicitIntent = workEntryExplicitIntentLabel(entry);
+  if (explicitIntent) return explicitIntent;
   const presentation = resolveWorkEntryToolPresentation(entry);
   if (presentation) return presentation.displayName;
   const intent = workEntryIntentLabel(entry);
@@ -343,6 +350,7 @@ const presentedActivityGroupsCache = new WeakMap<
     readonly activeRunId: RunId | null;
     readonly isWorking: boolean;
     readonly activeTail: boolean;
+    readonly activityIntent?: string | undefined;
     readonly rows: ReadonlyArray<ThreadFeedEntry>;
   }
 >();
@@ -889,6 +897,8 @@ function singleToolCallLabel(activity: ThreadFeedActivity, expanded: boolean): s
     return expanded
       ? "Thought"
       : compactWorkEntryText(activity.workEntry.detail ?? "") || "Thought";
+  const explicitIntent = workEntryExplicitIntentLabel(activity.workEntry);
+  if (explicitIntent) return explicitIntent;
   const presentation = resolveWorkEntryToolPresentation(activity.workEntry, "completed");
   if (presentation) return presentation.displayName;
   const command = activity.workEntry.command?.trim();
@@ -1377,6 +1387,24 @@ export function deriveThreadFeedPresentation(
   const sourceFeed = retainedFeed.map((entry, index) =>
     settleSupersededReasoning(entry, index === retainedFeed.length - 1),
   );
+  const activityIntents = precedingPublicActivity(sourceFeed, (entry) =>
+    entry.type === "message"
+      ? {
+          kind: "message",
+          role: entry.message.role,
+          text: entry.message.text,
+          runId: entry.message.runId,
+          attemptId: entry.message.attemptId,
+        }
+      : entry.type === "activity-group"
+        ? {
+            kind: "work",
+            id: entry.id,
+            runId: entry.runId,
+            attemptId: entry.activities[0]?.attemptId,
+          }
+        : { kind: "boundary" },
+  );
   const failedRunIds = failedFeedRunIds(sourceFeed, latestRun);
   const activeTailGroup = sourceFeed.at(-1);
   const activeRunId = unsettledRunId(latestRun);
@@ -1464,6 +1492,7 @@ export function deriveThreadFeedPresentation(
         activeRunId,
         isWorking,
         isActiveTailGroup,
+        activityIntents.get(entry.id),
       );
     }
   }
@@ -1597,6 +1626,7 @@ function appendPresentedFeedEntry(
   activeRunId: RunId | null,
   isWorking: boolean,
   activeTail: boolean,
+  activityIntent?: string,
 ): void {
   if (entry.type !== "activity-group") {
     result.push(entry);
@@ -1618,13 +1648,22 @@ function appendPresentedFeedEntry(
     cached.activeRunId !== activeRunId ||
     cached.isWorking !== isWorking ||
     cached.activeTail !== activeTail ||
+    cached.activityIntent !== activityIntent ||
     cached.rows.some(
       (row) => row.type === "work-toggle" && expandedWorkGroupIds.has(row.groupId) !== row.expanded,
     )
   ) {
     const rows: ThreadFeedEntry[] = [];
-    appendActivityGroupRows(rows, entry, expandedWorkGroupIds, activeRunId, isWorking, activeTail);
-    cached = { activeRunId, isWorking, activeTail, rows };
+    appendActivityGroupRows(
+      rows,
+      entry,
+      expandedWorkGroupIds,
+      activeRunId,
+      isWorking,
+      activeTail,
+      activityIntent,
+    );
+    cached = { activeRunId, isWorking, activeTail, activityIntent, rows };
     presentedActivityGroupsCache.set(entry, cached);
   }
   for (const row of cached.rows) {
@@ -1639,6 +1678,7 @@ function appendActivityGroupRows(
   activeRunId: RunId | null,
   isWorking: boolean,
   activeTail: boolean,
+  activityIntent?: string,
 ): void {
   const groupAnchorIdByActivityId = new Map<string, string>();
   let groupAnchorId: string | null = null;
@@ -1672,6 +1712,7 @@ function appendActivityGroupRows(
       activeRunId,
       isWorking,
       activeTail && isTrailingRun,
+      activityIntent,
     );
     groupableRun = [];
   };
@@ -1703,6 +1744,7 @@ function appendToolGroupRows(
   activeRunId: RunId | null,
   isWorking: boolean,
   activeTail: boolean,
+  activityIntent?: string,
 ): void {
   const expanded = expandedWorkGroupIds.has(groupId);
   const latestActiveActivity = activities.findLast(
@@ -1724,24 +1766,31 @@ function appendToolGroupRows(
         )?.workEntry.detail
       : undefined;
   const thought = latestThought ? liveThoughtLine(latestThought) : "";
-  const summary = live
-    ? (expanded || thought) && latestActivity.workEntry.itemType === "reasoning"
-      ? latestActivity.lifecycleStatus === "inProgress"
-        ? "Thinking"
-        : "Thought"
-      : liveToolActivitySummary(latestActivity, live)
-    : singleActivity !== null &&
-        singleActivity.toolLike &&
-        toolGroupAction(singleActivity.workEntry) !== "edit"
-      ? singleToolCallLabel(singleActivity, expanded)
-      : singleActivity !== null && !singleActivity.toolLike
-        ? singleActivity.workEntry.label
-        : groupSummary.summary;
+  const groupIntent = live ? activityIntent : undefined;
+  const summary =
+    groupIntent ??
+    (live
+      ? (expanded || thought) && latestActivity.workEntry.itemType === "reasoning"
+        ? latestActivity.lifecycleStatus === "inProgress"
+          ? "Thinking"
+          : "Thought"
+        : liveToolActivitySummary(latestActivity, live)
+      : singleActivity !== null &&
+          singleActivity.toolLike &&
+          toolGroupAction(singleActivity.workEntry) !== "edit"
+        ? singleToolCallLabel(singleActivity, expanded)
+        : singleActivity !== null && !singleActivity.toolLike
+          ? singleActivity.workEntry.label
+          : groupSummary.summary);
   const id = shimmer ? LIVE_ACTIVITY_ROW_ID : `${live ? "work-live" : "work-toggle"}:${groupId}`;
   // A lone call needs no header. Its own row takes the header's place, label
   // and identity, and discloses its details directly. A lone thought keeps the
   // header, whose expansion already shows the text itself.
-  if (singleActivity !== null && singleActivity.workEntry.itemType !== "reasoning") {
+  if (
+    singleActivity !== null &&
+    !groupIntent &&
+    singleActivity.workEntry.itemType !== "reasoning"
+  ) {
     result.push({
       type: "activity-group",
       id,
@@ -1787,6 +1836,7 @@ function appendToolGroupRows(
     hiddenCount: activities.length,
     expanded,
     summary,
+    executionStatus: live ? workEntryExecutionStatus(latestActivity.workEntry) : undefined,
     summaryKind: toolGroupSummaryKind(
       (live ? [latestActivity] : activities).map((activity) => activity.workEntry),
     ),
@@ -1829,6 +1879,8 @@ function liveToolActivitySummary(activity: ThreadFeedActivity, presentTense: boo
       (status === "inProgress" ? "Thinking" : "Thought")
     );
   }
+  const explicitIntent = workEntryExplicitIntentLabel(activity.workEntry);
+  if (explicitIntent) return explicitIntent;
   const presentation = resolveWorkEntryToolPresentation({
     ...activity.workEntry,
     toolLifecycleStatus: status,
@@ -2151,6 +2203,7 @@ export function buildThreadFeed(
         message: {
           id: item.messageId,
           role: item.type === "user_message" ? "user" : "assistant",
+          attemptId,
           text: item.text,
           ...(item.type === "user_message" && item.context ? { context: item.context } : {}),
           attachments: item.attachments ?? [],

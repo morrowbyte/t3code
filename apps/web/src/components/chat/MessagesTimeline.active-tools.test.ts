@@ -1,6 +1,12 @@
-import { RunId } from "@t3tools/contracts";
+import { MessageId, RunId, ThreadId, TurnItemId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
-import { deriveMessagesTimelineRows, liveWorkEntryLabel } from "./MessagesTimeline.logic";
+import {
+  deriveMessagesTimelineRows,
+  computeStableMessagesTimelineRows,
+  deriveMessagesTimelineRowsWithState,
+  liveWorkEntryLabel,
+  workEntryDisplayLabel,
+} from "./MessagesTimeline.logic";
 
 describe("long active tool groups", () => {
   it.each([false, true])(
@@ -49,3 +55,129 @@ describe("long active tool groups", () => {
     },
   );
 });
+
+it.each(["command_execution", "dynamic_tool"] as const)(
+  "shows group context before enrichment and concrete %s intent in individual rows",
+  (type) => {
+    const runId = RunId.make("intent-run");
+    const at = "2026-10-23T20:05:50.263Z";
+    const input = type === "command_execution" ? "python3 - <<'PY'\nopaque()\nPY" : { capsule: 42 };
+    const item = {
+      id: TurnItemId.make("runtime-call"),
+      threadId: ThreadId.make("fixture"),
+      runId,
+      type,
+      input,
+      toolName: "mcp__newly_registered__inspect_capsule",
+      title: null,
+      status: "running",
+    } as unknown as import("@t3tools/contracts").OrchestrationV2TurnItem;
+    const work = {
+      id: "call",
+      kind: "work" as const,
+      createdAt: at,
+      entry: {
+        id: "call",
+        createdAt: at,
+        runId,
+        label: "Run shell commands",
+        tone: "tool" as const,
+        itemType: type,
+        toolLifecycleStatus: "inProgress" as const,
+        structuredPayload: item,
+      },
+    };
+    const commentary = {
+      id: "progress",
+      kind: "message" as const,
+      createdAt: at,
+      message: {
+        id: MessageId.make("progress"),
+        role: "assistant" as const,
+        text: "Inspect Tibo's OpenAI posts from 23 October",
+        runId,
+        streaming: false,
+        createdAt: at,
+        updatedAt: at,
+      },
+    };
+    const renderRows = (timelineEntries: import("../../session-logic").TimelineEntry[]) =>
+      deriveMessagesTimelineRows({
+        timelineEntries,
+        isWorking: true,
+        runningRunId: runId,
+        turnDiffSummaries: [],
+        supportsConversationRollback: false,
+        expandedWorkGroupIds: new Set(["work-group:call"]),
+      });
+    const before = renderRows([commentary, work]);
+    const changedCommentary = {
+      ...commentary,
+      message: {
+        ...commentary.message,
+        text: "Compare the selected announcements",
+        streaming: true,
+      },
+    };
+    const changedRows = renderRows([changedCommentary, work]);
+    const stable = computeStableMessagesTimelineRows(before, { byId: new Map(), result: [] });
+    const updated = computeStableMessagesTimelineRows(changedRows, stable);
+    expect(updated.result.find((row) => row.kind === "work-live")).toMatchObject({
+      activityIntent: changedCommentary.message.text,
+    });
+    const context = {
+      isWorking: true,
+      runningRunId: runId,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    };
+    const streamingCommentary = {
+      ...commentary,
+      message: { ...commentary.message, streaming: true },
+    };
+    const projection = deriveMessagesTimelineRowsWithState({
+      ...context,
+      timelineEntries: [streamingCommentary, work],
+    });
+    const streamed = deriveMessagesTimelineRowsWithState(
+      { ...context, timelineEntries: [changedCommentary, work] },
+      projection,
+    );
+    expect(streamed.rows.find((row) => row.kind === "work-live")).toMatchObject({
+      activityIntent: changedCommentary.message.text,
+    });
+
+    expect(before.find((row) => row.kind === "work-live")).toMatchObject({
+      activityIntent: commentary.message.text,
+    });
+    expect(before.find((row) => row.kind === "work")?.groupedEntries[0]?.structuredPayload).toBe(
+      item,
+    );
+    const titled = {
+      ...work,
+      entry: {
+        ...work.entry,
+        structuredPayload: { ...item, title: "Extract the selected OpenAI posts" },
+      },
+    };
+    const after = renderRows([commentary, titled]);
+    expect(after.find((row) => row.kind === "work-live")).toMatchObject({
+      activityIntent: commentary.message.text,
+    });
+    expect(liveWorkEntryLabel(titled.entry, undefined, true)).toBe(
+      "Extract the selected OpenAI posts",
+    );
+    expect(workEntryDisplayLabel(titled.entry, undefined)).toBe(
+      "Extract the selected OpenAI posts",
+    );
+    expect(
+      "input" in titled.entry.structuredPayload ? titled.entry.structuredPayload.input : undefined,
+    ).toBe(input);
+    const nextRound = { ...work, entry: { ...work.entry, runId: RunId.make("next-run") } };
+    expect(
+      renderRows([commentary, nextRound]).some(
+        (row) => row.kind === "work-live" && row.activityIntent,
+      ),
+    ).toBe(false);
+  },
+);

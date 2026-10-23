@@ -495,7 +495,10 @@ export function LiveWorkEntryTimelineRow({
   const questionHeading = row.entry.questionAnswer
     ? getQuestionTextPreview(row.entry.questionAnswer)
     : "";
-  const label = questionHeading || liveWorkEntryLabel(row.entry, ctx.workspaceRoot, row.active);
+  const label =
+    questionHeading ||
+    row.activityIntent ||
+    liveWorkEntryLabel(row.entry, ctx.workspaceRoot, row.active);
   const executionStatus = workEntryExecutionStatus(row.entry);
   const threadLabel = threadReadLabel(label, threadTarget);
 
@@ -552,7 +555,7 @@ export function LiveWorkEntryTimelineRow({
             className="mt-1 size-4 shrink-0"
             muted
           />
-          <span className="min-w-0 flex-1 line-clamp-2 [overflow-wrap:anywhere]">{label}</span>
+          <span className="min-w-0 flex-1 line-clamp-3 [overflow-wrap:anywhere]">{label}</span>
           <span className="shrink-0 text-xs text-muted-foreground">{executionStatus}</span>
         </span>
       ) : (

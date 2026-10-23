@@ -1340,9 +1340,9 @@ describe("buildThreadFeed", () => {
     const activities = feed.flatMap((entry) =>
       entry.type === "activity-group" ? entry.activities : [],
     );
-    expect(workEntryRowLabel(activities[0]!.workEntry)).toBe("Listed projects");
-    expect(workEntryRowLabel(activities[1]!.workEntry)).toBe("Cloned a repository");
-    expect(workEntryRowLabel(activities[2]!.workEntry)).toBe("Failed to clone a repository");
+    expect(workEntryRowLabel(activities[0]!.workEntry)).toBe("Custom provider title");
+    expect(workEntryRowLabel(activities[1]!.workEntry)).toBe("Custom provider title");
+    expect(workEntryRowLabel(activities[2]!.workEntry)).toBe("Custom provider title");
     expect(activities.every((activity) => activity.logo === "t3-code")).toBe(true);
     const presented = deriveThreadFeedPresentation(
       feed,
@@ -2085,3 +2085,125 @@ it("presents an arbitrary runtime tool's authored intent without flattening its 
   );
   expect(item.input).toBe(input);
 });
+
+it.each(["command_execution", "dynamic_tool"] as const)(
+  "separates immediate public group context from enriched %s details",
+  (type) => {
+    const input = type === "command_execution" ? "python3 - <<'PY'\nopaque()\nPY" : { capsule: 42 };
+    const activity = {
+      ...base("opaque", "2026-10-23T20:05:50.263Z", 2),
+      type,
+      status: "running",
+      input,
+      toolName: "mcp__future_capsules__unpack",
+    } as OrchestrationV2TurnItem;
+    const progress = { ...assistantMessage(), text: "Inspect Tibo's OpenAI posts from 23 October" };
+    const feed = buildThreadFeed([
+      projected(userMessage(), 0),
+      projected(progress, 1),
+      projected(activity, 2),
+    ]);
+    const latestRun: ThreadFeedLatestRun = {
+      runId,
+      status: "running",
+      turnEnded: false,
+      startedAt: null,
+      completedAt: null,
+    };
+    const collapsed = deriveThreadFeedPresentation(
+      feed,
+      latestRun,
+      new Set(),
+      new Set(),
+      "2026-10-23T20:05:50.263Z",
+    );
+    const header = collapsed.find((row) => row.type === "work-toggle");
+    const cache = createThreadFeedCache();
+    deriveThreadFeedPresentation(
+      feed,
+      latestRun,
+      new Set(),
+      new Set(),
+      "2026-10-23T20:05:50.263Z",
+      false,
+      cache,
+    );
+    const changedProgress = feed.map((entry) =>
+      entry.type === "message" && entry.message.role === "assistant"
+        ? { ...entry, message: { ...entry.message, text: "Compare selected announcements" } }
+        : entry,
+    );
+    const updated = deriveThreadFeedPresentation(
+      changedProgress,
+      latestRun,
+      new Set(),
+      new Set(),
+      "2026-10-23T20:05:50.263Z",
+      false,
+      cache,
+    );
+    expect(updated.find((row) => row.type === "work-toggle")).toMatchObject({
+      summary: "Compare selected announcements",
+    });
+
+    expect(header).toMatchObject({
+      summary: progress.text,
+      expanded: false,
+      executionStatus: "Running",
+    });
+    if (header?.type !== "work-toggle") throw new Error("Missing tool group");
+    const fastFeed = buildThreadFeed([
+      projected(userMessage(), 0),
+      projected(progress, 1),
+      projected({ ...activity, status: "completed" }, 2),
+    ]);
+    const fast = deriveThreadFeedPresentation(
+      fastFeed,
+      latestRun,
+      new Set(),
+      new Set(),
+      "2026-10-23T20:05:50.263Z",
+    );
+    expect(fast.find((row) => row.type === "work-toggle")).toMatchObject({
+      summary: progress.text,
+      executionStatus: "Completed",
+    });
+    const titled = { ...activity, title: "Extract the selected OpenAI posts" };
+    const nextFeed = buildThreadFeed([
+      projected(userMessage(), 0),
+      projected(progress, 1),
+      projected(titled, 2),
+    ]);
+    const expanded = deriveThreadFeedPresentation(
+      nextFeed,
+      latestRun,
+      new Set(),
+      new Set([header.groupId]),
+      "2026-10-23T20:05:50.263Z",
+    );
+    expect(expanded.find((row) => row.type === "work-toggle")).toMatchObject({
+      summary: progress.text,
+    });
+    const detail = expanded.flatMap((row) =>
+      row.type === "activity-group" ? row.activities : [],
+    )[0];
+    expect(detail && workEntryRowLabel(detail.workEntry)).toBe(titled.title);
+    expect(
+      detail?.workEntry.structuredPayload && "input" in detail.workEntry.structuredPayload
+        ? detail.workEntry.structuredPayload.input
+        : undefined,
+    ).toBe(input);
+    const nextRound = { ...activity, runId: RunId.make("new-round") };
+    const newFeed = buildThreadFeed([projected(progress, 0), projected(nextRound, 1)]);
+    const newRows = deriveThreadFeedPresentation(
+      newFeed,
+      { ...latestRun, runId: nextRound.runId },
+      new Set(),
+      new Set(),
+      "2026-10-23T20:05:50.263Z",
+    );
+    expect(newRows.some((row) => row.type === "work-toggle" && row.summary === progress.text)).toBe(
+      false,
+    );
+  },
+);

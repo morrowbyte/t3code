@@ -23,6 +23,7 @@ import {
   authoredCodeIntent,
   classifyToolActivity,
   dynamicToolTitle,
+  isGenericToolActivityTitle,
   toolCallTitle,
 } from "@t3tools/shared/toolActivity";
 import { commandIntentLabel } from "./commandLabel.ts";
@@ -106,6 +107,78 @@ export interface WorkLogPresentationEntry {
   readonly toolIcon?: ToolActivityIcon;
 }
 
+type PublicActivityEntry =
+  | {
+      readonly kind: "message";
+      readonly role: string;
+      readonly text: string;
+      readonly runId: string | null;
+      readonly attemptId?: string | null | undefined;
+    }
+  | {
+      readonly kind: "work";
+      readonly id: string;
+      readonly runId: string | null;
+      readonly attemptId?: string | null | undefined;
+    }
+  | { readonly kind: "boundary" };
+
+/** Public progress describes a work group, never the effects or intent of an individual call. */
+export function precedingPublicActivity<T>(
+  entries: ReadonlyArray<T>,
+  describe: (entry: T) => PublicActivityEntry,
+): ReadonlyMap<string, string> {
+  const labels = new Map<string, string>();
+  let current: { runId: string | null; attemptId: string | null; text: string } | undefined;
+  for (const source of entries) {
+    const entry = describe(source);
+    if (entry.kind === "boundary" || (entry.kind === "message" && entry.role !== "assistant")) {
+      current = undefined;
+      continue;
+    }
+    if (entry.kind === "message") {
+      const text = entry.text.trim().replace(/\s+/gu, " ");
+      current = text
+        ? {
+            runId: entry.runId,
+            attemptId: entry.attemptId ?? null,
+            text: text.length > 240 ? `${text.slice(0, 239)}…` : text,
+          }
+        : undefined;
+    } else if (current?.runId === entry.runId && current.attemptId === (entry.attemptId ?? null)) {
+      labels.set(entry.id, current.text);
+    } else {
+      current = undefined;
+    }
+  }
+  return labels;
+}
+
+export function workEntryExplicitIntentLabel(entry: WorkLogPresentationEntry): string | undefined {
+  const item = entry.structuredPayload;
+  if (item?.type !== "command_execution" && item?.type !== "dynamic_tool") return undefined;
+  const title =
+    item.type === "dynamic_tool"
+      ? dynamicToolTitle(item.toolName, item.input, item.title)
+      : toolCallTitle(item.title);
+  if (
+    title &&
+    !isGenericToolActivityTitle(title) &&
+    title !== (typeof item.input === "string" ? item.input.trim() : undefined)
+  )
+    return title;
+  return authoredCodeIntent(
+    item.type === "command_execution"
+      ? item.input
+      : typeof item.input === "object" &&
+          item.input !== null &&
+          "code" in item.input &&
+          typeof item.input.code === "string"
+        ? item.input.code
+        : "",
+  );
+}
+
 export function workEntryIntentLabel(entry: WorkLogPresentationEntry): string | undefined {
   const item = entry.structuredPayload;
   if (item?.type === "dynamic_tool") {
@@ -116,7 +189,7 @@ export function workEntryIntentLabel(entry: WorkLogPresentationEntry): string | 
   const command = item?.type === "command_execution" ? item.input : entry.command;
   if (!command?.trim()) return undefined;
   const title = toolCallTitle(item?.title);
-  const genericTitle = /^(?:command|running [\w./\\-]+|ran [\w./\\-]+)$/iu.test(title ?? "");
+  const genericTitle = isGenericToolActivityTitle(title);
   return (
     (title && title !== command.trim() && !genericTitle ? title : undefined) ??
     authoredCodeIntent(command) ??

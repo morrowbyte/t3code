@@ -5,7 +5,12 @@ import {
   type ProviderInstanceId,
   type ProviderDriverKind,
 } from "@t3tools/contracts";
-import { authoredCodeIntent, dynamicToolTitle, toolCallTitle } from "@t3tools/shared/toolActivity";
+import {
+  authoredCodeIntent,
+  dynamicToolTitle,
+  isGenericToolActivityTitle,
+  toolCallTitle,
+} from "@t3tools/shared/toolActivity";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -19,7 +24,7 @@ type ToolItem = Extract<OrchestrationV2TurnItem, { type: "command_execution" | "
 export function isToolIntentMissing(item: ToolItem): boolean {
   if (item.type === "dynamic_tool") {
     const title = dynamicToolTitle(item.toolName, item.input, item.title);
-    return !title || title === "Run JavaScript" || title === "Computer use";
+    return !title || isGenericToolActivityTitle(title);
   }
   // These literal reads already have concrete client labels; opaque calls still use inference.
   const literalRead =
@@ -30,9 +35,7 @@ export function isToolIntentMissing(item: ToolItem): boolean {
   return (
     !literalRead &&
     !authoredCodeIntent(item.input) &&
-    (!title ||
-      title === item.input.trim() ||
-      /^(?:command|running [\w./\\-]+|ran [\w./\\-]+)$/iu.test(title))
+    (!title || title === item.input.trim() || isGenericToolActivityTitle(title))
   );
 }
 
