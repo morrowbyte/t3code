@@ -829,6 +829,10 @@ jobs:
           tar -czf release-linux/morrowbyte-linux-x64.tar.gz -C release-linux \
             "$(basename "$appimage")" nightly-linux.yml install-linux.sh
 
+      - name: Build the WSL resource monitor for a Windows candidate
+        if: inputs.windows_candidate_only
+        run: cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml --target x86_64-unknown-linux-gnu
+
       - name: Package and smoke-test Linux CLI archive
         run: |
           set -euo pipefail
