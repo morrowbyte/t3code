@@ -1021,6 +1021,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
           threadId={props.selectedThread.id}
           providerInstanceId={currentModelSelection.instanceId}
           eligible={
+            !props.isDraft &&
             props.canOperateThread &&
             props.connectionState === "connected" &&
             selectedProviderStatus?.driver === "codex" &&
