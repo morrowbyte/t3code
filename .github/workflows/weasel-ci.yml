@@ -109,6 +109,16 @@ jobs:
           apps/server/src/voice/CodexLiveSessionService.test.ts
           apps/server/src/voice/CodexLiveSessionService.ts
           packages/provider-core/src/server/ProviderAdapter.ts
+      - name: Test computer-use browser and editor boundaries
+        working-directory: apps/server
+        run: >-
+          vp test run
+          src/preview/ServerBrowserPage.test.ts
+          src/preview/ServerBrowser.test.ts
+          src/mcp/toolkits/preview/PreviewBatch.test.ts
+          src/mcp/McpHttpServer.test.ts
+          src/integrations/editorLink/EditorFollow.test.ts
+          src/integrations/editorLink/EditorFollowAcp.test.ts
       - name: Test voice dictation request deferral
         working-directory: apps/web
         run: >-
