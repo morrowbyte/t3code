@@ -8,7 +8,12 @@ it("does not offer thread back on a direct entry or unrelated navigation", async
   await expect
     .element(screen.getByRole("button", { name: "Back to previous thread" }))
     .not.toBeInTheDocument();
-  await act(() => screen.router!.navigate({ to: "/env/b" }));
+  await act(() =>
+    screen.router!.navigate({
+      to: "/$environmentId/$threadId",
+      params: { environmentId: "env", threadId: "b" },
+    }),
+  );
   await expect
     .element(screen.getByRole("button", { name: "Back to previous thread" }))
     .not.toBeInTheDocument();
@@ -17,7 +22,11 @@ it("does not offer thread back on a direct entry or unrelated navigation", async
 it("unwinds linked threads by history identity after the visible title changes", async () => {
   await using screen = await render(<ThreadLinkBackButton />, { router: "/env/a" });
   await act(() =>
-    screen.router!.navigate({ to: "/other-env/b", state: { threadLinkOrigin: true } }),
+    screen.router!.navigate({
+      to: "/$environmentId/$threadId",
+      params: { environmentId: "other-env", threadId: "b" },
+      state: { threadLinkOrigin: true },
+    }),
   );
   await screen.rerender(
     <>
@@ -25,7 +34,13 @@ it("unwinds linked threads by history identity after the visible title changes",
       <ThreadLinkBackButton />
     </>,
   );
-  await act(() => screen.router!.navigate({ to: "/env/c", state: { threadLinkOrigin: true } }));
+  await act(() =>
+    screen.router!.navigate({
+      to: "/$environmentId/$threadId",
+      params: { environmentId: "env", threadId: "c" },
+      state: { threadLinkOrigin: true },
+    }),
+  );
   await screen.getByRole("button", { name: "Back to previous thread" }).click();
   await expect.poll(() => screen.router!.state.location.pathname).toBe("/other-env/b");
   await screen.getByRole("button", { name: "Back to previous thread" }).click();
