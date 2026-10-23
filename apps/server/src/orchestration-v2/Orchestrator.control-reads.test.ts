@@ -339,7 +339,27 @@ it.effect(
           text,
           attachments: [],
           dispatchMode: { type: "start_immediately" as const },
-          delegation: { modelSelection, ...(index === 2 ? { projectId: destinationProject } : {}) },
+          delegation: {
+            modelSelection,
+            ...(index === 2 ? { projectId: destinationProject } : {}),
+            voiceIntake: {
+              stopId: null,
+              leaseId: "intake-lease",
+              generation: 1,
+              intentId: `intake-${index}`,
+              provisional: true,
+              sources: [
+                {
+                  segmentId: `segment-${index}`,
+                  stopId: null,
+                  revision: 3,
+                  start: 0,
+                  end: text.length,
+                  quote: text,
+                },
+              ],
+            },
+          },
           createdBy: "user" as const,
           creationSource: "voice" as const,
         };
@@ -363,6 +383,11 @@ it.effect(
           assert.isNull(child.thread.worktreePath);
           assert.isNull(child.thread.branch);
         }
+        assert.deepEqual(child.thread.voiceIntake, command.delegation.voiceIntake);
+        assert.deepEqual(
+          admission.delegationAdmission?.voiceIntake,
+          command.delegation.voiceIntake,
+        );
         assert.equal(child.runs[0]!.status, "starting");
         assert.equal(child.messages[0]!.text, text);
         assert.equal(child.messages.length, 1, "only the concrete brief reaches a fresh child");
@@ -395,6 +420,25 @@ it.effect(
       assert.equal(parent.runs.filter((run) => run.status === "queued").length, 0);
       assert.equal(parent.runs.filter((run) => run.status === "starting").length, 1);
       const firstTask = parent.subagents[0]!;
+      const provisional = yield* projections.getThreadProjection(firstTask.childThreadId!);
+      const beforeRunIds = provisional.runs.map((run) => run.id);
+      const confirm = {
+        type: "thread.runtime-mode.set" as const,
+        commandId: CommandId.make("confirm-voice-intake"),
+        threadId: provisional.thread.id,
+        runtimeMode: provisional.thread.runtimeMode,
+        voiceIntakeConfirmation: { ...provisional.thread.voiceIntake!, provisional: false },
+      };
+      const confirmedReceipt = yield* orchestrator.dispatch(confirm);
+      const confirmed = yield* projections.getThreadProjection(provisional.thread.id);
+      assert.isFalse(confirmed.thread.voiceIntake!.provisional);
+      assert.deepEqual(
+        confirmed.runs.map((run) => run.id),
+        beforeRunIds,
+      );
+      assert.equal((yield* orchestrator.dispatch(confirm)).sequence, confirmedReceipt.sequence);
+      assert.equal((yield* projections.getThreadProjection(threadId)).subagents.length, 3);
+
       const sink = yield* EventSink.EventSinkV2;
       yield* sink.write({
         events: [
@@ -548,6 +592,131 @@ it.effect(
         delegation: { modelSelection },
       });
     }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("fences a held voice decision against committed Stop and preserves accepted replay", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const locks = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+    const threadId = ThreadId.make("thread:voice-intake-stop");
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-intake-stop"),
+      threadId,
+      projectId: ProjectId.make("project:intake-stop"),
+      title: "Voice Stop",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const command = (key: string, stopId: string | null) => ({
+      type: "message.dispatch" as const,
+      commandId: CommandId.make(key),
+      threadId,
+      messageId: MessageId.make(key),
+      text: "Research a read-only concept.",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" as const },
+      delegation: {
+        modelSelection,
+        voiceIntake: {
+          leaseId: "lease",
+          generation: 1,
+          intentId: key,
+          provisional: true,
+          stopId,
+          sources: [{ segmentId: key, revision: 1, start: 0, end: 8, quote: "Research", stopId }],
+        },
+      },
+      createdBy: "user" as const,
+      creationSource: "voice" as const,
+    });
+    const acceptedCommand = command("accepted-before-stop", null);
+    const accepted = yield* orchestrator.dispatch(acceptedCommand);
+    const held = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const holding = yield* locks
+      .withLock(
+        threadId,
+        Deferred.succeed(held, undefined).pipe(Effect.andThen(Deferred.await(release))),
+      )
+      .pipe(Effect.forkChild({ startImmediately: true }));
+    yield* Deferred.await(held);
+    const stopId = CommandId.make("stop-during-voice-decision");
+    const stopping = yield* orchestrator
+      .dispatch({ type: "thread.stop", commandId: stopId, threadId })
+      .pipe(Effect.forkChild({ startImmediately: true }));
+    const late = yield* orchestrator
+      .dispatch(command("decision-from-before-stop", null))
+      .pipe(Effect.result, Effect.forkChild({ startImmediately: true }));
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.join(holding);
+    yield* Fiber.join(stopping);
+    assert.isTrue(
+      Result.isFailure(yield* Fiber.join(late)),
+      "a held decision cannot start after Stop commits",
+    );
+    const stopped = yield* projections.getThreadProjection(threadId);
+    assert.equal(stopped.thread.voiceIntakeStopId, stopId);
+    assert.equal(stopped.subagents.length, 1);
+    assert.equal((yield* orchestrator.dispatch(acceptedCommand)).sequence, accepted.sequence);
+    assert.isTrue(
+      Result.isFailure(
+        yield* orchestrator.dispatch(command("late-final", null)).pipe(Effect.result),
+      ),
+    );
+    const fresh = command("new-speech-after-stop", stopId);
+    const freshReceipt = yield* orchestrator.dispatch(fresh);
+    assert.equal((yield* projections.getThreadProjection(threadId)).subagents.length, 2);
+    yield* orchestrator.dispatch({
+      type: "thread.stop",
+      commandId: CommandId.make("second-stop"),
+      threadId,
+    });
+    assert.equal((yield* orchestrator.dispatch(fresh)).sequence, freshReceipt.sequence);
+    const owner = yield* projections.getThreadProjection(threadId);
+    const work = owner.subagents.at(-1)!;
+    const child = yield* projections.getThreadProjection(work.childThreadId!);
+    const beforeMessages = child.messages.length;
+    const continuation = yield* orchestrator
+      .dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("stale-confirmed-continuation"),
+        threadId: child.thread.id,
+        messageId: MessageId.make("stale-confirmed-continuation"),
+        text: "Continue the authorized work.",
+        attachments: [],
+        createdBy: "user",
+        creationSource: "voice",
+        dispatchMode: { type: "restart_active", targetRunId: child.runs[0]!.id },
+        voiceIntakeSource: fresh.delegation.voiceIntake,
+      })
+      .pipe(Effect.result);
+    assert.isTrue(
+      Result.isFailure(continuation),
+      "the Parent Stop fence also protects an exact child continuation",
+    );
+    if (Result.isFailure(continuation)) {
+      assert.equal(continuation.failure._tag, "OrchestratorDispatchError");
+      if (continuation.failure._tag === "OrchestratorDispatchError")
+        assert.include(String(continuation.failure.cause), "captured voice source");
+    }
+    assert.equal(
+      (yield* projections.getThreadProjection(child.thread.id)).messages.length,
+      beforeMessages,
+    );
+
+    assert.isTrue(
+      Result.isFailure(
+        yield* orchestrator.dispatch(command("new-key-old-speech", stopId)).pipe(Effect.result),
+      ),
+    );
+  }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect(

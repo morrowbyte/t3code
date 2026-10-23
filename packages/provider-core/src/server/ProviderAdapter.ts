@@ -43,6 +43,7 @@ import * as Schema from "effect/Schema";
 import type * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
+import type { VoiceIntakeDecision, VoiceIntakeSnapshot } from "@t3tools/contracts";
 
 import type {
   ProviderSelectionTransitionInput,
@@ -56,6 +57,7 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
   approvalPolicy: Schema.optional(Schema.Unknown),
   sandboxPolicy: Schema.optional(Schema.Unknown),
   reasoningEffort: Schema.optional(Schema.String),
+  provisionalVoiceIntake: Schema.optional(Schema.Literal(true)),
 });
 export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePolicy.Type;
 
@@ -669,6 +671,7 @@ export interface ProviderAdapterV2SessionRuntime {
 export interface ProviderAdapterV2LiveVoiceRuntime {
   readonly events: Stream.Stream<ProviderAdapterV2LiveVoiceEvent, ProviderAdapterV2Error>;
   readonly preparePlanner: (input: {
+    readonly newTaskAdmission?: "intake";
     readonly modelSelection: ModelSelection;
     readonly serviceTier?: string | null;
     readonly reasoningEffort?: string | null;
@@ -690,6 +693,11 @@ export interface ProviderAdapterV2LiveVoiceRuntime {
       readonly message?: string;
     }) => Effect.Effect<string, ProviderAdapterV2Error>;
   }) => Effect.Effect<{ readonly plannerNativeThreadId: string }, ProviderAdapterV2Error>;
+  readonly decideIntake?: (input: {
+    readonly snapshot: VoiceIntakeSnapshot;
+    readonly modelSelection: ModelSelection;
+  }) => Effect.Effect<VoiceIntakeDecision, ProviderAdapterV2Error>;
+  readonly canStartProvisionalWork?: Effect.Effect<boolean>;
   readonly start: (input: {
     readonly plannerNativeThreadId: string;
     readonly realtimeSessionId: string;

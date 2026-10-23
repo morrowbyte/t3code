@@ -3526,7 +3526,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               }
             : thread;
         case "thread.runtime-mode.set":
-          return { ...thread, runtimeMode: command.runtimeMode, updatedAt: now };
+          return {
+            ...thread,
+            runtimeMode: command.runtimeMode,
+            updatedAt: now,
+            ...(command.voiceIntakeConfirmation !== undefined &&
+            command.voiceIntakeConfirmation.provisional === false &&
+            thread.voiceIntake?.intentId === command.voiceIntakeConfirmation.intentId &&
+            thread.voiceIntake.leaseId === command.voiceIntakeConfirmation.leaseId &&
+            thread.voiceIntake.generation === command.voiceIntakeConfirmation.generation
+              ? { voiceIntake: command.voiceIntakeConfirmation }
+              : {}),
+          };
         case "thread.interaction-mode.set":
           return { ...thread, interactionMode: command.interactionMode, updatedAt: now };
         case "thread.model-selection.set":
@@ -4892,6 +4903,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         command.context !== undefined ||
         command.notification !== undefined ||
         command.delegatedCompletion !== undefined ||
+        command.voiceIntakeSource !== undefined ||
         command.scheduledTaskId !== undefined ||
         command.deliveryIntent !== undefined ||
         command.restartContinuationOfRunId !== undefined ||
@@ -4906,6 +4918,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause:
             "Independent delegation requires an explicit new request in an available conversation.",
         });
+      }
+      if (delegation.voiceIntake !== undefined) {
+        const source = delegation.voiceIntake;
+        if (
+          source.stopId !== (projection.thread.voiceIntakeStopId ?? null) ||
+          source.sources.some((part) => part.stopId !== source.stopId)
+        )
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "The captured voice source predates Stop or lacks its source fence.",
+          });
       }
       if (delegation.caller !== undefined) {
         const caller = delegation.caller;
@@ -5060,6 +5084,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           parentRunId: runId,
           parentNodeId: rootNodeId,
           task: command.text,
+          ...(delegation.voiceIntake === undefined ? {} : { voiceIntake: delegation.voiceIntake }),
           modelSelection: delegation.modelSelection,
           runtimeMode: delegation.runtimeMode ?? projection.thread.runtimeMode,
           interactionMode: delegation.interactionMode ?? projection.thread.interactionMode,
@@ -5100,6 +5125,35 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
   ) {
     let projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+    if (command.voiceIntakeSource !== undefined) {
+      const source = command.voiceIntakeSource;
+      const parentId = yield* appOwnedSubagentParentThreadId(command.threadId).pipe(
+        mapDispatchError(command),
+      );
+      const parent =
+        parentId === undefined
+          ? undefined
+          : yield* getProjectionWithPendingEvents(parentId, events);
+      if (
+        command.createdBy !== "user" ||
+        command.creationSource !== "voice" ||
+        command.delegation !== undefined ||
+        (command.dispatchMode.type !== "steer_active" &&
+          command.dispatchMode.type !== "restart_active") ||
+        projection.thread.voiceIntake?.intentId !== source.intentId ||
+        !parent ||
+        parent.thread.deletedAt !== null ||
+        parent.thread.archivedAt !== null ||
+        source.stopId !== (parent.thread.voiceIntakeStopId ?? null) ||
+        source.sources.some((part) => part.stopId !== source.stopId)
+      )
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause:
+            "The captured voice source cannot continue work after Parent Stop or without its exact owner.",
+        });
+    }
     if (command.delegation !== undefined)
       return yield* dispatchConversationDelegation(command, projection, events, effects);
     if (command.manualContinuationOfRunId !== undefined) {
@@ -7306,6 +7360,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           createdBy: command.createdBy,
           creationSource: command.creationSource,
         }),
+        ...(command.voiceIntake === undefined ? {} : { voiceIntake: command.voiceIntake }),
         runtimeMode: command.runtimeMode,
         interactionMode: command.interactionMode,
         ...(crossProject
@@ -10474,6 +10529,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       );
     if (projection.thread.deletedAt !== null) return undefined;
+    const fenceIntake = Effect.gen(function* () {
+      const pending = yield* getProjectionWithPendingEvents(command.threadId, events);
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "thread.metadata-updated",
+        threadId: command.threadId,
+        providerInstanceId: pending.thread.providerInstanceId,
+        occurredAt: yield* DateTime.now,
+        payload: { ...pending.thread, voiceIntakeStopId: command.commandId },
+      });
+    });
     // Queued after the interrupt, since a thread's effects run in order.
     const stopDelegatedTasks =
       command.stopDelegatedTasks === false ||
@@ -10522,6 +10590,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         yield* Ref.update(effects, (existing) => [...existing, ...enqueued]);
         yield* cancelIdleOrphans({ command, events, projection });
         yield* stopDelegatedTasks;
+        yield* fenceIntake;
         return interrupted.value;
       }
       yield* Effect.logWarning("thread.stop could not interrupt the running turn", {
@@ -10543,6 +10612,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     yield* holdStoppedThread({ command, events, projection, cohortRunIds: [], now });
     yield* cancelIdleOrphans({ command, events, projection });
     yield* stopDelegatedTasks;
+    yield* fenceIntake;
     return undefined;
   });
 

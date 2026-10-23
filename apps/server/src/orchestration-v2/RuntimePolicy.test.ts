@@ -67,6 +67,7 @@ const supportedRuntimeModesByInstance = new Map<ProviderInstanceId, ReadonlyArra
 ]);
 const providerInstanceFor = (instanceId: ProviderInstanceId) =>
   ({
+    driverKind: instanceId === providerInstanceId ? "codex" : "grok",
     snapshot: {
       getSnapshot: Effect.succeed({
         supportedRuntimeModes: supportedRuntimeModesByInstance.get(instanceId),
@@ -108,6 +109,34 @@ const layerTest = RuntimePolicy.layerFromProjectStore.pipe(
 );
 
 it.layer(layerTest)("RuntimePolicyV2", (it) => {
+  it.effect("keeps preliminary voice work read-only until its durable intent is confirmed", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const thread = {
+        ...makeThread({ now: yield* DateTime.now, worktreePath: null }),
+        voiceIntake: {
+          stopId: null,
+          leaseId: "lease",
+          generation: 1,
+          intentId: "intent",
+          provisional: true,
+          sources: [
+            { stopId: null, segmentId: "asr", revision: 1, start: 0, end: 8, quote: "Research" },
+          ],
+        },
+      };
+      const provisional = yield* policy.resolve({ thread, modelSelection });
+      assert.deepEqual(provisional.sandboxPolicy, { type: "readOnly", networkAccess: false });
+      assert.equal(provisional.approvalPolicy, "never");
+      assert.isTrue(provisional.provisionalVoiceIntake);
+      const confirmed = yield* policy.resolve({
+        thread: { ...thread, voiceIntake: { ...thread.voiceIntake, provisional: false } },
+        modelSelection,
+      });
+      assert.isUndefined(confirmed.provisionalVoiceIntake);
+      assert.equal(confirmed.runtimeMode, "full-access");
+    }),
+  );
   it.effect("runs a mode the provider does not offer in Supervised", () =>
     Effect.gen(function* () {
       const policy = yield* RuntimePolicy.RuntimePolicyV2;
@@ -124,6 +153,62 @@ it.layer(layerTest)("RuntimePolicyV2", (it) => {
       assert.equal(yield* modeFor(grokInstanceId, "auto"), "auto");
       assert.equal(yield* modeFor(grokInstanceId, "full-access"), "full-access");
       assert.equal(yield* modeFor(providerInstanceId, "auto-accept-edits"), "auto-accept-edits");
+    }),
+  );
+
+  it.effect("rejects provisional work on a provider without the enforceable Codex path", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const thread = {
+        ...makeThread({ now: yield* DateTime.now, worktreePath: null }),
+        voiceIntake: {
+          stopId: null,
+          leaseId: "lease",
+          generation: 1,
+          intentId: "intent",
+          provisional: true,
+          sources: [
+            { stopId: null, segmentId: "segment", revision: 1, start: 0, end: 4, quote: "Read" },
+          ],
+        },
+      };
+      const error = yield* policy
+        .resolve({
+          thread,
+          modelSelection: { instanceId: grokInstanceId, model: "other-provider" },
+        })
+        .pipe(Effect.flip);
+      assert.equal(error._tag, "RuntimePolicyResolveError");
+    }),
+  );
+
+  it.effect("retains the provisional ceiling when runtime overrides request full access", () =>
+    Effect.gen(function* () {
+      const base = yield* RuntimePolicy.RuntimePolicyV2;
+      const overridden = yield* Effect.service(RuntimePolicy.RuntimePolicyV2).pipe(
+        Effect.provide(
+          RuntimePolicy.layerWithOverride({
+            approvalPolicy: "on-request",
+            sandboxPolicy: { type: "dangerFullAccess" },
+          }).pipe(Layer.provide(Layer.succeed(RuntimePolicy.RuntimePolicyV2, base))),
+        ),
+      );
+      const thread = {
+        ...makeThread({ now: yield* DateTime.now, worktreePath: null }),
+        voiceIntake: {
+          stopId: null,
+          leaseId: "lease",
+          generation: 1,
+          intentId: "intent",
+          provisional: true,
+          sources: [
+            { stopId: null, segmentId: "segment", revision: 1, start: 0, end: 4, quote: "Read" },
+          ],
+        },
+      };
+      const actual = yield* overridden.resolve({ thread, modelSelection });
+      assert.equal(actual.approvalPolicy, "never");
+      assert.deepEqual(actual.sandboxPolicy, { type: "readOnly", networkAccess: false });
     }),
   );
 });

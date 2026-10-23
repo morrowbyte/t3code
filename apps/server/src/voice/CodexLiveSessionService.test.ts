@@ -124,6 +124,7 @@ it.effect.each([false, true])(
       const workFinished = yield* Deferred.make<void>();
       let completedWork = 0;
       let steers = 0;
+      let authorizedRestarts = 0;
       let rejectSteerAtAdmission = false;
       let sends = 0;
       let stops = 0;
@@ -140,6 +141,7 @@ it.effect.each([false, true])(
           const end = span.end.bind(span);
           span.end = (time, exit) => {
             end(time, exit);
+            if (span.name === "VoiceIntake.processLatest") notifyIntakeProcessed?.();
             if (span.attributes.has("voice.output.delivery"))
               deliveryWaiters.get(String(span.attributes.get("voice.output.message_id")))?.();
           };
@@ -219,13 +221,21 @@ it.effect.each([false, true])(
       let lookupGate:
         | { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> }
         | undefined;
+      let intakeDecision: ProviderAdapter.ProviderAdapterV2LiveVoiceRuntime["decideIntake"];
+      let expectedNewTaskOwner: "intake" | undefined;
+      let notifyIntakeProcessed: (() => void) | undefined;
       const runtime = {
         instanceId: ProviderInstanceId.make("codex-test"),
         providerSessionId: ProviderSessionId.make("provider-session-test"),
         driver: "codex",
         liveVoice: {
           events: Stream.fromQueue(nativeEvents),
+          get decideIntake() {
+            return intakeDecision;
+          },
+          canStartProvisionalWork: Effect.succeed(true),
           preparePlanner: (input: {
+            newTaskAdmission?: "intake";
             serviceTier?: string | null;
             reasoningEffort?: string | null;
             onSubmitWork: (input: {
@@ -237,6 +247,7 @@ it.effect.each([false, true])(
             onWorkControl: NonNullable<typeof controlWork>;
           }) =>
             Effect.gen(function* () {
+              assert.equal(input.newTaskAdmission, expectedNewTaskOwner);
               plannerAttempts += 1;
               const gate = plannerGate;
               plannerGate = undefined;
@@ -303,6 +314,9 @@ it.effect.each([false, true])(
         providerSessionId: secondProviderSessionId,
         liveVoice: {
           ...runtime.liveVoice,
+          get decideIntake() {
+            return intakeDecision;
+          },
           events: Stream.fromQueue(secondNativeEvents),
         },
       } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime;
@@ -423,12 +437,21 @@ it.effect.each([false, true])(
               const opened = {
                 ...secondRuntime,
                 providerSessionId: input.providerSessionId,
-                liveVoice: { ...secondRuntime.liveVoice!, events: Stream.fromQueue(events) },
+                liveVoice: {
+                  ...secondRuntime.liveVoice!,
+                  get decideIntake() {
+                    return intakeDecision;
+                  },
+                  events: Stream.fromQueue(events),
+                },
               };
-              runtimes.set(input.providerSessionId, opened);
+              runtimes.set(
+                input.providerSessionId,
+                opened as ProviderAdapter.ProviderAdapterV2SessionRuntime,
+              );
               runtimeEvents.set(input.providerSessionId, events);
               openedRuntimes.push(input);
-              return opened;
+              return opened as ProviderAdapter.ProviderAdapterV2SessionRuntime;
             }),
         } as unknown as ProviderSessionManager.ProviderSessionManagerV2Shape),
         Layer.succeed(ThreadManagementService.ThreadManagementService, {
@@ -477,13 +500,33 @@ it.effect.each([false, true])(
           dispatch: (
             command: Extract<
               Parameters<ThreadManagementService.ThreadManagementServiceShape["dispatch"]>[0],
-              { type: "message.dispatch" }
+              { type: "message.dispatch" | "thread.runtime-mode.set" }
             >,
           ) =>
             Effect.gen(function* () {
+              if (command.type === "thread.runtime-mode.set") {
+                const child = independentJobs.get(command.threadId)!;
+                assert.equal(
+                  child.thread.voiceIntake!.intentId,
+                  command.voiceIntakeConfirmation!.intentId,
+                );
+                independentJobs.set(command.threadId, {
+                  ...child,
+                  thread: {
+                    ...child.thread,
+                    voiceIntake: command.voiceIntakeConfirmation,
+                  },
+                });
+                return { events: [] };
+              }
               if (command.delegation !== undefined && admitIndependent)
                 return yield* admitIndependent(command);
-              if (
+              if (command.dispatchMode.type === "restart_active") {
+                assert.isFalse(
+                  independentJobs.get(command.threadId)!.thread.voiceIntake!.provisional,
+                );
+                authorizedRestarts += 1;
+              } else if (
                 command.dispatchMode.type !== "steer_active" ||
                 command.dispatchMode.onInactive !== "reject"
               )
@@ -526,7 +569,25 @@ it.effect.each([false, true])(
             }),
         } as unknown as ThreadManagementService.ThreadManagementServiceShape),
         Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
-          getInstance: () => Effect.succeed({ driverKind: "codex" }),
+          getInstance: () =>
+            Effect.succeed({
+              driverKind: "codex",
+              snapshot: {
+                getSnapshot: Effect.succeed({
+                  models: [
+                    {
+                      slug: "gpt-6-luna",
+                      capabilities: {
+                        optionDescriptors: [
+                          { id: "reasoningEffort", type: "select", options: [{ id: "medium" }] },
+                          { id: "serviceTier", type: "select", options: [{ id: "priority" }] },
+                        ],
+                      },
+                    },
+                  ],
+                }),
+              },
+            }),
         } as unknown as ProviderInstanceRegistry.ProviderInstanceRegistry["Service"]),
       );
       const program = Effect.gen(function* () {
@@ -910,7 +971,23 @@ it.effect.each([false, true])(
           "native output acknowledgement must not hold work admission",
         );
         assert.isFalse(yield* Deferred.isDone(heldContext));
+        yield* sql`UPDATE codex_live_voice_intents SET receipt_json = json_set(receipt_json, '$.intakeIntent', json('{"id":"concurrent-intake-marker"}')) WHERE lease_id = ${prepared.leaseId} AND planner_turn_id = 'planner-turn-1'`;
+        const progressSettled = waitForDelivery("commentary-message-durable-run-1");
         yield* Deferred.succeed(heldContext, undefined);
+        yield* Effect.promise(() => progressSettled);
+        const progressLedger = yield* sql<{
+          receipt_json: string;
+        }>`SELECT receipt_json FROM codex_live_voice_intents WHERE lease_id = ${prepared.leaseId} AND planner_turn_id = 'planner-turn-1'`;
+        const progressReceipt = decodeJson(progressLedger[0]!.receipt_json) as {
+          intakeIntent: { id: string };
+          publicReadbacks: Record<string, { state: string }>;
+        };
+        assert.equal(progressReceipt.intakeIntent.id, "concurrent-intake-marker");
+        assert.isTrue(
+          Object.values(progressReceipt.publicReadbacks).some(
+            (delivery) => delivery.state === "sent",
+          ),
+        );
         assert.deepEqual(
           contexts.map((message) => message.text),
           ["commentary for durable-run-1"],
@@ -2271,6 +2348,7 @@ it.effect.each([false, true])(
               const end = span.end.bind(span);
               span.end = (time, exit) => {
                 end(time, exit);
+                if (span.name === "VoiceIntake.processLatest") notifyIntakeProcessed?.();
                 if (
                   String(span.attributes.get("db.query.text")).includes(
                     "ORDER BY updated_at DESC LIMIT 1",
@@ -2343,6 +2421,9 @@ it.effect.each([false, true])(
                   relationshipToParent: "subagent" as const,
                   rootThreadId: threadId,
                 },
+                ...(command.delegation?.voiceIntake
+                  ? { voiceIntake: command.delegation.voiceIntake }
+                  : {}),
                 forkedFrom: { type: "node" as const, nodeId: taskId },
               },
               runs: seed.runs.map((run) => ({ ...run, threadId: childId })),
@@ -2535,6 +2616,11 @@ it.effect.each([false, true])(
         };
         yield* publishChild(0, "turn-item.updated");
         yield* Deferred.await(chunkArrived);
+        assert.deepEqual(
+          decodeJson(yield* submit(1, "handoff-after-public-chunk")),
+          receipts[0],
+          "public-output bookkeeping preserves a logical submission receipt, including its null destination",
+        );
         const firstSteerReceipt = yield* taskControl(
           0,
           "steer",
@@ -2778,6 +2864,261 @@ it.effect.each([false, true])(
           independentJobs.get(receipts[1]!.threadId!)!.runs[0]!.status,
           "running",
           "EndCall does not cancel independent work",
+        );
+        const previousClosed = yield* service.subscribe(session, parallelLease).pipe(
+          Stream.filter((event) => event.type === "status" && event.session.status === "closed"),
+          Stream.runHead,
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Queue.offer(replayEvents, {
+          type: "closed",
+          plannerNativeThreadId: parallelLease.plannerNativeThreadId!,
+        });
+        yield* Fiber.join(previousClosed);
+        const sourceThread = durableProjection.thread;
+        yield* sql`INSERT INTO orchestration_v2_projection_threads
+          (thread_id, project_id, title, default_provider, provider_instance_id, runtime_mode,
+           interaction_mode, active_provider_thread_id, created_at, updated_at, archived_at, deleted_at, payload_json)
+          VALUES (${threadId}, ${sourceThread.projectId}, ${"Voice intake fixture"}, ${sourceThread.providerInstanceId},
+           ${sourceThread.providerInstanceId}, ${sourceThread.runtimeMode}, ${sourceThread.interactionMode},
+           NULL, '2026-10-23T00:00:00Z', '2026-10-23T00:00:00Z', NULL, NULL, ${JSON.stringify(sourceThread)})`;
+        expectedNewTaskOwner = "intake";
+        let decideIntakeSnapshot: NonNullable<
+          ProviderAdapter.ProviderAdapterV2LiveVoiceRuntime["decideIntake"]
+        > = ({ snapshot }) =>
+          Effect.succeed({
+            requestId: snapshot.requestId,
+            actions: snapshot.segments
+              .filter(
+                (segment) =>
+                  !snapshot.intents.some((intent) =>
+                    intent.sources.some((source) => source.segmentId === segment.id),
+                  ),
+              )
+              .map((segment) => ({
+                type: "new" as const,
+                projectId: null,
+                sources: [
+                  {
+                    segmentId: segment.id,
+                    revision: segment.revision,
+                    start: 0,
+                    end: segment.text.length,
+                    quote: segment.text,
+                  },
+                ],
+                request: segment.text,
+                readOnly: true,
+              })),
+          });
+        intakeDecision = (input) => decideIntakeSnapshot(input);
+        const intakeLease = yield* service.prepare(session, {
+          threadId,
+          clientRequestId: "exclusive-intake",
+        });
+        const intakeReady = yield* service.subscribe(session, intakeLease).pipe(
+          Stream.filter((event) => event.type === "status" && event.session.status === "active"),
+          Stream.runHead,
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* service.start(session, {
+          ...intakeLease,
+          clientRequestId: "exclusive-start",
+          offerSdp: "synthetic-offer",
+        });
+        const intakeEvents = runtimeEvents.get(intakeLease.providerSessionId!)!;
+        yield* Queue.offer(intakeEvents, {
+          type: "started",
+          plannerNativeThreadId: intakeLease.plannerNativeThreadId!,
+          realtimeSessionId: `${intakeLease.leaseId}:${intakeLease.generation}`,
+        });
+        yield* Queue.offer(intakeEvents, {
+          type: "sdp",
+          plannerNativeThreadId: intakeLease.plannerNativeThreadId!,
+          sdp: "synthetic-answer",
+        });
+        yield* Fiber.join(intakeReady);
+        yield* sql.unsafe("CREATE TEMP TABLE intake_receipt_update_probe (used INTEGER NOT NULL)");
+        yield* sql.unsafe("INSERT INTO intake_receipt_update_probe VALUES (0)");
+        yield* sql.unsafe(`CREATE TEMP TRIGGER drop_one_intake_receipt_update BEFORE UPDATE ON codex_live_voice_intents
+          WHEN OLD.dispatch_state = 'reserved' AND NEW.dispatch_state = 'admitted' AND (SELECT used FROM intake_receipt_update_probe) = 0
+          BEGIN UPDATE intake_receipt_update_probe SET used = 1; SELECT RAISE(IGNORE); END`);
+        for (let index = 0; index < 3; index++) {
+          const processed = new Promise<void>((resolve) => {
+            notifyIntakeProcessed = resolve;
+          });
+          const text = `Independent intake research ${index}`;
+          yield* Queue.offer(intakeEvents, {
+            type: "transcript",
+            role: "user",
+            plannerNativeThreadId: intakeLease.plannerNativeThreadId!,
+            text,
+            segment: { id: `intake-segment-${index}`, revision: 1, kind: "snapshot", final: false },
+          });
+          if (index > 0) yield* TestClock.adjust("3 seconds");
+          yield* Effect.promise(() => processed);
+        }
+        notifyIntakeProcessed = undefined;
+        assert.equal(
+          admissions,
+          6,
+          "three partial ASR snapshots reach independent admissions before final or any new completion",
+        );
+        const intakeRows = yield* sql<{
+          receipt_json: string;
+        }>`SELECT receipt_json FROM codex_live_voice_intents WHERE lease_id = ${intakeLease.leaseId} AND dispatch_state = 'admitted'`;
+        assert.equal(
+          intakeRows.length,
+          3,
+          "the committed child repairs a lost auxiliary receipt update without another admission",
+        );
+        assert.equal(
+          (yield* sql<{ used: number }>`SELECT used FROM intake_receipt_update_probe`)[0]!.used,
+          1,
+        );
+        for (const record of intakeRows) {
+          const receipt = decodeJson(record.receipt_json) as {
+            intakeIntent: { taskId: string; provisional: boolean; sources: unknown[] };
+            voiceIntake: { intentId: string };
+          };
+          assert.isTrue(receipt.intakeIntent.provisional);
+          assert.equal(receipt.intakeIntent.sources.length, 1);
+          assert.isTrue(
+            durableProjection.subagents.some((task) => task.id === receipt.intakeIntent.taskId),
+          );
+        }
+        const continuing = decodeJson(intakeRows[0]!.receipt_json) as {
+          intakeIntent: { id: string; threadId: string; runId: string; taskId: string };
+        };
+        const previousRuns = independentJobs
+          .get(continuing.intakeIntent.threadId)!
+          .runs.map((run) => run.id);
+        decideIntakeSnapshot = ({ snapshot }) => {
+          const segment = snapshot.segments.find(
+            (candidate) => candidate.id === "confirmed-continuation",
+          )!;
+          const sources = [
+            { segmentId: segment.id, revision: segment.revision, quote: segment.text },
+          ];
+          return Effect.succeed({
+            requestId: snapshot.requestId,
+            actions: [
+              { type: "confirm" as const, intentId: continuing.intakeIntent.id, sources },
+              {
+                type: "refine" as const,
+                intentId: continuing.intakeIntent.id,
+                sources,
+                message: segment.text,
+                readOnly: false,
+              },
+            ],
+          });
+        };
+        for (const revision of [1, 2]) {
+          const continued = new Promise<void>((resolve) => {
+            notifyIntakeProcessed = resolve;
+          });
+          yield* Queue.offer(intakeEvents, {
+            type: "transcript",
+            role: "user",
+            plannerNativeThreadId: intakeLease.plannerNativeThreadId!,
+            text: "Yes, implement that confirmed task now.",
+            segment: { id: "confirmed-continuation", revision, kind: "snapshot", final: true },
+          });
+          yield* TestClock.adjust("3 seconds");
+          yield* Effect.promise(() => continued);
+        }
+        assert.equal(
+          authorizedRestarts,
+          1,
+          "final confirmation continues the exact provisional run only once",
+        );
+        assert.deepEqual(
+          independentJobs.get(continuing.intakeIntent.threadId)!.runs.map((run) => run.id),
+          previousRuns,
+        );
+        assert.isFalse(
+          independentJobs.get(continuing.intakeIntent.threadId)!.thread.voiceIntake!.provisional,
+        );
+        assert.equal(admissions, 6, "authorized continuation is not a replacement admission");
+        const decidingBeforeStop = yield* Deferred.make<void>();
+        const finishAfterStop = yield* Deferred.make<void>();
+        decideIntakeSnapshot = ({ snapshot }) =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(decidingBeforeStop, undefined);
+            yield* Deferred.await(finishAfterStop);
+            const segment = snapshot.segments.find((candidate) => candidate.id === "before-stop")!;
+            return {
+              requestId: snapshot.requestId,
+              actions: [
+                {
+                  type: "new" as const,
+                  projectId: null,
+                  sources: [
+                    { segmentId: segment.id, revision: segment.revision, quote: segment.text },
+                  ],
+                  request: segment.text,
+                  readOnly: true,
+                },
+              ],
+            };
+          });
+        const stoppedDecisionProcessed = new Promise<void>((resolve) => {
+          notifyIntakeProcessed = resolve;
+        });
+        yield* Queue.offer(intakeEvents, {
+          type: "transcript",
+          role: "user",
+          plannerNativeThreadId: intakeLease.plannerNativeThreadId!,
+          text: "Old request during Stop.",
+          segment: { id: "before-stop", revision: 1, kind: "snapshot", final: false },
+        });
+        yield* TestClock.adjust("3 seconds");
+        yield* Deferred.await(decidingBeforeStop);
+        yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = json_set(payload_json,
+          '$.voiceIntakeStopId', 'committed-stop-fixture') WHERE thread_id = ${threadId}`;
+        yield* Deferred.succeed(finishAfterStop, undefined);
+        yield* Effect.promise(() => stoppedDecisionProcessed);
+        assert.equal(
+          admissions,
+          6,
+          "PubSub intake rejects a decision after its durable source Stop marker changes",
+        );
+        const lateFinalProcessed = new Promise<void>((resolve) => {
+          notifyIntakeProcessed = resolve;
+        });
+        yield* Queue.offer(intakeEvents, {
+          type: "transcript",
+          role: "user",
+          plannerNativeThreadId: intakeLease.plannerNativeThreadId!,
+          text: "Old request during Stop.",
+          segment: { id: "before-stop", revision: 2, kind: "snapshot", final: true },
+        });
+        yield* TestClock.adjust("3 seconds");
+        yield* Effect.promise(() => lateFinalProcessed);
+        notifyIntakeProcessed = undefined;
+        assert.equal(admissions, 6, "a native late final cannot rebind its original source fence");
+        assert.isTrue(
+          Exit.isFailure(
+            yield* submitWork!({
+              plannerNativeThreadId: intakeLease.plannerNativeThreadId!,
+              plannerTurnId: "late-native-handoff",
+              callId: "late-native",
+              requestId: "must-not-create",
+              message: "Independent intake research 0",
+            }).pipe(Effect.exit),
+          ),
+        );
+        assert.equal(
+          admissions,
+          6,
+          "the service also rejects native submissions in exclusive mode",
+        );
+        yield* service.stop(session, { ...intakeLease, clientRequestId: "exclusive-end" });
+        assert.equal(
+          [...independentJobs.values()].filter((job) => job.runs[0]?.status === "running").length >=
+            3,
+          true,
         );
       });
       yield* program.pipe(

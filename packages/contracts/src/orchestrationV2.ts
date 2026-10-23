@@ -4,6 +4,7 @@ import {
   ApprovalReviewReceipt,
 } from "./approvalReviewAuthority.ts";
 import { AgentObservatoryMetadata } from "./agentObservatory.ts";
+import { VoiceIntakeProvenance } from "./voiceIntake.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -386,6 +387,8 @@ export const OrchestrationV2AppThread = Schema.Struct({
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
+  voiceIntake: Schema.optional(VoiceIntakeProvenance),
+  voiceIntakeStopId: Schema.optional(CommandId),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
@@ -544,6 +547,7 @@ export type OrchestrationV2ThreadLaunchWorkspaceStrategy =
 export const ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE = "workspace_preparation_failed";
 
 export const OrchestrationV2ConversationDelegation = Schema.Struct({
+  voiceIntake: Schema.optional(VoiceIntakeProvenance),
   requestJson: Schema.optional(TrimmedNonEmptyString),
   caller: Schema.optional(
     Schema.Struct({ threadId: ThreadId, runId: RunId, providerInstanceId: ProviderInstanceId }),
@@ -2822,6 +2826,7 @@ export const OrchestrationV2Command = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
     runtimeMode: RuntimeMode,
+    voiceIntakeConfirmation: Schema.optional(VoiceIntakeProvenance),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.interaction-mode.set"),
@@ -2857,6 +2862,7 @@ export const OrchestrationV2Command = Schema.Union([
     titleSeed: Schema.optional(TrimmedNonEmptyString),
     modelSelection: Schema.optional(ModelSelection),
     delegation: Schema.optional(OrchestrationV2ConversationDelegation),
+    voiceIntakeSource: Schema.optional(VoiceIntakeProvenance),
     sourcePlanRef: Schema.optional(Schema.Struct({ threadId: ThreadId, planId: PlanId })),
     restartContinuationOfRunId: Schema.optional(RunId),
     usageLimitContinuationOfRunId: Schema.optional(RunId),
@@ -3020,6 +3026,7 @@ export const OrchestrationV2Command = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("delegated_task.request"),
+    voiceIntake: Schema.optional(VoiceIntakeProvenance),
     ...OrchestrationV2CreationFields,
     commandId: CommandId,
     parentThreadId: ThreadId,

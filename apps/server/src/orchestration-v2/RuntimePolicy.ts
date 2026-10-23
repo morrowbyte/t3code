@@ -50,12 +50,22 @@ export class RuntimePolicyV2 extends Context.Service<RuntimePolicyV2, RuntimePol
   "t3/orchestration-v2/RuntimePolicy/RuntimePolicyV2",
 ) {}
 
+const intakeRestrictions = (thread: OrchestrationV2AppThread) =>
+  thread.voiceIntake?.provisional
+    ? {
+        provisionalVoiceIntake: true as const,
+        approvalPolicy: "never",
+        sandboxPolicy: { type: "readOnly", networkAccess: false },
+      }
+    : {};
+
 export const layer: Layer.Layer<RuntimePolicyV2> = Layer.succeed(RuntimePolicyV2, {
   resolve: (input) =>
     Effect.succeed({
       runtimeMode: input.thread.runtimeMode,
       interactionMode: input.thread.interactionMode,
       cwd: input.thread.worktreePath,
+      ...intakeRestrictions(input.thread),
     }),
 });
 
@@ -82,6 +92,13 @@ export const layerFromProjectStore: Layer.Layer<
     return RuntimePolicyV2.of({
       resolve: Effect.fn("RuntimePolicyV2.resolve")(function* (input) {
         const instance = yield* providerInstances.getInstance(input.modelSelection.instanceId);
+        if (input.thread.voiceIntake?.provisional && instance?.driverKind !== "codex") {
+          return yield* new RuntimePolicyResolveError({
+            projectId: input.thread.projectId,
+            providerInstanceId: input.modelSelection.instanceId,
+            cause: "This provider cannot enforce provisional voice read-only work.",
+          });
+        }
         const supportedRuntimeModes =
           instance === undefined
             ? undefined
@@ -115,6 +132,7 @@ export const layerFromProjectStore: Layer.Layer<
           runtimeMode: providerRuntimeMode(input.thread.runtimeMode, supportedRuntimeModes),
           interactionMode: input.thread.interactionMode,
           cwd,
+          ...intakeRestrictions(input.thread),
         });
       }),
     });
@@ -144,6 +162,12 @@ export function layerWithOverride(
                 ...(override.reasoningEffort === undefined
                   ? {}
                   : { reasoningEffort: override.reasoningEffort }),
+                ...(policy.provisionalVoiceIntake
+                  ? {
+                      approvalPolicy: "never",
+                      sandboxPolicy: { type: "readOnly", networkAccess: false },
+                    }
+                  : {}),
               }),
             ),
           ),

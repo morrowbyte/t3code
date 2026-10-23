@@ -135,6 +135,67 @@ describe("original LiveVoice transcript segments", () => {
 });
 
 describe("restricted conversational LiveVoice tools", () => {
+  it.effect("refuses a late native submission when the app intake owns new tasks", () =>
+    Effect.gen(function* () {
+      let admissions = 0;
+      const result = yield* CodexAdapterV2.routeCodexLiveVoiceTool(
+        {
+          newTaskAdmission: "intake",
+          onSubmitWork: () => {
+            admissions += 1;
+            return Effect.succeed('{"accepted":true}');
+          },
+        },
+        {
+          threadId: "planner",
+          turnId: "late-native-handoff",
+          callId: "late-native-submit",
+          tool: "t3_submit_voice_work",
+          arguments: { message: "Research the already admitted task", requestId: "native-key" },
+        },
+      );
+      assert.isFalse(result.success);
+      assert.equal(admissions, 0);
+    }),
+  );
+
+  it.effect("keeps native handoffs from steering alongside exclusive intake", () =>
+    Effect.gen(function* () {
+      let controls = 0;
+      const planner = {
+        newTaskAdmission: "intake" as const,
+        onSubmitWork: () => Effect.succeed("unused"),
+        onWorkControl: () =>
+          Effect.sync(() => {
+            controls += 1;
+            return "status";
+          }),
+      };
+      const payload = {
+        threadId: "planner",
+        turnId: "late-native-handoff",
+        callId: "late-native-steer",
+        tool: "t3_voice_work_control",
+        arguments: {
+          action: "steer",
+          taskId: "task",
+          runId: "run",
+          message: "Repeated constraint",
+        },
+      };
+      assert.isFalse((yield* CodexAdapterV2.routeCodexLiveVoiceTool(planner, payload)).success);
+      assert.equal(controls, 0);
+      assert.isTrue(
+        (yield* CodexAdapterV2.routeCodexLiveVoiceTool(planner, {
+          ...payload,
+          callId: "native-status",
+          arguments: { action: "status" },
+        })).success,
+      );
+      assert.equal(controls, 1);
+    }),
+  );
+
   it.effect(
     "returns bounded refusal reasons without native failure details or replacement work",
     () =>
