@@ -424,6 +424,7 @@ renderer_tests=(
   apps/web/src/components/ServerUpdateAction.browser.test.tsx
   apps/web/src/components/chat/ComposerPendingApprovalPanel.browser.test.tsx
   apps/web/src/components/ChatMarkdown.browser.test.tsx
+  apps/web/src/components/chat/OpenInPicker.browser.test.tsx
 )
 for renderer_test in "${renderer_tests[@]}"; do
   if [[ ! -f "$renderer_test" ]]; then
