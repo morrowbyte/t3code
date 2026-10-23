@@ -50,6 +50,7 @@ export type LiveVoicePeer = Pick<
   | "addTrack"
   | "close"
 > & {
+  getSenders?: () => ReadonlyArray<Pick<RTCRtpSender, "track">>;
   onconnectionstatechange: (() => void) | null;
   ontrack: ((event: Pick<RTCTrackEvent, "streams" | "track">) => void) | null;
 };
@@ -91,9 +92,22 @@ export type LiveVoiceState = {
   readonly sessionStatus: LiveVoiceSession["status"] | null;
   readonly lease: LiveVoiceLease | null;
   readonly error: string | null;
+  readonly inputIssue?: "ended" | "source-muted" | "disabled" | "sender-missing" | null;
+};
+
+export type LiveVoiceRecordingHooks = {
+  readonly attach: (
+    lease: LiveVoiceLease,
+    user: LiveVoiceMediaStream,
+    assistant: LiveVoiceMediaStream,
+  ) => void;
+  readonly pause: () => void;
+  readonly stop: () => void;
 };
 
 export type LiveVoiceControllerDependencies = {
+  readonly recording?: LiveVoiceRecordingHooks;
+  readonly scheduleInputCheck?: (callback: () => void) => () => void;
   readonly signaling: LiveVoiceSignalingAdapter;
   readonly beforePrepare?: (target: LiveVoiceTarget, signal: AbortSignal) => Promise<void>;
   readonly getUserMedia: () => Promise<LiveVoiceMediaStream>;
@@ -193,6 +207,7 @@ export class LiveVoiceController {
   private abortController: AbortController | null = null;
   private unsubscribe: (() => void) | null = null;
   private stream: LiveVoiceMediaStream | null = null;
+  private remoteStream: LiveVoiceMediaStream | null = null;
   private peer: LiveVoicePeer | null = null;
   private channel: LiveVoiceDataChannel | null = null;
   private audio: LiveVoiceAudioSink | null = null;
@@ -203,6 +218,8 @@ export class LiveVoiceController {
   private peerIsConnected = false;
   private cancelStartTimer: (() => void) | null = null;
   private cancelReconnectTimer: (() => void) | null = null;
+  private cancelInputCheck: (() => void) | null = null;
+  private inputListeners: Array<() => void> = [];
   private answer: ((sdp: string) => void) | null = null;
   private rejectAnswer: ((error: Error) => void) | null = null;
   private resolvePrepared: ((session: LiveVoiceSession) => void) | null = null;
@@ -419,6 +436,16 @@ export class LiveVoiceController {
       void this.rtcReady.catch(() => undefined);
       for (const track of stream.getAudioTracks())
         peer.addTrack(track as MediaStreamTrack, stream as MediaStream);
+      for (const track of stream.getAudioTracks()) {
+        if (typeof track.addEventListener !== "function") continue;
+        const update = () => {
+          if (this.isCurrentLease(operation, activeLease)) this.updateInputIssue();
+        };
+        for (const event of ["mute", "unmute", "ended"]) {
+          track.addEventListener(event, update);
+          this.inputListeners.push(() => track.removeEventListener(event, update));
+        }
+      }
       const audio = this.dependencies.createAudioSink();
       this.audio = audio;
       audio.autoplay = true;
@@ -434,6 +461,7 @@ export class LiveVoiceController {
           peer.connectionState === "disconnected" &&
           (this.state.phase === "live" || this.state.phase === "playback-blocked")
         ) {
+          this.recordingHook(() => this.dependencies.recording?.pause());
           this.setState({ ...this.state, phase: "reconnecting", error: null });
           // Give this peer time to recover without creating a second native session.
           let pending = true;
@@ -454,7 +482,9 @@ export class LiveVoiceController {
       };
       peer.ontrack = (event) => {
         if (!this.isCurrentLease(operation, activeLease)) return;
-        audio.srcObject = event.streams[0] ?? this.dependencies.createRemoteStream(event.track);
+        const remoteStream = event.streams[0] ?? this.dependencies.createRemoteStream(event.track);
+        this.remoteStream = remoteStream;
+        audio.srcObject = remoteStream;
         this.remoteMediaReady = true;
         this.resolveRtcReadyIfReady();
         void this.tryPlayback(operation, activeLease);
@@ -530,6 +560,7 @@ export class LiveVoiceController {
       return;
     for (const track of this.stream?.getAudioTracks() ?? []) track.enabled = !muted;
     this.setState({ ...this.state, localMuted: muted });
+    this.updateInputIssue();
   }
 
   async setOutputMuted(muted: boolean): Promise<void> {
@@ -712,6 +743,11 @@ export class LiveVoiceController {
       !this.remoteMediaReady
     )
       return;
+    if (this.stream && this.remoteStream) {
+      this.recordingHook(() =>
+        this.dependencies.recording?.attach(lease, this.stream!, this.remoteStream!),
+      );
+    }
     this.clearStartTimer();
     this.cancelReconnectTimer?.();
     this.cancelReconnectTimer = null;
@@ -720,6 +756,30 @@ export class LiveVoiceController {
       phase: this.playbackBlocked ? "playback-blocked" : "live",
       error: this.playbackBlocked ? "Allow audio playback to hear Live responses." : null,
     });
+    if (!this.cancelInputCheck && this.dependencies.scheduleInputCheck)
+      this.cancelInputCheck = this.dependencies.scheduleInputCheck(() => this.updateInputIssue());
+    this.updateInputIssue();
+  }
+
+  private updateInputIssue(): void {
+    if (!["live", "playback-blocked", "reconnecting"].includes(this.state.phase)) return;
+    const tracks = this.stream?.getAudioTracks() ?? [];
+    const senders = this.peer?.getSenders?.();
+    const inputIssue = tracks.some((track) => track.readyState === "ended")
+      ? "ended"
+      : this.state.localMuted
+        ? null
+        : tracks.some((track) => !track.enabled)
+          ? "disabled"
+          : tracks.some((track) => track.muted)
+            ? "source-muted"
+            : tracks.length === 0 ||
+                (senders &&
+                  !senders.some((sender) => sender.track && tracks.includes(sender.track)))
+              ? "sender-missing"
+              : null;
+    if ((this.state.inputIssue ?? null) !== inputIssue)
+      this.setState({ ...this.state, inputIssue });
   }
 
   private async tryPlayback(operation: number, lease: LiveVoiceLease): Promise<void> {
@@ -797,6 +857,10 @@ export class LiveVoiceController {
     lease: LiveVoiceLease | null,
     microphoneOwnership: MicrophoneOwnership | null,
   ): Promise<void> {
+    this.cancelInputCheck?.();
+    this.cancelInputCheck = null;
+    for (const remove of this.inputListeners) remove();
+    this.inputListeners = [];
     this.clearStartTimer();
     this.cancelReconnectTimer?.();
     this.cancelReconnectTimer = null;
@@ -821,6 +885,8 @@ export class LiveVoiceController {
       this.peer.close();
     }
     this.peer = null;
+    this.recordingHook(() => this.dependencies.recording?.stop());
+    this.remoteStream = null;
     stopTracks(this.stream);
     this.stream = null;
     if (this.audio) {
@@ -851,6 +917,15 @@ export class LiveVoiceController {
       this.setState({ ...this.state, lease: null });
     }
     if (!lease) this.target = null;
+  }
+
+  private recordingHook(callback: () => void): void {
+    // Recording is an optional observer and must never fail or stop the call.
+    try {
+      callback();
+    } catch {
+      /* Recorder owns its error state. */
+    }
   }
 
   private clearStartTimer(): void {

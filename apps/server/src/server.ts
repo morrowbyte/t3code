@@ -50,6 +50,8 @@ import * as NodePtyAdapter from "./terminal/NodePtyAdapter.ts";
 import * as YaziPicker from "./attachments/YaziPicker.ts";
 import * as PullRequestHttp from "./pullRequest/http.ts";
 import * as VoiceHttp from "./voice/http.ts";
+import * as VoiceRecordingHttp from "./voice/recordingHttp.ts";
+import * as VoiceRecordingService from "./voice/VoiceRecordingService.ts";
 import * as LinearHttp from "./integrations/linear/http.ts";
 import * as AndroidAppUpdatesHttp from "./appUpdates/http.ts";
 import * as AndroidAppUpdates from "./appUpdates/AndroidAppUpdates.ts";
@@ -742,6 +744,7 @@ const layerMakeRoutes = Layer.mergeAll(
       ),
       Layer.provide(PullRequestHttp.layer),
       Layer.provide(VoiceHttp.layer.pipe(Layer.provide(VoiceTranscriptionService.layer))),
+      Layer.provide(VoiceRecordingHttp.layer.pipe(Layer.provide(VoiceRecordingService.layer))),
       Layer.provide(
         LinearHttp.layer.pipe(
           Layer.provide(

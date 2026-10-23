@@ -1,4 +1,13 @@
 import {
+  VoiceRecordingStart,
+  VoiceRecordingChunk,
+  VoiceRecordingEntry,
+  VoiceRecordingSettings,
+  VoiceRecordingId,
+  VoiceRecordingRole,
+  VoiceRecordingError,
+} from "./voiceRecording.ts";
+import {
   ApprovalReviewSubmit,
   ApprovalReviewRead,
   ApprovalReviewClaim,
@@ -926,6 +935,70 @@ class EnvironmentVoiceHttpApi extends HttpApiGroup.make("voice").add(
   }).middleware(EnvironmentAuthenticatedAuth),
 ) {}
 
+class EnvironmentVoiceRecordingHttpApi extends HttpApiGroup.make("voiceRecording").add(
+  HttpApiEndpoint.get("settings", "/api/voice/recordings/settings", {
+    headers: OptionalBearerHeaders,
+    success: VoiceRecordingSettings,
+    error: [
+      ...EnvironmentScopedOperationErrors,
+      VoiceRecordingError.pipe(HttpApiSchema.status(409)),
+    ],
+  }).middleware(EnvironmentAuthenticatedAuth),
+  HttpApiEndpoint.put("updateSettings", "/api/voice/recordings/settings", {
+    headers: OptionalBearerHeaders,
+    payload: Schema.Struct({ enabled: Schema.Boolean }),
+    success: VoiceRecordingSettings,
+    error: [
+      ...EnvironmentScopedOperationErrors,
+      VoiceRecordingError.pipe(HttpApiSchema.status(409)),
+    ],
+  }).middleware(EnvironmentAuthenticatedAuth),
+  HttpApiEndpoint.post("start", "/api/voice/recordings", {
+    headers: OptionalBearerHeaders,
+    payload: VoiceRecordingStart,
+    success: VoiceRecordingEntry,
+    error: [
+      ...EnvironmentScopedOperationErrors,
+      VoiceRecordingError.pipe(HttpApiSchema.status(409)),
+    ],
+  }).middleware(EnvironmentAuthenticatedAuth),
+  HttpApiEndpoint.post("append", "/api/voice/recordings/chunk", {
+    headers: OptionalBearerHeaders,
+    payload: VoiceRecordingChunk,
+    success: Schema.Void,
+    error: [
+      ...EnvironmentScopedOperationErrors,
+      VoiceRecordingError.pipe(HttpApiSchema.status(409)),
+    ],
+  }).middleware(EnvironmentAuthenticatedAuth),
+  HttpApiEndpoint.post("finish", "/api/voice/recordings/finish", {
+    headers: OptionalBearerHeaders,
+    payload: Schema.Struct({ id: VoiceRecordingId }),
+    success: Schema.Void,
+    error: [
+      ...EnvironmentScopedOperationErrors,
+      VoiceRecordingError.pipe(HttpApiSchema.status(409)),
+    ],
+  }).middleware(EnvironmentAuthenticatedAuth),
+  HttpApiEndpoint.get("list", "/api/voice/recordings", {
+    headers: OptionalBearerHeaders,
+    success: Schema.Array(VoiceRecordingEntry),
+    error: [
+      ...EnvironmentScopedOperationErrors,
+      VoiceRecordingError.pipe(HttpApiSchema.status(409)),
+    ],
+  }).middleware(EnvironmentAuthenticatedAuth),
+  HttpApiEndpoint.get("file", "/api/voice/recordings/:id/:role", {
+    headers: OptionalBearerHeaders,
+    params: Schema.Struct({ id: VoiceRecordingId, role: VoiceRecordingRole }),
+    success: HttpApiSchema.StreamUint8Array(),
+    error: [
+      ...EnvironmentScopedOperationErrors,
+      VoiceRecordingError.pipe(HttpApiSchema.status(409)),
+    ],
+  }).middleware(EnvironmentAuthenticatedAuth),
+) {}
+
 class EnvironmentConnectHttpApi extends HttpApiGroup.make("connect")
   .add(
     HttpApiEndpoint.post("linkProof", "/api/connect/link-proof", {
@@ -1229,6 +1302,7 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentStreamableUiHttpApi)
   .add(EnvironmentPullRequestsHttpApi)
   .add(EnvironmentVoiceHttpApi)
+  .add(EnvironmentVoiceRecordingHttpApi)
   .add(EnvironmentProjectsHttpApi)
   .add(EnvironmentConnectHttpApi)
   .add(EnvironmentWebhooksHttpApi) {}

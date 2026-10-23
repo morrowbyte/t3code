@@ -1,3 +1,8 @@
+import {
+  createBrowserCallRecording,
+  observeRecordingOptOut,
+  type CallRecordingState,
+} from "./LiveVoiceRecording";
 import { AsyncResult } from "effect/reactivity";
 import * as Schema from "effect/Schema";
 import * as DateTime from "effect/DateTime";
@@ -623,10 +628,19 @@ function createLiveVoiceBinding(
   beforePrepare: LiveVoiceControllerDependencies["beforePrepare"] | undefined,
   onPhaseChange: ((phase: LiveVoiceState["phase"]) => void) | undefined,
   setState: (state: LiveVoiceState) => void,
+  setRecordingState: (state: CallRecordingState) => void,
 ) {
   const stateObserver = new LiveVoiceStateObserver();
+  const recording = createBrowserCallRecording((state) => {
+    if (stateObserver.active) setRecordingState(state);
+  });
   const dependencies: LiveVoiceControllerDependencies = {
     signaling,
+    recording,
+    scheduleInputCheck: (callback) => {
+      const timer = window.setInterval(callback, 2000);
+      return () => window.clearInterval(timer);
+    },
     ...(beforePrepare ? { beforePrepare: beforePrepare } : {}),
     getUserMedia: () => navigator.mediaDevices.getUserMedia({ audio: true }),
     createPeer: () => new RTCPeerConnection() as unknown as LiveVoicePeer,
@@ -660,6 +674,7 @@ function createLiveVoiceBinding(
   };
   return {
     stateObserver,
+    recording,
     controller: new LiveVoiceController(dependencies),
   };
 }
@@ -757,6 +772,7 @@ export function LiveVoiceControl(props: {
       providerInstanceId: props.providerInstanceId,
     };
   })();
+  const [recordingState, setRecordingState] = useState<CallRecordingState>({ status: "off" });
   const [bridge] = useState(createVoiceEventBridge);
   const signaling: LiveVoiceSignalingAdapter = {
     subscribe: bridge.subscribe,
@@ -795,15 +811,25 @@ export function LiveVoiceControl(props: {
   ];
   const [binding, setBinding] = useState(() => ({
     key: bindingKey,
-    ...createLiveVoiceBinding(signaling, beforePrepare, onPhaseChange, setState),
+    ...createLiveVoiceBinding(signaling, beforePrepare, onPhaseChange, setState, setRecordingState),
   }));
   if (binding.key.some((value, index) => value !== bindingKey[index])) {
     setBinding({
       key: bindingKey,
-      ...createLiveVoiceBinding(signaling, beforePrepare, onPhaseChange, setState),
+      ...createLiveVoiceBinding(
+        signaling,
+        beforePrepare,
+        onPhaseChange,
+        setState,
+        setRecordingState,
+      ),
     });
   }
-  const { controller, stateObserver } = binding;
+  const { controller, stateObserver, recording } = binding;
+  useEffect(
+    () => observeRecordingOptOut(props.environmentId, recording),
+    [props.environmentId, recording],
+  );
   const [stateController, setStateController] = useState(controller);
   if (stateController !== controller) {
     setStateController(controller);
@@ -844,19 +870,25 @@ export function LiveVoiceControl(props: {
   }, [controller, target]);
 
   const statusText =
-    state.phase === "preparing"
-      ? "Preparing restricted voice session…"
-      : state.phase === "prepared" || state.phase === "connecting"
-        ? "Connecting to Live…"
-        : state.phase === "playback-blocked"
-          ? "Live connected. Audio playback needs permission."
-          : state.phase === "reconnecting"
-            ? "Live connection interrupted. Reconnecting…"
-            : state.phase === "live"
-              ? "Live connected"
-              : state.phase === "stopping"
-                ? "Ending Live…"
-                : null;
+    active && state.inputIssue
+      ? state.inputIssue === "ended"
+        ? "Microphone ended. Restart the call to speak."
+        : state.inputIssue === "sender-missing"
+          ? "Microphone is no longer being sent. Restart the call to speak."
+          : "Microphone input is interrupted."
+      : state.phase === "preparing"
+        ? "Preparing restricted voice session…"
+        : state.phase === "prepared" || state.phase === "connecting"
+          ? "Connecting to Live…"
+          : state.phase === "playback-blocked"
+            ? "Live connected. Audio playback needs permission."
+            : state.phase === "reconnecting"
+              ? "Live connection interrupted. Reconnecting…"
+              : state.phase === "live"
+                ? "Live connected"
+                : state.phase === "stopping"
+                  ? "Ending Live…"
+                  : null;
 
   const toggleMicrophone = () => void controller.setLocalMuted(!state.localMuted);
   const toggleOutput = () => void controller.setOutputMuted(!state.outputMuted);
@@ -991,6 +1023,23 @@ export function LiveVoiceControl(props: {
         >
           Set up Codex sign-in
         </Button>
+      ) : null}
+      {recordingState.status !== "off" ? (
+        <span role="status" className="min-w-0 text-xs text-muted-foreground">
+          {recordingState.status === "error"
+            ? recordingState.error
+            : {
+                starting: "Starting recording…",
+                recording: "Recording to host",
+                paused: "Recording paused",
+                saving: "Saving recording…",
+                saved: "Recording saved",
+              }[recordingState.status]}
+          {" · "}
+          <a href={`/settings/voice?machine=${encodeURIComponent(props.environmentId)}`}>
+            Recordings
+          </a>
+        </span>
       ) : null}
       <LiveVoiceTranscript
         key={

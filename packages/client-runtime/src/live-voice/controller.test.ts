@@ -51,6 +51,8 @@ const answerEvent: LiveVoiceSignalEvent = {
 function createHarness(
   options: {
     readonly media?: () => Promise<MediaStream>;
+    readonly recording?: LiveVoiceControllerDependencies["recording"];
+    readonly scheduleInputCheck?: LiveVoiceControllerDependencies["scheduleInputCheck"];
     readonly peer?: LiveVoicePeer;
     readonly startTimeoutMs?: number;
     readonly preparedLease?: LiveVoiceLease;
@@ -190,6 +192,8 @@ function createHarness(
   const remoteStream = { getTracks: () => [] } as unknown as MediaStream;
   const dependencies: LiveVoiceControllerDependencies = {
     signaling,
+    ...(options.recording ? { recording: options.recording } : {}),
+    ...(options.scheduleInputCheck ? { scheduleInputCheck: options.scheduleInputCheck } : {}),
     ...(options.beforePrepare ? { beforePrepare: options.beforePrepare } : {}),
     getUserMedia: async () => {
       calls.push("media-request");
@@ -1007,4 +1011,110 @@ describe("LiveVoiceController", () => {
     await harness.controller.end();
     expect(harness.calls.filter((call) => call === "unsubscribe")).toHaveLength(1);
   });
+});
+
+it("attaches recording only after both call streams are ready and isolates hook failures", async () => {
+  const attach = vi.fn(() => {
+    throw new Error("fixture recorder failure");
+  });
+  const pause = vi.fn(() => {
+    throw new Error("fixture pause failure");
+  });
+  const stop = vi.fn(() => {
+    throw new Error("fixture stop failure");
+  });
+  const h = createHarness({ recording: { attach, pause, stop } });
+  const starting = h.controller.start(target);
+  expect(attach).not.toHaveBeenCalled();
+  await connectFirst(h, starting);
+  expect(attach).toHaveBeenCalledWith(
+    expect.objectContaining({ leaseId: lease.leaseId }),
+    h.stream,
+    h.remoteStream,
+  );
+  expect(h.calls.filter((call) => call === "media-request")).toHaveLength(1);
+  expect(h.controller.currentState.phase).toBe("live");
+  h.controller.setLocalMuted(true);
+  expect(h.localTrackEnabled).toBe(false);
+  (h.peer as { connectionState: RTCPeerConnectionState }).connectionState = "disconnected";
+  h.peer.onconnectionstatechange?.();
+  expect(pause).toHaveBeenCalledOnce();
+  expect(h.controller.currentState.phase).toBe("reconnecting");
+  (h.peer as { connectionState: RTCPeerConnectionState }).connectionState = "connected";
+  h.peer.onconnectionstatechange?.();
+  expect(h.controller.currentState.phase).toBe("live");
+  await h.controller.end();
+  expect(stop).toHaveBeenCalled();
+  expect(h.stoppedTracks).toBe(1);
+});
+
+it("reports an ended microphone while its peer stays connected, without reacquiring media", async () => {
+  const track = Object.assign(new EventTarget(), {
+    enabled: true,
+    muted: false,
+    readyState: "live",
+    stop: vi.fn(),
+  });
+  const stream = {
+    getTracks: () => [track],
+    getAudioTracks: () => [track],
+  } as unknown as MediaStream;
+  const h = createHarness({ media: async () => stream });
+  await connectFirst(h, h.controller.start(target));
+  track.readyState = "ended";
+  track.dispatchEvent(new Event("ended"));
+  expect(h.controller.currentState.inputIssue).toBe("ended");
+  expect(h.controller.currentState.phase).toBe("live");
+  expect(h.calls.filter((call) => call === "media-request")).toHaveLength(1);
+  await h.controller.end();
+});
+
+it("distinguishes deliberate mute from interrupted input and detects sender loss without a second microphone", async () => {
+  const track = Object.assign(new EventTarget(), {
+    enabled: true,
+    muted: false,
+    readyState: "live",
+    stop: vi.fn(),
+  });
+  const stream = {
+    getTracks: () => [track],
+    getAudioTracks: () => [track],
+  } as unknown as MediaStream;
+  let inspect: (() => void) | undefined;
+  const cancel = vi.fn();
+  const h = createHarness({
+    media: async () => stream,
+    scheduleInputCheck: (callback) => {
+      inspect = callback;
+      return cancel;
+    },
+  });
+  const sender: { track: MediaStreamTrack | null } = {
+    track: track as unknown as MediaStreamTrack,
+  };
+  h.peer.getSenders = () => [sender];
+  await connectFirst(h, h.controller.start(target));
+  track.muted = true;
+  track.dispatchEvent(new Event("mute"));
+  expect(h.controller.currentState.inputIssue).toBe("source-muted");
+  h.controller.setLocalMuted(true);
+  expect(h.controller.currentState.inputIssue).toBeNull();
+  expect(track.enabled).toBe(false);
+  h.controller.setLocalMuted(false);
+  expect(h.controller.currentState.inputIssue).toBe("source-muted");
+  track.muted = false;
+  track.dispatchEvent(new Event("unmute"));
+  expect(h.controller.currentState.inputIssue).toBeNull();
+  sender.track = null;
+  inspect?.();
+  expect(h.controller.currentState.inputIssue).toBe("sender-missing");
+  expect(h.controller.currentState.phase).toBe("live");
+  expect(h.calls.filter((call) => call === "media-request")).toHaveLength(1);
+  sender.track = track as unknown as MediaStreamTrack;
+  inspect?.();
+  expect(h.controller.currentState.inputIssue).toBeNull();
+  await h.controller.end();
+  expect(cancel).toHaveBeenCalledOnce();
+  track.dispatchEvent(new Event("mute"));
+  expect(h.controller.currentState.phase).toBe("ended");
 });

@@ -9,6 +9,7 @@ export {
   type LiveVoiceLease,
   type LiveVoiceMediaStream,
   type LiveVoicePeer,
+  type LiveVoiceRecordingHooks,
   type LiveVoicePhase,
   type LiveVoiceSignalEvent,
   type LiveVoiceSignalingAdapter,

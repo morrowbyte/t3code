@@ -507,6 +507,10 @@
     "./model-traits": {
       "types": "./src/modelTraits.ts",
       "default": "./src/modelTraits.ts"
+    },
+    "./state/voice-recording": {
+      "types": "./src/state/voiceRecordingHttp.ts",
+      "default": "./src/state/voiceRecordingHttp.ts"
     }
   },
   "scripts": {
