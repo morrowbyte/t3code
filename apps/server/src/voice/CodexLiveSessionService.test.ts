@@ -17,6 +17,7 @@ import * as Deferred from "effect/Deferred";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Tracer from "effect/Tracer";
+import { TestClock } from "effect/testing";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -48,6 +49,32 @@ const decodeWorkStatus = Schema.decodeSync(
           status: Schema.String,
           resultReady: Schema.Boolean,
           commentary: Schema.NullOr(Schema.String),
+        }),
+      ),
+    }),
+  ),
+);
+const decodeCurrentWorkStatus = Schema.decodeSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      visibility: Schema.String,
+      reason: Schema.optional(Schema.String),
+      tasks: Schema.Array(
+        Schema.Struct({
+          status: Schema.String,
+          resultReady: Schema.Boolean,
+          currentStep: Schema.NullOr(Schema.String),
+          visibility: Schema.String,
+        }),
+      ),
+      delegatedTasks: Schema.Array(
+        Schema.Struct({
+          taskId: Schema.String,
+          request: Schema.String,
+          status: Schema.String,
+          resultReady: Schema.Boolean,
+          lastUpdate: Schema.NullOr(Schema.String),
+          visibility: Schema.String,
         }),
       ),
     }),
@@ -109,6 +136,10 @@ it.effect.each([false, true])(
       });
       let gateReadResolvers: Array<() => void> = [];
       let durableProjection: OrchestrationV2ThreadProjection;
+      let childProjection: OrchestrationV2ThreadProjection | undefined;
+      let projectionGate:
+        | { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> }
+        | undefined;
       let activePrincipalLookups = 0;
       let principalLookupGate:
         | {
@@ -363,13 +394,20 @@ it.effect.each([false, true])(
         } as unknown as ProviderSessionManager.ProviderSessionManagerV2Shape),
         Layer.succeed(ThreadManagementService.ThreadManagementService, {
           getThreadProjection: (id: typeof threadId) =>
-            Effect.succeed(
-              String(id).startsWith("fork-prepare-")
+            Effect.gen(function* () {
+              const gate = projectionGate;
+              projectionGate = undefined;
+              if (gate) {
+                yield* Deferred.succeed(gate.started, undefined);
+                yield* Deferred.await(gate.release);
+              }
+              return String(id).startsWith("fork-prepare-")
                 ? { ...durableProjection, thread: { ...durableProjection.thread, id } }
-                : durableProjection,
-            ),
-          getProjectThread: () =>
+                : durableProjection;
+            }),
+          getProjectThread: (input: { threadId: string }) =>
             Effect.sync(() => {
+              if (childProjection?.thread.id === input.threadId) return childProjection;
               const resolve = gateReadResolvers.shift();
               resolve?.();
               return durableProjection;
@@ -1049,6 +1087,86 @@ it.effect.each([false, true])(
           },
         ]);
         assert.equal(completedWork, 0);
+        const savedProjection = durableProjection;
+        const childThreadId = "child-thread-live" as never;
+        childProjection = {
+          ...durableProjection,
+          thread: {
+            ...durableProjection.thread,
+            id: childThreadId,
+            lineage: {
+              parentThreadId: threadId,
+              relationshipToParent: "subagent",
+              rootThreadId: threadId,
+            },
+          },
+          runs: durableProjection.runs.map((run) => ({ ...run, threadId: childThreadId })),
+          turnItems: durableProjection.turnItems.map((item) => ({
+            ...item,
+            threadId: childThreadId,
+          })),
+          subagents: [],
+        };
+        durableProjection = {
+          ...durableProjection,
+          runs: durableProjection.runs.map((run) => ({ ...run, status: "completed" })),
+          subagents: durableProjection.subagents.map((child) => ({ ...child, childThreadId })),
+        };
+        const withChild = yield* control("status", "parent-completed-child-running");
+        const childReceipt = decodeCurrentWorkStatus(withChild);
+        assert.equal(childReceipt.tasks[0]!.status, "completed");
+        assert.isFalse(childReceipt.tasks[0]!.resultReady);
+        assert.equal(childReceipt.tasks[0]!.visibility, "historical");
+        assert.isNull(childReceipt.tasks[0]!.currentStep);
+        assert.equal(childReceipt.delegatedTasks[0]!.status, "running");
+        assert.equal(childReceipt.delegatedTasks[0]!.request, "required child work");
+        assert.equal(childReceipt.delegatedTasks[0]!.lastUpdate, betweenTurnsUpdate);
+        assert.isFalse(childReceipt.delegatedTasks[0]!.resultReady);
+        assert.equal(sends, 1, "status must not create replacement work");
+        childProjection = {
+          ...childProjection,
+          thread: {
+            ...childProjection.thread,
+            lineage: {
+              ...childProjection.thread.lineage,
+              parentThreadId: "foreign-parent" as never,
+            },
+          },
+        };
+        const foreignChild = decodeCurrentWorkStatus(yield* control("status", "foreign-child"));
+        assert.equal(foreignChild.delegatedTasks[0]!.visibility, "unknown");
+        assert.isNull(foreignChild.delegatedTasks[0]!.lastUpdate);
+        durableProjection = {
+          ...savedProjection,
+          runs: [
+            ...savedProjection.runs,
+            ...Array.from({ length: 10 }, (_, i) => ({
+              ...savedProjection.runs[0]!,
+              id: `old-${i}` as never,
+              ordinal: i + 10,
+              status: "completed" as const,
+            })),
+          ],
+        };
+        assert.equal(
+          decodeWorkStatus(yield* control("status", "active-first")).tasks[0]!.status,
+          "running",
+        );
+        durableProjection = savedProjection;
+        childProjection = undefined;
+        const stalledRead = {
+          started: yield* Deferred.make<void>(),
+          release: yield* Deferred.make<void>(),
+        };
+        projectionGate = stalledRead;
+        const statusFiber = yield* control("status", "bounded-read").pipe(Effect.forkChild);
+        yield* Deferred.await(stalledRead.started);
+        yield* TestClock.adjust("8 seconds");
+        const unavailable = decodeCurrentWorkStatus(yield* Fiber.join(statusFiber));
+        assert.equal(unavailable.visibility, "unavailable");
+        assert.equal(unavailable.reason, "status_timeout");
+        assert.equal(completedWork, 0);
+        assert.equal(sends, 1, "timeout never creates replacement work");
         const staleContext = "Dieser Zwischenbefund gehört zum alten Kontext.";
         const contextLookup = holdDispatchPrincipalLookup();
         durableProjection = {
@@ -1084,11 +1202,24 @@ it.effect.each([false, true])(
         } as OrchestrationV2ThreadProjection;
         yield* Queue.offer(t3EventQueues.get("turn-item.updated")!, updateEvent());
         yield* Effect.promise(() => contextLookup.started);
+        const whileDeliveryBlocked = decodeWorkStatus(
+          yield* control("status", "while-delivery-blocked"),
+        );
+        assert.equal(whileDeliveryBlocked.tasks[0]!.status, "running");
+        assert.equal(
+          completedWork,
+          0,
+          "status answers before delivery and work completion gates open",
+        );
         currentPolicy = { ...policy, cwd: "/changed-during-public-delivery" };
         contextLookup.release();
-        // The same lease lock makes this status call a barrier after the pending append.
+        // Mutating control still serializes with the pending append; status no longer does.
         assert.isTrue(
-          Exit.isFailure(yield* Effect.exit(control("status", "public-context-barrier"))),
+          Exit.isFailure(
+            yield* Effect.exit(
+              control("steer", "public-context-barrier", "durable-run-1", "must be refused"),
+            ),
+          ),
         );
         currentPolicy = policy;
         assert.isFalse(contexts.some((message) => message.text === staleContext));
