@@ -91,6 +91,7 @@ export interface EventSinkV2Shape {
     Crypto.Crypto
   >;
   readonly write: (input: {
+    readonly updateToolTitleOnly?: { readonly expectedTitle: string | null };
     /** Return no events if another thread owns this native session at commit time. */
     readonly unlessNativeThreadOwned?: Pick<
       OrchestrationV2ProviderThread,
@@ -101,6 +102,7 @@ export interface EventSinkV2Shape {
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
   }) => Effect.Effect<ReadonlyArray<OrchestrationV2StoredEvent>, EventSinkV2Error>;
   readonly writeWithEffects: (input: {
+    readonly updateToolTitleOnly?: { readonly expectedTitle: string | null };
     /**
      * Rebuilds each run.updated from the stored row with only its delegatedCompletion replaced.
      * The batch must not also change that run's lifecycle.
@@ -443,7 +445,7 @@ const layerBase: Layer.Layer<
           }
           // Checkpoint capture can finish after a cohort writer reads its parent run.
           // Merge in this transaction so the event log and projection keep that completion.
-          const events = input.updateDelegatedCompletionOnly
+          let events = input.updateDelegatedCompletionOnly
             ? yield* Effect.forEach(input.events, (event) =>
                 Effect.gen(function* () {
                   if (event.type !== "run.updated") return event;
@@ -465,6 +467,27 @@ const layerBase: Layer.Layer<
                 }),
               )
             : input.events;
+          if (input.updateToolTitleOnly) {
+            const expectedTitle = input.updateToolTitleOnly.expectedTitle;
+            const updates = yield* Effect.forEach(events, (event) =>
+              Effect.gen(function* () {
+                if (event.type !== "turn-item.updated") return [];
+                const current = yield* projectionStore.getTurnItem({
+                  threadId: event.threadId,
+                  itemId: event.payload.id,
+                });
+                if (
+                  !current ||
+                  current.title !== expectedTitle ||
+                  current.runId !== event.payload.runId
+                )
+                  return [];
+                // Only the title crosses this async boundary; lifecycle and output come from this transaction.
+                return [{ ...event, payload: { ...current, title: event.payload.title } }];
+              }),
+            );
+            events = updates.flat();
+          }
           const normalized = yield* normalizeEvents(
             input.guardPendingUserInputCancellations === true
               ? yield* guardUserInputCancellations(events)

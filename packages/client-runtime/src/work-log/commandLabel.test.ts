@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { commandActivityLabel, commandDisplayText, commandProgramName } from "./commandLabel.ts";
+import {
+  commandActivityLabel,
+  commandDisplayText,
+  commandProgramName,
+  commandIntentLabel,
+} from "./commandLabel.ts";
 
 describe("commandActivityLabel", () => {
   it.each([
@@ -182,5 +187,25 @@ describe("commandDisplayText control characters", () => {
     ["printf 'a\\tb'\r\necho done", "printf 'a\\tb'\r\necho done"],
   ])("shows %j as %j", (input, expected) => {
     expect(commandDisplayText(input)).toBe(expected);
+  });
+});
+
+describe("command intent", () => {
+  it.each([
+    ["cat docs/guide.md", "Read guide.md"],
+    ["sed -n '668,753p' src/worker.ts", "Read worker.ts, lines 668–753"],
+    ["tail -24 logs/check.log", "Read the end of check.log"],
+    ["zcat captures/check.json.gz", "Read compressed check.json.gz"],
+    ["python3 - <<'PY'\nprint('cat secrets')\nPY", "Run Python code"],
+    ["sed -i 's/old/new/g' file", "Run sed"],
+    ["cat source | bash", "Run shell commands"],
+    ["cat $(touch marker)", "Run shell commands"],
+    [
+      "# Intent: Inspect saved validation results\npython3 inspect.py",
+      "Inspect saved validation results",
+    ],
+    ["python3 - <<'PY'\n# Intent: not a shell intent\nprint('x')\nPY", "Run Python code"],
+  ])("describes only observable behavior: %s", (command, expected) => {
+    expect(commandIntentLabel(command)).toBe(expected);
   });
 });

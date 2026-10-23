@@ -2,7 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { ThreadId, TurnItemId, type OrchestrationV2TurnItem } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
-import { turnItemOutputImages, turnItemOutputText } from "./itemDetail.ts";
+import { toolCallLines, turnItemOutputImages, turnItemOutputText } from "./itemDetail.ts";
 
 function toolItem(output: unknown): OrchestrationV2TurnItem {
   return {
@@ -51,4 +51,19 @@ describe("tool image output parsing", () => {
       expect(turnItemOutputText(overflow)).toBe("Two additional screenshots:\n[image]\n[image]");
     },
   );
+});
+
+it("keeps original command bytes and opaque runtime arguments available independently of labels", () => {
+  const command = "  python3 - <<'PY'\r\nprint('keep  spaces and \\n literal')\r\nPY\r\n";
+  expect(toolCallLines({ command }).command).toBe(command);
+  const rawJson = '  {"opaque": "keep  spaces"}\r\n';
+  expect(toolCallLines({ args: rawJson }).argsText).toBe(rawJson);
+
+  const args = Object.freeze({ routeKey: "east", code: "x = 'keep  spaces'\n", quantity: 8 });
+  expect(toolCallLines({ args }).args).toEqual([
+    ["routeKey", "east"],
+    ["code", args.code],
+    ["quantity", "8"],
+  ]);
+  expect(args.code).toBe("x = 'keep  spaces'\n");
 });

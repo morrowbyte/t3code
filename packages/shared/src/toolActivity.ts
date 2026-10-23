@@ -28,6 +28,23 @@ export function isJavaScriptReplTool(toolName: string | null | undefined): boole
   return toolName === "js" || toolName === "cua_repl.js" || toolName === "node_repl.js";
 }
 
+/** An opt-in source comment, never inferred from strings or a script's body. */
+export function authoredCodeIntent(code: string): string | undefined {
+  return /^(?:[ \t]*\/\/ @exec:[^\r\n]*\r?\n)?(?:\s*\r?\n)*[ \t]*(?:#|\/\/) Intent:[ \t]*([^\r\n]{1,160})[ \t]*(?:\r?\n|$)/u
+    .exec(code.slice(0, 512))?.[1]
+    ?.trim();
+}
+
+export function toolCallTitle(
+  title: string | null | undefined,
+  toolName?: string | null,
+): string | undefined {
+  const text = title?.trim();
+  if (!text || text.length > 200 || /[\r\n]/u.test(text)) return undefined;
+  if (text.toLowerCase() === toolName?.toLowerCase()) return undefined;
+  return text;
+}
+
 export const COMPUTER_USE_TOOL_SOURCE = {
   key: "computer-use",
   name: "Computer Use",
@@ -49,6 +66,7 @@ export function dynamicToolTitle(
   input: unknown,
   retainedTitle?: string | null,
 ): string | undefined {
+  const source = typeof input === "string" ? input : asRecord(input)?.code;
   if (isJavaScriptReplTool(toolName)) {
     const title = asTrimmedString(retainedTitle);
     const meaningfulTitle =
@@ -58,11 +76,15 @@ export function dynamicToolTitle(
     return (
       asTrimmedString(asRecord(input)?.title) ??
       meaningfulTitle ??
+      (typeof source === "string" ? authoredCodeIntent(source) : undefined) ??
       (dynamicToolSurface(toolName, input) === "computer" ? "Computer use" : "Run JavaScript")
     );
   }
   const skill = claudeSkillInvocation(toolName, input);
-  return skill === undefined ? undefined : `Skill: ${skill.name}`;
+  return skill === undefined
+    ? (toolCallTitle(retainedTitle, toolName) ??
+        (typeof source === "string" ? authoredCodeIntent(source) : undefined))
+    : `Skill: ${skill.name}`;
 }
 
 function recordHasKeys(

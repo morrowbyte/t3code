@@ -25,6 +25,9 @@ import {
   TurnItemId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Queue from "effect/Queue";
+import * as ToolIntentGeneration from "../textGeneration/ToolIntentGeneration.ts";
+import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Effect from "effect/Effect";
@@ -2169,3 +2172,151 @@ layer("ProviderEventIngestorV2", (it) => {
     }),
   );
 });
+
+it.effect(
+  "enriches a persisted unknown runtime tool asynchronously without reverting completion or a newer authored title",
+  () =>
+    Effect.gen(function* () {
+      const requests = yield* Queue.make<Deferred.Deferred<{ title: string }>>();
+      const fakeGeneration = Layer.mock(TextGeneration.TextGeneration)({
+        generateThreadTitle: () =>
+          Effect.gen(function* () {
+            const reply = yield* Deferred.make<{ title: string }>();
+            yield* Queue.offer(requests, reply);
+            return yield* Deferred.await(reply);
+          }),
+      });
+      yield* Effect.gen(function* () {
+        const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const allocator = yield* IdAllocator.IdAllocatorV2;
+        const now = yield* DateTime.now;
+        const thread = yield* threadCreatedEvent(now);
+        yield* sink.write({ events: [thread] });
+        const providerSessionId = yield* allocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId: thread.threadId,
+        });
+        const original = { capsuleIds: ["north", "south"], unit: "EUR" };
+        const base = {
+          id: TurnItemId.make("runtime-intent"),
+          threadId: thread.threadId,
+          runId: null,
+          nodeId: null,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 0,
+          status: "running" as const,
+          title: null,
+          startedAt: now,
+          completedAt: null,
+          updatedAt: now,
+          type: "dynamic_tool" as const,
+          toolName: "mcp__new_at_runtime__quotes",
+          input: original,
+        };
+        const ingest = (turnItem: OrchestrationV2TurnItem) =>
+          ingestor.ingestNormalized({
+            providerSessionId,
+            providerInstanceId: modelSelection.instanceId,
+            threadId: thread.threadId,
+            event: { type: "turn_item.updated", driver: CODEX_DRIVER, turnItem },
+          });
+        const first = yield* ingest(base);
+        assert.equal(first.length, 1);
+        const reply = yield* Queue.take(requests);
+        assert.equal(
+          (yield* projections.getTurnItem({ threadId: base.threadId, itemId: base.id }))?.status,
+          "running",
+        );
+        yield* ingest({
+          ...base,
+          status: "completed",
+          output: "original output",
+          completedAt: now,
+        });
+        // Acquire the persisted event before releasing inference; no polling or wall-clock delay.
+        const titleCommitted = yield* sink
+          .stream({
+            threadId: base.threadId,
+            afterSequence: yield* sink.latestSequence({ threadId: base.threadId }),
+          })
+          .pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "turn-item.updated" &&
+                stored.event.payload.title === "Compare regional quotes",
+            ),
+            Stream.take(1),
+            Stream.runCollect,
+            Effect.forkScoped,
+          );
+        yield* Deferred.succeed(reply, { title: "Compare regional quotes" });
+        yield* Fiber.join(titleCommitted);
+        const completed = yield* projections.getTurnItem({
+          threadId: base.threadId,
+          itemId: base.id,
+        });
+        assert.equal(completed?.status, "completed");
+        assert.equal(completed?.title, "Compare regional quotes");
+        assert.deepEqual(completed?.type === "dynamic_tool" ? completed.input : null, original);
+        assert.equal(
+          completed?.type === "dynamic_tool" ? completed.output : null,
+          "original output",
+        );
+        yield* ingest({ ...base, status: "completed", output: "new output", completedAt: now });
+        assert.equal(
+          (yield* projections.getTurnItem({ threadId: base.threadId, itemId: base.id }))?.title,
+          "Compare regional quotes",
+        );
+        const second = {
+          ...base,
+          id: TurnItemId.make("authored-wins"),
+          input: { capsuleIds: ["other"] },
+        };
+        yield* ingest(second);
+        const late = yield* Queue.take(requests);
+        yield* ingest({
+          ...second,
+          title: "Authored activity",
+          status: "failed",
+          output: "latest failure",
+        });
+        const intents = yield* ToolIntentGeneration.ToolIntentGeneration;
+        const acknowledged = yield* Deferred.make<void>();
+        yield* intents.observe({
+          item: { ...second, id: TurnItemId.make("cache-observer") },
+          providerInstanceId: modelSelection.instanceId,
+          driverKind: CODEX_DRIVER,
+          commitTitle: () => Deferred.succeed(acknowledged, undefined).pipe(Effect.asVoid),
+        });
+        yield* Deferred.succeed(late, { title: "Older generated activity" });
+        yield* Deferred.await(acknowledged);
+        const authored = yield* projections.getTurnItem({
+          threadId: second.threadId,
+          itemId: second.id,
+        });
+        assert.equal(authored?.title, "Authored activity");
+        assert.equal(authored?.status, "failed");
+        assert.equal(authored?.type === "dynamic_tool" ? authored.output : null, "latest failure");
+        yield* ingest({ ...second, status: "completed", output: "newer output" });
+        const continued = yield* projections.getTurnItem({
+          threadId: second.threadId,
+          itemId: second.id,
+        });
+        assert.equal(continued?.title, "Authored activity");
+        assert.equal(continued?.status, "completed");
+      }).pipe(
+        Effect.provide(
+          layerTest.pipe(
+            Layer.provideMerge(ToolIntentGeneration.layer.pipe(Layer.provide(fakeGeneration))),
+            Layer.provide(NodeServices.layer),
+            Layer.fresh,
+          ),
+        ),
+      );
+    }).pipe(Effect.scoped),
+);

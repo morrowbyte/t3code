@@ -1,41 +1,27 @@
-import {
-  commandHighlightLanguage,
-  withVisibleControlCharacters,
-} from "@t3tools/client-runtime/work-log/command-label";
+import { commandHighlightLanguage } from "@t3tools/client-runtime/work-log/command-label";
 import { Suspense, use } from "react";
-
 import { useRenderedAppearance } from "../../hooks/useTheme";
 import { RenderErrorBoundary } from "../RenderErrorBoundary";
+import { MessageCopyButton } from "./MessageCopyButton";
 import { HighlightedTokens } from "./HighlightedTokens";
+import { PlainCodeLines } from "./RecordedSourceLines";
 
-const WORD_CLASS_NAME = "inline-block max-w-full [overflow-wrap:anywhere]";
-
-// The shell parser loads with the first expanded command, not with the timeline.
 let embeddedScriptsModule: Promise<typeof import("../../lib/embeddedScripts")> | undefined;
 function loadEmbeddedScripts() {
   embeddedScriptsModule ??= import("../../lib/embeddedScripts");
   return embeddedScriptsModule;
 }
 
-/** Same layout as the highlighted version, so the grammar arriving never reflows the block. */
-function PlainWords({ code }: { code: string }) {
-  return code.split(/(\s+)/u).map((part, index) =>
-    index % 2 === 1 || part === "" ? (
-      part
-    ) : (
-      // Positions are stable for a given string, which is all this renders.
-      // oxlint-disable-next-line react/no-array-index-key
-      <span key={index} className={WORD_CLASS_NAME}>
-        {part}
-      </span>
-    ),
-  );
-}
-
-function HighlightedCommand({ code, theme }: { code: string; theme: "light" | "dark" }) {
+function HighlightedCommand({
+  code,
+  language,
+  theme,
+}: {
+  code: string;
+  language: string;
+  theme: "light" | "dark";
+}) {
   const { embeddedScripts } = use(loadEmbeddedScripts());
-  const language = commandHighlightLanguage(code);
-  // Only shell syntax nests scripts; PowerShell's own grammar colors its strings.
   const embedded = language === "shellscript" ? embeddedScripts(code) : [];
   return (
     <HighlightedTokens
@@ -43,23 +29,45 @@ function HighlightedCommand({ code, theme }: { code: string; theme: "light" | "d
       language={language}
       embedded={embedded}
       theme={theme}
-      wordClassName={WORD_CLASS_NAME}
+      lineNumbers
     />
   );
 }
 
-export function ShellCommandBlock({ command }: { command: string }) {
-  const resolvedTheme = useRenderedAppearance();
-  const code = withVisibleControlCharacters(command.trim());
-  if (!code) return null;
-  const plain = <PlainWords code={code} />;
+export function ShellCommandBlock({
+  command,
+  language,
+}: {
+  command: string;
+  language?: string | undefined;
+}) {
+  const theme = useRenderedAppearance();
+  if (!command) return null;
+  const plain = <PlainCodeLines code={command} />;
   return (
-    <div className="text-foreground/85">
-      <RenderErrorBoundary fallback={plain} resetKeys={[code]}>
-        <Suspense fallback={plain}>
-          <HighlightedCommand code={code} theme={resolvedTheme} />
-        </Suspense>
-      </RenderErrorBoundary>
+    <div className="min-w-0 text-foreground/85">
+      <div className="flex justify-end">
+        <MessageCopyButton text={command} label="Copy recorded input" variant="ghost" />
+      </div>
+      <pre
+        aria-label="Recorded input"
+        tabIndex={0}
+        className="max-h-80 overflow-auto font-mono text-xs whitespace-pre-wrap [overflow-wrap:anywhere] select-text"
+      >
+        <RenderErrorBoundary fallback={plain} resetKeys={[command]}>
+          <Suspense fallback={plain}>
+            {command.length > 65_536 ? (
+              plain
+            ) : (
+              <HighlightedCommand
+                code={command}
+                language={language ?? commandHighlightLanguage(command)}
+                theme={theme}
+              />
+            )}
+          </Suspense>
+        </RenderErrorBoundary>
+      </pre>
     </div>
   );
 }

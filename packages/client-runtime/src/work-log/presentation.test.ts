@@ -5,6 +5,8 @@ import * as DateTime from "effect/DateTime";
 
 import {
   resolveWorkEntryToolPresentation,
+  workEntryIntentLabel,
+  workEntryExecutionStatus,
   toolItemForDisplay,
   type WorkLogPresentationEntry,
   workEntryIndicatesToolFailure,
@@ -14,7 +16,7 @@ import {
 
 function commandItem(
   fields: Partial<Extract<OrchestrationV2TurnItem, { type: "command_execution" }>> = {},
-): OrchestrationV2TurnItem {
+): Extract<OrchestrationV2TurnItem, { type: "command_execution" }> {
   return {
     id: TurnItemId.make("command"),
     threadId: ThreadId.make("thread"),
@@ -179,4 +181,74 @@ describe("resolveWorkEntryToolPresentation", () => {
       }),
     ).toBeNull();
   });
+});
+
+describe("runtime tool intent", () => {
+  it("uses a newly registered tool's call title without interpreting opaque arguments", () => {
+    const input = Object.freeze({
+      capsule: "42",
+      description: "Delete everything",
+      title: "Unrelated argument",
+    });
+    const item = {
+      ...commandItem(),
+      type: "dynamic_tool" as const,
+      toolName: "mcp__new_runtime__transduce",
+      title: "Compare the selected shipment quotes",
+      input,
+    };
+    const entry: WorkLogPresentationEntry = {
+      id: "runtime",
+      createdAt: "",
+      label: item.toolName,
+      tone: "tool",
+      itemType: "dynamic_tool",
+      structuredPayload: item,
+    };
+    expect(workEntryIntentLabel(entry)).toBe("Compare the selected shipment quotes");
+    expect(workEntryIntentLabel({ ...entry, structuredPayload: { ...item, title: null } })).toBe(
+      "Tool: mcp__new_runtime__transduce",
+    );
+    expect(item.input).toBe(input);
+    expect(item.input.description).toBe("Delete everything");
+    expect(workEntryExecutionStatus(entry)).toBe("Completed");
+    expect(
+      workEntryExecutionStatus({ ...entry, structuredPayload: { ...item, status: "running" } }),
+    ).toBe("Running");
+    expect(
+      workEntryExecutionStatus({ ...entry, structuredPayload: { ...item, status: "failed" } }),
+    ).toBe("Failed");
+  });
+  it("keeps a call intent independent of command outcome and preserves raw input", () => {
+    const input = "# Intent: Inspect validation results\npython3 - <<'PY'\nprint('original')\nPY\n";
+    const item = commandItem({ input, exitCode: 2 });
+    const entry: WorkLogPresentationEntry = {
+      id: "script",
+      createdAt: "",
+      label: "Command",
+      tone: "tool",
+      command: input,
+      structuredPayload: item,
+    };
+    expect(workEntryIntentLabel(entry)).toBe("Inspect validation results");
+    expect(workEntryExecutionStatus(entry)).toBe("Failed · exit 2");
+    expect(item.input).toBe(input);
+  });
+});
+
+it("keeps execution status independent of intent and quoted error text", () => {
+  const item = commandItem({
+    title: "Investigate failed checks",
+    output: "command not found is the string being inspected",
+    exitCode: 0,
+  });
+  const entry: WorkLogPresentationEntry = {
+    id: "status",
+    createdAt: "",
+    label: "Failed checks",
+    tone: "tool",
+    structuredPayload: item,
+  };
+  expect(workEntryExecutionStatus(entry)).toBe("Completed");
+  expect(workEntryIntentLabel(entry)).toBe("Investigate failed checks");
 });

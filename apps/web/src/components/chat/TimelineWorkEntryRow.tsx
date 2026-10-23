@@ -1,3 +1,4 @@
+import { workEntryExecutionStatus } from "@t3tools/client-runtime/work-log/presentation";
 import { useRightPanelStore } from "~/rightPanelStore";
 import { WorkLogDetails, WorkLogRow } from "./WorkLog";
 import {
@@ -31,7 +32,7 @@ import {
 } from "../../session-logic";
 import ChatMarkdown from "../ChatMarkdown";
 import { ChatMarkdownAssetImage } from "./ChatMarkdownMedia";
-import { ChevronRightIcon, CircleAlertIcon, XIcon, RotateCcwIcon } from "lucide-react";
+import { ChevronRightIcon, CircleAlertIcon, XIcon, RotateCcwIcon, CodeIcon } from "lucide-react";
 import { Button, InlineButton } from "../ui/button";
 import { useAssetUrls } from "../../assets/assetUrls";
 import { useThreadShell } from "../../state/entities";
@@ -289,6 +290,7 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
       : null;
   const viewedImagePath = workEntryViewedImagePath(workEntry);
   const payload = workEntry.structuredPayload;
+  const executionStatus = workEntryExecutionStatus(workEntry);
   const skill =
     payload?.type === "dynamic_tool"
       ? claudeSkillInvocation(payload.toolName, payload.input)
@@ -390,6 +392,7 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
       data-v2-item-type={workEntry.projectedItem?.item.type}
       data-v2-item-visibility={workEntry.projectedItem?.visibility}
       {...rowToggleProps}
+      wrapLabel={executionStatus !== undefined}
       icon={
         <span
           className={iconWrapperClass}
@@ -408,7 +411,13 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
         <div className="min-w-0 flex-1 overflow-hidden">
           <p className="flex min-w-0 w-full items-baseline gap-1.5 text-sm leading-relaxed">
             <span
-              className={cn(answerPreview ? "min-w-0" : "min-w-0 flex-1", "truncate", headingClass)}
+              className={cn(
+                answerPreview ? "min-w-0" : "min-w-0 flex-1",
+                executionStatus
+                  ? "line-clamp-2 whitespace-normal [overflow-wrap:anywhere]"
+                  : "truncate",
+                headingClass,
+              )}
             >
               {isReasoning && !expanded ? (
                 <ChatMarkdown
@@ -433,6 +442,9 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
                 previewText
               )}
             </span>
+            {executionStatus ? (
+              <span className="shrink-0 text-xs text-muted-foreground">{executionStatus}</span>
+            ) : null}
             {answerPreview ? (
               <span
                 className={cn(
@@ -470,7 +482,8 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
               }}
               onKeyDown={stopRowToggle}
             >
-              View code
+              <CodeIcon aria-hidden className="size-3" />
+              <span className="hidden sm:inline">View code</span>
             </InlineButton>
           ) : null}
           {createdThread ? (

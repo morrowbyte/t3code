@@ -13,6 +13,7 @@ import { useTheme } from "../../hooks/useTheme";
 import { RenderErrorBoundary } from "../RenderErrorBoundary";
 import { Button } from "../ui/button";
 import { HighlightedTokens } from "./HighlightedTokens";
+import { PlainCodeLines } from "./RecordedSourceLines";
 
 export interface ExecutionCodePanelProps {
   readonly threadRef: ScopedThreadRef;
@@ -35,6 +36,7 @@ function ExecutionSyntax(props: {
       language={props.language}
       embedded={embedded}
       theme={props.theme}
+      lineNumbers
     />
   );
 }
@@ -280,12 +282,15 @@ export function ExecutionCodeView(props: {
             ref={source}
             aria-label="Recorded input"
             tabIndex={0}
-            className="min-h-40 shrink-0 overflow-auto border border-border p-3 font-mono text-xs whitespace-pre select-text"
+            className="min-h-40 shrink-0 overflow-auto border border-border p-3 font-mono text-xs whitespace-pre-wrap [overflow-wrap:anywhere] select-text"
           >
-            <RenderErrorBoundary fallback={code.text} resetKeys={[code.text]}>
-              <Suspense fallback={code.text}>
+            <RenderErrorBoundary
+              fallback={<PlainCodeLines code={code.text} />}
+              resetKeys={[code.text]}
+            >
+              <Suspense fallback={<PlainCodeLines code={code.text} />}>
                 {code.text.length > 65_536 ? (
-                  code.text
+                  <PlainCodeLines code={code.text} />
                 ) : (
                   <ExecutionSyntax
                     code={code.text}

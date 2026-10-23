@@ -1,3 +1,5 @@
+import { commandHighlightLanguage } from "@t3tools/client-runtime/work-log/command-label";
+import { workEntryExecutionStatus } from "@t3tools/client-runtime/work-log/presentation";
 import { AgentIdentityLabel } from "../agent-identity/AgentIdentityLabel";
 import { Button } from "../../components/ui/Button";
 import { SubagentStatusDot } from "./SubagentStatusDot";
@@ -839,35 +841,54 @@ function WorkspacePreparationRetryButton(props: {
   );
 }
 
-function ReplCodeText({
+function RecordedCodeText({
   code,
+  language,
   theme,
 }: {
   readonly code: string;
+  readonly language: string;
   readonly theme: "light" | "dark";
 }) {
-  const lines = useMarkdownCodeHighlight({ code, language: "typescript", theme, enabled: true });
-  let offset = 0;
-  const highlighted = lines?.flatMap((line, lineIndex) => {
-    const separator = lineIndex > 0 ? "\n" : "";
-    offset += separator.length;
-    return [
-      separator,
-      ...line.map((token) => {
-        const start = offset;
-        offset += token.content.length;
-        return (
-          <Text key={start} style={token.color ? { color: token.color } : undefined}>
-            {token.content}
-          </Text>
-        );
-      }),
-    ];
+  const highlighted = useMarkdownCodeHighlight({
+    code,
+    language,
+    theme,
+    enabled: code.length <= 65_536,
   });
+  if (code.length > 65_536)
+    return (
+      <Text selectable className="font-mono text-2xs leading-normal text-foreground">
+        {code}
+      </Text>
+    );
   return (
-    <Text selectable className="font-mono text-2xs leading-normal text-foreground">
-      {highlighted ?? code}
-    </Text>
+    <View className="min-w-0">
+      {code.split(/\r?\n/u).map((line, index) => (
+        // Source positions stay stable; soft wraps remain within the same numbered row.
+        // oxlint-disable-next-line react/no-array-index-key
+        <View key={index} className="min-w-0 flex-row gap-2">
+          <Text
+            accessible={false}
+            className="w-7 text-right font-mono text-2xs leading-normal text-foreground-subtle"
+          >
+            {index + 1}
+          </Text>
+          <Text
+            selectable
+            className="min-w-0 flex-1 font-mono text-2xs leading-normal text-foreground"
+          >
+            {highlighted?.[index]?.map((token, tokenIndex) => (
+              // Token positions remain stable within this recorded source line.
+              // oxlint-disable-next-line react/no-array-index-key
+              <Text key={tokenIndex} style={token.color ? { color: token.color } : undefined}>
+                {token.content}
+              </Text>
+            )) ?? line}
+          </Text>
+        </View>
+      ))}
+    </View>
   );
 }
 
@@ -1025,6 +1046,7 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
       </Text>
     );
   const toolPresentation = resolveWorkEntryToolPresentation(row.workEntry);
+  const executionStatus = workEntryExecutionStatus(row.workEntry);
   const previewText = row.groupStandIn?.label ?? workEntryRowLabel(row.workEntry);
   const answerPreview = row.workEntry.questionAnswer
     ? getQuestionAnswerPreview(row.workEntry.questionAnswer)
@@ -1126,7 +1148,7 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
               {displayText}
             </Text>
           </View>
-        ) : row.live && !expanded ? (
+        ) : row.live && !expanded && !executionStatus ? (
           <ShimmeringWorkContent
             environmentId={props.environmentId}
             icon={icon}
@@ -1163,26 +1185,35 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
                 />
               )}
             </WorkLogIconSlot>
-            <WorkLogLabel
-              tone={isUsageLimit ? "warning" : iconIsDestructive ? "danger" : "default"}
-            >
-              {displayText}
-              {answerPreview ? (
-                <Text
-                  className={
-                    !expanded &&
-                    row.workEntry.questionAnswer &&
-                    hasQuestionAnswer(row.workEntry.questionAnswer)
-                      ? "text-foreground"
-                      : "text-foreground-subtle"
-                  }
-                >{`  ${answerPreview}`}</Text>
-              ) : null}
-            </WorkLogLabel>
+            {executionStatus ? (
+              <Text numberOfLines={2} className="min-w-0 flex-1 text-sm text-foreground-muted">
+                {displayText}
+              </Text>
+            ) : (
+              <WorkLogLabel
+                tone={isUsageLimit ? "warning" : iconIsDestructive ? "danger" : "default"}
+              >
+                {displayText}
+                {answerPreview ? (
+                  <Text
+                    className={
+                      !expanded &&
+                      row.workEntry.questionAnswer &&
+                      hasQuestionAnswer(row.workEntry.questionAnswer)
+                        ? "text-foreground"
+                        : "text-foreground-subtle"
+                    }
+                  >{`  ${answerPreview}`}</Text>
+                ) : null}
+              </WorkLogLabel>
+            )}
           </>
         )}
 
         <View className="shrink-0 flex-row items-center gap-px">
+          {executionStatus ? (
+            <Text className="pr-1 text-3xs text-foreground-muted">{executionStatus}</Text>
+          ) : null}
           {props.copied ? (
             <Text className="pr-1 font-t3-medium text-3xs text-adaptive-emerald-600-400">
               Copied
@@ -1269,22 +1300,74 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
               props.renderReasoning(reasoning.text)
             ) : call ? (
               [
-                call.command,
+                call.command ? (
+                  <View key="command">
+                    <Button
+                      label="Copy input"
+                      tone="secondary"
+                      onPress={() => props.onCopyRow(row.id, call.command!)}
+                    />
+                    <RecordedCodeText
+                      code={call.command}
+                      language={commandHighlightLanguage(call.command)}
+                      theme={props.themeAppearance}
+                    />
+                  </View>
+                ) : null,
                 ...(call.args ?? []).map(([key, value]) =>
-                  key === "code" &&
-                  shownItem.type === "dynamic_tool" &&
-                  isJavaScriptReplTool(shownItem.toolName) ? (
+                  (key === "code" || key === "script" || key === "command" || key === "cmd") &&
+                  shownItem.type === "dynamic_tool" ? (
                     <View key={key}>
                       <Text className="font-mono text-2xs leading-normal text-foreground-muted">
                         {key}
                       </Text>
-                      <ReplCodeText code={value} theme={props.themeAppearance} />
+                      <Button
+                        label="Copy input"
+                        tone="secondary"
+                        onPress={() => props.onCopyRow(row.id, value)}
+                      />
+                      <RecordedCodeText
+                        code={value}
+                        language={
+                          key === "command" || key === "cmd"
+                            ? commandHighlightLanguage(value)
+                            : isJavaScriptReplTool(shownItem.toolName)
+                              ? "typescript"
+                              : typeof shownItem.input === "object" &&
+                                  shownItem.input !== null &&
+                                  "language" in shownItem.input &&
+                                  typeof shownItem.input.language === "string"
+                                ? shownItem.input.language
+                                : "text"
+                        }
+                        theme={props.themeAppearance}
+                      />
                     </View>
                   ) : (
                     `${key} ${value}`
                   ),
                 ),
-                call.argsText,
+                call.argsText ? (
+                  <View key="input">
+                    <Button
+                      label="Copy input"
+                      tone="secondary"
+                      onPress={() => props.onCopyRow(row.id, call.argsText!)}
+                    />
+                    <RecordedCodeText
+                      code={call.argsText}
+                      language={
+                        shownItem.type === "dynamic_tool" &&
+                        isJavaScriptReplTool(shownItem.toolName)
+                          ? "typescript"
+                          : shownItem.type === "dynamic_tool" && typeof shownItem.input === "string"
+                            ? "text"
+                            : "json"
+                      }
+                      theme={props.themeAppearance}
+                    />
+                  </View>
+                ) : null,
               ]
                 .filter((line) => Boolean(line))
                 .map((line, index) =>

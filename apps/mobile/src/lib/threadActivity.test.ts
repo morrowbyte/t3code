@@ -921,7 +921,7 @@ describe("buildThreadFeed", () => {
     );
     expect(presented.find((entry) => entry.type === "activity-group")).toMatchObject({
       id: "live-activity-row",
-      activities: [{ live: true, groupStandIn: { label: "Running vp" } }],
+      activities: [{ live: true, groupStandIn: { label: "Run vp" } }],
     });
     expect(presented.some((entry) => entry.type === "thinking")).toBe(false);
   });
@@ -1759,7 +1759,7 @@ it("stops stranded thinking after a steer and follows the next thought or tool",
     expect(live[0]).toMatchObject(
       items.at(-1)!.type === "reasoning"
         ? { summary: "Thinking", thought: "next-thought" }
-        : { summary: "Running vp" },
+        : { summary: "Run vp" },
     );
   }
   expect(first.status).toBe("running");
@@ -2057,4 +2057,31 @@ describe("streamed feed updates", () => {
     expect(showsDelegation(steps[2]!)).toBe(true);
     expect(showsDelegation(steps[3]!)).toBe(false);
   });
+});
+
+it("presents an arbitrary runtime tool's authored intent without flattening its original input", () => {
+  const input = Object.freeze({ routeKey: "east", quantity: 8, title: "Opaque argument" });
+  const item = {
+    ...base("runtime-mcp", "2026-10-23T19:00:00.000Z", 1),
+    type: "dynamic_tool" as const,
+    toolName: "mcp__runtime_inventory__negotiate",
+    title: "Compare replenishment options",
+    input,
+  };
+  const entry = {
+    id: "runtime",
+    createdAt: "",
+    label: item.toolName,
+    tone: "tool" as const,
+    itemType: "dynamic_tool" as const,
+    structuredPayload: item,
+  };
+  expect(workEntryRowLabel(entry)).toBe("Compare replenishment options");
+  expect(workEntryRowLabel({ ...entry, structuredPayload: { ...item, status: "completed" } })).toBe(
+    "Compare replenishment options",
+  );
+  expect(workEntryRowLabel({ ...entry, structuredPayload: { ...item, title: null } })).toBe(
+    "Tool: mcp__runtime_inventory__negotiate",
+  );
+  expect(item.input).toBe(input);
 });

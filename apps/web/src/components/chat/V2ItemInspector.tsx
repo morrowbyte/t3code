@@ -286,8 +286,22 @@ function ToolCallBody(
           {call.args.map(([key, value]) => (
             <div key={key}>
               <span className="text-muted-foreground">{key} </span>
-              {key === "code" && isJavaScriptReplTool(props.toolName) ? (
-                <StructuredValue value={value} language="typescript" />
+              {key === "code" || key === "script" || key === "command" || key === "cmd" ? (
+                <ShellCommandBlock
+                  command={value}
+                  language={
+                    key === "command" || key === "cmd"
+                      ? undefined
+                      : isJavaScriptReplTool(props.toolName)
+                        ? "typescript"
+                        : typeof props.args === "object" &&
+                            props.args !== null &&
+                            "language" in props.args &&
+                            typeof props.args.language === "string"
+                          ? props.args.language
+                          : "text"
+                  }
+                />
               ) : (
                 value
               )}
@@ -295,7 +309,18 @@ function ToolCallBody(
           ))}
         </div>
       ) : null}
-      {call.argsText ? <StructuredValue value={call.argsText} highlightJson /> : null}
+      {call.argsText ? (
+        <ShellCommandBlock
+          command={call.argsText}
+          language={
+            isJavaScriptReplTool(props.toolName)
+              ? "typescript"
+              : isJsonText(call.argsText)
+                ? "json"
+                : "text"
+          }
+        />
+      ) : null}
       {props.outputSlot ?? <ToolOutput {...props} />}
       {props.exitCode !== undefined && props.exitCode !== 0 ? (
         <div className="text-destructive">exit {props.exitCode}</div>

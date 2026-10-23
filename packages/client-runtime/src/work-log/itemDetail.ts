@@ -87,8 +87,8 @@ export function toolCallLines(input: {
   readonly argsText: string | null;
 } {
   if (input.command !== undefined) {
-    const command = input.command.trim();
-    return { command: command || null, args: null, argsText: null };
+    const command = input.command;
+    return { command: command.trim() ? command : null, args: null, argsText: null };
   }
   const args = input.args;
   if (isRecord(args) && !isSummarizedValue(args)) {
@@ -108,7 +108,11 @@ export function toolCallLines(input: {
     );
     return { command: null, args: entries.length > 0 ? entries : null, argsText: null };
   }
-  return { command: null, args: null, argsText: formatToolValue(args) };
+  return {
+    command: null,
+    args: null,
+    argsText: typeof args === "string" ? args : formatToolValue(args),
+  };
 }
 
 function toolCallHasLines(lines: ReturnType<typeof toolCallLines>): boolean {

@@ -1,4 +1,5 @@
 import { use, type CSSProperties } from "react";
+import { NUMBERED_LINE_CLASS } from "./RecordedSourceLines";
 
 import { resolveDiffThemeName } from "../../lib/diffRendering";
 import type { EmbeddedScript } from "../../lib/embeddedScripts";
@@ -35,12 +36,14 @@ export function HighlightedTokens({
   embedded = NO_EMBEDDED_SCRIPTS,
   theme,
   wordClassName,
+  lineNumbers = false,
 }: {
   code: string;
   language: string;
   embedded?: ReadonlyArray<EmbeddedScript>;
   theme: "light" | "dark";
   wordClassName?: string;
+  lineNumbers?: boolean;
 }) {
   const highlighter = use(getSyntaxHighlighterPromise(language));
   for (const script of embedded) use(getSyntaxHighlighterPromise(script.language));
@@ -56,8 +59,12 @@ export function HighlightedTokens({
   // returns JSX, since `use` alone does not count as a hook call for that inference.
   return (
     <>
-      {lines.map(({ key, tokens, ending }) => (
-        <span key={key}>
+      {lines.map(({ key, tokens, ending }, index) => (
+        <span
+          key={key}
+          data-line={lineNumbers ? index + 1 : undefined}
+          className={lineNumbers ? NUMBERED_LINE_CLASS : undefined}
+        >
           {wordClassName
             ? wordsOf(tokens).map((part) =>
                 typeof part === "string" ? (

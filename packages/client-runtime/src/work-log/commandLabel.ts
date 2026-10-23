@@ -1,3 +1,5 @@
+import { authoredCodeIntent } from "@t3tools/shared/toolActivity";
+
 type CommandWrapper = "env" | "sudo";
 type CommandProgramContext = "exec" | "shell";
 
@@ -1380,6 +1382,47 @@ export function commandActivityLabel(command: string): string {
     remaining = split.remainingCommand;
   }
   return withVisibleControlCharacters(program);
+}
+
+/** Conservative display only; this is neither an effect prediction nor a safety check. */
+export function commandIntentLabel(command: string): string {
+  const intent = authoredCodeIntent(command);
+  if (intent) return intent;
+  const code = withoutShellWrapper(command);
+  const program = commandProgramName(code);
+  if (/^python(?:\d+(?:\.\d+)?)?$/u.test(program ?? "")) return "Run Python code";
+  if (/^(?:node|deno|bun)$/u.test(program ?? "") && /(?:\s-e\s|\s--eval\s|<<)/u.test(code))
+    return "Run JavaScript code";
+  const split = splitFirstShellCommand(code);
+  const tokens = tokenizeShellCommand(code);
+  // Substitutions and compound commands can do much more than their first verb.
+  if (split.remainingCommand || /[\n\r`$<>|;&]/u.test(code) || !tokens) return "Run shell commands";
+  const shortPath = (value: string) => {
+    const name = value.split(/[\\/]/u).at(-1) || value;
+    return name.length > 64 ? `${name.slice(0, 63)}…` : name;
+  };
+  const [executable, ...args] = tokens;
+  if (staticProgramName(executable ?? "") === program) {
+    if ((program === "cat" || program === "zcat") && args.length === 1 && !args[0]!.startsWith("-"))
+      return `Read ${program === "zcat" ? "compressed " : ""}${shortPath(args[0]!)}`;
+    if (program === "tail" && args.length >= 1 && args.length <= 3) {
+      const path = args.at(-1)!;
+      if (
+        !path.startsWith("-") &&
+        args
+          .slice(0, -1)
+          .join(" ")
+          .match(/^(?:-\d+|-n \d+|--lines=\d+)?$/u)
+      )
+        return `Read the end of ${shortPath(path)}`;
+    }
+    if (program === "sed" && args.length === 3 && args[0] === "-n") {
+      const range = /^(\d+),(\d+)p$/u.exec(args[1]!);
+      if (range && !args[2]!.startsWith("-"))
+        return `Read ${shortPath(args[2]!)}, lines ${range[1]}–${range[2]}`;
+    }
+  }
+  return program ? `Run ${withVisibleControlCharacters(program)}` : "Run command";
 }
 
 // Escape bytes and other control characters render as invisible gaps; display

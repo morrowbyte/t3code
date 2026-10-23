@@ -27,6 +27,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
+import * as ToolIntentGeneration from "../textGeneration/ToolIntentGeneration.ts";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import { isTemporaryWorktreeBranch } from "@t3tools/shared/git";
 import { getModelSelectionStringOptionValue, modelSelectionsEqual } from "@t3tools/shared/model";
@@ -303,6 +304,7 @@ export const layer: Layer.Layer<
   ProviderEventIngestorV2,
   Effect.gen(function* () {
     const eventSink = yield* EventSink.EventSinkV2;
+    const toolIntents = yield* ToolIntentGeneration.ToolIntentGeneration;
     const git = yield* GitVcsDriver.GitVcsDriver;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
@@ -644,7 +646,16 @@ export const layer: Layer.Layer<
                   type: "turn-item.updated",
                   threadId: input.event.turnItem.threadId,
                   payload: boundFileChangeForStorage(
-                    stripUnservedToolOutputImageBytes(input.event.turnItem),
+                    stripUnservedToolOutputImageBytes(
+                      (input.event.turnItem.type === "command_execution" ||
+                        input.event.turnItem.type === "dynamic_tool") &&
+                        toolIntents.retainedTitle(input.event.turnItem)
+                        ? {
+                            ...input.event.turnItem,
+                            title: toolIntents.retainedTitle(input.event.turnItem)!,
+                          }
+                        : input.event.turnItem,
+                    ),
                   ),
                   runId: input.event.turnItem.runId,
                   nodeId: input.event.turnItem.nodeId,
@@ -842,6 +853,36 @@ export const layer: Layer.Layer<
                           }),
                       ),
                     ),
+              ),
+              Effect.tap((storedEvents) =>
+                Effect.gen(function* () {
+                  if (input.event.type !== "turn_item.updated" || storedEvents.length === 0) return;
+                  const item = input.event.turnItem;
+                  if (item.type !== "command_execution" && item.type !== "dynamic_tool") return;
+                  const { id: itemId, threadId, runId, title: expectedTitle } = item;
+                  yield* toolIntents.observe({
+                    item,
+                    providerInstanceId: input.providerInstanceId,
+                    driverKind: input.event.driver,
+                    commitTitle: Effect.fn("ProviderEventIngestor.commitToolIntent")(
+                      function* (title) {
+                        const current = yield* projections.getTurnItem({ threadId, itemId });
+                        if (!current) return;
+                        const event = yield* makeDomainEvent(input, {
+                          type: "turn-item.updated",
+                          threadId,
+                          runId,
+                          payload: { ...current, title },
+                        });
+                        yield* eventSink.write({
+                          events: [event],
+                          updateToolTitleOnly: { expectedTitle },
+                        });
+                      },
+                      Effect.catchCause(() => Effect.void),
+                    ),
+                  });
+                }),
               ),
               Effect.tap((storedEvents) =>
                 Effect.gen(function* () {

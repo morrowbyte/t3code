@@ -19,7 +19,13 @@ import { resolveMediaSource } from "@t3tools/client-runtime/media-source";
 import { parseChangeRequestUrl } from "@t3tools/shared/changeRequestUrl";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 import { formatTokens } from "@t3tools/shared/usageFormat";
-import { classifyToolActivity } from "@t3tools/shared/toolActivity";
+import {
+  authoredCodeIntent,
+  classifyToolActivity,
+  dynamicToolTitle,
+  toolCallTitle,
+} from "@t3tools/shared/toolActivity";
+import { commandIntentLabel } from "./commandLabel.ts";
 import { toolOutputIndicatesFailure } from "@t3tools/shared/toolOutput";
 
 import {
@@ -98,6 +104,47 @@ export interface WorkLogPresentationEntry {
   readonly toolSource?: ToolActivitySource;
   readonly toolSurface?: ToolActivitySurface;
   readonly toolIcon?: ToolActivityIcon;
+}
+
+export function workEntryIntentLabel(entry: WorkLogPresentationEntry): string | undefined {
+  const item = entry.structuredPayload;
+  if (item?.type === "dynamic_tool") {
+    const title = dynamicToolTitle(item.toolName, item.input, item.title);
+    if (title) return title;
+    return item.toolName ? `Tool: ${item.toolName}` : "Tool call";
+  }
+  const command = item?.type === "command_execution" ? item.input : entry.command;
+  if (!command?.trim()) return undefined;
+  const title = toolCallTitle(item?.title);
+  const genericTitle = /^(?:command|running [\w./\\-]+|ran [\w./\\-]+)$/iu.test(title ?? "");
+  return (
+    (title && title !== command.trim() && !genericTitle ? title : undefined) ??
+    authoredCodeIntent(command) ??
+    commandIntentLabel(command)
+  );
+}
+
+export function workEntryExecutionStatus(entry: WorkLogPresentationEntry): string | undefined {
+  const item = entry.structuredPayload;
+  if (item?.type !== "command_execution" && item?.type !== "dynamic_tool") return undefined;
+  if (item.type === "command_execution" && item.exitCode !== undefined && item.exitCode !== 0)
+    return `Failed · exit ${item.exitCode}`;
+  switch (item.status) {
+    case "running":
+      return "Running";
+    case "pending":
+      return "Pending";
+    case "completed":
+      return "Completed";
+    case "failed":
+      return "Failed";
+    case "cancelled":
+      return "Cancelled";
+    case "interrupted":
+      return "Stopped";
+    default:
+      return item.status;
+  }
 }
 
 export type ToolGroupAction =

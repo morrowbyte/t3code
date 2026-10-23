@@ -2741,7 +2741,7 @@ describe("v2 run and attempt history", () => {
     expect(stoppedRows.map((row) => row.id)).toEqual(["stopped-command-entry", "interrupt-result"]);
     expect(stoppedRows[0]).toMatchObject({
       kind: "work",
-      displayLabel: "sleep 90 && echo slept",
+      displayLabel: "Run shell commands",
     });
   });
 });

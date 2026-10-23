@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { classifyToolActivity, dynamicToolSurface, mergeToolActivityData } from "./toolActivity.ts";
+import {
+  authoredCodeIntent,
+  classifyToolActivity,
+  dynamicToolSurface,
+  dynamicToolTitle,
+  mergeToolActivityData,
+} from "./toolActivity.ts";
 
 describe("toolActivity", () => {
   it("classifies from kind and toolName without sniffing titles", () => {
@@ -45,4 +51,18 @@ describe("toolActivity", () => {
     }
     expect(dynamicToolSurface("github.js", { code: "await sky.click(app);" })).toBeUndefined();
   });
+});
+
+it("reads an explicit intent after Code Mode's pragma without mining source strings or opaque arguments", () => {
+  const code =
+    '// @exec: {"max_output_tokens": 1000}\n// Intent: Inspect current renderer metadata\nconst result = await tools.inspect({});\ntext(result.count);';
+  expect(authoredCodeIntent(code)).toBe("Inspect current renderer metadata");
+  expect(dynamicToolTitle("js", { code })).toBe("Inspect current renderer metadata");
+  expect(
+    dynamicToolTitle("runtime.added.tool", { title: "unrelated", description: "capability" }),
+  ).toBeUndefined();
+  expect(authoredCodeIntent('print("# Intent: fabricated")')).toBeUndefined();
+  expect(dynamicToolTitle("runtime.added.tool", { code }, "Authored call title")).toBe(
+    "Authored call title",
+  );
 });
