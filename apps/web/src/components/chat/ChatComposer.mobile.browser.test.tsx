@@ -350,7 +350,7 @@ it("opens the production grouped configuration deliberately, preserves choices a
   expect(changedMode).toHaveBeenCalledExactlyOnceWith("full-access");
   expect(changedInteraction).not.toHaveBeenCalled();
   const plan = document.querySelector<HTMLButtonElement>(
-    '[aria-label="Default mode — click to enter plan mode"]',
+    '[aria-label="Default mode. Click to enter plan mode"]',
   );
   if (!plan) throw new Error("Missing actual interaction control");
   await act(async () => plan.click());
@@ -365,7 +365,7 @@ it("opens the production grouped configuration deliberately, preserves choices a
     "Full access",
   );
   expect(
-    document.querySelector('[aria-label="Plan mode — click to return to normal build mode"]'),
+    document.querySelector('[aria-label="Plan mode. Click to return to normal build mode"]'),
   ).not.toBeNull();
   const closeAgain = document.querySelector<HTMLButtonElement>(
     '[aria-label="Close configuration"]',
