@@ -5036,10 +5036,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             text: prompt,
           }),
         );
-        for (let step = 0; step < 200 && harness.terminalEvents().length === 0; step += 1) {
-          yield* Effect.yieldNow;
-          yield* TestClock.adjust("20 millis");
-        }
+        yield* TestClock.adjust(deltas.length * 20);
         yield* harness.firstTerminal;
 
         const plans = harness.events.flatMap((event) =>
