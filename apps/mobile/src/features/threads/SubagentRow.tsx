@@ -7,6 +7,7 @@ import { View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { SymbolView } from "../../components/ui/AppSymbol";
+import { AgentIdentityLabel } from "../agent-identity/AgentIdentityLabel";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { cn } from "../../lib/cn";
 import { useEnvironmentServerConfig, useProject, useThreadShell } from "../../state/entities";
@@ -32,44 +33,87 @@ export function SubagentRow(props: {
   readonly environmentId: EnvironmentId;
   readonly subagent: SubagentRowSubagent;
   readonly elapsed: ReactNode;
+  readonly conversation?: boolean;
 }) {
   const presentation = resolveSubagentRowPresentation(props.subagent);
   const detail = subagentCardDetail(presentation.detail);
   return (
     <View className="flex-row gap-3">
       <View className="h-5 justify-center">
-        <SubagentStatusDot tone={presentation.tone} placement="sheet" />
+        {props.conversation ? (
+          <SymbolView
+            name="arrow.down.left"
+            size={20}
+            tintColorClassName="accent-foreground-muted"
+          />
+        ) : (
+          <SubagentStatusDot tone={presentation.tone} placement="sheet" />
+        )}
       </View>
       <View className="min-w-0 flex-1 gap-1">
         <View className="min-h-5 flex-row items-center gap-2">
           <View className="min-w-0 flex-1 flex-row items-baseline gap-1.5">
-            <Text
-              numberOfLines={1}
-              className="min-w-0 shrink font-t3-medium text-sm text-foreground"
-            >
-              {presentation.title}
-            </Text>
-            <Text
-              accessibilityElementsHidden
-              importantForAccessibility="no"
-              className="shrink-0 text-xs text-foreground-muted"
-            >
-              ·
-            </Text>
-            <Text
-              className={cn(
-                "shrink-0 text-xs font-t3-medium",
-                SUBAGENT_TONE_TEXT_CLASS[presentation.tone],
-              )}
-            >
-              {presentation.statusLabel}
-            </Text>
+            {props.conversation && props.subagent.childThreadId ? (
+              <View className="min-w-0 flex-1">
+                <AgentIdentityLabel
+                  threadRef={{
+                    environmentId: props.environmentId,
+                    threadId: props.subagent.childThreadId,
+                  }}
+                  featureTitle={presentation.title}
+                  avatarSize={24}
+                />
+              </View>
+            ) : (
+              <Text
+                numberOfLines={1}
+                className="min-w-0 shrink font-t3-medium text-sm text-foreground"
+              >
+                {presentation.title}
+              </Text>
+            )}
+            {!props.conversation ? (
+              <>
+                <Text
+                  accessibilityElementsHidden
+                  importantForAccessibility="no"
+                  className="shrink-0 text-xs text-foreground-muted"
+                >
+                  ·
+                </Text>
+                <Text
+                  className={cn(
+                    "shrink-0 text-xs font-t3-medium",
+                    SUBAGENT_TONE_TEXT_CLASS[presentation.tone],
+                  )}
+                >
+                  {presentation.statusLabel}
+                </Text>
+              </>
+            ) : null}
           </View>
-          {props.elapsed}
+          {props.conversation ? (
+            <View className="shrink-0 items-end gap-1">
+              <Text
+                className={cn(
+                  "text-xs font-t3-medium",
+                  SUBAGENT_TONE_TEXT_CLASS[presentation.tone],
+                )}
+              >
+                {presentation.statusLabel}
+              </Text>
+              {props.elapsed}
+            </View>
+          ) : (
+            props.elapsed
+          )}
           {presentation.canOpenThread ? (
             <SymbolView name="chevron.right" size={12} tintColorClassName="accent-icon-subtle" />
           ) : null}
         </View>
+        {props.conversation ? (
+          <Text className="text-xs text-foreground-muted">Agentenlauf</Text>
+        ) : null}
         <SubagentMetadata environmentId={props.environmentId} subagent={props.subagent} />
         {detail ? (
           <Text

@@ -1,3 +1,4 @@
+import { AgentIdentityLabel } from "../agent-identity/AgentIdentityLabel";
 import { Button } from "../../components/ui/Button";
 import { SubagentStatusDot } from "./SubagentStatusDot";
 import { ThreadSubagentGroup } from "./thread-subagent-group";
@@ -1079,7 +1080,53 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
         }}
         onLongPress={() => props.onCopyRow(row.id, row.getCopyText())}
       >
-        {row.live && !expanded ? (
+        {notifiedSubagentThreadId !== undefined &&
+        row.projectedItem.item.type === "notification" ? (
+          <View className="min-w-0 flex-1 gap-1 border-l-2 border-border px-3 py-2">
+            <View className="flex-row items-center gap-2">
+              <SymbolView
+                name="arrow.down.left"
+                size={20}
+                tintColorClassName="accent-foreground-muted"
+              />
+              <View className="min-w-0 flex-1">
+                <AgentIdentityLabel
+                  threadRef={{
+                    environmentId: props.environmentId,
+                    threadId: notifiedSubagentThreadId,
+                  }}
+                  avatarSize={24}
+                />
+              </View>
+              <View className="shrink-0 items-end gap-1">
+                <Text className="text-xs text-foreground-muted">
+                  {
+                    {
+                      completed: "Finished",
+                      failed: "Failed",
+                      cancelled: "Stopped",
+                      updated: "Updated",
+                      unknown: "Unknown",
+                    }[row.projectedItem.item.outcome]
+                  }
+                </Text>
+                <Text
+                  accessibilityLabel={new Date(row.createdAt).toLocaleString()}
+                  className="text-xs tabular-nums text-foreground-muted"
+                >
+                  {new Date(row.createdAt).toLocaleTimeString(undefined, {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </Text>
+              </View>
+            </View>
+            <Text className="pl-7 text-xs text-foreground-muted">Ergebnis</Text>
+            <Text numberOfLines={2} className="pl-7 text-sm text-foreground">
+              {displayText}
+            </Text>
+          </View>
+        ) : row.live && !expanded ? (
           <ShimmeringWorkContent
             environmentId={props.environmentId}
             icon={icon}

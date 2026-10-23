@@ -32,6 +32,7 @@ import {
 } from "@t3tools/contracts";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
 import {
+  ArrowDownLeftIcon,
   BotIcon,
   ChevronRightIcon,
   ArrowRightLeftIcon,
@@ -54,7 +55,7 @@ import { getTriggerDisplayModelName } from "./providerIconUtils";
 import { ProviderInstanceIcon, providerTextColor } from "./ProviderInstanceIcon";
 import { cn } from "~/lib/utils";
 import { TimelineSystemDivider } from "./TimelineSystemDivider";
-import { subagentResumedSince } from "./V2LifecycleRow.logic";
+import { notificationSubagent, subagentResumedSince } from "./V2LifecycleRow.logic";
 import { Button, InlineButton } from "../ui/button";
 import { T3Wordmark } from "../T3Wordmark";
 
@@ -345,23 +346,21 @@ const NOTIFICATION_OUTCOME_LABEL: Record<OrchestrationV2Notification["outcome"],
   failed: "Failed",
   cancelled: "Stopped",
   updated: "Updated",
-  unknown: "Finished",
+  unknown: "Unknown",
 };
 
 export function SubagentNotificationLink(props: {
   readonly parentRef: ScopedThreadRef;
   readonly childThreadId: ThreadId;
+  readonly source: OrchestrationV2Notification["source"];
   readonly outcome: OrchestrationV2Notification["outcome"];
   readonly createdAt: string;
   readonly timestampFormat: TimestampFormat;
   readonly onOpenThread: (threadId: ThreadId) => void;
   readonly fallback: ReactNode;
 }) {
-  const agent = useAtomValue(
-    environmentThreadDetails.threadAtom(props.parentRef),
-    (thread) =>
-      thread?.projection.subagents.find((agent) => agent.childThreadId === props.childThreadId) ??
-      null,
+  const agent = useAtomValue(environmentThreadDetails.threadAtom(props.parentRef), (thread) =>
+    notificationSubagent(thread?.projection.subagents ?? [], props.source, props.childThreadId),
   );
   if (agent === null) return props.fallback;
   // A subagent resumed since this notification shows its live status, not the outcome reported then.
@@ -438,53 +437,59 @@ function SubagentTimelineLink(props: {
   };
   const content = (
     <>
-      <EnvironmentSubagentAvatar
-        environmentId={props.parentRef.environmentId}
-        providerInstanceId={props.providerInstanceId}
-        driver={props.driver}
-        status={status ?? undefined}
-      />
+      <ArrowDownLeftIcon className="mt-0.5 size-5 shrink-0 text-muted-foreground" aria-hidden />
       <span className="min-w-0 flex-1">
-        <span className="flex items-baseline gap-2">
-          <span className="min-w-0 truncate text-xs font-medium text-foreground">
+        <span className="flex min-w-0 items-center gap-1.5 text-sm leading-5">
+          <span className="shrink-0 text-muted-foreground">Von</span>
+          <span className="min-w-0 truncate font-medium text-foreground">
             {threadId ? (
               <AgentIdentityLabel
                 threadRef={{ environmentId: props.parentRef.environmentId, threadId }}
                 featureTitle={props.title}
                 lineage={{ relationshipToParent: "subagent" }}
+                avatarSize={24}
               />
             ) : (
               props.title
             )}
           </span>
-          {detail !== null && (props.event !== undefined || status !== "completed") ? (
-            <span
-              className={cn(
-                "shrink-0 text-3xs",
-                failed ? "text-destructive" : "text-muted-foreground",
-              )}
-            >
-              {statusLabel}
-            </span>
-          ) : null}
         </span>
-        <span
-          className={cn(
-            "block text-2xs leading-relaxed",
-            failed ? "text-destructive" : "text-muted-foreground",
-          )}
-        >
-          {detail === null ? (
-            statusLabel
-          ) : detail.includes("/") && !detail.includes(" ") ? (
-            <MiddleTruncate value={detail} showTitle={false} className="flex" />
-          ) : (
-            <span className="block truncate">{detail}</span>
-          )}
+        <span className="mt-1 block text-2xs text-muted-foreground">
+          {props.event ? "Ergebnis" : "Agentenlauf"}
         </span>
+        {detail !== null ? (
+          <span
+            className={cn(
+              "mt-1 block text-sm leading-relaxed [overflow-wrap:anywhere]",
+              failed ? "text-destructive" : "text-foreground/85",
+            )}
+          >
+            {detail.includes("/") && !detail.includes(" ") ? (
+              <MiddleTruncate value={detail} showTitle={false} className="flex" />
+            ) : (
+              <span className="line-clamp-2">{detail}</span>
+            )}
+          </span>
+        ) : null}
       </span>
-      <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-        {props.event ? props.event.timestamp : <SubagentElapsed agent={timing} />}
+      <span className="flex shrink-0 flex-col items-end gap-1 text-xs text-muted-foreground tabular-nums">
+        <span className={cn("flex items-center gap-1.5", failed && "text-destructive")}>
+          {status ? (
+            <span
+              aria-hidden
+              className={cn("size-1.5 rounded-full", subagentStatusVisual(status).dotClass)}
+            />
+          ) : null}
+          {statusLabel}
+        </span>
+        {props.event ? (
+          props.event.timestamp
+        ) : timing.startedAt &&
+          (timing.completedAt || ["pending", "running", "waiting"].includes(liveStatus)) ? (
+          <span aria-description="Start bis Abschluss des Agentenlaufs; während der Ausführung bis jetzt">
+            Laufzeit <SubagentElapsed agent={timing} />
+          </span>
+        ) : null}
       </span>
       {threadId !== null ? (
         <ChevronRightIcon
@@ -495,7 +500,7 @@ function SubagentTimelineLink(props: {
     </>
   );
   const className =
-    "group/subagent flex w-full min-w-0 items-center gap-2.5 rounded-md px-2 py-1.5 text-left";
+    "group/subagent flex w-full min-w-0 items-start gap-1.5 border-l-2 border-border/60 bg-muted/10 px-3 py-2.5 text-left";
   return (
     <Tooltip>
       <TooltipTrigger

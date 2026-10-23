@@ -1,4 +1,8 @@
-import type { OrchestrationV2Subagent } from "@t3tools/contracts";
+import type {
+  OrchestrationV2Notification,
+  OrchestrationV2Subagent,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
 const ACTIVE_SUBAGENT_STATUSES = new Set<OrchestrationV2Subagent["status"]>([
@@ -23,5 +27,21 @@ export function subagentResumedSince(
   const notifiedAtMillis = Date.parse(notifiedAt);
   return (
     !Number.isNaN(notifiedAtMillis) && DateTime.toEpochMillis(agent.startedAt) > notifiedAtMillis
+  );
+}
+
+export function notificationSubagent<
+  T extends Pick<OrchestrationV2Subagent, "id" | "childThreadId">,
+>(
+  agents: ReadonlyArray<T>,
+  source: OrchestrationV2Notification["source"],
+  childThreadId: ThreadId,
+): T | null {
+  return (
+    agents.find(
+      (agent) =>
+        agent.childThreadId === childThreadId &&
+        (source.kind !== "delegated_task" || source.taskIds.includes(agent.id)),
+    ) ?? null
   );
 }

@@ -113,7 +113,7 @@ export function AgentMessageRow({
       aria-label={`${human ? "Original order" : "Agent message"}: ${summary}`}
       data-keyboard-help="C: copy this message · D: toggle details · J/K: messages · H/L: actions"
       onKeyDown={(event) => handleObjectActionKey(event, { c: "copy", d: "details" })}
-      className="min-w-0 border border-border/60 bg-muted/20 px-3 py-2.5"
+      className={`min-w-0 px-3 py-2.5 ${human ? "border border-border/60 bg-muted/20" : "border-l-2 border-border/60 bg-muted/10"}`}
       style={{ borderRadius: "calc(var(--radius-2xl) / 4)" }}
       data-agent-message={messageId}
       data-agent-message-direction={direction}
@@ -121,7 +121,7 @@ export function AgentMessageRow({
       data-user-message-attribution={attribution}
     >
       <div
-        className={`mb-1.5 flex min-w-0 items-center gap-1.5 text-base leading-5 text-muted-foreground ${human ? "flex-wrap" : ""}`}
+        className={`mb-1.5 flex min-w-0 items-center gap-1.5 leading-5 text-muted-foreground ${human ? "flex-wrap text-base" : "text-sm"}`}
       >
         <DirectionIcon className="size-5 shrink-0" aria-hidden />
         <span className="shrink-0">{human ? "Auftrag von" : outgoing ? "An" : "Von"}</span>
@@ -141,7 +141,7 @@ export function AgentMessageRow({
             <AgentIdentityLabel
               threadRef={{ environmentId, threadId: peerThreadId }}
               featureTitle={peerTitle}
-              avatarSize={20}
+              avatarSize={human ? 20 : 24}
             />
           </Link>
         ) : (
@@ -155,7 +155,12 @@ export function AgentMessageRow({
                   : "Agent"}
           </span>
         )}
-        <span className="ml-auto shrink-0 text-xs">
+        <span className="ml-auto flex shrink-0 flex-col items-end gap-1 text-xs sm:flex-row sm:items-center sm:gap-2">
+          {status ? (
+            <Badge size="sm" variant={status.variant}>
+              {status.label}
+            </Badge>
+          ) : null}
           <Tooltip>
             <TooltipTrigger render={<time className="tabular-nums" dateTime={createdAt} />}>
               {timestamp}
@@ -165,139 +170,136 @@ export function AgentMessageRow({
         </span>
         {text && !streaming ? <MessageCopyButton text={text} variant="ghost" /> : null}
       </div>
-      <Collapsible
-        open={expanded}
-        onOpenChange={(open) => {
-          setExpanded(open);
-          if (open) onRequestText?.();
-          else setOriginalOpen(false);
-        }}
-      >
-        <CollapsibleTrigger
-          ref={trigger}
-          className="flex w-full items-start gap-2.5 rounded-sm text-left focus-visible:outline-2 focus-visible:outline-ring pointer-coarse:min-h-11"
-          aria-label={`${expanded ? "Zuklappen" : "Details öffnen"}: ${human ? "Originalauftrag" : "Agentennachricht"}`}
-          data-keyboard-action="details"
-          aria-keyshortcuts="D"
+      <div className={human ? undefined : "pl-6"}>
+        <Collapsible
+          open={expanded}
+          onOpenChange={(open) => {
+            setExpanded(open);
+            if (open) onRequestText?.();
+            else setOriginalOpen(false);
+          }}
         >
-          <span className="min-w-0 flex-1">
-            <span className="block text-base leading-relaxed font-medium text-foreground whitespace-pre-line [overflow-wrap:anywhere]">
-              {summary}
+          <CollapsibleTrigger
+            ref={trigger}
+            className="flex w-full items-start gap-2.5 rounded-sm text-left focus-visible:outline-2 focus-visible:outline-ring pointer-coarse:min-h-11"
+            aria-label={`${expanded ? "Zuklappen" : "Details öffnen"}: ${human ? "Originalauftrag" : "Agentennachricht"}`}
+            data-keyboard-action="details"
+            aria-keyshortcuts="D"
+          >
+            <span className="min-w-0 flex-1">
+              <span className="block text-base leading-relaxed font-medium text-foreground whitespace-pre-line [overflow-wrap:anywhere]">
+                {summary}
+              </span>
             </span>
-          </span>
-          <ChevronDownIcon
-            className={`mt-1 size-3.5 shrink-0 text-muted-foreground ${expanded ? "rotate-180" : ""}`}
-            aria-hidden
-          />
-        </CollapsibleTrigger>
-        {status || delivery || streaming ? (
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-2xs text-muted-foreground">
-            {status ? (
-              <Badge size="sm" variant={status.variant}>
-                {status.label}
-              </Badge>
-            ) : null}
-            {delivery}
-            {streaming ? <span role="status">Wird übertragen…</span> : null}
-          </div>
-        ) : null}
-        <div
-          ref={findRevealRef(() => setExpanded(true))}
-          data-thread-find-fold={!expanded ? "" : undefined}
-        >
-          <CollapsiblePanel animate={false} keepMounted>
-            <div
-              className="mt-3 border-t border-border/60 pt-3 text-sm [overflow-wrap:anywhere]"
-              data-thread-find-text="true"
-            >
-              {attachments}
-              {loading ? (
-                <p role="status" className="text-muted-foreground">
-                  Original wird geladen…
-                </p>
-              ) : null}
-              {error ? (
-                <p role="alert" className="text-destructive">
-                  {error}
-                </p>
-              ) : null}
-              {parsed?.kind === "structured" ? (
-                <div className="space-y-4">
-                  {sections.map((section) => (
-                    <section
-                      key={section.key}
-                      className={
-                        section.kind === "open" || section.kind === "decision"
-                          ? "border-l-2 border-warning/50 pl-3"
-                          : ""
-                      }
-                    >
-                      <h4 className="mb-1 text-xs font-medium text-muted-foreground">
-                        {section.label}
-                      </h4>
-                      {children(section.text)}
-                    </section>
-                  ))}
-                  {technical.length > 0 ? (
-                    <details className="text-sm">
-                      <summary className="w-fit cursor-pointer rounded-sm text-xs text-muted-foreground focus-visible:outline-2 focus-visible:outline-ring">
-                        Technik
-                      </summary>
-                      <div className="mt-2 space-y-3">
-                        {technical.map((section) => (
-                          <div key={section.key}>{children(section.text)}</div>
-                        ))}
-                      </div>
-                    </details>
-                  ) : null}
-                </div>
-              ) : text !== null ? (
-                <div className="space-y-3">
-                  {(human
-                    ? [{ key: "order", text: previewText ?? text }]
-                    : legacyParagraphs(text)
-                  ).map((paragraph) => (
-                    <div key={paragraph.key}>{children(paragraph.text)}</div>
-                  ))}
-                </div>
-              ) : null}
-              <div className="mt-3 flex flex-wrap items-center gap-1 border-t border-border/60 pt-2">
-                <Button
-                  size="xs"
-                  variant="ghost-muted"
-                  aria-expanded={originalOpen}
-                  aria-controls={originalPanelId}
-                  onClick={() => {
-                    setOriginalOpen(!originalOpen);
-                    onRequestText?.();
-                  }}
-                >
-                  <FileTextIcon /> {human ? "Originalauftrag" : "Original"}
-                </Button>
-                {text !== null ? (
-                  <MessageCopyButton text={text} label="Original kopieren" variant="ghost" />
-                ) : null}
-                <span className="ml-auto">
-                  <Button size="xs" variant="ghost-muted" onClick={collapse}>
-                    Zuklappen
-                  </Button>
-                </span>
-              </div>
-              <Collapsible open={originalOpen}>
-                <CollapsiblePanel id={originalPanelId} animate={false}>
-                  <pre
-                    tabIndex={0}
-                    data-agent-message-original="true"
-                    className="mt-2 max-h-[50dvh] overflow-auto rounded-md border border-border bg-background p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap focus-visible:outline-2 focus-visible:outline-ring [overflow-wrap:anywhere]"
-                  >
-                    {text}
-                  </pre>
-                </CollapsiblePanel>
-              </Collapsible>
+            <ChevronDownIcon
+              className={`mt-1 size-3.5 shrink-0 text-muted-foreground ${expanded ? "rotate-180" : ""}`}
+              aria-hidden
+            />
+          </CollapsibleTrigger>
+          {delivery || streaming ? (
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-2xs text-muted-foreground">
+              {delivery}
+              {streaming ? <span role="status">Wird übertragen…</span> : null}
             </div>
-          </CollapsiblePanel>
-        </div>
-      </Collapsible>
+          ) : null}
+          <div
+            ref={findRevealRef(() => setExpanded(true))}
+            data-thread-find-fold={!expanded ? "" : undefined}
+          >
+            <CollapsiblePanel animate={false} keepMounted>
+              <div
+                className="mt-3 border-t border-border/60 pt-3 text-sm [overflow-wrap:anywhere]"
+                data-thread-find-text="true"
+              >
+                {attachments}
+                {loading ? (
+                  <p role="status" className="text-muted-foreground">
+                    Original wird geladen…
+                  </p>
+                ) : null}
+                {error ? (
+                  <p role="alert" className="text-destructive">
+                    {error}
+                  </p>
+                ) : null}
+                {parsed?.kind === "structured" ? (
+                  <div className="space-y-4">
+                    {sections.map((section) => (
+                      <section
+                        key={section.key}
+                        className={
+                          section.kind === "open" || section.kind === "decision"
+                            ? "border-l-2 border-warning/50 pl-3"
+                            : ""
+                        }
+                      >
+                        <h4 className="mb-1 text-xs font-medium text-muted-foreground">
+                          {section.label}
+                        </h4>
+                        {children(section.text)}
+                      </section>
+                    ))}
+                    {technical.length > 0 ? (
+                      <details className="text-sm">
+                        <summary className="w-fit cursor-pointer rounded-sm text-xs text-muted-foreground focus-visible:outline-2 focus-visible:outline-ring">
+                          Technik
+                        </summary>
+                        <div className="mt-2 space-y-3">
+                          {technical.map((section) => (
+                            <div key={section.key}>{children(section.text)}</div>
+                          ))}
+                        </div>
+                      </details>
+                    ) : null}
+                  </div>
+                ) : text !== null ? (
+                  <div className="space-y-3">
+                    {(human
+                      ? [{ key: "order", text: previewText ?? text }]
+                      : legacyParagraphs(text)
+                    ).map((paragraph) => (
+                      <div key={paragraph.key}>{children(paragraph.text)}</div>
+                    ))}
+                  </div>
+                ) : null}
+                <div className="mt-3 flex flex-wrap items-center gap-1 border-t border-border/60 pt-2">
+                  <Button
+                    size="xs"
+                    variant="ghost-muted"
+                    aria-expanded={originalOpen}
+                    aria-controls={originalPanelId}
+                    onClick={() => {
+                      setOriginalOpen(!originalOpen);
+                      onRequestText?.();
+                    }}
+                  >
+                    <FileTextIcon /> {human ? "Originalauftrag" : "Original"}
+                  </Button>
+                  {text !== null ? (
+                    <MessageCopyButton text={text} label="Original kopieren" variant="ghost" />
+                  ) : null}
+                  <span className="ml-auto">
+                    <Button size="xs" variant="ghost-muted" onClick={collapse}>
+                      Zuklappen
+                    </Button>
+                  </span>
+                </div>
+                <Collapsible open={originalOpen}>
+                  <CollapsiblePanel id={originalPanelId} animate={false}>
+                    <pre
+                      tabIndex={0}
+                      data-agent-message-original="true"
+                      className="mt-2 max-h-[50dvh] overflow-auto rounded-md border border-border bg-background p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap focus-visible:outline-2 focus-visible:outline-ring [overflow-wrap:anywhere]"
+                    >
+                      {text}
+                    </pre>
+                  </CollapsiblePanel>
+                </Collapsible>
+              </div>
+            </CollapsiblePanel>
+          </div>
+        </Collapsible>
+      </div>
     </article>
   );
 }

@@ -160,6 +160,7 @@ export const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: WorkEn
     <SubagentNotificationLink
       parentRef={scopeThreadRef(ctx.activeThreadEnvironmentId, item.threadId)}
       childThreadId={childThreadId}
+      source={item.source}
       outcome={item.outcome}
       createdAt={props.workEntry.createdAt}
       timestampFormat={ctx.timestampFormat}

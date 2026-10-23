@@ -78,7 +78,7 @@ export const AgentMessage = memo(function AgentMessage(
             threadRef={{ environmentId: props.environmentId, threadId: props.senderThreadId }}
             featureTitle={sender?.title}
             size="md"
-            avatarSize={20}
+            avatarSize={24}
           />
         </View>
       ) : (
@@ -93,7 +93,9 @@ export const AgentMessage = memo(function AgentMessage(
   );
 
   return (
-    <View className="mb-3 w-full rounded border border-border bg-grouped-card px-3 py-2.5">
+    <View
+      className={`mb-3 w-full border-border bg-grouped-card px-3 py-2.5 ${originalOrder ? "rounded border" : "border-l-2"}`}
+    >
       <View className="min-h-11 flex-row items-center gap-3">
         {props.senderThreadId && !originalOrder ? (
           <Pressable
@@ -114,111 +116,115 @@ export const AgentMessage = memo(function AgentMessage(
         ) : (
           <View className="min-w-0 flex-1">{metadata}</View>
         )}
-        <Text className="text-xs tabular-nums text-foreground-muted">{props.timestampLabel}</Text>
-      </View>
-      {structured?.status && structured.status !== "info" ? (
-        <Text
-          accessibilityLabel={`Nachrichtenstatus: ${structured.status}`}
-          className="text-sm font-t3-medium text-foreground-muted"
-        >
-          Status: {structured.status}
-        </Text>
-      ) : null}
-      <Pressable
-        ref={trigger}
-        className="min-h-12 flex-row items-start gap-3 py-2"
-        accessibilityRole="button"
-        accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${props.attribution === "synthetic" ? "synthetic test order" : originalOrder ? "human order" : props.attribution === "agent" ? "agent message" : "MCP message"}`}
-        accessibilityState={{ expanded }}
-        onPress={() => (expanded ? collapse() : setExpanded(true))}
-      >
-        <Text
-          selectable={originalOrder}
-          className="min-w-0 flex-1 text-base font-t3-medium leading-6 text-foreground"
-        >
-          {props.previewText ??
-            (originalOrder ? props.text : structured?.summary) ??
-            (agentMessagePreview(props.text) ||
-              (props.attribution === "agent" ? "Agent message" : "MCP message"))}
-        </Text>
-        <SymbolView
-          name={expanded ? "chevron.up" : "chevron.down"}
-          size={16}
-          tintColorClassName="accent-foreground-muted"
-          style={{ marginTop: 4 }}
-        />
-      </Pressable>
-      {props.deliveryLabel ? (
-        <Text className="text-xs text-foreground-muted">{props.deliveryLabel}</Text>
-      ) : null}
-      {expanded ? (
-        <View className="gap-4 pt-3">
-          {props.attachments}
-          {originalOrder ? (
-            <Text selectable className="text-base leading-6 text-foreground">
-              {props.text}
-            </Text>
-          ) : structured?.kind === "structured" ? (
-            structured.sections.map((section, index) =>
-              section.kind === "technical" ? (
-                <View key={index}>
-                  <Button
-                    label={technical ? "Technik verbergen" : "Technik"}
-                    tone="text"
-                    onPress={() => setTechnical((value) => !value)}
-                  />
-                  {technical ? props.children(section.text) : null}
-                </View>
-              ) : (
-                <View key={index} className="gap-2">
-                  <Text className="font-t3-medium text-sm text-foreground-muted">
-                    {section.label}
-                  </Text>
-                  {props.children(section.text)}
-                </View>
-              ),
-            )
-          ) : (
-            props.children(props.text)
-          )}
-        </View>
-      ) : null}
-      {expanded ? (
-        <View className="mt-2 flex-row flex-wrap items-center gap-2">
-          <Button
-            label={raw ? "Hide original" : "Original"}
-            tone="text"
-            onPress={() => setRaw((value) => !value)}
-          />
-          <Button
-            label={copiedText === props.text ? "Copied" : "Copy original"}
-            tone="text"
-            disabled={props.text.length === 0}
-            onPress={() => {
-              void tryCopyTextWithHaptic(props.text).then((copied) => {
-                if (copied) setCopiedText(props.text);
-                else Dialog.alert("Could not copy", "Try again.");
-              });
-            }}
-          />
-          {expanded ? <Button label="Show less" tone="text" onPress={collapse} /> : null}
-          {props.streaming ? (
-            <Text accessibilityRole="text" className="text-xs text-foreground-muted">
-              Receiving…
+        <View className="shrink-0 items-end gap-1">
+          <Text className="text-xs tabular-nums text-foreground-muted">{props.timestampLabel}</Text>
+          {structured?.status && structured.status !== "info" ? (
+            <Text
+              accessibilityLabel={`Nachrichtenstatus: ${structured.status}`}
+              className="text-sm font-t3-medium text-foreground-muted"
+            >
+              {structured.status}
             </Text>
           ) : null}
         </View>
-      ) : props.streaming ? (
-        <Text className="mt-2 text-xs text-foreground-muted">Receiving…</Text>
-      ) : null}
-      {raw ? (
-        <Text
-          selectable
-          className="mt-3 rounded-lg border border-border p-3 font-t3-mono text-sm leading-6 text-foreground"
+      </View>
+      <View className={originalOrder ? undefined : "pl-6"}>
+        <Pressable
+          ref={trigger}
+          className="min-h-12 flex-row items-start gap-3 py-2"
+          accessibilityRole="button"
+          accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${props.attribution === "synthetic" ? "synthetic test order" : originalOrder ? "human order" : props.attribution === "agent" ? "agent message" : "MCP message"}`}
+          accessibilityState={{ expanded }}
+          onPress={() => (expanded ? collapse() : setExpanded(true))}
         >
-          {props.text}
-        </Text>
-      ) : null}
+          <Text
+            selectable={originalOrder}
+            className="min-w-0 flex-1 text-base font-t3-medium leading-6 text-foreground"
+          >
+            {props.previewText ??
+              (originalOrder ? props.text : structured?.summary) ??
+              (agentMessagePreview(props.text) ||
+                (props.attribution === "agent" ? "Agent message" : "MCP message"))}
+          </Text>
+          <SymbolView
+            name={expanded ? "chevron.up" : "chevron.down"}
+            size={16}
+            tintColorClassName="accent-foreground-muted"
+            style={{ marginTop: 4 }}
+          />
+        </Pressable>
+        {props.deliveryLabel ? (
+          <Text className="text-xs text-foreground-muted">{props.deliveryLabel}</Text>
+        ) : null}
+        {expanded ? (
+          <View className="gap-4 pt-3">
+            {props.attachments}
+            {originalOrder ? (
+              <Text selectable className="text-base leading-6 text-foreground">
+                {props.text}
+              </Text>
+            ) : structured?.kind === "structured" ? (
+              structured.sections.map((section, index) =>
+                section.kind === "technical" ? (
+                  <View key={index}>
+                    <Button
+                      label={technical ? "Technik verbergen" : "Technik"}
+                      tone="text"
+                      onPress={() => setTechnical((value) => !value)}
+                    />
+                    {technical ? props.children(section.text) : null}
+                  </View>
+                ) : (
+                  <View key={index} className="gap-2">
+                    <Text className="font-t3-medium text-sm text-foreground-muted">
+                      {section.label}
+                    </Text>
+                    {props.children(section.text)}
+                  </View>
+                ),
+              )
+            ) : (
+              props.children(props.text)
+            )}
+          </View>
+        ) : null}
+        {expanded ? (
+          <View className="mt-2 flex-row flex-wrap items-center gap-2">
+            <Button
+              label={raw ? "Hide original" : "Original"}
+              tone="text"
+              onPress={() => setRaw((value) => !value)}
+            />
+            <Button
+              label={copiedText === props.text ? "Copied" : "Copy original"}
+              tone="text"
+              disabled={props.text.length === 0}
+              onPress={() => {
+                void tryCopyTextWithHaptic(props.text).then((copied) => {
+                  if (copied) setCopiedText(props.text);
+                  else Dialog.alert("Could not copy", "Try again.");
+                });
+              }}
+            />
+            {expanded ? <Button label="Show less" tone="text" onPress={collapse} /> : null}
+            {props.streaming ? (
+              <Text accessibilityRole="text" className="text-xs text-foreground-muted">
+                Receiving…
+              </Text>
+            ) : null}
+          </View>
+        ) : props.streaming ? (
+          <Text className="mt-2 text-xs text-foreground-muted">Receiving…</Text>
+        ) : null}
+        {raw ? (
+          <Text
+            selectable
+            className="mt-3 rounded-lg border border-border p-3 font-t3-mono text-sm leading-6 text-foreground"
+          >
+            {props.text}
+          </Text>
+        ) : null}
+      </View>
     </View>
   );
 });
