@@ -10,6 +10,7 @@ mode="${1:---update}"
 managed="${T3_MORROWBYTE_MANAGED:-0}"
 legacy_executable="${T3_MORROWBYTE_LEGACY_EXECUTABLE_NAME:-}"
 release_prefix="${T3_MORROWBYTE_RELEASE_NAME_PREFIX:-Morrowbyte}"
+previous_release_prefix="${T3_MORROWBYTE_PREVIOUS_RELEASE_NAME_PREFIX:-}"
 die() { printf 't3code-morrowbyte: %s\n' "$*" >&2; exit 1; }
 valid_version() { [[ "$1" =~ ^[0-9A-Za-z][0-9A-Za-z.+_-]*$ ]]; }
 installed_version() { if [[ -L "$current_link" ]]; then basename "$(readlink "$current_link")"; fi; }
@@ -67,12 +68,14 @@ for tool in curl jq sha256sum nix-store zstd flock; do command -v "$tool" >/dev/
 fetch() { curl --proto '=https' --fail --silent --show-error --location --connect-timeout 10 --max-time 1800 --retry 2 "$@"; }
 releases_json="$(fetch "https://api.github.com/repos/$repo/releases?per_page=100")" || die 'could not read releases'
 requested=""; [[ "$mode" != --prepare ]] || requested="$2"
-release_json="$(jq -cer --arg channel "$channel" --arg requested "$requested" --arg prefix "$release_prefix" '[.[] | select(.draft == false) | select(
+release_json="$(jq -cer --arg channel "$channel" --arg requested "$requested" --arg prefix "$release_prefix" --arg previousPrefix "$previous_release_prefix" '
+def titled($stage): .name | (startswith($prefix + " " + $stage) or ($previousPrefix != "" and startswith($previousPrefix + " " + $stage)));
+[.[] | select(.draft == false) | select(
   if $channel == "nightly" then .prerelease == true and
     (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-nightly\\.[0-9]{8}\\.[0-9]+$")) and
-    (.name | startswith($prefix + " Nightly"))
+    titled("Nightly")
   else .prerelease == false and (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) and
-    (.name | startswith($prefix + " Stable")) end
+    titled("Stable") end
 ) | select($requested == "" or .tag_name == ("v" + $requested))] | sort_by(.published_at) | last' <<<"$releases_json")" || die "no fork-owned $channel release found"
 tag="$(jq -er '.tag_name' <<<"$release_json")"
 version="${tag#v}"

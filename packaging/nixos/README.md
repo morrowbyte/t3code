@@ -34,6 +34,8 @@ choose `current/bin/t3code-morrowbyte` for new packages and retain its existing 
 configuration (`T3CODE_HOME` and `T3CODE_DESKTOP_PROFILE`, including the previous
 Electron profile identifier). `T3_MORROWBYTE_RELEASE_NAME_PREFIX` can select a previous release brand;
 repository, channel, manifest and digest checks still apply.
+During a rename, `T3_MORROWBYTE_PREVIOUS_RELEASE_NAME_PREFIX` also accepts that
+previous brand alongside the new one and selects the newest matching release.
 
 Other operations:
 
