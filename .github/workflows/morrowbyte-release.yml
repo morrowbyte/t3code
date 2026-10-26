@@ -1711,7 +1711,10 @@ jobs:
                 "$ANDROID_SOURCE_SHA" "${ANDROID_LOCK_SHA256:-$lock_sha}"
             fi
             if [[ -n "$CONTINUATION68_RUN_ID" ]]; then
-              printf 'retained_bundle_origin_run_id=%s\nretained_bundle_origin_attempt=1\ndesktop_packaging_run_id=%s\ndesktop_packaging_context_sha=%s\ncli_build_node_version=26.12.1\n' "$CONTINUATION68_RUN_ID" "$GITHUB_RUN_ID" "$GITHUB_SHA"
+              printf 'retained_bundle_origin_run_id=40291055865\nretained_bundle_origin_attempt=1\ndesktop_packaging_run_id=%s\ndesktop_packaging_context_sha=%s\nretained_android_origin_run_id=40293470700\ncli_build_node_version=26.12.1\n' "$GITHUB_RUN_ID" "$GITHUB_SHA"
+              if [[ "$CONTINUATION68_RUN_ID" == 40297878651 ]]; then
+                printf 'retained_desktop_packages_run_id=40297878651\nnixos_packaging_run_id=%s\n' "$GITHUB_RUN_ID"
+              fi
             fi
             printf 'github_asset_digests=%s\n' "$(jq -c '[.[] | {name, digest}]' <<<"$assets_json")"
             printf 'artifact_sha256:\n'
