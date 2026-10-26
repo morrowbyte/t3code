@@ -385,7 +385,7 @@ if [[ ! -f "$mobile_composer_test" ]]; then
   echo "Required mobile composer gate is missing: $mobile_composer_test" >&2
   exit 1
 fi
-focused_tests+=(apps/server/src/attachments/YaziPicker.test.ts apps/web/src/components/chat/TraitsPicker.test.ts)
+focused_tests+=(apps/server/src/attachments/YaziPicker.test.ts apps/web/src/components/chat/TraitsPicker.test.ts apps/server/src/cua/CuaInstallation.test.ts)
 focused_tests+=(
   apps/web/src/components/diffs/diffKeyboardSelection.test.ts
 )

@@ -1,5 +1,4 @@
 import * as NodeModule from "node:module";
-import { cuaArchiveMembers, stageCuaRuntime, verifyCuaBytes } from "@trycua/cua-driver/runtime";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -11,7 +10,13 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import * as ServerConfig from "../config.ts";
-import { CUA_RELEASE, cuaRelease } from "./cuaRelease.ts";
+import {
+  CUA_RELEASE,
+  cuaRelease,
+  cuaArchiveMembers,
+  stageCuaRuntime,
+  verifyCuaBytes,
+} from "./cuaRelease.ts";
 
 export class CuaInstallationError extends Schema.TaggedError<CuaInstallationError>()(
   "CuaInstallationError",
