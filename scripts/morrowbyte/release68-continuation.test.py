@@ -18,23 +18,25 @@ NOW = datetime.datetime(2026, 10, 26, tzinfo=datetime.timezone.utc)
 
 
 def fixture():
-    run = {'id': int(m.RUN), 'run_number': 3, 'run_attempt': 1,
+    run = {'id': int(m.RUN), 'run_number': 5, 'run_attempt': 1,
            'repository': {'id': 123, 'full_name': 'morrowbyte/t3code'},
            'head_repository': {'full_name': 'morrowbyte/t3code'}, 'head_sha': m.SOURCE,
            'head_branch': 'main', 'path': m.WORKFLOW, 'event': 'workflow_dispatch',
-           'status': 'completed', 'conclusion': 'failure'}
-    conclusions = {'preflight': 'success', 'build_bundle': 'success', 'Build Morrowbyte Android APK': 'success',
-                   'build_linux': 'failure', 'build_nixos': 'skipped', 'build_windows': 'skipped',
-                   'publish': 'skipped', 'publish_android': 'skipped', 'publish_windows': 'skipped'}
+           'status': 'completed', 'conclusion': 'cancelled'}
+    conclusions = {'preflight': 'success', 'build_bundle': 'success', 'Build Morrowbyte Android APK': 'skipped',
+                   'build_linux': 'cancelled', 'build_nixos': 'cancelled', 'build_windows': 'cancelled',
+                   'publish': 'cancelled', 'publish_android': 'skipped', 'publish_windows': 'cancelled'}
     jobs = {'total_count': len(conclusions), 'jobs': [
         {'name': name, 'conclusion': result, 'head_sha': m.SOURCE, 'status': 'completed',
-         'steps': [{'name': 'Build Linux CLI executable', 'conclusion': 'failure'}] if name == 'build_linux' else []}
+         'steps': [{'name': 'Build Linux CLI executable', 'conclusion': 'cancelled'}] if name == 'build_linux' else []}
         for name, result in conclusions.items()]}
     artifacts = {'total_count': len(m.PINS), 'artifacts': [
         {'id': int(key), 'name': name, 'digest': 'sha256:' + sha, 'expired': False,
          'expires_at': '2026-10-27T06:47:41Z', 'workflow_run': {
              'id': int(m.RUN), 'head_sha': m.SOURCE, 'repository_id': 123, 'head_repository_id': 123}}
         for key, (name, sha, _) in m.PINS.items()]}
+    artifacts['artifacts'].extend({'id': int(key)} for key in m.ORIGIN_ARTIFACT_IDS - set(m.PINS))
+    artifacts['total_count'] = len(artifacts['artifacts'])
     return run, jobs, artifacts
 
 
@@ -57,7 +59,7 @@ class OriginTests(unittest.TestCase):
             if case == 'android':
                 next(j for j in jobs['jobs'] if j['name'] == 'Build Morrowbyte Android APK')['conclusion'] = 'failure'
             elif case == 'linux_step':
-                next(j for j in jobs['jobs'] if j['name'] == 'build_linux')['steps'][0]['name'] = 'Package and smoke-test Linux CLI archive'
+                next(j for j in jobs['jobs'] if j['name'] == 'build_linux')['conclusion'] = 'failure'
             else:
                 jobs['jobs'].pop()
             with self.subTest(case=case), self.assertRaises(AssertionError):
