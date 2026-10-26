@@ -4,6 +4,7 @@ import * as NodePath from "node:path";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import { execFileSync } from "node:child_process";
+import * as NodeAssert from "node:assert/strict";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { extractFile } from "@electron/asar";
@@ -137,7 +138,7 @@ it("release stages can restage a dependency already installed from the same pnpm
   execFileSync("vp", ["install", "--prod", "--package-import-method=hardlink", ...offline], {
     cwd: hardlinked,
   });
-  await assert.rejects(
+  await NodeAssert.rejects(
     NodeFSP.cp(
       NodePath.join(source, "node_modules/stage-copy-fixture"),
       NodePath.join(hardlinked, "node_modules/stage-copy-fixture"),
