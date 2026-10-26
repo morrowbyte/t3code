@@ -78,6 +78,12 @@ jobs:
       recovery_workflow_sha256: ${{ steps.continuation.outputs.recovery_workflow_sha256 || steps.windows_recovery.outputs.recovery_workflow_sha256 || steps.recovery.outputs.recovery_workflow_sha256 }}
       android_source_sha: ${{ steps.continuation.outputs.android_source_sha || steps.windows_recovery.outputs.android_source_sha || steps.recovery.outputs.android_source_sha }}
       android_lock_sha256: ${{ steps.continuation.outputs.android_lock_sha256 || steps.windows_recovery.outputs.android_lock_sha256 || steps.recovery.outputs.android_lock_sha256 }}
+      continuation_packaging_sha256: ${{ steps.continuation.outputs.packaging_sha256 }}
+      continuation_android_run_id: ${{ steps.continuation.outputs.android_run_id }}
+      continuation_android_run_attempt: ${{ steps.continuation.outputs.android_run_attempt }}
+      continuation_android_context_sha: ${{ steps.continuation.outputs.android_context_sha }}
+      continuation_android_workflow_sha: ${{ steps.continuation.outputs.android_workflow_sha }}
+      continuation_android_workflow_ref: ${{ steps.continuation.outputs.android_workflow_ref }}
       windows_packaging_sha256: ${{ steps.windows_recovery.outputs.windows_packaging_sha256 }}
       windows_recovery_receipt_sha256: ${{ steps.windows_recovery.outputs.windows_recovery_receipt_sha256 }}
       recovered_apk_sha256: ${{ steps.continuation.outputs.apk_sha256 || steps.windows_recovery.outputs.apk_sha256 }}
@@ -138,7 +144,7 @@ jobs:
           fi
 
       - id: continuation
-        name: Verify and retain only the corrected .68 desktop bundle and proofs
+        name: Verify the corrected .68 bundle and signed source-matching Android package
         if: inputs.continue_release68_run_id != ''
         env:
           GH_TOKEN: ${{ github.token }}
@@ -159,6 +165,16 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
+
+      - name: Retain the verified source-matching .68 Android package without rebuilding
+        if: steps.continuation.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: morrowbyte-release-android
+          path: ${{ runner.temp }}/release68/android/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
 
       - name: Preserve .68 continuation provenance
         if: steps.continuation.outcome == 'success'
@@ -813,6 +829,21 @@ jobs:
           ref: ${{ needs.preflight.outputs.source_sha }}
           fetch-depth: 1
 
+      - name: Apply the reviewed .68 release-stage copy fix
+        if: inputs.continue_release68_run_id != ''
+        shell: bash
+        env:
+          CONTROL_SHA: ${{ github.sha }}
+          PACKAGING_SHA256: ${{ needs.preflight.outputs.continuation_packaging_sha256 }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = be6292cd24dfe799ce9fcabed5a125c324ae5d06
+          test -z "$(git status --porcelain)"
+          git fetch --no-tags origin "$CONTROL_SHA"
+          git show "$CONTROL_SHA:scripts/build-desktop-artifact.ts" > scripts/build-desktop-artifact.ts
+          printf '%s  %s\n' "$PACKAGING_SHA256" scripts/build-desktop-artifact.ts | sha256sum --check --strict
+          test "$(git diff --name-only)" = scripts/build-desktop-artifact.ts
+
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
@@ -983,6 +1014,21 @@ jobs:
           test "$(git diff --name-only)" = scripts/build-desktop-artifact.ts
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
 
+      - name: Apply the reviewed .68 release-stage copy fix
+        if: inputs.continue_release68_run_id != ''
+        shell: bash
+        env:
+          CONTROL_SHA: ${{ github.sha }}
+          PACKAGING_SHA256: ${{ needs.preflight.outputs.continuation_packaging_sha256 }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = be6292cd24dfe799ce9fcabed5a125c324ae5d06
+          test -z "$(git status --porcelain)"
+          git fetch --no-tags origin "$CONTROL_SHA"
+          git show "$CONTROL_SHA:scripts/build-desktop-artifact.ts" > scripts/build-desktop-artifact.ts
+          printf '%s  %s\n' "$PACKAGING_SHA256" scripts/build-desktop-artifact.ts | sha256sum --check --strict
+          test "$(git diff --name-only)" = scripts/build-desktop-artifact.ts
+
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
@@ -1094,7 +1140,7 @@ jobs:
 
   build_android_apk:
     name: Build Morrowbyte Android APK
-    if: ${{ !inputs.windows_candidate_only && !inputs.windows_only && !inputs.desktop_only && inputs.recover_windows_run_id == '' }}
+    if: ${{ !inputs.windows_candidate_only && !inputs.windows_only && !inputs.desktop_only && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' }}
     needs: [preflight]
     runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 60
@@ -1322,7 +1368,7 @@ jobs:
   publish:
     if: >-
       ${{ !cancelled() && inputs.publish && !inputs.windows_only && !inputs.android_only && needs.preflight.result == 'success' &&
-          ((inputs.desktop_only && needs.build_android_apk.result == 'skipped') || (!inputs.desktop_only && needs.build_android_apk.result == 'success') || (inputs.recover_windows_run_id == '39182028263' && !inputs.desktop_only && needs.build_android_apk.result == 'skipped')) &&
+          ((inputs.desktop_only && needs.build_android_apk.result == 'skipped') || (!inputs.desktop_only && needs.build_android_apk.result == 'success') || (inputs.recover_windows_run_id == '39182028263' && !inputs.desktop_only && needs.build_android_apk.result == 'skipped') || (inputs.continue_release68_run_id == '40291055865' && !inputs.desktop_only && needs.build_android_apk.result == 'skipped')) &&
           ((inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && needs.build_bundle.result == 'success' && needs.build_linux.result == 'success' && needs.build_nixos.result == 'success' && needs.build_windows.result == 'success') ||
            (inputs.recover_desktop_run_id == '39093205395' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'skipped' && needs.build_nixos.result == 'skipped' && needs.build_windows.result == 'skipped') ||
            (inputs.recover_windows_run_id == '39182028263' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'skipped' && needs.build_nixos.result == 'skipped' && needs.build_windows.result == 'success') ||
@@ -1419,11 +1465,11 @@ jobs:
           ANDROID_VERSION_CODE: ${{ needs.preflight.outputs.android_version_code }}
           APK_SHA256: ${{ needs.preflight.outputs.recovered_apk_sha256 || needs.build_android_apk.outputs.apk_sha256 }}
           APK_RECEIPT_SHA256: ${{ needs.preflight.outputs.recovered_apk_receipt_sha256 || needs.build_android_apk.outputs.receipt_sha256 }}
-          APK_BUILD_ATTEMPT: ${{ inputs.recover_windows_run_id != '' && needs.preflight.outputs.desktop_run_attempt || needs.build_android_apk.outputs.build_attempt }}
-          APK_BUILD_RUN: ${{ inputs.recover_windows_run_id != '' && needs.preflight.outputs.desktop_run_id || github.run_id }}
-          APK_CONTEXT_SHA: ${{ inputs.recover_windows_run_id != '' && needs.preflight.outputs.desktop_context_sha || github.sha }}
-          APK_WORKFLOW_SHA: ${{ inputs.recover_windows_run_id != '' && needs.preflight.outputs.desktop_workflow_sha || github.workflow_sha }}
-          APK_WORKFLOW_REF: ${{ inputs.recover_windows_run_id != '' && needs.preflight.outputs.desktop_workflow_ref || github.workflow_ref }}
+          APK_BUILD_ATTEMPT: ${{ needs.preflight.outputs.continuation_android_run_attempt || (inputs.recover_windows_run_id != '' && needs.preflight.outputs.desktop_run_attempt || needs.build_android_apk.outputs.build_attempt) }}
+          APK_BUILD_RUN: ${{ needs.preflight.outputs.continuation_android_run_id || (inputs.recover_windows_run_id != '' && needs.preflight.outputs.desktop_run_id || github.run_id) }}
+          APK_CONTEXT_SHA: ${{ needs.preflight.outputs.continuation_android_context_sha || (inputs.recover_windows_run_id != '' && needs.preflight.outputs.desktop_context_sha || github.sha) }}
+          APK_WORKFLOW_SHA: ${{ needs.preflight.outputs.continuation_android_workflow_sha || (inputs.recover_windows_run_id != '' && needs.preflight.outputs.desktop_workflow_sha || github.workflow_sha) }}
+          APK_WORKFLOW_REF: ${{ needs.preflight.outputs.continuation_android_workflow_ref || (inputs.recover_windows_run_id != '' && needs.preflight.outputs.desktop_workflow_ref || github.workflow_ref) }}
         run: |
           set -euo pipefail
           python3 - <<'PYPUBLISHAPK'
@@ -1573,7 +1619,7 @@ jobs:
               platform_notes+=" Retained Linux, NixOS, Android and shared runtime bytes from run $WINDOWS_RECOVERY_RUN_ID. Windows packaging uses validation-only script $WINDOWS_PACKAGING_SHA256 from control source $GITHUB_SHA; application source and version remain unchanged."
             fi
             if [[ -n "$CONTINUATION68_RUN_ID" ]]; then
-              platform_notes+=" Corrected desktop/server bundle retained unchanged from run $CONTINUATION68_RUN_ID. Android and the remaining desktop packages are built from the same application source; the release version is unchanged."
+              platform_notes+=" Corrected desktop/server bundle retained unchanged from run $CONTINUATION68_RUN_ID. The signed Android package is retained unchanged from run 40293470700 at the same application source. Only the missing desktop packages are built, using private dependency copies; the release version is unchanged."
             fi
             gh release create "$tag" \
               --target "$source_sha" \

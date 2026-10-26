@@ -83,6 +83,56 @@ class OriginTests(unittest.TestCase):
                 m.validate_origin(run, jobs, artifacts, NOW)
 
 
+class AndroidOriginTests(unittest.TestCase):
+    def fixture(self):
+        run, _, _ = fixture()
+        run.update(id=int(m.ANDROID_RUN), head_sha=m.ANDROID_CONTROL, run_number=6, conclusion='failure')
+        conclusions = {'preflight': 'success', 'build_bundle': 'skipped', 'Build Morrowbyte Android APK': 'success',
+                       'build_linux': 'failure', 'build_nixos': 'skipped', 'build_windows': 'skipped',
+                       'publish': 'skipped', 'publish_android': 'skipped', 'publish_windows': 'skipped'}
+        jobs = {'total_count': 9, 'jobs': [{'name': name, 'conclusion': result, 'status': 'completed',
+                'head_sha': m.ANDROID_CONTROL, 'steps': [{'name': 'Build Linux AppImage and updater metadata',
+                'conclusion': 'failure'}] if name == 'build_linux' else []} for name, result in conclusions.items()]}
+        ids = ['12637941853', '12637920360', '12637875258', '12637800388', '12637690993', '12636988434']
+        artifacts = {'total_count': 6, 'artifacts': [{'id': int(key)} for key in ids]}
+        artifacts['artifacts'][0].update(name='morrowbyte-release-android', size_in_bytes=56400077,
+            digest='sha256:' + m.ANDROID_ARCHIVE_SHA, expired=False, expires_at='2026-11-02T08:49:00Z',
+            workflow_run={'id': int(m.ANDROID_RUN), 'head_sha': m.ANDROID_CONTROL,
+                          'repository_id': 123, 'head_repository_id': 123})
+        return run, jobs, artifacts
+
+    def test_exact_successful_android_is_retained_after_linux_packaging_failure(self):
+        m.validate_android_origin(*self.fixture(), NOW)
+
+    def test_changed_origin_or_unverified_android_fails_closed(self):
+        for case in ['source', 'attempt', 'running', 'android_failure', 'different_linux_failure',
+                     'digest', 'size', 'expired', 'artifact_source', 'omitted']:
+            run, jobs, artifacts = self.fixture()
+            artifact = artifacts['artifacts'][0]
+            if case == 'source':
+                run['head_sha'] = '0' * 40
+            elif case == 'attempt':
+                run['run_attempt'] = 2
+            elif case == 'running':
+                run['status'] = 'in_progress'
+            elif case == 'android_failure':
+                next(j for j in jobs['jobs'] if j['name'] == 'Build Morrowbyte Android APK')['conclusion'] = 'failure'
+            elif case == 'different_linux_failure':
+                next(j for j in jobs['jobs'] if j['name'] == 'build_linux')['steps'][0]['name'] = 'Build Linux CLI executable'
+            elif case == 'digest':
+                artifact['digest'] = 'sha256:' + '0' * 64
+            elif case == 'size':
+                artifact['size_in_bytes'] -= 1
+            elif case == 'expired':
+                artifact['expires_at'] = '2026-10-25T00:00:00Z'
+            elif case == 'artifact_source':
+                artifact['workflow_run']['head_sha'] = '0' * 40
+            else:
+                artifacts['artifacts'].pop()
+            with self.subTest(case=case), self.assertRaises(AssertionError):
+                m.validate_android_origin(run, jobs, artifacts, NOW)
+
+
 class ExtractionTests(unittest.TestCase):
     def extract(self, data, expected=None):
         with tempfile.TemporaryDirectory() as tmp:

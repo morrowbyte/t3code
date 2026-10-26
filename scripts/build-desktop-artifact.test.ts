@@ -1,6 +1,10 @@
 // @effect-diagnostics nodeBuiltinImport:off - Tests use Node's glob matcher to verify electron-builder exclusions.
 import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import { execFileSync } from "node:child_process";
+import * as NodeAssert from "node:assert/strict";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { extractFile } from "@electron/asar";
@@ -22,6 +26,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import {
   buildDesktopBundles,
+  STAGE_INSTALL_ARGS,
   DesktopBuildManifestRestoreError,
   BundleNotSelfContainedError,
   BuildCommandFailedError,
@@ -99,6 +104,61 @@ const stagePackageExtensions = {
   "electron-webauthn": { peerDependenciesMeta: { typescript: { optional: true } } },
   "@electron-webauthn/macos": { peerDependenciesMeta: { typescript: { optional: true } } },
 };
+
+it("release stages can restage a dependency already installed from the same pnpm store", async () => {
+  await using directory = await NodeFSP.mkdtempDisposable(
+    NodePath.join(NodeOS.tmpdir(), "t3-stage-copy-"),
+  );
+  const root = directory.path;
+  const contents = NodePath.join(root, "dependency", "package");
+  await NodeFSP.mkdir(contents, { recursive: true });
+  await NodeFSP.writeFile(
+    NodePath.join(contents, "package.json"),
+    JSON.stringify({ name: "stage-copy-fixture", version: "1.0.0" }),
+  );
+  const bytes = "export const original = true;\n";
+  await NodeFSP.writeFile(NodePath.join(contents, "index.js"), bytes);
+  const archive = NodePath.join(root, "dependency.tgz");
+  execFileSync("tar", ["-czf", archive, "-C", NodePath.dirname(contents), "package"]);
+  const source = NodePath.join(root, "source");
+  const destination = NodePath.join(root, "stage");
+  const hardlinked = NodePath.join(root, "hardlinked-stage");
+  for (const project of [source, destination, hardlinked]) {
+    await NodeFSP.mkdir(project);
+    await NodeFSP.writeFile(
+      NodePath.join(project, "package.json"),
+      JSON.stringify({ private: true, dependencies: { "stage-copy-fixture": `file:${archive}` } }),
+    );
+    await NodeFSP.writeFile(NodePath.join(project, "pnpm-workspace.yaml"), "nodeLinker: hoisted\n");
+  }
+  const offline = ["--offline", "--ignore-scripts", "--store-dir", NodePath.join(root, "store")];
+  execFileSync("vp", ["install", "--prod", "--", "--package-import-method=hardlink", ...offline], {
+    cwd: source,
+  });
+  execFileSync("vp", ["install", "--prod", "--", "--package-import-method=hardlink", ...offline], {
+    cwd: hardlinked,
+  });
+  await NodeAssert.rejects(
+    NodeFSP.cp(
+      NodePath.join(source, "node_modules/stage-copy-fixture"),
+      NodePath.join(hardlinked, "node_modules/stage-copy-fixture"),
+      { recursive: true, dereference: true },
+    ),
+    /src and dest cannot be the same/u,
+  );
+  execFileSync("vp", [...STAGE_INSTALL_ARGS, ...offline], { cwd: destination });
+  const dependency = "node_modules/stage-copy-fixture";
+  const original = NodePath.join(source, dependency, "index.js");
+  const staged = NodePath.join(destination, dependency, "index.js");
+  const before = await NodeFSP.readFile(original, "utf8");
+  await NodeFSP.cp(NodePath.join(source, dependency), NodePath.join(destination, dependency), {
+    recursive: true,
+    dereference: true,
+  });
+  assert.strictEqual(await NodeFSP.readFile(staged, "utf8"), bytes);
+  assert.strictEqual(await NodeFSP.readFile(original, "utf8"), before);
+  assert.notStrictEqual((await NodeFSP.stat(original)).ino, (await NodeFSP.stat(staged)).ino);
+});
 
 const encodeModuleUrl = Schema.encodeEffect(Schema.fromJsonString(Schema.String));
 const decodePackageVersion = Schema.decodeUnknownEffect(
