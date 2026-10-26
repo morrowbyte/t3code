@@ -12,6 +12,7 @@ import {
   type AuthGrantScope,
   type AuthPairingCredentialResult,
   type AdvertisedEndpoint,
+  type EnvironmentId,
 } from "@t3tools/contracts";
 import { settlePromise } from "@t3tools/client-runtime/state/runtime";
 import * as Cause from "effect/Cause";
@@ -578,6 +579,11 @@ const ConnectedClientListRow = memo(function ConnectedClientListRow({
 });
 
 type AuthorizedClientsHeaderActionProps = {
+  environmentId?: EnvironmentId;
+  createPairingCredential?: (input: {
+    label: string;
+    scopes: ReadonlyArray<AuthGrantScope>;
+  }) => Promise<AuthPairingCredentialResult>;
   onPairingLinkCreated: (result: AuthPairingCredentialResult) => void;
   clientSessions: ReadonlyArray<ServerClientSessionRecord> | null;
   isRevokingOtherClients: boolean;
@@ -586,13 +592,16 @@ type AuthorizedClientsHeaderActionProps = {
 };
 
 export const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHeaderAction({
+  environmentId: selectedEnvironmentId,
+  createPairingCredential = createServerPairingCredential,
   onPairingLinkCreated,
   clientSessions,
   isRevokingOtherClients,
   onRevokeOtherClients,
   delegatableScopes,
 }: AuthorizedClientsHeaderActionProps) {
-  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const primaryId = usePrimaryEnvironmentId();
+  const primaryEnvironmentId = selectedEnvironmentId ?? primaryId;
   const [dialogOpen, setDialogOpen] = useState(false);
   const [pairingLabel, setPairingLabel] = useState("");
   const [pairingScopes, setPairingScopes] = useState<ReadonlyArray<AuthGrantScope>>([
@@ -611,7 +620,7 @@ export const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHead
       return;
     setIsCreatingPairingLink(true);
     const settled = await settlePromise(async () => {
-      const created = await createServerPairingCredential({
+      const created = await createPairingCredential({
         label: pairingLabel,
         scopes: selectedScopes,
       });

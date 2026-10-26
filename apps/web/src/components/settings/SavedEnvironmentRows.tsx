@@ -1,3 +1,4 @@
+import { SavedEnvironmentAccess } from "./SavedEnvironmentAccessSettings";
 import { SessionPermissions } from "./SessionPermissions";
 import {
   ChevronRightIcon,
@@ -114,6 +115,7 @@ export function SavedBackendListRow({
 }: SavedBackendListRowProps) {
   const [routesOpen, setRoutesOpen] = useState(false);
   const [permissionsOpen, setPermissionsOpen] = useState(false);
+  const [accessOpen, setAccessOpen] = useState(false);
   const [diagnosisOpen, setDiagnosisOpen] = useState(false);
   const environmentId = environment.environmentId;
   const unsupported = environment.connection.phase === "unsupported";
@@ -302,6 +304,26 @@ export function SavedBackendListRow({
               )}
             />
           </button>
+          {isConnected ? (
+            <>
+              <span aria-hidden className="shrink-0">
+                ·
+              </span>
+              <button
+                type="button"
+                aria-expanded={accessOpen}
+                aria-controls={`remote-access-${environmentId}`}
+                onClick={() => setAccessOpen((open) => !open)}
+                className="inline-flex shrink-0 items-center gap-0.5 rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
+              >
+                Access{" "}
+                <ChevronRightIcon
+                  aria-hidden
+                  className={cn("size-3 shrink-0", accessOpen && "rotate-90")}
+                />
+              </button>
+            </>
+          ) : null}
         </span>
       }
       below={
@@ -338,6 +360,11 @@ export function SavedBackendListRow({
               onAddRoute={() => onAddRoute(environment)}
             />
           )}
+          {accessOpen && isConnected ? (
+            <div id={`remote-access-${environmentId}`}>
+              <SavedEnvironmentAccess key={environmentId} environment={environment} />
+            </div>
+          ) : null}
           {permissionsOpen && (
             <div
               id={`remote-permissions-${environmentId}`}
