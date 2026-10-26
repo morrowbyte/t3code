@@ -112,7 +112,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -n "${CONTINUATION_RUN_ID:-}" ]]; then
-            test "$CONTINUATION_RUN_ID" = 40291055865
+            [[ "$CONTINUATION_RUN_ID" == 40291055865 || "$CONTINUATION_RUN_ID" == 40297878651 ]]
             test "$WINDOWS_ONLY" != true
             test "$ANDROID_ONLY" != true
             test "$DESKTOP_ONLY" != true
@@ -175,6 +175,46 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
+
+      - name: Retain verified .68 linux package bytes
+        if: inputs.continue_release68_run_id == '40297878651'
+        uses: actions/upload-artifact@v4
+        with:
+          name: morrowbyte-release-linux
+          path: ${{ runner.temp }}/release68/linux/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Retain verified .68 cli-linux package bytes
+        if: inputs.continue_release68_run_id == '40297878651'
+        uses: actions/upload-artifact@v4
+        with:
+          name: morrowbyte-release-cli-linux
+          path: ${{ runner.temp }}/release68/cli-linux/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Retain verified .68 windows package bytes
+        if: inputs.continue_release68_run_id == '40297878651'
+        uses: actions/upload-artifact@v4
+        with:
+          name: morrowbyte-release-windows
+          path: ${{ runner.temp }}/release68/windows/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Retain verified .68 cli-windows package bytes
+        if: inputs.continue_release68_run_id == '40297878651'
+        uses: actions/upload-artifact@v4
+        with:
+          name: morrowbyte-release-cli-windows
+          path: ${{ runner.temp }}/release68/cli-windows/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
 
       - name: Preserve .68 continuation provenance
         if: steps.continuation.outcome == 'success'
@@ -952,7 +992,12 @@ jobs:
           retention-days: 1
 
   build_nixos:
-    if: inputs.windows_candidate_only != true && inputs.windows_only != true && inputs.android_only != true && inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == ''
+    if: >-
+      ${{ !cancelled() && needs.preflight.result == 'success' &&
+          inputs.windows_candidate_only != true && inputs.windows_only != true && inputs.android_only != true &&
+          inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' &&
+          (needs.build_linux.result == 'success' ||
+           (inputs.continue_release68_run_id == '40297878651' && needs.build_linux.result == 'skipped')) }}
     needs: [preflight, build_linux]
     runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 40
@@ -1368,11 +1413,12 @@ jobs:
   publish:
     if: >-
       ${{ !cancelled() && inputs.publish && !inputs.windows_only && !inputs.android_only && needs.preflight.result == 'success' &&
-          ((inputs.desktop_only && needs.build_android_apk.result == 'skipped') || (!inputs.desktop_only && needs.build_android_apk.result == 'success') || (inputs.recover_windows_run_id == '39182028263' && !inputs.desktop_only && needs.build_android_apk.result == 'skipped') || (inputs.continue_release68_run_id == '40291055865' && !inputs.desktop_only && needs.build_android_apk.result == 'skipped')) &&
+          ((inputs.desktop_only && needs.build_android_apk.result == 'skipped') || (!inputs.desktop_only && needs.build_android_apk.result == 'success') || (inputs.recover_windows_run_id == '39182028263' && !inputs.desktop_only && needs.build_android_apk.result == 'skipped') || ((inputs.continue_release68_run_id == '40291055865' || inputs.continue_release68_run_id == '40297878651') && !inputs.desktop_only && needs.build_android_apk.result == 'skipped')) &&
           ((inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && needs.build_bundle.result == 'success' && needs.build_linux.result == 'success' && needs.build_nixos.result == 'success' && needs.build_windows.result == 'success') ||
            (inputs.recover_desktop_run_id == '39093205395' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'skipped' && needs.build_nixos.result == 'skipped' && needs.build_windows.result == 'skipped') ||
            (inputs.recover_windows_run_id == '39182028263' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'skipped' && needs.build_nixos.result == 'skipped' && needs.build_windows.result == 'success') ||
-           (inputs.continue_release68_run_id == '40291055865' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'success' && needs.build_nixos.result == 'success' && needs.build_windows.result == 'success')) }}
+           (inputs.continue_release68_run_id == '40291055865' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'success' && needs.build_nixos.result == 'success' && needs.build_windows.result == 'success') ||
+           (inputs.continue_release68_run_id == '40297878651' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'skipped' && needs.build_nixos.result == 'success' && needs.build_windows.result == 'skipped')) }}
     needs: [preflight, build_bundle, build_linux, build_nixos, build_windows, build_android_apk]
     runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 15
@@ -1619,7 +1665,10 @@ jobs:
               platform_notes+=" Retained Linux, NixOS, Android and shared runtime bytes from run $WINDOWS_RECOVERY_RUN_ID. Windows packaging uses validation-only script $WINDOWS_PACKAGING_SHA256 from control source $GITHUB_SHA; application source and version remain unchanged."
             fi
             if [[ -n "$CONTINUATION68_RUN_ID" ]]; then
-              platform_notes+=" Corrected desktop/server bundle retained unchanged from run $CONTINUATION68_RUN_ID. The signed Android package is retained unchanged from run 40293470700 at the same application source. Only the missing desktop packages are built, using private dependency copies; the release version is unchanged."
+              platform_notes+=" Corrected desktop/server bundle retained unchanged from run 40291055865. The signed Android package is retained unchanged from run 40293470700 at the same application source. Linux and Windows packages use private dependency copies. The release version is unchanged."
+            fi
+            if [[ "$CONTINUATION68_RUN_ID" == 40297878651 ]]; then
+              platform_notes+=" Linux, Windows and CLI package bytes are retained unchanged from run 40297878651; only the missing NixOS closure is built in this publication run."
             fi
             gh release create "$tag" \
               --target "$source_sha" \
