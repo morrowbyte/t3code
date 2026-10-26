@@ -4,6 +4,7 @@ set -euo pipefail
 node scripts/sync-third-party-license-notices.ts --check
 
 node --test scripts/morrowbyte/nightly-after-ci.test.cjs
+python3 scripts/morrowbyte/release68-continuation.test.py
 
 bash scripts/morrowbyte/test.sh
 python3 packaging/nixos/test-updater.py
