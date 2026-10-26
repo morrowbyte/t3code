@@ -167,7 +167,11 @@ import {
   connectPairing as connectPairingAtom,
   connectSshEnvironment as connectSshEnvironmentAtom,
 } from "~/connection/onboarding";
-import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
+import {
+  readEnvironmentScope,
+  useEnvironmentScope,
+  useEnvironmentSessionState,
+} from "~/state/session";
 import { useEnvironmentQuery } from "~/state/query";
 import {
   desktopNetworkAccessStateAtom,
@@ -1024,6 +1028,11 @@ const ConnectedClientListRow = memo(function ConnectedClientListRow({
 });
 
 type AuthorizedClientsHeaderActionProps = {
+  environmentId?: EnvironmentId;
+  createPairingCredential?: (input: {
+    label: string;
+    scopes: ReadonlyArray<AuthGrantScope>;
+  }) => Promise<AuthPairingCredentialResult>;
   onPairingLinkCreated: (result: AuthPairingCredentialResult) => void;
   clientSessions: ReadonlyArray<ServerClientSessionRecord> | null;
   isRevokingOtherClients: boolean;
@@ -1032,13 +1041,16 @@ type AuthorizedClientsHeaderActionProps = {
 };
 
 const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHeaderAction({
+  environmentId: selectedEnvironmentId,
+  createPairingCredential = createServerPairingCredential,
   onPairingLinkCreated,
   clientSessions,
   isRevokingOtherClients,
   onRevokeOtherClients,
   delegatableScopes,
 }: AuthorizedClientsHeaderActionProps) {
-  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const primaryId = usePrimaryEnvironmentId();
+  const primaryEnvironmentId = selectedEnvironmentId ?? primaryId;
   const [dialogOpen, setDialogOpen] = useState(false);
   const [pairingLabel, setPairingLabel] = useState("");
   const [pairingScopes, setPairingScopes] = useState<ReadonlyArray<AuthGrantScope>>([
@@ -1057,7 +1069,7 @@ const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHeaderActio
       return;
     setIsCreatingPairingLink(true);
     try {
-      const created = await createServerPairingCredential({
+      const created = await createPairingCredential({
         label: pairingLabel,
         scopes: selectedScopes,
       });
@@ -1079,7 +1091,14 @@ const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHeaderActio
     } finally {
       setIsCreatingPairingLink(false);
     }
-  }, [delegatableScopes, onPairingLinkCreated, pairingLabel, primaryEnvironmentId, selectedScopes]);
+  }, [
+    createPairingCredential,
+    delegatableScopes,
+    onPairingLinkCreated,
+    pairingLabel,
+    primaryEnvironmentId,
+    selectedScopes,
+  ]);
 
   const togglePairingScope = useCallback((scope: AuthGrantScope, checked: boolean) => {
     setPairingScopes((current) => togglePairingScopeSelection(current, scope, checked));
@@ -1481,6 +1500,158 @@ function savedBackendStatus(environment: EnvironmentPresentation): {
   }
 }
 
+function SavedEnvironmentAccess({ environment }: { environment: EnvironmentPresentation }) {
+  const environmentId = environment.environmentId;
+  const session = useEnvironmentSessionState(environmentId);
+  const prepared = Option.getOrNull(usePreparedConnection(environmentId));
+  const canRead = useEnvironmentScope(environmentId, AuthAccessReadScope);
+  const canWrite = useEnvironmentScope(environmentId, AuthAccessWriteScope);
+  const access = useEnvironmentQuery(
+    canRead ? authEnvironment.accessChanges({ environmentId, input: null }) : null,
+  );
+  const createPairing = useAtomCommand(authEnvironment.createPairing, { reportFailure: false });
+  const revokePairing = useAtomCommand(authEnvironment.revokePairing, { reportFailure: false });
+  const revokeClient = useAtomCommand(authEnvironment.revokeClient, { reportFailure: false });
+  const revokeOthers = useAtomCommand(authEnvironment.revokeOtherClients, { reportFailure: false });
+  const [credentials, setCredentials] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const [revokingPairingId, setRevokingPairingId] = useState<string | null>(null);
+  const [revokingClientId, setRevokingClientId] = useState<string | null>(null);
+  const [revokingOthers, setRevokingOthers] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const snapshot = access.data?.type === "snapshot" ? access.data.payload : null;
+  const pairingLinks = sortDesktopPairingLinks(
+    (snapshot?.pairingLinks ?? []).map(toDesktopPairingLinkRecord),
+  );
+  const clients = sortDesktopClientSessions(
+    (snapshot?.clientSessions ?? []).map(toDesktopClientSessionRecord),
+  );
+  const scopes = session.data?.authenticated
+    ? (session.data.permissions ?? session.data.scopes ?? [])
+    : [];
+  const create = useCallback(
+    async (input: { label: string; scopes: ReadonlyArray<AuthGrantScope> }) => {
+      const result = await createPairing({ environmentId, input });
+      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+      return result.value;
+    },
+    [createPairing, environmentId],
+  );
+  const onCreated = useCallback((created: AuthPairingCredentialResult) => {
+    setCredentials((current) => new Map(current).set(created.id, created.credential));
+  }, []);
+  const onRevokePairing = async (id: string) => {
+    if (!readEnvironmentScope(environmentId, AuthAccessWriteScope)) return;
+    setRevokingPairingId(id);
+    setError(null);
+    try {
+      const result = await revokePairing({ environmentId, input: id });
+      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+      setCredentials((current) => {
+        const next = new Map(current);
+        next.delete(id);
+        return next;
+      });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not revoke pairing link.");
+    } finally {
+      setRevokingPairingId(null);
+    }
+  };
+  const onRevokeClient = async (sessionId: ServerClientSessionRecord["sessionId"]) => {
+    if (!readEnvironmentScope(environmentId, AuthAccessWriteScope)) return;
+    setRevokingClientId(sessionId);
+    setError(null);
+    try {
+      const result = await revokeClient({ environmentId, input: sessionId });
+      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not revoke client.");
+    } finally {
+      setRevokingClientId(null);
+    }
+  };
+  const onRevokeOthers = async () => {
+    if (!readEnvironmentScope(environmentId, AuthAccessWriteScope)) return;
+    if (
+      !(await requestConfirmDialog(`Revoke all other clients on ${environment.label}?`, {
+        variant: "destructive",
+      }))
+    )
+      return;
+    setRevokingOthers(true);
+    setError(null);
+    try {
+      const result = await revokeOthers({ environmentId, input: null });
+      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not revoke other clients.");
+    } finally {
+      setRevokingOthers(false);
+    }
+  };
+  const endpointUrl =
+    environment.serverConfig?.directEndpoints?.find(
+      (endpoint) => !isLoopbackHostname(new URL(endpoint.httpBaseUrl).hostname),
+    )?.httpBaseUrl ?? prepared?.httpBaseUrl;
+  return (
+    <div className="mt-2 border-t border-border/50 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-3 sm:px-4">
+        <h3 className="text-sm font-medium">Authorized clients · {environment.label}</h3>
+        {canWrite && prepared ? (
+          <AuthorizedClientsHeaderAction
+            environmentId={environmentId}
+            createPairingCredential={create}
+            delegatableScopes={scopes}
+            onPairingLinkCreated={onCreated}
+            clientSessions={snapshot ? clients : null}
+            isRevokingOtherClients={revokingOthers}
+            onRevokeOtherClients={() => void onRevokeOthers()}
+          />
+        ) : null}
+      </div>
+      {(error ?? access.error) ? (
+        <p role="alert" className="px-4 py-2 text-xs text-destructive">
+          {error ?? access.error}
+        </p>
+      ) : null}
+      {!canRead
+        ? [...credentials].map(([id, credential]) => (
+            <div key={id} className="px-4 py-2">
+              <Input
+                aria-label="One-time pairing code"
+                readOnly
+                value={credential}
+                className="font-mono text-xs"
+              />
+            </div>
+          ))
+        : null}
+      {canRead ? (
+        <PairingClientsList
+          endpointUrl={endpointUrl}
+          endpoints={EMPTY_ADVERTISED_ENDPOINTS}
+          defaultEndpointKey={null}
+          isLoading={access.isPending && snapshot === null}
+          pairingLinks={pairingLinks}
+          createdPairingCredentials={credentials}
+          clientSessions={clients}
+          revokingPairingLinkId={revokingPairingId}
+          revokingClientSessionId={revokingClientId}
+          onRevokePairingLink={(id) => void onRevokePairing(id)}
+          onRevokeClientSession={(id) => void onRevokeClient(id)}
+          canRevoke={canWrite}
+        />
+      ) : (
+        <p className="px-4 py-3 text-xs text-muted-foreground">
+          {canWrite
+            ? "This connection can create access links but cannot view authorized clients."
+            : "This connection does not grant access management. Pair this device using a link with View access or Manage access permission."}
+        </p>
+      )}
+    </div>
+  );
+}
+
 /**
  * One added machine in the Environments list. The switch is the main action;
  * the update icon appears only when that machine can take an update; the
@@ -1495,6 +1666,7 @@ function SavedBackendListRow({
 }: SavedBackendListRowProps) {
   const [routesOpen, setRoutesOpen] = useState(false);
   const [permissionsOpen, setPermissionsOpen] = useState(false);
+  const [accessOpen, setAccessOpen] = useState(false);
   const environmentId = environment.environmentId;
   const unsupported = environment.connection.phase === "unsupported";
   const enabled = environment.entry.enabled && !unsupported;
@@ -1681,6 +1853,26 @@ function SavedBackendListRow({
               )}
             />
           </button>
+          {isConnected ? (
+            <>
+              <span aria-hidden className="shrink-0">
+                ·
+              </span>
+              <button
+                type="button"
+                aria-expanded={accessOpen}
+                aria-controls={`remote-access-${environmentId}`}
+                onClick={() => setAccessOpen((open) => !open)}
+                className="inline-flex shrink-0 items-center gap-0.5 rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
+              >
+                Access{" "}
+                <ChevronRightIcon
+                  aria-hidden
+                  className={cn("size-3 shrink-0", accessOpen && "rotate-90")}
+                />
+              </button>
+            </>
+          ) : null}
         </span>
       }
       below={
@@ -1698,6 +1890,11 @@ function SavedBackendListRow({
               onAddRoute={() => onAddRoute(environment)}
             />
           )}
+          {accessOpen && isConnected ? (
+            <div id={`remote-access-${environmentId}`}>
+              <SavedEnvironmentAccess key={environmentId} environment={environment} />
+            </div>
+          ) : null}
           {permissionsOpen && (
             <div
               id={`remote-permissions-${environmentId}`}
