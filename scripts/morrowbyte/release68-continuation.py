@@ -1,10 +1,9 @@
-"""Exact .68 continuation: authenticate immutable original artifacts before reuse."""
+"""Exact .68 continuation: authenticate immutable original APK before reuse."""
 import datetime
 import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
-import shutil
 import stat
 import subprocess
 import zipfile
@@ -27,6 +26,7 @@ ALLOWED_CONTROL_PATHS = {
     WORKFLOW, 'scripts/morrowbyte/release68-continuation.py',
     'scripts/morrowbyte/release68-continuation.test.py',
     'scripts/morrowbyte/nightly-after-ci.test.cjs', 'scripts/morrowbyte/check.sh',
+    'apps/server/src/cua/cuaRelease.ts', 'apps/server/src/cua/CuaInstallation.ts',
 }
 
 
@@ -84,22 +84,7 @@ def extract_verified(archive, expected_digest, destination):
         zipped.extractall(destination)
 
 
-def verify_payload(root, check_sha):
-    pre_path, built_path = root / 'preflight/receipt.json', root / 'build/receipt.json'
-    pre, built = json.loads(pre_path.read_bytes()), json.loads(built_path.read_bytes())
-    for receipt in [pre, built]:
-        assert receipt['source'] == SOURCE and receipt['run'] == RUN and receipt['attempt'] == '1'
-        assert receipt['lockSha256'] == LOCK
-        assert receipt['trustedContextSha'] == receipt['trustedWorkflowSha'] == SOURCE
-        assert receipt['trustedWorkflowRef'] == WORKFLOW_REF
-    assert pre['effectiveSourceSha'] == SOURCE and pre['status'] == 'generated-unreviewed'
-    assert pre['generatorVersion'] == '1.167.12' and pre['config'] == {'autoCodeSplitting': True}
-    assert pre['checkScriptSha256'] == check_sha
-    assert pre['beforeSha256'] == pre['afterSha256'] == built['generatedRouteSha256'] == ROUTE
-    assert digest(root / 'preflight/routeTree.gen.ts') == digest(root / 'build/routeTree.gen.ts') == ROUTE
-    assert (root / 'preflight/routeTree.diff').is_file()
-    assert built['preflightReceiptSha256'] == digest(pre_path)
-    assert (root / 'js/server/dist').is_dir() and (root / 'js/desktop/dist-electron').is_dir()
+def verify_payload(root):
     apk_name = 'Morrowbyte-' + VERSION + '-android-arm64.apk'
     android = root / 'android'
     assert {p.name for p in android.iterdir()} == {apk_name, apk_name + '.json', apk_name + '.sha256'}
@@ -123,19 +108,26 @@ def verify_payload(root, check_sha):
 def main():
     env = os.environ
     assert env['GITHUB_REPOSITORY'] == 'morrowbyte/t3code'
-    assert env['SOURCE_SHA'] == SOURCE and env['CONTINUATION_RUN_ID'] == RUN
+    assert env['CONTINUATION_RUN_ID'] == RUN
+    assert env['SOURCE_SHA'] == env['GITHUB_SHA']
     assert env['GITHUB_REF'] == 'refs/heads/main' and env['GITHUB_RUN_ATTEMPT'] == '1'
     assert env['GITHUB_WORKFLOW_REF'] == WORKFLOW_REF
     assert env['GITHUB_WORKFLOW_SHA'] == env['GITHUB_SHA'] and env['GITHUB_SHA'] != SOURCE
-    assert git('rev-parse', 'HEAD') == SOURCE and not git('status', '--porcelain')
+    assert git('rev-parse', 'HEAD') == env['SOURCE_SHA'] and not git('status', '--porcelain')
     assert digest(Path('pnpm-lock.yaml')) == LOCK
     subprocess.run(['git', 'fetch', '--no-tags', 'origin', 'main'], check=True)
     control = git('rev-parse', 'FETCH_HEAD')
     assert control == env['GITHUB_SHA'], 'Control source must still be current main.'
     subprocess.run(['git', 'merge-base', '--is-ancestor', SOURCE, control], check=True)
     changed = set(git('diff', '--name-only', SOURCE, control).splitlines())
-    assert changed <= ALLOWED_CONTROL_PATHS and WORKFLOW in changed, 'Application source must stay byte-identical.'
-    # Workflow-only Node overrides change; all product scripts and dependency locks remain pinned.
+    assert changed <= ALLOWED_CONTROL_PATHS and WORKFLOW in changed, 'Only the reviewed server loader and continuation tooling may change.'
+    loader_pins = {
+        'apps/server/src/cua/cuaRelease.ts': 'a99a9529aba05319490b76a5964ce98604dc4299c2984d55af66936904398efd',
+        'apps/server/src/cua/CuaInstallation.ts': '8156247097ac2d5dc2bf5e0f09b2191b8a92536a84dca75371b0fdacd4fa283d',
+    }
+    for path, expected in loader_pins.items():
+        assert digest(Path(path)) == expected, 'Server loader differs from reviewed fix.'
+    # Mobile/shared/lock/native source remains byte-identical; only the desktop server loader changes.
     origin = api('actions/runs/' + RUN)
     jobs = api('actions/runs/' + RUN + '/attempts/1/jobs?per_page=100')
     metadata = api('actions/runs/' + RUN + '/artifacts?per_page=100')
@@ -144,35 +136,36 @@ def main():
     assert not any(r['tag_name'] == 'v' + VERSION for r in releases), 'This version already has a release.'
     previous = api('actions/workflows/morrowbyte-release.yml/runs?event=workflow_dispatch&per_page=100')
     later = [r for r in previous['workflow_runs'] if r['id'] > int(RUN)]
-    assert len(later) == 1 and later[0]['id'] == int(env['GITHUB_RUN_ID']), 'Another product continuation exists.'
+    assert {r['id'] for r in later} == {40286679208, int(env['GITHUB_RUN_ID'])}, 'Another product continuation exists.'
+    prior = next(r for r in later if r['id'] == 40286679208)
+    assert prior['status'] == 'completed' and prior['conclusion'] == 'failure'
+    assert prior['head_sha'] == 'a336bfde4d2d1c3b197364ce763c3c13200ad3a6'
     root = Path(env['RUNNER_TEMP']) / 'release68'
     root.mkdir(mode=0o700)
     for artifact_id, (_, sha, directory) in PINS.items():
+        if directory not in ('android', 'android-evidence'):
+            continue
         archive = root / (artifact_id + '.zip')
         with archive.open('wb') as output:
             subprocess.run(['gh', 'api', f'repos/morrowbyte/t3code/actions/artifacts/{artifact_id}/zip'], stdout=output, check=True)
         extract_verified(archive, sha, root / directory)
-    apk_sha, apk_receipt_sha = verify_payload(root, digest(Path('scripts/morrowbyte/check.sh')))
-    for directory, target in [('preflight', 'observatory-route-generation'), ('build', 'observatory-release-build')]:
-        shutil.copytree(root / directory, Path(env['RUNNER_TEMP']) / target)
+    apk_sha, apk_receipt_sha = verify_payload(root)
     workflow_bytes = subprocess.check_output(['git', 'show', control + ':' + WORKFLOW])
-    receipt = {'source': SOURCE, 'version': VERSION, 'originRun': RUN, 'originAttempt': '1',
+    receipt = {'source': env['SOURCE_SHA'], 'androidSource': SOURCE, 'version': VERSION, 'originRun': RUN, 'originAttempt': '1',
                'controlSource': control, 'continuationRun': env['GITHUB_RUN_ID'],
                'workflowSha256': hashlib.sha256(workflow_bytes).hexdigest(),
-               'reusedArtifacts': [{'id': artifact_id, 'name': name, 'archiveSha256': sha} for artifact_id, (name, sha, _) in PINS.items()],
+               'reusedArtifacts': [{'id': artifact_id, 'name': name, 'archiveSha256': sha} for artifact_id, (name, sha, directory) in PINS.items() if directory in ('android', 'android-evidence')],
                'files': [{'path': str(p.relative_to(root)), 'sha256': digest(p)}
-                         for directory in ['js', 'android'] for p in sorted((root / directory).rglob('*')) if p.is_file()]}
+                         for directory in ['android'] for p in sorted((root / directory).rglob('*')) if p.is_file()]}
     (root / 'CONTINUATION68.json').write_text(json.dumps(receipt, indent=2) + '\n')
-    values = {'source_sha': SOURCE, 'version': VERSION, 'android_version_code': '68', 'tag': 'v' + VERSION,
-              'observatory_route_sha256': ROUTE, 'desktop_run_id': RUN, 'desktop_run_attempt': '1',
-              'desktop_context_sha': SOURCE, 'desktop_workflow_sha': SOURCE, 'desktop_workflow_ref': WORKFLOW_REF,
-              'recovery_artifact_attempt': '1', 'recovery_workflow_sha256': receipt['workflowSha256'],
-              'android_source_sha': SOURCE, 'android_lock_sha256': LOCK,
+    values = {'version': VERSION, 'android_version_code': '68', 'tag': 'v' + VERSION,
+              'recovery_workflow_sha256': receipt['workflowSha256'],
+              'android_source_sha': SOURCE, 'android_desktop_source_sha': SOURCE, 'android_lock_sha256': LOCK,
               'apk_sha256': apk_sha, 'apk_receipt_sha256': apk_receipt_sha}
     with open(env['GITHUB_OUTPUT'], 'a') as output:
         output.writelines(f'{key}={value}\n' for key, value in values.items())
-    print(json.dumps({'status': 'verified', 'source': SOURCE, 'version': VERSION, 'originRun': RUN,
-                      'retainedArtifacts': len(PINS), 'apkSha256': apk_sha}))
+    print(json.dumps({'status': 'verified', 'source': env['SOURCE_SHA'], 'androidSource': SOURCE, 'version': VERSION, 'originRun': RUN,
+                      'retainedArtifacts': 2, 'apkSha256': apk_sha}))
 
 
 if __name__ == '__main__':

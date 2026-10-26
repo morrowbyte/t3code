@@ -39,7 +39,7 @@ on:
         default: ""
 
       continue_release68_run_id:
-        description: Exact .68 continuation only (40281335664); reuse verified bundle and signed APK
+        description: Exact .68 continuation only (40281335664); reuse verified signed APK; rebuild the corrected desktop bundle
         type: string
         default: ""
 
@@ -62,18 +62,18 @@ jobs:
     runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 15
     outputs:
-      source_sha: ${{ steps.continuation.outputs.source_sha || steps.windows_recovery.outputs.source_sha || steps.recovery.outputs.source_sha || steps.release.outputs.source_sha }}
+      source_sha: ${{ steps.windows_recovery.outputs.source_sha || steps.recovery.outputs.source_sha || steps.release.outputs.source_sha || inputs.source_sha }}
       version: ${{ steps.continuation.outputs.version || steps.windows_recovery.outputs.version || steps.recovery.outputs.version || steps.release.outputs.version }}
       android_version_code: ${{ steps.continuation.outputs.android_version_code || steps.windows_recovery.outputs.android_version_code || steps.recovery.outputs.android_version_code || steps.release.outputs.android_version_code }}
       tag: ${{ steps.continuation.outputs.tag || steps.windows_recovery.outputs.tag || steps.recovery.outputs.tag || steps.release.outputs.tag }}
-      observatory_route_sha256: ${{ steps.continuation.outputs.observatory_route_sha256 || steps.windows_recovery.outputs.observatory_route_sha256 || steps.recovery.outputs.observatory_route_sha256 || steps.route.outputs.observatory_route_sha256 }}
-      desktop_run_id: ${{ steps.continuation.outputs.desktop_run_id || steps.windows_recovery.outputs.desktop_run_id || steps.recovery.outputs.desktop_run_id || github.run_id }}
-      desktop_run_attempt: ${{ steps.continuation.outputs.desktop_run_attempt || steps.windows_recovery.outputs.desktop_run_attempt || steps.recovery.outputs.desktop_run_attempt || github.run_attempt }}
-      desktop_context_sha: ${{ steps.continuation.outputs.desktop_context_sha || steps.windows_recovery.outputs.desktop_context_sha || steps.recovery.outputs.desktop_context_sha || github.sha }}
-      desktop_workflow_sha: ${{ steps.continuation.outputs.desktop_workflow_sha || steps.windows_recovery.outputs.desktop_workflow_sha || steps.recovery.outputs.desktop_workflow_sha || github.workflow_sha }}
-      desktop_workflow_ref: ${{ steps.continuation.outputs.desktop_workflow_ref || steps.windows_recovery.outputs.desktop_workflow_ref || steps.recovery.outputs.desktop_workflow_ref || github.workflow_ref }}
+      observatory_route_sha256: ${{ steps.windows_recovery.outputs.observatory_route_sha256 || steps.recovery.outputs.observatory_route_sha256 || steps.route.outputs.observatory_route_sha256 }}
+      desktop_run_id: ${{ steps.windows_recovery.outputs.desktop_run_id || steps.recovery.outputs.desktop_run_id || github.run_id }}
+      desktop_run_attempt: ${{ steps.windows_recovery.outputs.desktop_run_attempt || steps.recovery.outputs.desktop_run_attempt || github.run_attempt }}
+      desktop_context_sha: ${{ steps.windows_recovery.outputs.desktop_context_sha || steps.recovery.outputs.desktop_context_sha || github.sha }}
+      desktop_workflow_sha: ${{ steps.windows_recovery.outputs.desktop_workflow_sha || steps.recovery.outputs.desktop_workflow_sha || github.workflow_sha }}
+      desktop_workflow_ref: ${{ steps.windows_recovery.outputs.desktop_workflow_ref || steps.recovery.outputs.desktop_workflow_ref || github.workflow_ref }}
       source_ci_run_id: ${{ steps.android_ci.outputs.run_id }}
-      recovery_artifact_attempt: ${{ steps.continuation.outputs.recovery_artifact_attempt || steps.windows_recovery.outputs.recovery_artifact_attempt || steps.recovery.outputs.recovery_artifact_attempt }}
+      recovery_artifact_attempt: ${{ steps.windows_recovery.outputs.recovery_artifact_attempt || steps.recovery.outputs.recovery_artifact_attempt }}
       recovery_receipt_sha256: ${{ steps.recovery.outputs.recovery_receipt_sha256 }}
       recovery_workflow_sha256: ${{ steps.continuation.outputs.recovery_workflow_sha256 || steps.windows_recovery.outputs.recovery_workflow_sha256 || steps.recovery.outputs.recovery_workflow_sha256 }}
       android_source_sha: ${{ steps.continuation.outputs.android_source_sha || steps.windows_recovery.outputs.android_source_sha || steps.recovery.outputs.android_source_sha }}
@@ -81,6 +81,7 @@ jobs:
       windows_packaging_sha256: ${{ steps.windows_recovery.outputs.windows_packaging_sha256 }}
       windows_recovery_receipt_sha256: ${{ steps.windows_recovery.outputs.windows_recovery_receipt_sha256 }}
       recovered_apk_sha256: ${{ steps.continuation.outputs.apk_sha256 || steps.windows_recovery.outputs.apk_sha256 }}
+      recovered_android_desktop_source_sha: ${{ steps.continuation.outputs.android_desktop_source_sha }}
       recovered_apk_receipt_sha256: ${{ steps.continuation.outputs.apk_receipt_sha256 || steps.windows_recovery.outputs.apk_receipt_sha256 }}
     steps:
       - name: Require artifact-only mode for a Windows candidate
@@ -138,7 +139,7 @@ jobs:
           fi
 
       - id: continuation
-        name: Verify and retain only the original .68 bundle, APK and proofs
+        name: Verify and retain the original .68 APK for the corrected desktop source
         if: inputs.continue_release68_run_id != ''
         env:
           GH_TOKEN: ${{ github.token }}
@@ -149,16 +150,6 @@ jobs:
           git fetch --no-tags origin "$GITHUB_SHA"
           git show "$GITHUB_SHA:scripts/morrowbyte/release68-continuation.py" > "$RUNNER_TEMP/release68-continuation.py"
           python3 "$RUNNER_TEMP/release68-continuation.py"
-
-      - name: Retain verified .68 shared bundle without rebuilding
-        if: steps.continuation.outcome == 'success'
-        uses: actions/upload-artifact@v4
-        with:
-          name: morrowbyte-js-bundle
-          path: ${{ runner.temp }}/release68/js
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
 
       - name: Retain verified .68 signed Android payload without rebuilding
         if: steps.continuation.outcome == 'success'
@@ -544,7 +535,7 @@ jobs:
           retention-days: 7
 
       - name: Preserve original Observatory build proof without rewriting it
-        if: inputs.recover_desktop_run_id != '' || inputs.recover_windows_run_id != '' || steps.continuation.outcome == 'success'
+        if: inputs.recover_desktop_run_id != '' || inputs.recover_windows_run_id != ''
         uses: actions/upload-artifact@v4
         with:
           name: morrowbyte-observatory-build-${{ inputs.source_sha }}-${{ github.run_attempt }}
@@ -553,7 +544,7 @@ jobs:
           retention-days: 7
 
       - name: Verify published or artifact-only source
-        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == ''
+        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == ''
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
           ANDROID_SOURCE_SHA: ${{ inputs.android_source_sha }}
@@ -565,14 +556,14 @@ jobs:
           bash scripts/morrowbyte/verify-desktop-source.sh "$SOURCE_SHA" "$PUBLISH_RELEASE" "$DISPATCHED_REF" "$DISPATCHED_SHA"
 
       - name: Setup Vite+
-        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == ''
+        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == ''
         uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version-file: package.json
           cache: true
           run-install: false
       - name: Install dependencies
-        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == ''
+        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == ''
         run: |
           if [[ '${{ inputs.android_only }}' == true && '${{ inputs.publish }}' == true ]]; then
             vp install --frozen-lockfile --filter=@t3tools/mobile... --filter=@t3tools/scripts...
@@ -580,15 +571,15 @@ jobs:
             vp install --frozen-lockfile
           fi
       - name: Prepare pinned Electron runtime before desktop imports
-        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && (inputs.android_only != true || inputs.publish != true)
+        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && (inputs.android_only != true || inputs.publish != true)
         run: node apps/desktop/scripts/ensure-electron-runtime.mjs
 
       - name: Install pinned Chromium for focused renderer gates
-        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && (inputs.android_only != true || inputs.publish != true)
+        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && (inputs.android_only != true || inputs.publish != true)
         run: node apps/server/node_modules/playwright-core/cli.js install --with-deps --only-shell chromium
 
       - name: Check source before release
-        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && (inputs.android_only != true || inputs.publish != true)
+        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && (inputs.android_only != true || inputs.publish != true)
         env:
           EFFECTIVE_SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
@@ -622,7 +613,7 @@ jobs:
 
       - id: route
         name: Verify reviewed Observatory preflight route
-        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && (inputs.android_only != true || inputs.publish != true)
+        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && (inputs.android_only != true || inputs.publish != true)
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
@@ -657,7 +648,7 @@ jobs:
           PYROUTE
 
       - name: Preserve release Observatory preflight route evidence
-        if: always() && hashFiles('apps/web/src/routes/observatory.tsx') != '' && ((inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '') || steps.recovery.outcome == 'success' || steps.windows_recovery.outcome == 'success' || steps.continuation.outcome == 'success') && (inputs.android_only != true || inputs.publish != true)
+        if: always() && hashFiles('apps/web/src/routes/observatory.tsx') != '' && ((inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '') || steps.recovery.outcome == 'success' || steps.windows_recovery.outcome == 'success') && (inputs.android_only != true || inputs.publish != true)
         uses: actions/upload-artifact@v4
         with:
           name: morrowbyte-observatory-preflight-${{ inputs.source_sha }}-${{ github.run_attempt }}
@@ -712,7 +703,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
   build_bundle:
-    if: inputs.android_only != true && inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == ''
+    if: inputs.android_only != true && inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == ''
     needs: [preflight]
     runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 30
@@ -808,9 +799,7 @@ jobs:
   build_linux:
     if: >-
       ${{ !cancelled() && needs.preflight.result == 'success' && !inputs.windows_only && !inputs.android_only &&
-          inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' &&
-          ((inputs.continue_release68_run_id == '' && needs.build_bundle.result == 'success') ||
-           (inputs.continue_release68_run_id == '40281335664' && needs.build_bundle.result == 'skipped')) }}
+          inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && needs.build_bundle.result == 'success' }}
     needs: [preflight, build_bundle]
     runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 80
@@ -963,8 +952,7 @@ jobs:
     if: >-
       ${{ !cancelled() && !inputs.android_only && needs.preflight.result == 'success' && inputs.recover_desktop_run_id == '' &&
           ((inputs.recover_windows_run_id == '' && needs.build_bundle.result == 'success' && ((inputs.windows_only && needs.build_linux.result == 'skipped') || (!inputs.windows_only && needs.build_linux.result == 'success'))) ||
-           (inputs.recover_windows_run_id == '39182028263' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'skipped') ||
-           (inputs.continue_release68_run_id == '40281335664' && inputs.recover_windows_run_id == '' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'success')) }}
+           (inputs.recover_windows_run_id == '39182028263' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'skipped')) }}
     needs: [preflight, build_bundle, build_linux]
     runs-on: ${{ vars.MORROWBYTE_WINDOWS_RUNNER || 'blacksmith-8vcpu-windows-2025' }}
     timeout-minutes: 50
@@ -1333,10 +1321,10 @@ jobs:
     if: >-
       ${{ !cancelled() && inputs.publish && !inputs.windows_only && !inputs.android_only && needs.preflight.result == 'success' &&
           ((inputs.desktop_only && needs.build_android_apk.result == 'skipped') || (!inputs.desktop_only && needs.build_android_apk.result == 'success') || (inputs.recover_windows_run_id == '39182028263' && !inputs.desktop_only && needs.build_android_apk.result == 'skipped') || (inputs.continue_release68_run_id == '40281335664' && !inputs.desktop_only && needs.build_android_apk.result == 'skipped')) &&
-          ((inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && needs.build_bundle.result == 'success' && needs.build_linux.result == 'success' && needs.build_nixos.result == 'success' && needs.build_windows.result == 'success') ||
+          ((inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && needs.build_bundle.result == 'success' && needs.build_linux.result == 'success' && needs.build_nixos.result == 'success' && needs.build_windows.result == 'success') ||
            (inputs.recover_desktop_run_id == '39093205395' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'skipped' && needs.build_nixos.result == 'skipped' && needs.build_windows.result == 'skipped') ||
            (inputs.recover_windows_run_id == '39182028263' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'skipped' && needs.build_nixos.result == 'skipped' && needs.build_windows.result == 'success') ||
-           (inputs.continue_release68_run_id == '40281335664' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'success' && needs.build_nixos.result == 'success' && needs.build_windows.result == 'success')) }}
+           (inputs.continue_release68_run_id == '40281335664' && needs.build_bundle.result == 'success' && needs.build_linux.result == 'success' && needs.build_nixos.result == 'success' && needs.build_windows.result == 'success')) }}
     needs: [preflight, build_bundle, build_linux, build_nixos, build_windows, build_android_apk]
     runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 15
@@ -1423,17 +1411,17 @@ jobs:
         if: ${{ !inputs.desktop_only }}
         env:
           SOURCE_SHA: ${{ needs.preflight.outputs.android_source_sha || needs.preflight.outputs.source_sha }}
-          DESKTOP_SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+          DESKTOP_SOURCE_SHA: ${{ needs.preflight.outputs.recovered_android_desktop_source_sha || needs.preflight.outputs.source_sha }}
           ANDROID_LOCK_SHA256: ${{ needs.preflight.outputs.android_lock_sha256 }}
           ANDROID_VERSION: ${{ needs.preflight.outputs.version }}
           ANDROID_VERSION_CODE: ${{ needs.preflight.outputs.android_version_code }}
           APK_SHA256: ${{ needs.preflight.outputs.recovered_apk_sha256 || needs.build_android_apk.outputs.apk_sha256 }}
           APK_RECEIPT_SHA256: ${{ needs.preflight.outputs.recovered_apk_receipt_sha256 || needs.build_android_apk.outputs.receipt_sha256 }}
-          APK_BUILD_ATTEMPT: ${{ (inputs.recover_windows_run_id != '' || inputs.continue_release68_run_id != '') && needs.preflight.outputs.desktop_run_attempt || needs.build_android_apk.outputs.build_attempt }}
-          APK_BUILD_RUN: ${{ (inputs.recover_windows_run_id != '' || inputs.continue_release68_run_id != '') && needs.preflight.outputs.desktop_run_id || github.run_id }}
-          APK_CONTEXT_SHA: ${{ (inputs.recover_windows_run_id != '' || inputs.continue_release68_run_id != '') && needs.preflight.outputs.desktop_context_sha || github.sha }}
-          APK_WORKFLOW_SHA: ${{ (inputs.recover_windows_run_id != '' || inputs.continue_release68_run_id != '') && needs.preflight.outputs.desktop_workflow_sha || github.workflow_sha }}
-          APK_WORKFLOW_REF: ${{ (inputs.recover_windows_run_id != '' || inputs.continue_release68_run_id != '') && needs.preflight.outputs.desktop_workflow_ref || github.workflow_ref }}
+          APK_BUILD_ATTEMPT: ${{ inputs.continue_release68_run_id != '' && '1' || (inputs.recover_windows_run_id != '' || inputs.continue_release68_run_id != '') && needs.preflight.outputs.desktop_run_attempt || needs.build_android_apk.outputs.build_attempt }}
+          APK_BUILD_RUN: ${{ inputs.continue_release68_run_id != '' && '40281335664' || (inputs.recover_windows_run_id != '' || inputs.continue_release68_run_id != '') && needs.preflight.outputs.desktop_run_id || github.run_id }}
+          APK_CONTEXT_SHA: ${{ inputs.continue_release68_run_id != '' && 'b560b5bc8bd4dad4a838033c1e98cc5a81354d14' || (inputs.recover_windows_run_id != '' || inputs.continue_release68_run_id != '') && needs.preflight.outputs.desktop_context_sha || github.sha }}
+          APK_WORKFLOW_SHA: ${{ inputs.continue_release68_run_id != '' && 'b560b5bc8bd4dad4a838033c1e98cc5a81354d14' || (inputs.recover_windows_run_id != '' || inputs.continue_release68_run_id != '') && needs.preflight.outputs.desktop_workflow_sha || github.workflow_sha }}
+          APK_WORKFLOW_REF: ${{ inputs.continue_release68_run_id != '' && 'morrowbyte/t3code/.github/workflows/morrowbyte-release.yml@refs/heads/main' || (inputs.recover_windows_run_id != '' || inputs.continue_release68_run_id != '') && needs.preflight.outputs.desktop_workflow_ref || github.workflow_ref }}
         run: |
           set -euo pipefail
           python3 - <<'PYPUBLISHAPK'
@@ -1583,7 +1571,7 @@ jobs:
               platform_notes+=" Retained Linux, NixOS, Android and shared runtime bytes from run $WINDOWS_RECOVERY_RUN_ID. Windows packaging uses validation-only script $WINDOWS_PACKAGING_SHA256 from control source $GITHUB_SHA; application source and version remain unchanged."
             fi
             if [[ -n "$CONTINUATION68_RUN_ID" ]]; then
-              platform_notes+=" Shared bundle and signed Android payload retained unchanged from run $CONTINUATION68_RUN_ID; only previously missing desktop packages rebuilt with the required Node 26.12.1. Application source and version unchanged."
+              platform_notes+=" Signed Android payload retained unchanged from run $CONTINUATION68_RUN_ID. Desktop packages and the shared desktop/server bundle use the corrected CUA loader source; the release version is unchanged."
             fi
             gh release create "$tag" \
               --target "$source_sha" \
@@ -1626,7 +1614,7 @@ jobs:
                 "$ANDROID_SOURCE_SHA" "${ANDROID_LOCK_SHA256:-$lock_sha}"
             fi
             if [[ -n "$CONTINUATION68_RUN_ID" ]]; then
-              printf 'retained_bundle_android_origin_run_id=%s\nretained_bundle_android_origin_attempt=1\ndesktop_packaging_run_id=%s\ndesktop_packaging_context_sha=%s\ncli_build_node_version=26.12.1\n' "$CONTINUATION68_RUN_ID" "$GITHUB_RUN_ID" "$GITHUB_SHA"
+              printf 'retained_android_origin_run_id=%s\nretained_android_origin_attempt=1\ndesktop_packaging_run_id=%s\ndesktop_packaging_context_sha=%s\ncli_build_node_version=26.12.1\n' "$CONTINUATION68_RUN_ID" "$GITHUB_RUN_ID" "$GITHUB_SHA"
             fi
             printf 'github_asset_digests=%s\n' "$(jq -c '[.[] | {name, digest}]' <<<"$assets_json")"
             printf 'artifact_sha256:\n'
