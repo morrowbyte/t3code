@@ -356,13 +356,17 @@ else
   echo "Connection layer gate not present in this source; NOT EXECUTED: $connection_layer_test"
 fi
 
-transcript_ui_test=apps/web/src/voice/LiveVoiceTranscript.browser.test.tsx
-if [[ ! -f "$transcript_ui_test" ]]; then
-  echo "Required Transcript UI gate is missing: $transcript_ui_test" >&2
-  exit 1
-fi
-
-echo "Including required Transcript UI gate: $transcript_ui_test"
+transcript_ui_tests=(
+  apps/web/src/voice/VoiceConversationRow.browser.test.tsx
+  apps/web/src/voice/WebVoiceCallHistory.browser.test.tsx
+)
+for transcript_ui_test in "${transcript_ui_tests[@]}"; do
+  if [[ ! -f "$transcript_ui_test" ]]; then
+    echo "Required Transcript UI gate is missing: $transcript_ui_test" >&2
+    exit 1
+  fi
+  echo "Including required Transcript UI gate: $transcript_ui_test"
+done
 agent_session_tests=(
   packages/contracts/src/agentSessions.test.ts
   apps/server/src/project/AgentSessionScanner.test.ts
@@ -402,7 +406,7 @@ renderer_tests=(
   apps/web/src/components/approvalReview/HostOrderComposer.browser.test.tsx
   apps/web/src/components/approvalReview/HostOrderChatMode.browser.test.tsx
   apps/web/src/components/approvalReview/ApprovalReview.browser.test.tsx
-  "$transcript_ui_test"
+  "${transcript_ui_tests[@]}"
   apps/web/src/voice/LiveVoiceControl.browser.test.tsx
   "$mobile_composer_test"
   apps/web/src/components/CommandPalette.focus.browser.test.tsx
