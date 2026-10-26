@@ -133,6 +133,53 @@ class AndroidOriginTests(unittest.TestCase):
                 m.validate_android_origin(run, jobs, artifacts, NOW)
 
 
+class PackageOriginTests(unittest.TestCase):
+    def fixture(self):
+        run, _, _ = fixture()
+        run.update(id=int(m.PACKAGES_RUN), head_sha=m.PACKAGES_CONTROL, run_number=7, conclusion='success')
+        conclusions = {'preflight': 'success', 'build_bundle': 'skipped', 'Build Morrowbyte Android APK': 'skipped',
+                       'build_linux': 'success', 'build_nixos': 'skipped', 'build_windows': 'success',
+                       'publish': 'skipped', 'publish_android': 'skipped', 'publish_windows': 'skipped'}
+        jobs = {'total_count': 9, 'jobs': [{'name': name, 'conclusion': result, 'status': 'completed',
+                'head_sha': m.PACKAGES_CONTROL} for name, result in conclusions.items()]}
+        artifacts = {'total_count': 9, 'artifacts': [{'id': int(key), 'name': name,
+            'digest': 'sha256:' + sha, 'expired': False, 'expires_at': '2026-10-27T09:17:00Z',
+            'workflow_run': {'id': int(m.PACKAGES_RUN), 'head_sha': m.PACKAGES_CONTROL,
+                             'repository_id': 123, 'head_repository_id': 123}}
+            for key, (name, sha, _) in m.PACKAGE_PINS.items()]}
+        artifacts['artifacts'].extend({'id': int(key)} for key in ['12639535244', '12639530219',
+            '12639088291', '12638234346', '12638119703'])
+        return run, jobs, artifacts
+
+    def test_finished_desktop_bytes_are_reused_without_building_them_again(self):
+        m.validate_packages_origin(*self.fixture(), NOW)
+
+    def test_unfinished_changed_or_missing_packages_cannot_reach_publication(self):
+        for case in ['source', 'attempt', 'running', 'windows_failure', 'linux_failure', 'published',
+                     'digest', 'expired', 'artifact_source', 'omitted']:
+            run, jobs, artifacts = self.fixture()
+            artifact = artifacts['artifacts'][0]
+            if case == 'source':
+                run['head_sha'] = '0' * 40
+            elif case == 'attempt':
+                run['run_attempt'] = 2
+            elif case == 'running':
+                run['status'] = 'in_progress'
+            elif case in ['windows_failure', 'linux_failure', 'published']:
+                name = {'windows_failure': 'build_windows', 'linux_failure': 'build_linux', 'published': 'publish'}[case]
+                next(j for j in jobs['jobs'] if j['name'] == name)['conclusion'] = 'success' if case == 'published' else 'failure'
+            elif case == 'digest':
+                artifact['digest'] = 'sha256:' + '0' * 64
+            elif case == 'expired':
+                artifact['expires_at'] = '2026-10-25T00:00:00Z'
+            elif case == 'artifact_source':
+                artifact['workflow_run']['head_sha'] = '0' * 40
+            else:
+                artifacts['artifacts'].pop()
+            with self.subTest(case=case), self.assertRaises(AssertionError):
+                m.validate_packages_origin(run, jobs, artifacts, NOW)
+
+
 class ExtractionTests(unittest.TestCase):
     def extract(self, data, expected=None):
         with tempfile.TemporaryDirectory() as tmp:

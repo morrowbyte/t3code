@@ -488,3 +488,28 @@ test("both native CLI builds use the application's required Node version", () =>
     assert.equal(step.env.VP_NODE_VERSION, required, name);
   }
 });
+
+
+test("NixOS follows a retained bundle without inheriting implicit success over skipped ancestors", () => {
+  const condition = releaseWorkflow.jobs.build_nixos.if;
+  assert.match(condition, /\b(?:cancelled|always)\s*\(/, "GitHub otherwise applies implicit success() to the skipped bundle ancestor");
+  const inputs = { ...platformInputs(), continue_release68_run_id: "40291055865" };
+  const needs = { ...releaseNeeds("skipped"), build_bundle: { result: "skipped" } };
+  assert.equal(expression(condition, inputs, needs), true);
+  assert.equal(expression(condition, inputs, { ...needs, build_linux: { result: "failure" } }), false);
+  assert.equal(expression(condition, inputs, needs, true), false);
+});
+
+test("the final .68 continuation builds only the missing NixOS closure and preserves every publish gate", () => {
+  const inputs = { ...platformInputs(), continue_release68_run_id: "40297878651" };
+  const needs = { ...releaseNeeds("skipped"), build_bundle: { result: "skipped" }, build_linux: { result: "skipped" }, build_windows: { result: "skipped" } };
+  for (const job of ["build_bundle", "build_linux", "build_windows", "build_android_apk"])
+    assert.equal(expression(releaseWorkflow.jobs[job].if, inputs, needs), false, job);
+  assert.equal(expression(releaseWorkflow.jobs.build_nixos.if, inputs, needs), true);
+  assert.equal(expression(releaseWorkflow.jobs.publish.if, inputs, needs), true);
+  for (const job of ["preflight", "build_nixos"])
+    assert.equal(expression(releaseWorkflow.jobs.publish.if, inputs, { ...needs, [job]: { result: "failure" } }), false, job);
+  assert.equal(expression(releaseWorkflow.jobs.publish.if, inputs, needs, true), false);
+  assert.equal(expression(releaseWorkflow.jobs.publish.if, { ...inputs, publish: false }, needs), false);
+  assert.equal(expression(releaseWorkflow.jobs.publish.if, { ...inputs, continue_release68_run_id: "foreign" }, needs), false);
+});

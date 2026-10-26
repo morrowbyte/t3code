@@ -21,6 +21,14 @@ PINS = {
     '12635969252': ('morrowbyte-observatory-build-' + SOURCE + '-1', '8a752190aed0f13e79ce0ff127d58656a084eefbf73fc775246d1d9e21e8f275', 'build'),
     '12636662871': ('morrowbyte-js-bundle', '36c2b37422e38c6be5899137d5e9a9d81f0f3bc6be9eca9467886af19ae20a44', 'js'),
 }
+PACKAGES_RUN = '40297878651'
+PACKAGES_CONTROL = '7fef18cacc0c3bf9cd063b38597617b140c2ea97'
+PACKAGE_PINS = {
+    '12640275485': ('morrowbyte-release-windows', '24355d599c2437ad6245efc5f9b82c0b699d6534ba4f67b43fd6faec3181117a', 'windows'),
+    '12639399607': ('morrowbyte-release-cli-windows', '4982fea6fba86fdf88ce6907e50a36fc20ca53f7597e747275d27f5874dcc503', 'cli-windows'),
+    '12639202759': ('morrowbyte-release-linux', '6d2cf64731d1f3f08546eec42d63a1ab547888f3bfaca81d66534d9ece15e83a', 'linux'),
+    '12639705082': ('morrowbyte-release-cli-linux', '6a238ca86ffae605804727faf8eb8e0edf5c4d58576894c90f0a4b6a3bdc3f8f', 'cli-linux'),
+}
 ANDROID_RUN = '40293470700'
 ANDROID_CONTROL = '4e5b01b01bbdc4bc3c0ebc27ba41c3065655db7a'
 ANDROID_ARTIFACT = '12637941853'
@@ -119,6 +127,34 @@ def verify_android_payload(directory):
     assert all(receipt.get(key) == value for key, value in expected.items())
 
 
+def validate_packages_origin(run, jobs, artifacts, now):
+    assert run['id'] == int(PACKAGES_RUN) and run['run_number'] == 7 and run['run_attempt'] == 1
+    assert run['repository']['full_name'] == run['head_repository']['full_name'] == 'morrowbyte/t3code'
+    assert run['head_sha'] == PACKAGES_CONTROL and run['head_branch'] == 'main'
+    assert run['path'] == WORKFLOW and run['event'] == 'workflow_dispatch'
+    assert run['status'] == 'completed' and run['conclusion'] == 'success'
+    expected = {'preflight': 'success', 'build_bundle': 'skipped', 'Build Morrowbyte Android APK': 'skipped',
+                'build_linux': 'success', 'build_nixos': 'skipped', 'build_windows': 'success',
+                'publish': 'skipped', 'publish_android': 'skipped', 'publish_windows': 'skipped'}
+    assert jobs['total_count'] == len(jobs['jobs']) == len(expected)
+    assert {job['name']: job['conclusion'] for job in jobs['jobs']} == expected
+    assert all(job['head_sha'] == PACKAGES_CONTROL and job['status'] == 'completed' for job in jobs['jobs'])
+    assert len(PACKAGE_PINS) == 4
+    assert {v[2] for v in PACKAGE_PINS.values()} == {'linux', 'windows', 'cli-linux', 'cli-windows'}
+    assert artifacts['total_count'] == len(artifacts['artifacts']) == 9
+    assert {str(a['id']) for a in artifacts['artifacts']} == {*PACKAGE_PINS, '12639535244', '12639530219', '12639088291', '12638234346', '12638119703'}
+    for artifact in artifacts['artifacts']:
+        key = str(artifact['id'])
+        if key not in PACKAGE_PINS:
+            continue
+        name, sha, _ = PACKAGE_PINS[key]
+        assert artifact['name'] == name and artifact['digest'] == 'sha256:' + sha and not artifact['expired']
+        assert datetime.datetime.fromisoformat(artifact['expires_at'].replace('Z', '+00:00')) > now
+        origin = artifact['workflow_run']
+        assert origin['id'] == int(PACKAGES_RUN) and origin['head_sha'] == PACKAGES_CONTROL
+        assert origin['repository_id'] == origin['head_repository_id'] == run['repository']['id']
+
+
 def extract_verified(archive, expected_digest, destination):
     assert digest(archive) == expected_digest, 'Original artifact archive digest differs.'
     with zipfile.ZipFile(archive) as zipped:
@@ -156,7 +192,8 @@ def verify_payload(root, check_sha):
 def main():
     env = os.environ
     assert env['GITHUB_REPOSITORY'] == 'morrowbyte/t3code'
-    assert env['SOURCE_SHA'] == SOURCE and env['CONTINUATION_RUN_ID'] == RUN
+    assert env['SOURCE_SHA'] == SOURCE and env['CONTINUATION_RUN_ID'] in {RUN, PACKAGES_RUN}
+    retain_packages = env['CONTINUATION_RUN_ID'] == PACKAGES_RUN
     assert env['GITHUB_REF'] == 'refs/heads/main' and env['GITHUB_RUN_ATTEMPT'] == '1'
     assert env['GITHUB_WORKFLOW_REF'] == WORKFLOW_REF
     assert env['GITHUB_WORKFLOW_SHA'] == env['GITHUB_SHA'] and env['GITHUB_SHA'] != SOURCE
@@ -183,7 +220,15 @@ def main():
     assert not any(r['tag_name'] == 'v' + VERSION for r in releases), 'This version already has a release.'
     previous = api('actions/workflows/morrowbyte-release.yml/runs?event=workflow_dispatch&per_page=100')
     later = [r for r in previous['workflow_runs'] if r['id'] > int(RUN)]
-    assert len(later) == 2 and {r['id'] for r in later} == {int(ANDROID_RUN), int(env['GITHUB_RUN_ID'])}, 'Another product continuation exists.'
+    expected_later = {int(ANDROID_RUN), int(env['GITHUB_RUN_ID'])}
+    if retain_packages:
+        expected_later.add(int(PACKAGES_RUN))
+    assert len(later) == len(expected_later) and {r['id'] for r in later} == expected_later, 'Another product continuation exists.'
+    if retain_packages:
+        validate_packages_origin(api('actions/runs/' + PACKAGES_RUN),
+                                 api('actions/runs/' + PACKAGES_RUN + '/attempts/1/jobs?per_page=100'),
+                                 api('actions/runs/' + PACKAGES_RUN + '/artifacts?per_page=100'),
+                                 datetime.datetime.now(datetime.timezone.utc))
     root = Path(env['RUNNER_TEMP']) / 'release68'
     root.mkdir(mode=0o700)
     for artifact_id, (_, sha, directory) in PINS.items():
@@ -191,6 +236,12 @@ def main():
         with archive.open('wb') as output:
             subprocess.run(['gh', 'api', f'repos/morrowbyte/t3code/actions/artifacts/{artifact_id}/zip'], stdout=output, check=True)
         extract_verified(archive, sha, root / directory)
+    if retain_packages:
+        for artifact_id, (_, sha, directory) in PACKAGE_PINS.items():
+            archive = root / (artifact_id + '.zip')
+            with archive.open('wb') as output:
+                subprocess.run(['gh', 'api', f'repos/morrowbyte/t3code/actions/artifacts/{artifact_id}/zip'], stdout=output, check=True)
+            extract_verified(archive, sha, root / directory)
     android_archive = root / (ANDROID_ARTIFACT + '.zip')
     with android_archive.open('wb') as output:
         subprocess.run(['gh', 'api', f'repos/morrowbyte/t3code/actions/artifacts/{ANDROID_ARTIFACT}/zip'], stdout=output, check=True)
@@ -205,6 +256,9 @@ def main():
                'workflowSha256': hashlib.sha256(workflow_bytes).hexdigest(),
                'androidOriginRun': ANDROID_RUN, 'androidArchiveSha256': ANDROID_ARCHIVE_SHA,
                'packagingScriptSha256': PACKAGING_SHA,
+               'retainedPackageRun': PACKAGES_RUN if retain_packages else None,
+               'retainedPackages': [{'id': key, 'name': value[0], 'archiveSha256': value[1]}
+                                    for key, value in PACKAGE_PINS.items()] if retain_packages else [],
                'reusedArtifacts': [{'id': artifact_id, 'name': name, 'archiveSha256': sha} for artifact_id, (name, sha, _) in PINS.items()],
                'files': [{'path': str(p.relative_to(root)), 'sha256': digest(p)}
                          for directory in ['js'] for p in sorted((root / directory).rglob('*')) if p.is_file()]}
