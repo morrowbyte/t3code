@@ -107,6 +107,7 @@ const platformInputs = (desktop_only = false) => ({
   publish: true,
   recover_desktop_run_id: "",
   recover_windows_run_id: "",
+  continue_release68_run_id: "",
   android_source_sha: "",
 });
 const desktopJobs = ["preflight", "build_bundle", "build_linux", "build_nixos", "build_windows"];
@@ -463,5 +464,27 @@ test("Windows-only publication assembles the actual producer artifacts before va
     assert(windowsOnly.validatePayload(assets, version).includes(`t3-${version}-win32-x64.zip`));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test(".68 continuation skips successful bundle/APK and requires every new desktop package", () => {
+  const inputs = { ...platformInputs(), continue_release68_run_id: "40281335664" };
+  const needs = { ...releaseNeeds("skipped"), build_bundle: { result: "skipped" } };
+  assert.equal(expression(releaseWorkflow.jobs.build_bundle.if, inputs, needs), false);
+  assert.equal(expression(releaseWorkflow.jobs.build_android_apk.if, inputs, needs), false);
+  for (const job of ["build_linux", "build_nixos", "build_windows", "publish"])
+    assert.equal(expression(releaseWorkflow.jobs[job].if, inputs, needs), true, job);
+  for (const job of ["preflight", "build_linux", "build_nixos", "build_windows"])
+    assert.equal(expression(releaseWorkflow.jobs.publish.if, inputs, { ...needs, [job]: { result: "failure" } }), false, job);
+  assert.equal(expression(releaseWorkflow.jobs.publish.if, inputs, needs, true), false);
+  assert.equal(expression(releaseWorkflow.jobs.publish.if, { ...inputs, publish: false }, needs), false);
+  assert.equal(expression(releaseWorkflow.jobs.publish.if, { ...inputs, continue_release68_run_id: "foreign" }, needs), false);
+});
+
+test("both native CLI builds use the application's required Node version", () => {
+  const required = JSON.parse(readFileSync(resolve(__dirname, "../../package.json"), "utf8")).engines.node;
+  for (const name of ["build_linux", "build_windows"]) {
+    const step = releaseWorkflow.jobs[name].steps.find((item) => /Build (Linux|Windows) CLI executable/.test(item.name));
+    assert.equal(step.env.VP_NODE_VERSION, required, name);
   }
 });
