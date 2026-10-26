@@ -986,7 +986,9 @@ interface StagePackageJson {
   };
 }
 
-export const STAGE_INSTALL_ARGS = ["install", "--prod"] as const;
+// Cua restages UniFFI files from the same pnpm store. Hardlinks make fs.cp reject
+// those source/destination files as identical, so release stages need private copies.
+export const STAGE_INSTALL_ARGS = ["install", "--prod", "--package-import-method=copy"] as const;
 export const DESKTOP_ELECTRON_LANGUAGES = ["en-US"] as const;
 export const DESKTOP_FILE_EXCLUSIONS = [
   // Cursor finds platform assets by walking up from argv[1]. Keep them outside

@@ -467,11 +467,11 @@ test("Windows-only publication assembles the actual producer artifacts before va
   }
 });
 
-test(".68 coherent-source continuation reuses the corrected bundle and requires a fresh Android package", () => {
+test(".68 coherent-source continuation retains the bundle and signed Android package", () => {
   const inputs = { ...platformInputs(), continue_release68_run_id: "40291055865" };
-  const needs = { ...releaseNeeds("success"), build_bundle: { result: "skipped" } };
+  const needs = { ...releaseNeeds("skipped"), build_bundle: { result: "skipped" } };
   assert.equal(expression(releaseWorkflow.jobs.build_bundle.if, inputs, needs), false);
-  assert.equal(expression(releaseWorkflow.jobs.build_android_apk.if, inputs, needs), true);
+  assert.equal(expression(releaseWorkflow.jobs.build_android_apk.if, inputs, needs), false);
   for (const job of ["build_linux", "build_nixos", "build_windows", "publish"])
     assert.equal(expression(releaseWorkflow.jobs[job].if, inputs, needs), true, job);
   for (const job of ["preflight", "build_linux", "build_nixos", "build_windows", "build_android_apk"])
