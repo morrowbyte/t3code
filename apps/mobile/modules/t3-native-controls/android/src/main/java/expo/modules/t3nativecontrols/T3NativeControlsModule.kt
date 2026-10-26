@@ -87,7 +87,7 @@ class T3NativeControlsModule : Module() {
               val contentUri = FileProvider.getUriForFile(activity, "${activity.packageName}.FileSystemFileProvider", file)
               val intent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(contentUri, "application/vnd.android.package-archive")
-                clipData = ClipData.newRawUri("Morrowbyte APK", contentUri)
+                clipData = ClipData.newRawUri("Crew APK", contentUri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
               }
               activity.startActivity(intent)

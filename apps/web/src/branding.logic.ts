@@ -4,7 +4,11 @@ export function formatAppDisplayName(input: {
   readonly baseName: string;
   readonly stageLabel: string;
 }): string {
-  if (input.baseName === "Morrowbyte" || input.stageLabel.trim().toLowerCase() === "latest") {
+  if (
+    input.baseName === "Crew" ||
+    input.baseName === "Crew Web" ||
+    input.stageLabel.trim().toLowerCase() === "latest"
+  ) {
     return input.baseName;
   }
 

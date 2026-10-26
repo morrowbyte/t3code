@@ -73,7 +73,7 @@ jobs:
           import json, os
           from pathlib import Path
           config = json.loads((Path(os.environ['RUNNER_TEMP']) / 'dev-client-config.json').read_text())
-          assert config['name'] == 'Morrowbyte Dev'
+          assert config['name'] == 'Crew Dev'
           assert config['android']['package'] == 'com.morrowbyte.t3code.dev'
           assert config['scheme'] == 'morrowbyte-dev'
           assert config['runtimeVersion']['policy'] == 'appVersion'

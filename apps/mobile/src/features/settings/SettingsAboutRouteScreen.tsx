@@ -24,7 +24,7 @@ export function SettingsAboutRouteScreen() {
   const variant = (Constants.expoConfig?.extra?.appVariant as string | undefined) ?? "production";
 
   return (
-    <SettingsScreen title="About Morrowbyte">
+    <SettingsScreen title="About Crew">
       <ScrollView
         contentInsetAdjustmentBehavior="automatic"
         showsVerticalScrollIndicator={false}
@@ -120,7 +120,7 @@ function AppSettingsSection() {
   );
 
   return (
-    <SettingsSection title="App">
+    <SettingsSection title="Crew by Morrowbyte">
       <SettingsRow icon="internaldrive" label="Client Storage" target="SettingsClientStorage" />
       <SettingsRow icon="stethoscope" label="Diagnostics" target="SettingsDiagnostics" />
       <SettingsRow
@@ -129,6 +129,7 @@ function AppSettingsSection() {
         target="SettingsOpenSourceLicenses"
       />
       <SettingsRow icon="doc.text" label="Legal" fullScreenTarget="SettingsLegal" />
+      <Text className="px-4 py-3 text-sm text-foreground-muted">Based on T3 Code.</Text>
       {updateCheckAvailable ? (
         <Pressable
           accessibilityLabel={`Version ${versionLabel}`}

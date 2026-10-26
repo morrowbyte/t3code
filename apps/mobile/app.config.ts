@@ -1,6 +1,5 @@
 import type { ExpoConfig } from "expo/config";
 
-import { BRAND_ASSET_PATHS } from "../../scripts/lib/brand-assets.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
 
 type AppVariant = "development" | "preview" | "production";
@@ -30,48 +29,35 @@ if (
   );
 }
 
-const DEVELOPMENT_ASSETS = {
-  appIcon: fromRepoRoot(BRAND_ASSET_PATHS.developmentIosIconPng),
-  iosIcon: fromRepoRoot(BRAND_ASSET_PATHS.developmentIconComposerProject),
-  splashIcon: fromRepoRoot(BRAND_ASSET_PATHS.developmentIosIconPng),
+const CREW_ASSETS = {
+  appIcon: fromRepoRoot("assets/crew/native-1024.png"),
+  iosIcon: fromRepoRoot("assets/crew/native-1024.png"),
+  splashIcon: fromRepoRoot("assets/crew/native-1024.png"),
   androidAdaptiveForeground,
-  androidAdaptiveBackgroundColor: "#347FF8",
-  androidAdaptiveBackgroundImage: "./assets/android-icon-background-dev.png",
-  androidSplashIcon: "./assets/android-splash-icon-dev.png",
+  androidAdaptiveBackgroundColor: "#292B2E",
   androidMonochromeIcon: "./assets/android-icon-mark.png",
   androidNotificationIcon: "./assets/android-notification-icon.png",
-  androidNotificationColor: "#00639B",
+  androidNotificationColor: "#789C90",
+} as const;
+
+const DEVELOPMENT_ASSETS = {
+  ...CREW_ASSETS,
+  androidSplashIcon: "./assets/android-splash-icon-dev.png",
 } as const;
 
 const PREVIEW_ASSETS = {
-  appIcon: fromRepoRoot(BRAND_ASSET_PATHS.nightlyIosIconPng),
-  iosIcon: fromRepoRoot(BRAND_ASSET_PATHS.nightlyIconComposerProject),
-  splashIcon: fromRepoRoot(BRAND_ASSET_PATHS.nightlyIosIconPng),
-  androidAdaptiveForeground,
-  androidAdaptiveBackgroundColor: "#111533",
-  androidAdaptiveBackgroundImage: "./assets/android-icon-background-nightly.png",
+  ...CREW_ASSETS,
   androidSplashIcon: "./assets/android-splash-icon-nightly.png",
-  androidMonochromeIcon: "./assets/android-icon-mark.png",
-  androidNotificationIcon: "./assets/android-notification-icon.png",
-  androidNotificationColor: "#7565C7",
 } as const;
 
 const RELEASE_ASSETS = {
-  appIcon: fromRepoRoot(BRAND_ASSET_PATHS.productionIosIconPng),
-  iosIcon: fromRepoRoot(BRAND_ASSET_PATHS.productionIconComposerProject),
-  splashIcon: fromRepoRoot(BRAND_ASSET_PATHS.productionIosIconPng),
-  androidAdaptiveForeground,
-  androidAdaptiveBackgroundColor: "#000000",
-  androidAdaptiveBackgroundImage: undefined,
+  ...CREW_ASSETS,
   androidSplashIcon: "./assets/android-splash-icon-prod.png",
-  androidMonochromeIcon: "./assets/android-icon-mark.png",
-  androidNotificationIcon: "./assets/android-notification-icon.png",
-  androidNotificationColor: "#FFFFFF",
 } as const;
 
 const VARIANT_CONFIG = {
   development: {
-    appName: "Morrowbyte Dev",
+    appName: "Crew Dev",
     scheme: "morrowbyte-dev",
     iosBundleIdentifier: "com.t3tools.t3code.dev",
     androidPackage: "com.morrowbyte.t3code.dev",
@@ -79,7 +65,7 @@ const VARIANT_CONFIG = {
     assets: DEVELOPMENT_ASSETS,
   },
   preview: {
-    appName: "Morrowbyte Preview",
+    appName: "Crew Preview",
     scheme: "morrowbyte-preview",
     iosBundleIdentifier: "com.t3tools.t3code.preview",
     androidPackage: "com.morrowbyte.t3code.preview",
@@ -87,7 +73,7 @@ const VARIANT_CONFIG = {
     assets: PREVIEW_ASSETS,
   },
   production: {
-    appName: "Morrowbyte",
+    appName: "Crew",
     scheme: "morrowbyte",
     iosBundleIdentifier: "com.t3tools.t3code",
     androidPackage: "com.morrowbyte.t3code",
@@ -119,7 +105,7 @@ if (
 const iosBundleIdentifier = isIosPersonalTeamBuild
   ? personalTeamBundleIdentifier!
   : variant.iosBundleIdentifier;
-const microphonePermission = "Allow Morrowbyte to use your microphone for voice input.";
+const microphonePermission = "Allow Crew to use your microphone for voice input.";
 
 const dmSansFonts = {
   regular: "@expo-google-fonts/dm-sans/400Regular/DMSans_400Regular.ttf",
@@ -140,8 +126,8 @@ const widgetsPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
     widgets: [
       {
         name: "SubscriptionUsage",
-        displayName: "Subscription usage",
-        description: "Subscription quotas from your connected T3 Code environments.",
+        displayName: "Crew usage",
+        description: "Subscription quotas from your connected Crew environments.",
         ios: {
           configuration: {
             title: "Subscription usage",
@@ -191,8 +177,8 @@ const widgetsPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
       },
       {
         name: "AgentActivity",
-        displayName: "Agent Activity",
-        description: "Shows the current state of active T3 Code agents.",
+        displayName: "Crew activity",
+        description: "Shows the current state of active Crew agents.",
         android: null,
         ios: { supportedFamilies: ["systemSmall", "systemMedium", "accessoryRectangular"] },
       },
@@ -274,8 +260,8 @@ const config: ExpoConfig = {
         NSAllowsArbitraryLoads: true,
       },
       NSLocalNetworkUsageDescription:
-        "Allow T3 Code to connect to T3 Code servers on your local network or tailnet.",
-      NSPhotoLibraryAddUsageDescription: "Allow T3 Code to save images to your photo library.",
+        "Allow Crew to connect to Crew and T3 Code servers on your local network or tailnet.",
+      NSPhotoLibraryAddUsageDescription: "Allow Crew to save images to your photo library.",
       // "Audio, AirPlay, and Picture in Picture": the browser screen's system
       // picture in picture needs it to start and to stay up outside the app.
       UIBackgroundModes: ["audio"],
@@ -312,9 +298,6 @@ const config: ExpoConfig = {
       : {}),
     adaptiveIcon: {
       backgroundColor: variant.assets.androidAdaptiveBackgroundColor,
-      ...(variant.assets.androidAdaptiveBackgroundImage
-        ? { backgroundImage: variant.assets.androidAdaptiveBackgroundImage }
-        : {}),
       foregroundImage: variant.assets.androidAdaptiveForeground,
       monochromeImage: variant.assets.androidMonochromeIcon,
     },
@@ -381,9 +364,6 @@ const config: ExpoConfig = {
           shortcut_icon: {
             foregroundImage: variant.assets.androidAdaptiveForeground,
             backgroundColor: variant.assets.androidAdaptiveBackgroundColor,
-            ...(variant.assets.androidAdaptiveBackgroundImage
-              ? { backgroundImage: variant.assets.androidAdaptiveBackgroundImage }
-              : {}),
           },
         },
       },
@@ -400,7 +380,7 @@ const config: ExpoConfig = {
     [
       "expo-camera",
       {
-        cameraPermission: "Allow T3 Code to access your camera so you can scan pairing QR codes.",
+        cameraPermission: "Allow Crew to access your camera so you can scan pairing QR codes.",
         microphonePermission,
         barcodeScannerEnabled: true,
         recordAudioAndroid: false,
@@ -413,17 +393,15 @@ const config: ExpoConfig = {
       {
         image: variant.assets.splashIcon,
         resizeMode: "contain",
-        backgroundColor: "#ffffff",
+        backgroundColor: "#292B2E",
         imageWidth: 220,
         dark: {
           image: variant.assets.splashIcon,
-          backgroundColor: "#0a0a0a",
+          backgroundColor: "#292B2E",
         },
         android: {
-          // Android 12+ masks the splash icon to a circle over the central two thirds of
-          // its 288dp canvas, so the iOS export's corners get cut. A full-canvas image of
-          // the composed adaptive layers puts the wordmark in the same frame the launcher
-          // icon uses.
+          // Android 12+ masks the central two thirds of its 288dp canvas. Use the
+          // padded mark export so the launcher and splash retain the same silhouette.
           image: variant.assets.androidSplashIcon,
           imageWidth: 288,
           dark: { image: variant.assets.androidSplashIcon },

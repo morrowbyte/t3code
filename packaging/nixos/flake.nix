@@ -1,5 +1,5 @@
 {
-  description = "NixOS package for the morrowbyte T3 Code fork";
+  description = "NixOS package for Crew by Morrowbyte, based on T3 Code";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/0954f7ee2f6bb3dc7d4e3d0d8bcb8fd4bde4cfc5";
 
@@ -28,7 +28,7 @@
           };
           desktopFile = pkgs.writeText "t3code-morrowbyte.desktop" ''
             [Desktop Entry]
-            Name=Morrowbyte
+            Name=Crew
             Comment=AI coding assistant desktop app
             Exec=t3code-morrowbyte %U
             Icon=t3code
@@ -88,7 +88,7 @@
           '';
 
           meta = {
-            description = "Morrowbyte coding agent desktop (Nightly)";
+            description = "Crew by Morrowbyte coding agent desktop (Nightly)";
             homepage = "https://github.com/${repository}";
             license = lib.licenses.mit;
             mainProgram = "t3code-morrowbyte";

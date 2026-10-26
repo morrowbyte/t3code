@@ -1,4 +1,27 @@
-# Brand icons
+# Crew identity
+
+Crew uses the **Offener Bogen** C mark in Graphit: ink `#292B2E`, paper `#F2F1EC`,
+and sage accent `#789C90`. `crew/mark.svg` is the vector source. The native app
+uses the plain C tile; **Crew Web** uses the same mark inside a browser frame
+with outlined WEB lettering. The distinction survives monochrome rendering.
+
+Run `vp run icons:export` to regenerate the tracked assets and
+`vp run icons:check` to verify them. `scripts/export-crew-icons.ts` uses the
+repository's pinned Sharp version and emits native PNG/ICO, web install icons,
+favicons, Android adaptive, themed, splash, and notification artwork, and the
+embedded icon in the standalone Linux installer.
+`icons:export:android` uses the same generator so it cannot restore the old T3 mark.
+
+`crew/native-1024.png` is opaque and square for iOS and Android system masks;
+`crew/desktop-1024.png` and the ICO use the rounded desktop tile. Android adaptive
+artwork has a transparent foreground within the circular safe zone, on the solid
+Graphit background configured by the app. The notification icon is a white silhouette.
+
+The original T3 Code assets below and the earlier `morrowbyte/` artwork remain
+as provenance. They are not the active Crew identity. The legacy exporters below
+are for those upstream assets, not for regenerating Crew.
+
+## Original T3 Code assets
 
 The three Icon Composer projects are the source of truth for full application icons:
 
@@ -8,7 +31,7 @@ The three Icon Composer projects are the source of truth for full application ic
 
 Each project uses `text.svg` for the T3 mark and `background.svg` when the background is a vector layer. Additional layers use semantic names that describe their role and placement.
 
-Run `vp run icons:export` from the repository root to regenerate the tracked iOS, Linux, Windows, and web assets. The development web exports are also copied to `apps/web/public` for the browser favicon and splash screen. Run `vp run icons:check` to verify that the generated assets and public copies match their sources without changing files.
+Run `node scripts/export-brand-icons.ts` from the repository root to regenerate the tracked iOS, Linux, Windows, and web assets. The development web exports are also copied to `apps/web/public` for the browser favicon and splash screen. Run `node scripts/export-brand-icons.ts --check` to verify that the generated assets and public copies match their sources without changing files.
 
 Exporting requires Icon Composer 2 or newer on macOS. The script selects the newest compatible exporter from Xcode or a standalone Icon Composer installation and pins design generation 26. Set `ICON_COMPOSER_TOOL` to the full path of `Icon Composer.app/Contents/Executables/ictool` to override automatic discovery.
 
@@ -54,7 +77,7 @@ Do not edit the generated PNG or ICO files directly.
 Android masks the central 72dp of a 108dp adaptive canvas, and the Android 12+ splash screen masks
 the central two thirds of a 288dp canvas, so the Icon Composer exports cannot be used directly:
 their rounded-square silhouette gets framed again and the wordmark is cropped. The Android artwork
-is instead rendered from the same Icon Composer SVG sources by `vp run icons:export:android`:
+is instead rendered from the same Icon Composer SVG sources by `node scripts/export-android-icons.ts`:
 
 - `apps/mobile/assets/android-icon-foreground.png`: the shared transparent wordmark, sized to stay
   inside the safe zone

@@ -127,10 +127,12 @@ describe("DesktopEnvironment", () => {
         { T3CODE_DESKTOP_PROFILE: "morrowbyte", T3CODE_HOME: "/custom/t3" },
       );
       assert.equal(fork.baseDir, "/Users/alice/.t3-morrowbyte");
-      assert.equal(fork.displayName, "Morrowbyte");
-      assert.equal(fork.branding.baseName, "Morrowbyte");
+      assert.equal(fork.displayName, "Crew");
+      assert.equal(fork.branding.baseName, "Crew");
       assert.equal(fork.appUserModelId, "com.morrowbyte.t3code");
       assert.equal(fork.linuxDesktopEntryName, "com.morrowbyte.t3code.desktop");
+      assert.equal(fork.linuxWmClass, "t3code-morrowbyte");
+      assert.equal(fork.stateDir, "/Users/alice/.t3-morrowbyte/userdata");
       assert.equal(explicit.baseDir, "/custom/t3");
     }),
   );

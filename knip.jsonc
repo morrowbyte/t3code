@@ -25,6 +25,9 @@
         // These fixture scripts are injected into a browser page by path.
         "fixtures/issue-16534/*.js",
         "knip-schemas.ts",
+        // Original T3 artwork exporters remain documented, manually invoked tools.
+        "export-brand-icons.ts",
+        "export-android-icons.ts",
         "mobile-native-client.ts",
         "setup-worktree.ts",
         "sign-macos.ts",

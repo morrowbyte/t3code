@@ -1,26 +1,30 @@
 {
   "id": "/",
-  "name": "T3 Code",
-  "short_name": "T3 Code",
+  "name": "Crew Web",
+  "short_name": "Crew Web",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#161616",
-  "theme_color": "#161616",
+  "background_color": "#F2F1EC",
+  "theme_color": "#292B2E",
   "icons": [
     {
-      "src": "/morrowbyte-icon.svg",
+      "src": "/crew-web.svg",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any"
     },
     {
-      "src": "/morrowbyte-icon.png",
-      "sizes": "1024x1024",
+      "src": "/crew-web-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/crew-web-512.png",
+      "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
     }
-  ],
-  "name": "Morrowbyte",
-  "short_name": "Morrowbyte"
+  ]
 }

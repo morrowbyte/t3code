@@ -86,7 +86,7 @@ class T3VoiceSessionService : HeadlessJsTaskService() {
         Notification.Builder(this)
       }
       val notification = builder.setSmallIcon(android.R.drawable.ic_btn_speak_now)
-        .setContentTitle("Morrowbyte · Voice chat")
+        .setContentTitle("Crew · Voice chat")
         .setContentText("Microphone and audio active")
         .setCategory(Notification.CATEGORY_CALL)
         .setVisibility(Notification.VISIBILITY_PRIVATE)

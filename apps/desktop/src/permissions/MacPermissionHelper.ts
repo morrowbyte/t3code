@@ -43,15 +43,15 @@ function helperHtml(permission: MacPermission, icon: string) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'">
 <title>Set up ${title}</title><style>
-:root { color-scheme: light dark; --base: #fff; --row: #e7e7e7; --text: #292929; --line: #e3e3e3; }
-@media (prefers-color-scheme: dark) { :root { --base: #242424; --row: #383838; --text: #f5f5f5; --line: #484848; } }
+:root { color-scheme: light dark; --base: #F2F1EC; --row: #e7e7e7; --text: #292B2E; --line: #e3e3e3; }
+@media (prefers-color-scheme: dark) { :root { --base: #292B2E; --row: #383838; --text: #F2F1EC; --line: #484848; } }
 * { box-sizing: border-box; }
 html { background: transparent; }
 body { margin: 0; background: transparent; color: var(--text); font: 15px/22px -apple-system, BlinkMacSystemFont, sans-serif; user-select: none; }
 #panel { position: relative; margin: 2px; padding: 20px; height: 136px; border: 1px solid var(--line); border-radius: 24px; background: var(--base); }
 header { font-weight: 600; white-space: nowrap; }
 button { font: inherit; color: inherit; }
-button:focus-visible { outline: 2px solid #007aff; outline-offset: -2px; }
+button:focus-visible { outline: 2px solid #789C90; outline-offset: -2px; }
 #close { position: absolute; right: 8px; top: 6px; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%; background: var(--base); font-size: 18px; cursor: pointer; opacity: 0; }
 #panel:hover #close, #close:focus-visible { opacity: 1; }
 #app { display: flex; align-items: center; gap: 12px; width: 100%; height: 52px; margin-top: 20px; padding: 8px 12px; border: 0; border-radius: 10px; background: var(--row); cursor: grab; text-align: left; font-size: 16px; font-weight: 600; }
@@ -59,8 +59,8 @@ button:focus-visible { outline: 2px solid #007aff; outline-offset: -2px; }
 img { width: 32px; height: 32px; pointer-events: none; }
 </style></head><body><main id="panel">
 <button id="close" aria-label="Close permission helper">×</button>
-<header>↑ Drag T3 Code into the list above</header>
-<button id="app" draggable="true" aria-label="Drag T3 Code to System Settings, or click to reveal in Finder"><img src="${escapeHtml(icon)}" alt="" draggable="false">T3 Code</button>
+<header>↑ Drag Crew into the list above</header>
+<button id="app" draggable="true" aria-label="Drag Crew to System Settings, or click to reveal in Finder"><img src="${escapeHtml(icon)}" alt="" draggable="false">Crew</button>
 </main></body></html>`;
 }
 
@@ -93,7 +93,7 @@ export class MacPermissionHelper {
     const appIcon = iconPaths
       .map((iconPath) => Electron.nativeImage.createFromPath(iconPath))
       .find((image) => !image.isEmpty());
-    if (!appIcon) throw new Error("The packaged T3 Code icon is missing.");
+    if (!appIcon) throw new Error("The packaged Crew icon is missing.");
     const icon = appIcon.resize({ width: 64, height: 64 });
     const window = new Electron.BrowserWindow({
       width: 560,

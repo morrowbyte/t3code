@@ -280,7 +280,7 @@ export async function startDesktopAppControlServer(input: {
           requestId: request.requestId,
           ok: false,
           code: "result-window-unavailable",
-          message: "T3 Code could not open the result conversation.",
+          message: "Crew could not open the result conversation.",
         });
         if (!input.openResultConversation) {
           finish(unavailable());
@@ -418,7 +418,7 @@ export async function startDesktopAppControlServer(input: {
       activeRequestId = parsed.requestId;
       void input.handle(parsed).then(finish, () => {
         finish(
-          invalidResponse(parsed.requestId, "T3 Code could not process the desktop app request."),
+          invalidResponse(parsed.requestId, "Crew could not process the desktop app request."),
         );
       });
     });

@@ -88,7 +88,7 @@ export function AndroidApkUpdatePanel(props: { readonly updater: AndroidApkUpdat
       {state.phase === "permission-required" ? (
         <>
           <Text className="px-4 py-2 text-foreground-muted">
-            Allow Morrowbyte to request app installs in Android settings, then return here.
+            Allow Crew to request app installs in Android settings, then return here.
           </Text>
           <SettingsActionRow
             label="Allow app installs"

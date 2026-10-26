@@ -82,7 +82,7 @@ jobs:
           import json, os
           from pathlib import Path
           config = json.loads((Path(os.environ['RUNNER_TEMP']) / 'morrowbyte-config.json').read_text())
-          assert config['name'] == 'Morrowbyte'
+          assert config['name'] == 'Crew'
           assert config['scheme'] == 'morrowbyte'
           assert config['android']['package'] == 'com.morrowbyte.t3code'
           assert config['version'] == os.environ['T3CODE_MOBILE_VERSION']
@@ -202,7 +202,7 @@ jobs:
           badging = subprocess.check_output([str(sdk / 'aapt'), 'dump', 'badging', str(apk)], text=True)
           identity = re.search(r"^package: name='([^']+)' versionCode='([^']+)' versionName='([^']+)'", badging, re.M)
           assert identity and identity.groups() == ('com.morrowbyte.t3code', str(code), version)
-          assert "application-label:'Morrowbyte'" in badging and 'application-debuggable' not in badging
+          assert "application-label:'Crew'" in badging and 'application-debuggable' not in badging
           for permission in ['INTERNET', 'RECORD_AUDIO', 'MODIFY_AUDIO_SETTINGS']:
               assert "name='android.permission." + permission + "'" in badging
           with zipfile.ZipFile(apk) as archive:
@@ -269,7 +269,7 @@ jobs:
               'run': os.environ['GITHUB_RUN_ID'], 'attempt': os.environ['GITHUB_RUN_ATTEMPT'],
               'trustedContextSha': os.environ['GITHUB_SHA'], 'trustedWorkflowSha': os.environ['GITHUB_WORKFLOW_SHA'],
               'trustedWorkflowRef': os.environ['GITHUB_WORKFLOW_REF'],
-              'package': 'com.morrowbyte.t3code', 'name': 'Morrowbyte', 'version': version, 'versionCode': code,
+              'package': 'com.morrowbyte.t3code', 'name': 'Crew', 'version': version, 'versionCode': code,
               'apk': name, 'apkSha256': apk_sha, 'certificateSha256': expected_cert,
               'abis': ['x86_64'], 'embeddedBundle': bundle, 'embeddedBundleSha256': bundle_sha,
               'nativeLibraryCount': len(libraries), 'signatureVerified': True, 'zip16KB': True, 'elf16KB': True,

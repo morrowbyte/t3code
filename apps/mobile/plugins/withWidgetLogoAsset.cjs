@@ -12,8 +12,8 @@ const { addWidgetAssetCatalog } = require("./lib/addWidgetAssetCatalog.cjs");
 
 const TARGET_NAME = "ExpoWidgetsTarget";
 const CATALOG_NAME = "Assets.xcassets";
-const IMAGE_SET = "T3Mark.imageset";
-const SVG_NAME = "T3Mark.svg";
+const IMAGE_SET = "CrewMark.imageset";
+const SVG_NAME = "CrewMark.svg";
 
 const CATALOG_CONTENTS = JSON.stringify({ info: { author: "expo", version: 1 } }, null, 2) + "\n";
 const IMAGE_SET_CONTENTS =
@@ -34,13 +34,18 @@ function withAssetFiles(config) {
   return withDangerousMod(config, [
     "ios",
     (cfg) => {
-      const source = path.join(cfg.modRequest.projectRoot, "assets", "widget", SVG_NAME);
+      const source = path.resolve(cfg.modRequest.projectRoot, "../../assets/crew/mark.svg");
       const catalogDir = path.join(cfg.modRequest.platformProjectRoot, TARGET_NAME, CATALOG_NAME);
       const imageSetDir = path.join(catalogDir, IMAGE_SET);
       fs.mkdirSync(imageSetDir, { recursive: true });
       fs.writeFileSync(path.join(catalogDir, "Contents.json"), CATALOG_CONTENTS);
       fs.writeFileSync(path.join(imageSetDir, "Contents.json"), IMAGE_SET_CONTENTS);
-      fs.copyFileSync(source, path.join(imageSetDir, SVG_NAME));
+      // Asset-catalog SVGs cannot resolve CSS variables. Template rendering tints
+      // both paths together, including vibrant and accented widget presentations.
+      const svg = fs
+        .readFileSync(source, "utf8")
+        .replace(/currentColor|var\(--accent\)/g, "#FFFFFF");
+      fs.writeFileSync(path.join(imageSetDir, SVG_NAME), svg);
       return cfg;
     },
   ]);

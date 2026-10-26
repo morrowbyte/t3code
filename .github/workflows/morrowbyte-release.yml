@@ -923,7 +923,7 @@ jobs:
           T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}
           T3CODE_DESKTOP_APP_ID: ${{ vars.MORROWBYTE_DESKTOP_APP_ID || 'com.morrowbyte.t3code' }}
           T3CODE_DESKTOP_INSTALLER_GUID: ${{ vars.MORROWBYTE_DESKTOP_INSTALLER_GUID }}
-          T3CODE_DESKTOP_PRODUCT_NAME: ${{ vars.MORROWBYTE_DESKTOP_PRODUCT_NAME || 'Morrowbyte' }}
+          T3CODE_DESKTOP_PRODUCT_NAME: ${{ vars.MORROWBYTE_DESKTOP_PRODUCT_NAME || 'Crew' }}
           T3CODE_DESKTOP_PROFILE: morrowbyte
           T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR: "false"
           T3CODE_DESKTOP_REUSE_LINUX_CAPTURE_HELPERS: "false"
@@ -1141,7 +1141,7 @@ jobs:
           T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}
           T3CODE_DESKTOP_APP_ID: ${{ vars.MORROWBYTE_DESKTOP_APP_ID || 'com.morrowbyte.t3code' }}
           T3CODE_DESKTOP_INSTALLER_GUID: ${{ vars.MORROWBYTE_DESKTOP_INSTALLER_GUID }}
-          T3CODE_DESKTOP_PRODUCT_NAME: ${{ vars.MORROWBYTE_DESKTOP_PRODUCT_NAME || 'Morrowbyte' }}
+          T3CODE_DESKTOP_PRODUCT_NAME: ${{ vars.MORROWBYTE_DESKTOP_PRODUCT_NAME || 'Crew' }}
           T3CODE_DESKTOP_PROFILE: morrowbyte
         shell: bash
         run: |
@@ -1248,7 +1248,7 @@ jobs:
           import json, os
           from pathlib import Path
           config = json.loads((Path(os.environ['RUNNER_TEMP']) / 'morrowbyte-config.json').read_text())
-          assert config['name'] == 'Morrowbyte'
+          assert config['name'] == 'Crew'
           assert config['scheme'] == 'morrowbyte'
           assert config['android']['package'] == 'com.morrowbyte.t3code'
           assert config['version'] == os.environ['T3CODE_MOBILE_VERSION']
@@ -1332,7 +1332,7 @@ jobs:
           badging = subprocess.check_output([str(sdk / 'aapt'), 'dump', 'badging', str(apk)], text=True)
           identity = re.search(r"^package: name='([^']+)' versionCode='([^']+)' versionName='([^']+)'", badging, re.M)
           assert identity and identity.groups() == ('com.morrowbyte.t3code', str(code), version)
-          assert "application-label:'Morrowbyte'" in badging and 'application-debuggable' not in badging
+          assert "application-label:'Crew'" in badging and 'application-debuggable' not in badging
           for permission in ['INTERNET', 'RECORD_AUDIO', 'MODIFY_AUDIO_SETTINGS']:
               assert "name='android.permission." + permission + "'" in badging
           with zipfile.ZipFile(apk) as archive:
@@ -1376,7 +1376,7 @@ jobs:
               'run': os.environ['GITHUB_RUN_ID'], 'attempt': os.environ['GITHUB_RUN_ATTEMPT'],
               'trustedContextSha': os.environ['GITHUB_SHA'], 'trustedWorkflowSha': os.environ['GITHUB_WORKFLOW_SHA'],
               'trustedWorkflowRef': os.environ['GITHUB_WORKFLOW_REF'],
-              'package': 'com.morrowbyte.t3code', 'name': 'Morrowbyte', 'version': version, 'versionCode': code,
+              'package': 'com.morrowbyte.t3code', 'name': 'Crew', 'version': version, 'versionCode': code,
               'apk': name, 'apkSha256': apk_sha, 'certificateSha256': expected_cert,
               'abis': ['arm64-v8a'], 'embeddedBundle': bundle, 'embeddedBundleSha256': bundle_sha,
               'nativeLibraryCount': len(libraries), 'signatureVerified': True, 'zip16KB': True, 'elf16KB': True,
@@ -1533,6 +1533,7 @@ jobs:
           assert digest(receipt_path) == os.environ['APK_RECEIPT_SHA256']
           assert (assets / (name + '.sha256')).read_text() == f'{expected_sha}  {name}\n'
           receipt = json.loads(receipt_path.read_text())
+          assert receipt['name'] in {'Crew', 'Morrowbyte'}
           expected = {
               'schemaVersion': 1, 'source': os.environ['SOURCE_SHA'], 'version': version,
               'desktopSource': os.environ['DESKTOP_SOURCE_SHA'],
@@ -1541,7 +1542,8 @@ jobs:
               'run': os.environ['APK_BUILD_RUN'], 'attempt': os.environ['APK_BUILD_ATTEMPT'],
               'trustedContextSha': os.environ['APK_CONTEXT_SHA'], 'trustedWorkflowSha': os.environ['APK_WORKFLOW_SHA'],
               'trustedWorkflowRef': os.environ['APK_WORKFLOW_REF'],
-              'apk': name, 'apkSha256': expected_sha, 'package': 'com.morrowbyte.t3code', 'name': 'Morrowbyte',
+              'apk': name, 'apkSha256': expected_sha, 'package': 'com.morrowbyte.t3code',
+              'name': 'Crew' if os.environ['APK_BUILD_RUN'] == os.environ['GITHUB_RUN_ID'] else receipt['name'],
               'certificateSha256': '34a33c2541544bc4a96e359a33e9f71aaa449ee9a0cd725c2469b65b057aa2b2',
               'abis': ['arm64-v8a'], 'signatureVerified': True, 'zip16KB': True, 'elf16KB': True,
               'deviceAcceptance': 'not-run',
