@@ -17,6 +17,9 @@ vp_cmd() {
   fi
 }
 
+# Fail fast on release packaging before the unchanged renderer suites.
+(cd scripts && vp_cmd test run --config ../vite.config.ts build-desktop-artifact.test.ts lib/morrowbyte-branding.test.ts)
+
 # Route generation is hosted evidence, not a committed source edit.
 if [[ -f apps/web/src/routes/observatory.tsx ]]; then
   test "${GITHUB_ACTIONS:-}" = true
@@ -462,4 +465,3 @@ vp_cmd test run --config vite.config.ts "${node_focused_tests[@]}"
 (cd apps/mobile && vp_cmd test run "${mobile_focused_tests[@]}")
 (cd apps/web && vp_cmd test run --project unit src/terminal/ghostty/core.test.ts)
 (cd apps/web && vp_cmd test run --project browser "${renderer_tests[@]#apps/web/}")
-(cd scripts && vp_cmd test run --config ../vite.config.ts build-desktop-artifact.test.ts lib/morrowbyte-branding.test.ts)

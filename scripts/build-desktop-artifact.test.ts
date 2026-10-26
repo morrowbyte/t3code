@@ -132,10 +132,10 @@ it("release stages can restage a dependency already installed from the same pnpm
     await NodeFSP.writeFile(NodePath.join(project, "pnpm-workspace.yaml"), "nodeLinker: hoisted\n");
   }
   const offline = ["--offline", "--ignore-scripts", "--store-dir", NodePath.join(root, "store")];
-  execFileSync("vp", ["install", "--prod", "--package-import-method=hardlink", ...offline], {
+  execFileSync("vp", ["install", "--prod", "--", "--package-import-method=hardlink", ...offline], {
     cwd: source,
   });
-  execFileSync("vp", ["install", "--prod", "--package-import-method=hardlink", ...offline], {
+  execFileSync("vp", ["install", "--prod", "--", "--package-import-method=hardlink", ...offline], {
     cwd: hardlinked,
   });
   await NodeAssert.rejects(
