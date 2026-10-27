@@ -4043,6 +4043,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 UNION
                 SELECT thread_id FROM orchestration_v2_projection_runtime_requests
                 WHERE status = 'pending'
+                   OR CASE WHEN json_valid(payload_json)
+                     THEN json_extract(payload_json, '$.privilegedCommand.state') IN ('approved', 'claimed')
+                     ELSE 0 END
                 UNION
                 SELECT bindings.thread_id
                 FROM orchestration_v2_projection_provider_sessions AS sessions
@@ -4619,7 +4622,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             `,
             sql<PayloadRow>`
               SELECT payload_json FROM orchestration_v2_projection_runtime_requests
-              WHERE thread_id = ${threadId} AND status = 'pending'
+              WHERE thread_id = ${threadId} AND (status = 'pending'
+                OR CASE WHEN json_valid(payload_json)
+                  THEN json_extract(payload_json, '$.privilegedCommand.state') IN ('approved', 'claimed')
+                  ELSE 0 END)
               ORDER BY created_at ASC, runtime_request_id ASC
             `,
             sql<PayloadRow>`
@@ -4635,7 +4641,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             sql<PayloadRow>`
               SELECT item.payload_json FROM orchestration_v2_projection_turn_items AS item
               WHERE item.thread_id = ${threadId}
-                AND item.status IN ('pending', 'running', 'waiting')
+                AND (item.status IN ('pending', 'running', 'waiting')
+                  OR CASE WHEN json_valid(item.payload_json)
+                    THEN json_extract(item.payload_json, '$.privilegedCommand.state') IN ('approved', 'claimed')
+                    ELSE 0 END)
                 AND (
                   item.run_id IN (
                     SELECT run_id FROM orchestration_v2_projection_runs
@@ -4643,6 +4652,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                       AND status IN ('queued', 'preparing', 'starting', 'running', 'waiting')
                   )
                   OR item.type IN ('command_execution', 'dynamic_tool', 'subagent')
+                  OR CASE WHEN json_valid(item.payload_json)
+                    THEN json_extract(item.payload_json, '$.privilegedCommand.state') IN ('approved', 'claimed')
+                    ELSE 0 END
                   OR (
                     item.run_id IS NULL
                     AND item.node_id IN (

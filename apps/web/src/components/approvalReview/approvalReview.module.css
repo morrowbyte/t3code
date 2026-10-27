@@ -367,8 +367,11 @@
 }
 .review-decisions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 100%;
   gap: 10px;
-  flex-shrink: 0;
+  min-width: 0;
 }
 .review-muted {
   color: var(--muted-foreground);
@@ -461,5 +464,41 @@
   }
   .review-warning {
     margin: 8px 12px;
+  }
+}
+
+/* The source is visible immediately; additional evidence stays on demand. */
+.review-main {
+  display: block;
+  overflow: auto;
+}
+.review-purpose {
+  padding: 12px 28px;
+  overflow-wrap: anywhere;
+}
+.review-purpose b {
+  margin-right: 8px;
+}
+.review-source {
+  height: min(55vh, 620px);
+  min-height: 280px;
+  overflow: hidden;
+  border-block: 1px solid var(--border);
+}
+.review-details {
+  padding: 16px 28px;
+}
+.review-details > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.review-details .review-scroll {
+  overflow: visible;
+  padding: 20px 0;
+}
+@media (max-width: 700px) {
+  .review-purpose,
+  .review-details {
+    padding: 12px 16px;
   }
 }

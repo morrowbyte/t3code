@@ -6113,6 +6113,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             readonly context: ActiveCodexTurnContext;
             readonly status: OrchestrationV2ProviderTurn["status"];
             readonly failureMessage?: string;
+            readonly failureDetails?: string;
             readonly failureErrorInfo?: CodexErrorInfo;
             readonly providerRetry?: ActiveCodexProviderRetry;
           }): Effect.fn.Return<CodexRootTerminalEvent> {
@@ -6130,7 +6131,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               // completion repeats it. An explicit exhaustion status on the
               // completion still decides the class; a missing one is not evidence.
               const exhaustionStatus = codexExhaustionHttpStatus(input.failureErrorInfo);
-              const failure =
+              const completionDetails = input.failureDetails?.trim();
+              const baseFailure =
                 previousFailure !== undefined &&
                 (input.failureMessage === undefined ||
                   input.failureMessage === previousFailure.nativeMessage) &&
@@ -6143,8 +6145,22 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                         code: failureCode,
                         class: failureClass,
                       }),
-                      input.failureMessage,
+                      { message: input.failureMessage, additionalDetails: completionDetails },
                     );
+              const failure = completionDetails
+                ? withCodexManagedFailure(
+                    makeProviderFailure({
+                      class: baseFailure.class,
+                      code: baseFailure.code,
+                      retryable: baseFailure.retryable,
+                      ...(baseFailure.resetAt === undefined
+                        ? {}
+                        : { resetAt: baseFailure.resetAt }),
+                      message: completionDetails,
+                    }),
+                    { message: input.failureMessage, additionalDetails: completionDetails },
+                  )
+                : baseFailure;
               return {
                 type: "turn.terminal",
                 driver: CODEX_PROVIDER,
@@ -6235,6 +6251,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             readonly nativeTurnId: string;
             readonly status: OrchestrationV2ProviderTurn["status"];
             readonly failureMessage?: string;
+            readonly failureDetails?: string;
             readonly failureErrorInfo?: CodexErrorInfo;
             readonly providerRetry?: ActiveCodexProviderRetry;
             readonly goalHoldTurn?: OrchestrationV2ProviderTurn;
@@ -6345,6 +6362,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           readonly status: OrchestrationV2ProviderTurn["status"];
           readonly completedAt: DateTime.Utc;
           readonly failureMessage?: string;
+          readonly failureDetails?: string;
           readonly failureErrorInfo?: CodexErrorInfo;
         }) =>
           turnTerminalizationPermit.withPermits(1)(
@@ -6660,6 +6678,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 ? {}
                 : {
                     failureMessage: payload.turn.error.message,
+                    ...(payload.turn.error.additionalDetails == null
+                      ? {}
+                      : { failureDetails: payload.turn.error.additionalDetails }),
                     ...(payload.turn.error.codexErrorInfo == null
                       ? {}
                       : { failureErrorInfo: payload.turn.error.codexErrorInfo }),

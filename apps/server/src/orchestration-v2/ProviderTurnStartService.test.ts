@@ -31,6 +31,7 @@ import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 
 import * as ServerConfig from "../config.ts";
+import * as StoragePressure from "../storagePressure.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -59,10 +60,18 @@ const normalize = (target: string) => {
   }
   return `/${parts.join("/")}`;
 };
-const layerWorktreeLocation = (worktreesDir = managedWorktreesDir) =>
+const layerWorktreeLocation = (
+  worktreesDir = managedWorktreesDir,
+  guard?: StoragePressure.StoragePressureGuard,
+) =>
   Layer.mergeAll(
+    guard ? Layer.succeed(StoragePressure.StoragePressure, guard) : StoragePressure.layerTest,
     Path.layer,
-    Layer.mock(ServerConfig.ServerConfig)({ worktreesDir } as ServerConfig.ServerConfig["Service"]),
+    Layer.mock(ServerConfig.ServerConfig)({
+      worktreesDir,
+      stateDir: "/tmp/t3-data",
+      cwd: "/tmp",
+    } as ServerConfig.ServerConfig["Service"]),
     ServerSettings.layerTest(),
   );
 
@@ -259,6 +268,7 @@ it.each([
 
 function makeLocalCommandHarness(input: {
   readonly text: string;
+  readonly storageGuard?: StoragePressure.StoragePressureGuard;
   readonly worktreePath?: string;
   readonly worktreesDir?: string;
   readonly fileSystem?: FileSystem.FileSystem;
@@ -690,7 +700,7 @@ function makeLocalCommandHarness(input: {
         }),
         Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
         IdAllocator.layer,
-        layerWorktreeLocation(input.worktreesDir),
+        layerWorktreeLocation(input.worktreesDir, input.storageGuard),
         input.fileSystem === undefined
           ? FileSystem.layerNoop({ exists: () => Effect.succeed(true) })
           : Layer.succeed(FileSystem.FileSystem, input.fileSystem),
@@ -773,6 +783,29 @@ function makeLocalCommandHarness(input: {
     }).pipe(Effect.provide(layer)),
   };
 }
+
+effectIt.effect("refuses provider startup with a storage error for the work and data paths", () =>
+  Effect.gen(function* () {
+    const check = vi.fn(async () => "Free disk space and try again.");
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      storageGuard: {
+        check,
+        checkRunning: async () => null,
+        acquire: async () => ({ message: null, release: () => {} }),
+      },
+    });
+    yield* harness.start;
+    expect(check).toHaveBeenCalledWith(["/tmp/t3-data", "/tmp/native-account-command"]);
+    expect(harness.open).not.toHaveBeenCalled();
+    const item = harness.events.find((event) => event.type === "turn-item.updated")?.payload;
+    expect(item?.type).toBe("error");
+    if (item?.type === "error") {
+      expect(item.failure.class).toBe("validation_error");
+      expect(item.failure.message).toContain("Free disk space");
+    }
+  }),
+);
 
 effectIt.effect.each(["dictated", "typed", "voice-source-only"] as const)(
   "forwards speech transcription provenance from the current persisted message: %s",

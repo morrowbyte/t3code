@@ -54,6 +54,22 @@ export function ApprovalActionSummary({
   className,
 }: ApprovalActionSummaryProps) {
   if (approval === null) return null;
+  if (approval.privilegedCommand) {
+    const { bundle } = approval.privilegedCommand;
+    return (
+      <section
+        aria-label="Privileged action approval"
+        className={cn("min-w-0 space-y-1", className)}
+      >
+        <p className="text-xs font-medium wrap-break-word">{bundle.purpose}</p>
+        <div className="flex flex-wrap gap-x-3 gap-y-1 text-2xs text-muted-foreground">
+          <span>{environmentLabel || bundle.environmentId}</span>
+          <span>{bundle.shell}</span>
+          <span className="text-warning">Requires elevation</span>
+        </div>
+      </section>
+    );
+  }
   const presentation = presentations[approval.requestKind];
   const Icon = presentation.icon;
   const external = approval.responseCapability === "external";
@@ -133,7 +149,7 @@ export function ApprovalActionSummary({
       </div>
       {!live ? (
         <p role="status" className="text-xs text-muted-foreground">
-          Provider process is gone — interrupt or restart the run to respond.
+          Provider process is gone. Interrupt or restart the run to respond.
         </p>
       ) : null}
       <details

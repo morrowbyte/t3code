@@ -69,8 +69,11 @@ export function withCreationProvenance(
   provenance: ThreadManagementProvenance,
 ): OrchestrationV2Command {
   switch (command.type) {
+    case "message.dispatch": {
+      const { remoteSender: _remoteSender, sendRequest: _sendRequest, ...safeCommand } = command;
+      return { ...safeCommand, ...provenance };
+    }
     case "thread.create":
-    case "message.dispatch":
     case "thread.fork":
     case "thread.merge_back":
     case "delegated_task.request":
@@ -125,6 +128,7 @@ export interface ThreadManagementSendInput {
   readonly messageId: MessageId;
   readonly scheduledTaskId?: ScheduledTaskId;
   readonly senderThreadId?: ThreadId;
+  readonly remoteSender?: import("@t3tools/contracts").OrchestrationV2RemoteSender;
   readonly text: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
   readonly modelSelection?: ModelSelection;
@@ -769,7 +773,8 @@ const make = Effect.gen(function* () {
     "ThreadManagementService.sendToThread",
   )(function* (input) {
     const target = yield* getProjectThreadRecords(input, ["runs", "providerTurns"]);
-    if (target.thread.archivedAt !== null) {
+    const alreadyHandled = yield* hasReceipt(input.commandId);
+    if (!alreadyHandled && target.thread.archivedAt !== null) {
       return yield* new ThreadManagementThreadArchivedError({
         threadId: input.threadId,
       });
@@ -779,7 +784,10 @@ const make = Effect.gen(function* () {
       OrchestrationV2Command,
       { readonly type: "message.dispatch" }
     >["dispatchMode"];
-    if (input.mode === "steer" || input.mode === "restart") {
+    if (alreadyHandled) {
+      // The receipt decides replay; the original run may no longer be active.
+      dispatchMode = { type: "start_immediately" };
+    } else if (input.mode === "steer" || input.mode === "restart") {
       if (steerableRun === undefined) {
         return yield* new ThreadManagementNoSteerableRunError({
           threadId: input.threadId,
@@ -805,6 +813,8 @@ const make = Effect.gen(function* () {
       messageId: input.messageId,
       ...(input.scheduledTaskId === undefined ? {} : { scheduledTaskId: input.scheduledTaskId }),
       ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
+      ...(input.remoteSender === undefined ? {} : { remoteSender: input.remoteSender }),
+      sendRequest: { text: input.text, mode: input.mode },
       text: input.text,
       attachments: input.attachments,
       ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),

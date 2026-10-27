@@ -133,3 +133,5 @@ export const MAIN_RENDERER_DIAGNOSTICS_RESPONSE_CHANNEL =
   "desktop:main-renderer-diagnostics:response";
 export const MAIN_RENDERER_DIAGNOSTICS_INVALIDATE_CHANNEL =
   "desktop:main-renderer-diagnostics:invalidate";
+
+export const RESPOND_TO_PRIVILEGED_DECISION_CHANNEL = "desktop:respond-to-privileged-decision";

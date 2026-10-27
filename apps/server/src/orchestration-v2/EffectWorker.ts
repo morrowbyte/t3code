@@ -26,6 +26,7 @@ import * as ProviderTurnStartService from "./ProviderTurnStartService.ts";
 import * as RuntimeRequestService from "./RuntimeRequestService.ts";
 import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
+import * as PrivilegedCommandService from "./PrivilegedCommandService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { continueRestartedRun } from "./RestartContinuation.ts";
 
@@ -94,10 +95,46 @@ export const layerExecutor: Layer.Layer<
       yield* ThreadTitleRegenerationService.ThreadTitleRegenerationService;
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const settings = yield* ServerSettings.ServerSettingsService;
+    const privilegedCommands = yield* PrivilegedCommandService.PrivilegedCommandService;
     return OrchestrationEffectExecutorV2.of({
       execute: (effect, options) => {
         const willRetry = options?.willRetry ?? false;
         switch (effect.request.type) {
+          case "privileged-command.cleanup":
+            return privilegedCommands
+              .cleanup({
+                threadId: effect.threadId,
+                requestId: effect.request.requestId,
+                shell: effect.request.shell,
+                identity: effect.request.identity,
+              })
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationEffectExecutionError({
+                      effectId: effect.id,
+                      effectType: effect.request.type,
+                      cause,
+                    }),
+                ),
+              );
+          case "privileged-command.execute":
+            return privilegedCommands
+              .executeApproved({
+                threadId: effect.threadId,
+                requestId: effect.request.requestId,
+                packageHash: effect.request.packageHash,
+              })
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationEffectExecutionError({
+                      effectId: effect.id,
+                      effectType: effect.request.type,
+                      cause,
+                    }),
+                ),
+              );
           case "provider-runtime.continue": {
             const sourceRunId = effect.request.sourceRunId;
             return continueRestartedRun({ threadId: effect.threadId, sourceRunId }).pipe(
@@ -742,6 +779,9 @@ export const layerWithOptions = (
             Effect.ensuring(outbox.clearCancellation(effect.id)),
           );
           if (Exit.isSuccess(exit) && exit.value === "cancelled") {
+            if (effect.request.type === "privileged-command.execute") {
+              yield* outbox.finishCancellation({ effectId: effect.id, workerId });
+            }
             return true;
           }
           if (Exit.isSuccess(exit)) {
@@ -772,7 +812,8 @@ export const layerWithOptions = (
             ? yield* outbox
                 .succeed({ effectId: effect.id, workerId })
                 .pipe(Effect.onError((cause) => terminalizeClaim(effect, cause)))
-            : effect.attemptCount >= maxAttempts
+            : effect.attemptCount >= maxAttempts &&
+                effect.request.type !== "privileged-command.cleanup"
               ? yield* outbox
                   .fail({ effectId: effect.id, workerId, error })
                   .pipe(Effect.onError((cause) => terminalizeClaim(effect, cause)))

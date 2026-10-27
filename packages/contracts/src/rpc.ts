@@ -67,6 +67,14 @@ import * as Effect from "effect/Effect";
 import * as SchemaGetter from "effect/SchemaGetter";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
+import {
+  ConnectedEnvironmentBridgeEvent,
+  ConnectedEnvironmentBridgeResponse,
+  ConnectedEnvironmentReadRelayRequest,
+  ConnectedEnvironmentSendRelayRequest,
+  ConnectedEnvironmentResult,
+} from "./connectedEnvironmentMcp.ts";
+import { OrchestratorMcpFailure } from "./orchestratorMcp.ts";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
 import { MainRendererDiagnosticsReadInput, MainRendererDiagnosticsReadResult } from "./ipc.ts";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
@@ -440,6 +448,11 @@ import {
 } from "./agentObservatory.ts";
 
 export const WS_METHODS = {
+  connectedEnvironmentSubscribe: "connectedEnvironment.subscribe",
+  connectedEnvironmentRespond: "connectedEnvironment.respond",
+  connectedEnvironmentRead: "connectedEnvironment.read",
+  connectedEnvironmentPrepare: "connectedEnvironment.prepare",
+  connectedEnvironmentSend: "connectedEnvironment.send",
   projectsFeatureTiming: "projects.featureTiming",
   projectsList: "projects.list",
   projectsAdd: "projects.add",
@@ -2098,6 +2111,32 @@ const observatoryReadRpcError = Schema.Union([
   AgentObservatoryReadError,
   EnvironmentAuthorizationError,
 ]);
+const WsConnectedEnvironmentSubscribeRpc = Rpc.make(WS_METHODS.connectedEnvironmentSubscribe, {
+  payload: Schema.Struct({}),
+  success: ConnectedEnvironmentBridgeEvent,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+const WsConnectedEnvironmentRespondRpc = Rpc.make(WS_METHODS.connectedEnvironmentRespond, {
+  payload: ConnectedEnvironmentBridgeResponse,
+  error: Schema.Union([OrchestratorMcpFailure, EnvironmentAuthorizationError]),
+});
+const WsConnectedEnvironmentReadRpc = Rpc.make(WS_METHODS.connectedEnvironmentRead, {
+  payload: ConnectedEnvironmentReadRelayRequest,
+  success: ConnectedEnvironmentResult,
+  error: Schema.Union([OrchestratorMcpFailure, EnvironmentAuthorizationError]),
+});
+const WsConnectedEnvironmentSendRpc = Rpc.make(WS_METHODS.connectedEnvironmentSend, {
+  payload: ConnectedEnvironmentSendRelayRequest,
+  success: ConnectedEnvironmentResult,
+  error: Schema.Union([OrchestratorMcpFailure, EnvironmentAuthorizationError]),
+});
+const WsConnectedEnvironmentPrepareRpc = Rpc.make(WS_METHODS.connectedEnvironmentPrepare, {
+  payload: Schema.Struct({}),
+  success: Schema.Struct({ admissionId: Schema.String }),
+  error: EnvironmentAuthorizationError,
+});
+
 const WsAgentObservatorySubscribeRpc = Rpc.make(WS_METHODS.agentObservatorySubscribe, {
   payload: Schema.Unknown.pipe(
     Schema.decodeTo(AgentObservatorySubscribeInput, {
@@ -2197,6 +2236,11 @@ export const YaziPickerRpcGroup = RpcGroup.make(
 ).middleware(RpcScopeAuthorization);
 
 export const WsRpcGroup = RpcGroup.make(
+  WsConnectedEnvironmentSubscribeRpc,
+  WsConnectedEnvironmentRespondRpc,
+  WsConnectedEnvironmentReadRpc,
+  WsConnectedEnvironmentPrepareRpc,
+  WsConnectedEnvironmentSendRpc,
   WsWindowsCuaSubscribeRpc,
   WsAgentObservatorySubscribeRpc,
   WsAgentObservatoryReadNativeRosterRpc,

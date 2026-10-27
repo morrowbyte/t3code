@@ -292,7 +292,11 @@ const requiredScopesForRpcCall = (
 export const layer = (
   scopes: ReadonlyArray<AuthEnvironmentScope>,
   onAuthorized?: (method: string, payload: unknown) => Effect.Effect<void>,
-  authenticatedPrincipal?: { readonly sessionId: AuthSessionId; readonly subject: string },
+  authenticatedPrincipal?: {
+    readonly sessionId: AuthSessionId;
+    readonly subject: string;
+    readonly method?: "browser-session-cookie" | "bearer-access-token" | "dpop-access-token";
+  },
 ) =>
   Layer.succeed(RpcScopeAuthorization)((effect, { rpc, payload }) => {
     const requiredScopes = requiredScopesForRpcCall(rpc._tag, payload);

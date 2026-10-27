@@ -7,6 +7,7 @@ export class ApprovalReviewHumanAuthority extends Context.Reference<
   | {
       readonly sessionId: AuthSessionId;
       readonly subject: string;
+      readonly method?: "browser-session-cookie" | "bearer-access-token" | "dpop-access-token";
     }
   | undefined
 >("t3/auth/ApprovalReviewHumanAuthority", { defaultValue: () => undefined }) {}

@@ -4,10 +4,13 @@ import type { PreviewCaptureFailureEncoded } from "./previewCapture.ts";
 import { SnapShotSource } from "./chatAttachment.ts";
 import {
   EnvironmentId,
+  ThreadId,
+  RuntimeRequestId,
   NonNegativeInt,
   PositiveInt,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
+import { ApprovalReviewHash } from "./approvalReviewAuthority.ts";
 import { BrowserProfileId } from "./browserProfile.ts";
 import type {
   BrowserImportResult,
@@ -1213,6 +1216,15 @@ export const MainRendererDiagnosticsReadResult = Schema.Union([
 ]).annotate({ parseOptions: { onExcessProperty: "error" } });
 export type MainRendererDiagnosticsReadResult = typeof MainRendererDiagnosticsReadResult.Type;
 
+export const DesktopPrivilegedDecision = Schema.Struct({
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  requestId: RuntimeRequestId,
+  packageHash: ApprovalReviewHash,
+  decision: Schema.Literals(["accept", "decline"]),
+}).annotate({ parseOptions: { onExcessProperty: "error" } });
+export type DesktopPrivilegedDecision = typeof DesktopPrivilegedDecision.Type;
+
 export interface DesktopBridge {
   /** Passive, finite request only; absence means no diagnostic capability. */
   onMainRendererDiagnosticsRequest?: (
@@ -1246,6 +1258,7 @@ export interface DesktopBridge {
   getLocalEnvironmentEnabled?: () => boolean;
   setLocalEnvironmentEnabled?: (enabled: boolean) => Promise<void>;
   getLocalEnvironmentBearerToken: () => Promise<string>;
+  respondToPrivilegedDecision: (input: DesktopPrivilegedDecision) => Promise<void>;
   getClientSettings: () => Promise<ClientSettings | null>;
   setClientSettings: (settings: ClientSettings) => Promise<void>;
   getConnectionCatalog?: () => Promise<string | null>;

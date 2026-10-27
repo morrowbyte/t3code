@@ -89,7 +89,7 @@ export interface ObservatoryQuery {
   /** First visible identity, not an array offset: source reordering cannot retarget a page. */
   readonly anchorKey: string | null;
 }
-export const OBSERVATORY_PAGE_SIZE = 50;
+const OBSERVATORY_PAGE_SIZE = 50;
 export const EMPTY_OBSERVATORY_QUERY: ObservatoryQuery = {
   environmentId: null,
   search: "",

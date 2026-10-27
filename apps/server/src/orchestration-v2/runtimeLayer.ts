@@ -3,6 +3,7 @@ import * as TrustedInvocation from "../mcp/TrustedAppControlInvocation.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as Layer from "effect/Layer";
+import * as Effect from "effect/Effect";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as OrchestrationCommandReceipts from "../persistence/OrchestrationCommandReceipts.ts";
 import * as OrchestrationEventStore from "../persistence/OrchestrationEventStore.ts";
@@ -25,6 +26,10 @@ import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EffectWorker from "./EffectWorker.ts";
+import * as PrivilegedCommandService from "./PrivilegedCommandService.ts";
+import * as PrivilegedCommandExecutor from "../privilegedCommands/PrivilegedCommandExecutor.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -45,6 +50,7 @@ import * as ProviderRuntimeRecoveryService from "./ProviderRuntimeRecoveryServic
 import * as ProviderSwitchService from "./ProviderSwitchService.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
 import * as ProviderTurnStartService from "./ProviderTurnStartService.ts";
+import * as StoragePressure from "../storagePressure.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as ResourceCleanupService from "./ResourceCleanupService.ts";
@@ -186,21 +192,6 @@ const layerRunExecutionServiceProvided = RunExecutionService.layer.pipe(
   ),
 );
 
-const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pipe(
-  Layer.provide(
-    Layer.mergeAll(
-      layerContextHandoffServiceProvided,
-      layerEventSinkProvided,
-      IdAllocator.layer,
-      ProjectionStore.layer,
-      layerProviderSessionManagerProvided,
-      layerProviderAuthServiceProvided,
-      layerRunExecutionServiceProvided,
-      layerRuntimePolicyProvided,
-    ),
-  ),
-);
-
 const layerProviderTurnControlServiceProvided = ProviderTurnControlService.layer.pipe(
   Layer.provide(Layer.merge(ProjectionStore.layer, layerProviderSessionManagerProvided)),
 );
@@ -256,6 +247,28 @@ const layerOrchestratorProvided = Orchestrator.layer.pipe(
       layerProviderSwitchServiceProvided,
       layerRunExecutionServiceProvided,
       ThreadForkService.layer,
+    ),
+  ),
+);
+
+const layerStorageRunInterrupt = Layer.effect(
+  ProviderTurnStartService.StorageRunInterrupt,
+  Effect.map(Orchestrator.OrchestratorV2, ProviderTurnStartService.storageRunInterrupt),
+).pipe(Layer.provide(layerOrchestratorProvided));
+
+const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      layerContextHandoffServiceProvided,
+      StoragePressure.layer,
+      layerStorageRunInterrupt,
+      layerEventSinkProvided,
+      IdAllocator.layer,
+      ProjectionStore.layer,
+      layerProviderSessionManagerProvided,
+      layerProviderAuthServiceProvided,
+      layerRunExecutionServiceProvided,
+      layerRuntimePolicyProvided,
     ),
   ),
 );
@@ -331,6 +344,18 @@ const layerThreadTitleRegenerationProvided = ThreadTitleRegenerationService.laye
     Layer.mergeAll(layerThreadManagementProvided, ProjectStore.layer, TextGeneration.layer),
   ),
 );
+const layerPrivilegedCommandProvided = PrivilegedCommandService.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      layerOrchestratorProvided,
+      ProjectionStore.layer,
+      layerEventSinkProvided,
+      ServerEnvironment.layerIdentity,
+      layerProviderSessionManagerProvided,
+      PrivilegedCommandExecutor.layer.pipe(Layer.provide(ProcessRunner.layer)),
+    ),
+  ),
+);
 const layerEffectExecutorProvided = EffectWorker.layerExecutor.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -342,6 +367,7 @@ const layerEffectExecutorProvided = EffectWorker.layerExecutor.pipe(
       layerRuntimeRequestServiceProvided,
       layerThreadTitleRegenerationProvided,
       layerThreadManagementProvided,
+      layerPrivilegedCommandProvided,
     ),
   ),
 );
@@ -372,6 +398,7 @@ const layerMcpAppRequestsProvided = McpAppRequests.layer.pipe(
 );
 
 export const layer = Layer.mergeAll(
+  layerPrivilegedCommandProvided,
   layerAgentObservatoryProvided,
   layerTrustedObservatoryProvided,
   layerCommandOutputHubProvided,

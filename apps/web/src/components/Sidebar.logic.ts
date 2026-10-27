@@ -517,9 +517,8 @@ export function isSidebarSubagentThread(thread: Pick<SidebarThreadSummary, "line
   return thread.lineage.relationshipToParent === "subagent";
 }
 
-// Subagent threads have no sidebar row, so an open subagent is represented by
-// its nearest non-subagent ancestor. A broken chain (missing parent, cycle,
-// other environment) resolves to the thread itself, which then matches no row.
+// Keep the containing family visible when its shelf is collapsed. Selection
+// uses the exact routed thread instead of this ancestor used for disclosure.
 export function resolveSidebarRowThreadId(
   threadId: ThreadId,
   environmentId: EnvironmentId,

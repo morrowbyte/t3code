@@ -3246,7 +3246,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   error: {
                     message: "Failed before native start",
                     codexErrorInfo: null,
-                    additionalDetails: null,
+                    additionalDetails:
+                      "Disk write failed: no space left on device. Bearer private-token",
                   },
                 },
               },
@@ -3285,6 +3286,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       yield* Fiber.join(interrupt);
       yield* harness.firstTerminal;
       assert.equal(harness.terminalEvents()[0]?.status, "failed");
+      const terminal = harness.terminalEvents()[0];
+      if (terminal?.status !== "failed") throw new Error("Expected a failed turn");
+      assert.equal(
+        terminal.failure.message,
+        "Disk write failed: no space left on device. Bearer [REDACTED]",
+      );
       assert.lengthOf(harness.terminalEvents(), 1);
       assert.isFalse(interruptSent, "A terminal native turn must not receive turn/interrupt");
       assert.isFalse(yield* harness.hasPendingBackgroundWork);

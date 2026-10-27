@@ -267,6 +267,72 @@ export const make = Effect.gen(function* () {
           ),
         );
       const events: Array<OrchestrationV2DomainEvent> = [];
+      for (const request of projection.runtimeRequests) {
+        const authority = request.privilegedCommand;
+        if (
+          authority === undefined ||
+          !["pending", "approved", "claimed"].includes(authority.state)
+        )
+          continue;
+        // A process-bound executor cannot be resumed safely after server shutdown or restart.
+        const updated =
+          authority.state === "pending"
+            ? { ...authority, state: "rejected" as const }
+            : {
+                ...authority,
+                state: "unknown" as const,
+                result: {
+                  status: "unknown" as const,
+                  exitCode: null,
+                  stdout: "",
+                  stderr: "The server stopped before the result was confirmed.",
+                },
+              };
+        events.push({
+          id: yield* allocateEventId(),
+          type: "runtime-request.updated",
+          threadId: projection.thread.id,
+          nodeId: request.nodeId,
+          occurredAt: now,
+          payload: {
+            ...request,
+            status: request.status === "pending" ? "cancelled" : request.status,
+            resolvedAt: request.resolvedAt ?? now,
+            privilegedCommand: updated,
+          },
+        });
+        const item = projection.turnItems.find(
+          (candidate) =>
+            candidate.type === "approval_request" && candidate.requestId === request.id,
+        );
+        if (item?.type === "approval_request") {
+          persistentRequestNodeIds.add(request.nodeId);
+          events.push({
+            id: yield* allocateEventId(),
+            type: "turn-item.updated",
+            threadId: projection.thread.id,
+            nodeId: request.nodeId,
+            occurredAt: now,
+            payload: {
+              ...item,
+              status: authority.state === "claimed" ? "waiting" : "cancelled",
+              completedAt: authority.state === "claimed" ? null : now,
+              updatedAt: now,
+              privilegedCommand: updated,
+            },
+          });
+        }
+        const node = projection.nodes.find((candidate) => candidate.id === request.nodeId);
+        if (node !== undefined && isNonterminalNodeStatus(node.status))
+          events.push({
+            id: yield* allocateEventId(),
+            type: "node.updated",
+            threadId: projection.thread.id,
+            nodeId: node.id,
+            occurredAt: now,
+            payload: { ...node, status: "cancelled", completedAt: now },
+          });
+      }
       const cancelledBackgroundWork = new Map<
         ProviderThreadId,
         Array<OrchestrationV2RestartCancelledBackgroundWork>

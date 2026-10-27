@@ -95,6 +95,10 @@ import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as JarvisClient from "./integrations/jarvis/JarvisClient.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
+import * as ConnectedEnvironmentBroker from "./mcp/connectedEnvironment/Broker.ts";
+import * as ConnectedEnvironmentAdmission from "./mcp/connectedEnvironment/Admission.ts";
+import * as ThreadCommandExecutor from "./orchestration-v2/ThreadCommandExecutor.ts";
+import * as OrchestratorMcpService from "./mcp/OrchestratorMcpService.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import * as DeviceHubProxy from "./device/DeviceHubProxy.ts";
 import * as PreviewManager from "./preview/Manager.ts";
@@ -801,6 +805,11 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.provide(ServerBrowser.layer.pipe(Layer.provide(DesktopBrowserChannel.layer))),
   Layer.provide(PreviewBrowser.layer),
   Layer.provide(PreviewAutomationBroker.layer),
+  Layer.provide(ConnectedEnvironmentBroker.layer),
+  Layer.provide(ConnectedEnvironmentAdmission.layer),
+  Layer.provide(OrchestratorMcpService.layer),
+  Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
+  Layer.provide(ThreadCommandExecutor.layer),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(layerDesktopAppUpdate))),
   Layer.provide(ApprovalReviewOrderPolicy.layer),
   Layer.provide(layerCommandReadiness),

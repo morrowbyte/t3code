@@ -1,5 +1,6 @@
 import { ApprovalReviewError } from "@t3tools/contracts";
 import * as ApprovalReviewCommands from "./ApprovalReviewCommands.ts";
+import * as PrivilegedCommandCommands from "./PrivilegedCommandCommands.ts";
 import * as ApprovalReviewOrderPolicy from "./ApprovalReviewOrderPolicy.ts";
 import { firstDelegationParagraph } from "@t3tools/shared/delegationMessage";
 import type {
@@ -64,6 +65,7 @@ import {
   resolveProviderInstanceEnabled,
   type ProviderSessionId,
   RunId,
+  type RuntimeRequestId,
   RuntimeMode,
   ThreadLinkedPullRequest,
   ThreadId,
@@ -503,6 +505,11 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "approval-review.submit":
     case "approval-review.claim":
     case "approval-review.receipt":
+    case "privileged-command.submit":
+    case "privileged-command.claim":
+    case "privileged-command.result":
+    case "privileged-command.unconfirmed":
+    case "privileged-command.cleanup-visible":
     case "runtime-request.respond":
     case "thread.user-input.dismiss":
     case "checkpoint.rollback":
@@ -1902,6 +1909,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ...(queuedMessage.senderThreadId === undefined
             ? {}
             : { senderThreadId: queuedMessage.senderThreadId }),
+          ...(queuedMessage.remoteSender === undefined
+            ? {}
+            : { remoteSender: queuedMessage.remoteSender }),
+          ...(queuedMessage.sendRequest === undefined
+            ? {}
+            : { sendRequest: queuedMessage.sendRequest }),
         }),
         providerThreadId: queuedProviderThread.id,
         inputIntent: "queued_turn",
@@ -4192,6 +4205,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly creationSource: OrchestrationV2ConversationMessage["creationSource"];
     readonly scheduledTaskId?: OrchestrationV2ConversationMessage["scheduledTaskId"];
     readonly senderThreadId?: OrchestrationV2ConversationMessage["senderThreadId"];
+    readonly remoteSender?: OrchestrationV2ConversationMessage["remoteSender"];
+    readonly sendRequest?: OrchestrationV2ConversationMessage["sendRequest"];
     readonly delegatedCompletion?: OrchestrationV2ConversationMessage["delegatedCompletion"];
     readonly forceRestart: boolean;
   }) {
@@ -4349,6 +4364,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ? {}
             : { scheduledTaskId: input.scheduledTaskId }),
           ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
+          ...(input.remoteSender === undefined ? {} : { remoteSender: input.remoteSender }),
+          ...(input.sendRequest === undefined ? {} : { sendRequest: input.sendRequest }),
           id: input.messageId,
           threadId: input.command.threadId,
           runId: messageInput.runId,
@@ -4368,6 +4385,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ? {}
             : { scheduledTaskId: input.scheduledTaskId }),
           ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
+          ...(input.remoteSender === undefined ? {} : { remoteSender: input.remoteSender }),
+          ...(input.sendRequest === undefined ? {} : { sendRequest: input.sendRequest }),
           id: idAllocator.derive.userTurnItem({ messageId: input.messageId }),
           threadId: input.command.threadId,
           runId: messageInput.runId,
@@ -5017,6 +5036,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         createdBy: command.createdBy,
         creationSource: command.creationSource,
         ...(command.senderThreadId === undefined ? {} : { senderThreadId: command.senderThreadId }),
+        ...(command.remoteSender === undefined ? {} : { remoteSender: command.remoteSender }),
+        ...(command.sendRequest === undefined ? {} : { sendRequest: command.sendRequest }),
         createdAt: now,
         updatedAt: now,
       };
@@ -5573,6 +5594,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ? {}
           : { scheduledTaskId: command.scheduledTaskId }),
         ...(command.senderThreadId === undefined ? {} : { senderThreadId: command.senderThreadId }),
+        ...(command.remoteSender === undefined ? {} : { remoteSender: command.remoteSender }),
+        ...(command.sendRequest === undefined ? {} : { sendRequest: command.sendRequest }),
         forceRestart: dispatchMode.type === "restart_active",
       });
       return;
@@ -5808,6 +5831,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ? {}
           : { scheduledTaskId: command.scheduledTaskId }),
         ...(command.senderThreadId === undefined ? {} : { senderThreadId: command.senderThreadId }),
+        ...(command.remoteSender === undefined ? {} : { remoteSender: command.remoteSender }),
+        ...(command.sendRequest === undefined ? {} : { sendRequest: command.sendRequest }),
         id: command.messageId,
         threadId: command.threadId,
         runId,
@@ -6150,6 +6175,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ? {}
           : { scheduledTaskId: command.scheduledTaskId }),
         ...(command.senderThreadId === undefined ? {} : { senderThreadId: command.senderThreadId }),
+        ...(command.remoteSender === undefined ? {} : { remoteSender: command.remoteSender }),
+        ...(command.sendRequest === undefined ? {} : { sendRequest: command.sendRequest }),
         id: command.messageId,
         threadId: command.threadId,
         runId,
@@ -6171,6 +6198,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ? {}
           : { scheduledTaskId: command.scheduledTaskId }),
         ...(command.senderThreadId === undefined ? {} : { senderThreadId: command.senderThreadId }),
+        ...(command.remoteSender === undefined ? {} : { remoteSender: command.remoteSender }),
+        ...(command.sendRequest === undefined ? {} : { sendRequest: command.sendRequest }),
         id: idAllocator.derive.userTurnItem({ messageId: command.messageId }),
         threadId: command.threadId,
         runId,
@@ -6837,6 +6866,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ? {}
         : { scheduledTaskId: command.scheduledTaskId }),
       ...(command.senderThreadId === undefined ? {} : { senderThreadId: command.senderThreadId }),
+      ...(command.remoteSender === undefined ? {} : { remoteSender: command.remoteSender }),
+      ...(command.sendRequest === undefined ? {} : { sendRequest: command.sendRequest }),
       id: command.messageId,
       threadId: command.threadId,
       runId,
@@ -6858,6 +6889,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ? {}
         : { scheduledTaskId: command.scheduledTaskId }),
       ...(command.senderThreadId === undefined ? {} : { senderThreadId: command.senderThreadId }),
+      ...(command.remoteSender === undefined ? {} : { remoteSender: command.remoteSender }),
+      ...(command.sendRequest === undefined ? {} : { sendRequest: command.sendRequest }),
       id: idAllocator.derive.userTurnItem({ messageId: command.messageId }),
       threadId: command.threadId,
       runId,
@@ -8083,8 +8116,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
 
       const now = yield* DateTime.now;
+      if (runtimeRequest.privilegedCommand !== undefined && command.decision === "accept") {
+        const running = yield* projectionStore
+          .getRunningTurnContext(command.threadId)
+          .pipe(Effect.mapError(() => new ApprovalReviewError({ reason: "storage" })));
+        if (running.run?.id !== runtimeRequest.privilegedCommand.bundle.runId)
+          return yield* new ApprovalReviewError({ reason: "conflict" });
+      }
       const approvalReview =
-        runtimeRequest.responseCapability.type === "external"
+        runtimeRequest.responseCapability.type === "external" &&
+        runtimeRequest.privilegedCommand === undefined
           ? yield* ApprovalReviewCommands.resolve(runtimeRequest, command, now).pipe(
               Effect.provideService(
                 ApprovalReviewOrderPolicy.ApprovalReviewOrderPolicy,
@@ -8092,9 +8133,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               ),
             )
           : undefined;
+      const privilegedCommand =
+        runtimeRequest.privilegedCommand === undefined
+          ? undefined
+          : yield* PrivilegedCommandCommands.resolve(runtimeRequest, command);
       const resolvedRequest = {
         ...runtimeRequest,
         ...(approvalReview === undefined ? {} : { approvalReview }),
+        ...(privilegedCommand === undefined ? {} : { privilegedCommand }),
         status: "resolved" as const,
         resolvedAt: now,
         ...(command.decision === undefined ? {} : { decision: command.decision }),
@@ -8221,6 +8267,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           payload: {
             ...approvalTurnItem,
             ...(approvalReview === undefined ? {} : { approvalReview }),
+            ...(privilegedCommand === undefined ? {} : { privilegedCommand }),
             ...(approvalTurnItem.type === "user_input_request" && answers !== undefined
               ? {
                   questionAnswer: {
@@ -8319,6 +8366,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           events,
           effects,
         );
+      }
+      if (privilegedCommand !== undefined && command.decision === "accept") {
+        yield* Ref.update(effects, (existing) => [
+          ...existing,
+          {
+            id: `effect:${command.commandId}:privileged-command.execute:${command.requestId}`,
+            commandId: command.commandId,
+            threadId: command.threadId,
+            request: {
+              type: "privileged-command.execute",
+              requestId: command.requestId,
+              packageHash: privilegedCommand.packageHash,
+            },
+          } satisfies PendingOrchestrationEffectV2,
+        ]);
       }
       if (providerSessionId === null) return;
       yield* Ref.update(effects, (existing) => [
@@ -8514,6 +8576,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ...(queuedMessage.senderThreadId === undefined
         ? {}
         : { senderThreadId: queuedMessage.senderThreadId }),
+      ...(queuedMessage.remoteSender === undefined
+        ? {}
+        : { remoteSender: queuedMessage.remoteSender }),
+      ...(queuedMessage.sendRequest === undefined
+        ? {}
+        : { sendRequest: queuedMessage.sendRequest }),
       forceRestart: false,
     });
   });
@@ -11805,8 +11873,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     {
       readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
       readonly effects: ReadonlyArray<PendingOrchestrationEffectV2>;
+      readonly confirmedCleanupEffectId?: string;
       readonly cancelUnsettledEffects?: {
         readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
+        readonly privilegedRequestIds?: ReadonlyArray<RuntimeRequestId>;
         readonly reason: string;
       };
     },
@@ -11823,9 +11893,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     let cancelUnsettledEffects:
       | {
           readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
+          readonly privilegedRequestIds?: ReadonlyArray<RuntimeRequestId>;
           readonly reason: string;
         }
       | undefined;
+    let confirmedCleanupEffectId: string | undefined;
     switch (command.type) {
       case "thread.create":
         yield* dispatchThreadCreate(command, events);
@@ -11974,6 +12046,58 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         for (const event of planned) yield* emit(events, command)(event);
         break;
       }
+      case "privileged-command.submit":
+      case "privileged-command.claim":
+      case "privileged-command.result":
+      case "privileged-command.unconfirmed":
+      case "privileged-command.cleanup-visible": {
+        if (command.type === "privileged-command.submit") {
+          const running = yield* projectionStore
+            .getRunningTurnContext(command.threadId)
+            .pipe(Effect.mapError(() => new ApprovalReviewError({ reason: "storage" })));
+          if (
+            running.run?.id !== command.authority.bundle.runId ||
+            running.providerTurn === undefined ||
+            running.providerThread?.providerSessionId == null ||
+            !(yield* providerSessions.ownsMcpCredential({
+              providerSessionId: running.providerThread.providerSessionId,
+              threadId: command.threadId,
+              credentialId: command.authority.bundle.providerSessionId,
+            }))
+          )
+            return yield* new ApprovalReviewError({ reason: "forbidden" });
+        }
+        const planned = yield* PrivilegedCommandCommands.plan(command).pipe(
+          Effect.provideService(ProjectionStoreV2, projectionStore),
+        );
+        for (const event of planned) yield* emit(events, command)(event);
+        if (command.type === "privileged-command.result" && command.cleanupConfirmed === true)
+          confirmedCleanupEffectId = `effect:privileged-command-claim:${command.claimId}:privileged-command.cleanup:${command.requestId}`;
+        if (command.type === "privileged-command.claim") {
+          const updated = planned.find((event) => event.type === "runtime-request.updated");
+          const request = updated?.payload as
+            | import("@t3tools/contracts").OrchestrationV2RuntimeRequest
+            | undefined;
+          if (request?.privilegedCommand === undefined)
+            return yield* new ApprovalReviewError({ reason: "storage" });
+          const shell = request.privilegedCommand.bundle.shell;
+          yield* Ref.update(effects, (existing) => [
+            ...existing,
+            {
+              id: `effect:${command.commandId}:privileged-command.cleanup:${command.requestId}`,
+              commandId: command.commandId,
+              threadId: command.threadId,
+              request: {
+                type: "privileged-command.cleanup",
+                requestId: command.requestId,
+                shell,
+                identity: command.recoveryIdentity,
+              },
+            } satisfies PendingOrchestrationEffectV2,
+          ]);
+        }
+        break;
+      }
       case "runtime-request.respond":
         yield* dispatchRuntimeRequestRespond(command, events, effects);
         break;
@@ -11985,6 +12109,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "run.interrupt":
         cancelUnsettledEffects = yield* dispatchRunInterrupt(command, events, effects);
+        const privilegedStopped = yield* PrivilegedCommandCommands.stop({
+          threadId: command.threadId,
+          runId: command.runId,
+        }).pipe(Effect.provideService(ProjectionStoreV2, projectionStore));
+        for (const event of privilegedStopped) yield* emit(events, command)(event);
+        cancelUnsettledEffects = {
+          effectTypes: [
+            ...(cancelUnsettledEffects?.effectTypes ?? []),
+            "privileged-command.execute",
+          ],
+          privilegedRequestIds: privilegedStopped.flatMap((event) =>
+            event.type === "runtime-request.updated"
+              ? [(event.payload as import("@t3tools/contracts").OrchestrationV2RuntimeRequest).id]
+              : [],
+          ),
+          reason: `Run ${command.runId} was stopped.`,
+        };
         if (command.holdQueue === true) {
           // Stop must still commit when a child can't be read, so a failed repair's
           // partial events are dropped.
@@ -12013,6 +12154,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "thread.stop":
         cancelUnsettledEffects = yield* dispatchThreadStop(command, events, effects);
+        for (const event of yield* PrivilegedCommandCommands.stop({
+          threadId: command.threadId,
+        }).pipe(Effect.provideService(ProjectionStoreV2, projectionStore)))
+          yield* emit(events, command)(event);
+        cancelUnsettledEffects = {
+          effectTypes: [
+            ...(cancelUnsettledEffects?.effectTypes ?? []),
+            "privileged-command.execute",
+          ],
+          reason: "Thread was stopped.",
+        };
         break;
       case "queued-message.promote-to-steer":
         yield* dispatchQueuedMessagePromoteToSteer(command, events, effects);
@@ -12143,6 +12295,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     return {
       events: yield* Ref.get(events),
       effects: yield* Ref.get(effects),
+      ...(confirmedCleanupEffectId === undefined ? {} : { confirmedCleanupEffectId }),
       ...(cancelUnsettledEffects === undefined ? {} : { cancelUnsettledEffects }),
     };
   });
@@ -12204,8 +12357,30 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         )?.event;
         const message = storedEvents.find(
           (stored) =>
-            stored.event.type === "message.updated" && stored.event.threadId === command.threadId,
+            stored.event.type === "message.updated" &&
+            stored.event.threadId === command.threadId &&
+            stored.event.payload.id === command.messageId,
         )?.event;
+        if (
+          (command.sendRequest !== undefined ||
+            (message?.type === "message.updated" && message.payload.sendRequest !== undefined)) &&
+          (receipt.commandType !== command.type ||
+            message?.type !== "message.updated" ||
+            message.payload.id !== command.messageId ||
+            message.payload.sendRequest?.text !== command.sendRequest?.text ||
+            command.sendRequest?.text !== command.text ||
+            message.payload.sendRequest?.mode !== command.sendRequest?.mode ||
+            message.payload.createdBy !== command.createdBy ||
+            message.payload.creationSource !== command.creationSource ||
+            message.payload.senderThreadId !== command.senderThreadId ||
+            message.payload.remoteSender?.environmentId !== command.remoteSender?.environmentId ||
+            message.payload.remoteSender?.threadId !== command.remoteSender?.threadId)
+        )
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "Command ID conflict: the accepted send has different request inputs.",
+          });
         if (
           (command.delegation !== undefined ||
             (admitted?.type === "run.created" &&
@@ -12257,6 +12432,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // user may have raised them since, and only here can they not change.
     const limit = yield* DispatchModeLimit;
     if (limit !== undefined) {
+      if (
+        limit.expiresAtMonotonicMs !== undefined &&
+        performance.now() >= limit.expiresAtMonotonicMs
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "Connected environment admission expired before dispatch.",
+        });
+      }
       // A fork or merge-back source is not under this lock: its dispatch
       // checks the copy it reads instead.
       const threadId = commandThreadId(command);
@@ -12357,8 +12542,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         threadId: commandThreadId(command),
         commandType: command.type,
         acceptedAt,
+        ...(limit?.expiresAtMonotonicMs === undefined
+          ? {}
+          : { admissionDeadlineMonotonicMs: limit.expiresAtMonotonicMs }),
         events: plan.events,
         effects: plan.effects,
+        ...(plan.confirmedCleanupEffectId === undefined
+          ? {}
+          : { confirmedCleanupEffectId: plan.confirmedCleanupEffectId }),
         ...(plan.cancelUnsettledEffects === undefined
           ? {}
           : { cancelUnsettledEffects: plan.cancelUnsettledEffects }),
@@ -12442,9 +12633,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       for (const id of ids.toReversed()) admission = threadDispatch.withLock(id, admission);
       return yield* admission;
     }
+    const commandEffect = dispatchWithReceiptEffect(command);
     const dispatch = threadDispatch.withLock(
       commandThreadId(command),
-      dispatchWithReceiptEffect(command),
+      command.type === "privileged-command.submit"
+        ? providerSessions.withMcpCredentialLock(command.threadId, commandEffect)
+        : commandEffect,
     );
     if (
       command.type !== "message.dispatch" ||

@@ -209,6 +209,11 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
   };
   const responseControls = (reviewedBundle?: ReviewBundle) => (
     <View className="gap-3">
+      {props.approval.privilegedCommand ? (
+        <Text accessibilityRole="alert" className="text-sm text-warning-foreground">
+          Review and approve this elevated script in the desktop or web app.
+        </Text>
+      ) : null}
       {options.map((option) =>
         option.warning ? (
           <Text key={option.decision} className="text-xs leading-normal text-warning-foreground">

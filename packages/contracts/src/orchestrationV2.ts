@@ -3,6 +3,11 @@ import {
   ApprovalReviewHash,
   ApprovalReviewReceipt,
 } from "./approvalReviewAuthority.ts";
+import {
+  PrivilegedCommandAuthority,
+  PrivilegedCommandClaimRecoveryIdentity,
+  PrivilegedCommandResult,
+} from "./privilegedCommand.ts";
 import { AgentObservatoryMetadata } from "./agentObservatory.ts";
 import { VoiceIntakeProvenance } from "./voiceIntake.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
@@ -20,6 +25,7 @@ import {
   ContextHandoffId,
   ContextTransferId,
   EventId,
+  EnvironmentId,
   IsoDateTime,
   MessageId,
   NodeId,
@@ -1048,6 +1054,7 @@ export const OrchestrationV2RuntimeRequest = Schema.Struct({
   ]),
   status: Schema.Literals(["pending", "resolved", "expired", "cancelled"]),
   approvalReview: Schema.optional(ApprovalReviewAuthority),
+  privilegedCommand: Schema.optional(PrivilegedCommandAuthority),
   responseCapability: Schema.Union([
     Schema.Struct({ type: Schema.Literal("external") }),
     Schema.Struct({
@@ -1123,12 +1130,25 @@ export const OrchestrationV2Notification = Schema.Struct({
 });
 export type OrchestrationV2Notification = typeof OrchestrationV2Notification.Type;
 
+export const OrchestrationV2RemoteSender = Schema.Struct({
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+});
+export type OrchestrationV2RemoteSender = typeof OrchestrationV2RemoteSender.Type;
+
+const OrchestrationV2SendRequest = Schema.Struct({
+  mode: Schema.Literals(["auto", "queue", "steer", "restart"]),
+  text: Schema.String,
+});
+
 export const OrchestrationV2ConversationMessage = Schema.Struct({
   observatory: Schema.optional(AgentObservatoryMetadata),
   notification: Schema.optional(OrchestrationV2Notification),
   ...OrchestrationV2CreationFields,
   scheduledTaskId: Schema.optional(ScheduledTaskId),
   senderThreadId: Schema.optional(ThreadId),
+  remoteSender: Schema.optional(OrchestrationV2RemoteSender),
+  sendRequest: Schema.optional(OrchestrationV2SendRequest),
   /**
    * The message is the script a provider-native workflow run executes, not prose. Clients show
    * the workflow's opening instead and keep the script behind a disclosure.
@@ -1385,6 +1405,8 @@ export const OrchestrationV2TurnItem = Schema.Union([
     messageId: MessageId,
     scheduledTaskId: Schema.optional(ScheduledTaskId),
     senderThreadId: Schema.optional(ThreadId),
+    remoteSender: Schema.optional(OrchestrationV2RemoteSender),
+    sendRequest: Schema.optional(OrchestrationV2SendRequest),
     workflowScript: OrchestrationV2ConversationMessage.fields.workflowScript,
     inputIntent: OrchestrationV2UserMessageInputIntent,
     text: Schema.String,
@@ -1466,6 +1488,7 @@ export const OrchestrationV2TurnItem = Schema.Union([
     requestId: RuntimeRequestId,
     requestKind: ProviderRequestKind,
     approvalReview: Schema.optional(ApprovalReviewAuthority),
+    privilegedCommand: Schema.optional(PrivilegedCommandAuthority),
     prompt: Schema.optional(Schema.String),
     reason: Schema.optional(Schema.String),
     fullAccessOverride: Schema.optional(ProviderApprovalFullAccessOverride),
@@ -2160,6 +2183,8 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     messageId: MessageId,
     scheduledTaskId: Schema.optional(ScheduledTaskId),
     senderThreadId: Schema.optional(ThreadId),
+    remoteSender: Schema.optional(OrchestrationV2RemoteSender),
+    sendRequest: Schema.optional(OrchestrationV2SendRequest),
     workflowScript: OrchestrationV2ConversationMessage.fields.workflowScript,
     inputIntent: OrchestrationV2UserMessageInputIntent,
     text: Schema.String,
@@ -2241,6 +2266,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     requestId: RuntimeRequestId,
     requestKind: ProviderRequestKind,
     approvalReview: Schema.optional(ApprovalReviewAuthority),
+    privilegedCommand: Schema.optional(PrivilegedCommandAuthority),
     prompt: Schema.optional(Schema.String),
     reason: Schema.optional(Schema.String),
     fullAccessOverride: Schema.optional(ProviderApprovalFullAccessOverride),
@@ -2853,6 +2879,8 @@ export const OrchestrationV2Command = Schema.Union([
     ...OrchestrationV2CreationFields,
     scheduledTaskId: Schema.optional(ScheduledTaskId),
     senderThreadId: Schema.optional(ThreadId),
+    remoteSender: Schema.optional(OrchestrationV2RemoteSender),
+    sendRequest: Schema.optional(OrchestrationV2SendRequest),
     commandId: CommandId,
     threadId: ThreadId,
     messageId: MessageId,
@@ -3090,6 +3118,50 @@ export type OrchestrationV2Command = typeof OrchestrationV2Command.Type;
  * send them.
  */
 const OrchestrationV2InternalCommand = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("privileged-command.submit"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    requestId: RuntimeRequestId,
+    nodeId: NodeId,
+    turnItemId: TurnItemId,
+    authority: PrivilegedCommandAuthority,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("privileged-command.claim"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    requestId: RuntimeRequestId,
+    packageHash: Schema.String,
+    claimId: Schema.String,
+    recoveryIdentity: PrivilegedCommandClaimRecoveryIdentity,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("privileged-command.result"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    requestId: RuntimeRequestId,
+    packageHash: Schema.String,
+    claimId: Schema.String,
+    cleanupConfirmed: Schema.optional(Schema.Boolean),
+    result: PrivilegedCommandResult,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("privileged-command.unconfirmed"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    requestId: RuntimeRequestId,
+    packageHash: Schema.String,
+    claimId: Schema.String,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("privileged-command.cleanup-visible"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    requestId: RuntimeRequestId,
+    packageHash: Schema.String,
+    claimId: Schema.String,
+  }),
   Schema.Struct({
     type: Schema.Literal("approval-review.submit"),
     commandId: CommandId,

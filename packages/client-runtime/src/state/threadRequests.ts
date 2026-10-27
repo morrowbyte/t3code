@@ -57,6 +57,7 @@ export interface ThreadPendingApproval {
   readonly options?: ReadonlyArray<ProviderApprovalOption>;
   readonly supportsFeedback?: boolean;
   readonly approvalReview?: OrchestrationV2RuntimeRequest["approvalReview"];
+  readonly privilegedCommand?: OrchestrationV2RuntimeRequest["privilegedCommand"];
   readonly responseCapability: "live" | "external" | "not_resumable";
 }
 
@@ -67,6 +68,14 @@ export function canRespondToThreadApproval(
   now = Clock.Clock.defaultValue().currentTimeMillisUnsafe(),
 ): boolean {
   if (!approval || approval.responseCapability === "not_resumable") return false;
+  if (approval.privilegedCommand) {
+    return (
+      approval.responseCapability === "external" &&
+      approval.privilegedCommand.state === "pending" &&
+      approval.privilegedCommand.packageHash === packageHash &&
+      (decision === "accept" || decision === "decline" || decision === "cancel")
+    );
+  }
   const authority = approval.approvalReview;
   if (!authority) return approval.responseCapability === "live" && packageHash === undefined;
   return (
@@ -185,6 +194,7 @@ export function derivePendingThreadRequests(
         ? { options: item.options }
         : {}),
       ...(request.approvalReview ? { approvalReview: request.approvalReview } : {}),
+      ...(request.privilegedCommand ? { privilegedCommand: request.privilegedCommand } : {}),
       responseCapability:
         responseCapability === "live" || responseCapability === "external"
           ? responseCapability

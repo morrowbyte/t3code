@@ -14,6 +14,11 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
  * even where they differ from the method prefix.
  */
 const RPC_AGGREGATES = {
+  [WS_METHODS.connectedEnvironmentSubscribe]: "connectedEnvironment",
+  [WS_METHODS.connectedEnvironmentRespond]: "connectedEnvironment",
+  [WS_METHODS.connectedEnvironmentRead]: "connectedEnvironment",
+  [WS_METHODS.connectedEnvironmentPrepare]: "connectedEnvironment",
+  [WS_METHODS.connectedEnvironmentSend]: "connectedEnvironment",
   [WS_METHODS.approvalReviewOrderCreate]: "approvalReview",
   [WS_METHODS.approvalReviewOrderRead]: "approvalReview",
   [WS_METHODS.approvalReviewOrderCancel]: "approvalReview",

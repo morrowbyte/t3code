@@ -19,6 +19,8 @@ export interface DispatchModeRefusal extends DispatchModes {
  */
 export interface DispatchModeLimitValue extends DispatchModes {
   readonly refused?: Ref.Ref<DispatchModeRefusal | undefined>;
+  /** Target-local monotonic deadline for a connected-environment admission. */
+  readonly expiresAtMonotonicMs?: number;
 }
 
 export const DispatchModeLimit = Context.Reference<DispatchModeLimitValue | undefined>(

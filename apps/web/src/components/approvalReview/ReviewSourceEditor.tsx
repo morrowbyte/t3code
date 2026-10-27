@@ -59,6 +59,7 @@ export type {
 } from "./ReviewSourceEditor.logic";
 
 export interface ReviewSourceEditorProps {
+  readonly compact?: boolean;
   readonly files: readonly ReviewSourceFile[];
   readonly symbols: readonly ReviewSourceSymbol[];
   readonly location: ReviewSourceLocation;
@@ -195,7 +196,7 @@ function ReviewSourceEditorView(props: ReviewSourceEditorProps) {
   const [vim, setVim] = useState(savedSession?.vim ?? props.vimNavigation ?? false);
   const isNarrow = useMediaQuery("max-sm");
   const [filesOpen, setFilesOpen] = useState<boolean | null>(null);
-  const showFiles = filesOpen ?? !isNarrow;
+  const showFiles = !props.compact && (filesOpen ?? !isNarrow);
   const [notice, setNotice] = useState("");
   const [definitions, setDefinitions] = useState<readonly ReviewSourceSymbol[]>([]);
   const [syntax, setSyntax] = useState("Plain text");
@@ -497,89 +498,124 @@ function ReviewSourceEditorView(props: ReviewSourceEditorProps) {
         }
       }}
     >
-      <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border p-2">
-        <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto sm:min-w-40 sm:flex-1">
-          <span className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap px-1 font-mono text-xs">
-            {activePath}
-          </span>
-          <span className="shrink-0 px-1 text-xs text-muted-foreground">Read only</span>
-        </div>
-        <div className="flex w-full flex-wrap items-center gap-1 sm:w-auto">
-          <Button
-            variant="ghost"
-            size="icon-xl"
-            aria-label="Toggle source files"
-            aria-expanded={showFiles}
-            onClick={() => setFilesOpen(!showFiles)}
-          >
-            <FilesIcon />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-xl"
-            aria-label="Back (Ctrl+O)"
-            disabled={history.back === 0}
-            onClick={() => traverse("back")}
-          >
-            <ArrowLeftIcon />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-xl"
-            aria-label="Forward (Ctrl+I)"
-            disabled={history.forward === 0}
-            onClick={() => traverse("forward")}
-          >
-            <ArrowRightIcon />
-          </Button>
-          <Button variant="ghost" size="lg" disabled={!activeFile} onClick={showDefinition}>
-            Definition
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-xl"
-            aria-label="Copy selection"
-            disabled={!activeFile}
-            onClick={() => {
-              void copySelection();
-            }}
-          >
-            <CopyIcon />
-          </Button>
+      {props.compact ? (
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border p-2">
+          {props.files.length > 1 ? (
+            <label className="flex min-w-0 items-center gap-2">
+              File
+              <select
+                aria-label="Source file"
+                value={activePath}
+                onChange={(event) => navigate({ path: event.target.value, line: 1 }, true)}
+                className="min-w-0 max-w-full bg-background"
+              >
+                {props.files.map((file) => (
+                  <option key={file.path} value={file.path}>
+                    {file.path}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <span className="min-w-0 break-all font-mono text-xs">{activePath}</span>
+          )}
+          <span className="whitespace-nowrap text-xs text-muted-foreground">Read only</span>
           <Button
             variant="ghost"
             size="icon-xl"
             aria-label="Find in file"
-            disabled={!activeFile}
             onClick={() => {
-              if (editor.current) {
-                openSearchPanel(editor.current);
-              }
+              if (editor.current) openSearchPanel(editor.current);
             }}
           >
             <SearchIcon />
           </Button>
-          <Button
-            variant={vim ? "secondary" : "ghost"}
-            size="lg"
-            aria-pressed={vim}
-            aria-label="Vim keys: j/k move lines, Ctrl+U/D move pages"
-            onClick={() => setVim(!vim)}
-          >
-            Vim keys
-          </Button>
-          {props.onClose && (
+        </div>
+      ) : (
+        <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border p-2">
+          <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto sm:min-w-40 sm:flex-1">
+            <span className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap px-1 font-mono text-xs">
+              {activePath}
+            </span>
+            <span className="shrink-0 px-1 text-xs text-muted-foreground">Read only</span>
+          </div>
+          <div className="flex w-full flex-wrap items-center gap-1 sm:w-auto">
             <Button
               variant="ghost"
               size="icon-xl"
-              aria-label="Close source editor"
-              onClick={props.onClose}
+              aria-label="Toggle source files"
+              aria-expanded={showFiles}
+              onClick={() => setFilesOpen(!showFiles)}
             >
-              <XIcon />
+              <FilesIcon />
             </Button>
-          )}
+            <Button
+              variant="ghost"
+              size="icon-xl"
+              aria-label="Back (Ctrl+O)"
+              disabled={history.back === 0}
+              onClick={() => traverse("back")}
+            >
+              <ArrowLeftIcon />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-xl"
+              aria-label="Forward (Ctrl+I)"
+              disabled={history.forward === 0}
+              onClick={() => traverse("forward")}
+            >
+              <ArrowRightIcon />
+            </Button>
+            <Button variant="ghost" size="lg" disabled={!activeFile} onClick={showDefinition}>
+              Definition
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-xl"
+              aria-label="Copy selection"
+              disabled={!activeFile}
+              onClick={() => {
+                void copySelection();
+              }}
+            >
+              <CopyIcon />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-xl"
+              aria-label="Find in file"
+              disabled={!activeFile}
+              onClick={() => {
+                if (editor.current) {
+                  openSearchPanel(editor.current);
+                }
+              }}
+            >
+              <SearchIcon />
+            </Button>
+            <Button
+              variant={vim ? "secondary" : "ghost"}
+              size="lg"
+              aria-pressed={vim}
+              aria-label="Vim keys: j/k move lines, Ctrl+U/D move pages"
+              onClick={() => setVim(!vim)}
+            >
+              Vim keys
+            </Button>
+            {props.onClose && (
+              <Button
+                variant="ghost"
+                size="icon-xl"
+                aria-label="Close source editor"
+                onClick={props.onClose}
+              >
+                <XIcon />
+              </Button>
+            )}
+          </div>
         </div>
-      </div>
+      )}
       <div className="relative flex min-h-0 flex-1 flex-col sm:flex-row">
         {showFiles && (
           <aside
@@ -648,7 +684,7 @@ function ReviewSourceEditorView(props: ReviewSourceEditorProps) {
                     className="w-full break-all px-3 py-2 text-left text-xs hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring"
                     onClick={() => navigate(symbol)}
                   >
-                    {symbol.name} — {symbol.path}:{symbol.line}
+                    {symbol.name}: {symbol.path}:{symbol.line}
                   </button>
                 </li>
               ))}

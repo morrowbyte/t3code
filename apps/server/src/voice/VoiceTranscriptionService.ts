@@ -47,7 +47,7 @@ export class VoiceTranscriptionError extends Data.TaggedError("VoiceTranscriptio
 }> {}
 
 export const MAX_VOICE_AUDIO_BYTES = 25 * 1024 * 1024;
-export const VOICE_TRANSCRIPTION_TIMEOUT = "60 seconds" as const;
+const VOICE_TRANSCRIPTION_TIMEOUT = "60 seconds" as const;
 
 export const validateVoiceAudio = (audio: VoiceAudio) =>
   audio.bytes.byteLength <= MAX_VOICE_AUDIO_BYTES

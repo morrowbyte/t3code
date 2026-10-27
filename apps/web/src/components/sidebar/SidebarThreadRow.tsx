@@ -598,8 +598,6 @@ type SidebarThreadRowProps = {
   snoozeWakeLabelText: string | null;
   wokeAt: string | null;
   isActive: boolean;
-  // Unlike isActive, never true for the ancestor standing in for an open
-  // subagent: drafts and PR clicks care about which composer is on screen.
   isRouteThread: boolean;
   openPullRequestsInRightPanel: boolean;
   jumpLabel: string | null;

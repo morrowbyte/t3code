@@ -4129,6 +4129,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         onSelectRequest={setSelectedApprovalId}
                         approvals={pendingApprovals}
                         environmentId={activeThreadEnvironmentId}
+                        environmentLabel={
+                          hostOrderEnvironments.find(
+                            (entry) => entry.environmentId === activeThreadEnvironmentId,
+                          )?.label
+                        }
                         runtimeMode={activeThread?.runtimeMode}
                       />
                     </ComposerBanner.Content>
@@ -4136,6 +4141,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       <ComposerPendingApprovalActions
                         approval={activePendingApproval}
                         environmentId={activeThreadEnvironmentId}
+                        threadId={activeThreadId}
+                        targetLabel={
+                          hostOrderEnvironments.find(
+                            (entry) => entry.environmentId === activeThreadEnvironmentId,
+                          )?.label
+                        }
                         requestId={activePendingApproval.requestId}
                         disabled={!canOperateThread}
                         isResponding={respondingRequestIds.includes(

@@ -60,17 +60,18 @@ function ApprovalItemReview({
   environmentId: EnvironmentId;
 }) {
   const [open, setOpen] = useState(false);
-  if (parseApprovalReviewDetail(item.prompt).kind === "none")
+  if (!item.privilegedCommand && parseApprovalReviewDetail(item.prompt).kind === "none")
     return <StructuredValue value={item.prompt} />;
   return (
     <>
       <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
-        Review package and evidence
+        {item.privilegedCommand ? "Review action and result" : "Review package and evidence"}
       </Button>
       <ApprovalReview
         open={open}
         onOpenChange={setOpen}
         environmentId={environmentId}
+        privilegedCommand={item.privilegedCommand}
         disabled
         approval={{
           requestId: item.requestId,
@@ -80,6 +81,9 @@ function ApprovalItemReview({
           ...(item.prompt === undefined ? {} : { detail: item.prompt }),
           ...(item.appName === undefined ? {} : { appName: item.appName }),
           ...(item.approvalReview === undefined ? {} : { approvalReview: item.approvalReview }),
+          ...(item.privilegedCommand === undefined
+            ? {}
+            : { privilegedCommand: item.privilegedCommand }),
         }}
       />
     </>

@@ -1,3 +1,9 @@
+// @effect-diagnostics nodeBuiltinImport:off -- The pressure fixture verifies a real disposable child process.
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { assert, it } from "@effect/vitest";
 import {
   CheckpointScopeId,
@@ -35,8 +41,10 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerSettings from "../serverSettings.ts";
+import { makeStoragePressure } from "../storagePressure.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import type { PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
@@ -2724,6 +2732,309 @@ it.effect("keeps completed runs completed when pull request refresh fails", () =
   }),
 );
 
+it.effect(
+  "interrupts an accepted turn on storage pressure and stops monitoring after termination",
+  () =>
+    Effect.gen(function* () {
+      const stopped = yield* Deferred.make<void>();
+      const now = yield* DateTime.now;
+      let samples = 0;
+      let released = 0;
+      let cleanupRequested = false;
+      let storageInterruptCommitted = false;
+      const result = yield* captureRootRunTermination({
+        key: "storage-pressure-monitor",
+        shouldFinalizeRun: () => Effect.succeed(true),
+        storagePressure: {
+          paths: ["work", "data"],
+          interrupt: ({ reason }) =>
+            Effect.sync(() => {
+              assert.equal(reason, "Free disk space and try again.");
+              storageInterruptCommitted = true;
+            }),
+          guard: {
+            check: async () => null,
+            acquire: async () => ({
+              message: null,
+              release: () => {
+                released += 1;
+              },
+            }),
+            checkRunning: async () => {
+              samples += 1;
+              return "Free disk space and try again.";
+            },
+          },
+        },
+        events: (ids) =>
+          Stream.concat(
+            Stream.make({
+              type: "provider_turn.updated" as const,
+              driver,
+              providerTurn: {
+                id: ids.rootProviderTurnId,
+                providerThreadId: ids.providerThreadId,
+                nodeId: ids.rootNodeId,
+                runAttemptId: ids.attemptId,
+                nativeTurnRef: null,
+                ordinal: 1,
+                status: "running" as const,
+                startedAt: now,
+                completedAt: null,
+              },
+            }),
+            Stream.unwrap(
+              Deferred.await(stopped).pipe(
+                Effect.as(Stream.make(rootTerminalEvent(ids, "interrupted"))),
+              ),
+            ),
+          ),
+        interruptTurn: (request) =>
+          Effect.sync(() => {
+            assert.isTrue(storageInterruptCommitted);
+            cleanupRequested = request.requestRuntimeRestart === true;
+          }).pipe(Effect.andThen(Deferred.succeed(stopped, undefined)), Effect.asVoid),
+        afterStart: (closed) =>
+          Effect.gen(function* () {
+            yield* TestClock.adjust("5 seconds");
+            yield* Deferred.await(stopped);
+            yield* Deferred.await(closed);
+            yield* Effect.yieldNow;
+            yield* TestClock.adjust("15 seconds");
+          }),
+      });
+      assert.isTrue(cleanupRequested);
+      assert.equal(samples, 1);
+      assert.equal(released, 1);
+      assert.isTrue(
+        result.written.some(
+          (item) => item.type === "error" && item.failure.code === "storage_pressure",
+        ),
+      );
+    }),
+);
+
+it.effect("directly interrupts the provider if the storage callback is blocked", () =>
+  Effect.gen(function* () {
+    const stopped = yield* Deferred.make<void>();
+    const callbackStarted = yield* Deferred.make<void>();
+    const callbackRelease = yield* Deferred.make<void>();
+    const now = yield* DateTime.now;
+    yield* captureRootRunTermination({
+      key: "storage-pressure-blocked-callback",
+      shouldFinalizeRun: () => Effect.succeed(true),
+      storagePressure: {
+        paths: ["work"],
+        interrupt: () =>
+          Deferred.succeed(callbackStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(callbackRelease)),
+          ),
+        guard: {
+          check: async () => null,
+          acquire: async () => ({ message: null, release: () => {} }),
+          checkRunning: async () => "Low disk space.",
+        },
+      },
+      events: (ids) =>
+        Stream.concat(
+          Stream.make({
+            type: "provider_turn.updated" as const,
+            driver,
+            providerTurn: {
+              id: ids.rootProviderTurnId,
+              providerThreadId: ids.providerThreadId,
+              nodeId: ids.rootNodeId,
+              runAttemptId: ids.attemptId,
+              nativeTurnRef: null,
+              ordinal: 1,
+              status: "running" as const,
+              startedAt: now,
+              completedAt: null,
+            },
+          }),
+          Stream.unwrap(
+            Deferred.await(stopped).pipe(
+              Effect.as(Stream.make(rootTerminalEvent(ids, "interrupted"))),
+            ),
+          ),
+        ),
+      interruptTurn: () => Deferred.succeed(stopped, undefined).pipe(Effect.asVoid),
+      afterStart: (closed) =>
+        Effect.gen(function* () {
+          yield* TestClock.adjust("5 seconds");
+          yield* Deferred.await(callbackStarted);
+          yield* TestClock.adjust("1 second");
+          yield* Deferred.await(stopped);
+          yield* Deferred.succeed(callbackRelease, undefined);
+          yield* Deferred.await(closed);
+        }),
+    });
+  }),
+);
+
+it.effect("stops a real bounded child through the storage pressure interrupt", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const dir = yield* Effect.acquireRelease(
+        Effect.promise(() => NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-pressure-child-"))),
+        (path) => Effect.promise(() => NodeFSP.rm(path, { recursive: true, force: true })),
+      );
+      const file = NodePath.join(dir, "worker.txt");
+      const child = yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          NodeChildProcess.spawn(
+            process.execPath,
+            [
+              "-e",
+              "require('node:fs').writeFileSync(process.argv[1], 'fixture'); process.stdout.write('ready\\n'); setInterval(() => {}, 1000)",
+              file,
+            ],
+            { stdio: ["ignore", "pipe", "pipe"] },
+          ),
+        ),
+        (worker) =>
+          Effect.sync(() => {
+            if (worker.exitCode === null && worker.signalCode === null) worker.kill("SIGKILL");
+          }),
+      );
+      const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+        (resolve, reject) => {
+          child.once("error", reject);
+          child.once("exit", (code, signal) => resolve({ code, signal }));
+        },
+      );
+      yield* Effect.promise(
+        () =>
+          new Promise<void>((resolve, reject) => {
+            child.once("error", reject);
+            child.stdout.once("data", () => resolve());
+          }),
+      );
+      const pid = child.pid!;
+      assert.isAtMost((yield* Effect.promise(() => NodeFSP.stat(file))).size, 1024);
+      const stopped = yield* Deferred.make<void>();
+      const now = yield* DateTime.now;
+      let bytes = 20 * 1024 ** 3;
+      let reads = 0;
+      let releases = 0;
+      let exitSignal: NodeJS.Signals | null = null;
+      const realGuard = makeStoragePressure(async (paths) => {
+        reads += 1;
+        return paths.map((path) => ({ path, availableBytes: bytes }));
+      });
+      const result = yield* captureRootRunTermination({
+        key: "storage-pressure-real-child",
+        shouldFinalizeRun: () => Effect.succeed(true),
+        storagePressure: {
+          paths: [dir],
+          guard: {
+            ...realGuard,
+            acquire: async (paths) => {
+              const lease = await realGuard.acquire(paths);
+              return {
+                ...lease,
+                release: () => {
+                  releases += 1;
+                  lease.release();
+                },
+              };
+            },
+          },
+        },
+        events: (ids) =>
+          Stream.concat(
+            Stream.make({
+              type: "provider_turn.updated" as const,
+              driver,
+              providerTurn: {
+                id: ids.rootProviderTurnId,
+                providerThreadId: ids.providerThreadId,
+                nodeId: ids.rootNodeId,
+                runAttemptId: ids.attemptId,
+                nativeTurnRef: null,
+                ordinal: 1,
+                status: "running" as const,
+                startedAt: now,
+                completedAt: null,
+              },
+            }),
+            Stream.unwrap(
+              Deferred.await(stopped).pipe(
+                Effect.as(Stream.make(rootTerminalEvent(ids, "interrupted"))),
+              ),
+            ),
+          ),
+        interruptTurn: (request) =>
+          Effect.gen(function* () {
+            assert.isTrue(request.requestRuntimeRestart);
+            assert.isTrue(child.kill("SIGTERM"));
+            exitSignal = (yield* Effect.promise(() => exited)).signal;
+            yield* Deferred.succeed(stopped, undefined);
+          }),
+        afterStart: (closed) =>
+          Effect.gen(function* () {
+            bytes = 3 * 1024 ** 3;
+            yield* TestClock.adjust("5 seconds");
+            yield* Deferred.await(stopped);
+            yield* Deferred.await(closed);
+            yield* Effect.yieldNow;
+            const readsAtClose = reads;
+            yield* TestClock.adjust("15 seconds");
+            assert.equal(reads, readsAtClose);
+          }),
+      });
+      if ((yield* HostProcess.Platform) !== "win32") assert.equal(exitSignal, "SIGTERM");
+      else assert.isTrue(child.exitCode !== null || child.signalCode !== null);
+      assert.throws(() => process.kill(pid, 0), /ESRCH/);
+      assert.equal(releases, 1);
+      assert.isTrue(
+        result.written.some(
+          (item) => item.type === "error" && item.failure.code === "storage_pressure",
+        ),
+      );
+    }),
+  ),
+);
+
+it.effect("reports a late storage admission refusal without starting the provider", () =>
+  Effect.gen(function* () {
+    let starts = 0;
+    let streamReady!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      streamReady = resolve;
+    });
+    const result = yield* captureRootRunTermination({
+      key: "storage-pressure-admission",
+      shouldFinalizeRun: () => Effect.succeed(true),
+      storagePressure: {
+        paths: ["work", "data"],
+        guard: {
+          check: async () => null,
+          checkRunning: async () => null,
+          acquire: async () => {
+            await ready;
+            return { message: "Free disk space and try again.", release: () => {} };
+          },
+        },
+      },
+      startTurn: () =>
+        Effect.sync(() => {
+          starts += 1;
+        }),
+      events: () => Stream.unwrap(Effect.sync(streamReady).pipe(Effect.as(Stream.never))),
+    });
+    assert.equal(starts, 0);
+    assert.isTrue(
+      result.written.some(
+        (item) =>
+          item.type === "error" &&
+          item.failure.code === "storage_pressure" &&
+          item.title === "Not enough disk space to start work",
+      ),
+    );
+  }),
+);
+
 function captureRootRunTermination(input: {
   readonly key: string;
   readonly shouldFinalizeRun: () => Effect.Effect<boolean, ProjectionStore.ProjectionStoreV2Error>;
@@ -2751,6 +3062,7 @@ function captureRootRunTermination(input: {
     request: Parameters<EventSink.EventSinkV2["Service"]["writeIfRunCurrent"]>[0],
   ) => Effect.Effect<boolean, EventSink.EventSinkV2Error>;
   readonly afterStart?: (closed: Deferred.Deferred<void>) => Effect.Effect<void>;
+  readonly storagePressure?: RunExecutionService.RunExecutionServiceV2StartRootRunInput["storagePressure"];
 }) {
   return Effect.gen(function* () {
     const ids = backgroundScenarioIds(input.key);
@@ -2907,6 +3219,7 @@ function captureRootRunTermination(input: {
         } as OrchestrationV2RunAttempt,
         attemptId: ids.attemptId,
         providerTurnOrdinal: 1,
+        ...(input.storagePressure === undefined ? {} : { storagePressure: input.storagePressure }),
         shouldFinalizeRun: input.shouldFinalizeRun,
         ...(input.shouldStartProviderTurn === undefined
           ? {}

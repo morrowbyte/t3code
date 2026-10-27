@@ -175,10 +175,13 @@ export interface EventSinkV2Shape {
     readonly threadId: ThreadId;
     readonly commandType: string;
     readonly acceptedAt: DateTime.Utc;
+    readonly admissionDeadlineMonotonicMs?: number;
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
     readonly effects: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2>;
+    readonly confirmedCleanupEffectId?: string;
     readonly cancelUnsettledEffects?: {
       readonly effectTypes: ReadonlyArray<EffectOutbox.OrchestrationEffectRequestV2["type"]>;
+      readonly privilegedRequestIds?: ReadonlyArray<import("@t3tools/contracts").RuntimeRequestId>;
       readonly reason: string;
     };
   }) => Effect.Effect<
@@ -295,6 +298,7 @@ const layerBase: Layer.Layer<
     const commitThenPublish = <A, E, R>(
       transaction: Effect.Effect<A, E, R>,
       publish: (committed: A) => Effect.Effect<void>,
+      validate?: (committed: A) => Effect.Effect<void, EventSinkV2Error>,
     ) =>
       Effect.suspend(() => {
         let holdsLane = false;
@@ -307,7 +311,15 @@ const layerBase: Layer.Layer<
           Effect.uninterruptible,
         );
         return sql
-          .withTransaction(Effect.tap(transaction, () => takeLane))
+          .withTransaction(
+            Effect.tap(transaction, (result) =>
+              takeLane.pipe(
+                Effect.andThen(
+                  Effect.suspend(() => (validate === undefined ? Effect.void : validate(result))),
+                ),
+              ),
+            ),
+          )
           .pipe(
             Effect.tap(publish),
             Effect.ensuring(
@@ -980,6 +992,17 @@ const layerBase: Layer.Layer<
             error: null,
           };
           yield* commandReceipts.upsert(receipt);
+          if (input.confirmedCleanupEffectId !== undefined) {
+            const confirmed = yield* effectOutbox.confirmCleanup({
+              threadId: input.threadId,
+              effectId: input.confirmedCleanupEffectId,
+            });
+            if (!confirmed)
+              return yield* new EventSinkWriteError({
+                eventCount: input.events.length,
+                commandId: input.commandId,
+              });
+          }
           const cancelledEffectIds =
             input.cancelUnsettledEffects === undefined
               ? []
@@ -992,11 +1015,25 @@ const layerBase: Layer.Layer<
         (result) =>
           Effect.gen(function* () {
             yield* effectOutbox.signalCancellations(result.cancelledEffectIds);
+            if (result.committed && input.confirmedCleanupEffectId !== undefined)
+              yield* effectOutbox.signalCleanupConfirmed(input.confirmedCleanupEffectId);
             if (result.committed && input.effects.length > 0) {
               yield* effectOutbox.notifyAvailable(input.effects.length);
             }
             if (result.committed) yield* publishStoredEvents(result.storedEvents, result.outcomes);
           }),
+        (result) =>
+          result.committed &&
+          input.admissionDeadlineMonotonicMs !== undefined &&
+          performance.now() >= input.admissionDeadlineMonotonicMs
+            ? Effect.fail(
+                new EventSinkWriteError({
+                  commandId: input.commandId,
+                  eventCount: input.events.length,
+                  cause: "Connected environment admission expired before commit.",
+                }),
+              )
+            : Effect.void,
       );
       return {
         receipt: result.receipt,
