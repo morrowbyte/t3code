@@ -94,11 +94,14 @@ describe("MCP app asset responses", () => {
 });
 
 describe("browser API CORS", () => {
-  it("accepts protocol negotiation with authenticated browser headers", async () => {
+  it.each([
+    ["GET", "/api/environment"],
+    ["PUT", "/api/voice/recordings/settings"],
+  ] as const)("accepts authenticated browser preflight for %s %s", async (method, path) => {
     const layerRoute = Layer.effectDiscard(
       Effect.gen(function* () {
         const router = yield* HttpRouter.HttpRouter;
-        yield* router.add("GET", "/api/environment", HttpServerResponse.empty());
+        yield* router.add(method, path, HttpServerResponse.empty());
       }),
     );
     const layerApp = Layer.merge(layerRoute, ServerHttp.layerBrowserApiCors).pipe(
@@ -109,11 +112,11 @@ describe("browser API CORS", () => {
 
     try {
       const response = await handler(
-        new Request("https://backend.example/api/environment", {
+        new Request(`https://backend.example${path}`, {
           method: "OPTIONS",
           headers: {
             origin: "https://app.t3.codes",
-            "access-control-request-method": "GET",
+            "access-control-request-method": method,
             "access-control-request-headers": [
               ORCHESTRATION_PROTOCOL_HEADER,
               "authorization",
@@ -125,6 +128,11 @@ describe("browser API CORS", () => {
 
       expect(response.status).toBe(204);
       expect(response.headers.get("access-control-allow-origin")).toBe("*");
+      expect(
+        (response.headers.get("access-control-allow-methods") ?? "")
+          .split(",")
+          .map((value) => value.trim()),
+      ).toContain(method);
       const allowedHeaders = new Set(
         (response.headers.get("access-control-allow-headers") ?? "")
           .split(",")
