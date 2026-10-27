@@ -77,6 +77,16 @@ describe("tool intent generation", () => {
         expect(
           Service.isToolIntentMissing({ ...item, title: "Compare selected shipment quotes" }),
         ).toBe(false);
+        expect(
+          Service.isToolIntentMissing({
+            ...item,
+            toolName: "functions.exec",
+            title: "Run shell commands",
+            input: {
+              code: "// Intent: Inspect recording permission preferences\nawait inspect();",
+            },
+          }),
+        ).toBe(false);
       }),
   );
 

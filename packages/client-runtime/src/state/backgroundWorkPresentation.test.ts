@@ -42,4 +42,26 @@ describe("background command presentation", () => {
       commandStatus: "waiting",
     });
   });
+
+  it("uses the semantic item title while retaining the exact shell input", () => {
+    const command = "/bin/bash -lc \"python3 - <<'PY'\nprint('original')\nPY\"";
+    const presentation = presentPendingBackgroundWork(
+      [{ taskId: "python", kind: "command", description: command }],
+      [
+        {
+          id: TurnItemId.make("python"),
+          type: "command_execution",
+          nativeItemRef: null,
+          input: command,
+          title: "Inspect recording permission preferences",
+          status: "running",
+        },
+      ],
+    );
+    expect(presentation?.items[0]).toMatchObject({
+      commandLabel: "Inspect recording permission preferences",
+      commandLine: command,
+      commandStatus: "running",
+    });
+  });
 });

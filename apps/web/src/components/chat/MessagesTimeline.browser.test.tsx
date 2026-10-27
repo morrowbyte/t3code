@@ -1,4 +1,11 @@
-import { EnvironmentId, MessageId, RunId, ScheduledTaskId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  MessageId,
+  RunId,
+  ScheduledTaskId,
+  ThreadId,
+  TurnItemId,
+} from "@t3tools/contracts";
 import type { LegendListRef } from "@legendapp/list/react";
 import { createRef, Profiler, type ComponentProps, type ReactElement } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -599,6 +606,77 @@ describe("MessagesTimeline agent messages", () => {
       body.getBoundingClientRect().bottom,
     );
   });
+});
+
+it("shows current tool intent without repeating public commentary in the live disclosure", async () => {
+  using _state = setup();
+  const runId = RunId.make("live-intent-run");
+  const commentary =
+    "I will inspect the recording preferences and check which permission is missing.";
+  const intent = "Inspect recording permissions";
+  const reasoning = "Focusing on code efficiency";
+  const entries: Entry[] = [
+    message(commentary, { role: "assistant", runId }),
+    {
+      id: "reasoning",
+      kind: "work",
+      createdAt: CREATED_AT,
+      entry: {
+        id: "reasoning",
+        createdAt: CREATED_AT,
+        runId,
+        label: "Thinking",
+        tone: "thinking",
+        itemType: "reasoning",
+        detail: reasoning,
+        toolLifecycleStatus: "completed",
+      },
+    },
+    {
+      id: "permission-check",
+      kind: "work",
+      createdAt: CREATED_AT,
+      entry: {
+        id: "permission-check",
+        createdAt: CREATED_AT,
+        runId,
+        label: "Run shell commands",
+        tone: "tool",
+        itemType: "command_execution",
+        toolLifecycleStatus: "inProgress",
+        structuredPayload: {
+          id: TurnItemId.make("permission-check"),
+          threadId: ThreadId.make("fixture"),
+          runId,
+          type: "command_execution",
+          input: "# Intent: Inspect recording permissions\npython3 inspect.py",
+          title: null,
+          status: "running",
+        } as import("@t3tools/contracts").OrchestrationV2TurnItem,
+      },
+    },
+  ];
+  await using screen = await renderTimeline(entries, {
+    isWorking: true,
+    activeTurnInProgress: true,
+    runningRunId: runId,
+    activeTurnStartedAt: CREATED_AT,
+  });
+  await expect.element(screen.getByRole("button", { name: new RegExp(intent) })).toBeVisible();
+  expect(screen.text().split(commentary)).toHaveLength(2);
+  expect(screen.buttons(new RegExp(commentary))).toHaveLength(0);
+  expect(screen.buttons(new RegExp(intent))).toHaveLength(1);
+  expect(screen.text()).toContain(reasoning);
+  expect(screen.button(new RegExp(intent)).getAttribute("aria-expanded")).toBe("false");
+  await click(screen.button(new RegExp(intent)));
+  await vi.waitFor(() => {
+    expect(screen.button(new RegExp(intent)).getAttribute("aria-expanded")).toBe("true");
+    expect(screen.text()).toContain(reasoning);
+  });
+  await click(screen.button(new RegExp(intent)));
+  await vi.waitFor(() =>
+    expect(screen.button(new RegExp(intent)).getAttribute("aria-expanded")).toBe("false"),
+  );
 });
 
 describe("compact reasoning math", () => {

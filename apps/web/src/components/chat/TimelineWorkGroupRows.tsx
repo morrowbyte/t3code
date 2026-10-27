@@ -495,10 +495,7 @@ export function LiveWorkEntryTimelineRow({
   const questionHeading = row.entry.questionAnswer
     ? getQuestionTextPreview(row.entry.questionAnswer)
     : "";
-  const label =
-    questionHeading ||
-    row.activityIntent ||
-    liveWorkEntryLabel(row.entry, ctx.workspaceRoot, row.active);
+  const label = questionHeading || liveWorkEntryLabel(row.entry, ctx.workspaceRoot, row.active);
   const executionStatus = workEntryExecutionStatus(row.entry);
   const threadLabel = threadReadLabel(label, threadTarget);
 

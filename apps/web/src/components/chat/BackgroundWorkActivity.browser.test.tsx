@@ -5,11 +5,57 @@ import { userEvent } from "vite-plus/test/browser";
 import { render } from "../../../test/render";
 import { BackgroundWorkActivity } from "./BackgroundWorkActivity";
 import { ComposerBannerStack } from "./ComposerBannerStack";
+import { TurnItemId } from "@t3tools/contracts";
+import { getSyntaxHighlighterPromise } from "../../lib/syntaxHighlighting";
 
 const command =
   "/bin/bash -lc 'umask 077; PATH=/bin vp run dev --port 14664 > /tmp/private.log 2>&1'";
 
 describe("background process activity", () => {
+  it("shows semantic activity and readable highlighted Python while retaining the full shell command", async () => {
+    const source = "import json\nprint(json.dumps({'status': True}))\n";
+    const original = `/run/current-system/sw/bin/bash -lc "python3 - <<'PY'\n${source}PY"`;
+    const title = "Inspect recording permission preferences";
+    const presentation = presentPendingBackgroundWork(
+      [{ taskId: "python", kind: "command", description: original }],
+      [
+        {
+          id: TurnItemId.make("python"),
+          type: "command_execution",
+          nativeItemRef: null,
+          input: original,
+          title,
+          status: "running",
+        },
+      ],
+    )!;
+    await using screen = await render(
+      <BackgroundWorkActivity
+        presentation={presentation}
+        canStop
+        stopping={false}
+        onStopThread={vi.fn()}
+        onOpenThread={vi.fn()}
+      />,
+    );
+    await screen.getByRole("button", { name: `Show details for ${title}` }).click();
+    await getSyntaxHighlighterPromise("python");
+    const script = screen.container.querySelector('[aria-label="Embedded script"]');
+    expect(script?.textContent).toBe(source);
+    await vi.waitFor(() => {
+      const colors = new Set(
+        [...script!.querySelectorAll<HTMLElement>("[style]")].map((token) => token.style.color),
+      );
+      expect(colors.size).toBeGreaterThan(1);
+    });
+    expect(screen.container.querySelector('[aria-label="Full command"]')?.textContent).toBe(
+      original,
+    );
+    expect(screen.container.querySelector("details")?.open).toBe(false);
+    await screen.getByText("Full command", { exact: true }).click();
+    expect(screen.container.querySelector("details")?.open).toBe(true);
+  });
+
   it("opens the original command with keyboard and keeps thread stop separate", async () => {
     const onStop = vi.fn();
     const presentation = presentPendingBackgroundWork([

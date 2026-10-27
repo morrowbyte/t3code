@@ -17,6 +17,10 @@ describe("commandActivityLabel", () => {
     ["env PATH=/bin /opt/custom/strange-tool --watch ./data", "strange-tool --watch ./data"],
     ["sleep 600 > /tmp/sleep.log 2>&1", "sleep 600"],
     ["python3 -m http.server 8000", "python3 -m http.server"],
+    [
+      "bash -lc '# Intent: Inspect recording permissions\npython3 inspect.py'",
+      "Inspect recording permissions",
+    ],
     ["bash -lc 'git status", "Command"],
     ["while true; do sleep 1; done", "Command"],
   ])("identifies the executable without guessing its purpose: %s", (command, label) => {
@@ -203,6 +207,10 @@ describe("command intent", () => {
     [
       "# Intent: Inspect saved validation results\npython3 inspect.py",
       "Inspect saved validation results",
+    ],
+    [
+      "bash -lc '# Intent: Inspect recording permissions\npython3 inspect.py'",
+      "Inspect recording permissions",
     ],
     ["python3 - <<'PY'\n# Intent: not a shell intent\nprint('x')\nPY", "Run Python code"],
   ])("describes only observable behavior: %s", (command, expected) => {

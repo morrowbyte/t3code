@@ -4,6 +4,18 @@ import { T3_CODE_VISUAL_INSTRUCTIONS } from "./orchestrationInstructions.ts";
 import { parseStreamableUi } from "@t3tools/shared/streamableUi";
 
 describe("buildRuntimeInstructions", () => {
+  it.each(["Codex", "Claude Code", "Cursor"])(
+    "asks %s to supply semantic labels with executable tool calls",
+    (harness) => {
+      const instructions = buildRuntimeInstructions({ harness });
+      expect(instructions).toContain("<tool_activity_labels>");
+      expect(instructions).toContain("# Intent: Inspect recording permission preferences");
+      expect(instructions).toContain("// Intent: Inspect recording permission preferences");
+      expect(instructions).toContain("after a required // @exec: pragma");
+      expect(instructions).toContain("Do not add a separate tool or model call");
+    },
+  );
+
   it("asks senders for structured handoffs without rewriting originals or adding model calls", () => {
     const instructions = buildRuntimeInstructions({ harness: "Codex" });
     expect(instructions.match(/<agent_messages>/g)).toHaveLength(1);
