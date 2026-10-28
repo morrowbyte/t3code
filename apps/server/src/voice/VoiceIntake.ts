@@ -590,9 +590,7 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
             provisional,
             sources: sources,
           },
-          transfer
-            ? `Completed work (context only, do not repeat):\n${transfer.owner.request.slice(0, 2_000)}\nNew authorized change:\n${action.request}`
-            : action.request,
+          action.request,
           transfer?.owner.projectId ?? action.projectId ?? undefined,
           transfer ? transfer.pending.previewContext : snapshot.previewContext,
           transfer

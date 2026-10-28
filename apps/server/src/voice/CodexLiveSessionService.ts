@@ -64,6 +64,7 @@ import { getCodexServiceTierOptionValue } from "../codexModelOptions.ts";
 import { isVoiceWorkActive, voiceRunStatus } from "./voiceWorkStatus.ts";
 import { voiceAnswerParagraphs } from "./voiceAnswerParagraphs.ts";
 import { voiceStartupHistory } from "./voiceStartupHistory.ts";
+import { voiceIntakeInstruction } from "./voiceIntakeInstruction.ts";
 
 type LeaseRow = {
   lease_id: string;
@@ -122,6 +123,7 @@ const intakeFailureClass = (cause: Cause.Cause<unknown>) => {
 
 const isIntakeIntent = Schema.is(VoiceIntakeIntent);
 const isIntakeProvenance = Schema.is(VoiceIntakeProvenance);
+const encodeIntakeProvenance = Schema.encodeSync(Schema.fromJsonString(VoiceIntakeProvenance));
 const readbackContextMatches = (
   row: LeaseRow,
   projection: OrchestrationV2ThreadProjection,
@@ -2075,7 +2077,13 @@ export const layer: Layer.Layer<
           );
           if (input.validateSource && !(yield* input.validateSource))
             return yield* liveError("stale_lease");
-          let transfer: { before: VoiceIntakeIntent; after: VoiceIntakeIntent } | undefined;
+          let transfer:
+            | {
+                before: VoiceIntakeIntent;
+                after: VoiceIntakeIntent;
+                completedSources: VoiceIntakeProvenance["sources"];
+              }
+            | undefined;
           if (input.voiceIntake) {
             const claimed = yield* sql<{
               receipt_json: string;
@@ -2106,7 +2114,10 @@ export const layer: Layer.Layer<
                 const receipt = record
                   ? (decodeReceipt(record.receipt_json) as Record<string, unknown>)
                   : undefined;
-                if (!isIntakeIntent(receipt?.intakeIntent))
+                if (
+                  !isIntakeIntent(receipt?.intakeIntent) ||
+                  !isIntakeProvenance(receipt.voiceIntake)
+                )
                   return yield* liveError("dispatch_conflict");
                 const owner = receipt.intakeIntent;
                 const transferred = transferVoiceIntakeClaim(
@@ -2129,7 +2140,11 @@ export const layer: Layer.Layer<
                   )
                 )
                   return yield* liveError("dispatch_conflict");
-                transfer = { before: owner, after: transferred };
+                transfer = {
+                  before: owner,
+                  after: transferred,
+                  completedSources: receipt.voiceIntake.sources,
+                };
               }
             }
             for (const record of claimed) {
@@ -2156,6 +2171,20 @@ export const layer: Layer.Layer<
             }
           }
           const now = DateTime.formatIso(yield* DateTime.now);
+          const frozenPreview =
+            input.previewContext === undefined
+              ? (active.get(leaseKey(input.leaseId, input.generation))?.previewContext ?? null)
+              : input.previewContext;
+          const sourceInstruction =
+            input.voiceIntake === undefined
+              ? undefined
+              : voiceIntakeInstruction(
+                  input.voiceIntake.sources,
+                  frozenPreview,
+                  transfer?.completedSources,
+                );
+          if (input.voiceIntake && sourceInstruction === undefined)
+            return yield* liveError("invalid_state");
           const priorIntents = yield* sql<{
             dispatch_state: "reserved" | "admitted" | "conflict";
           }>`
@@ -2188,7 +2217,7 @@ export const layer: Layer.Layer<
           ) VALUES (
             ${input.leaseId}, ${input.generation}, ${input.plannerNativeThreadId},
             ${intentTurnId}, 0, ${input.callId}, ${input.message.trim()},
-            ${commandId}, ${messageId}, 'reserved', ${input.requestId === undefined ? null : encodeReceipt({ requestedProjectId: input.projectId ?? null, previewContext: input.previewContext === undefined ? (active.get(leaseKey(input.leaseId, input.generation))?.previewContext ?? null) : input.previewContext, ...(input.voiceIntake === undefined ? {} : { voiceIntake: input.voiceIntake }), ...(input.sourceTransfer === undefined ? {} : { sourceTransfer: input.sourceTransfer }) })}, ${now}
+            ${commandId}, ${messageId}, 'reserved', ${input.requestId === undefined ? null : encodeReceipt({ requestedProjectId: input.projectId ?? null, previewContext: frozenPreview, ...(input.voiceIntake === undefined ? {} : { voiceIntake: input.voiceIntake, sourceInstruction }), ...(input.sourceTransfer === undefined ? {} : { sourceTransfer: input.sourceTransfer }) })}, ${now}
           )
         `;
             }),
@@ -2231,6 +2260,19 @@ export const layer: Layer.Layer<
                 ? reserved.previewContext
                 : null
               : input.previewContext;
+          if (
+            input.voiceIntake &&
+            (!isIntakeProvenance(reserved?.voiceIntake) ||
+              encodeIntakeProvenance(reserved.voiceIntake) !==
+                encodeIntakeProvenance(input.voiceIntake))
+          )
+            return yield* liveError("dispatch_conflict");
+          const executionText = input.voiceIntake
+            ? typeof reserved?.sourceInstruction === "string"
+              ? reserved.sourceInstruction
+              : voiceIntakeInstruction(input.voiceIntake.sources, previewContext)
+            : withPreviewContext(input.message.trim(), previewContext);
+          if (executionText === undefined) return yield* liveError("invalid_state");
           if (intent.dispatch_state === "admitted" && intent.receipt_json !== null) {
             const priorReceipt = decodeReceipt(intent.receipt_json) as Record<string, unknown>;
             if (
@@ -2310,7 +2352,7 @@ export const layer: Layer.Layer<
                       threadId: projection.thread.id,
                       commandId: CommandId.make(intent.command_id),
                       messageId: MessageId.make(intent.message_id),
-                      text: withPreviewContext(input.message.trim(), previewContext),
+                      text: executionText,
                       attachments: [],
                       mode: "auto",
                       ...(input.voiceIntake === undefined
@@ -2348,7 +2390,7 @@ export const layer: Layer.Layer<
                       threadId: projection.thread.id,
                       commandId: CommandId.make(intent.command_id),
                       messageId: MessageId.make(intent.message_id),
-                      text: withPreviewContext(input.message.trim(), previewContext),
+                      text: executionText,
                       createdBy: "user",
                       creationSource: "voice",
                       delegation: {
@@ -2530,8 +2572,11 @@ export const layer: Layer.Layer<
                           message.id === `message:intake-steer:${pending.requestId}` &&
                           message.runId === intent.runId &&
                           message.threadId === projection.thread.id &&
-                          message.text ===
-                            withPreviewContext(pending.message, pending.previewContext),
+                          (message.text ===
+                            voiceIntakeInstruction(pending.sources, pending.previewContext) ||
+                            // Recognize accepted pre-formatter commands after upgrading.
+                            message.text ===
+                              withPreviewContext(pending.message, pending.previewContext)),
                       ),
                   );
                 return {
@@ -2673,7 +2718,7 @@ export const layer: Layer.Layer<
                 }),
               ),
             read,
-            steer: (intent, message, requestId, readOnly, previewContext) =>
+            steer: (intent, _message, requestId, readOnly, previewContext) =>
               leaseLocks.withLock(
                 leaseKey(row.lease_id, row.generation),
                 Effect.gen(function* () {
@@ -2683,6 +2728,10 @@ export const layer: Layer.Layer<
                     !(yield* engine.validateSources(intent.pendingSteer.sources))
                   )
                     return yield* liveError("stale_lease");
+                  const instruction = intent.pendingSteer
+                    ? voiceIntakeInstruction(intent.pendingSteer.sources, previewContext)
+                    : undefined;
+                  if (instruction === undefined) return yield* liveError("invalid_state");
                   if (isMainIntent(intent)) {
                     const sources = intent.pendingSteer?.sources;
                     if (!sources?.length) return yield* liveError("dispatch_conflict");
@@ -2692,7 +2741,7 @@ export const layer: Layer.Layer<
                         threadId: source.thread.id,
                         commandId: CommandId.make(`command:intake-steer:${requestId}`),
                         messageId: MessageId.make(`message:intake-steer:${requestId}`),
-                        text: withPreviewContext(message, previewContext),
+                        text: instruction,
                         attachments: [],
                         dispatchMode: {
                           type: "steer_active",
@@ -2733,7 +2782,7 @@ export const layer: Layer.Layer<
                       threadId: exact.projection.thread.id,
                       commandId: CommandId.make(`command:intake-steer:${requestId}`),
                       messageId: MessageId.make(`message:intake-steer:${requestId}`),
-                      text: withPreviewContext(message, previewContext),
+                      text: instruction,
                       attachments: [],
                       createdBy: "user",
                       creationSource: "voice",

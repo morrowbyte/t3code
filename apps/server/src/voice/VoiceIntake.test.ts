@@ -1679,8 +1679,7 @@ it.effect.each(["new", "reference", "refine"] as const)(
       assert.deepEqual(test.steered, []);
       assert.equal(test.admitted.length, answer === "new" ? 2 : 1);
       if (answer === "new") {
-        assert.include(test.admitted[1]!.request, first);
-        assert.include(test.admitted[1]!.request, next);
+        assert.equal(test.admitted[1]!.request, next);
         assert.equal(test.admittedContexts[1], "selected form before completion");
         assert.deepEqual(
           (yield* test.engine.state).intents[0]!.claimedSources.map((s) => s.quote),
