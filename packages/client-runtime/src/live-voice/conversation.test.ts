@@ -279,6 +279,38 @@ it("keeps a final live correction ahead of stale history until the closed call s
   ]);
 });
 
+it("waits for a settled call before warning about incomplete speech", () => {
+  const activeCall: LiveVoiceCallSummary = { ...call, status: "active", endedAt: null };
+  const saved = {
+    ...transcript([
+      {
+        id: "speaking",
+        speaker: "user",
+        text: "Ich spreche noch",
+        final: false,
+        occurredAt: at(2),
+        updatedAt: at(2),
+      },
+    ]),
+    incomplete: true,
+  };
+  const snapshots = new Map([
+    [voiceCallKey(call), { transcript: saved, throughEventId: call.lastEventId - 1 }],
+  ]);
+  const live = voiceConversationItems([activeCall], snapshots);
+  expect(live.some((item) => item.kind === "notice")).toBe(false);
+  expect(live).toContainEqual(
+    expect.objectContaining({ kind: "speech", entry: expect.objectContaining({ final: false }) }),
+  );
+  expect(voiceConversationItems([call], snapshots).some((item) => item.kind === "notice")).toBe(
+    false,
+  );
+  snapshots.set(voiceCallKey(call), { transcript: saved, throughEventId: call.lastEventId });
+  expect(voiceConversationItems([call], snapshots)).toContainEqual(
+    expect.objectContaining({ kind: "notice", text: "Some transcript segments are incomplete." }),
+  );
+});
+
 it("interleaves the observed 37-segment incomplete history despite a late normal row at the front", () => {
   const receipts = [
     ["02:03.404", "user", true],

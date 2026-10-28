@@ -181,7 +181,7 @@ export function voiceConversationItems(
             entry,
           });
       }
-      if (saved?.incomplete)
+      if (saved?.incomplete && settledSnapshot)
         items.push({
           id: `${prefix}:incomplete`,
           callKey: key,
