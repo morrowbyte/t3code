@@ -1,4 +1,4 @@
-import { act, render as renderUi, stubGlobal } from "../../test/render";
+import { act, fakeTimers, render as renderUi, stubGlobal } from "../../test/render";
 import {
   EnvironmentId,
   LiveVoiceError,
@@ -631,6 +631,36 @@ describe("selected preview context during a call", () => {
     expect(getUserMedia).not.toHaveBeenCalled();
   });
 
+  it("sends a newer clear while selection delivery is still pending", async () => {
+    using _environment = setupEnvironment();
+    await using control = await setupControl();
+    const ref = { environmentId: environmentA, threadId: thread };
+    await control.render(loaded);
+    await act(async () => voiceFixture.publish?.(activeState()));
+    expect(commands.context).toHaveBeenCalledTimes(1);
+    let releaseSelection = () => {};
+    const pendingSelection = new Promise<void>((resolve) => {
+      releaseSelection = resolve;
+    });
+    commands.context.mockReturnValueOnce(
+      pendingSelection.then(() => AsyncResult.success(undefined)),
+    );
+    await act(async () =>
+      usePreviewSelectionStore.getState().replaceSelection(ref, selection("pending", "Target")),
+    );
+    expect(commands.context).toHaveBeenCalledTimes(2);
+    await act(async () => usePreviewSelectionStore.getState().clearSelection(ref));
+    expect(commands.context).toHaveBeenLastCalledWith({
+      environmentId: environmentA,
+      input: { leaseId: "selected-context-lease", generation: 1, revision: 3, context: null },
+    });
+    await act(async () => releaseSelection());
+    await act(async () =>
+      voiceFixture.publish?.({ ...activeState(), lease: { ...activeState().lease! } }),
+    );
+    expect(commands.context).toHaveBeenCalledTimes(3);
+  });
+
   it("retries transient context delivery and cancels retries for a replaced selection", async () => {
     using _environment = setupEnvironment();
     await using control = await setupControl();
@@ -640,36 +670,32 @@ describe("selected preview context during a call", () => {
     commands.context
       .mockResolvedValueOnce({ _tag: "Failure" })
       .mockResolvedValueOnce({ _tag: "Failure" });
-    vi.useFakeTimers();
-    try {
-      await act(async () => voiceFixture.publish?.(activeState()));
-      expect(commands.context).toHaveBeenCalledTimes(1);
-      await act(async () =>
-        usePreviewSelectionStore.getState().replaceSelection(ref, selection("new", "New target")),
-      );
-      expect(commands.context).toHaveBeenCalledTimes(2);
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(250);
-      });
-      expect(commands.context).toHaveBeenCalledTimes(3);
-      expect(commands.context).toHaveBeenLastCalledWith({
-        environmentId: environmentA,
-        input: {
-          leaseId: "selected-context-lease",
-          generation: 1,
-          revision: 3,
-          context: expect.stringContaining("New target"),
-        },
-      });
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(2_000);
-      });
-      expect(commands.context).toHaveBeenCalledTimes(3);
-      expect(commands.start).not.toHaveBeenCalled();
-      expect(commands.stop).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
+    using _timers = fakeTimers();
+    await act(async () => voiceFixture.publish?.(activeState()));
+    expect(commands.context).toHaveBeenCalledTimes(1);
+    await act(async () =>
+      usePreviewSelectionStore.getState().replaceSelection(ref, selection("new", "New target")),
+    );
+    expect(commands.context).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+    expect(commands.context).toHaveBeenCalledTimes(3);
+    expect(commands.context).toHaveBeenLastCalledWith({
+      environmentId: environmentA,
+      input: {
+        leaseId: "selected-context-lease",
+        generation: 1,
+        revision: 3,
+        context: expect.stringContaining("New target"),
+      },
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+    expect(commands.context).toHaveBeenCalledTimes(3);
+    expect(commands.start).not.toHaveBeenCalled();
+    expect(commands.stop).not.toHaveBeenCalled();
   });
 
   it("rejects foreign and inactive leases and resends bounded context for a new generation", async () => {

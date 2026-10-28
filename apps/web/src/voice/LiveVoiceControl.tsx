@@ -915,6 +915,10 @@ export function LiveVoiceControl(props: {
       generation: lease.generation,
       context: selectedContext,
     };
+    // A request can reach the server after this effect is cancelled. Until the
+    // new value is acknowledged, a return to the prior value needs a newer
+    // revision too (for example, select then clear while selection is in flight).
+    sentContext.current = null;
     let cancelled = false;
     let retry: ReturnType<typeof setTimeout> | undefined;
     let attempts = 0;
