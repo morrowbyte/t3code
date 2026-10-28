@@ -5,7 +5,7 @@ commands, tool inputs, status, and exit codes. Expand a tool call to see its out
 command's output updates live, and long output shows only its most recent part. Use **Open diff** on
 a file change to review its contents.
 
-Choose **Activity & thinking summary language** in **Settings → General → Text generation**
+Choose **Activity & thinking summary language** in **Settings → Agent defaults → Text generation**
 to use German, English, or the thread's language for new activity descriptions and completed
 thinking summaries. This uses your text generation model without changing the working agent's
 model or instructions. Changing the setting does not retranslate the whole history.
