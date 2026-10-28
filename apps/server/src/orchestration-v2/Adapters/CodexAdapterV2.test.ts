@@ -2764,6 +2764,62 @@ describe("CodexAdapterV2 LiveVoice planner preparation", () => {
       }).pipe(Effect.scoped, Effect.provide(dependencies)),
   );
 
+  it.effect("a confirmed close cleans the cwd after a late start's compensating Stop fails", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const starting = yield* Deferred.make<void>();
+      const started = yield* Deferred.make<void>();
+      const stopping = yield* Deferred.make<void>();
+      const failStop = yield* Deferred.make<void>();
+      const planner = yield* openPlanner({
+        request: (method) => {
+          if (method === "thread/realtime/start")
+            return Deferred.succeed(starting, undefined).pipe(
+              Effect.andThen(Deferred.await(started)),
+              Effect.as({}),
+            );
+          if (method === "thread/realtime/stop")
+            return Deferred.succeed(stopping, undefined).pipe(
+              Effect.andThen(Deferred.await(failStop)),
+              Effect.andThen(
+                Effect.fail(
+                  new CodexError.CodexAppServerRequestError({
+                    code: -32000,
+                    errorMessage: "compensating Stop failed",
+                  }),
+                ),
+              ),
+            );
+          return undefined;
+        },
+      });
+      yield* planner.prepare();
+      const cwd = planner.directories[0]!;
+      const start = yield* planner.startCall().pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(starting);
+      yield* planner.emitNative("thread/realtime/closed", { threadId: "new-live-planner" });
+      assert.isTrue(yield* fileSystem.exists(cwd));
+      yield* Deferred.succeed(started, undefined);
+      yield* Deferred.await(stopping);
+      assert.equal(
+        (yield* Effect.exit(
+          planner.appendContext({
+            plannerNativeThreadId: "new-live-planner",
+            text: "late request",
+          }),
+        ))._tag,
+        "Failure",
+      );
+      yield* Deferred.succeed(failStop, undefined);
+      assert.equal((yield* Fiber.await(start))._tag, "Failure");
+      assert.isTrue(yield* fileSystem.exists(cwd));
+      yield* planner.emitNative("thread/realtime/closed", { threadId: "new-live-planner" });
+      assert.isFalse(yield* fileSystem.exists(cwd));
+      yield* planner.emitNative("thread/realtime/closed", { threadId: "new-live-planner" });
+      assert.deepEqual(planner.removedDirectories, [cwd]);
+    }).pipe(Effect.scoped, Effect.provide(dependencies)),
+  );
+
   it.effect("a late old close cannot delete another planner's cwd", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

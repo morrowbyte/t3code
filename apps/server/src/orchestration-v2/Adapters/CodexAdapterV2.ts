@@ -190,6 +190,7 @@ type CodexLivePlannerDirectory = {
   readonly cwd: string;
   users: number;
   ended: boolean;
+  acceptingRequests: boolean;
 };
 
 type CodexLivePlannerSettings = Pick<
@@ -2099,13 +2100,21 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
       function* (input) {
         const scope = yield* Scope.Scope;
         const plannerDirectories = new Set<CodexLivePlannerDirectory>();
+        const liveVoicePlannerDirectories = new Map<string, CodexLivePlannerDirectory>();
         let liveVoiceFinalized = false;
         const removePlannerDirectory = Effect.fn("CodexAdapterV2.removePlannerDirectory")(
           function* (directory: CodexLivePlannerDirectory) {
             if (!plannerDirectories.has(directory) || !directory.ended || directory.users > 0)
               return;
             yield* fileSystem.remove(directory.cwd, { recursive: true, force: true }).pipe(
-              Effect.tap(() => Effect.sync(() => plannerDirectories.delete(directory))),
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  plannerDirectories.delete(directory);
+                  for (const [threadId, ownedDirectory] of liveVoicePlannerDirectories) {
+                    if (ownedDirectory === directory) liveVoicePlannerDirectories.delete(threadId);
+                  }
+                }),
+              ),
               Effect.ignoreCause({ log: true }),
             );
           },
@@ -2294,7 +2303,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }
           >(),
         );
-        const liveVoicePlannerDirectories = new Map<string, CodexLivePlannerDirectory>();
         yield* Scope.addFinalizer(
           scope,
           Effect.sync(() => {
@@ -2309,7 +2317,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const directory = liveVoicePlannerDirectories.get(threadId);
             if (directory === undefined) return;
             directory.ended = true;
-            liveVoicePlannerDirectories.delete(threadId);
+            directory.acceptingRequests = false;
             yield* Ref.update(liveVoicePlanners, (current) => {
               const next = new Map(current);
               next.delete(threadId);
@@ -2326,7 +2334,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           Effect.acquireUseRelease(
             Effect.suspend(() => {
               const directory = liveVoicePlannerDirectories.get(threadId);
-              if (liveVoiceFinalized || directory === undefined || directory.ended)
+              if (
+                liveVoiceFinalized ||
+                directory === undefined ||
+                !directory.acceptingRequests ||
+                directory.ended
+              )
                 return Effect.fail(
                   new ProviderAdapter.ProviderAdapterProtocolError({
                     driver: CODEX_PROVIDER,
@@ -8388,7 +8401,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 const directory = yield* Effect.acquireRelease(
                   fileSystem.makeTempDirectory({ prefix: "t3-live-planner-" }).pipe(
                     Effect.map((cwd): CodexLivePlannerDirectory => {
-                      const directory = { cwd, users: 1, ended: false };
+                      const directory = { cwd, users: 1, ended: false, acceptingRequests: true };
                       plannerDirectories.add(directory);
                       return directory;
                     }),

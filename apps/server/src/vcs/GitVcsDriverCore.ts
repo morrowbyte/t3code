@@ -3740,7 +3740,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       }
       worktreePath = path.join(parentDir, repoName, sanitizedBranch);
     }
-    const storagePaths = [input.cwd, path.resolve(input.cwd, worktreePath)];
+    const gitCommonDir = yield* resolveGitCommonDir(input.cwd);
+    const storagePaths = [input.cwd, path.resolve(input.cwd, worktreePath), gitCommonDir];
     const storageMessage = yield* Effect.tryPromise({
       try: () => checkStorageAdmission(storagePaths),
       catch: (cause) =>

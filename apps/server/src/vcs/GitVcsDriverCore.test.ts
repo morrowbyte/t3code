@@ -3032,21 +3032,32 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
   });
 
   describe("worktree operations", () => {
-    it.effect.each(["absolute", "relative"] as const)(
+    it.effect.each(["absolute", "relative", "separate-common-dir"] as const)(
       "refuses checkout before creating a worktree at a %s path under critical storage pressure",
       (kind) =>
         Effect.gen(function* () {
           const cwd = yield* makeTmpDir();
-          const { initialBranch } = yield* initRepoWithCommit(cwd);
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
+          const gitCommonDir =
+            kind === "separate-common-dir"
+              ? yield* makeTmpDir("git-critical-common-")
+              : path.join(cwd, ".git");
+          if (kind === "separate-common-dir") {
+            yield* git(cwd, ["init", `--separate-git-dir=${gitCommonDir}`]);
+          }
+          const { initialBranch } = yield* initRepoWithCommit(cwd);
           const worktreePath = path.join(cwd, "missing-parent", "blocked");
           const requestedPath =
             kind === "relative" ? path.join("missing-parent", "blocked") : worktreePath;
           const message = "Btrfs metadata is critically full. Free disk space and try again.";
           using admission = vi
             .spyOn(StoragePressure, "checkStorageAdmission")
-            .mockResolvedValue(message);
+            .mockImplementation(async (paths) =>
+              paths.includes(kind === "separate-common-dir" ? gitCommonDir : worktreePath)
+                ? message
+                : null,
+            );
           const delegate = yield* ChildProcessSpawner.ChildProcessSpawner;
           const checkouts: string[][] = [];
           const spawner = ChildProcessSpawner.make((command) => {
@@ -3077,10 +3088,11 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
           assert.deepEqual(checkouts, []);
           assert.isTrue(Result.isFailure(result));
           if (Result.isFailure(result)) assert.include(result.failure.message, message);
-          assert.deepEqual(admission.mock.calls, [[[cwd, worktreePath]]]);
+          assert.deepEqual(admission.mock.calls, [[[cwd, worktreePath, gitCommonDir]]]);
           assert.isFalse(yield* fs.exists(path.dirname(worktreePath)));
+          assert.equal(yield* git(cwd, ["branch", "--list", "feature/blocked"]), "");
           const driverForReads = yield* GitVcsDriver.GitVcsDriver;
-          assert.include(yield* git(cwd, ["worktree", "list", "--porcelain"]), cwd);
+          assert.notInclude(yield* git(cwd, ["worktree", "list", "--porcelain"]), worktreePath);
           yield* driverForReads.pruneWorktrees({ cwd });
         }),
     );
