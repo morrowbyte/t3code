@@ -122,6 +122,8 @@ export type ThreadManagementTerminalRunStatus = Extract<
 >;
 
 export interface ThreadManagementSendInput {
+  readonly voiceIntakeSource?: import("@t3tools/contracts").VoiceIntakeProvenance;
+  readonly voiceIntakeSourceThreadId?: ThreadId;
   readonly projectId: ProjectId;
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
@@ -821,6 +823,12 @@ const make = Effect.gen(function* () {
       dispatchMode,
       createdBy: input.createdBy,
       creationSource: input.creationSource,
+      ...(input.voiceIntakeSource === undefined
+        ? {}
+        : { voiceIntakeSource: input.voiceIntakeSource }),
+      ...(input.voiceIntakeSourceThreadId === undefined
+        ? {}
+        : { voiceIntakeSourceThreadId: input.voiceIntakeSourceThreadId }),
     });
     const projection = yield* getProjectThreadRecords(input, ["runs", "messages", "turnItems"], {
       messageIds: [input.messageId],

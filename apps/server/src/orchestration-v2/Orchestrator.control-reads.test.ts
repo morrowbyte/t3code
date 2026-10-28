@@ -2273,3 +2273,92 @@ it.effect("explicit settle clears snooze atomically and stays idempotent after r
     assert.deepInclude((yield* projections.getThreadProjection(threadId)).thread, active);
   }).pipe(Effect.provide(layerTest)),
 );
+
+it.effect("fences current-thread voice admission and steering at the dispatch commit", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = ThreadId.make("thread:voice-current-stop");
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-current-voice"),
+      threadId,
+      projectId: ProjectId.make("project:voice-current-stop"),
+      title: "Current voice thread",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const command = (key: string, stopId: string | null) => ({
+      type: "message.dispatch" as const,
+      commandId: CommandId.make(key),
+      threadId,
+      messageId: MessageId.make(key),
+      text: "Change the selected heading.",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" as const },
+      voiceIntakeSourceThreadId: threadId,
+      voiceIntakeSource: {
+        leaseId: "lease",
+        generation: 1,
+        intentId: key,
+        provisional: false,
+        stopId,
+        sources: [{ segmentId: key, revision: 1, start: 0, end: 6, quote: "Change", stopId }],
+      },
+      createdBy: "user" as const,
+      creationSource: "voice" as const,
+    });
+    const first = command("current-first", null);
+    const receipt = yield* orchestrator.dispatch(first);
+    const beforeStop = yield* projections.getThreadProjection(threadId);
+    assert.equal(beforeStop.messages.length, 1);
+    assert.equal(beforeStop.subagents.length, 0);
+    yield* orchestrator.dispatch({
+      type: "thread.stop",
+      commandId: CommandId.make("current-stop"),
+      threadId,
+    });
+    const stopped = yield* projections.getThreadProjection(threadId);
+    const stopId = stopped.thread.voiceIntakeStopId!;
+    assert.equal((yield* orchestrator.dispatch(first)).sequence, receipt.sequence);
+    assert.isTrue(
+      Result.isFailure(
+        yield* orchestrator.dispatch(command("late-current", null)).pipe(Effect.result),
+      ),
+    );
+    const fresh = command("fresh-current", stopId);
+    yield* orchestrator.dispatch(fresh);
+    const active = yield* projections.getThreadProjection(threadId);
+    assert.equal(active.messages.length, 2);
+    yield* orchestrator.dispatch({
+      type: "thread.stop",
+      commandId: CommandId.make("current-second-stop"),
+      threadId,
+    });
+    const lateSteer = yield* orchestrator
+      .dispatch({
+        ...command("current-steer", stopId),
+        dispatchMode: { type: "steer_active", targetRunId: active.runs.at(-1)!.id },
+      })
+      .pipe(Effect.result);
+    assert.isTrue(Result.isFailure(lateSteer));
+    if (Result.isFailure(lateSteer))
+      assert.include(String(lateSteer.failure.cause), "captured voice source");
+    assert.isTrue(
+      Result.isFailure(
+        yield* orchestrator
+          .dispatch({
+            ...command("foreign-current", stopId),
+            voiceIntakeSourceThreadId: ThreadId.make("different-thread"),
+          })
+          .pipe(Effect.result),
+      ),
+    );
+    assert.equal((yield* projections.getThreadProjection(threadId)).messages.length, 2);
+  }).pipe(Effect.provide(layerTest)),
+);

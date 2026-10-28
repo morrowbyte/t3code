@@ -5147,33 +5147,44 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
   ) {
     let projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+    if (command.voiceIntakeSourceThreadId !== undefined && command.voiceIntakeSource === undefined)
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "A voice source origin requires its captured source.",
+      });
     if (command.voiceIntakeSource !== undefined) {
       const source = command.voiceIntakeSource;
-      const parentId = yield* appOwnedSubagentParentThreadId(command.threadId).pipe(
-        mapDispatchError(command),
-      );
-      const parent =
-        parentId === undefined
+      const direct = command.voiceIntakeSourceThreadId !== undefined;
+      const parentId = direct
+        ? undefined
+        : yield* appOwnedSubagentParentThreadId(command.threadId).pipe(mapDispatchError(command));
+      const owner = direct
+        ? projection
+        : parentId === undefined
           ? undefined
           : yield* getProjectionWithPendingEvents(parentId, events);
+      const validTarget = direct
+        ? command.voiceIntakeSourceThreadId === command.threadId
+        : (command.dispatchMode.type === "steer_active" ||
+            command.dispatchMode.type === "restart_active") &&
+          projection.thread.voiceIntake?.intentId === source.intentId;
       if (
         command.createdBy !== "user" ||
         command.creationSource !== "voice" ||
         command.delegation !== undefined ||
-        (command.dispatchMode.type !== "steer_active" &&
-          command.dispatchMode.type !== "restart_active") ||
-        projection.thread.voiceIntake?.intentId !== source.intentId ||
-        !parent ||
-        parent.thread.deletedAt !== null ||
-        parent.thread.archivedAt !== null ||
-        source.stopId !== (parent.thread.voiceIntakeStopId ?? null) ||
+        !validTarget ||
+        !owner ||
+        owner.thread.deletedAt !== null ||
+        owner.thread.archivedAt !== null ||
+        source.stopId !== (owner.thread.voiceIntakeStopId ?? null) ||
         source.sources.some((part) => part.stopId !== source.stopId)
       )
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
           cause:
-            "The captured voice source cannot continue work after Parent Stop or without its exact owner.",
+            "The captured voice source cannot continue work after Stop or without its exact owner.",
         });
     }
     if (command.delegation !== undefined)

@@ -2891,6 +2891,7 @@ export const OrchestrationV2Command = Schema.Union([
     modelSelection: Schema.optional(ModelSelection),
     delegation: Schema.optional(OrchestrationV2ConversationDelegation),
     voiceIntakeSource: Schema.optional(VoiceIntakeProvenance),
+    voiceIntakeSourceThreadId: Schema.optional(ThreadId),
     sourcePlanRef: Schema.optional(Schema.Struct({ threadId: ThreadId, planId: PlanId })),
     restartContinuationOfRunId: Schema.optional(RunId),
     usageLimitContinuationOfRunId: Schema.optional(RunId),
