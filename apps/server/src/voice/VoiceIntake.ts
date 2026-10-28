@@ -24,7 +24,7 @@ export interface VoiceIntakeDependencies {
     request: string,
     projectId?: string,
     previewContext?: string | null,
-    transfer?: { readonly intentId: string; readonly requestId: string },
+    transfer?: { readonly intentId: string; readonly requestIds: ReadonlyArray<string> },
   ) => Effect.Effect<VoiceIntakeIntent, Error>;
   readonly read: (intent: VoiceIntakeIntent) => Effect.Effect<VoiceIntakeIntent, Error>;
   readonly steer: (
@@ -81,29 +81,36 @@ const retractions = (text: string) =>
     retractionWords.has(word.replaceAll("’", "'")),
   ).length;
 
+const sameSource = (a: VoiceIntakeSource, b: VoiceIntakeSource) =>
+  a.segmentId === b.segmentId &&
+  a.start === b.start &&
+  a.end === b.end &&
+  a.quote === b.quote &&
+  a.stopId === b.stopId;
+
 export function transferVoiceIntakeClaim(
   intent: VoiceIntakeIntent,
-  requestId: string,
+  requestId: string | ReadonlyArray<string>,
   sources: ReadonlyArray<VoiceIntakeSource>,
 ): VoiceIntakeIntent | undefined {
   const pending = [intent.pendingSteer, ...(intent.queuedSteers ?? [])].filter(
     (item): item is NonNullable<VoiceIntakeIntent["pendingSteer"]> => item !== null,
   );
-  const selected = pending.find((item) => item.requestId === requestId && item.awaitingFollowup);
-  const same = (a: VoiceIntakeSource, b: VoiceIntakeSource) =>
-    a.segmentId === b.segmentId &&
-    a.start === b.start &&
-    a.end === b.end &&
-    a.quote === b.quote &&
-    a.stopId === b.stopId;
+  const requestIds = typeof requestId === "string" ? [requestId] : requestId;
+  const selected = pending.filter(
+    (item) => requestIds.includes(item.requestId) && item.awaitingFollowup,
+  );
+  const selectedSources = selected.flatMap((item) => item.sources);
   if (
-    !selected ||
-    selected.sources.length !== sources.length ||
-    !selected.sources.every((source) => sources.some((other) => same(source, other)))
+    !requestIds.length ||
+    new Set(requestIds).size !== requestIds.length ||
+    selected.length !== requestIds.length ||
+    !selectedSources.every((source) => sources.some((other) => sameSource(source, other))) ||
+    !sources.every((source) => selectedSources.some((other) => sameSource(source, other)))
   )
     return;
   const claimedSources = intent.claimedSources.filter(
-    (claim) => !selected.sources.some((source) => same(source, claim)),
+    (claim) => !selectedSources.some((source) => sameSource(source, claim)),
   );
   if (
     claimedSources.some((claim) =>
@@ -116,7 +123,20 @@ export function transferVoiceIntakeClaim(
     )
   )
     return;
-  const remaining = pending.filter((item) => item.requestId !== requestId);
+  const remaining = pending.filter((item) => !requestIds.includes(item.requestId));
+  if (
+    remaining.some((item) =>
+      item.sources.some((claim) =>
+        sources.some(
+          (source) =>
+            source.segmentId === claim.segmentId &&
+            source.start < claim.end &&
+            claim.start < source.end,
+        ),
+      ),
+    )
+  )
+    return;
   return {
     ...intent,
     claimedSources,
@@ -320,6 +340,9 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
         pending!.sources.every(
           (source) => (corrections.get(source.segmentId) ?? 0) <= source.revision,
         );
+      // A failed projection read is not evidence that the target ended. Keep
+      // valid unsent entries until a later event makes the exact run readable.
+      if (valid && observed.status === "unavailable") break;
       if (valid && isTerminal(observed.status)) {
         observed = withPending(
           observed,
@@ -532,10 +555,21 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
       );
       const transfer =
         action.type === "new" && foreign.length === 1 && isTerminal(foreign[0]!.status)
-          ? pendingOf(foreign[0]!).flatMap((pending) => {
-              const transferred = transferVoiceIntakeClaim(foreign[0]!, pending.requestId, sources);
-              return transferred ? [{ owner: foreign[0]!, pending, transferred }] : [];
-            })[0]
+          ? (() => {
+              const pending = pendingOf(foreign[0]!).filter(
+                (item) =>
+                  item.awaitingFollowup &&
+                  item.sources.every((source) =>
+                    sources.some((other) => sameSource(source, other)),
+                  ),
+              );
+              const transferred = transferVoiceIntakeClaim(
+                foreign[0]!,
+                pending.map((item) => item.requestId),
+                sources,
+              );
+              return transferred ? { owner: foreign[0]!, pending, transferred } : undefined;
+            })()
           : undefined;
       if (foreign.length && !transfer) {
         reason = "source_already_owned";
@@ -592,9 +626,12 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
           },
           action.request,
           transfer?.owner.projectId ?? action.projectId ?? undefined,
-          transfer ? transfer.pending.previewContext : snapshot.previewContext,
+          transfer ? transfer.pending[0]!.previewContext : snapshot.previewContext,
           transfer
-            ? { intentId: transfer.owner.id, requestId: transfer.pending.requestId }
+            ? {
+                intentId: transfer.owner.id,
+                requestIds: transfer.pending.map((item) => item.requestId),
+              }
             : undefined,
         );
         if (transfer) yield* persist(transfer.transferred);

@@ -3709,8 +3709,55 @@ it.effect.each([false, true])(
           "refused reserved intake never falls through to native child admission",
         );
 
-        // End the owned run exactly after read, while another run becomes active.
+        // Queue two constraints under different selections, then end their exact
+        // run at dispatch while an unrelated run becomes active.
         const oldRun = durableProjection.runs[0]!;
+        const raceParts = ["Keep the existing accessible name.", "Announce submission completion."];
+        const raceClause = raceParts.join(" ");
+        durableProjection = {
+          ...durableProjection,
+          runs: durableProjection.runs.map((run) => ({ ...run, status: "preparing" })),
+        };
+        decideIntakeSnapshot = ({ snapshot }) => {
+          const segment = snapshot.segments.find((segment) => segment.id === "run-race")!;
+          const owner = snapshot.intents.find(
+            (intent) => intent.id === mainReceipt.intakeIntent.id,
+          )!;
+          const quote = raceParts[segment.revision - 1]!;
+          return Effect.succeed({
+            requestId: snapshot.requestId,
+            actions:
+              owner.status === "completed"
+                ? []
+                : [
+                    {
+                      type: "refine" as const,
+                      intentId: owner.id,
+                      message: quote,
+                      readOnly: false,
+                      sources: [{ segmentId: segment.id, revision: segment.revision, quote }],
+                    },
+                  ],
+          });
+        };
+        for (const [index, context] of [
+          "selected-first-constraint",
+          "selected-second-constraint",
+        ].entries()) {
+          yield* service.context(session, { ...intakeLease, revision: index + 3, context });
+          const queued = new Promise<void>((resolve) => {
+            notifyIntakeProcessed = resolve;
+          });
+          yield* emitSpeech(
+            "user",
+            raceParts.slice(0, index + 1).join(" "),
+            "run-race",
+            index + 1,
+            false,
+          );
+          yield* Effect.promise(() => queued);
+        }
+        durableProjection = { ...durableProjection, runs: [{ ...oldRun, status: "running" }] };
         beforeMainCommit = () => {
           beforeMainCommit = undefined;
           durableProjection = {
@@ -3726,25 +3773,23 @@ it.effect.each([false, true])(
             ],
           };
         };
-        const raceClause = "Keep the existing accessible name.";
-        decideIntakeSnapshot = ({ snapshot }) =>
-          Effect.succeed({
-            requestId: snapshot.requestId,
-            actions: [
-              {
-                type: "refine",
-                intentId: mainReceipt.intakeIntent.id,
-                message: raceClause,
-                readOnly: false,
-                sources: [{ segmentId: "run-race", revision: 1, quote: raceClause }],
-              },
-            ],
-          });
         const beforeRaceMessages = durableProjection.messages.length;
         const raceProcessed = new Promise<void>((resolve) => {
           notifyIntakeProcessed = resolve;
         });
-        yield* emitSpeech("user", raceClause, "run-race", 1, false);
+        yield* Queue.offer(
+          t3EventQueues.get("run.updated")!,
+          eventFor({
+            type: "run.updated",
+            id: "main-race-became-running",
+            threadId,
+            runId: oldRun.id,
+            nodeId: null,
+            providerInstanceId,
+            occurredAt: "2026-10-14T00:00:04.000Z",
+            payload: durableProjection.runs[0]!,
+          } as never),
+        );
         yield* Effect.promise(() => raceProcessed);
         assert.deepEqual(mainRefinements.at(-1)!.dispatchMode, {
           type: "steer_active",
@@ -3758,17 +3803,25 @@ it.effect.each([false, true])(
         );
         assert.equal(mainInputs.length, 2, "a stale refinement cannot auto-start replacement work");
 
-        // A completed-result semantic decision can transfer an unsent claim, never steer the new run.
-        const transferSource = { segmentId: "run-race", revision: 2, quote: raceClause };
+        // A completed-result semantic decision can transfer the complete union.
+        const transferSources = raceParts.map((quote) => ({
+          segmentId: "run-race",
+          revision: 3,
+          quote,
+        }));
         const beforeTransfer = yield* sql<{
           receipt_json: string;
         }>`SELECT receipt_json FROM codex_live_voice_intents WHERE planner_turn_id = ${`request:${mainReceipt.intakeIntent.id}`}`;
         const transferOwner = (
           decodeJson(beforeTransfer[0]!.receipt_json) as {
-            intakeIntent: { pendingSteer: { requestId: string; awaitingFollowup: boolean } };
+            intakeIntent: {
+              pendingSteer: { requestId: string; awaitingFollowup: boolean };
+              queuedSteers: Array<{ requestId: string; awaitingFollowup: boolean }>;
+            };
           }
         ).intakeIntent;
         assert.isTrue(transferOwner.pendingSteer.awaitingFollowup);
+        assert.isTrue(transferOwner.queuedSteers[0]!.awaitingFollowup);
         decideIntakeSnapshot = ({ snapshot }) =>
           Effect.succeed({
             requestId: snapshot.requestId,
@@ -3778,14 +3831,14 @@ it.effect.each([false, true])(
                 projectId: null,
                 request: raceClause,
                 readOnly: false,
-                sources: [transferSource],
+                sources: transferSources,
               },
             ],
           });
         const transferProcessed = new Promise<void>((resolve) => {
           notifyIntakeProcessed = resolve;
         });
-        yield* emitSpeech("user", raceClause, "run-race", 2, true);
+        yield* emitSpeech("user", raceClause, "run-race", 3, true);
         yield* Effect.promise(() => transferProcessed);
         assert.equal(
           mainInputs.length,
@@ -3799,7 +3852,15 @@ it.effect.each([false, true])(
           mainClause,
           "completed reference uses original speech",
         );
-        assert.include(mainInputs.at(-1)!.text, raceClause);
+        for (const part of raceParts) assert.include(mainInputs.at(-1)!.text, part);
+        assert.include(
+          mainInputs.at(-1)!.text,
+          `${raceParts[0]}\n\nSelected preview context (reference data):\nselected-first-constraint`,
+        );
+        assert.include(
+          mainInputs.at(-1)!.text,
+          `${raceParts[1]}\n\nSelected preview context (reference data):\nselected-second-constraint`,
+        );
         assert.notInclude(mainInputs.at(-1)!.text, "publicly available for everyone");
         const afterTransfer = yield* sql<{
           receipt_json: string;
@@ -3815,8 +3876,13 @@ it.effect.each([false, true])(
         );
         const transferred = yield* sql<{
           receipt_json: string;
-        }>`SELECT receipt_json FROM codex_live_voice_intents WHERE lease_id = ${intakeLease.leaseId} AND json_extract(receipt_json, '$.sourceTransfer.requestId') = ${transferOwner.pendingSteer.requestId}`;
+        }>`SELECT receipt_json FROM codex_live_voice_intents WHERE lease_id = ${intakeLease.leaseId} AND json_extract(receipt_json, '$.sourceTransfer.requestIds[0]') = ${transferOwner.pendingSteer.requestId}`;
         assert.equal(transferred.length, 1);
+        assert.deepEqual(
+          (decodeJson(transferred[0]!.receipt_json) as { sourceTransfer: { requestIds: string[] } })
+            .sourceTransfer.requestIds,
+          [transferOwner.pendingSteer.requestId, transferOwner.queuedSteers[0]!.requestId],
+        );
         yield* service.status(session, intakeLease);
         assert.equal(
           mainInputs.length,

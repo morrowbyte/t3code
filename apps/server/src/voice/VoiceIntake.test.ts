@@ -112,7 +112,7 @@ const setup = (
           loseReply = false;
           return yield* new LiveVoiceError({ code: "runtime_unavailable" });
         }
-        return { intent, delivered: true };
+        return { intent: status ? { ...intent, status } : intent, delivered: true };
       }),
     confirm: (intent) =>
       Effect.gen(function* () {
@@ -1691,9 +1691,9 @@ it.effect.each(["new", "reference", "refine"] as const)(
     }),
 );
 
-it.effect(
-  "transfers both unhandled FIFO entries after completion with their own frozen selection",
-  () =>
+it.effect.each([false, true])(
+  "transfers complete pending source vectors after completion (combined: %s)",
+  (combined) =>
     Effect.gen(function* () {
       const held = yield* Deferred.make<void>();
       const release = yield* Deferred.make<void>();
@@ -1721,13 +1721,23 @@ it.effect(
             yield* Deferred.await(release);
             return {
               requestId: snapshot.requestId,
-              actions: parts.map((text, index) => ({
-                type: "new" as const,
-                projectId: null,
-                request: text,
-                readOnly: false,
-                sources: [source(text, `part-${index}`)],
-              })),
+              actions: combined
+                ? [
+                    {
+                      type: "new" as const,
+                      projectId: null,
+                      request: parts.join(" "),
+                      readOnly: false,
+                      sources: parts.map((text, index) => source(text, `part-${index}`)),
+                    },
+                  ]
+                : parts.map((text, index) => ({
+                    type: "new" as const,
+                    projectId: null,
+                    request: text,
+                    readOnly: false,
+                    sources: [source(text, `part-${index}`)],
+                  })),
             };
           }
           const index = classify - 2;
@@ -1757,12 +1767,31 @@ it.effect(
       test.complete();
       const recheck = yield* test.engine.processLatest().pipe(Effect.forkChild);
       yield* Deferred.await(held);
+      const heldOwner = (yield* test.engine.state).intents[0]!;
+      const ids = [heldOwner.pendingSteer!, ...heldOwner.queuedSteers!].map(
+        (item) => item.requestId,
+      );
+      const union = parts.map((text, index) => source(text, `part-${index}`));
+      assert.isDefined(transferVoiceIntakeClaim(heldOwner, ids, union));
+      assert.isUndefined(transferVoiceIntakeClaim(heldOwner, ids, [union[0]!]));
+      assert.isUndefined(
+        transferVoiceIntakeClaim(heldOwner, ids, [
+          ...union,
+          source("Unrelated instruction.", "foreign"),
+        ]),
+      );
+      assert.isUndefined(
+        transferVoiceIntakeClaim(heldOwner, ids, [source("Sent", "part-0", 1, 5), union[1]!]),
+      );
       test.setPreviewContext("unrelated selection");
       yield* Deferred.succeed(release, undefined);
       yield* Fiber.join(recheck);
       yield* test.engine.processLatest();
-      assert.equal(test.admitted.length, 3);
-      assert.deepEqual(test.admittedContexts, [null, "selection 0", "selection 1"]);
+      assert.equal(test.admitted.length, combined ? 2 : 3);
+      assert.deepEqual(
+        test.admittedContexts,
+        combined ? [null, "selection 0"] : [null, "selection 0", "selection 1"],
+      );
       assert.deepEqual(test.steered, []);
       const old = (yield* test.engine.state).intents[0]!;
       assert.isNull(old.pendingSteer);
@@ -1772,6 +1801,67 @@ it.effect(
       );
       assert.isUndefined(transferVoiceIntakeClaim(old, "absent", [source(parts[0]!, "part-0")]));
     }),
+);
+
+it.effect("pauses B when the read after successful A is temporarily unavailable", () =>
+  Effect.gen(function* () {
+    const first = "Add the form.";
+    const parts = ["Show Sent.", "Announce Sent to screen readers."];
+    let round = 0;
+    const test = setup((snapshot) =>
+      Effect.succeed({
+        requestId: snapshot.requestId,
+        actions:
+          ++round === 1
+            ? [
+                {
+                  type: "new" as const,
+                  projectId: null,
+                  request: first,
+                  readOnly: false,
+                  sources: [source(first)],
+                },
+              ]
+            : [
+                {
+                  type: "refine" as const,
+                  intentId: snapshot.intents[0]!.id,
+                  message: parts[round - 2]!,
+                  readOnly: false,
+                  sources: [source(parts[round - 2]!, `part-${round - 2}`)],
+                },
+              ],
+      }),
+    );
+    yield* test.engine.observe(transcript(first));
+    yield* test.engine.processLatest();
+    test.setStatus("preparing");
+    for (const [index, part] of parts.entries()) {
+      yield* test.engine.observe(transcript(part, 1, false, `part-${index}`));
+      yield* test.engine.processLatest();
+    }
+    const pending = (yield* test.engine.state).intents[0]!;
+    const keyB = pending.queuedSteers![0]!.requestId;
+    test.setBeforeSteer(
+      Effect.sync(() => {
+        test.setStatus("unavailable");
+        return true;
+      }),
+    );
+    test.setStatus("running");
+    yield* test.engine.processLatest();
+    assert.deepEqual(test.steered, [parts[0]]);
+    assert.equal((yield* test.engine.state).intents[0]!.pendingSteer?.requestId, keyB);
+    yield* test.engine.processLatest();
+    assert.deepEqual(test.steered, [parts[0]]);
+    test.setBeforeSteer(undefined);
+    test.setStatus("running");
+    yield* test.engine.processLatest();
+    yield* test.engine.processLatest();
+    assert.deepEqual(test.steered, parts);
+    assert.deepEqual(test.attemptedSteerKeys, [pending.pendingSteer!.requestId, keyB]);
+    assert.isNull((yield* test.engine.state).intents[0]!.pendingSteer);
+  }),
 );
 
 it.effect(

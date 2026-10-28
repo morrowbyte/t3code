@@ -2041,7 +2041,10 @@ export const layer: Layer.Layer<
       readonly validateSource?: Effect.Effect<boolean>;
       readonly previewContext?: string | null;
       readonly dispatchOptions?: DispatchRuntimeOptions;
-      readonly sourceTransfer?: { readonly intentId: string; readonly requestId: string };
+      readonly sourceTransfer?: {
+        readonly intentId: string;
+        readonly requestIds: ReadonlyArray<string>;
+      };
     }) {
       const intentTurnId =
         input.requestId === undefined ? input.plannerTurnId : `request:${input.requestId}`;
@@ -2082,6 +2085,7 @@ export const layer: Layer.Layer<
                 before: VoiceIntakeIntent;
                 after: VoiceIntakeIntent;
                 completedSources: VoiceIntakeProvenance["sources"];
+                pending: ReadonlyArray<NonNullable<VoiceIntakeIntent["pendingSteer"]>>;
               }
             | undefined;
           if (input.voiceIntake) {
@@ -2103,8 +2107,15 @@ export const layer: Layer.Layer<
                 priorTransfer !== null &&
                 "intentId" in priorTransfer &&
                 priorTransfer.intentId === input.sourceTransfer.intentId &&
-                "requestId" in priorTransfer &&
-                priorTransfer.requestId === input.sourceTransfer.requestId;
+                (("requestIds" in priorTransfer &&
+                  Array.isArray(priorTransfer.requestIds) &&
+                  priorTransfer.requestIds.length === input.sourceTransfer.requestIds.length &&
+                  priorTransfer.requestIds.every(
+                    (id, index) => id === input.sourceTransfer!.requestIds[index],
+                  )) ||
+                  ("requestId" in priorTransfer &&
+                    input.sourceTransfer.requestIds.length === 1 &&
+                    priorTransfer.requestId === input.sourceTransfer.requestIds[0]));
               if (existing.length && !replay) return yield* liveError("dispatch_conflict");
               if (!replay) {
                 const record = claimed.find(
@@ -2122,7 +2133,7 @@ export const layer: Layer.Layer<
                 const owner = receipt.intakeIntent;
                 const transferred = transferVoiceIntakeClaim(
                   owner,
-                  input.sourceTransfer.requestId,
+                  input.sourceTransfer.requestIds,
                   input.voiceIntake.sources,
                 );
                 if (!transferred) return yield* liveError("dispatch_conflict");
@@ -2135,8 +2146,9 @@ export const layer: Layer.Layer<
                   ) ||
                   actual.messages.some(
                     (message) =>
-                      message.id === `message:intake-steer:${input.sourceTransfer!.requestId}` &&
-                      message.runId === owner.runId,
+                      input.sourceTransfer!.requestIds.some(
+                        (requestId) => message.id === `message:intake-steer:${requestId}`,
+                      ) && message.runId === owner.runId,
                   )
                 )
                   return yield* liveError("dispatch_conflict");
@@ -2144,6 +2156,10 @@ export const layer: Layer.Layer<
                   before: owner,
                   after: transferred,
                   completedSources: receipt.voiceIntake.sources,
+                  pending: [owner.pendingSteer, ...(owner.queuedSteers ?? [])].filter(
+                    (item): item is NonNullable<VoiceIntakeIntent["pendingSteer"]> =>
+                      item !== null && input.sourceTransfer!.requestIds.includes(item.requestId),
+                  ),
                 };
               }
             }
@@ -2178,11 +2194,20 @@ export const layer: Layer.Layer<
           const sourceInstruction =
             input.voiceIntake === undefined
               ? undefined
-              : voiceIntakeInstruction(
-                  input.voiceIntake.sources,
-                  frozenPreview,
-                  transfer?.completedSources,
-                );
+              : transfer
+                ? (() => {
+                    const groups = transfer.pending.map((pending, index) =>
+                      voiceIntakeInstruction(
+                        pending.sources,
+                        pending.previewContext,
+                        index === 0 ? transfer.completedSources : undefined,
+                      ),
+                    );
+                    return groups.every((group) => group !== undefined)
+                      ? groups.join("\n\n")
+                      : undefined;
+                  })()
+                : voiceIntakeInstruction(input.voiceIntake.sources, frozenPreview);
           if (input.voiceIntake && sourceInstruction === undefined)
             return yield* liveError("invalid_state");
           const priorIntents = yield* sql<{
