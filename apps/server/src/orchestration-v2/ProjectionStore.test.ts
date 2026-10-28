@@ -4312,6 +4312,51 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           terminal ? [false, false] : [true, true],
         );
       }
+      for (const state of ["pending", "approved", "claimed"] as const) {
+        yield* projectionStore.apply({
+          id: EventId.make(`event:${suffix}:${state}`),
+          type: "runtime-request.updated",
+          threadId,
+          runId,
+          nodeId,
+          driver,
+          occurredAt: now,
+          payload: {
+            id: RuntimeRequestId.make(`privileged:${state}`),
+            nodeId,
+            providerTurnId: null,
+            nativeRequestRef: null,
+            kind: "command",
+            status: state === "pending" ? "pending" : "resolved",
+            responseCapability: { type: "external" },
+            createdAt: now,
+            resolvedAt: state === "pending" ? null : now,
+            privilegedCommand: {
+              bundle: {
+                environmentId: EnvironmentId.make("fixture"),
+                threadId,
+                runId,
+                providerSessionId: "session",
+                purpose: "test",
+                script: "true",
+                shell: "sh",
+                cwd: "/tmp",
+                timeoutMs: 1000,
+              },
+              packageHash: "a".repeat(64),
+              state,
+            },
+          },
+        });
+      }
+      const unclaimed = yield* projectionStore.getThreadRecords(threadId, ["runtimeRequests"], {
+        runtimeRequestStatuses: ["pending", "resolved"],
+        runtimeRequestPrivilegedStates: ["pending", "approved"],
+      });
+      assert.deepEqual(unclaimed.runtimeRequests.map((item) => item.id).sort(), [
+        "privileged:approved",
+        "privileged:pending",
+      ]);
     }),
   );
 

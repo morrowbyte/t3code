@@ -218,10 +218,11 @@ export const plan = Effect.fn("PrivilegedCommandCommands.plan")(function* (comma
       occurredAt: now,
       payload: {
         ...context.item,
-        ...(command.type === "privileged-command.result" &&
-        command.cleanupConfirmed === true &&
-        context.item.status === "waiting" &&
-        authority.state === "unknown"
+        ...(((command.type === "privileged-command.result" &&
+          command.cleanupConfirmed === true &&
+          authority.state === "unknown") ||
+          (command.type === "privileged-command.unconfirmed" && authority.state === "approved")) &&
+        context.item.status === "waiting"
           ? { status: "cancelled" as const, completedAt: now }
           : {}),
         privilegedCommand: updated,
@@ -263,7 +264,7 @@ export const resolve = Effect.fn("PrivilegedCommandCommands.resolve")(function* 
 export const stop = Effect.fn("PrivilegedCommandCommands.stop")(function* (input: {
   readonly threadId: import("@t3tools/contracts").ThreadId;
   readonly runId?: import("@t3tools/contracts").RunId;
-  readonly onlyPending?: boolean;
+  readonly onlyUnclaimed?: boolean;
 }) {
   const store = yield* ProjectionStore.ProjectionStoreV2;
   const now = yield* DateTime.now;
@@ -276,7 +277,9 @@ export const stop = Effect.fn("PrivilegedCommandCommands.stop")(function* (input
     if (
       authority === undefined ||
       (input.runId !== undefined && authority.bundle.runId !== input.runId) ||
-      (input.onlyPending === true && authority.state !== "pending") ||
+      (input.onlyUnclaimed === true &&
+        authority.state !== "pending" &&
+        authority.state !== "approved") ||
       !["pending", "approved", "claimed"].includes(authority.state)
     )
       continue;

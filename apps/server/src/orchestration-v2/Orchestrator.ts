@@ -12051,7 +12051,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const stopped = yield* PrivilegedCommandCommands.stop({
           threadId: command.threadId,
           runId: command.runId,
-          onlyPending: true,
+          onlyUnclaimed: true,
         }).pipe(Effect.provideService(ProjectionStoreV2, projectionStore));
         for (const event of stopped) yield* emit(events, command)(event);
         break;
@@ -12682,12 +12682,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           const { runtimeRequests } = yield* projectionStore.getThreadRecords(
             threadId,
             ["runtimeRequests"],
-            { runtimeRequestStatuses: ["pending"] },
+            {
+              runtimeRequestStatuses: ["pending", "resolved"],
+              runtimeRequestPrivilegedStates: ["pending", "approved"],
+            },
           );
           if (
             !runtimeRequests.some(
               (request) =>
-                request.privilegedCommand?.state === "pending" &&
+                (request.privilegedCommand?.state === "pending" ||
+                  request.privilegedCommand?.state === "approved") &&
                 request.privilegedCommand.bundle.runId === run.id,
             )
           )

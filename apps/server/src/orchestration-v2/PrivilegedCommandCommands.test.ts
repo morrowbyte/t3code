@@ -114,7 +114,7 @@ effectIt.effect("keeps a claimed approval waiting until cleanup is confirmed", (
   }),
 );
 
-effectIt.effect("closes only pending privileged requests when their run ends", () =>
+effectIt.effect("closes unclaimed privileged requests when their run ends", () =>
   Effect.gen(function* () {
     const claimed = {
       ...request,
@@ -130,7 +130,7 @@ effectIt.effect("closes only pending privileged requests when their run ends", (
           node: undefined,
         }),
     } as unknown as ProjectionStore.ProjectionStoreV2["Service"];
-    const events = yield* Commands.stop({ threadId, runId, onlyPending: true }).pipe(
+    const events = yield* Commands.stop({ threadId, runId, onlyUnclaimed: true }).pipe(
       Effect.provideService(ProjectionStore.ProjectionStoreV2, store),
     );
     const updates = events.filter((event) => event.type === "runtime-request.updated");
@@ -139,6 +139,74 @@ effectIt.effect("closes only pending privileged requests when their run ends", (
       id: requestId,
       status: "cancelled",
       privilegedCommand: { state: "rejected" },
+    });
+  }),
+);
+
+effectIt.effect(
+  "closes an approved but unclaimed request without touching a claimed execution",
+  () =>
+    Effect.gen(function* () {
+      const approvedId = RuntimeRequestId.make("approved-race");
+      const claimedId = RuntimeRequestId.make("claimed-race");
+      const approved = {
+        ...request,
+        id: approvedId,
+        status: "resolved" as const,
+        privilegedCommand: { ...authority, state: "approved" as const },
+      };
+      const claimed = {
+        ...request,
+        id: claimedId,
+        status: "resolved" as const,
+        privilegedCommand: { ...authority, state: "claimed" as const, claimId: "claim" },
+      };
+      const store = {
+        getThreadRecords: () => Effect.succeed({ runtimeRequests: [approved, claimed] }),
+        getRuntimeResponseContext: (_threadId: unknown, id: unknown) =>
+          Effect.succeed({
+            request: id === approvedId ? approved : claimed,
+            item: { type: "approval_request", status: "waiting", completedAt: null },
+            node: undefined,
+          }),
+      } as unknown as ProjectionStore.ProjectionStoreV2["Service"];
+      const events = yield* Commands.stop({ threadId, runId, onlyUnclaimed: true }).pipe(
+        Effect.provideService(ProjectionStore.ProjectionStoreV2, store),
+      );
+      expect(events.filter((event) => event.type === "runtime-request.updated")).toHaveLength(1);
+      expect(events.find((event) => event.type === "turn-item.updated")?.payload).toMatchObject({
+        status: "cancelled",
+        privilegedCommand: { state: "unknown" },
+      });
+    }),
+);
+
+effectIt.effect("closes an unclaimed approval when a claim cannot start", () =>
+  Effect.gen(function* () {
+    const approved = {
+      ...request,
+      status: "resolved" as const,
+      decision: "accept" as const,
+      privilegedCommand: { ...authority, state: "approved" as const },
+    };
+    const store = {
+      getRuntimeResponseContext: () =>
+        Effect.succeed({
+          request: approved,
+          item: { type: "approval_request", status: "waiting", completedAt: null },
+        }),
+    } as unknown as ProjectionStore.ProjectionStoreV2["Service"];
+    const events = yield* Commands.plan({
+      type: "privileged-command.unconfirmed",
+      commandId: CommandId.make("unconfirmed-race"),
+      threadId,
+      requestId,
+      packageHash,
+      claimId: "claim",
+    }).pipe(Effect.provideService(ProjectionStore.ProjectionStoreV2, store));
+    expect(events.find((event) => event.type === "turn-item.updated")?.payload).toMatchObject({
+      status: "cancelled",
+      privilegedCommand: { state: "unknown" },
     });
   }),
 );
