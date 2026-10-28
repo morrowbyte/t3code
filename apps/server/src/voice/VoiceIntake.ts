@@ -92,6 +92,8 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
   let noticeVersion = 0;
   let retractionEpoch = 0;
   const sourceEpochs = new WeakMap<VoiceIntakeSource, number>();
+  const decisionEpochs = new WeakMap<VoiceIntakeSource, number>();
+  const queuedSources = new WeakSet<VoiceIntakeSource>();
   const segmentRetractions = new Map<string, number>();
   const corrections = new Map<string, number>();
   const segmentStops = new Map<string, string | null | undefined>();
@@ -199,12 +201,36 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
     });
   const overlap = (left: VoiceIntakeSource, right: VoiceIntakeSource) =>
     left.segmentId === right.segmentId && left.start < right.end && right.start < left.end;
+  const coveredByClaims = (
+    source: VoiceIntakeSource,
+    claimed: ReadonlyArray<VoiceIntakeSource>,
+  ) => {
+    const ranges = claimed
+      .filter((claim) => overlap(source, claim))
+      .flatMap((claim) => {
+        const start = Math.max(source.start, claim.start);
+        const end = Math.min(source.end, claim.end);
+        return source.quote.slice(start - source.start, end - source.start) ===
+          claim.quote.slice(start - claim.start, end - claim.start)
+          ? [{ start, end }]
+          : [];
+      })
+      .sort((a, b) => a.start - b.start);
+    let covered = source.start;
+    for (const range of ranges) {
+      if (range.start > covered) return false;
+      covered = Math.max(covered, range.end);
+      if (covered >= source.end) return true;
+    }
+    return false;
+  };
   const currentSources = (sources: ReadonlyArray<VoiceIntakeSource>) =>
     sources.every((source) => {
       const current = segments.get(source.segmentId);
       return (
         current !== undefined &&
         sourceEpochs.get(source) === (segmentRetractions.get(source.segmentId) ?? 0) &&
+        (queuedSources.has(source) || decisionEpochs.get(source) === retractionEpoch) &&
         source.start < source.end &&
         current.text.slice(source.start, source.end) === source.quote
       );
@@ -283,6 +309,8 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
       return;
     }
     if (![...segments.values()].some((segment) => segment.text.trim())) return;
+    const visibleSegments = [...segments.values()].slice(-12);
+    const visibleSources = new Map(visibleSegments.map((segment) => [segment.id, segment]));
     const snapshot: VoiceIntakeSnapshot = {
       requestId: `${input.leaseId}:${input.generation}:intake:${version}`,
       previewContext: input.getPreviewContext?.() ?? null,
@@ -292,7 +320,7 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
       provisionalReadOnlyAvailable: input.provisionalAllowed !== false,
       defaultProjectId: input.defaultProjectId ?? "current-project",
       projects: input.projects ?? [],
-      segments: [...segments.values()].slice(-12),
+      segments: visibleSegments,
       intents: [...intents.values()]
         .toSorted((a, b) => Number(isActive(b.status)) - Number(isActive(a.status)))
         .slice(0, 24)
@@ -301,13 +329,23 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
           provisional: intent.provisional,
           status: intent.status,
           request: intent.request.slice(0, 200),
-          sources: intent.claimedSources.map(({ segmentId, revision, start, end, quote }) => ({
-            segmentId,
-            revision,
-            start,
-            end,
-            quote,
-          })),
+          sources: [
+            ...new Map(
+              intent.claimedSources
+                .filter((source) => {
+                  const segment = visibleSources.get(source.segmentId);
+                  return (
+                    segment !== undefined &&
+                    (source.revision === segment.revision ||
+                      segment.text.slice(source.start, source.end) === source.quote)
+                  );
+                })
+                .map(({ segmentId, revision, start, end, quote }) => {
+                  const source = { segmentId, revision, start, end, quote };
+                  return [JSON.stringify(source), source] as const;
+                }),
+            ).values(),
+          ],
           result: intent.result?.slice(0, 300) ?? null,
         })),
     };
@@ -368,6 +406,7 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
           break;
         const source = { ...anchor, stopId: prior.stopId, start, end: start + anchor.quote.length };
         sourceEpochs.set(source, capturedRetractions.get(source.segmentId) ?? 0);
+        decisionEpochs.set(source, capturedEpoch);
         sources.push(source);
       }
       const valid =
@@ -466,22 +505,49 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
         reason = null;
       } else if (owner) {
         const current = yield* input.read(owner);
+        if (!currentSources(sources)) {
+          reason = "source_revised";
+          continue;
+        }
+        const fresh = sources.filter((source) => !coveredByClaims(source, current.claimedSources));
         if (!isActive(current.status)) {
           yield* persist(current);
-          reason = "task_inactive";
+          const terminal = [
+            "completed",
+            "interrupted",
+            "failed",
+            "cancelled",
+            "rolled_back",
+          ].includes(current.status);
+          // A semantic refine may outlive its target run. Only entirely new,
+          // explicitly authorized mutation sources can become follow-up work.
+          if (
+            terminal &&
+            !action.readOnly &&
+            fresh.length === sources.length &&
+            sources.every(
+              (source) => !current.claimedSources.some((claim) => overlap(source, claim)),
+            )
+          ) {
+            const followup = yield* input.admit(
+              {
+                leaseId: input.leaseId,
+                generation: input.generation,
+                intentId: `${snapshot.requestId}:${index}:followup`,
+                stopId: sources[0]!.stopId,
+                provisional: false,
+                sources,
+              },
+              `Completed work (context only, do not repeat):\n${current.request.slice(0, 2_000)}\nNew authorized change:\n${action.message}`,
+              current.projectId,
+              snapshot.previewContext,
+            );
+            yield* persist(followup);
+            reason = null;
+          } else reason = "task_inactive";
           noticeVersion = snapshot.version;
           continue;
         }
-        const fresh = sources.filter(
-          (source) =>
-            !current.claimedSources.some(
-              (claimed) =>
-                claimed.segmentId === source.segmentId &&
-                claimed.start === source.start &&
-                claimed.end === source.end &&
-                claimed.quote === source.quote,
-            ),
-        );
         const confirmedContinuation =
           current.startedProvisional &&
           !current.provisional &&
@@ -508,6 +574,7 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
           reason = "intake_capacity";
           continue;
         }
+        for (const source of sources) queuedSources.add(source);
         const claimed = withPending(
           {
             ...current,
@@ -552,6 +619,10 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
   return {
     observe,
     processLatest,
+    validateSourcesNow: (sources: ReadonlyArray<VoiceIntakeSource>) =>
+      enabled &&
+      currentSources(sources) &&
+      sources.every((source) => (corrections.get(source.segmentId) ?? 0) <= source.revision),
     validateSources: Effect.fn("VoiceIntake.validateSources")(function* (
       sources: ReadonlyArray<VoiceIntakeSource>,
     ) {

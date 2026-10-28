@@ -1442,3 +1442,202 @@ it.effect(
       assert.isNull((yield* test.engine.state).intents[0]!.pendingSteer);
     }),
 );
+
+it.effect(
+  "deduplicates smaller quotes and unions of claimed ranges while allowing an appended requirement",
+  () =>
+    Effect.gen(function* () {
+      const first = "Keep the label. Preserve focus.";
+      const appended = " Announce Sent to screen readers.";
+      let round = 0;
+      const test = setup((snapshot) =>
+        Effect.succeed({
+          requestId: snapshot.requestId,
+          actions:
+            ++round === 1
+              ? [
+                  {
+                    type: "new" as const,
+                    projectId: null,
+                    request: first,
+                    readOnly: false,
+                    sources: [
+                      source("Keep the label.", "segment-a", 1, 0),
+                      source(" Preserve focus.", "segment-a", 1, 15),
+                    ],
+                  },
+                ]
+              : [
+                  {
+                    type: "refine" as const,
+                    intentId: snapshot.intents[0]!.id,
+                    message:
+                      round < 4 ? "Paraphrase the existing label and focus request." : appended,
+                    readOnly: false,
+                    sources: [
+                      round === 2
+                        ? source("the label.", "segment-a", 2, 5)
+                        : round === 3
+                          ? source(first, "segment-a", 3)
+                          : source(
+                              appended,
+                              "segment-a",
+                              snapshot.segments[0]!.revision,
+                              first.length,
+                            ),
+                    ],
+                  },
+                ],
+        }),
+      );
+      yield* test.engine.observe(transcript(first));
+      yield* test.engine.processLatest();
+      yield* test.engine.observe(transcript(first, 2));
+      yield* test.engine.processLatest();
+      yield* test.engine.observe(transcript(first, 3));
+      yield* test.engine.processLatest();
+      assert.deepEqual(
+        test.steered,
+        [],
+        "claimed interval union covers both small and expanded quotes",
+      );
+      yield* test.engine.observe(transcript(first + appended, 4));
+      yield* test.engine.processLatest();
+      yield* test.engine.observe(transcript(first + appended, 5, true));
+      yield* test.engine.processLatest();
+      assert.deepEqual(test.steered, [appended]);
+      assert.equal(test.admitted.length, 1);
+    }),
+);
+
+it.effect(
+  "admits a fresh authorized follow-up exactly once when its target completes during classification",
+  () =>
+    Effect.gen(function* () {
+      const held = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const first = "Add the form with the Ready state.";
+      const next = "After sending, show Sent, reset the form and announce Sent to screen readers.";
+      const test = setup((snapshot) =>
+        Effect.gen(function* () {
+          if (!snapshot.intents.length)
+            return {
+              requestId: snapshot.requestId,
+              actions: [
+                {
+                  type: "new" as const,
+                  projectId: null,
+                  request: first,
+                  readOnly: false,
+                  sources: [source(first)],
+                },
+              ],
+            };
+          yield* Deferred.succeed(held, undefined);
+          yield* Deferred.await(release);
+          return {
+            requestId: snapshot.requestId,
+            actions: [
+              {
+                type: "refine" as const,
+                intentId: snapshot.intents[0]!.id,
+                message: next,
+                readOnly: false,
+                sources: [source(next, "fresh-followup", snapshot.segments.at(-1)!.revision)],
+              },
+            ],
+          };
+        }),
+      );
+      yield* test.engine.observe(transcript(first));
+      yield* test.engine.processLatest();
+      test.setPreviewContext("selected form before completion");
+      yield* test.engine.observe(transcript(next, 1, false, "fresh-followup"));
+      const deciding = yield* test.engine.processLatest().pipe(Effect.forkChild);
+      yield* Deferred.await(held);
+      test.complete();
+      test.setPreviewContext("different selection");
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(deciding);
+      assert.equal(test.admitted.length, 2);
+      assert.deepEqual(test.steered, []);
+      assert.include(test.admitted[1]!.request, first);
+      assert.include(test.admitted[1]!.request, next);
+      assert.equal(test.admitted[1]!.sources[0]!.segmentId, "fresh-followup");
+      assert.equal(test.admittedContexts[1], "selected form before completion");
+      yield* test.engine.observe(transcript(next, 2, true, "fresh-followup"));
+      yield* test.engine.processLatest();
+      assert.equal(
+        test.admitted.length,
+        2,
+        "the old source and fresh follow-up are each admitted once",
+      );
+    }),
+);
+
+it.effect(
+  "bounds quoted snapshot ownership to visible matching speech while retaining durable history",
+  () =>
+    Effect.gen(function* () {
+      const snapshots: Array<Parameters<VoiceIntakeDependencies["decide"]>[0]> = [];
+      const first = "Add an export control.";
+      const test = setup((snapshot) => {
+        snapshots.push(snapshot);
+        return Effect.succeed({
+          requestId: snapshot.requestId,
+          actions: snapshot.intents.length
+            ? []
+            : [
+                {
+                  type: "new" as const,
+                  projectId: null,
+                  request: first,
+                  readOnly: false,
+                  sources: [source(first), source(first)],
+                },
+              ],
+        });
+      });
+      yield* test.engine.observe(transcript(first, 1, true));
+      yield* test.engine.processLatest();
+      yield* test.engine.observe(transcript(`${first} Additional discussion.`, 2, true));
+      yield* test.engine.processLatest();
+      assert.equal(
+        snapshots.at(-1)!.intents[0]!.sources.length,
+        1,
+        "exact duplicate quotes appear once",
+      );
+      assert.equal(
+        snapshots.at(-1)!.intents[0]!.sources[0]!.quote,
+        first,
+        "unchanged old revision quotes remain useful",
+      );
+      yield* test.engine.observe(transcript("The export request was replaced.", 3, true));
+      yield* test.engine.processLatest();
+      assert.deepEqual(
+        snapshots.at(-1)!.intents[0]!.sources,
+        [],
+        "a replaced quote is never subtracted from candidates",
+      );
+      for (let i = 0; i < 24; i++) {
+        yield* test.engine.observe(
+          transcript(`Discussion ${i}. ${"details ".repeat(100)}`, 1, true, `history-window-${i}`),
+        );
+        yield* test.engine.processLatest();
+      }
+      const latest = snapshots.at(-1)!;
+      assert.equal(latest.segments.length, 12);
+      assert.deepEqual(latest.intents[0]!.sources, []);
+      assert.equal(latest.intents[0]!.request, first);
+      assert.isBelow(
+        JSON.stringify(latest).length,
+        16_000,
+        "historical quotes cannot grow the bounded live prompt",
+      );
+      assert.equal(
+        (yield* test.engine.state).intents[0]!.claimedSources.length,
+        2,
+        "durable ownership is complete",
+      );
+    }),
+);

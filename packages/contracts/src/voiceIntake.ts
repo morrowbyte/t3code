@@ -49,6 +49,7 @@ export const VoiceIntakeIntent = Schema.Struct({
   sources: Sources,
   claimedSources: Schema.Array(VoiceIntakeSource).check(Schema.isMaxLength(128)),
   taskId: Id,
+  projectId: Schema.optionalKey(Id),
   threadId: Id,
   runId: Id,
   provisional: Schema.Boolean,

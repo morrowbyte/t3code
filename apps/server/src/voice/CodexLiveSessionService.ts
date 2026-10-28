@@ -26,6 +26,7 @@ import {
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Queue from "effect/Queue";
+import * as Semaphore from "effect/Semaphore";
 import { makeVoiceIntake } from "./VoiceIntake.ts";
 import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";
@@ -50,6 +51,7 @@ import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as RuntimePolicy from "../orchestration-v2/RuntimePolicy.ts";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import type { DispatchRuntimeOptions } from "../orchestration-v2/DispatchRuntimeOptions.ts";
 import * as ConversationWorkCoordinator from "../orchestration-v2/ConversationWorkCoordinator.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as CodexLiveEventHub from "./CodexLiveEventHub.ts";
@@ -88,6 +90,30 @@ const encodeRuntimePolicy = Schema.encodeSync(
 const encodeReceipt = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeReceipt = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown));
 const isLiveVoiceError = Schema.is(LiveVoiceError);
+const isProviderAdapterError = Schema.is(ProviderAdapter.ProviderAdapterV2Error);
+const isIntakeTimeout = (error: unknown, depth = 0): boolean => {
+  if (depth > 6 || typeof error !== "object" || error === null) return false;
+  if (
+    ("_tag" in error && error._tag === "TimeoutError") ||
+    ("name" in error && error.name === "TimeoutError")
+  )
+    return true;
+  if (Cause.isCause(error)) {
+    const failure = Cause.findErrorOption(error);
+    return Option.isSome(failure) && isIntakeTimeout(failure.value, depth + 1);
+  }
+  return "cause" in error && isIntakeTimeout(error.cause, depth + 1);
+};
+const intakeFailureClass = (cause: Cause.Cause<unknown>) => {
+  if (isIntakeTimeout(cause)) return "TimeoutError";
+  const error = Cause.findErrorOption(cause);
+  if (Option.isSome(error)) {
+    if (isProviderAdapterError(error.value)) return error.value._tag;
+    if (isLiveVoiceError(error.value)) return `LiveVoiceError:${error.value.code}`;
+  }
+  return Cause.hasInterruptsOnly(cause) ? "Interrupted" : Cause.hasDies(cause) ? "Defect" : "Error";
+};
+
 const isIntakeIntent = Schema.is(VoiceIntakeIntent);
 const isIntakeProvenance = Schema.is(VoiceIntakeProvenance);
 const readbackContextMatches = (
@@ -207,6 +233,8 @@ export const layer: Layer.Layer<
         readonly generation: number;
         previewContext?: string | null;
         contextRevision?: number;
+        acceptingWork?: boolean;
+        sourceSemaphore?: Semaphore.Semaphore;
         lastSpeechAt?: number;
         lastQuietStatusAt?: number;
         userSpeaking?: boolean;
@@ -261,6 +289,17 @@ export const layer: Layer.Layer<
         additionalSql?: (now: string) => Effect.Effect<unknown, SqlError.SqlError>,
       ) =>
         Effect.gen(function* () {
+          if (["stopping", "closed", "failed", "unknown"].includes(status)) {
+            const lease = active.get(leaseKey(row.lease_id, row.generation));
+            if (lease) {
+              const invalidate = Effect.sync(() => {
+                lease.acceptingWork = false;
+              });
+              yield* lease.sourceSemaphore
+                ? lease.sourceSemaphore.withPermits(1)(invalidate)
+                : invalidate;
+            }
+          }
           const now = DateTime.formatIso(yield* DateTime.now);
           const next = yield* sql.withTransaction(
             Effect.gen(function* () {
@@ -1993,6 +2032,7 @@ export const layer: Layer.Layer<
       readonly voiceIntake?: VoiceIntakeProvenance;
       readonly validateSource?: Effect.Effect<boolean>;
       readonly previewContext?: string | null;
+      readonly dispatchOptions?: DispatchRuntimeOptions;
     }) {
       const intentTurnId =
         input.requestId === undefined ? input.plannerTurnId : `request:${input.requestId}`;
@@ -2189,23 +2229,26 @@ export const layer: Layer.Layer<
               !input.voiceIntake.provisional &&
               (input.projectId === undefined || input.projectId === projection.thread.projectId))
               ? yield* threads
-                  .sendToThread({
-                    projectId: projection.thread.projectId,
-                    threadId: projection.thread.id,
-                    commandId: CommandId.make(intent.command_id),
-                    messageId: MessageId.make(intent.message_id),
-                    text: withPreviewContext(input.message.trim(), previewContext),
-                    attachments: [],
-                    mode: "auto",
-                    ...(input.voiceIntake === undefined
-                      ? {}
-                      : {
-                          voiceIntakeSource: input.voiceIntake,
-                          voiceIntakeSourceThreadId: projection.thread.id,
-                        }),
-                    createdBy: "user",
-                    creationSource: "voice",
-                  })
+                  .sendToThread(
+                    {
+                      projectId: projection.thread.projectId,
+                      threadId: projection.thread.id,
+                      commandId: CommandId.make(intent.command_id),
+                      messageId: MessageId.make(intent.message_id),
+                      text: withPreviewContext(input.message.trim(), previewContext),
+                      attachments: [],
+                      mode: "auto",
+                      ...(input.voiceIntake === undefined
+                        ? {}
+                        : {
+                            voiceIntakeSource: input.voiceIntake,
+                            voiceIntakeSourceThreadId: projection.thread.id,
+                          }),
+                      createdBy: "user",
+                      creationSource: "voice",
+                    },
+                    input.dispatchOptions,
+                  )
                   .pipe(
                     Effect.map((sent) => ({
                       delivery: sent.delivery,
@@ -2224,24 +2267,27 @@ export const layer: Layer.Layer<
                     Effect.mapError(() => liveError("runtime_unavailable")),
                   )
               : yield* conversationWork
-                  .delegate({
-                    projectId: projection.thread.projectId,
-                    threadId: projection.thread.id,
-                    commandId: CommandId.make(intent.command_id),
-                    messageId: MessageId.make(intent.message_id),
-                    text: withPreviewContext(input.message.trim(), previewContext),
-                    createdBy: "user",
-                    creationSource: "voice",
-                    delegation: {
-                      modelSelection: projection.thread.modelSelection,
-                      ...(input.voiceIntake === undefined
-                        ? {}
-                        : { voiceIntake: input.voiceIntake }),
-                      ...(input.projectId === undefined
-                        ? {}
-                        : { projectId: ProjectId.make(input.projectId) }),
+                  .delegate(
+                    {
+                      projectId: projection.thread.projectId,
+                      threadId: projection.thread.id,
+                      commandId: CommandId.make(intent.command_id),
+                      messageId: MessageId.make(intent.message_id),
+                      text: withPreviewContext(input.message.trim(), previewContext),
+                      createdBy: "user",
+                      creationSource: "voice",
+                      delegation: {
+                        modelSelection: projection.thread.modelSelection,
+                        ...(input.voiceIntake === undefined
+                          ? {}
+                          : { voiceIntake: input.voiceIntake }),
+                        ...(input.projectId === undefined
+                          ? {}
+                          : { projectId: ProjectId.make(input.projectId) }),
+                      },
                     },
-                  })
+                    input.dispatchOptions,
+                  )
                   .pipe(
                     Effect.map((admitted) => ({
                       delivery: "delegated",
@@ -2313,7 +2359,7 @@ export const layer: Layer.Layer<
             );
           if (
             !model ||
-            !hasOption("reasoningEffort", "medium") ||
+            !hasOption("reasoningEffort", "low") ||
             !hasOption("serviceTier", "priority")
           )
             return yield* liveError("planner_restriction_failed");
@@ -2321,7 +2367,7 @@ export const layer: Layer.Layer<
             instanceId: runtime.instanceId,
             model: model.slug,
             options: [
-              { id: "reasoningEffort", value: "medium" },
+              { id: "reasoningEffort", value: "low" },
               { id: "serviceTier", value: "priority" },
             ],
           };
@@ -2400,6 +2446,7 @@ export const layer: Layer.Layer<
                 return {
                   ...intent,
                   runId: run.id,
+                  projectId: projection.thread.projectId,
                   status: run.status,
                   result: result.type === "ready" ? result.text.slice(0, 8_000) : null,
                 };
@@ -2442,6 +2489,23 @@ export const layer: Layer.Layer<
               result: null,
             });
           }
+          const sourceSemaphore = yield* Semaphore.make(1);
+          const intakeLease = active.get(leaseKey(row.lease_id, row.generation));
+          if (!intakeLease) return yield* liveError("stale_lease");
+          intakeLease.sourceSemaphore = sourceSemaphore;
+          function commitOptions(
+            sources: VoiceIntakeProvenance["sources"],
+          ): DispatchRuntimeOptions {
+            return {
+              voiceIntakeCommitGuard: {
+                semaphore: sourceSemaphore,
+                isCurrent: () =>
+                  active.get(leaseKey(row.lease_id, row.generation)) === intakeLease &&
+                  intakeLease!.acceptingWork !== false &&
+                  engine.validateSourcesNow(sources),
+              },
+            };
+          }
           const engine = makeVoiceIntake({
             defaultProjectId: source.thread.projectId,
             projects: projectCatalog,
@@ -2456,7 +2520,28 @@ export const layer: Layer.Layer<
               runtime.liveVoice?.canStartProvisionalWork === undefined
                 ? false
                 : yield* runtime.liveVoice.canStartProvisionalWork,
-            decide: (snapshot) => decide({ snapshot, modelSelection: selection }),
+            decide: (snapshot) =>
+              decide({ snapshot, modelSelection: selection }).pipe(
+                Effect.catch((error) =>
+                  Effect.gen(function* () {
+                    if (!isIntakeTimeout(error)) return yield* Effect.fail(error);
+                    const latest = yield* engine.state;
+                    if (
+                      !latest.enabled ||
+                      latest.version !== snapshot.version ||
+                      intakeLease.acceptingWork === false
+                    )
+                      return yield* Effect.fail(error);
+                    yield* Effect.logWarning("Voice intake decision retrying.", {
+                      failureClass: "TimeoutError",
+                      version: snapshot.version,
+                      attempt: 2,
+                    });
+                    // Exactly one retry of this frozen snapshot; newer speech wins.
+                    return yield* decide({ snapshot, modelSelection: selection });
+                  }),
+                ),
+              ),
             admit: (voiceIntake, request, projectId, previewContext) =>
               submitWork({
                 principalSessionId: principal.sessionId,
@@ -2470,6 +2555,7 @@ export const layer: Layer.Layer<
                 voiceIntake,
                 previewContext: previewContext ?? null,
                 validateSource: engine.validateSources(voiceIntake.sources),
+                dispatchOptions: commitOptions(voiceIntake.sources),
                 ...(projectId === undefined ? {} : { projectId }),
               }).pipe(
                 Effect.map((json): VoiceIntakeIntent => {
@@ -2482,6 +2568,7 @@ export const layer: Layer.Layer<
                     provisional: voiceIntake.provisional,
                     startedProvisional: voiceIntake.provisional,
                     pendingSteer: null,
+                    projectId: String(receipt.projectId),
                     taskId:
                       typeof receipt.taskId === "string" ? receipt.taskId : voiceIntake.intentId,
                     threadId: String(receipt.threadId),
@@ -2505,30 +2592,33 @@ export const layer: Layer.Layer<
                   if (isMainIntent(intent)) {
                     const sources = intent.pendingSteer?.sources;
                     if (!sources?.length) return yield* liveError("dispatch_conflict");
-                    yield* threads.dispatch({
-                      type: "message.dispatch",
-                      threadId: source.thread.id,
-                      commandId: CommandId.make(`command:intake-steer:${requestId}`),
-                      messageId: MessageId.make(`message:intake-steer:${requestId}`),
-                      text: withPreviewContext(message, previewContext),
-                      attachments: [],
-                      dispatchMode: {
-                        type: "steer_active",
-                        targetRunId: RunId.make(intent.runId),
-                        onInactive: "reject",
+                    yield* threads.dispatch(
+                      {
+                        type: "message.dispatch",
+                        threadId: source.thread.id,
+                        commandId: CommandId.make(`command:intake-steer:${requestId}`),
+                        messageId: MessageId.make(`message:intake-steer:${requestId}`),
+                        text: withPreviewContext(message, previewContext),
+                        attachments: [],
+                        dispatchMode: {
+                          type: "steer_active",
+                          targetRunId: RunId.make(intent.runId),
+                          onInactive: "reject",
+                        },
+                        createdBy: "user",
+                        creationSource: "voice",
+                        voiceIntakeSource: {
+                          leaseId: row.lease_id,
+                          generation: row.generation,
+                          intentId: intent.id,
+                          provisional: false,
+                          sources,
+                          stopId: sources[0]!.stopId,
+                        },
+                        voiceIntakeSourceThreadId: source.thread.id,
                       },
-                      createdBy: "user",
-                      creationSource: "voice",
-                      voiceIntakeSource: {
-                        leaseId: row.lease_id,
-                        generation: row.generation,
-                        intentId: intent.id,
-                        provisional: false,
-                        sources,
-                        stopId: sources[0]!.stopId,
-                      },
-                      voiceIntakeSourceThreadId: source.thread.id,
-                    });
+                      commitOptions(sources),
+                    );
                     return yield* read(intent);
                   }
                   const exact = yield* conversationWork.read({
@@ -2547,20 +2637,23 @@ export const layer: Layer.Layer<
                       !["starting", "running", "waiting"].includes(exact.run.status))
                   )
                     return yield* liveError("invalid_state");
-                  yield* threads.dispatch({
-                    type: "message.dispatch",
-                    threadId: exact.projection.thread.id,
-                    commandId: CommandId.make(`command:intake-steer:${requestId}`),
-                    messageId: MessageId.make(`message:intake-steer:${requestId}`),
-                    text: withPreviewContext(message, previewContext),
-                    attachments: [],
-                    createdBy: "user",
-                    creationSource: "voice",
-                    voiceIntakeSource: { ...provenance, sources, stopId: sources[0]!.stopId },
-                    dispatchMode: restart
-                      ? { type: "restart_active", targetRunId: exact.run.id }
-                      : { type: "steer_active", targetRunId: exact.run.id, onInactive: "reject" },
-                  });
+                  yield* threads.dispatch(
+                    {
+                      type: "message.dispatch",
+                      threadId: exact.projection.thread.id,
+                      commandId: CommandId.make(`command:intake-steer:${requestId}`),
+                      messageId: MessageId.make(`message:intake-steer:${requestId}`),
+                      text: withPreviewContext(message, previewContext),
+                      attachments: [],
+                      createdBy: "user",
+                      creationSource: "voice",
+                      voiceIntakeSource: { ...provenance, sources, stopId: sources[0]!.stopId },
+                      dispatchMode: restart
+                        ? { type: "restart_active", targetRunId: exact.run.id }
+                        : { type: "steer_active", targetRunId: exact.run.id, onInactive: "reject" },
+                    },
+                    commitOptions(sources),
+                  );
                   return yield* read({
                     ...intent,
                     startedProvisional: intent.startedProvisional && readOnly,
@@ -2579,17 +2672,20 @@ export const layer: Layer.Layer<
                   const provenance = child.thread.voiceIntake;
                   if (!provenance || provenance.intentId !== intent.id)
                     return yield* liveError("dispatch_conflict");
-                  yield* threads.dispatch({
-                    type: "thread.runtime-mode.set",
-                    threadId: child.thread.id,
-                    commandId: CommandId.make(`command:intake-confirm:${intent.id}`),
-                    runtimeMode: child.thread.runtimeMode,
-                    voiceIntakeConfirmation: {
-                      ...provenance,
-                      provisional: false,
-                      sources: intent.sources,
+                  yield* threads.dispatch(
+                    {
+                      type: "thread.runtime-mode.set",
+                      threadId: child.thread.id,
+                      commandId: CommandId.make(`command:intake-confirm:${intent.id}`),
+                      runtimeMode: child.thread.runtimeMode,
+                      voiceIntakeConfirmation: {
+                        ...provenance,
+                        provisional: false,
+                        sources: intent.sources,
+                      },
                     },
-                  });
+                    commitOptions(intent.sources),
+                  );
                 }),
               ),
             store: Effect.fn("CodexLiveSessionService.storeIntake")(function* (
@@ -2717,16 +2813,24 @@ export const layer: Layer.Layer<
           const worker = yield* Effect.gen(function* () {
             while ((yield* engine.state).enabled) {
               yield* Queue.take(wake);
-              yield* engine
-                .processLatest()
-                .pipe(
-                  Effect.catchCause(() =>
-                    engine.refused.pipe(
-                      Effect.andThen(Effect.logWarning("Voice intake decision refused.")),
+              const attemptVersion = (yield* engine.state).version;
+              let failed = false;
+              yield* engine.processLatest().pipe(
+                Effect.catchCause((cause) => {
+                  failed = true;
+                  return engine.refused.pipe(
+                    Effect.andThen(
+                      Effect.logWarning("Voice intake decision refused.", {
+                        failureClass: intakeFailureClass(cause),
+                        version: attemptVersion,
+                      }),
                     ),
-                  ),
-                );
+                  );
+                }),
+              );
               const state = yield* engine.state;
+              if (failed && state.enabled && state.version > attemptVersion)
+                yield* Queue.offer(wake, undefined);
               if (state.noticeVersion > lastNotice) {
                 lastNotice = state.noticeVersion;
                 yield* Queue.offer(output, state);
@@ -2741,7 +2845,11 @@ export const layer: Layer.Layer<
             ),
             Stream.runForEach((event) =>
               Effect.gen(function* () {
-                yield* engine.observe(event, intakeSourceStops.get(event));
+                // Public transcripts are already published; only intake source
+                // invalidation shares the short commit permit, never model I/O.
+                yield* sourceSemaphore.withPermits(1)(
+                  engine.observe(event, intakeSourceStops.get(event)),
+                );
                 yield* Deferred.succeed(subscribed, undefined);
                 if (!(yield* engine.state).enabled) {
                   yield* Effect.all([Fiber.interrupt(worker), Fiber.interrupt(outputWorker)], {

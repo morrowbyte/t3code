@@ -11,11 +11,14 @@ import {
   type OrchestrationV2StoredEvent,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
+import type { DispatchRuntimeOptions } from "../orchestration-v2/DispatchRuntimeOptions.ts";
 import type { LiveVoiceEvent, LiveVoiceSession } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Effect from "effect/Effect";
+import * as Cause from "effect/Cause";
+import * as Logger from "effect/Logger";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Exit from "effect/Exit";
@@ -138,6 +141,40 @@ it.effect.each([false, true])(
           { type: "message.dispatch" }
         >
       > = [];
+      const warningMessages: unknown[] = [];
+      const warningLogger = Logger.make(({ message }) => {
+        warningMessages.push(message);
+      });
+      let beforeSourceCommit:
+        | {
+            started: Deferred.Deferred<
+              NonNullable<DispatchRuntimeOptions["voiceIntakeCommitGuard"]>
+            >;
+            release: Deferred.Deferred<void>;
+          }
+        | undefined;
+      const guarded = <A, E, R>(
+        options: DispatchRuntimeOptions | undefined,
+        commandId: Parameters<
+          ThreadManagementService.ThreadManagementServiceShape["dispatch"]
+        >[0]["commandId"],
+        effect: Effect.Effect<A, E, R>,
+      ) => {
+        const guard = options?.voiceIntakeCommitGuard;
+        return guard
+          ? guard.semaphore.withPermits(1)(
+              Effect.gen(function* () {
+                if (!guard.isCurrent())
+                  return yield* new Orchestrator.OrchestratorCommandRejectedError({
+                    commandId,
+                    commandType: "message.dispatch",
+                    cause: "Source changed before commit.",
+                  });
+                return yield* effect;
+              }),
+            )
+          : effect;
+      };
       let stops = 0;
       const spoken: Array<{ plannerNativeThreadId: string; text: string }> = [];
       const contexts: Array<{ plannerNativeThreadId: string; text: string }> = [];
@@ -505,9 +542,10 @@ it.effect.each([false, true])(
             input: Parameters<
               ThreadManagementService.ThreadManagementServiceShape["sendToThread"]
             >[0],
+            options?: DispatchRuntimeOptions,
           ) =>
             mainSend
-              ? mainSend(input)
+              ? mainSend(input, options)
               : Effect.gen(function* () {
                   sends += 1;
                   if (sends === 1)
@@ -527,78 +565,83 @@ it.effect.each([false, true])(
               Parameters<ThreadManagementService.ThreadManagementServiceShape["dispatch"]>[0],
               { type: "message.dispatch" | "thread.runtime-mode.set" }
             >,
+            options?: DispatchRuntimeOptions,
           ) =>
-            Effect.gen(function* () {
-              if (command.type === "thread.runtime-mode.set") {
-                const child = independentJobs.get(command.threadId)!;
-                assert.equal(
-                  child.thread.voiceIntake!.intentId,
-                  command.voiceIntakeConfirmation!.intentId,
-                );
-                independentJobs.set(command.threadId, {
-                  ...child,
-                  thread: {
-                    ...child.thread,
-                    voiceIntake: command.voiceIntakeConfirmation,
-                  },
-                });
+            guarded(
+              options,
+              command.commandId,
+              Effect.gen(function* () {
+                if (command.type === "thread.runtime-mode.set") {
+                  const child = independentJobs.get(command.threadId)!;
+                  assert.equal(
+                    child.thread.voiceIntake!.intentId,
+                    command.voiceIntakeConfirmation!.intentId,
+                  );
+                  independentJobs.set(command.threadId, {
+                    ...child,
+                    thread: {
+                      ...child.thread,
+                      voiceIntake: command.voiceIntakeConfirmation,
+                    },
+                  });
+                  return { events: [] };
+                }
+                if (command.delegation !== undefined && admitIndependent)
+                  return yield* admitIndependent(command);
+                if (command.dispatchMode.type === "restart_active") {
+                  assert.isFalse(
+                    independentJobs.get(command.threadId)!.thread.voiceIntake!.provisional,
+                  );
+                  authorizedRestarts += 1;
+                } else if (
+                  command.dispatchMode.type !== "steer_active" ||
+                  command.dispatchMode.onInactive !== "reject"
+                )
+                  return yield* new Orchestrator.OrchestratorCommandRejectedError({
+                    commandId: command.commandId,
+                    commandType: command.type,
+                    cause: "Expected exact, fail-closed steering.",
+                  });
+                const targetRunId = command.dispatchMode.targetRunId;
+                if (command.voiceIntakeSourceThreadId !== undefined) {
+                  assert.equal(command.voiceIntakeSourceThreadId, command.threadId);
+                  assert.equal(command.threadId, threadId);
+                  assert.isFalse(command.voiceIntakeSource!.provisional);
+                  mainRefinements.push(command);
+                  beforeMainCommit?.();
+                }
+                const target = independentJobs.get(command.threadId) ?? durableProjection;
+                const run = target.runs.find((candidate) => candidate.id === targetRunId);
+                if (
+                  rejectSteerAtAdmission ||
+                  !run ||
+                  !["running", "starting", "waiting"].includes(run.status)
+                )
+                  return yield* new Orchestrator.OrchestratorCommandRejectedError({
+                    commandId: command.commandId,
+                    commandType: command.type,
+                    cause: "Target run ended at admission.",
+                  });
+                steers += 1;
+                const updated = {
+                  ...target,
+                  messages: [
+                    ...target.messages,
+                    {
+                      id: command.messageId,
+                      threadId: command.threadId,
+                      runId: run.id,
+                      role: "user",
+                      text: command.text,
+                    } as never,
+                  ],
+                };
+                if (independentJobs.has(command.threadId))
+                  independentJobs.set(command.threadId, updated);
+                else durableProjection = updated;
                 return { events: [] };
-              }
-              if (command.delegation !== undefined && admitIndependent)
-                return yield* admitIndependent(command);
-              if (command.dispatchMode.type === "restart_active") {
-                assert.isFalse(
-                  independentJobs.get(command.threadId)!.thread.voiceIntake!.provisional,
-                );
-                authorizedRestarts += 1;
-              } else if (
-                command.dispatchMode.type !== "steer_active" ||
-                command.dispatchMode.onInactive !== "reject"
-              )
-                return yield* new Orchestrator.OrchestratorCommandRejectedError({
-                  commandId: command.commandId,
-                  commandType: command.type,
-                  cause: "Expected exact, fail-closed steering.",
-                });
-              const targetRunId = command.dispatchMode.targetRunId;
-              if (command.voiceIntakeSourceThreadId !== undefined) {
-                assert.equal(command.voiceIntakeSourceThreadId, command.threadId);
-                assert.equal(command.threadId, threadId);
-                assert.isFalse(command.voiceIntakeSource!.provisional);
-                mainRefinements.push(command);
-                beforeMainCommit?.();
-              }
-              const target = independentJobs.get(command.threadId) ?? durableProjection;
-              const run = target.runs.find((candidate) => candidate.id === targetRunId);
-              if (
-                rejectSteerAtAdmission ||
-                !run ||
-                !["running", "starting", "waiting"].includes(run.status)
-              )
-                return yield* new Orchestrator.OrchestratorCommandRejectedError({
-                  commandId: command.commandId,
-                  commandType: command.type,
-                  cause: "Target run ended at admission.",
-                });
-              steers += 1;
-              const updated = {
-                ...target,
-                messages: [
-                  ...target.messages,
-                  {
-                    id: command.messageId,
-                    threadId: command.threadId,
-                    runId: run.id,
-                    role: "user",
-                    text: command.text,
-                  } as never,
-                ],
-              };
-              if (independentJobs.has(command.threadId))
-                independentJobs.set(command.threadId, updated);
-              else durableProjection = updated;
-              return { events: [] };
-            }),
+              }),
+            ),
         } as unknown as ThreadManagementService.ThreadManagementServiceShape),
         Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
           getInstance: () =>
@@ -611,7 +654,7 @@ it.effect.each([false, true])(
                       slug: "gpt-6-luna",
                       capabilities: {
                         optionDescriptors: [
-                          { id: "reasoningEffort", type: "select", options: [{ id: "medium" }] },
+                          { id: "reasoningEffort", type: "select", options: [{ id: "low" }] },
                           { id: "serviceTier", type: "select", options: [{ id: "priority" }] },
                         ],
                       },
@@ -2943,7 +2986,13 @@ it.effect.each([false, true])(
                 readOnly: true,
               })),
           });
-        intakeDecision = (input) => decideIntakeSnapshot(input);
+        intakeDecision = (input) => {
+          assert.equal(
+            input.modelSelection.options?.find((option) => option.id === "reasoningEffort")?.value,
+            "low",
+          );
+          return decideIntakeSnapshot(input);
+        };
         const intakeLease = yield* service.prepare(session, {
           threadId,
           clientRequestId: "exclusive-intake",
@@ -3092,36 +3141,52 @@ it.effect.each([false, true])(
             completedAt: null,
           })),
         };
-        mainSend = (input) =>
-          Effect.sync(() => {
-            const prior = mainReceipts.get(input.commandId);
-            if (prior) return prior;
-            assert.equal(input.mode, "auto");
-            assert.equal(input.threadId, threadId);
-            assert.equal(input.voiceIntakeSourceThreadId, threadId);
-            assert.isFalse(input.voiceIntakeSource!.provisional);
-            mainInputs.push(input);
-            const run = durableProjection.runs[0]!;
-            durableProjection = {
-              ...durableProjection,
-              messages: [
-                ...durableProjection.messages,
-                {
-                  ...durableProjection.messages[0]!,
-                  id: input.messageId,
-                  threadId,
-                  runId: run.id,
-                  role: "user",
-                  text: input.text,
-                },
-              ],
-            };
-            const result = {
-              delivery: mainInputs.length === 1 ? "started" : "steered",
-              run,
-            } as Effect.Success<ReturnType<NonNullable<typeof mainSend>>>;
-            mainReceipts.set(input.commandId, result);
-            return result;
+        mainSend = (input, options) =>
+          Effect.gen(function* () {
+            assert.isDefined(
+              options?.voiceIntakeCommitGuard,
+              "intake carries its runtime commit fence",
+            );
+            const held = beforeSourceCommit;
+            beforeSourceCommit = undefined;
+            if (held) {
+              yield* Deferred.succeed(held.started, options!.voiceIntakeCommitGuard!);
+              yield* Deferred.await(held.release);
+            }
+            return yield* guarded(
+              options,
+              input.commandId,
+              Effect.sync(() => {
+                const prior = mainReceipts.get(input.commandId);
+                if (prior) return prior;
+                assert.equal(input.mode, "auto");
+                assert.equal(input.threadId, threadId);
+                assert.equal(input.voiceIntakeSourceThreadId, threadId);
+                assert.isFalse(input.voiceIntakeSource!.provisional);
+                mainInputs.push(input);
+                const run = durableProjection.runs[0]!;
+                durableProjection = {
+                  ...durableProjection,
+                  messages: [
+                    ...durableProjection.messages,
+                    {
+                      ...durableProjection.messages[0]!,
+                      id: input.messageId,
+                      threadId,
+                      runId: run.id,
+                      role: "user",
+                      text: input.text,
+                    },
+                  ],
+                };
+                const result = {
+                  delivery: mainInputs.length === 1 ? "started" : "steered",
+                  run,
+                } as Effect.Success<ReturnType<NonNullable<typeof mainSend>>>;
+                mainReceipts.set(input.commandId, result);
+                return result;
+              }),
+            );
           });
         const mainDecisions = yield* Queue.unbounded<{
           snapshot: Parameters<typeof decideIntakeSnapshot>[0]["snapshot"];
@@ -3374,6 +3439,61 @@ it.effect.each([false, true])(
           });
           yield* Fiber.join(delivered);
         });
+        const timeoutError = () =>
+          new ProviderAdapter.ProviderAdapterProtocolError({
+            driver: ProviderDriverKind.make("codex"),
+            detail: "PRIVATE_PROVIDER_TEXT_MUST_NOT_LOG",
+            cause: new Cause.TimeoutError("PRIVATE_TIMEOUT_TEXT_MUST_NOT_LOG"),
+          });
+        let timeoutCalls = 0;
+        decideIntakeSnapshot = () => {
+          timeoutCalls++;
+          return Effect.fail(timeoutError());
+        };
+        let timeoutProcessed = new Promise<void>((resolve) => {
+          notifyIntakeProcessed = resolve;
+        });
+        yield* emitSpeech("user", "A standalone status question.", "timeout-retry", 1, true);
+        yield* Effect.promise(() => timeoutProcessed);
+        assert.equal(timeoutCalls, 2, "unchanged timed-out snapshot gets exactly one retry");
+        const loggedWarnings = JSON.stringify(warningMessages);
+        assert.include(loggedWarnings, "TimeoutError");
+        assert.notInclude(loggedWarnings, "PRIVATE_PROVIDER_TEXT_MUST_NOT_LOG");
+        assert.notInclude(loggedWarnings, "PRIVATE_TIMEOUT_TEXT_MUST_NOT_LOG");
+        const startedTimeout = yield* Deferred.make<void>();
+        const failOld = yield* Deferred.make<void>();
+        const latestClassified = yield* Deferred.make<number>();
+        const decidedVersions: number[] = [];
+        decideIntakeSnapshot = ({ snapshot }) =>
+          Effect.gen(function* () {
+            decidedVersions.push(snapshot.version);
+            if (decidedVersions.length === 1) {
+              yield* Deferred.succeed(startedTimeout, undefined);
+              yield* Deferred.await(failOld);
+              return yield* timeoutError();
+            }
+            yield* Deferred.succeed(latestClassified, snapshot.version);
+            return { requestId: snapshot.requestId, actions: [] };
+          });
+        yield* emitSpeech("user", "What is its current status?", "timeout-newer", 1, false);
+        yield* Deferred.await(startedTimeout);
+        yield* emitSpeech(
+          "user",
+          "What is its current status? Just a factual question.",
+          "timeout-newer",
+          2,
+          true,
+        );
+        yield* Deferred.succeed(failOld, undefined);
+        const latestVersion = yield* Deferred.await(latestClassified);
+        assert.equal(
+          decidedVersions.length,
+          2,
+          "newer snapshot wins immediately over an obsolete timeout retry",
+        );
+        assert.isAbove(latestVersion, decidedVersions[0]!);
+        decideIntakeSnapshot = ({ snapshot }) =>
+          Effect.succeed({ requestId: snapshot.requestId, actions: [] });
         yield* emitSpeech("user", laterText, "authorized-main", 3, true);
         yield* emitSpeech("assistant", "Ich höre weiter zu.", "speaking-assistant", 1, false);
         yield* TestClock.adjust("45 seconds");
@@ -3457,6 +3577,52 @@ it.effect.each([false, true])(
           contexts.at(-1)!.text,
           questionText,
           "pending public questions reach realtime without waiting for completion",
+        );
+
+        const staleClause = "Change the selected button to purple.";
+        decideIntakeSnapshot = ({ snapshot }) =>
+          Effect.succeed({
+            requestId: snapshot.requestId,
+            actions:
+              snapshot.segments.at(-1)?.id === "source-revoked"
+                ? []
+                : [
+                    {
+                      type: "new",
+                      projectId: null,
+                      request: staleClause,
+                      readOnly: false,
+                      sources: [{ segmentId: "stale-commit", revision: 1, quote: staleClause }],
+                    },
+                  ],
+          });
+        const guardedCommitStarted =
+          yield* Deferred.make<NonNullable<DispatchRuntimeOptions["voiceIntakeCommitGuard"]>>();
+        const releaseGuardedCommit = yield* Deferred.make<void>();
+        beforeSourceCommit = { started: guardedCommitStarted, release: releaseGuardedCommit };
+        yield* emitSpeech("user", staleClause, "stale-commit", 1, false);
+        const sourceGuard = yield* Deferred.await(guardedCommitStarted);
+        yield* emitSpeech("user", "No, do not change that button.", "source-revoked", 1, true);
+        assert.isFalse(
+          sourceGuard.isCurrent(),
+          "revocation during downstream I/O invalidates the runtime commit fence",
+        );
+        const refusedCommit = new Promise<void>((resolve) => {
+          notifyIntakeProcessed = resolve;
+        });
+        yield* Deferred.succeed(releaseGuardedCommit, undefined);
+        yield* Effect.promise(() => refusedCommit);
+        assert.equal(
+          mainInputs.length,
+          2,
+          "stale work never commits after sendToThread's downstream I/O",
+        );
+        yield* service.status(session, intakeLease);
+        assert.equal(mainInputs.length, 2, "recovery cannot revive a refused intake reservation");
+        assert.equal(
+          admissions,
+          6,
+          "refused reserved intake never falls through to native child admission",
         );
 
         // End the owned run exactly after read, while another run becomes active.
@@ -3605,6 +3771,7 @@ it.effect.each([false, true])(
       });
       yield* program.pipe(
         Effect.withTracer(deliveryTracer),
+        Effect.provide(Logger.layer([warningLogger], { mergeWithExisting: false })),
         Effect.provide(Layer.provideMerge(CodexLiveSessionService.layer, dependencies)),
       );
     }),
