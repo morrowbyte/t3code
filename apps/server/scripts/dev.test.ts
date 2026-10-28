@@ -76,7 +76,7 @@ function spawnDev(args: ReadonlyArray<string>) {
 
 it("preserves the child exit code and inherited output", async () => {
   const child = spawnDev(["--eval", 'process.stdout.write("done"); process.exitCode = 23;']);
-  const closed = NodeEvents.once(child, "close");
+  const closed = NodeEvents.EventEmitter.once(child, "close");
   let output = "";
   child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
     output += chunk;
@@ -87,9 +87,9 @@ it("preserves the child exit code and inherited output", async () => {
 
 it.each(["SIGINT", "SIGTERM"] as const)("forwards %s and exits with the child", async (signal) => {
   const child = spawnDev(["--eval", 'process.stdin.resume(); process.stdout.write("ready");']);
-  const closed = NodeEvents.once(child, "close");
+  const closed = NodeEvents.EventEmitter.once(child, "close");
   try {
-    const [ready] = await NodeEvents.once(child.stdout, "data");
+    const [ready] = await NodeEvents.EventEmitter.once(child.stdout, "data");
     assert.equal(String(ready), "ready");
     assert.equal(child.kill(signal), true);
     assert.deepEqual(await closed, [null, signal]);
