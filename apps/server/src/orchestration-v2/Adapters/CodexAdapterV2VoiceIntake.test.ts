@@ -1,5 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import { ProviderInstanceId, VoiceIntakeDecision } from "@t3tools/contracts";
+import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
+import type { JsonSchemaType } from "@modelcontextprotocol/sdk/validation";
 import * as CodexClient from "effect-codex-app-server/client";
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
@@ -10,6 +12,7 @@ import * as Stream from "effect/Stream";
 
 import {
   runCodexVoiceIntakeDecision,
+  voiceIntakeDecisionOutputSchema,
   voiceIntakeUnclaimedSpans,
 } from "./CodexAdapterV2VoiceIntake.ts";
 
@@ -63,6 +66,74 @@ const decision = {
   requestId: snapshot.requestId,
   actions: [{ type: "defer" as const, reason: "No new work." }],
 };
+
+it("limits native refinement and confirmation to eligible snapshot targets", () => {
+  const intents = ["preparing", "starting", "running", "waiting", "queued", "completed"].map(
+    (status) => ({
+      id: status,
+      status,
+      request: "Existing work",
+      provisional: false,
+      sources: [],
+      result: null,
+    }),
+  );
+  intents.push({
+    id: "research",
+    status: "running",
+    request: "Research",
+    provisional: true,
+    sources: [],
+    result: null,
+  });
+  const validate = new AjvJsonSchemaValidator().getValidator(
+    voiceIntakeDecisionOutputSchema({ ...snapshot, intents }) as JsonSchemaType,
+  );
+  const sources = [{ segmentId: "segment", revision: 1, quote: "Research runners." }];
+  const accepts = (action: object) =>
+    validate({ requestId: snapshot.requestId, actions: [action] }).valid;
+  for (const status of ["preparing", "starting", "running", "waiting", "queued"])
+    assert.isTrue(
+      accepts({ type: "refine", intentId: status, sources, readOnly: false, message: "Change it" }),
+    );
+  for (const intentId of ["completed", "unknown"])
+    assert.isFalse(
+      accepts({ type: "refine", intentId, sources, readOnly: false, message: "Change it" }),
+    );
+  assert.isTrue(accepts({ type: "confirm", intentId: "research", sources }));
+  assert.isFalse(accepts({ type: "confirm", intentId: "running", sources }));
+  assert.isFalse(accepts({ type: "confirm", intentId: "completed", sources }));
+  assert.isTrue(accepts({ type: "reference", intentId: "completed" }));
+  assert.isFalse(accepts({ type: "reference", intentId: "unknown" }));
+});
+
+it("keeps new work and deferral available without a steerable target", () => {
+  const validate = new AjvJsonSchemaValidator().getValidator(
+    voiceIntakeDecisionOutputSchema(snapshot) as JsonSchemaType,
+  );
+  const accepts = (action: object) =>
+    validate({ requestId: snapshot.requestId, actions: [action] }).valid;
+  assert.isTrue(
+    accepts({
+      type: "new",
+      sources: [{ segmentId: "segment", revision: 1, quote: "Research runners." }],
+      request: "Research runners",
+      readOnly: true,
+      projectId: null,
+    }),
+  );
+  assert.isTrue(accepts({ type: "defer", reason: "Need the requested change" }));
+  assert.isFalse(accepts({ type: "reference", intentId: "unknown" }));
+  assert.isFalse(
+    accepts({
+      type: "refine",
+      intentId: "unknown",
+      sources: [{ segmentId: "segment", revision: 1, quote: "Research runners." }],
+      readOnly: false,
+      message: "Change it",
+    }),
+  );
+});
 
 it("keeps new clauses visible after overlapping claimed ranges and ASR corrections", () => {
   const text = "Reset. Dann Gesendet anzeigen.";

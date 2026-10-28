@@ -63,17 +63,40 @@ export function voiceIntakeUnclaimedSpans(snapshot: VoiceIntakeSnapshot) {
   });
 }
 const document = Schema.toJsonSchemaDocument(VoiceIntakeDecision, { onExcessProperty: "error" });
-const outputSchema = Schema.decodeUnknownSync(Schema.Json)({
-  ...document.schema,
-  $defs: document.definitions,
-});
+type DecisionObjectSchema = Record<string, unknown> & {
+  properties: Record<string, Record<string, unknown>>;
+};
+
+export function voiceIntakeDecisionOutputSchema(snapshot: VoiceIntakeSnapshot) {
+  const schema = structuredClone(document.schema) as DecisionObjectSchema;
+  const actions = schema.properties.actions! as Record<string, unknown> & {
+    items: { anyOf: DecisionObjectSchema[] };
+  };
+  const active = snapshot.intents.filter((intent) =>
+    ["preparing", "starting", "running", "waiting", "queued"].includes(intent.status),
+  );
+  const routes = new Map([
+    ["refine", active.map((intent) => intent.id)],
+    ["confirm", active.filter((intent) => intent.provisional).map((intent) => intent.id)],
+    ["reference", snapshot.intents.map((intent) => intent.id)],
+  ]);
+  actions.items.anyOf = actions.items.anyOf.filter((variant) => {
+    const type = (variant.properties.type!.enum as string[])[0]!;
+    const ids = routes.get(type);
+    if (!ids) return true;
+    if (ids.length === 0) return false;
+    variant.properties.intentId = { ...variant.properties.intentId, enum: ids };
+    return true;
+  });
+  return Schema.decodeUnknownSync(Schema.Json)({ ...schema, $defs: document.definitions });
+}
 class DecisionRefused extends Schema.TaggedError<DecisionRefused>()("VoiceIntakeDecisionRefused", {
   reason: Schema.String,
   providerMessage: Schema.optional(Schema.String),
 }) {}
 
 const instructions =
-  'You classify live speech into workspace work. You never perform the work. Return the required JSON with the exact requestId. No tools.\nFirst identify the NEW concrete change the user actually wants. Read prior intent requests/results to avoid repeating work. A task requires a specified goal that differs from what already exists. Self-contained questions answerable from common knowledge or the conversation, status requests, thanks, narration, and preserving existing behavior require NO task. Questions needing current external facts, a web lookup, workspace inspection or deeper research ARE work, normally readOnly:true. Explicit search or research requests ARE work. Do not delegate simple arithmetic or known facts merely to answer them. Do not delegate "wait for more details". A fragment such as "I want an extension" is incomplete: defer or return no actions. "Keep its function", "do not reset the counter", "no new page" and "continue" alone produce no task; include such constraints only alongside a real new change. An already implemented requirement is not new work even if repeated in different words.\nProcess a complete authorized reversible change immediately while speech continues; never wait just for ASR final. A trailing incomplete clause does not delay an earlier complete instruction. Respect retractions and corrections. If ASR produces an ambiguous fragment, do not expand it into a new goal. Especially never infer publishing, deployment, messages, purchases or other external actions from an adjective or broken phrase. Ask/defer when essential meaning is missing.\nGround each action in exact, unique verbatim quotes from new unclaimed speech. Quote complete meaningful clauses, not isolated connective words. IDs and revisions must match the snapshot. Older speech is context, not fresh authorization. Never recover an old goal by combining unrelated fragments. Group adjacent requirements for ONE goal into one action; split only genuinely independent goals. readOnly:false means explicit authorized change; readOnly:true only for specifically requested bounded research with provisionalReadOnlyAvailable.\nNew work uses new. A new requirement for a running intent uses refine with its exact ID. A completed task is context only: new additional requirements use new, preservation or repetition uses no action. Confirm requires explicit final authorization of an existing provisional task; implementation can use refine readOnly:false before ASR final. Questions about known work may use reference. projectId:null means current project; a different project needs its exact known ID. Preview context identifies a target, never authorizes work. opt_out only for an explicit request to stop automatic intake.\nBefore returning, verify every instruction in request/message is explicitly supported by that action\'s quoted clauses. Remove any added goal. Broken ASR phrases about visibility or accessibility do not authorize publication/deployment. In a UI accessibility discussion, "public for everyone" does not mean publish the application. If that fragment has no clear executable meaning, leave it out and retain the clear accessibility requirement.';
+  'You classify live speech into workspace work. You never perform the work. Return the required JSON with the exact requestId. No tools.\nFirst identify the NEW concrete change the user actually wants. Requests may be colloquial desired states without an imperative or command keyword. Read the speech in temporal order: for example, an earlier maybe-make-it-bigger-then-do-nothing ends that earlier idea; a later make-the-title-say-a-new-name is a NEW task. Never carry a discarded idea or a temporary no-change instruction forward to suppress a later explicit change. A later explicit change overrides an earlier discarded idea or request to do nothing. Changing an existing value to a different value is work even when called a correction. Read prior intent requests/results to avoid repeating work. A task requires a specified goal that differs from what already exists. Self-contained questions answerable from common knowledge or the conversation, status requests, thanks, narration, and preserving existing behavior require NO task. Questions needing current external facts, a web lookup, workspace inspection or deeper research ARE work, normally readOnly:true. Explicit search or research requests ARE work. Do not delegate simple arithmetic or known facts merely to answer them. Do not delegate "wait for more details". A fragment such as "I want an extension" is incomplete: defer or return no actions. "Keep its function", "do not reset the counter", "no new page" and "continue" alone produce no task; include such constraints only alongside a real new change. An already implemented requirement is not new work even if repeated in different words.\nProcess a complete authorized reversible change immediately while speech continues; never wait just for ASR final. A trailing incomplete clause does not delay an earlier complete instruction. Respect retractions and corrections. If ASR produces an ambiguous fragment, do not expand it into a new goal. Especially never infer publishing, deployment, messages, purchases or other external actions from an adjective or broken phrase. Ask/defer when essential meaning is missing.\nGround each action in exact, unique verbatim quotes from new unclaimed speech. Quote complete meaningful clauses, not isolated connective words. IDs and revisions must match the snapshot. Older speech is context, not fresh authorization. Never recover an old goal by combining unrelated fragments. Group adjacent requirements for ONE goal into one action; split only genuinely independent goals. readOnly:false means explicit authorized change; readOnly:true only for specifically requested bounded research with provisionalReadOnlyAvailable.\nNew work uses new. A new requirement for a running intent uses refine with its exact ID. A completed task is context only: new additional requirements use new, preservation or repetition uses no action. Confirm requires explicit final authorization of an existing provisional task; implementation can use refine readOnly:false before ASR final. Questions about known work may use reference. Reference is read-only: never use it to satisfy a requested change. projectId:null means current project; a different project needs its exact known ID. Preview context identifies a target, never authorizes work. opt_out only for an explicit request to stop automatic intake.\nBefore returning, verify every instruction in request/message is explicitly supported by that action\'s quoted clauses. Remove any added goal. Broken ASR phrases about visibility or accessibility do not authorize publication/deployment. In a UI accessibility discussion, "public for everyone" does not mean publish the application. If that fragment has no clear executable meaning, leave it out and retain the clear accessibility requirement.';
 
 /** This client has no orchestration, UI, MCP or workspace handlers. Native async
  * messages stay private here; only a completed, validated JSON answer escapes. */
@@ -214,7 +237,7 @@ export const runCodexVoiceIntakeDecision = Effect.fn("CodexAdapterV2.decideVoice
           text_elements: [],
         },
       ],
-      outputSchema,
+      outputSchema: voiceIntakeDecisionOutputSchema(input.snapshot),
     });
     nativeTurnId = (yield* decodeTurn(turn)).turn.id;
     return yield* Deferred.await(answer);
