@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as ServerSettings from "../serverSettings.ts";
 import { assert, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import {
   CheckpointId,
   CheckpointRef,
@@ -43,6 +44,7 @@ import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Scheduler from "effect/Scheduler";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as Tracer from "effect/Tracer";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -221,6 +223,135 @@ it.effect("rebuilds event history one bounded page at a time", () =>
     const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
     assert.isTrue((yield* maintenance.verify).valid);
   }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect.each(["commit", "stale", "defect"] as const)(
+  "holds the voice source permit through SQL %s and releases it before publication",
+  (outcome) =>
+    Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const sql = yield* SqlClient.SqlClient;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const events = yield* EventStore.EventStoreV2;
+      const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const semaphore = yield* Semaphore.make(1);
+      const finishing = yield* Deferred.make<void>();
+      const finish = yield* Deferred.make<void>();
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make(`thread:source-finalizer:${outcome}`);
+      const commandId = CommandId.make(`command:source-finalizer:${outcome}`);
+      const connection = yield* Effect.scoped(sql.reserve);
+      const execute = connection.executeUnprepared;
+      const controls: Array<string> = [];
+      const controlPermitAvailable: Array<boolean> = [];
+      let observingCommit = true;
+      using _control = vi
+        .spyOn(connection, "executeUnprepared")
+        .mockImplementation((statement, params, transform) =>
+          observingCommit && (statement === "COMMIT" || statement === "ROLLBACK")
+            ? Effect.gen(function* () {
+                controls.push(statement);
+                yield* Deferred.succeed(finishing, undefined);
+                yield* Deferred.await(finish);
+                const before = yield* semaphore.takeIfAvailable(1);
+                if (before) yield* semaphore.release(1);
+                controlPermitAvailable.push(before);
+                const result = yield* execute(statement, params, transform);
+                const after = yield* semaphore.takeIfAvailable(1);
+                if (after) yield* semaphore.release(1);
+                controlPermitAvailable.push(after);
+                return result;
+              })
+            : execute(statement, params, transform),
+        );
+      const notify = outbox.notifyAvailable;
+      const publish = events.publishCommitted;
+      const publications: Array<string> = [];
+      using _notify = vi.spyOn(outbox, "notifyAvailable").mockImplementation((count) =>
+        Effect.gen(function* () {
+          assert.isTrue(yield* semaphore.takeIfAvailable(1));
+          yield* semaphore.release(1);
+          publications.push("outbox");
+          yield* notify(count);
+        }),
+      );
+      using _publish = vi.spyOn(events, "publishCommitted").mockImplementation((stored) =>
+        Effect.gen(function* () {
+          assert.isTrue(yield* semaphore.takeIfAvailable(1));
+          yield* semaphore.release(1);
+          publications.push("events");
+          yield* publish(stored);
+        }),
+      );
+      const pending = yield* sink
+        .commitCommand(
+          {
+            commandId,
+            threadId,
+            commandType: "thread.create",
+            acceptedAt: now,
+            events: [
+              threadCreatedEvent({
+                id: `event:source-finalizer:${outcome}`,
+                thread: makeThread(threadId, now),
+                now,
+              }),
+            ],
+            effects: [
+              {
+                id: `effect:source-finalizer:${outcome}`,
+                commandId,
+                threadId,
+                request: { type: "terminal.cleanup" },
+              },
+            ],
+          },
+          {
+            voiceIntakeCommitGuard: {
+              semaphore,
+              isCurrent: () => {
+                if (outcome === "defect") throw new Error("source validation defect");
+                return outcome !== "stale";
+              },
+            },
+          },
+        )
+        .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
+      yield* Effect.raceFirst(
+        Deferred.await(finishing),
+        Fiber.join(pending).pipe(
+          Effect.andThen(Effect.die("The command completed before SQL finalization.")),
+        ),
+      );
+      const availableDuringControl = yield* semaphore.takeIfAvailable(1);
+      if (availableDuringControl) yield* semaphore.release(1);
+      const publicationsDuringControl = [...publications];
+      yield* Deferred.succeed(finish, undefined);
+      const result = yield* Fiber.join(pending);
+      observingCommit = false;
+      assert.isFalse(availableDuringControl);
+      assert.deepEqual(controlPermitAvailable, [false, false]);
+      assert.deepEqual(publicationsDuringControl, []);
+      assert.isTrue(yield* semaphore.takeIfAvailable(1));
+      yield* semaphore.release(1);
+      if (outcome === "commit") {
+        assert.equal(result._tag, "Success");
+        assert.deepEqual(controls, ["COMMIT"]);
+        assert.deepEqual(publications, ["outbox", "events"]);
+      } else {
+        assert.equal(result._tag, "Failure");
+        assert.deepEqual(controls, ["ROLLBACK"]);
+        assert.deepEqual(publications, []);
+        assert.isTrue(Option.isNone(yield* receipts.getByCommandId(commandId)));
+        assert.isNull(yield* projections.getThreadShell(threadId));
+        assert.lengthOf(yield* outbox.listByCommandId(commandId), 0);
+        assert.equal(
+          (yield* events.readByCommandId({ commandId }).pipe(Stream.runCollect)).length,
+          0,
+        );
+      }
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
 );
 
 it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {

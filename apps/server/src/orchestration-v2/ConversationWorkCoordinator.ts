@@ -13,6 +13,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import * as ThreadManagementService from "./ThreadManagementService.ts";
+import type { DispatchRuntimeOptions } from "./DispatchRuntimeOptions.ts";
 
 export const conversationTaskRuns = (projection: OrchestrationV2ThreadProjection, taskId: NodeId) =>
   projection.runs.filter(
@@ -49,21 +50,25 @@ const make = Effect.gen(function* () {
   const threads = yield* ThreadManagementService.ThreadManagementService;
   const delegate = Effect.fn("ConversationWorkCoordinator.delegate")(function* (
     input: ThreadManagementDelegateInput,
+    options?: DispatchRuntimeOptions,
   ) {
     yield* threads.getProjectThread(input);
-    const result = yield* threads.dispatch({
-      type: "message.dispatch",
-      commandId: input.commandId,
-      threadId: input.threadId,
-      messageId: input.messageId,
-      text: input.text,
-      attachments: [],
-      ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
-      delegation: input.delegation,
-      dispatchMode: { type: "start_immediately" },
-      createdBy: input.createdBy,
-      creationSource: input.creationSource,
-    });
+    const result = yield* threads.dispatch(
+      {
+        type: "message.dispatch",
+        commandId: input.commandId,
+        threadId: input.threadId,
+        messageId: input.messageId,
+        text: input.text,
+        attachments: [],
+        ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
+        delegation: input.delegation,
+        dispatchMode: { type: "start_immediately" },
+        createdBy: input.createdBy,
+        creationSource: input.creationSource,
+      },
+      options,
+    );
     const task = result.storedEvents.find(
       (stored) =>
         stored.event.type === "subagent.updated" && stored.event.threadId === input.threadId,

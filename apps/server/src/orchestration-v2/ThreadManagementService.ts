@@ -7,6 +7,7 @@ import type {
   ProjectionRecordFilter,
   ProjectionRecords,
 } from "./ProjectionStore.ts";
+import type { DispatchRuntimeOptions } from "./DispatchRuntimeOptions.ts";
 import {
   type ChatAttachment,
   CommandId,
@@ -328,6 +329,7 @@ export interface ThreadManagementServiceShape {
   ) => Effect.Effect<void, LegacyV1ThreadImporter.LegacyV1ThreadImportError>;
   readonly dispatch: (
     command: OrchestrationV2ServerCommand,
+    options?: DispatchRuntimeOptions,
   ) => Effect.Effect<
     Orchestrator.OrchestratorV2DispatchResult,
     Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
@@ -382,6 +384,7 @@ export interface ThreadManagementServiceShape {
   }) => Effect.Effect<ReadonlyArray<OrchestrationV2ThreadShell>, ThreadManagementError>;
   readonly sendToThread: (
     input: ThreadManagementSendInput,
+    options?: DispatchRuntimeOptions,
   ) => Effect.Effect<ThreadManagementSendResult, ThreadManagementFailure>;
   readonly assertProviderInstanceEnabled: (input: {
     readonly projectId: ProjectId;
@@ -692,10 +695,10 @@ const make = Effect.gen(function* () {
     }
   };
 
-  const dispatch: ThreadManagementServiceShape["dispatch"] = (command) =>
+  const dispatch: ThreadManagementServiceShape["dispatch"] = (command, options) =>
     ensureCommandTranscripts(command).pipe(
       Effect.andThen(assertDispatchTargetEnabled(command)),
-      Effect.andThen(orchestrator.dispatch(command)),
+      Effect.andThen(orchestrator.dispatch(command, options)),
     );
 
   const getProjectThread: ThreadManagementServiceShape["getProjectThread"] = (input) =>
@@ -773,7 +776,7 @@ const make = Effect.gen(function* () {
 
   const sendToThread: ThreadManagementServiceShape["sendToThread"] = Effect.fn(
     "ThreadManagementService.sendToThread",
-  )(function* (input) {
+  )(function* (input, options) {
     const target = yield* getProjectThreadRecords(input, ["runs", "providerTurns"]);
     const alreadyHandled = yield* hasReceipt(input.commandId);
     if (!alreadyHandled && target.thread.archivedAt !== null) {
@@ -808,28 +811,31 @@ const make = Effect.gen(function* () {
       };
     }
 
-    const dispatched = yield* dispatch({
-      type: "message.dispatch",
-      commandId: input.commandId,
-      threadId: input.threadId,
-      messageId: input.messageId,
-      ...(input.scheduledTaskId === undefined ? {} : { scheduledTaskId: input.scheduledTaskId }),
-      ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
-      ...(input.remoteSender === undefined ? {} : { remoteSender: input.remoteSender }),
-      sendRequest: { text: input.text, mode: input.mode },
-      text: input.text,
-      attachments: input.attachments,
-      ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
-      dispatchMode,
-      createdBy: input.createdBy,
-      creationSource: input.creationSource,
-      ...(input.voiceIntakeSource === undefined
-        ? {}
-        : { voiceIntakeSource: input.voiceIntakeSource }),
-      ...(input.voiceIntakeSourceThreadId === undefined
-        ? {}
-        : { voiceIntakeSourceThreadId: input.voiceIntakeSourceThreadId }),
-    });
+    const dispatched = yield* dispatch(
+      {
+        type: "message.dispatch",
+        commandId: input.commandId,
+        threadId: input.threadId,
+        messageId: input.messageId,
+        ...(input.scheduledTaskId === undefined ? {} : { scheduledTaskId: input.scheduledTaskId }),
+        ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
+        ...(input.remoteSender === undefined ? {} : { remoteSender: input.remoteSender }),
+        sendRequest: { text: input.text, mode: input.mode },
+        text: input.text,
+        attachments: input.attachments,
+        ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
+        dispatchMode,
+        createdBy: input.createdBy,
+        creationSource: input.creationSource,
+        ...(input.voiceIntakeSource === undefined
+          ? {}
+          : { voiceIntakeSource: input.voiceIntakeSource }),
+        ...(input.voiceIntakeSourceThreadId === undefined
+          ? {}
+          : { voiceIntakeSourceThreadId: input.voiceIntakeSourceThreadId }),
+      },
+      options,
+    );
     const projection = yield* getProjectThreadRecords(input, ["runs", "messages", "turnItems"], {
       messageIds: [input.messageId],
       turnItemTypes: ["user_message"],

@@ -50,6 +50,7 @@ import * as EventStore from "./EventStore.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
+import type { DispatchRuntimeOptions } from "./DispatchRuntimeOptions.ts";
 
 export class EventSinkWriteError extends Schema.TaggedError<EventSinkWriteError>()(
   "EventSinkWriteError",
@@ -79,8 +80,22 @@ export class EventSinkStreamError extends Schema.TaggedError<EventSinkStreamErro
   }
 }
 
-export const EventSinkV2Error = Schema.Union([EventSinkWriteError, EventSinkStreamError]);
+export class EventSinkVoiceIntakeNotCurrentError extends Schema.TaggedError<EventSinkVoiceIntakeNotCurrentError>()(
+  "EventSinkVoiceIntakeNotCurrentError",
+  { commandId: CommandId },
+) {
+  override get message(): string {
+    return "The voice intake source is no longer current at commit.";
+  }
+}
+
+export const EventSinkV2Error = Schema.Union([
+  EventSinkWriteError,
+  EventSinkStreamError,
+  EventSinkVoiceIntakeNotCurrentError,
+]);
 export type EventSinkV2Error = typeof EventSinkV2Error.Type;
+const isVoiceIntakeNotCurrentError = Schema.is(EventSinkVoiceIntakeNotCurrentError);
 
 export interface EventSinkV2Shape {
   /** Internal host-attested call only; no RPC/tool decoder may provide principal. */
@@ -187,21 +202,26 @@ export interface EventSinkV2Shape {
     },
     EventSinkV2Error
   >;
-  readonly commitCommand: (input: {
-    readonly commandId: CommandId;
-    readonly threadId: ThreadId;
-    readonly commandType: string;
-    readonly acceptedAt: DateTime.Utc;
-    readonly admissionDeadlineMonotonicMs?: number;
-    readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
-    readonly effects: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2>;
-    readonly confirmedCleanupEffectId?: string;
-    readonly cancelUnsettledEffects?: {
-      readonly effectTypes: ReadonlyArray<EffectOutbox.OrchestrationEffectRequestV2["type"]>;
-      readonly privilegedRequestIds?: ReadonlyArray<import("@t3tools/contracts").RuntimeRequestId>;
-      readonly reason: string;
-    };
-  }) => Effect.Effect<
+  readonly commitCommand: (
+    input: {
+      readonly commandId: CommandId;
+      readonly threadId: ThreadId;
+      readonly commandType: string;
+      readonly acceptedAt: DateTime.Utc;
+      readonly admissionDeadlineMonotonicMs?: number;
+      readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
+      readonly effects: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2>;
+      readonly confirmedCleanupEffectId?: string;
+      readonly cancelUnsettledEffects?: {
+        readonly effectTypes: ReadonlyArray<EffectOutbox.OrchestrationEffectRequestV2["type"]>;
+        readonly privilegedRequestIds?: ReadonlyArray<
+          import("@t3tools/contracts").RuntimeRequestId
+        >;
+        readonly reason: string;
+      };
+    },
+    options?: DispatchRuntimeOptions,
+  ) => Effect.Effect<
     {
       readonly receipt: CommandReceiptStore.CommandReceiptV2;
       readonly storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>;
@@ -316,9 +336,11 @@ const layerBase: Layer.Layer<
       transaction: Effect.Effect<A, E, R>,
       publish: (committed: A) => Effect.Effect<void>,
       validate?: (committed: A) => Effect.Effect<void, EventSinkV2Error>,
+      sourceCommitSemaphore?: Semaphore.Semaphore,
     ) =>
       Effect.suspend(() => {
         let holdsLane = false;
+        let holdsSourcePermit = false;
         const takeLane = publishLane.take(1).pipe(
           Effect.andThen(
             Effect.sync(() => {
@@ -332,12 +354,33 @@ const layerBase: Layer.Layer<
             Effect.tap(transaction, (result) =>
               takeLane.pipe(
                 Effect.andThen(
+                  sourceCommitSemaphore === undefined
+                    ? Effect.void
+                    : sourceCommitSemaphore.take(1).pipe(
+                        Effect.andThen(
+                          Effect.sync(() => {
+                            holdsSourcePermit = true;
+                          }),
+                        ),
+                        Effect.uninterruptible,
+                      ),
+                ),
+                Effect.andThen(
                   Effect.suspend(() => (validate === undefined ? Effect.void : validate(result))),
                 ),
               ),
             ),
           )
           .pipe(
+            // withTransaction completes SQL COMMIT/ROLLBACK before this finalizer.
+            // Observers take only the source permit and never perform SQL under it.
+            Effect.ensuring(
+              Effect.suspend(() =>
+                holdsSourcePermit && sourceCommitSemaphore !== undefined
+                  ? sourceCommitSemaphore.release(1)
+                  : Effect.void,
+              ),
+            ),
             Effect.tap(publish),
             Effect.ensuring(
               Effect.suspend(() => (holdsLane ? publishLane.release(1) : Effect.void)),
@@ -1029,6 +1072,7 @@ const layerBase: Layer.Layer<
 
     const commitCommandEffect = Effect.fn("orchestrationV2.EventSink.commitCommand")(function* (
       input: Parameters<EventSinkV2Shape["commitCommand"]>[0],
+      options?: DispatchRuntimeOptions,
     ) {
       const result = yield* commitThenPublish(
         Effect.gen(function* () {
@@ -1105,17 +1149,23 @@ const layerBase: Layer.Layer<
             if (result.committed) yield* publishStoredEvents(result.storedEvents, result.outcomes);
           }),
         (result) =>
-          result.committed &&
-          input.admissionDeadlineMonotonicMs !== undefined &&
-          performance.now() >= input.admissionDeadlineMonotonicMs
-            ? Effect.fail(
-                new EventSinkWriteError({
-                  commandId: input.commandId,
-                  eventCount: input.events.length,
-                  cause: "Connected environment admission expired before commit.",
-                }),
-              )
-            : Effect.void,
+          Effect.gen(function* () {
+            if (!result.committed) return;
+            if (options?.voiceIntakeCommitGuard?.isCurrent() === false) {
+              return yield* new EventSinkVoiceIntakeNotCurrentError({ commandId: input.commandId });
+            }
+            if (
+              input.admissionDeadlineMonotonicMs !== undefined &&
+              performance.now() >= input.admissionDeadlineMonotonicMs
+            ) {
+              return yield* new EventSinkWriteError({
+                commandId: input.commandId,
+                eventCount: input.events.length,
+                cause: "Connected environment admission expired before commit.",
+              });
+            }
+          }),
+        options?.voiceIntakeCommitGuard?.semaphore,
       );
       return {
         receipt: result.receipt,
@@ -1344,15 +1394,16 @@ const layerBase: Layer.Layer<
             (cause) => new EventSinkWriteError({ eventCount: input.events.length, cause }),
           ),
         ),
-      commitCommand: (input) =>
-        commitCommandEffect(input).pipe(
-          Effect.mapError(
-            (cause) =>
-              new EventSinkWriteError({
-                commandId: input.commandId,
-                eventCount: input.events.length,
-                cause,
-              }),
+      commitCommand: (input, options) =>
+        commitCommandEffect(input, options).pipe(
+          Effect.mapError((cause) =>
+            isVoiceIntakeNotCurrentError(cause)
+              ? cause
+              : new EventSinkWriteError({
+                  commandId: input.commandId,
+                  eventCount: input.events.length,
+                  cause,
+                }),
           ),
         ),
       commitRejectedCommand: (input) =>

@@ -1,3 +1,4 @@
+import type { DispatchRuntimeOptions } from "./DispatchRuntimeOptions.ts";
 import { ApprovalReviewError } from "@t3tools/contracts";
 import * as ApprovalReviewCommands from "./ApprovalReviewCommands.ts";
 import * as PrivilegedCommandCommands from "./PrivilegedCommandCommands.ts";
@@ -327,6 +328,7 @@ export interface OrchestratorV2Shape {
   readonly awaitRestartContinuation: (run: OrchestrationV2Run) => Effect.Effect<void>;
   readonly dispatch: (
     command: OrchestrationV2ServerCommand,
+    options?: DispatchRuntimeOptions,
   ) => Effect.Effect<OrchestratorV2DispatchResult, OrchestratorV2Error>;
   readonly autoArmLimitRecovery: (input: {
     readonly commandId: CommandId;
@@ -12323,6 +12325,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   const dispatchWithReceiptEffect = Effect.fn("orchestrationV2.dispatch.withReceipt")(function* (
     command: OrchestrationV2ServerCommand,
+    options?: DispatchRuntimeOptions,
   ): Effect.fn.Return<OrchestratorV2DispatchResult, OrchestratorV2Error> {
     yield* Effect.annotateCurrentSpan({
       "orchestration_v2.command_id": command.commandId,
@@ -12558,23 +12561,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     const acceptedAt = plan.events.at(-1)?.occurredAt ?? (yield* DateTime.now);
     const committed = yield* eventSink
-      .commitCommand({
-        commandId: command.commandId,
-        threadId: commandThreadId(command),
-        commandType: command.type,
-        acceptedAt,
-        ...(limit?.expiresAtMonotonicMs === undefined
-          ? {}
-          : { admissionDeadlineMonotonicMs: limit.expiresAtMonotonicMs }),
-        events: plan.events,
-        effects: plan.effects,
-        ...(plan.confirmedCleanupEffectId === undefined
-          ? {}
-          : { confirmedCleanupEffectId: plan.confirmedCleanupEffectId }),
-        ...(plan.cancelUnsettledEffects === undefined
-          ? {}
-          : { cancelUnsettledEffects: plan.cancelUnsettledEffects }),
-      })
+      .commitCommand(
+        {
+          commandId: command.commandId,
+          threadId: commandThreadId(command),
+          commandType: command.type,
+          acceptedAt,
+          ...(limit?.expiresAtMonotonicMs === undefined
+            ? {}
+            : { admissionDeadlineMonotonicMs: limit.expiresAtMonotonicMs }),
+          events: plan.events,
+          effects: plan.effects,
+          ...(plan.confirmedCleanupEffectId === undefined
+            ? {}
+            : { confirmedCleanupEffectId: plan.confirmedCleanupEffectId }),
+          ...(plan.cancelUnsettledEffects === undefined
+            ? {}
+            : { cancelUnsettledEffects: plan.cancelUnsettledEffects }),
+        },
+        options,
+      )
       .pipe(
         Effect.mapError(
           (cause) =>
@@ -12616,7 +12622,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   });
 
   // dispatchWithReceiptEffect owns the dispatch span; this wrapper selects the thread locks.
-  const dispatchWithReceipt = Effect.fnUntraced(function* (command: OrchestrationV2ServerCommand) {
+  const dispatchWithReceipt = Effect.fnUntraced(function* (
+    command: OrchestrationV2ServerCommand,
+    options?: DispatchRuntimeOptions,
+  ) {
     if (command.type === "message.dispatch" && command.delegation?.caller !== undefined) {
       const parent = yield* appOwnedSubagentParentThreadId(command.threadId).pipe(
         mapDispatchError(command),
@@ -12650,11 +12659,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (left, right) =>
           depths.get(left)! - depths.get(right)! || (left < right ? -1 : left > right ? 1 : 0),
       );
-      let admission = dispatchWithReceiptEffect(command);
+      let admission = dispatchWithReceiptEffect(command, options);
       for (const id of ids.toReversed()) admission = threadDispatch.withLock(id, admission);
       return yield* admission;
     }
-    const commandEffect = dispatchWithReceiptEffect(command);
+    const commandEffect = dispatchWithReceiptEffect(command, options);
     const dispatch = threadDispatch.withLock(
       commandThreadId(command),
       command.type === "privileged-command.submit"

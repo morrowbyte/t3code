@@ -76,6 +76,8 @@ import * as RuntimeLayer from "./runtimeLayer.ts";
 import { shellStreamItemFromThreadShell } from "./ShellStream.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
+import * as ConversationWorkCoordinator from "./ConversationWorkCoordinator.ts";
+import * as Semaphore from "effect/Semaphore";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
@@ -639,6 +641,128 @@ const layerSharedApplicationDataPlaneTest = Layer.mergeAll(
   Layer.provide(layerTestProviderInstanceRegistry),
   Layer.provide(layerGitWorkflowTest),
   Layer.provide(layerPlatformTest),
+);
+
+it.effect.each(["send", "delegate"] as const)(
+  "rolls back voice %s when its source is withdrawn during projection before commit",
+  (mode) =>
+    Effect.gen(function* () {
+      const threads = yield* ThreadManagementService.ThreadManagementService;
+      const work = yield* ConversationWorkCoordinator.ConversationWorkCoordinator;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const sql = yield* SqlClient.SqlClient;
+      const projects = yield* ProjectService.ProjectService;
+      const projectId = ProjectId.make(`project:withdrawn-voice:${mode}`);
+      const threadId = ThreadId.make(`thread:withdrawn-voice:${mode}`);
+      const commandId = CommandId.make(`command:withdrawn-voice:${mode}`);
+      const messageId = MessageId.make(`message:withdrawn-voice:${mode}`);
+      yield* projects.create({
+        commandId: CommandId.make(`create-project:withdrawn-voice:${mode}`),
+        projectId,
+        title: "Voice race project",
+        workspaceRoot: `/tmp/withdrawn-voice-${mode}`,
+      });
+      yield* threads.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`create:withdrawn-voice:${mode}`),
+        threadId,
+        projectId,
+        title: "Voice source race",
+        createdBy: "user",
+        creationSource: "web",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+      });
+      const before = yield* projections.getThreadProjection(threadId);
+      const projected = yield* Deferred.make<void>();
+      const releaseProjection = yield* Deferred.make<void>();
+      const semaphore = yield* Semaphore.make(1);
+      let current = true;
+      const options = { voiceIntakeCommitGuard: { semaphore, isCurrent: () => current } };
+      const apply = projections.apply;
+      using _projection = vi
+        .spyOn(projections, "apply")
+        .mockImplementation((event) =>
+          apply(event).pipe(
+            Effect.andThen(
+              event.type === "message.updated" && event.payload.id === messageId
+                ? Deferred.succeed(projected, undefined).pipe(
+                    Effect.andThen(Deferred.await(releaseProjection)),
+                  )
+                : Effect.void,
+            ),
+          ),
+        );
+      const input = {
+        projectId,
+        threadId,
+        commandId,
+        messageId,
+        text: "Research this exact source.",
+        createdBy: "user",
+        creationSource: "voice",
+      } as const;
+      // This is the last service-side validation; the transaction pauses after a real write.
+      assert.isTrue(current);
+      const pending = yield* Effect.gen(function* () {
+        if (mode === "send") {
+          yield* threads.sendToThread({ ...input, mode: "auto", attachments: [] }, options);
+        } else {
+          yield* work.delegate({ ...input, delegation: { modelSelection } }, options);
+        }
+      }).pipe(Effect.result, Effect.forkChild({ startImmediately: true }));
+      yield* Effect.raceFirst(
+        Deferred.await(projected),
+        Fiber.join(pending).pipe(
+          Effect.flatMap((result) =>
+            result._tag === "Failure"
+              ? Effect.fail(result.failure)
+              : Effect.die("Voice dispatch completed before its projection barrier."),
+          ),
+        ),
+      );
+      yield* semaphore.withPermit(
+        Effect.sync(() => {
+          current = false;
+        }),
+      );
+      yield* Deferred.succeed(releaseProjection, undefined);
+      const rejected = yield* Fiber.join(pending);
+      assert.equal(rejected._tag, "Failure");
+      if (rejected._tag === "Failure") {
+        assert.equal(rejected.failure._tag, "OrchestratorDispatchError");
+        if (rejected.failure._tag === "OrchestratorDispatchError") {
+          assert.propertyVal(rejected.failure.cause, "_tag", "EventSinkVoiceIntakeNotCurrentError");
+        }
+      }
+      assert.deepEqual(yield* projections.getThreadProjection(threadId), before);
+      assert.lengthOf(yield* outbox.listByCommandId(commandId), 0);
+      assert.equal((yield* sink.readByCommandId({ commandId }).pipe(Stream.runCollect)).length, 0);
+      assert.lengthOf(
+        yield* sql`
+        SELECT command_id FROM orchestration_command_receipts WHERE command_id = ${commandId}
+      `,
+        0,
+      );
+      assert.isTrue(yield* semaphore.takeIfAvailable(1));
+      yield* semaphore.release(1);
+    }).pipe(
+      Effect.provide(
+        ConversationWorkCoordinator.layer.pipe(
+          Layer.provideMerge(
+            Layer.mergeAll(ProjectionStore.layer, EffectOutbox.layer).pipe(
+              Layer.provideMerge(layerSharedApplicationDataPlaneTest),
+            ),
+          ),
+        ),
+      ),
+      Effect.scoped,
+    ),
 );
 
 it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
