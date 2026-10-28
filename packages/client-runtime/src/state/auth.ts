@@ -1,15 +1,32 @@
 import type {
+  AuthGrantScope,
+  AuthSessionId,
   AuthAccessSnapshot,
   AuthAccessStreamEvent,
   AuthAccessStreamSnapshotEvent,
 } from "@t3tools/contracts";
 import { WS_METHODS } from "@t3tools/contracts";
 import * as Stream from "effect/Stream";
+import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as SubscriptionRef from "effect/SubscriptionRef";
+import { HttpClient } from "effect/http";
+import * as EnvironmentSupervisor from "../connection/supervisor.ts";
+import * as ManagedRelay from "../relay/managedRelay.ts";
+import * as RemoteEnvironmentAuthorization from "../authorization/service.ts";
+import { EnvironmentRpcUnavailableError } from "../rpc/client.ts";
+import {
+  createEnvironmentPairingCredential,
+  revokeEnvironmentPairingLink,
+  revokeEnvironmentClient,
+  revokeOtherEnvironmentClients,
+  type AuthAccessHttpContext,
+} from "./authAccessHttp.ts";
 import { Atom } from "effect/reactivity";
 
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import { subscribe } from "../rpc/client.ts";
-import { createEnvironmentSubscriptionAtomFamily } from "./runtime.ts";
+import { createEnvironmentCommand, createEnvironmentSubscriptionAtomFamily } from "./runtime.ts";
 
 export const EMPTY_AUTH_ACCESS_SNAPSHOT: AuthAccessSnapshot = {
   pairingLinks: [],
@@ -75,10 +92,55 @@ function projectAuthAccessSnapshot(
   return [snapshot, [projected]];
 }
 
+const withAuthAccessConnection = Effect.fn("clientRuntime.state.withAuthAccessConnection")(
+  function* <A, E>(
+    request: (context: AuthAccessHttpContext) => Effect.Effect<A, E, HttpClient.HttpClient>,
+  ) {
+    const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+    const prepared = yield* SubscriptionRef.get(supervisor.prepared);
+    const client = yield* Effect.serviceOption(HttpClient.HttpClient);
+    if (Option.isNone(prepared) || Option.isNone(client)) {
+      return yield* new EnvironmentRpcUnavailableError({
+        environmentId: supervisor.target.environmentId,
+        message: `${supervisor.target.label} is not connected.`,
+      });
+    }
+    const signer = yield* Effect.serviceOption(ManagedRelay.ManagedRelayDpopSigner);
+    const remoteAuthorization = yield* Effect.serviceOption(
+      RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization,
+    );
+    return yield* request({ prepared: prepared.value, signer, remoteAuthorization }).pipe(
+      Effect.provideService(HttpClient.HttpClient, client.value),
+    );
+  },
+);
+
 export function createAuthEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
 ) {
   return {
+    createPairing: createEnvironmentCommand(runtime, {
+      label: "environment-auth:create-pairing",
+      execute: (input: {
+        readonly label?: string;
+        readonly scopes?: ReadonlyArray<AuthGrantScope>;
+      }) =>
+        withAuthAccessConnection((context) => createEnvironmentPairingCredential(context, input)),
+    }),
+    revokePairing: createEnvironmentCommand(runtime, {
+      label: "environment-auth:revoke-pairing",
+      execute: (id: string) =>
+        withAuthAccessConnection((context) => revokeEnvironmentPairingLink(context, id)),
+    }),
+    revokeClient: createEnvironmentCommand(runtime, {
+      label: "environment-auth:revoke-client",
+      execute: (sessionId: AuthSessionId) =>
+        withAuthAccessConnection((context) => revokeEnvironmentClient(context, sessionId)),
+    }),
+    revokeOtherClients: createEnvironmentCommand(runtime, {
+      label: "environment-auth:revoke-other-clients",
+      execute: (_input: null) => withAuthAccessConnection(revokeOtherEnvironmentClients),
+    }),
     accessChanges: createEnvironmentSubscriptionAtomFamily(runtime, {
       label: "environment-data:server:auth-access-changes",
       subscribe: (_input: null) =>

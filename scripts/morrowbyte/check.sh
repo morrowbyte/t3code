@@ -94,6 +94,7 @@ if [[ "$typecheck_failed" != 0 ]]; then
   exit 1
 fi
 focused_tests=(
+  packages/client-runtime/src/state/authAccessHttp.test.ts
   packages/client-runtime/src/state/threadInbox.test.ts
   packages/client-runtime/src/state/threadShell.test.ts
   packages/client-runtime/src/state/entities.test.ts
