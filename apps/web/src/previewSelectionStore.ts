@@ -26,6 +26,10 @@ export const usePreviewSelectionStore = create<PreviewSelectionState>()((set) =>
     }),
 }));
 
-export function useThreadPreviewSelection(ref: ScopedThreadRef): PreviewAnnotationPayload | null {
-  return usePreviewSelectionStore((state) => state.byThreadKey[scopedThreadKey(ref)] ?? null);
+export function useThreadPreviewSelection(
+  ref: ScopedThreadRef | null,
+): PreviewAnnotationPayload | null {
+  return usePreviewSelectionStore((state) =>
+    ref ? (state.byThreadKey[scopedThreadKey(ref)] ?? null) : null,
+  );
 }

@@ -73,6 +73,7 @@ export * from "./rpc.ts";
 export * from "./worktreeSetup.ts";
 export * from "./secretRequest.ts";
 export * from "./liveVoice.ts";
+export * from "./liveVoiceContext.ts";
 export * from "./liveVoiceHistory.ts";
 export * from "./clientRpcPermissions.ts";
 export * from "./jarvis.ts";

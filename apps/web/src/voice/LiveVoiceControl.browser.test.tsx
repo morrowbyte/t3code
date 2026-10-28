@@ -11,7 +11,13 @@ import {
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
-import { AsyncResult } from "effect/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
+import type {
+  LiveVoiceControllerDependencies,
+  LiveVoiceState,
+} from "@t3tools/client-runtime/live-voice";
+import type { PreviewAnnotationPayload } from "@t3tools/contracts";
+import { usePreviewSelectionStore } from "~/previewSelectionStore";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { dispatchKeyboardCommand } from "~/components/keyboard/keyboardCommands";
 
@@ -23,14 +29,32 @@ const commands = vi.hoisted(() => ({
   start: vi.fn(),
   stop: vi.fn(),
   status: vi.fn(),
+  context: vi.fn(),
 }));
+const voiceFixture = vi.hoisted(() => ({
+  publish: null as LiveVoiceControllerDependencies["onStateChange"] | null,
+  events: vi.fn(),
+}));
+vi.mock("@t3tools/client-runtime/live-voice", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@t3tools/client-runtime/live-voice")>();
+  return {
+    ...actual,
+    LiveVoiceController: class extends actual.LiveVoiceController {
+      constructor(dependencies: LiveVoiceControllerDependencies) {
+        super(dependencies);
+        voiceFixture.publish = dependencies.onStateChange;
+      }
+    },
+  };
+});
 vi.mock("../state/liveVoice", () => ({
   liveVoiceEnvironment: {
     prepare: "prepare",
     start: "start",
     stop: "stop",
     status: "status",
-    events: vi.fn(),
+    context: "context",
+    events: voiceFixture.events,
   },
 }));
 vi.mock("../state/use-atom-command", () => ({
@@ -112,6 +136,11 @@ function setupEnvironment() {
     value: { getUserMedia },
   });
   for (const command of Object.values(commands)) command.mockReset();
+  voiceFixture.publish = null;
+  voiceFixture.events.mockReturnValue(Atom.make(AsyncResult.initial()));
+  usePreviewSelectionStore.setState({ byThreadKey: {} });
+  cleanup.defer(() => usePreviewSelectionStore.setState({ byThreadKey: {} }));
+  commands.context.mockResolvedValue(AsyncResult.success(undefined));
   commands.prepare.mockResolvedValue(
     AsyncResult.failure(Cause.fail(new LiveVoiceError({ code: "managed_account_required" }))),
   );
@@ -520,9 +549,172 @@ function expectPassive() {
   expect(commands.prepare).not.toHaveBeenCalled();
   expect(commands.start).not.toHaveBeenCalled();
   expect(commands.status).not.toHaveBeenCalled();
+  expect(commands.context).not.toHaveBeenCalled();
   expect(getUserMedia).not.toHaveBeenCalled();
   expect(peer).not.toHaveBeenCalled();
 }
+
+describe("selected preview context during a call", () => {
+  const selection = (id: string, comment = ""): PreviewAnnotationPayload => ({
+    id,
+    comment,
+    pageUrl: "http://localhost:7191",
+    pageTitle: "Selected preview",
+    elements: [],
+    regions: [],
+    strokes: [],
+    styleChanges: [],
+    screenshot: null,
+    createdAt: "2026-10-28T18:00:00.000Z",
+  });
+  const activeState = (): LiveVoiceState => ({
+    phase: "live",
+    localMuted: false,
+    outputMuted: false,
+    transcript: [{ speaker: "assistant", text: "Still speaking", final: false }],
+    sessionStatus: "active",
+    error: null,
+    lease: {
+      leaseId: "selected-context-lease",
+      generation: 1,
+      environmentId: environmentA,
+      threadId: thread,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      providerSessionId: null,
+      plannerNativeThreadId: null,
+      status: "active",
+    },
+  });
+
+  it("sends existing selection, replacement and clear with increasing revisions on the same call", async () => {
+    using _environment = setupEnvironment();
+    await using control = await setupControl();
+    const ref = { environmentId: environmentA, threadId: thread };
+    usePreviewSelectionStore.getState().replaceSelection(ref, selection("first"));
+    await control.render(loaded);
+    expect(commands.context).not.toHaveBeenCalled();
+    const state = activeState();
+    await act(async () => voiceFixture.publish?.(state));
+    expect(commands.context).toHaveBeenCalledWith({
+      environmentId: environmentA,
+      input: {
+        leaseId: "selected-context-lease",
+        generation: 1,
+        revision: 1,
+        context: expect.stringContaining("http://localhost:7191"),
+      },
+    });
+    await act(async () =>
+      usePreviewSelectionStore
+        .getState()
+        .replaceSelection(ref, selection("second", "Change this target")),
+    );
+    expect(commands.context).toHaveBeenLastCalledWith({
+      environmentId: environmentA,
+      input: {
+        leaseId: "selected-context-lease",
+        generation: 1,
+        revision: 2,
+        context: expect.stringContaining("Change this target"),
+      },
+    });
+    await act(async () => voiceFixture.publish?.({ ...state, lease: { ...state.lease! } }));
+    expect(commands.context).toHaveBeenCalledTimes(2);
+    await act(async () => usePreviewSelectionStore.getState().clearSelection(ref));
+    expect(commands.context).toHaveBeenLastCalledWith({
+      environmentId: environmentA,
+      input: { leaseId: "selected-context-lease", generation: 1, revision: 3, context: null },
+    });
+    expect(commands.prepare).not.toHaveBeenCalled();
+    expect(commands.start).not.toHaveBeenCalled();
+    expect(commands.stop).not.toHaveBeenCalled();
+    expect(getUserMedia).not.toHaveBeenCalled();
+  });
+
+  it("retries transient context delivery and cancels retries for a replaced selection", async () => {
+    using _environment = setupEnvironment();
+    await using control = await setupControl();
+    const ref = { environmentId: environmentA, threadId: thread };
+    usePreviewSelectionStore.getState().replaceSelection(ref, selection("old", "Old target"));
+    await control.render(loaded);
+    commands.context
+      .mockResolvedValueOnce({ _tag: "Failure" })
+      .mockResolvedValueOnce({ _tag: "Failure" });
+    vi.useFakeTimers();
+    try {
+      await act(async () => voiceFixture.publish?.(activeState()));
+      expect(commands.context).toHaveBeenCalledTimes(1);
+      await act(async () =>
+        usePreviewSelectionStore.getState().replaceSelection(ref, selection("new", "New target")),
+      );
+      expect(commands.context).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(250);
+      });
+      expect(commands.context).toHaveBeenCalledTimes(3);
+      expect(commands.context).toHaveBeenLastCalledWith({
+        environmentId: environmentA,
+        input: {
+          leaseId: "selected-context-lease",
+          generation: 1,
+          revision: 3,
+          context: expect.stringContaining("New target"),
+        },
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(commands.context).toHaveBeenCalledTimes(3);
+      expect(commands.start).not.toHaveBeenCalled();
+      expect(commands.stop).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects foreign and inactive leases and resends bounded context for a new generation", async () => {
+    using _environment = setupEnvironment();
+    await using control = await setupControl();
+    const ref = { environmentId: environmentA, threadId: thread };
+    usePreviewSelectionStore
+      .getState()
+      .replaceSelection(ref, selection("large", "x".repeat(24_000)));
+    await control.render(loaded);
+    const state = activeState();
+    for (const lease of [
+      { ...state.lease!, environmentId: environmentB },
+      { ...state.lease!, threadId: ThreadId.make("other") },
+      { ...state.lease!, providerInstanceId: ProviderInstanceId.make("other") },
+      { ...state.lease!, status: "starting" as const },
+    ])
+      await act(async () => voiceFixture.publish?.({ ...state, lease }));
+    expect(commands.context).not.toHaveBeenCalled();
+    await act(async () => voiceFixture.publish?.(state));
+    expect(commands.context.mock.calls[0]?.[0].input.context).toHaveLength(24_000);
+    await act(async () =>
+      usePreviewSelectionStore
+        .getState()
+        .replaceSelection({ ...ref, environmentId: environmentB }, selection("foreign")),
+    );
+    expect(commands.context).toHaveBeenCalledOnce();
+    await act(async () =>
+      voiceFixture.publish?.({ ...state, lease: { ...state.lease!, generation: 2 } }),
+    );
+    expect(commands.context).toHaveBeenLastCalledWith({
+      environmentId: environmentA,
+      input: expect.objectContaining({ generation: 2, revision: 2 }),
+    });
+  });
+
+  it("supports an absent thread without selecting or sending context", async () => {
+    using _environment = setupEnvironment();
+    await using control = await setupControl();
+    await control.render({ ...loaded, threadId: null });
+    await act(async () => voiceFixture.publish?.(activeState()));
+    expect(commands.context).not.toHaveBeenCalled();
+    expect(getUserMedia).not.toHaveBeenCalled();
+  });
+});
 
 it("keyboard call and mute respect the current permission gate without microphone capture", async () => {
   using _environment = setupEnvironment();

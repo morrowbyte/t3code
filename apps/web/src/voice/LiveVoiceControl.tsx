@@ -53,6 +53,13 @@ import { Button } from "~/components/ui/button";
 import { toastManager } from "~/components/ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { randomUUID } from "~/lib/utils";
+import { useThreadPreviewSelection } from "~/previewSelectionStore";
+import {
+  previewAnnotationContextRecord,
+  previewAnnotationContextReference,
+} from "~/lib/composerContextRecords";
+import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
+import { formatInlineContextReference } from "~/lib/composerContextReferences";
 import { useVoiceConversationPresentation } from "./VoiceConversation";
 import { unwrapLiveVoiceCommand } from "./LiveVoiceCommands";
 import { useKeyboardCommands } from "~/components/keyboard/keyboardCommands";
@@ -706,6 +713,26 @@ export function LiveVoiceControl(props: {
     reportFailure: false,
     reportDefect: false,
   });
+  const contextRpc = useAtomCommand(liveVoiceEnvironment.context, {
+    reportFailure: false,
+    reportDefect: false,
+  });
+  const contextRevision = useRef(0);
+  const sentContext = useRef<{
+    environmentId: EnvironmentId;
+    leaseId: string;
+    generation: number;
+    context: string | null;
+  } | null>(null);
+  const selection = useThreadPreviewSelection(
+    props.threadId ? { environmentId: props.environmentId, threadId: props.threadId } : null,
+  );
+  const selectedContext = selection
+    ? projectComposerContextForProvider({
+        text: formatInlineContextReference(previewAnnotationContextReference(selection)),
+        records: [previewAnnotationContextRecord(selection)],
+      }).slice(0, 24_000)
+    : null;
   const [state, setState] = useState<LiveVoiceState>({
     phase: "idle",
     localMuted: false,
@@ -860,6 +887,75 @@ export function LiveVoiceControl(props: {
   useEffect(() => {
     void controller.contextChanged(target);
   }, [controller, target]);
+
+  useEffect(() => {
+    const lease = state.lease;
+    if (
+      !targetPresent ||
+      (state.phase !== "live" && state.phase !== "playback-blocked") ||
+      !lease ||
+      lease.status !== "active" ||
+      lease.environmentId !== props.environmentId ||
+      lease.threadId !== props.threadId ||
+      lease.providerInstanceId !== props.providerInstanceId
+    )
+      return;
+    // Command callbacks and status snapshots can change without a new selection.
+    const previous = sentContext.current;
+    if (
+      previous?.environmentId === props.environmentId &&
+      previous.leaseId === lease.leaseId &&
+      previous.generation === lease.generation &&
+      previous.context === selectedContext
+    )
+      return;
+    const currentContext = {
+      environmentId: props.environmentId,
+      leaseId: lease.leaseId,
+      generation: lease.generation,
+      context: selectedContext,
+    };
+    let cancelled = false;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let attempts = 0;
+    const send = async () => {
+      const result = await contextRpc({
+        environmentId: props.environmentId,
+        input: {
+          leaseId: lease.leaseId,
+          generation: lease.generation,
+          revision: ++contextRevision.current,
+          context: selectedContext,
+        },
+      });
+      if (cancelled) return;
+      if (result._tag === "Success") {
+        sentContext.current = currentContext;
+      } else if (++attempts < 6) {
+        retry = setTimeout(() => void send(), 250 * 2 ** (attempts - 1));
+      } else {
+        toastManager.add({
+          type: "error",
+          title: "Selection could not be shared with Live voice",
+          description: "Select the element again after the connection recovers.",
+        });
+      }
+    };
+    void send();
+    return () => {
+      cancelled = true;
+      if (retry !== undefined) clearTimeout(retry);
+    };
+  }, [
+    contextRpc,
+    props.environmentId,
+    props.threadId,
+    props.providerInstanceId,
+    selectedContext,
+    state.lease,
+    state.phase,
+    targetPresent,
+  ]);
 
   const statusText =
     active && state.inputIssue

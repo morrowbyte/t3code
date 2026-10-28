@@ -9,6 +9,20 @@ import {
 import { CLIENT_GUARDED_RPC_SCOPES, clientRpcRequiredScopes } from "./clientRpcPermissions.ts";
 import { WS_METHODS } from "./rpc.ts";
 
+it("guards selected Live voice context with operation authority on its destination", () => {
+  expect(CLIENT_GUARDED_RPC_SCOPES[WS_METHODS.liveVoiceContext]).toBe(
+    AuthOrchestrationOperateScope,
+  );
+  expect(
+    clientRpcRequiredScopes(WS_METHODS.liveVoiceContext, {
+      leaseId: "lease",
+      generation: 1,
+      revision: 1,
+      context: null,
+    }),
+  ).toEqual([AuthOrchestrationOperateScope]);
+});
+
 it("separates avatar reads from subscription-consuming generation on the destination", () => {
   for (const method of [WS_METHODS.agentAvatarGenerate, WS_METHODS.agentAvatarCancel]) {
     expect(clientRpcRequiredScopes(method, { threadId: "agent", theme: "weasel" })).toEqual([

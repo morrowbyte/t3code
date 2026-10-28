@@ -438,6 +438,7 @@ import {
   LiveVoiceStopInput,
   LiveVoiceSubscribeInput,
 } from "./liveVoice.ts";
+import { LiveVoiceContextInput } from "./liveVoiceContext.ts";
 
 import {
   AgentObservatorySubscribeInput,
@@ -509,6 +510,7 @@ export const WS_METHODS = {
   liveVoicePrepare: "liveVoice.prepare",
   liveVoiceStart: "liveVoice.start",
   liveVoiceStop: "liveVoice.stop",
+  liveVoiceContext: "liveVoice.context",
   liveVoiceStatus: "liveVoice.status",
   liveVoiceSubscribe: "liveVoice.subscribe",
   approvalReviewOrderCreate: "approvalReview.orderCreate",
@@ -2209,6 +2211,11 @@ const WsLiveVoiceStatusRpc = Rpc.make(WS_METHODS.liveVoiceStatus, {
   success: LiveVoiceSession,
   error: liveVoiceRpcError,
 });
+const WsLiveVoiceContextRpc = Rpc.make(WS_METHODS.liveVoiceContext, {
+  payload: LiveVoiceContextInput,
+  success: Schema.Void,
+  error: liveVoiceRpcError,
+});
 const WsLiveVoiceSubscribeRpc = Rpc.make(WS_METHODS.liveVoiceSubscribe, {
   payload: LiveVoiceSubscribeInput,
   success: LiveVoiceEvent,
@@ -2248,6 +2255,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsLiveVoicePrepareRpc,
   WsLiveVoiceStartRpc,
   WsLiveVoiceStopRpc,
+  WsLiveVoiceContextRpc,
   WsLiveVoiceStatusRpc,
   WsLiveVoiceSubscribeRpc,
   WsServerProbeRpc,

@@ -80,6 +80,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.liveVoicePrepare]: AuthOrchestrationOperateScope,
   [WS_METHODS.liveVoiceStart]: AuthOrchestrationOperateScope,
   [WS_METHODS.liveVoiceStop]: AuthOrchestrationOperateScope,
+  [WS_METHODS.liveVoiceContext]: AuthOrchestrationOperateScope,
   [WS_METHODS.liveVoiceStatus]: AuthOrchestrationOperateScope,
   [WS_METHODS.liveVoiceSubscribe]: AuthOrchestrationOperateScope,
 } as const;

@@ -8,11 +8,38 @@ import {
   LiveVoiceSubscribeInput,
   LiveVoiceEvent,
 } from "./liveVoice.ts";
-import { WS_METHODS } from "./rpc.ts";
+import { WS_METHODS, WsRpcGroup } from "./rpc.ts";
 import { clientRpcRequiredScopes } from "./clientRpcPermissions.ts";
 import { AuthOrchestrationOperateScope } from "./auth.ts";
+import { LiveVoiceContextInput } from "./liveVoiceContext.ts";
 
 describe("subscription Codex Live contracts", () => {
+  it("registers selected context as a unary RPC with a void response", () => {
+    const rpc = WsRpcGroup.requests.get(WS_METHODS.liveVoiceContext);
+    if (!rpc) throw new Error("liveVoice.context is not registered");
+    const input = { leaseId: "lease", generation: 1, revision: 1, context: null };
+    const decodeInput = Schema.decodeUnknownSync(rpc.payloadSchema);
+    const decodeResponse = Schema.decodeUnknownSync(rpc.successSchema);
+    expect(decodeInput(input)).toEqual(input);
+    expect(decodeResponse(undefined)).toBeUndefined();
+  });
+
+  it("bounds selected context and requires positive safe lease revisions, including clear", () => {
+    const decode = Schema.decodeUnknownSync(LiveVoiceContextInput);
+    const input = { leaseId: "lease", generation: 1, revision: 1, context: null };
+    expect(decode(input)).toEqual(input);
+    expect(decode({ ...input, context: "x".repeat(24_000) }).context).toHaveLength(24_000);
+    for (const invalid of [
+      { context: "x".repeat(24_001) },
+      { revision: 0 },
+      { revision: 1.5 },
+      { revision: Number.MAX_SAFE_INTEGER + 1 },
+      { generation: 0 },
+      { leaseId: "" },
+    ])
+      expect(() => decode({ ...input, ...invalid })).toThrow();
+  });
+
   it("preserves original transcript parts and validates revision correlation without changing legacy events", () => {
     const decode = Schema.decodeUnknownSync(LiveVoiceEvent);
     const legacy = {
