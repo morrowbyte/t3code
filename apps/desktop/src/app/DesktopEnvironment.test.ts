@@ -39,6 +39,17 @@ const makeEnvironment = (
 ) => DesktopEnvironment.DesktopEnvironment.pipe(Effect.provide(layerEnvironment(overrides, env)));
 
 describe("DesktopEnvironment", () => {
+  it.effect("shows Crew when the legacy product name is configured", () =>
+    Effect.gen(function* () {
+      const environment = yield* makeEnvironment(
+        {},
+        { T3CODE_DESKTOP_PROFILE: "weasel", T3CODE_DESKTOP_PRODUCT_NAME: "Morrowbyte" },
+      );
+      assert.equal(environment.branding.baseName, "Crew");
+      assert.equal(environment.branding.displayName, "Crew");
+    }),
+  );
+
   it.effect("derives state paths and development identity inside Effect", () =>
     Effect.gen(function* () {
       const environment = yield* makeEnvironment(
