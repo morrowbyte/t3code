@@ -178,6 +178,17 @@ export class OrchestratorThreadAlreadyExistsError extends Schema.TaggedError<Orc
   }
 }
 
+export class OrchestratorSteerTemporarilyUnavailableError extends Schema.TaggedError<OrchestratorSteerTemporarilyUnavailableError>()(
+  "OrchestratorSteerTemporarilyUnavailableError",
+  { runId: RunId, status: Schema.Literals(["starting", "waiting"]) },
+) {
+  override get message(): string {
+    return `Target run ${this.runId} is ${this.status} and cannot be steered.`;
+  }
+}
+
+const isSteerTemporarilyUnavailableError = Schema.is(OrchestratorSteerTemporarilyUnavailableError);
+
 export class OrchestratorCommandRejectedError extends Schema.TaggedError<OrchestratorCommandRejectedError>()(
   "OrchestratorCommandRejectedError",
   { commandId: CommandId, commandType: Schema.String, cause: Schema.optional(Schema.Defect()) },
@@ -4264,7 +4275,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return yield* new OrchestratorDispatchError({
         commandId: input.command.commandId,
         commandType: input.command.type,
-        cause: `Target run ${targetRun.id} is ${targetRun.status} and cannot be steered.`,
+        cause:
+          targetRun.status === "starting" || targetRun.status === "waiting"
+            ? new OrchestratorSteerTemporarilyUnavailableError({
+                runId: targetRun.id,
+                status: targetRun.status,
+              })
+            : `Target run ${targetRun.id} is ${targetRun.status} and cannot be steered.`,
       });
     }
     // The run reads as running until its provider stops, but a steer accepted
@@ -12493,6 +12510,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       Effect.catch((cause) =>
         Effect.gen(function* () {
           if (cause._tag === "OrchestratorThreadAboveModeLimitError") return yield* cause;
+          // A guarded intake retries this exact pending key when the same run resumes.
+          // Persist every other rejection, including Stop and source/provenance failures.
+          if (
+            command.type === "message.dispatch" &&
+            command.createdBy === "user" &&
+            command.creationSource === "voice" &&
+            command.voiceIntakeSource !== undefined &&
+            options?.voiceIntakeCommitGuard !== undefined &&
+            command.dispatchMode.type === "steer_active" &&
+            cause._tag === "OrchestratorDispatchError" &&
+            isSteerTemporarilyUnavailableError(cause.cause) &&
+            cause.cause.runId === command.dispatchMode.targetRunId &&
+            !(yield* stopReachedRun(command, command.threadId, cause.cause.runId))
+          ) {
+            return yield* cause;
+          }
           const rejectedAt = yield* DateTime.now;
           const receipt = yield* eventSink
             .commitRejectedCommand({

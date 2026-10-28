@@ -765,6 +765,241 @@ it.effect.each(["send", "delegate"] as const)(
     ),
 );
 
+it.effect.each([
+  "waiting",
+  "starting",
+  "unguarded",
+  "web",
+  "missing-source",
+  "stopped",
+  "completed",
+  "missing-run",
+] as const)("preserves voice steer receipt semantics across a %s state race", (scenario) =>
+  Effect.gen(function* () {
+    const threads = yield* ThreadManagementService.ThreadManagementService;
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const sink = yield* EventSink.EventSinkV2;
+    const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+    const projects = yield* ProjectService.ProjectService;
+    const sql = yield* SqlClient.SqlClient;
+    const projectId = ProjectId.make(`project:steer-race:${scenario}`);
+    const threadId = ThreadId.make(`thread:steer-race:${scenario}`);
+    const commandId = CommandId.make(`command:steer-race:${scenario}`);
+    const messageId = MessageId.make(`message:steer-race:${scenario}`);
+    yield* projects.create({
+      commandId: CommandId.make(`project-create:${scenario}`),
+      projectId,
+      title: "Steer race",
+      workspaceRoot: `/tmp/steer-race-${scenario}`,
+    });
+    yield* threads.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make(`thread-create:${scenario}`),
+      threadId,
+      projectId,
+      title: "Steer race",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    yield* threads.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make(`start:${scenario}`),
+      threadId,
+      messageId: MessageId.make(`start:${scenario}`),
+      text: "Start work",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const initial = yield* threads.getThreadProjection(threadId);
+    const run = initial.runs[0]!;
+    const providerThread = initial.providerThreads[0]!;
+    const now = yield* DateTime.now;
+    const providerSession = {
+      id: providerThread.providerSessionId!,
+      driver,
+      providerInstanceId: modelSelection.instanceId,
+      status: "running" as const,
+      cwd: process.cwd(),
+      model: modelSelection.model,
+      capabilities: CodexProviderCapabilitiesV2,
+      createdAt: now,
+      updatedAt: now,
+      lastError: null,
+    };
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make(`run-running:${scenario}`),
+          type: "run.updated",
+          threadId,
+          runId: run.id,
+          occurredAt: now,
+          payload: { ...run, status: "running", startedAt: now },
+        },
+        {
+          id: EventId.make(`session-running:${scenario}`),
+          type: "provider-session.attached",
+          threadId,
+          occurredAt: now,
+          payload: providerSession,
+        },
+        {
+          id: EventId.make(`turn-running:${scenario}`),
+          type: "provider-turn.updated",
+          threadId,
+          runId: run.id,
+          occurredAt: now,
+          payload: {
+            id: ProviderTurnId.make(`turn:${scenario}`),
+            providerThreadId: providerThread.id,
+            nodeId: run.rootNodeId!,
+            runAttemptId: run.activeAttemptId,
+            nativeTurnRef: null,
+            ordinal: 1,
+            status: "running",
+            startedAt: now,
+            completedAt: null,
+          },
+        },
+      ],
+    });
+    using _session = vi
+      .spyOn(sessions, "get")
+      .mockReturnValue(
+        Effect.succeed(
+          Option.some({ providerSession } as ProviderAdapter.ProviderAdapterV2SessionRuntime),
+        ),
+      );
+    const sourceStopId = scenario === "stopped" ? CommandId.make(`stop:${scenario}`) : null;
+    const source = {
+      leaseId: "lease",
+      generation: 1,
+      intentId: "intent",
+      provisional: false,
+      stopId: sourceStopId,
+      sources: [
+        {
+          segmentId: "segment",
+          revision: 1,
+          start: 0,
+          end: 6,
+          quote: "Refine",
+          stopId: sourceStopId,
+        },
+      ],
+    };
+    const command = {
+      type: "message.dispatch",
+      commandId,
+      threadId,
+      messageId,
+      text: "Refine the existing work",
+      attachments: [],
+      dispatchMode: {
+        type: "steer_active",
+        targetRunId: scenario === "missing-run" ? RunId.make("missing-run") : run.id,
+        onInactive: "reject",
+      },
+      createdBy: "user",
+      creationSource: scenario === "web" ? "web" : "voice",
+      ...(scenario === "missing-source" || scenario === "web"
+        ? {}
+        : {
+            voiceIntakeSource: source,
+            voiceIntakeSourceThreadId: threadId,
+          }),
+    } as const;
+    const options =
+      scenario === "unguarded"
+        ? undefined
+        : {
+            voiceIntakeCommitGuard: { semaphore: yield* Semaphore.make(1), isCurrent: () => true },
+          };
+    const observedRunning = yield* Deferred.make<void>();
+    const dispatchAfterChange = yield* Deferred.make<void>();
+    const pending = yield* Effect.gen(function* () {
+      const observed = yield* threads.getThreadRecords(threadId, ["runs"]);
+      assert.equal(observed.runs.find((candidate) => candidate.id === run.id)?.status, "running");
+      yield* Deferred.succeed(observedRunning, undefined);
+      yield* Deferred.await(dispatchAfterChange);
+      return yield* threads.dispatch(command, options).pipe(Effect.result);
+    }).pipe(Effect.forkChild({ startImmediately: true }));
+    yield* Deferred.await(observedRunning);
+    const status =
+      scenario === "starting" ? "starting" : scenario === "completed" ? "completed" : "waiting";
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make(`run-changed:${scenario}`),
+          type: "run.updated",
+          threadId,
+          runId: run.id,
+          occurredAt: now,
+          payload: { ...run, status, startedAt: now },
+        },
+      ],
+    });
+    if (scenario === "stopped")
+      yield* threads.dispatch({
+        type: "thread.stop",
+        threadId,
+        commandId: CommandId.make(`stop:${scenario}`),
+      });
+    yield* Deferred.succeed(dispatchAfterChange, undefined);
+    const result = yield* Fiber.join(pending);
+    assert.equal(result._tag, "Failure");
+    assert.lengthOf((yield* threads.getThreadProjection(threadId)).messages, 1);
+    assert.equal((yield* sink.readByCommandId({ commandId }).pipe(Stream.runCollect)).length, 0);
+    const receipts = yield* sql<{ status: string }>`
+      SELECT status FROM orchestration_command_receipts WHERE command_id = ${commandId}
+    `;
+    const retryable = scenario === "waiting" || scenario === "starting";
+    if (retryable) {
+      assert.deepEqual(receipts, []);
+      if (result._tag === "Failure" && result.failure._tag === "OrchestratorDispatchError") {
+        assert.instanceOf(
+          result.failure.cause,
+          Orchestrator.OrchestratorSteerTemporarilyUnavailableError,
+        );
+        assert.propertyVal(result.failure.cause, "runId", run.id);
+      }
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make(`run-ready:${scenario}`),
+            type: "run.updated",
+            threadId,
+            runId: run.id,
+            occurredAt: now,
+            payload: { ...run, status: "running", startedAt: now },
+          },
+        ],
+      });
+      const accepted = yield* threads.dispatch(command, options);
+      const replayed = yield* threads.dispatch(command, options);
+      assert.isTrue(replayed.replayed);
+      assert.equal(replayed.sequence, accepted.sequence);
+      const final = yield* threads.getThreadProjection(threadId);
+      assert.lengthOf(final.runs, 1);
+      assert.equal(final.messages.find((message) => message.id === messageId)?.runId, run.id);
+      assert.lengthOf(final.messages, 2);
+    } else {
+      assert.deepEqual(receipts, [{ status: "rejected" }]);
+      const retry = yield* orchestrator.dispatch(command, options).pipe(Effect.result);
+      assert.equal(retry._tag, "Failure");
+      if (retry._tag === "Failure")
+        assert.equal(retry.failure._tag, "OrchestratorCommandPreviouslyRejectedError");
+    }
+  }).pipe(Effect.provide(layerSharedApplicationDataPlaneTest), Effect.scoped),
+);
+
 it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
   const seedFailingRollbackThread = (name: string) =>
     Effect.gen(function* () {
