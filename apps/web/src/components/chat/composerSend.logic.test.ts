@@ -1,14 +1,24 @@
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ThreadId,
+  type PreviewAnnotationPayload,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+} from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import { formatInlineContextReference } from "../../lib/composerContextReferences";
 import { threadContextRecord, threadContextReference } from "../../lib/composerContextRecords";
 import {
+  retainUnavailablePreviewAnnotation,
   approvalRedirectNotice,
   loadBalancingSendWarning,
   multipleModelSendBlock,
   referencedThreadContexts,
 } from "./composerSend.logic";
+
+import { useComposerDraftStore, type ComposerImageAttachment } from "../../composerDraftStore";
+import { ensureInlineContextReferences } from "../../lib/composerContextReferences";
+import { previewAnnotationContextReference } from "../../lib/composerContextRecords";
 
 const local = EnvironmentId.make("local");
 const remote = EnvironmentId.make("remote");
@@ -121,5 +131,81 @@ describe("approvalRedirectNotice", () => {
   it("stays quiet when the decline failed or the user left the thread", () => {
     expect(approvalRedirectNotice({ ...settled, declined: false })).toBeNull();
     expect(approvalRedirectNotice(settled)).toBeNull();
+  });
+});
+
+afterEach(() => useComposerDraftStore.setState({ draftsByThreadKey: {} }));
+
+describe("unavailable direct preview send", () => {
+  const target = scopeThreadRef(local, ThreadId.make("preview-draft"));
+  const annotation: PreviewAnnotationPayload = {
+    id: "picked",
+    pageUrl: "http://app.test",
+    pageTitle: "Form",
+    comment: "Check this",
+    elements: [],
+    regions: [],
+    strokes: [],
+    styleChanges: [],
+    screenshot: {
+      dataUrl: "data:image/png;base64,AA==",
+      width: 1,
+      height: 1,
+      cropRect: { x: 0, y: 0, width: 1, height: 1 },
+    },
+    createdAt: "2026-10-28T00:00:00.000Z",
+  };
+  const image: ComposerImageAttachment = {
+    type: "image",
+    id: "picked",
+    name: "crop.png",
+    mimeType: "image/png",
+    sizeBytes: 1,
+    file: new File(["x"], "crop.png", { type: "image/png" }),
+    previewUrl: "data:image/png;base64,AA==",
+  };
+  it("retains context, optional crop and a sendable reference while preserving the draft", () => {
+    const store = useComposerDraftStore.getState();
+    store.setPrompt(target, "Existing request");
+    expect(retainUnavailablePreviewAnnotation(target, { annotation, image })).toBe(true);
+    expect(retainUnavailablePreviewAnnotation(target, { annotation, image })).toBe(true);
+    const draft = store.getComposerDraft(target);
+    expect(draft?.previewAnnotations).toEqual([
+      { ...annotation, screenshot: { ...annotation.screenshot, dataUrl: "" } },
+    ]);
+    expect(draft?.images).toEqual([image]);
+    expect(draft?.prompt).toBe(
+      ensureInlineContextReferences("Existing request", [
+        previewAnnotationContextReference(annotation),
+      ]),
+    );
+  });
+  it("keeps structured context without claiming a crop rejected by the attachment cap", () => {
+    const store = useComposerDraftStore.getState();
+    store.addImages(
+      target,
+      Array.from({ length: PROVIDER_SEND_TURN_MAX_ATTACHMENTS }, (_, index) => ({
+        ...image,
+        id: `full-${index}`,
+        name: `full-${index}.png`,
+      })),
+      { allowDuplicates: true },
+    );
+    retainUnavailablePreviewAnnotation(target, { annotation, image });
+    expect(store.getComposerDraft(target)?.previewAnnotations).toEqual([
+      { ...annotation, screenshot: null },
+    ]);
+    expect(store.getComposerDraft(target)?.images).toHaveLength(PROVIDER_SEND_TURN_MAX_ATTACHMENTS);
+  });
+  it("keeps comment-free context without an optional image and leaves ordinary sends alone", () => {
+    expect(retainUnavailablePreviewAnnotation(target, undefined)).toBe(false);
+    expect(useComposerDraftStore.getState().getComposerDraft(target)).toBeNull();
+    retainUnavailablePreviewAnnotation(target, {
+      annotation: { ...annotation, comment: "", screenshot: null },
+      image: null,
+    });
+    expect(useComposerDraftStore.getState().getComposerDraft(target)?.previewAnnotations).toEqual([
+      { ...annotation, comment: "", screenshot: null },
+    ]);
   });
 });

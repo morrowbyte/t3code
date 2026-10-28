@@ -93,6 +93,7 @@ import { runMobileComposerTransition } from "./draftHeroTransition";
 import { useClientSettingsHydrated, useEnvironmentSettings } from "../../hooks/useSettings";
 import { environmentPresentations } from "../../state/presentation";
 import {
+  retainUnavailablePreviewAnnotation,
   approvalRedirectNotice,
   loadBalancingSendWarning,
   multipleModelSendBlock,
@@ -427,7 +428,7 @@ export function useComposerSend(input: ComposerSendInput) {
     }
 
     const notifyDirectAnnotationAttached = () => {
-      if (!directAnnotation) return;
+      if (!retainUnavailablePreviewAnnotation(composerDraftTarget, directAnnotation)) return;
       toastManager.add(
         stackedThreadToast({
           type: "info",
@@ -561,8 +562,7 @@ export function useComposerSend(input: ComposerSendInput) {
         previewAnnotations: sendContextPreviewAnnotations,
         direct: directAnnotation,
       });
-    // A direct "send annotation" writes the draft and sends in the same tick; the reference
-    // must be in the text now, not after the next render.
+    // Direct sends build their reference here; only unavailable sends are staged in the draft.
     const promptForSend = imageAnnotation
       ? imageAnnotation.text
       : directAnnotation
@@ -1017,8 +1017,8 @@ export function useComposerSend(input: ComposerSendInput) {
       // A draft edited since send, or a paste still landing in it, is no longer the message
       // the user sent.
       const attachmentIdsAtSend = composerAttachmentsSnapshot.map((attachment) => attachment.id);
-      // A direct annotation send writes its image and reference into the draft as it sends,
-      // so the live draft may still lack them; anything else differing is a real edit.
+      // Direct sends add their image and reference only to the send snapshot,
+      // so the live draft may lack them; anything else differing is a real edit.
       const annotationImageId = directAnnotation?.image?.id;
       const attachmentIdsBeforeAnnotation = attachmentIdsAtSend.filter(
         (id) => id !== annotationImageId,

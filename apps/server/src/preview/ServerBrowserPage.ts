@@ -1210,6 +1210,7 @@ export const inspectAtPoint = async (
   page: Page,
   x: number,
   y: number,
+  cdp: CDPSession,
 ): Promise<PreviewAnnotationPayload | null> => {
   let frame = page.mainFrame();
   let point = { x, y };
@@ -1240,58 +1241,91 @@ export const inspectAtPoint = async (
         frame = child;
         continue;
       }
-      const target = await element.evaluate((node) => {
-        const browser = globalThis as unknown as {
-          CSS: { escape: (value: string) => string };
-          getComputedStyle: (element: InspectableElement) => {
-            getPropertyValue: (name: string) => string;
-          };
-        };
-        const parts: string[] = [];
-        let current: InspectableElement | null = node;
-        while (current && parts.length < 12) {
-          if (current.id) {
-            parts.unshift("#" + browser.CSS.escape(current.id));
-            break;
-          }
-          const parent: InspectableElement | null = current.parentElement;
-          const siblings = parent
-            ? Array.from(parent.children).filter((sibling) => sibling.tagName === current!.tagName)
-            : [];
-          parts.unshift(
-            current.tagName.toLowerCase() +
-              (siblings.length > 1 ? ":nth-of-type(" + (siblings.indexOf(current) + 1) + ")" : ""),
-          );
-          current = parent;
-        }
-        const rect = node.getBoundingClientRect();
-        const style = browser.getComputedStyle(node);
-        const selector = parts.join(" > ");
-        const uniqueSelector =
-          node.getRootNode() === node.ownerDocument &&
-          node.ownerDocument.querySelectorAll(selector).length === 1
-            ? selector
-            : null;
-        return {
-          tagName: node.tagName.toLowerCase(),
-          selector: uniqueSelector,
-          htmlPreview: node.outerHTML.slice(0, 12000),
-          styles: [
-            "display",
-            "position",
-            "color",
-            "background-color",
-            "font-size",
-            "margin",
-            "padding",
-            "width",
-            "height",
-          ]
-            .map((name) => name + ": " + style.getPropertyValue(name) + ";")
-            .join("\n"),
-          rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
-        };
+      // Reuse snapshot's isolated-world readers: masked values must not be exposed by HTML
+      // attributes, text copies, or page-defined value getters. Refuse an incomplete read.
+      const { read } = await openReaders(page, cdp);
+      const before = await read();
+      if (before.some((values) => values === undefined)) throw tooBusy();
+      const values = before.flatMap((values) => values ?? []);
+      // Include HTML text and attribute encodings as well as raw script/style text.
+      const htmlValues = values.flatMap((value) => {
+        const escaped = value.replaceAll("&", "&amp;").replaceAll("\u00a0", "&nbsp;");
+        const markup = escaped.replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+        return [
+          value,
+          escaped,
+          markup,
+          escaped.replaceAll('"', "&quot;"),
+          markup.replaceAll('"', "&quot;"),
+        ];
       });
+      const dotted = dottedPattern(htmlValues);
+      const target = await element.evaluate(
+        (node, mask) => {
+          const browser = globalThis as unknown as {
+            CSS: { escape: (value: string) => string };
+            getComputedStyle: (element: InspectableElement) => {
+              getPropertyValue: (name: string) => string;
+            };
+          };
+          const parts: string[] = [];
+          let current: InspectableElement | null = node;
+          while (current && parts.length < 12) {
+            if (current.id) {
+              parts.unshift("#" + browser.CSS.escape(current.id));
+              break;
+            }
+            const parent: InspectableElement | null = current.parentElement;
+            const siblings = parent
+              ? Array.from(parent.children).filter(
+                  (sibling) => sibling.tagName === current!.tagName,
+                )
+              : [];
+            parts.unshift(
+              current.tagName.toLowerCase() +
+                (siblings.length > 1
+                  ? ":nth-of-type(" + (siblings.indexOf(current) + 1) + ")"
+                  : ""),
+            );
+            current = parent;
+          }
+          const rect = node.getBoundingClientRect();
+          const style = browser.getComputedStyle(node);
+          const selector = parts.join(" > ");
+          const uniqueSelector =
+            node.getRootNode() === node.ownerDocument &&
+            node.ownerDocument.querySelectorAll(selector).length === 1
+              ? selector
+              : null;
+          return {
+            tagName: node.tagName.toLowerCase(),
+            selector: uniqueSelector,
+            // Mask before truncation and before returning HTML from the browser process.
+            htmlPreview: (mask.source
+              ? node.outerHTML.replace(new RegExp(mask.source, "gu"), mask.replacement)
+              : node.outerHTML
+            ).slice(0, 12000),
+            styles: [
+              "display",
+              "position",
+              "color",
+              "background-color",
+              "font-size",
+              "margin",
+              "padding",
+              "width",
+              "height",
+            ]
+              .map((name) => name + ": " + style.getPropertyValue(name) + ";")
+              .join("\n"),
+            rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+          };
+        },
+        { source: dotted?.source, replacement: MASKED_VALUE },
+      );
+      const after = await read(before);
+      if (after.some((values) => values === undefined)) throw tooBusy();
+      if (JSON.stringify(before) !== JSON.stringify(after)) throw pageChanged();
       const { rect, ...description } = target;
       const createdAt = new Date().toISOString();
       const pageTitle = await page.title();

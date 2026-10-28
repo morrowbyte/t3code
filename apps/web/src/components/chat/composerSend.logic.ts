@@ -1,5 +1,35 @@
-import type { EnvironmentId, ThreadContextRecord } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  PreviewAnnotationPayload,
+  ThreadContextRecord,
+} from "@t3tools/contracts";
 import { collectInlineContextIds } from "../../lib/composerContextReferences";
+
+import {
+  useComposerDraftStore,
+  type ComposerImageAttachment,
+  type ComposerThreadTarget,
+} from "../../composerDraftStore";
+
+/** Keep a direct annotation when the composer cannot send it yet. */
+export function retainUnavailablePreviewAnnotation(
+  target: ComposerThreadTarget,
+  direct:
+    | { annotation: PreviewAnnotationPayload; image: ComposerImageAttachment | null }
+    | undefined,
+): boolean {
+  if (!direct) return false;
+  const store = useComposerDraftStore.getState();
+  if (direct.image) store.addImage(target, direct.image);
+  const cropAttached =
+    direct.image !== null &&
+    store.getComposerDraft(target)?.images.some((image) => image.id === direct.image?.id);
+  store.addPreviewAnnotation(target, {
+    ...direct.annotation,
+    screenshot: cropAttached ? direct.annotation.screenshot : null,
+  });
+  return true;
+}
 
 /** Attached threads the prompt still links to; replacing linked text leaves stale records. */
 export function referencedThreadContexts(draft: {

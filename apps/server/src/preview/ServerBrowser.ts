@@ -2565,7 +2565,12 @@ const make = Effect.gen(function* () {
         )
           return;
         try {
-          const annotation = await ServerBrowserPage.inspectAtPoint(tab.page, message.x, message.y);
+          const annotation = await ServerBrowserPage.inspectAtPoint(
+            tab.page,
+            message.x,
+            message.y,
+            tab.cdp,
+          );
           viewer.push({ _tag: "selection", requestId: message.requestId, annotation });
         } catch {
           viewer.push({

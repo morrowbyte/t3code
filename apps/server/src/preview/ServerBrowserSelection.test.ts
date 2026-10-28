@@ -1,8 +1,9 @@
 import * as NodeVM from "node:vm";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { inspectAtPoint } from "./ServerBrowserPage.ts";
+import { inspectAtPoint as nativeInspectAtPoint } from "./ServerBrowserPage.ts";
 
-type Page = Parameters<typeof inspectAtPoint>[0];
+type Page = Parameters<typeof nativeInspectAtPoint>[0];
+type Cdp = Parameters<typeof nativeInspectAtPoint>[3];
 const element = (label: string) => {
   const ownerDocument = { querySelectorAll: (_selector: string) => ({ length: 1 }) };
   return {
@@ -21,11 +22,16 @@ const element = (label: string) => {
 type Node = ReturnType<typeof element>;
 
 // Playwright invokes function arguments with the handle. Strings are expressions, not callbacks.
-function evaluate(expression: string | ((node: never) => unknown), node: Node) {
+function evaluate(
+  expression: string | ((node: never, arg: never) => unknown),
+  node: Node,
+  arg?: unknown,
+) {
   const value = NodeVM.runInNewContext(
-    typeof expression === "function" ? `(${expression.toString()})(node)` : expression,
+    typeof expression === "function" ? `(${expression.toString()})(node, arg)` : expression,
     {
       node,
+      arg,
       CSS: { escape: (value: string) => value },
       getComputedStyle: () => ({ getPropertyValue: () => "" }),
     },
@@ -34,8 +40,9 @@ function evaluate(expression: string | ((node: never) => unknown), node: Node) {
 }
 function handle(node: Node | null, child: object | null = null) {
   const dispose = vi.fn(async () => {});
-  const evaluateNode = vi.fn(async (expression: string | ((node: never) => unknown)) =>
-    evaluate(expression, node!),
+  const evaluateNode = vi.fn(
+    async (expression: string | ((node: never, arg: never) => unknown), arg?: unknown) =>
+      evaluate(expression, node!, arg),
   );
   return {
     asElement: () =>
@@ -50,21 +57,44 @@ function handle(node: Node | null, child: object | null = null) {
     dispose,
   };
 }
-function frame(node: Node | null) {
+function frame(node: Node | null, fields: Array<object> = []) {
   const selected = handle(node);
   const evaluateHandle = vi.fn(async (script: string) => {
     NodeVM.runInNewContext(script, { document: { elementFromPoint: () => node } });
     return selected;
   });
-  return { evaluateHandle, selected, url: () => "http://app.test/demo" };
+  return { fields, evaluateHandle, selected, url: () => "http://app.test/demo" };
 }
-function page(main: object): Page {
+function page(main: object): Page & { cdp: Cdp } {
+  const cdp = {
+    send: async (method: string, input: { expression?: string }) => {
+      if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
+      if (method === "Page.createIsolatedWorld") return { executionContextId: 1 };
+      if (method === "Runtime.evaluate")
+        return {
+          result: {
+            value: NodeVM.runInNewContext(input.expression!, {
+              document: { querySelectorAll: () => ("fields" in main ? main.fields : []) },
+              getComputedStyle: (node: { masked?: boolean }) => ({
+                getPropertyValue: () => (node.masked ? "disc" : "none"),
+              }),
+            }),
+          },
+        };
+      throw new Error(`Unexpected CDP method: ${method}`);
+    },
+  } as unknown as Cdp;
   return {
+    cdp,
+    frames: () => [main],
     mainFrame: () => main,
     url: () => "http://app.test/demo",
     title: async () => "Demo",
-  } as unknown as Page;
+  } as unknown as Page & { cdp: Cdp };
 }
+
+const inspectAtPoint = (page: Page & { cdp: Cdp }, x: number, y: number) =>
+  nativeInspectAtPoint(page, x, y, page.cdp);
 
 describe("server browser element inspection", () => {
   it("invokes a real ElementHandle callback and reads current content without clicking", async () => {
@@ -113,6 +143,70 @@ describe("server browser element inspection", () => {
     expect(result?.elements[0]?.rect).toEqual({ x: 112, y: 73, width: 40, height: 25 });
     expect(selected.dispose).toHaveBeenCalledOnce();
     expect(child.selected.dispose).toHaveBeenCalledOnce();
+  });
+  it.each(["input", "textarea", "editable"])(
+    "redacts selected or descendant %s masked values, including serialized HTML copies",
+    async (kind) => {
+      const secret = 's<&"ecret';
+      const encoded = "s&lt;&amp;&quot;ecret";
+      const node = element("Form");
+      node.outerHTML = `<form><label>Email</label><input name="email" value="normal@example.test"><${kind} type="password" value="${encoded}">${encoded}</${kind}><span>${encoded}</span><script>${secret}</script></form>`;
+      const main = frame(node, [
+        {
+          localName: kind === "editable" ? "div" : kind,
+          type: kind === "input" ? "password" : "text",
+          isContentEditable: kind === "editable",
+          masked: kind !== "input",
+          value: secret,
+          defaultValue: secret,
+          textContent: secret,
+        },
+      ]);
+      const html = (await inspectAtPoint(page(main), 15, 25))?.elements[0]?.element.htmlPreview;
+      expect(html).not.toContain(secret);
+      expect(html).not.toContain(encoded);
+      expect(html).toContain("••••••••");
+      expect(html).toContain('<input name="email" value="normal@example.test">');
+      expect(html).toContain("<label>Email</label>");
+    },
+  );
+  it("redacts a selected password field's current and default values", async () => {
+    const node = element("Password");
+    node.tagName = "INPUT";
+    node.outerHTML = '<input id="save" type="password" value="initial-private">';
+    const main = frame(node, [
+      {
+        localName: "input",
+        type: "password",
+        value: "edited-private",
+        defaultValue: "initial-private",
+      },
+    ]);
+    const html = (await inspectAtPoint(page(main), 15, 25))?.elements[0]?.element.htmlPreview;
+    expect(html).toBe('<input id="save" type="password" value="••••••••">');
+  });
+  it("does not return context if masked values change while inspecting", async () => {
+    const field = { localName: "input", type: "password", value: "before", defaultValue: "" };
+    const main = frame(element("Form"), [field]);
+    const evaluate = main.selected.evaluateNode.getMockImplementation()!;
+    main.selected.evaluateNode.mockImplementation(async (...args) => {
+      const result = await evaluate(...args);
+      field.value = "after";
+      return result;
+    });
+    await expect(inspectAtPoint(page(main), 15, 25)).rejects.toThrow("page changed");
+    expect(main.selected.dispose).toHaveBeenCalledOnce();
+  });
+  it("masks before truncation so a password crossing the preview limit leaves no prefix", async () => {
+    const secret = "boundary-private-value";
+    const node = element("Form");
+    node.outerHTML = `<div>${"x".repeat(11990)}${secret}</div>`;
+    const main = frame(node, [
+      { localName: "input", type: "password", value: secret, defaultValue: "" },
+    ]);
+    const html = (await inspectAtPoint(page(main), 15, 25))?.elements[0]?.element.htmlPreview;
+    expect(html).not.toContain("boun");
+    expect(html?.length).toBeLessThanOrEqual(12000);
   });
   it("returns no selection for an empty point and disposes its handle", async () => {
     const main = frame(null);
