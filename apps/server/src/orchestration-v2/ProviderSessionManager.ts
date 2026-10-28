@@ -1165,16 +1165,23 @@ export const layerWithOptions = (
           // Capture runtime identity before yielding: a replacement session
           // can reuse the same providerSessionId while this fiber is parked.
           const probedRuntime = entry.runtime;
+          const hasActiveVoice =
+            probedRuntime.liveVoice?.hasActiveSession === undefined
+              ? false
+              : yield* probedRuntime.liveVoice.hasActiveSession.pipe(
+                  Effect.catchCause(() => Effect.succeed(false)),
+                );
           const hasPendingWork =
-            probedRuntime.hasPendingBackgroundWork === undefined
+            hasActiveVoice ||
+            (probedRuntime.hasPendingBackgroundWork === undefined
               ? false
               : yield* probedRuntime.hasPendingBackgroundWork.pipe(
                   Effect.catchCause(() => Effect.succeed(false)),
-                );
+                ));
           if (hasPendingWork) {
             const now = yield* Clock.currentTimeMillis;
-            const pinnedSinceMs = entry.pinnedSinceMs ?? now;
-            if (now - pinnedSinceMs < maxIdlePinMs) {
+            const pinnedSinceMs = hasActiveVoice ? now : (entry.pinnedSinceMs ?? now);
+            if (hasActiveVoice || now - pinnedSinceMs < maxIdlePinMs) {
               const shouldContinuePin = yield* Ref.modify(sessions, (latest) => {
                 const latestEntry = latest.get(key);
                 if (

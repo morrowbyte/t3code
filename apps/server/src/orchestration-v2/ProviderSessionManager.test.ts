@@ -330,6 +330,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
       readonly initialProviderItemIdentityVersion?: 2;
     }) => Effect.Effect<void>;
     readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
+    readonly liveVoice?: ProviderAdapter.ProviderAdapterV2LiveVoiceRuntime;
     readonly hasPendingBackgroundWorkForThread?: Effect.Effect<boolean>;
     readonly backgroundTasksEndWithProcess?: boolean;
     readonly hangSessionScopeClose?: boolean;
@@ -420,6 +421,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
           ...(options.hasPendingBackgroundWork === undefined
             ? {}
             : { hasPendingBackgroundWork: options.hasPendingBackgroundWork }),
+          ...(options.liveVoice === undefined ? {} : { liveVoice: options.liveVoice }),
           ...(options.hasPendingBackgroundWorkForThread === undefined
             ? {}
             : {
@@ -484,6 +486,7 @@ function layerTest(input: {
     readonly paused: Deferred.Deferred<void>;
   };
   readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
+  readonly liveVoice?: ProviderAdapter.ProviderAdapterV2LiveVoiceRuntime;
   readonly hasPendingBackgroundWorkForThread?: Effect.Effect<boolean>;
   readonly backgroundTasksEndWithProcess?: boolean;
   readonly hangSessionScopeClose?: boolean;
@@ -514,6 +517,7 @@ function layerTest(input: {
       ...(input.hasPendingBackgroundWork === undefined
         ? {}
         : { hasPendingBackgroundWork: input.hasPendingBackgroundWork }),
+      ...(input.liveVoice === undefined ? {} : { liveVoice: input.liveVoice }),
       ...(input.hasPendingBackgroundWorkForThread === undefined
         ? {}
         : { hasPendingBackgroundWorkForThread: input.hasPendingBackgroundWorkForThread }),
@@ -3803,4 +3807,56 @@ it.effect.each([false, true])(
         assert.deepEqual(seen, [present]);
       }).pipe(Effect.provide(layers));
     }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 retains an active voice call beyond the background pin cap",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const speaking = yield* Ref.make(true);
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const now = yield* DateTime.now;
+        const threadId = yield* idAllocator.allocate.thread({
+          fixtureName: "provider-session-manager-voice-call",
+          projectId: yield* idAllocator.allocate.project({
+            fixtureName: "provider-session-manager-voice-call",
+          }),
+        });
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+        yield* TestClock.adjust("5 seconds");
+        assert.isTrue(Option.isSome(yield* manager.get(providerSessionId)));
+        assert.equal((yield* Ref.get(state)).closeCount, 0);
+        yield* Ref.set(speaking, false);
+        yield* TestClock.adjust("1 second");
+        assert.isTrue(Option.isNone(yield* manager.get(providerSessionId)));
+        assert.equal((yield* Ref.get(state)).closeCount, 1);
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 1000,
+            maxIdlePinMs: 2000,
+            liveVoice: {
+              events: Stream.empty,
+              hasActiveSession: Ref.get(speaking),
+              preparePlanner: () => Effect.succeed({ plannerNativeThreadId: "voice-planner" }),
+              start: () => Effect.void,
+              stop: () => Effect.void,
+              appendSpeech: () => Effect.void,
+            },
+          }),
+        ),
+      );
+    }),
 );

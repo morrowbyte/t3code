@@ -669,6 +669,8 @@ export interface ProviderAdapterV2SessionRuntime {
 }
 
 export interface ProviderAdapterV2LiveVoiceRuntime {
+  /** A connected call is foreground activity while the workspace agent is idle. */
+  readonly hasActiveSession?: Effect.Effect<boolean>;
   readonly events: Stream.Stream<ProviderAdapterV2LiveVoiceEvent, ProviderAdapterV2Error>;
   readonly preparePlanner: (input: {
     readonly newTaskAdmission?: "intake";

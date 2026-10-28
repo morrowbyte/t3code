@@ -2245,6 +2245,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
         const liveVoiceEvents =
           yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2LiveVoiceEvent>();
+        const activeLiveVoiceSessions = new Set<string>();
+        const pendingLiveVoiceStarts = new Map<string, object>();
+        const endLiveVoiceSession = (threadId: string) => {
+          pendingLiveVoiceStarts.delete(threadId);
+          activeLiveVoiceSessions.delete(threadId);
+        };
         const liveVoiceReadbacks = new Map<string, Set<string>>();
         const liveVoicePlanners = yield* Ref.make(
           new Map<
@@ -7323,10 +7329,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           }),
         );
         yield* client.handleServerNotification("thread/realtime/error", (payload) =>
-          offerLiveVoiceEvent({ type: "error", plannerNativeThreadId: payload.threadId }),
+          Effect.gen(function* () {
+            endLiveVoiceSession(payload.threadId);
+            yield* offerLiveVoiceEvent({ type: "error", plannerNativeThreadId: payload.threadId });
+          }),
         );
         yield* client.handleServerNotification("thread/realtime/closed", (payload) =>
           Effect.gen(function* () {
+            endLiveVoiceSession(payload.threadId);
             liveVoiceReadbacks.delete(payload.threadId);
             transcriptTracker.close(payload.threadId);
             yield* offerLiveVoiceEvent({ type: "closed", plannerNativeThreadId: payload.threadId });
@@ -8206,6 +8216,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           mcpApps,
           liveVoice: {
             events: Stream.fromQueue(liveVoiceEvents),
+            hasActiveSession: Effect.sync(() => activeLiveVoiceSessions.size > 0),
             canStartProvisionalWork: client.request("modelProvider/capabilities/read", {}).pipe(
               Effect.map((caps) => caps.webSearch),
               Effect.catch(() => Effect.succeed(false)),
@@ -8470,6 +8481,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     })),
                   });
                 }
+                const startMarker = {};
+                pendingLiveVoiceStarts.set(input.plannerNativeThreadId, startMarker);
                 yield* client.raw
                   .request("thread/realtime/start", {
                     threadId: input.plannerNativeThreadId,
@@ -8499,7 +8512,18 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   .pipe(
                     Effect.tap(() =>
                       Effect.sync(() => {
-                        liveVoiceReadbacks.set(input.plannerNativeThreadId, new Set());
+                        if (
+                          pendingLiveVoiceStarts.get(input.plannerNativeThreadId) === startMarker
+                        ) {
+                          activeLiveVoiceSessions.add(input.plannerNativeThreadId);
+                          liveVoiceReadbacks.set(input.plannerNativeThreadId, new Set());
+                        }
+                      }),
+                    ),
+                    Effect.ensuring(
+                      Effect.sync(() => {
+                        if (pendingLiveVoiceStarts.get(input.plannerNativeThreadId) === startMarker)
+                          pendingLiveVoiceStarts.delete(input.plannerNativeThreadId);
                       }),
                     ),
                     Effect.asVoid,
@@ -8509,6 +8533,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             ),
             stop: (plannerNativeThreadId) =>
               Effect.sync(() => {
+                endLiveVoiceSession(plannerNativeThreadId);
                 liveVoiceReadbacks.delete(plannerNativeThreadId);
               })
                 .pipe(
