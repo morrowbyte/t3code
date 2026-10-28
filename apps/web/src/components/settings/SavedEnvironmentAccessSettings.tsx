@@ -8,7 +8,7 @@ import {
   type AdvertisedEndpoint,
 } from "@t3tools/contracts";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import { isLoopbackHostname, type ServerClientSessionRecord } from "~/environments/primary";
+import type { ServerClientSessionRecord } from "~/environments/primary";
 import { authEnvironment } from "~/state/auth";
 import { useEnvironmentQuery } from "~/state/query";
 import {
@@ -117,10 +117,7 @@ export function SavedEnvironmentAccess({ environment }: { environment: Environme
       setRevokingOthers(false);
     }
   };
-  const endpointUrl =
-    environment.serverConfig?.directEndpoints?.find(
-      (endpoint) => !isLoopbackHostname(new URL(endpoint.httpBaseUrl).hostname),
-    )?.httpBaseUrl ?? prepared?.httpBaseUrl;
+  const endpointUrl = prepared?.httpBaseUrl;
   return (
     <div className="mt-2 border-t border-border/50 py-3">
       <div className="flex flex-wrap items-center justify-between gap-2 px-3 sm:px-4">
