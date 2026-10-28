@@ -2,10 +2,16 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
+import { checkStorageAdmission } from "../packages/shared/src/node/storagePressure.ts";
 
 const ENV_FILES = [".env", NodePath.join("infra", "relay", ".env")];
 
 const worktree = NodePath.dirname(import.meta.dirname);
+
+const storageMessage = await checkStorageAdmission([worktree]);
+if (storageMessage !== null) {
+  throw new Error(`Cannot set up worktree: ${storageMessage}`);
+}
 
 // T3 runs setup in the background, so agents can start before it ends.
 // `setup-running` holds this PID until setup ends with `setup-done` or

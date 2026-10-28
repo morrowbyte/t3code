@@ -50,6 +50,7 @@ import {
   parseRemoteRefWithRemoteNames,
 } from "../git/remoteRefs.ts";
 import * as ServerConfig from "../config.ts";
+import { checkStorageAdmission } from "../storagePressure.ts";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const gitProcesses = Semaphore.makeUnsafe(8);
@@ -3738,6 +3739,25 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         });
       }
       worktreePath = path.join(parentDir, repoName, sanitizedBranch);
+    }
+    const storagePaths = [input.cwd, path.resolve(input.cwd, worktreePath)];
+    const storageMessage = yield* Effect.tryPromise({
+      try: () => checkStorageAdmission(storagePaths),
+      catch: (cause) =>
+        new GitCommandError({
+          operation: "GitVcsDriver.createWorktree",
+          command: "git worktree add",
+          cwd: input.cwd,
+          detail: `Cannot check storage before creating a worktree: ${cause instanceof Error ? cause.message : String(cause)}`,
+        }),
+    });
+    if (storageMessage !== null) {
+      return yield* new GitCommandError({
+        operation: "GitVcsDriver.createWorktree",
+        command: "git worktree add",
+        cwd: input.cwd,
+        detail: storageMessage,
+      });
     }
     const args = input.newRefName
       ? ["worktree", "add", "-b", input.newRefName, "--", worktreePath, input.refName]

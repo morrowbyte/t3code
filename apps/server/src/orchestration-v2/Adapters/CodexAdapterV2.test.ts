@@ -46,6 +46,7 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Predicate from "effect/Predicate";
 import * as FileSystem from "effect/FileSystem";
 import { MCP_APP_OUTPUT_KEY, readMcpAppReference } from "@t3tools/shared/mcpApp";
@@ -58,6 +59,7 @@ import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -2396,6 +2398,11 @@ describe("CodexAdapterV2 LiveVoice planner preparation", () => {
   const openPlanner = Effect.fnUntraced(function* (
     options: {
       readonly start?: Partial<CodexSchema.V2ThreadStartResponse>;
+      readonly nativeThreadIds?: ReadonlyArray<string>;
+      readonly request?: (
+        method: string,
+        params: unknown,
+      ) => Effect.Effect<unknown, CodexError.CodexAppServerError> | undefined;
       readonly update?: (
         emit: (
           settings: Settings,
@@ -2417,6 +2424,17 @@ describe("CodexAdapterV2 LiveVoice planner preparation", () => {
       startEntry.frame.result,
     );
     const requests: Array<{ method: string; params: unknown }> = [];
+    const fileSystem = yield* FileSystem.FileSystem;
+    const tempRoot = yield* fileSystem.makeTempDirectoryScoped({ prefix: "codex-planner-test-" });
+    const directories: string[] = [];
+    const removedDirectories: string[] = [];
+    const removals = yield* Queue.unbounded<string>();
+    let nextThread = 0;
+    const adapterScope = yield* Scope.fork(yield* Scope.Scope);
+    const notifications = new Map<
+      string,
+      (payload: unknown) => Effect.Effect<void, CodexError.CodexAppServerError>
+    >();
     let settingsHandler:
       | ((
           payload: CodexSchema.V2ThreadSettingsUpdatedNotification,
@@ -2448,10 +2466,16 @@ describe("CodexAdapterV2 LiveVoice planner preparation", () => {
                     request: (method, params) =>
                       Effect.gen(function* () {
                         requests.push({ method, params });
+                        const override = options.request?.(method, params);
+                        if (override !== undefined) return yield* override;
                         if (method === "account/read") return { account: { type: "chatgpt" } };
                         if (method === "thread/start")
                           return {
                             ...started,
+                            thread: {
+                              ...started.thread,
+                              id: options.nativeThreadIds?.[nextThread++] ?? started.thread.id,
+                            },
                             approvalPolicy: "never",
                             sandbox: { type: "readOnly", networkAccess: false },
                             serviceTier: "ultrafast",
@@ -2463,6 +2487,9 @@ describe("CodexAdapterV2 LiveVoice planner preparation", () => {
                         if (
                           method === "thread/archive" ||
                           method === "thread/inject_items" ||
+                          method === "thread/realtime/stop" ||
+                          method === "thread/realtime/appendText" ||
+                          method === "thread/realtime/appendSpeech" ||
                           method === "thread/realtime/start"
                         )
                           return {};
@@ -2470,6 +2497,7 @@ describe("CodexAdapterV2 LiveVoice planner preparation", () => {
                       }),
                   },
                   handleServerNotification: (method, handler) => {
+                    notifications.set(method, (payload) => handler(payload as never));
                     if (method === "thread/settings/updated") {
                       settingsHandler = (payload) => handler(payload as never);
                     }
@@ -2488,24 +2516,59 @@ describe("CodexAdapterV2 LiveVoice planner preparation", () => {
           ),
       },
       crypto: yield* Crypto.Crypto,
-      fileSystem: yield* FileSystem.FileSystem,
+      fileSystem: {
+        ...fileSystem,
+        makeTempDirectory: (options) =>
+          fileSystem
+            .makeTempDirectory({ ...options, directory: tempRoot })
+            .pipe(Effect.tap((directory) => Effect.sync(() => directories.push(directory)))),
+        remove: (path, options) =>
+          fileSystem.remove(path, options).pipe(
+            Effect.tap(() => Effect.sync(() => removedDirectories.push(path))),
+            Effect.tap(() => Queue.offer(removals, path)),
+          ),
+      },
       idAllocator: yield* IdAllocator.IdAllocatorV2,
       serverConfig: yield* makeReplayServerConfig("live-planner").pipe(Effect.orDie),
     });
-    const runtime = yield* adapter.openSession({
-      threadId: ThreadId.make("existing-work-thread"),
-      providerSessionId: ProviderSessionId.make("live-provider-session"),
-      modelSelection: CODEX_TEST_MODEL_SELECTION,
-      runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
-    });
+    const runtime = yield* adapter
+      .openSession({
+        threadId: ThreadId.make("existing-work-thread"),
+        providerSessionId: ProviderSessionId.make("live-provider-session"),
+        modelSelection: CODEX_TEST_MODEL_SELECTION,
+        runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+      })
+      .pipe(Effect.provideService(Scope.Scope, adapterScope));
     const liveVoice = runtime.liveVoice;
-    if (liveVoice === undefined) return yield* Effect.die("Missing LiveVoice runtime.");
+    if (
+      liveVoice === undefined ||
+      liveVoice.appendContext === undefined ||
+      liveVoice.hasActiveSession === undefined
+    )
+      return yield* Effect.die("Missing LiveVoice runtime capabilities.");
     return {
       requests,
+      directories,
+      removedDirectories,
+      removed: Queue.take(removals),
       emit,
+      emitNative: (method: string, payload: unknown) =>
+        notifications.get(method)?.(payload) ?? Effect.die("Missing notification handler."),
+      close: Scope.close(adapterScope, Exit.void),
       start: liveVoice.start,
-      prepare: () =>
+      startCall: (plannerNativeThreadId = "new-live-planner") =>
+        liveVoice.start({
+          plannerNativeThreadId,
+          realtimeSessionId: "test-call",
+          offerSdp: "offer",
+        }),
+      stop: liveVoice.stop,
+      appendSpeech: liveVoice.appendSpeech,
+      appendContext: liveVoice.appendContext,
+      hasActiveSession: liveVoice.hasActiveSession,
+      prepare: (newTaskAdmission?: "intake") =>
         liveVoice.preparePlanner({
+          ...(newTaskAdmission === undefined ? {} : { newTaskAdmission }),
           modelSelection: CODEX_TEST_MODEL_SELECTION,
           serviceTier: "ultrafast",
           reasoningEffort: "low",
@@ -2518,6 +2581,333 @@ describe("CodexAdapterV2 LiveVoice planner preparation", () => {
     IdAllocator.layer,
     McpProviderSessions.layer,
     NodeServices.layer,
+  );
+
+  it.effect("removes the planner temp cwd after preparation fails", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const planner = yield* openPlanner({ start: { approvalPolicy: "on-request" } });
+      assert.equal((yield* Effect.exit(planner.prepare()))._tag, "Failure");
+      assert.lengthOf(planner.directories, 1);
+      assert.isFalse(yield* fileSystem.exists(planner.directories[0]!));
+    }).pipe(Effect.scoped, Effect.provide(dependencies)),
+  );
+
+  it.effect("keeps the planner cwd through prepare and active use, then removes it on Stop", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const planner = yield* openPlanner();
+      yield* planner.prepare();
+      const cwd = planner.directories[0]!;
+      assert.isTrue(yield* fileSystem.exists(cwd));
+      yield* fileSystem.writeFileString(`${cwd}/owned-child`, "planner data");
+      yield* planner.startCall();
+      assert.isTrue(yield* planner.hasActiveSession);
+      yield* planner.appendSpeech({ plannerNativeThreadId: "new-live-planner", text: "answer" });
+      yield* planner.appendContext({ plannerNativeThreadId: "new-live-planner", text: "context" });
+      assert.isTrue(yield* fileSystem.exists(cwd));
+      yield* planner.stop("new-live-planner");
+      assert.isFalse(yield* fileSystem.exists(cwd));
+      assert.isFalse(yield* planner.hasActiveSession);
+      yield* planner.stop("new-live-planner");
+      yield* planner.emitNative("thread/realtime/closed", { threadId: "new-live-planner" });
+      assert.equal((yield* Effect.exit(planner.startCall()))._tag, "Failure");
+      assert.equal(
+        (yield* Effect.exit(
+          planner.appendContext({ plannerNativeThreadId: "new-live-planner", text: "late" }),
+        ))._tag,
+        "Failure",
+      );
+      yield* planner.close;
+      assert.deepEqual(planner.removedDirectories, [cwd]);
+    }).pipe(Effect.scoped, Effect.provide(dependencies)),
+  );
+
+  it.effect.each([false, true])(
+    "finalization removes a prepared/active planner (active=%s)",
+    (active) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const planner = yield* openPlanner();
+        yield* planner.prepare();
+        if (active) yield* planner.startCall();
+        assert.isTrue(yield* fileSystem.exists(planner.directories[0]!));
+        yield* planner.close;
+        assert.isFalse(yield* fileSystem.exists(planner.directories[0]!));
+        assert.isFalse(yield* planner.hasActiveSession);
+        assert.equal((yield* Effect.exit(planner.startCall()))._tag, "Failure");
+        yield* planner.close;
+      }).pipe(Effect.scoped, Effect.provide(dependencies)),
+  );
+
+  it.effect("retains an uncertain start/error/failed Stop until a confirmed close", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const planner = yield* openPlanner({
+        request: (method) =>
+          method === "thread/realtime/start" || method === "thread/realtime/stop"
+            ? Effect.fail(
+                new CodexError.CodexAppServerRequestError({
+                  code: -32000,
+                  errorMessage: "uncertain fixture outcome",
+                }),
+              )
+            : undefined,
+      });
+      yield* planner.prepare();
+      assert.equal((yield* Effect.exit(planner.startCall()))._tag, "Failure");
+      assert.isTrue(yield* fileSystem.exists(planner.directories[0]!));
+      yield* planner.emitNative("thread/realtime/error", {
+        threadId: "new-live-planner",
+        error: "fixture",
+      });
+      assert.equal((yield* Effect.exit(planner.stop("new-live-planner")))._tag, "Failure");
+      assert.isTrue(yield* fileSystem.exists(planner.directories[0]!));
+      yield* planner.emitNative("thread/realtime/closed", { threadId: "new-live-planner" });
+      assert.isFalse(yield* fileSystem.exists(planner.directories[0]!));
+    }).pipe(Effect.scoped, Effect.provide(dependencies)),
+  );
+
+  it.effect.each(["thread/start", "config/read"])("cleans failed preparation at %s", (method) =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const planner = yield* openPlanner({
+        request: (requested) =>
+          requested === method
+            ? Effect.fail(
+                new CodexError.CodexAppServerRequestError({
+                  code: -32000,
+                  errorMessage: "preparation fixture failure",
+                }),
+              )
+            : undefined,
+      });
+      assert.equal(
+        (yield* Effect.exit(planner.prepare(method === "config/read" ? "intake" : undefined)))._tag,
+        "Failure",
+      );
+      assert.lengthOf(planner.directories, 1);
+      assert.isFalse(yield* fileSystem.exists(planner.directories[0]!));
+    }).pipe(Effect.scoped, Effect.provide(dependencies)),
+  );
+
+  it.effect("defers closed cleanup until an in-flight append releases the cwd", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const requested = yield* Deferred.make<void>();
+      const complete = yield* Deferred.make<void>();
+      const planner = yield* openPlanner({
+        request: (method) =>
+          method === "thread/realtime/appendText"
+            ? Deferred.succeed(requested, undefined).pipe(
+                Effect.andThen(Deferred.await(complete)),
+                Effect.as({}),
+              )
+            : undefined,
+      });
+      yield* planner.prepare();
+      yield* planner.startCall();
+      const append = yield* planner
+        .appendContext({ plannerNativeThreadId: "new-live-planner", text: "in flight" })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(requested);
+      yield* planner.emitNative("thread/realtime/closed", { threadId: "new-live-planner" });
+      assert.isFalse(yield* planner.hasActiveSession);
+      assert.isTrue(yield* fileSystem.exists(planner.directories[0]!));
+      yield* Deferred.succeed(complete, undefined);
+      yield* Fiber.join(append);
+      assert.isFalse(yield* fileSystem.exists(planner.directories[0]!));
+    }).pipe(Effect.scoped, Effect.provide(dependencies)),
+  );
+
+  it.effect.each([false, true])(
+    "reconciles a late start after Stop before cleanup (stopFails=%s)",
+    (stopFails) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const requested = yield* Deferred.make<void>();
+        const complete = yield* Deferred.make<void>();
+        let stops = 0;
+        const planner = yield* openPlanner({
+          request: (method) => {
+            if (method === "thread/realtime/start")
+              return Deferred.succeed(requested, undefined).pipe(
+                Effect.andThen(Deferred.await(complete)),
+                Effect.as({}),
+              );
+            if (method === "thread/realtime/stop" && ++stops === 2 && stopFails)
+              return Effect.fail(
+                new CodexError.CodexAppServerRequestError({
+                  code: -32000,
+                  errorMessage: "late Stop failed",
+                }),
+              );
+            return undefined;
+          },
+        });
+        yield* planner.prepare();
+        const start = yield* planner.startCall().pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(requested);
+        assert.equal((yield* Effect.exit(planner.startCall()))._tag, "Failure");
+        yield* planner.stop("new-live-planner");
+        assert.isTrue(yield* fileSystem.exists(planner.directories[0]!));
+        yield* Deferred.succeed(complete, undefined);
+        assert.equal((yield* Fiber.await(start))._tag, stopFails ? "Failure" : "Success");
+        assert.equal(
+          planner.requests.filter((request) => request.method === "thread/realtime/stop").length,
+          2,
+        );
+        assert.isFalse(yield* planner.hasActiveSession);
+        assert.equal(yield* fileSystem.exists(planner.directories[0]!), stopFails);
+        yield* planner.close;
+        assert.isFalse(yield* fileSystem.exists(planner.directories[0]!));
+      }).pipe(Effect.scoped, Effect.provide(dependencies)),
+  );
+
+  it.effect("a late old close cannot delete another planner's cwd", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const planner = yield* openPlanner({ nativeThreadIds: ["old-planner", "next-planner"] });
+      yield* planner.prepare();
+      yield* planner.stop("old-planner");
+      yield* planner.prepare();
+      yield* planner.startCall("next-planner");
+      yield* planner.emitNative("thread/realtime/closed", { threadId: "old-planner" });
+      assert.isFalse(yield* fileSystem.exists(planner.directories[0]!));
+      assert.isTrue(yield* fileSystem.exists(planner.directories[1]!));
+      assert.isTrue(yield* planner.hasActiveSession);
+      yield* planner.stop("next-planner");
+      assert.isFalse(yield* fileSystem.exists(planner.directories[1]!));
+    }).pipe(Effect.scoped, Effect.provide(dependencies)),
+  );
+
+  it.effect("Stop during history injection prevents a later realtime start", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const injected = yield* Deferred.make<void>();
+      const complete = yield* Deferred.make<void>();
+      const planner = yield* openPlanner({
+        request: (method) =>
+          method === "thread/inject_items"
+            ? Deferred.succeed(injected, undefined).pipe(
+                Effect.andThen(Deferred.await(complete)),
+                Effect.as({}),
+              )
+            : undefined,
+      });
+      yield* planner.prepare();
+      const start = yield* planner
+        .start({
+          plannerNativeThreadId: "new-live-planner",
+          realtimeSessionId: "test-call",
+          offerSdp: "offer",
+          initialItems: [{ role: "assistant", text: "existing finding" }],
+        })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(injected);
+      yield* planner.stop("new-live-planner");
+      assert.isTrue(yield* fileSystem.exists(planner.directories[0]!));
+      yield* Deferred.succeed(complete, undefined);
+      yield* Fiber.join(start);
+      assert.isFalse(yield* fileSystem.exists(planner.directories[0]!));
+      assert.notInclude(
+        planner.requests.map((request) => request.method),
+        "thread/realtime/start",
+      );
+      assert.isFalse(yield* planner.hasActiveSession);
+    }).pipe(Effect.scoped, Effect.provide(dependencies)),
+  );
+
+  it.effect("an interrupted start retains its cwd until Stop is acknowledged", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const starting = yield* Deferred.make<void>();
+      const stopping = yield* Deferred.make<void>();
+      const stopped = yield* Deferred.make<void>();
+      const planner = yield* openPlanner({
+        request: (method) => {
+          if (method === "thread/realtime/start")
+            return Deferred.succeed(starting, undefined).pipe(Effect.andThen(Effect.never));
+          if (method === "thread/realtime/stop")
+            return Deferred.succeed(stopping, undefined).pipe(
+              Effect.andThen(Deferred.await(stopped)),
+              Effect.as({}),
+            );
+          return undefined;
+        },
+      });
+      yield* planner.prepare();
+      const start = yield* planner.startCall().pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(starting);
+      yield* Fiber.interrupt(start);
+      assert.isTrue(yield* fileSystem.exists(planner.directories[0]!));
+      const stop = yield* planner
+        .stop("new-live-planner")
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(stopping);
+      assert.isTrue(yield* fileSystem.exists(planner.directories[0]!));
+      yield* Deferred.succeed(stopped, undefined);
+      yield* Fiber.join(stop);
+      assert.isFalse(yield* fileSystem.exists(planner.directories[0]!));
+    }).pipe(Effect.scoped, Effect.provide(dependencies)),
+  );
+
+  it.effect("finalization defers cwd deletion until an outstanding append returns", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const requested = yield* Deferred.make<void>();
+      const complete = yield* Deferred.make<void>();
+      const planner = yield* openPlanner({
+        request: (method) =>
+          method === "thread/realtime/appendSpeech"
+            ? Deferred.succeed(requested, undefined).pipe(
+                Effect.andThen(Deferred.await(complete)),
+                Effect.as({}),
+              )
+            : undefined,
+      });
+      yield* planner.prepare();
+      yield* planner.startCall();
+      const append = yield* planner
+        .appendSpeech({ plannerNativeThreadId: "new-live-planner", text: "in flight" })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(requested);
+      yield* planner.close;
+      assert.isTrue(yield* fileSystem.exists(planner.directories[0]!));
+      yield* Deferred.succeed(complete, undefined);
+      yield* Fiber.join(append);
+      assert.isFalse(yield* fileSystem.exists(planner.directories[0]!));
+    }).pipe(Effect.scoped, Effect.provide(dependencies)),
+  );
+
+  it.effect("a pending automatic planner readback keeps its cwd until the append returns", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const requested = yield* Deferred.make<void>();
+      const complete = yield* Deferred.make<void>();
+      const planner = yield* openPlanner({
+        request: (method) =>
+          method === "thread/realtime/appendSpeech"
+            ? Deferred.succeed(requested, undefined).pipe(
+                Effect.andThen(Deferred.await(complete)),
+                Effect.as({}),
+              )
+            : undefined,
+      });
+      yield* planner.prepare();
+      yield* planner.startCall();
+      yield* planner.emitNative("item/completed", {
+        threadId: "new-live-planner",
+        turnId: "answer-turn",
+        item: { id: "answer", type: "agentMessage", phase: "final_answer", text: "Result" },
+      });
+      yield* Deferred.await(requested);
+      yield* planner.stop("new-live-planner");
+      assert.isTrue(yield* fileSystem.exists(planner.directories[0]!));
+      yield* Deferred.succeed(complete, undefined);
+      assert.equal(yield* planner.removed, planner.directories[0]);
+      assert.isFalse(yield* fileSystem.exists(planner.directories[0]!));
+    }).pipe(Effect.scoped, Effect.provide(dependencies)),
   );
 
   it.effect(
@@ -2697,6 +3087,7 @@ describe("CodexAdapterV2 LiveVoice planner preparation", () => {
     "archives the new planner when the update request fails or preparation is interrupted",
     () =>
       Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
         const requestStarted = yield* Deferred.make<void>();
         const planner = yield* openPlanner({
           start: { reasoningEffort: "high" },
@@ -2708,6 +3099,7 @@ describe("CodexAdapterV2 LiveVoice planner preparation", () => {
           .pipe(Effect.forkChild({ startImmediately: true }));
         yield* Deferred.await(requestStarted);
         yield* Fiber.interrupt(preparation);
+        assert.isFalse(yield* fileSystem.exists(planner.directories[0]!));
         yield* planner.emit(settings);
         assert.deepEqual(planner.requests.at(-1), {
           method: "thread/archive",
@@ -2725,6 +3117,7 @@ describe("CodexAdapterV2 LiveVoice planner preparation", () => {
             ),
         });
         assert.equal((yield* Effect.exit(failed.prepare()))._tag, "Failure");
+        assert.isFalse(yield* fileSystem.exists(failed.directories[0]!));
         assert.deepEqual(failed.requests.at(-1), {
           method: "thread/archive",
           params: { threadId: "new-live-planner" },

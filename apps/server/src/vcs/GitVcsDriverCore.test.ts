@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - realpathSync.native resolves Windows 8.3 short names, which the Effect realPath does not.
 import * as NodeFS from "node:fs";
+import { vi } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { assert, it, describe } from "@effect/vitest";
@@ -29,6 +30,7 @@ import {
 } from "@t3tools/contracts";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import * as ServerConfig from "../config.ts";
+import * as StoragePressure from "../storagePressure.ts";
 import {
   makeGitVcsDriverCore,
   parseGitCheckoutProgressLine,
@@ -3030,6 +3032,59 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
   });
 
   describe("worktree operations", () => {
+    it.effect.each(["absolute", "relative"] as const)(
+      "refuses checkout before creating a worktree at a %s path under critical storage pressure",
+      (kind) =>
+        Effect.gen(function* () {
+          const cwd = yield* makeTmpDir();
+          const { initialBranch } = yield* initRepoWithCommit(cwd);
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const worktreePath = path.join(cwd, "missing-parent", "blocked");
+          const requestedPath =
+            kind === "relative" ? path.join("missing-parent", "blocked") : worktreePath;
+          const message = "Btrfs metadata is critically full. Free disk space and try again.";
+          using admission = vi
+            .spyOn(StoragePressure, "checkStorageAdmission")
+            .mockResolvedValue(message);
+          const delegate = yield* ChildProcessSpawner.ChildProcessSpawner;
+          const checkouts: string[][] = [];
+          const spawner = ChildProcessSpawner.make((command) => {
+            if (
+              command._tag === "StandardCommand" &&
+              command.args.includes("add") &&
+              command.args.includes("worktree")
+            ) {
+              checkouts.push([...command.args]);
+              return Effect.succeed(makeSuccessfulHandle(""));
+            }
+            return delegate.spawn(command);
+          });
+          const driver = yield* makeGitVcsDriverCore().pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            Effect.provide(layerServerConfig),
+          );
+
+          const result = yield* Effect.result(
+            driver.createWorktree({
+              cwd,
+              path: requestedPath,
+              refName: initialBranch,
+              newRefName: "feature/blocked",
+            }),
+          );
+
+          assert.deepEqual(checkouts, []);
+          assert.isTrue(Result.isFailure(result));
+          if (Result.isFailure(result)) assert.include(result.failure.message, message);
+          assert.deepEqual(admission.mock.calls, [[[cwd, worktreePath]]]);
+          assert.isFalse(yield* fs.exists(path.dirname(worktreePath)));
+          const driverForReads = yield* GitVcsDriver.GitVcsDriver;
+          assert.include(yield* git(cwd, ["worktree", "list", "--porcelain"]), cwd);
+          yield* driverForReads.pruneWorktrees({ cwd });
+        }),
+    );
+
     it.effect("uses parallel checkout without skipping filters or hooks", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();

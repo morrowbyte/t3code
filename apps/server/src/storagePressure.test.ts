@@ -6,7 +6,82 @@ import { describe, expect, it } from "vite-plus/test";
 import { checkStorageAdmission, makeStoragePressure, sampleStorage } from "./storagePressure.ts";
 
 const GiB = 1024 ** 3;
+const btrfs = {
+  deviceUnallocatedBytes: 2 * GiB,
+  metadataTotalBytes: 10 * GiB,
+  metadataUsedBytes: 8 * GiB,
+  metadataReservedBytes: 0,
+  metadataPinnedBytes: 0,
+  metadataMayUseBytes: 0,
+  metadataReadonlyBytes: 0,
+  deviceErrors: 0,
+};
 describe("storage pressure admission", () => {
+  it("blocks Btrfs metadata exhaustion even with fifty GiB reported free", async () => {
+    const guard = makeStoragePressure(async () => [
+      {
+        path: "btrfs",
+        availableBytes: 50 * GiB,
+        btrfs: { ...btrfs, metadataUsedBytes: 9.5 * GiB },
+      },
+    ]);
+    expect(await guard.check(["btrfs"])).toContain("Btrfs");
+    expect(await guard.checkRunning(["btrfs"])).toContain("Btrfs");
+  });
+  it("counts metadata reservations and requires recovery headroom", async () => {
+    let metadataMayUseBytes = 1.5 * GiB;
+    const guard = makeStoragePressure(async () => [
+      {
+        path: "btrfs",
+        availableBytes: 50 * GiB,
+        btrfs: { ...btrfs, metadataMayUseBytes },
+      },
+    ]);
+    expect(await guard.checkRunning(["btrfs"])).toContain("Btrfs");
+    metadataMayUseBytes = Math.floor(0.9 * GiB);
+    expect(await guard.check(["btrfs"])).toContain("Btrfs");
+    metadataMayUseBytes = 0;
+    expect(await guard.check(["btrfs"])).toBeNull();
+  });
+  it("permits Btrfs allocation headroom but blocks device errors", async () => {
+    let deviceErrors = 0;
+    const guard = makeStoragePressure(async () => [
+      {
+        path: "btrfs",
+        availableBytes: 50 * GiB,
+        btrfs: {
+          ...btrfs,
+          metadataUsedBytes: 9.5 * GiB,
+          deviceUnallocatedBytes: 50 * GiB,
+          deviceErrors,
+        },
+      },
+    ]);
+    expect(await guard.check(["btrfs"])).toBeNull();
+    deviceErrors = 1;
+    expect(await guard.check(["btrfs"])).toContain("device errors");
+  });
+  it("permits a healthy small Btrfs pool and detects its real metadata exhaustion", async () => {
+    let metadataUsedBytes = 32 * 1024 ** 2;
+    const guard = makeStoragePressure(async () => [
+      {
+        path: "small-btrfs",
+        availableBytes: 28 * GiB,
+        btrfs: {
+          ...btrfs,
+          deviceUnallocatedBytes: 30 * GiB,
+          metadataTotalBytes: 256 * 1024 ** 2,
+          metadataUsedBytes,
+        },
+      },
+    ]);
+    expect(await guard.check(["small-btrfs"])).toBeNull();
+    expect(await guard.checkRunning(["small-btrfs"])).toBeNull();
+    metadataUsedBytes = 250 * 1024 ** 2;
+    expect(await guard.checkRunning(["small-btrfs"])).toContain("Btrfs");
+    metadataUsedBytes = 32 * 1024 ** 2;
+    expect(await guard.check(["small-btrfs"])).toBeNull();
+  });
   it("probes the actual filesystem of an isolated temporary directory", async () => {
     const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-storage-probe-"));
     try {

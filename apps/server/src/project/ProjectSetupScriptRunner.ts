@@ -18,6 +18,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import * as ServerSettings from "../serverSettings.ts";
+import { checkStorageAdmission } from "../storagePressure.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import * as ProjectService from "./ProjectService.ts";
 
@@ -76,11 +77,20 @@ export class ProjectSetupScriptOperationError extends Schema.TaggedError<Project
     projectId: Schema.optional(Schema.String),
     projectCwd: Schema.optional(Schema.String),
     worktreePath: Schema.String,
-    operation: Schema.Literals(["resolveProject", "readSettings", "openTerminal", "writeCommand"]),
+    operation: Schema.Literals([
+      "resolveProject",
+      "readSettings",
+      "storagePreflight",
+      "openTerminal",
+      "writeCommand",
+    ]),
     cause: Schema.Defect(),
   },
 ) {
   override get message(): string {
+    if (this.operation === "storagePreflight") {
+      return `Cannot start project setup script in '${this.worktreePath}': ${this.cause instanceof Error ? this.cause.message : String(this.cause)}`;
+    }
     return `Project setup script operation '${this.operation}' failed for thread '${this.threadId}' in '${this.worktreePath}'.`;
   }
 }
@@ -345,6 +355,25 @@ export const make = Effect.gen(function* () {
       return {
         status: "no-script",
       } as const;
+    }
+
+    if (trigger === "setup") {
+      const storageMessage = yield* Effect.tryPromise({
+        try: () => checkStorageAdmission([project.workspaceRoot, input.worktreePath]),
+        catch: (cause) =>
+          new ProjectSetupScriptOperationError({
+            ...errorContext,
+            operation: "storagePreflight",
+            cause,
+          }),
+      });
+      if (storageMessage !== null) {
+        return yield* new ProjectSetupScriptOperationError({
+          ...errorContext,
+          operation: "storagePreflight",
+          cause: new Error(storageMessage),
+        });
+      }
     }
 
     // A thread settles again after it is resumed, and an earlier settle shell

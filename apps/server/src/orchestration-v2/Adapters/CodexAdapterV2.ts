@@ -93,6 +93,7 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -184,6 +185,12 @@ type CodexLiveVoiceWorkControl = NonNullable<
     ProviderAdapter.ProviderAdapterV2LiveVoiceRuntime["preparePlanner"]
   >[0]["onWorkControl"]
 >;
+
+type CodexLivePlannerDirectory = {
+  readonly cwd: string;
+  users: number;
+  ended: boolean;
+};
 
 type CodexLivePlannerSettings = Pick<
   CodexSchema.V2ThreadSettingsUpdatedNotification["threadSettings"],
@@ -2091,6 +2098,29 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
     openSession: Effect.fn("CodexAdapterV2.openSession")(
       function* (input) {
         const scope = yield* Scope.Scope;
+        const plannerDirectories = new Set<CodexLivePlannerDirectory>();
+        let liveVoiceFinalized = false;
+        const removePlannerDirectory = Effect.fn("CodexAdapterV2.removePlannerDirectory")(
+          function* (directory: CodexLivePlannerDirectory) {
+            if (!plannerDirectories.has(directory) || !directory.ended || directory.users > 0)
+              return;
+            yield* fileSystem.remove(directory.cwd, { recursive: true, force: true }).pipe(
+              Effect.tap(() => Effect.sync(() => plannerDirectories.delete(directory))),
+              Effect.ignoreCause({ log: true }),
+            );
+          },
+          Effect.uninterruptible,
+        );
+        // Register before opening the client so its process shuts down before the fallback cleanup.
+        yield* Scope.addFinalizer(
+          scope,
+          Effect.suspend(() =>
+            Effect.forEach(plannerDirectories, (directory) => {
+              directory.ended = true;
+              return removePlannerDirectory(directory);
+            }),
+          ),
+        );
         const cua = yield* Option.match(cuaControl, {
           onNone: () => Effect.succeed(undefined),
           onSome: (control) =>
@@ -2264,6 +2294,54 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }
           >(),
         );
+        const liveVoicePlannerDirectories = new Map<string, CodexLivePlannerDirectory>();
+        yield* Scope.addFinalizer(
+          scope,
+          Effect.sync(() => {
+            liveVoiceFinalized = true;
+            pendingLiveVoiceStarts.clear();
+            activeLiveVoiceSessions.clear();
+            for (const directory of plannerDirectories) directory.ended = true;
+          }),
+        );
+        const releaseLiveVoicePlanner = Effect.fn("CodexAdapterV2.releaseLiveVoicePlanner")(
+          function* (threadId: string) {
+            const directory = liveVoicePlannerDirectories.get(threadId);
+            if (directory === undefined) return;
+            directory.ended = true;
+            liveVoicePlannerDirectories.delete(threadId);
+            yield* Ref.update(liveVoicePlanners, (current) => {
+              const next = new Map(current);
+              next.delete(threadId);
+              return next;
+            });
+            yield* removePlannerDirectory(directory);
+          },
+          Effect.uninterruptible,
+        );
+        const withLiveVoicePlanner = <A, E, R>(
+          threadId: string,
+          operation: Effect.Effect<A, E, R>,
+        ) =>
+          Effect.acquireUseRelease(
+            Effect.suspend(() => {
+              const directory = liveVoicePlannerDirectories.get(threadId);
+              if (liveVoiceFinalized || directory === undefined || directory.ended)
+                return Effect.fail(
+                  new ProviderAdapter.ProviderAdapterProtocolError({
+                    driver: CODEX_PROVIDER,
+                    detail: "Codex Live planner is no longer available.",
+                  }),
+                );
+              directory.users++;
+              return Effect.succeed(directory);
+            }),
+            () => operation,
+            (directory) => {
+              directory.users--;
+              return removePlannerDirectory(directory);
+            },
+          );
         const liveVoiceSettingsWaiters = yield* Ref.make(
           new Map<
             string,
@@ -5333,12 +5411,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             if (plannerReadbacks !== undefined) {
               // The reader must remain free to receive the append response.
               yield* appendCodexLivePlannerAnswer(plannerReadbacks, payload, (text) =>
-                client.raw
-                  .request("thread/realtime/appendSpeech", {
-                    threadId: payload.threadId,
-                    text,
-                  })
-                  .pipe(Effect.asVoid),
+                withLiveVoicePlanner(
+                  payload.threadId,
+                  client.raw
+                    .request("thread/realtime/appendSpeech", {
+                      threadId: payload.threadId,
+                      text,
+                    })
+                    .pipe(Effect.asVoid),
+                ),
               ).pipe(
                 Effect.ignoreCause({ log: true }),
                 Effect.forkIn(scope, { startImmediately: true }),
@@ -7341,6 +7422,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             endLiveVoiceSession(payload.threadId);
             liveVoiceReadbacks.delete(payload.threadId);
             transcriptTracker.close(payload.threadId);
+            yield* releaseLiveVoicePlanner(payload.threadId);
             yield* offerLiveVoiceEvent({ type: "closed", plannerNativeThreadId: payload.threadId });
           }),
         );
@@ -8296,7 +8378,28 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     }),
                   );
                 }
-                const cwd = yield* fileSystem.makeTempDirectory({ prefix: "t3-live-planner-" });
+                if (liveVoiceFinalized)
+                  return yield* Effect.fail(
+                    new ProviderAdapter.ProviderAdapterProtocolError({
+                      driver: CODEX_PROVIDER,
+                      detail: "Codex Live adapter is finalized.",
+                    }),
+                  );
+                const directory = yield* Effect.acquireRelease(
+                  fileSystem.makeTempDirectory({ prefix: "t3-live-planner-" }).pipe(
+                    Effect.map((cwd): CodexLivePlannerDirectory => {
+                      const directory = { cwd, users: 1, ended: false };
+                      plannerDirectories.add(directory);
+                      return directory;
+                    }),
+                  ),
+                  (directory, exit) => {
+                    directory.users--;
+                    if (Exit.isFailure(exit)) directory.ended = true;
+                    return removePlannerDirectory(directory);
+                  },
+                );
+                const cwd = directory.cwd;
                 const exclusive = plannerInput.newTaskAdmission === "intake";
                 const effective = exclusive
                   ? yield* client.raw.request("config/read", { cwd, includeLayers: false })
@@ -8494,11 +8597,42 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       : { onWorkControl: plannerInput.onWorkControl }),
                   }),
                 );
+                if (liveVoiceFinalized)
+                  return yield* Effect.fail(
+                    new ProviderAdapter.ProviderAdapterProtocolError({
+                      driver: CODEX_PROVIDER,
+                      detail: "Codex Live adapter is finalized.",
+                    }),
+                  );
+                liveVoicePlannerDirectories.set(plannerNativeThreadId, directory);
                 return { plannerNativeThreadId };
-              }).pipe(Effect.mapError(liveVoiceFailure("planner preparation"))),
+              }).pipe(Effect.scoped, Effect.mapError(liveVoiceFailure("planner preparation"))),
             ),
             start: Effect.fn("CodexAdapterV2.liveVoice.start")(
               function* (input) {
+                if (
+                  pendingLiveVoiceStarts.has(input.plannerNativeThreadId) ||
+                  activeLiveVoiceSessions.has(input.plannerNativeThreadId)
+                )
+                  return yield* Effect.fail(
+                    new ProviderAdapter.ProviderAdapterProtocolError({
+                      driver: CODEX_PROVIDER,
+                      detail: "Codex Live planner is already starting or active.",
+                    }),
+                  );
+                const directory = liveVoicePlannerDirectories.get(input.plannerNativeThreadId);
+                const startMarker = yield* Effect.acquireRelease(
+                  Effect.sync(() => {
+                    const marker = {};
+                    pendingLiveVoiceStarts.set(input.plannerNativeThreadId, marker);
+                    return marker;
+                  }),
+                  (marker) =>
+                    Effect.sync(() => {
+                      if (pendingLiveVoiceStarts.get(input.plannerNativeThreadId) === marker)
+                        pendingLiveVoiceStarts.delete(input.plannerNativeThreadId);
+                    }),
+                );
                 if (input.initialItems?.length) {
                   yield* client.raw.request("thread/inject_items", {
                     threadId: input.plannerNativeThreadId,
@@ -8514,8 +8648,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     })),
                   });
                 }
-                const startMarker = {};
-                pendingLiveVoiceStarts.set(input.plannerNativeThreadId, startMarker);
+                if (pendingLiveVoiceStarts.get(input.plannerNativeThreadId) !== startMarker) return;
                 yield* client.raw
                   .request("thread/realtime/start", {
                     threadId: input.plannerNativeThreadId,
@@ -8545,24 +8678,29 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   })
                   .pipe(
                     Effect.tap(() =>
-                      Effect.sync(() => {
+                      Effect.gen(function* () {
+                        if (liveVoiceFinalized) return;
                         if (
                           pendingLiveVoiceStarts.get(input.plannerNativeThreadId) === startMarker
                         ) {
                           activeLiveVoiceSessions.add(input.plannerNativeThreadId);
                           liveVoiceReadbacks.set(input.plannerNativeThreadId, new Set());
+                        } else {
+                          // A Stop/closed can precede this response; confirm a stop after the late start.
+                          if (directory !== undefined) directory.ended = false;
+                          yield* client.raw.request("thread/realtime/stop", {
+                            threadId: input.plannerNativeThreadId,
+                          });
+                          yield* releaseLiveVoicePlanner(input.plannerNativeThreadId);
+                          if (directory !== undefined) directory.ended = true;
                         }
-                      }),
-                    ),
-                    Effect.ensuring(
-                      Effect.sync(() => {
-                        if (pendingLiveVoiceStarts.get(input.plannerNativeThreadId) === startMarker)
-                          pendingLiveVoiceStarts.delete(input.plannerNativeThreadId);
                       }),
                     ),
                     Effect.asVoid,
                   );
               },
+              (effect, input) =>
+                withLiveVoicePlanner(input.plannerNativeThreadId, Effect.scoped(effect)),
               Effect.mapError(liveVoiceFailure("realtime start")),
             ),
             stop: (plannerNativeThreadId) =>
@@ -8574,23 +8712,30 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   Effect.andThen(
                     client.raw.request("thread/realtime/stop", { threadId: plannerNativeThreadId }),
                   ),
+                  Effect.andThen(releaseLiveVoicePlanner(plannerNativeThreadId)),
                 )
                 .pipe(Effect.asVoid, Effect.mapError(liveVoiceFailure("realtime stop"))),
             appendSpeech: (input) =>
-              client.raw
-                .request("thread/realtime/appendSpeech", {
-                  threadId: input.plannerNativeThreadId,
-                  text: input.text,
-                })
-                .pipe(Effect.asVoid, Effect.mapError(liveVoiceFailure("speech output"))),
+              withLiveVoicePlanner(
+                input.plannerNativeThreadId,
+                client.raw
+                  .request("thread/realtime/appendSpeech", {
+                    threadId: input.plannerNativeThreadId,
+                    text: input.text,
+                  })
+                  .pipe(Effect.asVoid),
+              ).pipe(Effect.mapError(liveVoiceFailure("speech output"))),
             appendContext: (input) =>
-              client.raw
-                .request("thread/realtime/appendText", {
-                  threadId: input.plannerNativeThreadId,
-                  role: "assistant",
-                  text: input.text,
-                })
-                .pipe(Effect.asVoid, Effect.mapError(liveVoiceFailure("background context"))),
+              withLiveVoicePlanner(
+                input.plannerNativeThreadId,
+                client.raw
+                  .request("thread/realtime/appendText", {
+                    threadId: input.plannerNativeThreadId,
+                    role: "assistant",
+                    text: input.text,
+                  })
+                  .pipe(Effect.asVoid),
+              ).pipe(Effect.mapError(liveVoiceFailure("background context"))),
           },
           readThreadSnapshot: Effect.fn("CodexAdapterV2.readThreadSnapshot")(
             function* (threadInput) {
