@@ -99,6 +99,7 @@ export type PreviewNavStatus =
     };
 
 export interface PreviewTabState {
+  selection?: PreviewAnnotationPayload | null;
   tabId: string;
   webContentsId: number | null;
   navStatus: PreviewNavStatus;
@@ -1444,6 +1445,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         const state: PreviewTabState = {
           ...(clearFavicon ? currentWithoutFavicon : current),
           navStatus,
+          selection:
+            navStatus.kind === "Idle" ||
+            current.navStatus.kind === "Idle" ||
+            navStatus.url !== current.navStatus.url ||
+            (navStatus.kind === "Loading" && current.navStatus.kind !== "Loading")
+              ? null
+              : (current.selection ?? null),
           canGoBack,
           canGoForward,
           // zoomFactor is deliberately not read back from the guest: Chromium
@@ -2141,6 +2149,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       const next: PreviewTabState = {
         tabId,
         webContentsId: current?.webContentsId ?? null,
+        selection: null,
         navStatus: {
           kind: "Loading",
           url,
@@ -2364,12 +2373,20 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           resume(Effect.succeed(null));
         });
         const onMessage = (_event: Electron.IpcMainEvent, ...args: unknown[]): void => {
+          if (settled) return;
           const payload = args[0];
+          if (args[4] === "selection") {
+            if (payload === null || isPreviewAnnotationPayload(payload)) {
+              runFork(privateAdmission(wc, update(tabId, { selection: payload })));
+            }
+            return;
+          }
           if (!isPreviewAnnotationPayload(payload)) {
             settle(null);
             return;
           }
           const cropRect = normalizeCaptureRect(args[1]);
+          const captureScreenshot = args[5] !== false;
           const submission =
             args[2] === "send" && annotationSendEnabled.get(tabId) === true ? "send" : "attach";
           const devicePixelRatio = typeof args[3] === "number" ? args[3] : 1;
@@ -2384,14 +2401,18 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             // dropped the crop on pages where that capture was merely slow.
             privateAdmission(
               wc,
-              capturePageWithRetry(
-                { operation: "captureAnnotationScreenshot", tabId, webContentsId: wc.id },
-                tabId,
-                wc,
+              (captureScreenshot
+                ? capturePageWithRetry(
+                    { operation: "captureAnnotationScreenshot", tabId, webContentsId: wc.id },
+                    tabId,
+                    wc,
+                  ).pipe(
+                    Effect.map((image) =>
+                      cropAnnotationScreenshot(image, cropRect, devicePixelRatio, targetRects),
+                    ),
+                  )
+                : Effect.succeed(null)
               ).pipe(
-                Effect.map((image) =>
-                  cropAnnotationScreenshot(image, cropRect, devicePixelRatio, targetRects),
-                ),
                 Effect.tapError((error) =>
                   Effect.logWarning("preview annotation screenshot failed").pipe(
                     Effect.annotateLogs({ tabId, webContentsId: wc.id, error: error.message }),
@@ -2409,7 +2430,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                   }),
                   onSuccess: (screenshot): PreviewAnnotationSubmissionResult =>
                     screenshot === null
-                      ? { annotation: payload, submission, screenshotFailed: true }
+                      ? {
+                          annotation: payload,
+                          submission,
+                          ...(captureScreenshot ? { screenshotFailed: true } : {}),
+                        }
                       : { annotation: { ...payload, screenshot }, submission },
                 }),
                 Effect.flatMap((result) => {

@@ -671,6 +671,68 @@ it.live("enforces provider ownership and explicit targets when a session has mul
   ).pipe(Effect.provide(layer)),
 );
 
+it.live("inspects the existing controlled page without clicking and refuses other viewers", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, tabId } = yield* ready;
+      const page = contexts[0]!.page;
+      const target = {
+        tagName: "button",
+        selector: "#save",
+        htmlPreview: "<button id=save>Save</button>",
+        styles: "display: block",
+        rect: { x: 10, y: 20, width: 30, height: 40 },
+      };
+      const dispose = vi.fn(async () => {});
+      const evaluateHandle = vi.fn(async () => ({
+        asElement: () => ({
+          contentFrame: async () => null,
+          evaluate: async () => target,
+        }),
+        dispose,
+      }));
+      Object.assign(page, { evaluateHandle });
+      const readonly = yield* browser.attachViewer(viewerInput(tabId, false));
+      yield* readonly.input({ type: "inspect", requestId: "no-access", x: 15, y: 25 });
+      expect(evaluateHandle).not.toHaveBeenCalled();
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+      yield* viewer.input({ type: "takeControl" });
+      yield* Queue.clear(viewer.output);
+      const session = contexts[0]!.sessions.at(-1)!;
+      session.send.mockClear();
+      yield* viewer.input({ type: "inspect", requestId: "selected", x: 15, y: 25 });
+      const outputs = yield* Queue.takeAll(viewer.output);
+      expect(outputs).toContainEqual(
+        expect.objectContaining({
+          _tag: "selection",
+          requestId: "selected",
+          annotation: expect.objectContaining({
+            comment: "",
+            screenshot: null,
+            elements: [
+              expect.objectContaining({ element: expect.objectContaining({ selector: "#save" }) }),
+            ],
+          }),
+        }),
+      );
+      expect(dispose).toHaveBeenCalledOnce();
+      expect(session.send.mock.calls.some(([method]) => method.startsWith("Input."))).toBe(false);
+      evaluateHandle.mockRejectedValueOnce(new Error("inspection evaluation failed"));
+      yield* viewer.input({ type: "inspect", requestId: "failed-evaluation", x: 15, y: 25 });
+      expect(yield* Queue.takeAll(viewer.output)).toContainEqual({
+        _tag: "selection",
+        requestId: "failed-evaluation",
+        annotation: null,
+        failed: true,
+      });
+      yield* viewer.input({ type: "inspect", requestId: "invalid", x: Number.NaN, y: 25 });
+      yield* viewer.input({ type: "releaseControl" });
+      yield* viewer.input({ type: "inspect", requestId: "released", x: 15, y: 25 });
+      expect(evaluateHandle).toHaveBeenCalledTimes(2);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
 it.live("streams to a read-only viewer without allowing takeover, input, or viewport changes", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -682,6 +744,7 @@ it.live("streams to a read-only viewer without allowing takeover, input, or view
       session.send.mockClear();
       for (const message of [
         { type: "takeControl" },
+        { type: "inspect", requestId: "readonly", x: 5, y: 5 },
         { type: "key", action: "down", key: "a", text: "a" },
         { type: "resize", width: 390, height: 844 },
         { type: "viewport", setting: { _tag: "freeform", width: 390, height: 844 } },

@@ -625,7 +625,19 @@ function startAnnotation(sendEnabled: boolean): void {
   submit.className +=
     " h-8 shrink-0 border-primary bg-primary px-3 text-primary-foreground shadow-sm hover:bg-primary/90";
   composerRow.appendChild(submit);
+  const send = createButton("Send", "Send annotation (Cmd/Ctrl+Enter)");
+  send.className = submit.className;
+  send.hidden = !sendEnabled;
+  composerRow.appendChild(send);
+  const includeScreenshot = document.createElement("input");
+  includeScreenshot.type = "checkbox";
+  includeScreenshot.checked = true;
+  const screenshotLabel = document.createElement("label");
+  screenshotLabel.className =
+    "pointer-events-auto flex items-center gap-2 px-3 pb-2 text-xs text-muted-foreground";
+  screenshotLabel.append(includeScreenshot, document.createTextNode("Screenshot"));
   editor.appendChild(composerRow);
+  editor.appendChild(screenshotLabel);
 
   const stylePanel = document.createElement("div");
   stylePanel.className =
@@ -653,7 +665,7 @@ function startAnnotation(sendEnabled: boolean): void {
   let activeStroke: { target: PreviewAnnotationStrokeTarget; path: SVGPathElement } | null = null;
   let pendingCapture = false;
   let editorExpanded = false;
-  let editorWasShown = false;
+  let selectionRevision = 0;
   let editorPosition: { left: number; top: number } | null = null;
   let editorDrag: { pointerId: number; offsetX: number; offsetY: number } | null = null;
   let editorLayoutFrame: number | null = null;
@@ -668,18 +680,51 @@ function startAnnotation(sendEnabled: boolean): void {
   };
   comment.addEventListener("input", resizeComment);
 
+  const publishSelection = (): void => {
+    const revision = ++selectionRevision;
+    const targets = Array.from(selected.values());
+    const selectedRegions = [...regions];
+    const selectedStrokes = [...strokes];
+    if (targets.length === 0 && selectedRegions.length === 0 && selectedStrokes.length === 0) {
+      ipcRenderer.send(ELEMENT_PICKED_CHANNEL, null, null, "attach", 1, "selection");
+      return;
+    }
+    void Promise.all(
+      targets.map(async (target) => ({
+        id: target.id,
+        element: await captureElement(target.element),
+        rect: rectFromDomRect(target.element.getBoundingClientRect()),
+      })),
+    )
+      .then((elements) => {
+        if (finished || revision !== selectionRevision) return;
+        const annotation: PreviewAnnotationPayload = {
+          id: nextId("selection"),
+          pageUrl: location.href,
+          pageTitle: document.title?.trim() || null,
+          comment: "",
+          elements,
+          regions: selectedRegions,
+          strokes: selectedStrokes,
+          styleChanges: [],
+          screenshot: null,
+          createdAt: new Date().toISOString(),
+        };
+        ipcRenderer.send(ELEMENT_PICKED_CHANNEL, annotation, null, "attach", 1, "selection");
+      })
+      .catch(() => undefined);
+  };
+
   const updateStatus = (): void => {
     const hasTargets = selected.size > 0 || regions.length > 0 || strokes.length > 0;
     editor.style.display = hasTargets ? "flex" : "none";
     submit.disabled = !hasTargets;
+    send.disabled = !hasTargets;
     submit.style.opacity = hasTargets ? "1" : "0.45";
     adjust.disabled = !hasTargets;
     stylePanel.style.display = editorExpanded && selected.size > 0 ? "grid" : "none";
     queueEditorLayout();
-    if (hasTargets && !editorWasShown) {
-      editorWasShown = true;
-      window.setTimeout(() => comment.focus({ preventScroll: true }), 0);
-    }
+    publishSelection();
   };
 
   const refreshToolButtons = (): void => {
@@ -1398,10 +1443,12 @@ function startAnnotation(sendEnabled: boolean): void {
       return;
     pendingCapture = true;
     submit.disabled = true;
+    send.disabled = true;
     submit.textContent = "Capturing…";
     // The element context lookup can take up to its timeout, and the user can
     // keep editing meanwhile; the annotation must describe what they submitted.
     const submittedComment = comment.value.trim();
+    const captureScreenshot = includeScreenshot.checked;
     const submittedRegions = [...regions];
     const submittedStrokes = [...strokes];
     const submittedStyleChanges = Array.from(styleChanges.values(), (change) => ({ ...change }));
@@ -1447,10 +1494,12 @@ function startAnnotation(sendEnabled: boolean): void {
         ipcRenderer.send(
           ELEMENT_PICKED_CHANNEL,
           annotation,
-          screenshotRect,
+          captureScreenshot ? screenshotRect : null,
           submission === "send" && !sendEnabled ? "attach" : submission,
           // Main crops a viewport capture, whose pixels are CSS px × this.
           window.devicePixelRatio,
+          undefined,
+          captureScreenshot,
         );
       })
       .catch(() => {
@@ -1458,6 +1507,7 @@ function startAnnotation(sendEnabled: boolean): void {
       });
   };
   submit.addEventListener("click", () => submitAnnotation("attach"));
+  send.addEventListener("click", () => submitAnnotation("send"));
   root.addEventListener("keydown", (event) => {
     const submission =
       event.target === comment ? resolveAnnotationSubmission(event, sendEnabled) : null;
@@ -1493,6 +1543,7 @@ function startAnnotation(sendEnabled: boolean): void {
     applyTheme: (theme) => applyAnnotationTheme(host, theme),
     setSendEnabled: (enabled) => {
       sendEnabled = enabled;
+      send.hidden = !enabled;
       updateSendHint();
     },
   };

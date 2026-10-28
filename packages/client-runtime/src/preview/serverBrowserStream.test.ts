@@ -63,6 +63,51 @@ describe("preview stream control", () => {
     dialog: null,
   };
 
+  it("inspects only under viewer ownership and validates comment-free selection replies", () => {
+    const onSelection = vi.fn();
+    const client = createPreviewStreamClient(target, {
+      onFrame: vi.fn(),
+      onViewport: vi.fn(),
+      onConnectedChange: vi.fn(),
+      onUnauthorized: vi.fn(),
+      onSelection,
+    });
+    const socket = FakeSocket.current;
+    const inspect = { type: "inspect", requestId: "pick-1", x: 20, y: 30 } as const;
+    socket.control(agent);
+    expect(client.send(inspect)).toBe(false);
+    socket.control({ ...agent, controller: "you", generation: 2 });
+    expect(client.send(inspect)).toBe(true);
+    expect(JSON.parse(socket.sent.at(-1)!)).toEqual(inspect);
+    const annotation = {
+      id: "pick-1",
+      pageUrl: "http://app.test",
+      pageTitle: null,
+      comment: "",
+      elements: [],
+      regions: [],
+      strokes: [],
+      styleChanges: [],
+      screenshot: null,
+      createdAt: "now",
+    };
+    socket.message(JSON.stringify({ type: "selection", requestId: "pick-1", annotation }));
+    expect(onSelection).toHaveBeenCalledWith("pick-1", annotation, false);
+    socket.message(
+      JSON.stringify({ type: "selection", requestId: "invalid", annotation: { comment: "" } }),
+    );
+    expect(onSelection).toHaveBeenCalledTimes(1);
+    socket.message(JSON.stringify({ type: "selection", requestId: "clear", annotation: null }));
+    expect(onSelection).toHaveBeenLastCalledWith("clear", null, false);
+    socket.message(
+      JSON.stringify({ type: "selection", requestId: "failure", annotation: null, failed: true }),
+    );
+    expect(onSelection).toHaveBeenLastCalledWith("failure", null, true);
+    socket.control({ ...agent, controller: "another-viewer", generation: 3 });
+    expect(client.send(inspect)).toBe(false);
+    client.stop();
+  });
+
   it("does not grant control from malformed dialog metadata", () => {
     const { client, socket, onControl } = connect();
     socket.message(

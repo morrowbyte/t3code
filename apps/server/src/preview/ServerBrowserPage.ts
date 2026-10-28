@@ -2,6 +2,7 @@
 
 import {
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
+  type PreviewAnnotationPayload,
   type PreviewAutomationClickInput,
   type PreviewAutomationConsoleEntry,
   type PreviewAutomationDragInput,
@@ -19,7 +20,14 @@ import {
   type PreviewAutomationWaitForInput,
 } from "@t3tools/contracts";
 import { constVoid } from "effect/Function";
-import type { CDPSession, ConsoleMessage, Frame, Locator, Page } from "playwright-core";
+import type {
+  CDPSession,
+  ConsoleMessage,
+  ElementHandle,
+  Frame,
+  Locator,
+  Page,
+} from "playwright-core";
 import * as NodeCrypto from "node:crypto";
 import { BrowserControlInterrupted } from "./SessionControl.ts";
 
@@ -1182,3 +1190,140 @@ export const RECORDING_ENCODER_SCRIPT = `(() => {
     },
   };
 })()`;
+
+/** Structural DOM types keep callbacks type-safe without adding browser globals to the Node project. */
+interface InspectableElement {
+  id: string;
+  tagName: string;
+  outerHTML: string;
+  clientLeft: number;
+  clientTop: number;
+  parentElement: InspectableElement | null;
+  children: ArrayLike<InspectableElement>;
+  ownerDocument: { querySelectorAll: (selector: string) => { readonly length: number } };
+  getRootNode: () => object;
+  getBoundingClientRect: () => { x: number; y: number; width: number; height: number };
+}
+
+/** Inspect without dispatching page input or navigating. Coordinates are viewport CSS px. */
+export const inspectAtPoint = async (
+  page: Page,
+  x: number,
+  y: number,
+): Promise<PreviewAnnotationPayload | null> => {
+  let frame = page.mainFrame();
+  let point = { x, y };
+  let offset = { x: 0, y: 0 };
+  for (let depth = 0; depth < 8; depth++) {
+    const handle = await frame.evaluateHandle(`(() => {
+      let element = document.elementFromPoint(${point.x}, ${point.y});
+      while (element?.shadowRoot) {
+        const nested = element.shadowRoot.elementFromPoint(${point.x}, ${point.y});
+        if (!nested || nested === element) break;
+        element = nested;
+      }
+      return element;
+    })()`);
+    try {
+      const element = handle.asElement() as ElementHandle<InspectableElement> | null;
+      if (!element) return null;
+      const child = await element.contentFrame();
+      if (child) {
+        const box = await element.boundingBox();
+        if (!box) return null;
+        const border = await element.evaluate((node) => ({
+          x: node.clientLeft,
+          y: node.clientTop,
+        }));
+        offset = { x: box.x + border.x, y: box.y + border.y };
+        point = { x: x - offset.x, y: y - offset.y };
+        frame = child;
+        continue;
+      }
+      const target = await element.evaluate((node) => {
+        const browser = globalThis as unknown as {
+          CSS: { escape: (value: string) => string };
+          getComputedStyle: (element: InspectableElement) => {
+            getPropertyValue: (name: string) => string;
+          };
+        };
+        const parts: string[] = [];
+        let current: InspectableElement | null = node;
+        while (current && parts.length < 12) {
+          if (current.id) {
+            parts.unshift("#" + browser.CSS.escape(current.id));
+            break;
+          }
+          const parent: InspectableElement | null = current.parentElement;
+          const siblings = parent
+            ? Array.from(parent.children).filter((sibling) => sibling.tagName === current!.tagName)
+            : [];
+          parts.unshift(
+            current.tagName.toLowerCase() +
+              (siblings.length > 1 ? ":nth-of-type(" + (siblings.indexOf(current) + 1) + ")" : ""),
+          );
+          current = parent;
+        }
+        const rect = node.getBoundingClientRect();
+        const style = browser.getComputedStyle(node);
+        const selector = parts.join(" > ");
+        const uniqueSelector =
+          node.getRootNode() === node.ownerDocument &&
+          node.ownerDocument.querySelectorAll(selector).length === 1
+            ? selector
+            : null;
+        return {
+          tagName: node.tagName.toLowerCase(),
+          selector: uniqueSelector,
+          htmlPreview: node.outerHTML.slice(0, 12000),
+          styles: [
+            "display",
+            "position",
+            "color",
+            "background-color",
+            "font-size",
+            "margin",
+            "padding",
+            "width",
+            "height",
+          ]
+            .map((name) => name + ": " + style.getPropertyValue(name) + ";")
+            .join("\n"),
+          rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        };
+      });
+      const { rect, ...description } = target;
+      const createdAt = new Date().toISOString();
+      const pageTitle = await page.title();
+      return {
+        id: NodeCrypto.randomUUID(),
+        pageUrl: page.url(),
+        pageTitle: pageTitle || null,
+        comment: "",
+        elements: [
+          {
+            id: NodeCrypto.randomUUID(),
+            element: {
+              ...description,
+              pageUrl: frame.url(),
+              pageTitle: pageTitle || null,
+              componentName: null,
+              source: null,
+              stack: [],
+              pickedAt: createdAt,
+            },
+            rect: { ...rect, x: rect.x + offset.x, y: rect.y + offset.y },
+          },
+        ],
+        regions: [],
+        strokes: [],
+        styleChanges: [],
+        screenshot: null,
+        createdAt,
+      };
+    } finally {
+      await handle.dispose();
+    }
+  }
+  return null;
+};

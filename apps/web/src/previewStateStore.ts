@@ -11,6 +11,7 @@ import {
 import { Atom } from "effect/reactivity";
 
 import { PREVIEW_RECENT_URL_LIMIT } from "./components/preview/previewConstants";
+import { usePreviewSelectionStore } from "./previewSelectionStore";
 import { appAtomRegistry } from "./rpc/atomRegistry";
 
 export interface DesktopPreviewOverlay {
@@ -28,6 +29,8 @@ export interface DesktopPreviewOverlay {
 }
 
 export interface ThreadPreviewState {
+  /** Counts document loads even when React batches Loading and Success into one render. */
+  documentRevisionByTabId?: Readonly<Record<string, number>>;
   snapshot: PreviewSessionSnapshot | null;
   sessions: Record<string, PreviewSessionSnapshot>;
   /** Tabs intentionally closed by this client. Stale list snapshots must not resurrect them. */
@@ -106,11 +109,36 @@ function updateThreadPreviewState(
   const threadKey = scopedThreadKey(ref);
   const atom = previewStateAtom(threadKey);
   let nextState = appAtomRegistry.get(atom);
+  const pending = usePreviewSelectionStore.getState().byThreadKey[threadKey];
+  let invalidateSelection = false;
   const changed = appAtomRegistry.modify(atom, (current) => {
     nextState = update(current);
-    return [nextState !== current, nextState];
+    if (nextState === current) return [false, current];
+    let revisions: Record<string, number> | undefined = current.documentRevisionByTabId;
+    for (const [tabId, snapshot] of Object.entries(nextState.sessions)) {
+      const native = nextState.desktopByTabId[tabId];
+      const loadingStarted = native?.hasWebContents
+        ? native.loading && !current.desktopByTabId[tabId]?.loading
+        : snapshot.navStatus._tag === "Loading" &&
+          current.sessions[tabId]?.navStatus._tag !== "Loading";
+      if (!loadingStarted) continue;
+      if (revisions === current.documentRevisionByTabId) revisions = Object.assign({}, revisions);
+      revisions![tabId] = (revisions?.[tabId] ?? 0) + 1;
+      if (tabId === current.activeTabId || tabId === nextState.activeTabId)
+        invalidateSelection = true;
+    }
+    if (revisions && revisions !== current.documentRevisionByTabId)
+      nextState = { ...nextState, documentRevisionByTabId: revisions };
+    if (
+      current.activeTabId !== nextState.activeTabId ||
+      current.serverEpoch !== nextState.serverEpoch
+    )
+      invalidateSelection = true;
+    return [true, nextState];
   });
   if (!changed) return;
+  if (invalidateSelection && pending)
+    usePreviewSelectionStore.getState().clearSelection(ref, pending.id);
   changedPreviewThreadKeys.add(threadKey);
   syncActivePreviewThread(threadKey, nextState);
 }

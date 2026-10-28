@@ -29,7 +29,7 @@ import {
   previewPdfAssetUrl,
   resolveSearchUrlTemplate,
 } from "@t3tools/shared/preview";
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 
 import {
   BROWSER_HISTORY_MAX_ENTRIES_PER_PROJECT,
@@ -44,6 +44,7 @@ import { ensureLocalApi } from "~/localApi";
 import { getClientSettings } from "~/hooks/useSettings";
 import {
   rememberPreviewUrl,
+  readThreadPreviewState,
   updatePreviewServerSnapshot,
   useThreadPreviewState,
 } from "~/previewStateStore";
@@ -65,6 +66,8 @@ import {
 import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
 import { useRightPanelStore } from "~/rightPanelStore";
 
+import { usePreviewSelectionStore, useThreadPreviewSelection } from "~/previewSelectionStore";
+import { PreviewSelectionFeedback } from "./PreviewSelectionFeedback";
 import { previewBridge } from "./previewBridge";
 import { subscribePreviewAction } from "./previewActionBus";
 import { closePreviewSession } from "./closePreviewSession";
@@ -159,11 +162,18 @@ export function PreviewView({
 }: Props) {
   const [focusUrlNonce, setFocusUrlNonce] = useState<number | undefined>(undefined);
   const [pickActive, setPickActive] = useState(false);
+  const selection = useThreadPreviewSelection(threadRef);
+  const replaceSelection = usePreviewSelectionStore((state) => state.replaceSelection);
+  const clearSelection = usePreviewSelectionStore((state) => state.clearSelection);
   const canSendAnnotation =
     useEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope) &&
     Boolean(onSendAnnotation);
   const activeRecordingTabIds = useActiveBrowserRecordingTabIds();
-  const pickActiveRef = useRef<{ cancelled: boolean } | null>(null);
+  const pickActiveRef = useRef<{
+    cancelled: boolean;
+    scope: string;
+    documentRevision: number;
+  } | null>(null);
   const isMountedRef = useRef(true);
   const previewState = useThreadPreviewState(threadRef);
   const recentHistoryEntries = useThreadRecentHistory(
@@ -254,6 +264,18 @@ export function PreviewView({
   const latestHistoryUrl = recentHistoryEntries[0]?.url;
   // Keyed on the ids rather than threadRef, which is recreated on every update.
   const { environmentId: threadEnvironmentId, threadId } = threadRef;
+  const documentRevision = tabId ? (previewState.documentRevisionByTabId?.[tabId] ?? 0) : 0;
+  const selectionScope = `${runtimeTabId ?? ""}\n${url}\n${documentRevision}`;
+  const selectionScopeRef = useRef(selectionScope);
+  useLayoutEffect(() => {
+    selectionScopeRef.current = selectionScope;
+    const ref = scopeThreadRef(threadEnvironmentId, threadId);
+    const key = scopedThreadKey(ref);
+    return () => {
+      const pending = usePreviewSelectionStore.getState().byThreadKey[key];
+      if (pending) clearSelection(ref, pending.id);
+    };
+  }, [clearSelection, selectionScope, threadEnvironmentId, threadId]);
   useEffect(() => {
     if (!navUrl || !navTitle || !latestHistoryUrl) return;
     setTitleForThreadUrl(
@@ -794,7 +816,58 @@ export function PreviewView({
     );
   };
 
+  const handleAnnotation = (
+    picked: PreviewAnnotationPayload,
+    submission: "attach" | "send",
+    screenshotFailed = false,
+  ) => {
+    // The structured annotation is still sendable when its optional crop
+    // stalls or fails, so tell the user what they lost and keep going
+    // instead of holding the composer for an attachment that never lands.
+    // The stored copy drops the screenshot on failure, otherwise the prompt
+    // would tell the agent a crop is attached when none was sent.
+    const capture = capturePreviewAnnotationScreenshot(picked);
+    const cropDropped = screenshotFailed || capture.status === "failed";
+    const annotation = capture.status === "failed" ? { ...picked, screenshot: null } : picked;
+    replaceSelection(threadRef, annotation);
+    if (cropDropped) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not capture the picked element",
+          description: "The annotation was kept without the screenshot.",
+        }),
+      );
+    }
+    const screenshotFile = capture.status === "captured" ? capture.file : null;
+    const image =
+      screenshotFile && annotation.screenshot
+        ? ({
+            type: "image",
+            id: annotation.id,
+            name: screenshotFile.name,
+            mimeType: screenshotFile.type,
+            sizeBytes: screenshotFile.size,
+            previewUrl: annotation.screenshot.dataUrl,
+            file: screenshotFile,
+          } satisfies ComposerImageAttachment)
+        : null;
+    if (
+      submission === "send" &&
+      readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope)
+    ) {
+      onSendAnnotation?.(annotation, image);
+    } else {
+      addPreviewAnnotation(threadRef, annotation);
+      if (image) addImage(threadRef, image);
+    }
+  };
+
   const handlePickElement = () => {
+    if (isServerTab) {
+      setPickActive((active) => !active);
+      return;
+    }
     if (!previewBridge || !runtimeTabId) return;
     if (pickActiveRef.current) {
       pickActiveRef.current.cancelled = true;
@@ -806,7 +879,7 @@ export function PreviewView({
     // guest webContents.
     const previouslyFocused =
       typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
-    const pickRequest = { cancelled: false };
+    const pickRequest = { cancelled: false, scope: selectionScope, documentRevision };
     let submitted = false;
     pickActiveRef.current = pickRequest;
     setPickActive(true);
@@ -837,7 +910,14 @@ export function PreviewView({
       );
       if (pickRequest.cancelled) return;
       const result = await bridge.pickElement(runtimeTabId);
-      if (!result || pickRequest.cancelled) return;
+      if (
+        !result ||
+        pickRequest.cancelled ||
+        pickRequest.scope !== selectionScopeRef.current ||
+        pickRequest.documentRevision !==
+          (readThreadPreviewState(threadRef).documentRevisionByTabId?.[tabId ?? ""] ?? 0)
+      )
+        return;
       // Nothing that happens after this point (a second picker click, a tab
       // change, unmount) may discard it, so the pick stops being cancellable
       // here rather than in finishPick.
@@ -847,46 +927,7 @@ export function PreviewView({
         submitted = true;
       }
       const { annotation: picked, submission, screenshotFailed = false } = result;
-      // The structured annotation is still sendable when its optional crop
-      // stalls or fails, so tell the user what they lost and keep going
-      // instead of holding the composer for an attachment that never lands.
-      // The stored copy drops the screenshot on failure, otherwise the prompt
-      // would tell the agent a crop is attached when none was sent.
-      const capture = capturePreviewAnnotationScreenshot(picked);
-      const cropDropped = screenshotFailed || capture.status === "failed";
-      const annotation = capture.status === "failed" ? { ...picked, screenshot: null } : picked;
-      addPreviewAnnotation(threadRef, annotation);
-      if (cropDropped) {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not capture the picked element",
-            description: "The annotation was kept without the screenshot.",
-          }),
-        );
-      }
-      const screenshotFile = capture.status === "captured" ? capture.file : null;
-      const image =
-        screenshotFile && annotation.screenshot
-          ? ({
-              type: "image",
-              id: annotation.id,
-              name: screenshotFile.name,
-              mimeType: screenshotFile.type,
-              sizeBytes: screenshotFile.size,
-              previewUrl: annotation.screenshot.dataUrl,
-              file: screenshotFile,
-            } satisfies ComposerImageAttachment)
-          : null;
-      if (image) {
-        addImage(threadRef, image);
-      }
-      if (
-        submission === "send" &&
-        readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope)
-      ) {
-        onSendAnnotation?.(annotation, image);
-      }
+      handleAnnotation(picked, submission, screenshotFailed);
     }).then(finishPick);
   };
 
@@ -898,8 +939,9 @@ export function PreviewView({
   }, [canSendAnnotation, pickActive, runtimeTabId]);
 
   useEffect(() => {
+    const scope = selectionScope;
     return () => {
-      if (!pickActiveRef.current) return;
+      if (!pickActiveRef.current || pickActiveRef.current.scope !== scope) return;
       pickActiveRef.current.cancelled = true;
       pickActiveRef.current = null;
       if (previewBridge && runtimeTabId) {
@@ -907,10 +949,22 @@ export function PreviewView({
       }
       if (isMountedRef.current) setPickActive(false);
     };
-  }, [runtimeTabId]);
+  }, [runtimeTabId, selectionScope]);
 
   // Subscribe only while visible; `toggle-panel` is owned by ChatView's
   // URL-aware handler regardless of whether the panel is currently mounted.
+  useEffect(() => {
+    if (!isServerTab || !pickActive || serverInputDisabled || !visible) return;
+    const cancel = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setPickActive(false);
+      }
+    };
+    window.addEventListener("keydown", cancel);
+    return () => window.removeEventListener("keydown", cancel);
+  }, [isServerTab, pickActive, serverInputDisabled, visible]);
+
   const onPreviewAction = useEffectEvent(
     (action: Parameters<Parameters<typeof subscribePreviewAction>[0]>[0]) => {
       switch (action) {
@@ -990,9 +1044,14 @@ export function PreviewView({
         pictureInPictureDisabled={
           isUnreachable || (!isServerTab && !desktopOverlay?.hasWebContents)
         }
-        onPickElement={previewBridge && tabId && !isServerTab ? handlePickElement : undefined}
+        onPickElement={tabId && (isServerTab || previewBridge) ? handlePickElement : undefined}
         pickActive={pickActive}
-        pickDisabled={!tabId || isUnreachable}
+        pickDisabled={
+          !tabId ||
+          isUnreachable ||
+          serverInputDisabled ||
+          (isServerTab && Boolean(previewPdfAssetUrl(url, environmentHttpBaseUrl)))
+        }
         pickDisabledReason={
           isUnreachable ? "Page didn't load. Pick is unavailable until the page renders" : undefined
         }
@@ -1034,6 +1093,43 @@ export function PreviewView({
         }
       />
 
+      {selection ? (
+        <PreviewSelectionFeedback
+          key={selection.id}
+          annotation={selection}
+          canSend={canSendAnnotation}
+          onSend={(annotation) => handleAnnotation(annotation, "send")}
+          onAttach={(annotation) => {
+            handleAnnotation(annotation, "attach");
+            clearSelection(threadRef, annotation.id);
+            if (pickActiveRef.current) {
+              pickActiveRef.current.cancelled = true;
+              void previewBridge?.cancelPickElement(runtimeTabId!).catch(() => undefined);
+            }
+            setPickActive(false);
+          }}
+          onScreenshot={
+            isServerTab
+              ? () => {
+                  try {
+                    const screenshot = serverSurfaceRef.current?.screenshot();
+                    if (screenshot) replaceSelection(threadRef, { ...selection, screenshot });
+                  } catch {
+                    toastManager.add({ type: "error", title: "Unable to capture screenshot" });
+                  }
+                }
+              : undefined
+          }
+          onClear={() => {
+            clearSelection(threadRef, selection.id);
+            if (pickActiveRef.current) {
+              pickActiveRef.current.cancelled = true;
+              void previewBridge?.cancelPickElement(runtimeTabId!).catch(() => undefined);
+            }
+            setPickActive(false);
+          }}
+        />
+      ) : null}
       <div ref={serverBodyRef} className="relative min-h-0 flex-1 overflow-hidden">
         {runtimeTabId && snapshot && isServerTab ? (
           <>
@@ -1065,9 +1161,22 @@ export function PreviewView({
                 }
                 visible={visible}
                 onFirstFrame={() => setServerFrameTabId(runtimeTabId)}
-                onControl={(control) =>
-                  setServerControlledTabId(control?.controller === "you" ? runtimeTabId : null)
-                }
+                picking={pickActive && visible && !serverInputDisabled}
+                selectionScope={selectionScope}
+                onSelection={(annotation) => {
+                  if (
+                    documentRevision !==
+                    (readThreadPreviewState(threadRef).documentRevisionByTabId?.[tabId ?? ""] ?? 0)
+                  )
+                    return;
+                  if (annotation) replaceSelection(threadRef, annotation);
+                  else clearSelection(threadRef);
+                  setPickActive(false);
+                }}
+                onControl={(control) => {
+                  setServerControlledTabId(control?.controller === "you" ? runtimeTabId : null);
+                  if (control?.controller !== "you") setPickActive(false);
+                }}
                 onPopup={(popupTabId) => showPreviewPopup(threadRef, popupTabId, "panel")}
                 // Stays connected under the empty state so a URL picked there reaches the page.
                 className={cn(

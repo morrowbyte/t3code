@@ -1,7 +1,10 @@
 // @effect-diagnostics globalTimers:off globalFetch:off - This browser and WebView transport runs without an Effect runtime.
+import * as Schema from "effect/Schema";
 import { type DeviceHubAccess, withDeviceHubQuery } from "../device/hubAccess.ts";
 import {
   PREVIEW_STREAM_HOST_SETUP_CLOSE_CODE,
+  PreviewAnnotationPayloadSchema,
+  type PreviewAnnotationPayload,
   type PreviewStreamHostSetup,
   type PreviewViewportSetting,
 } from "@t3tools/contracts";
@@ -39,6 +42,8 @@ export const previewStreamControlLabel = (control: PreviewStreamControl | null):
             ? "Another viewer has control"
             : "Watching";
 
+const isPreviewAnnotation = Schema.is(PreviewAnnotationPayloadSchema);
+
 const isPreviewStreamDialog = (value: unknown): value is PreviewStreamControl["dialog"] =>
   value === null ||
   (typeof value === "object" &&
@@ -51,6 +56,7 @@ const isPreviewStreamDialog = (value: unknown): value is PreviewStreamControl["d
 
 /** Coordinates are page CSS px. */
 export type PreviewStreamInput =
+  | { readonly type: "inspect"; readonly requestId: string; readonly x: number; readonly y: number }
   | { readonly type: "takeControl" }
   | { readonly type: "releaseControl" }
   | { readonly type: "dialog"; readonly accept: boolean; readonly promptText?: string }
@@ -185,6 +191,11 @@ export interface PreviewStreamTarget {
 export interface PreviewStreamEvents {
   readonly onFrame: (jpeg: ArrayBuffer) => void;
   readonly onViewport: (viewport: PreviewStreamViewport) => void;
+  readonly onSelection?: (
+    requestId: string,
+    annotation: PreviewAnnotationPayload | null,
+    failed?: boolean,
+  ) => void;
   readonly onProbe?: (probe: PreviewStreamProbe) => void;
   readonly onPointer?: (pointer: PreviewStreamPointer) => void;
   readonly onControl?: (control: PreviewStreamControl) => void;
@@ -271,8 +282,17 @@ export function createPreviewStreamClient(
         phase,
         sequence,
         tabId,
+        requestId,
+        annotation,
+        failed,
       } = message as Record<string, unknown>;
       if (
+        type === "selection" &&
+        typeof requestId === "string" &&
+        (annotation === null || isPreviewAnnotation(annotation))
+      ) {
+        events.onSelection?.(requestId, annotation, failed === true);
+      } else if (
         type === "fileChooser" &&
         typeof id === "string" &&
         typeof multiple === "boolean" &&

@@ -14,6 +14,7 @@ import {
 } from "~/browserFaviconStore";
 import { useBrowserPointerStore } from "~/browser/browserPointerStore";
 import { applyPreviewDesktopState, type DesktopPreviewOverlay } from "~/previewStateStore";
+import { usePreviewSelectionStore } from "~/previewSelectionStore";
 import { previewEnvironment } from "~/state/preview";
 import { usePreparedConnection } from "~/state/session";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -52,6 +53,7 @@ export function usePreviewBridge(input: {
 
   const lastReportedUrl = useRef<string | null>(null);
   const lastReportedKind = useRef<DesktopPreviewTabState["navStatus"]["kind"] | null>(null);
+  const lastSelection = useRef<DesktopPreviewTabState["selection"]>(undefined);
   const lastDesktopNavStatus = useRef<DesktopPreviewTabState["navStatus"] | null>(null);
   const handleStateChange = useEffectEvent(
     (changedTabId: string, state: DesktopPreviewTabState): void => {
@@ -60,6 +62,18 @@ export function usePreviewBridge(input: {
         clearBrowserPointer(runtimeTabId);
       }
       lastDesktopNavStatus.current = state.navStatus;
+      if (
+        state.selection !== undefined &&
+        lastSelection.current !== state.selection &&
+        (state.selection === null || lastSelection.current?.id !== state.selection.id)
+      ) {
+        const previousSelection = lastSelection.current;
+        lastSelection.current = state.selection;
+        const selections = usePreviewSelectionStore.getState();
+        if (state.selection) selections.replaceSelection(stableThreadRef, state.selection);
+        else if (previousSelection)
+          selections.clearSelection(stableThreadRef, previousSelection.id);
+      }
       applyPreviewDesktopState(stableThreadRef, tabId, projectDesktopState(state));
       if (state.favicon) {
         recordFaviconForThread(stableThreadRef, state.favicon, projectRef, environmentHostname);
@@ -85,6 +99,7 @@ export function usePreviewBridge(input: {
     lastReportedUrl.current = null;
     lastReportedKind.current = null;
     lastDesktopNavStatus.current = null;
+    lastSelection.current = undefined;
     return previewBridge.onStateChange(handleStateChange);
   }, [
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A different tab or thread starts its status reports and pointer tracking from scratch.

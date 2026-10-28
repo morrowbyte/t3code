@@ -16,6 +16,8 @@ import {
 } from "@t3tools/client-runtime/preview/server-browser-stream";
 import type {
   EnvironmentId,
+  PreviewAnnotationPayload,
+  PreviewAnnotationScreenshot,
   PreviewStreamHostSetup,
   PreviewViewportSetting,
 } from "@t3tools/contracts";
@@ -36,7 +38,7 @@ import { CommandBlock } from "~/components/CommandBlock";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { toastManager } from "~/components/ui/toast";
-import { cn } from "~/lib/utils";
+import { randomUUID, cn } from "~/lib/utils";
 import { refreshPreviewStreamAccess, usePreviewStreamAccess } from "~/state/previewStream";
 import { observeResize } from "~/lib/observeResize";
 
@@ -46,6 +48,7 @@ export interface ServerBrowserHandle {
   readonly reload: (options?: { readonly ignoreCache?: boolean }) => void;
   readonly viewport: (setting: PreviewViewportSetting) => void;
   readonly canvas: () => HTMLCanvasElement | null;
+  readonly screenshot: () => PreviewAnnotationScreenshot | null;
 }
 
 const RESIZE_THROTTLE_MS = 150;
@@ -139,6 +142,9 @@ export function ServerBrowserSurface(props: {
   readonly tabId: string;
   readonly visible: boolean;
   readonly followSize?: boolean;
+  readonly picking?: boolean;
+  readonly selectionScope?: string;
+  readonly onSelection?: (annotation: PreviewAnnotationPayload | null) => void;
   readonly controlPosition?: "top" | "bottom";
   readonly onFirstFrame?: () => void;
   readonly onViewport?: (viewport: PreviewStreamViewport) => void;
@@ -164,6 +170,29 @@ export function ServerBrowserSurface(props: {
     ref,
   } = props;
   const access = usePreviewStreamAccess(environmentId);
+  const selectionRequestRef = useRef<{ id: string; scope: string | undefined } | null>(null);
+  const selectionReceived = useEffectEvent(
+    (requestId: string, annotation: PreviewAnnotationPayload | null, failed = false) => {
+      if (
+        selectionRequestRef.current?.id !== requestId ||
+        selectionRequestRef.current.scope !== props.selectionScope ||
+        !props.picking ||
+        controlRef.current?.controller !== "you"
+      )
+        return;
+      selectionRequestRef.current = null;
+      if (failed)
+        toastManager.add({
+          type: "error",
+          title: "Could not inspect the selected element",
+          description: "Try selecting the element again.",
+        });
+      props.onSelection?.(annotation);
+    },
+  );
+  useEffect(() => {
+    if (!props.picking) selectionRequestRef.current = null;
+  }, [props.picking]);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const keySentRef = useRef(false);
@@ -308,6 +337,17 @@ export function ServerBrowserSurface(props: {
         send({ type: "reload", ...(options?.ignoreCache ? { ignoreCache: true } : {}) }),
       viewport: (setting) => send({ type: "viewport", setting }),
       canvas: () => (!pdfUrl && hasFrameRef.current ? canvasRef.current : null),
+      screenshot: () => {
+        const canvas = canvasRef.current;
+        const viewport = viewportRef.current;
+        if (pdfUrl || !canvas || !viewport || !hasFrameRef.current) return null;
+        return {
+          dataUrl: canvas.toDataURL("image/png"),
+          width: canvas.width,
+          height: canvas.height,
+          cropRect: { x: 0, y: 0, width: viewport.width, height: viewport.height },
+        };
+      },
     }),
     [pdfUrl, send],
   );
@@ -374,6 +414,7 @@ export function ServerBrowserSurface(props: {
           unauthorizedRef.current = 0;
           painter.paint(jpeg);
         },
+        onSelection: selectionReceived,
         onProbe: (result) => {
           if (controlRef.current?.controller !== "you") return;
           lastProbeRef.current = { ...result, at: performance.now() };
@@ -442,6 +483,7 @@ export function ServerBrowserSurface(props: {
     return () => {
       painter.stop();
       if (refreshTimer !== null) clearTimeout(refreshTimer);
+      selectionRequestRef.current = null;
       client.stop();
       if (clientRef.current === client) clientRef.current = null;
       controlRef.current = null;
@@ -498,6 +540,19 @@ export function ServerBrowserSurface(props: {
   const handlePointer = (event: PointerEvent<HTMLCanvasElement>) => {
     if (controlRef.current?.controller !== "you") return;
     const { type, pointerId, clientX, clientY } = event;
+    if (props.picking) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (type === "pointerdown" && event.button === 0) {
+        const point = pagePoint(clientX, clientY, false);
+        if (point) {
+          const requestId = randomUUID();
+          selectionRequestRef.current = { id: requestId, scope: props.selectionScope };
+          send({ type: "inspect", requestId, x: point.x, y: point.y });
+        }
+      }
+      return;
+    }
     const cancelled = type === "pointercancel";
     const touch = touchRef.current;
     if (cancelled && touch?.pointerId === pointerId) {
@@ -744,7 +799,10 @@ export function ServerBrowserSurface(props: {
         ) : null}
         <canvas
           ref={canvasRef}
-          className="block size-full touch-none object-contain"
+          className={cn(
+            "block size-full touch-none object-contain",
+            props.picking && "cursor-crosshair",
+          )}
           onPointerDown={handlePointer}
           onPointerMove={handlePointer}
           onPointerUp={handlePointer}

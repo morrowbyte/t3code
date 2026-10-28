@@ -20,6 +20,7 @@ import {
   resetPreviewStateForTests,
   setActivePreviewTab,
 } from "./previewStateStore";
+import { usePreviewSelectionStore } from "./previewSelectionStore";
 import { appAtomRegistry } from "./rpc/atomRegistry";
 
 const environmentId = "env-1" as EnvironmentId;
@@ -55,9 +56,62 @@ const applyPreviewServerEvent = (eventRef: typeof ref, event: PreviewEventDraft)
 beforeEach(() => {
   nextServerRevision = 0;
   resetPreviewStateForTests();
+  usePreviewSelectionStore.setState({ byThreadKey: {} });
 });
 
 describe("previewStateStore (single-tab)", () => {
+  it("invalidates selection on same-URL document reload even when loading and success arrive before rendering", () => {
+    const loaded = makeSnapshot({
+      navStatus: { _tag: "Success", url: "http://localhost:5173/", title: "App" },
+    });
+    applyPreviewServerSnapshot(ref, loaded);
+    const selected = {
+      id: "old-document",
+      pageUrl: "http://localhost:5173/",
+      pageTitle: "App",
+      comment: "",
+      elements: [],
+      regions: [],
+      strokes: [],
+      styleChanges: [],
+      screenshot: null,
+      createdAt: loaded.updatedAt,
+    };
+    usePreviewSelectionStore.getState().replaceSelection(ref, selected);
+    const before = readThreadPreviewState(ref).documentRevisionByTabId?.[loaded.tabId] ?? 0;
+    applyPreviewServerEvent(ref, {
+      type: "navigated",
+      threadId: "thread-1",
+      tabId: loaded.tabId,
+      createdAt: loaded.updatedAt,
+      snapshot: { ...loaded, navStatus: { _tag: "Loading", url: selected.pageUrl, title: "App" } },
+    });
+    applyPreviewServerEvent(ref, {
+      type: "navigated",
+      threadId: "thread-1",
+      tabId: loaded.tabId,
+      createdAt: loaded.updatedAt,
+      snapshot: loaded,
+    });
+    expect(usePreviewSelectionStore.getState().byThreadKey[scopedThreadKey(ref)]).toBeUndefined();
+    expect(readThreadPreviewState(ref).documentRevisionByTabId?.[loaded.tabId]).toBe(before + 1);
+    const current = { ...selected, id: "current-document" };
+    usePreviewSelectionStore.getState().replaceSelection(ref, current);
+    applyPreviewServerEvent(ref, {
+      type: "navigated",
+      threadId: "thread-1",
+      tabId: loaded.tabId,
+      createdAt: loaded.updatedAt,
+      snapshot: {
+        ...loaded,
+        navStatus: { _tag: "Success", url: selected.pageUrl, title: "HMR title" },
+      },
+    });
+    expect(usePreviewSelectionStore.getState().byThreadKey[scopedThreadKey(ref)]?.id).toBe(
+      "current-document",
+    );
+  });
+
   it("resized event updates tab viewport without changing the active tab", () => {
     const active = makeSnapshot({ tabId: "tab_a" });
     const background = makeSnapshot({ tabId: "tab_b" });

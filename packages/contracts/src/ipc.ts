@@ -616,6 +616,8 @@ export interface DesktopPreviewFavicon {
 }
 
 export interface DesktopPreviewTabState {
+  /** Live picker context, before attaching or sending an annotation. */
+  selection?: PreviewAnnotationPayload | null;
   tabId: string;
   webContentsId: number | null;
   navStatus: DesktopPreviewNavStatus;

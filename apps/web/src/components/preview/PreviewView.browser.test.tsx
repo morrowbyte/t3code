@@ -39,6 +39,7 @@ const mocks = vi.hoisted(() => ({
   showEmptyState: false,
   loading: false,
   nativeServerTab: false,
+  pageUrl: "http://example.com/",
   serverEpoch: null as string | null,
   servers: [] as PreviewableServer[],
   recordingTabIds: new Set<string>(),
@@ -123,7 +124,7 @@ vi.mock(import("~/previewStateStore"), async (original) => ({
             threadId: "thread-1",
             tabId: "tab-1",
             runtime: mocks.nativeServerTab ? "server" : "desktop",
-            navStatus: { _tag: "Success", url: "http://example.com/", title: "Example" },
+            navStatus: { _tag: "Success", url: mocks.pageUrl, title: "Example" },
             canGoBack: mocks.canGoBack,
             canGoForward: mocks.canGoForward,
             updatedAt: "2026-07-13T00:00:00.000Z",
@@ -162,6 +163,8 @@ vi.mock(import("~/browser/previewRuntime"), async (original) => ({
 
 vi.mock(import("~/browser/browserViewportActions"), { spy: true });
 
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { usePreviewSelectionStore } from "~/previewSelectionStore";
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { useBrowserPointerStore } from "~/browser/browserPointerStore";
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
@@ -204,6 +207,8 @@ function annotation(id: string, screenshot: unknown = null) {
 // resetting them.
 function setup() {
   vi.clearAllMocks();
+  usePreviewSelectionStore.setState({ byThreadKey: {} });
+  mocks.pageUrl = "http://example.com/";
   mocks.readEnvironmentScope.mockReset().mockReturnValue(true);
   mocks.setAnnotationSendEnabled.mockReset().mockResolvedValue(undefined);
   mocks.pickElement.mockReset();
@@ -307,6 +312,69 @@ describe("PreviewView", () => {
     expect(input.value).toBe("http://example.com/");
   });
 
+  it("retains comment-free selection for Voice and sends feedback without staging a draft", async () => {
+    setup();
+    const onSendAnnotation = vi.fn();
+    await using _screen = await render(view(onSendAnnotation));
+    const selected = { ...annotation("selected"), comment: "", screenshot: null };
+    await act(async () =>
+      usePreviewSelectionStore.getState().replaceSelection(TEST_THREAD_REF, selected),
+    );
+    await expect.element(page.getByRole("textbox", { name: "Selection feedback" })).toBeVisible();
+    expect(
+      usePreviewSelectionStore.getState().byThreadKey[scopedThreadKey(TEST_THREAD_REF)]?.comment,
+    ).toBe("");
+    await userEvent.fill(
+      page.getByRole("textbox", { name: "Selection feedback" }),
+      "Make this blue",
+    );
+    await userEvent.click(page.getByRole("button", { name: "Send", exact: true }));
+    await vi.waitFor(() =>
+      expect(onSendAnnotation).toHaveBeenCalledWith(
+        { ...selected, comment: "Make this blue" },
+        null,
+      ),
+    );
+    expect(mocks.addPreviewAnnotation).not.toHaveBeenCalled();
+  });
+
+  it("clears selection on URL changes, tab changes and closing, without accepting an old picker result", async () => {
+    setup();
+    let finishPick: ((result: unknown) => void) | undefined;
+    mocks.pickElement.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishPick = resolve;
+        }),
+    );
+    await using screen = await render(view());
+    await userEvent.click(page.getByRole("button", { name: "Annotate preview", exact: true }));
+    await vi.waitFor(() => expect(finishPick).toBeDefined());
+    const key = scopedThreadKey(TEST_THREAD_REF);
+    const selected = { ...annotation("before-navigation"), comment: "", screenshot: null };
+    await act(async () =>
+      usePreviewSelectionStore.getState().replaceSelection(TEST_THREAD_REF, selected),
+    );
+    mocks.pageUrl = "http://example.com/next";
+    await screen.rerender(view());
+    expect(usePreviewSelectionStore.getState().byThreadKey[key]).toBeUndefined();
+    const current = { ...selected, id: "current", pageUrl: mocks.pageUrl };
+    await act(async () =>
+      usePreviewSelectionStore.getState().replaceSelection(TEST_THREAD_REF, current),
+    );
+    await act(async () => finishPick?.({ annotation: selected, submission: "attach" }));
+    expect(usePreviewSelectionStore.getState().byThreadKey[key]?.id).toBe("current");
+    await screen.rerender(<PreviewView threadRef={TEST_THREAD_REF} tabId="tab-2" visible />);
+    expect(usePreviewSelectionStore.getState().byThreadKey[key]).toBeUndefined();
+    await act(async () =>
+      usePreviewSelectionStore
+        .getState()
+        .replaceSelection(TEST_THREAD_REF, { ...current, id: "second-tab" }),
+    );
+    await screen.rerender(<div />);
+    expect(usePreviewSelectionStore.getState().byThreadKey[key]).toBeUndefined();
+  });
+
   it("retains the annotation locally when its own environment loses access during capture", async () => {
     setup();
     const picked = annotation("annotation-revoked");
@@ -357,7 +425,7 @@ describe("PreviewView", () => {
 
     const sent = { ...picked, screenshot: null };
     await vi.waitFor(() => expect(onSendAnnotation).toHaveBeenCalledWith(sent, null));
-    expect(mocks.addPreviewAnnotation).toHaveBeenCalledWith(TEST_THREAD_REF, sent);
+    expect(mocks.addPreviewAnnotation).not.toHaveBeenCalled();
     expect(mocks.addImage).not.toHaveBeenCalled();
   });
 });

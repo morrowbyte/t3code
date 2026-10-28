@@ -3476,6 +3476,69 @@ describe("PreviewManager", () => {
     ),
   );
 
+  effectIt.effect(
+    "publishes comment-free selection changes without completing the picker or capturing a screenshot",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          let picked: ((event: unknown, ...args: unknown[]) => void) | undefined;
+          let listenerReady: (() => void) | undefined;
+          const ready = new Promise<void>((resolve) => {
+            listenerReady = resolve;
+          });
+          const capturePage = vi.fn(async () => ({
+            toJPEG: () => Buffer.from("frame"),
+            getSize: () => ({ width: 10, height: 10 }),
+          }));
+          fromId.mockReturnValue(
+            Object.assign(makeTestPreviewWebContents(capturePage), {
+              once: vi.fn(),
+              isFocused: () => true,
+              focus: vi.fn(),
+              ipc: {
+                on: vi.fn((channel: string, listener: typeof picked) => {
+                  if (channel === "preview:element-picked") {
+                    picked = listener;
+                    listenerReady?.();
+                  }
+                }),
+                off: vi.fn(),
+                removeListener: vi.fn(),
+              },
+            }) as never,
+          );
+          const changed = yield* Deferred.make<PreviewManager.PreviewTabState>();
+          yield* manager.subscribeStateChanges((_tabId, state) =>
+            state.selection ? Deferred.succeed(changed, state).pipe(Effect.asVoid) : Effect.void,
+          );
+          yield* manager.createTab("tab_selection");
+          yield* manager.registerWebview("tab_selection", 42);
+          const pick = yield* manager.pickElement("tab_selection").pipe(Effect.forkChild);
+          yield* Effect.promise(() => ready);
+          expect(picked).toBeDefined();
+          const annotation = {
+            id: "selection-1",
+            pageUrl: "https://example.com",
+            pageTitle: null,
+            comment: "",
+            elements: [],
+            regions: [],
+            strokes: [],
+            styleChanges: [],
+            screenshot: null,
+            createdAt: "2026-10-28T00:00:00.000Z",
+          };
+          picked?.({}, annotation, null, "attach", 1, "selection");
+          expect((yield* Deferred.await(changed)).selection).toEqual(annotation);
+          expect(pick.pollUnsafe()).toBeUndefined();
+          expect(capturePage).not.toHaveBeenCalled();
+          picked?.({}, annotation, null, "attach", 1, undefined, false);
+          expect(yield* Fiber.join(pick)).toEqual({ annotation, submission: "attach" });
+          expect(capturePage).not.toHaveBeenCalled();
+        }),
+      ),
+  );
+
   effectIt.effect("keeps annotation send grants isolated and updates an active pick", () =>
     withManager((manager) =>
       Effect.gen(function* () {

@@ -44,6 +44,7 @@ import {
   ThreadId,
   SERVER_BROWSER_AUTOMATION_CLIENT_ID,
   type PreviewAppearancePreference,
+  type PreviewAnnotationPayload,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { normalizePreviewUrl } from "@t3tools/shared/preview";
@@ -416,6 +417,12 @@ export class ServerBrowserLaunchError extends Schema.TaggedError<ServerBrowserLa
 }
 
 export type ServerBrowserViewerOutput =
+  | {
+      readonly _tag: "selection";
+      readonly requestId: string;
+      readonly failed?: boolean;
+      readonly annotation: PreviewAnnotationPayload | null;
+    }
   | {
       readonly _tag: "frame";
       readonly data: Uint8Array;
@@ -2545,6 +2552,31 @@ const make = Effect.gen(function* () {
         }
         tab.control.trackUntilHandoff(tab.page.reload(VIEWER_NAVIGATION_OPTIONS));
         return;
+      case "inspect": {
+        if (
+          typeof message.requestId !== "string" ||
+          message.requestId.length > 128 ||
+          typeof message.x !== "number" ||
+          !Number.isFinite(message.x) ||
+          message.x < 0 ||
+          typeof message.y !== "number" ||
+          !Number.isFinite(message.y) ||
+          message.y < 0
+        )
+          return;
+        try {
+          const annotation = await ServerBrowserPage.inspectAtPoint(tab.page, message.x, message.y);
+          viewer.push({ _tag: "selection", requestId: message.requestId, annotation });
+        } catch {
+          viewer.push({
+            _tag: "selection",
+            requestId: message.requestId,
+            annotation: null,
+            failed: true,
+          });
+        }
+        return;
+      }
       case "probe": {
         const x = num(message.x);
         const y = num(message.y);
@@ -2615,7 +2647,12 @@ const make = Effect.gen(function* () {
         if (next._tag === "frame") runFork(next.ack);
         // State a stalled viewer cannot miss replaces its backlog. It runs
         // synchronously so an older replacement can never land after a newer one.
-        else if (next._tag === "gone" || next._tag === "control" || next._tag === "fileChooser") {
+        else if (
+          next._tag === "gone" ||
+          next._tag === "control" ||
+          next._tag === "fileChooser" ||
+          next._tag === "selection"
+        ) {
           const dropped = Effect.runSyncExit(Queue.clear(output));
           if (dropped._tag === "Failure") return;
           Queue.offerUnsafe(output, next);
