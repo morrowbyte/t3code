@@ -3811,3 +3811,159 @@ it.effect("loads a shell snapshot while the writer connection is occupied", () =
     }).pipe(Effect.provide(projectionLayer));
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
+
+it.effect(
+  "enriches only an unchanged completed reasoning title and preserves the public provider original",
+  () =>
+    Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:reasoning-summary-guard");
+      yield* sink.write({
+        events: [
+          threadCreatedEvent({ id: "summary-thread", thread: makeThread(threadId, now), now }),
+        ],
+      });
+      const original: Extract<OrchestrationV2TurnItem, { type: "reasoning" }> = {
+        id: TurnItemId.make("summary-guard"),
+        threadId,
+        runId: null,
+        nodeId: null,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 1,
+        status: "completed",
+        title: null,
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+        type: "reasoning",
+        text: "Inspect the existing wrapper before changing execution.",
+        streaming: false,
+      };
+      const event = (id: string, payload: typeof original): OrchestrationV2DomainEvent => ({
+        id: EventId.make(id),
+        type: "turn-item.updated",
+        threadId,
+        occurredAt: now,
+        payload,
+      });
+      yield* sink.write({ events: [event("summary-source", original)] });
+      const title = "Der vorhandene Shell-Wrapper wird zuerst geprüft.";
+      const enriched = yield* sink.write({
+        events: [
+          event("summary-enriched", { ...original, title, text: "must not replace original" }),
+        ],
+        updateReasoningTitleOnly: { expectedTitle: null, expectedText: original.text },
+      });
+      assert.equal(enriched.length, 1);
+      assert.deepEqual(yield* projections.getTurnItem({ threadId, itemId: original.id }), {
+        ...original,
+        title,
+      });
+      const newer = {
+        ...original,
+        title,
+        text: "The provider has now identified a different wrapper.",
+      };
+      yield* sink.write({ events: [event("summary-new-source", newer)] });
+      const stale = yield* sink.write({
+        events: [event("summary-stale-source", { ...original, title: "Old result" })],
+        updateReasoningTitleOnly: { expectedTitle: title, expectedText: original.text },
+      });
+      assert.equal(stale.length, 0);
+      const resumed = { ...newer, status: "running" as const, streaming: true };
+      yield* sink.write({ events: [event("summary-resumed", resumed)] });
+      assert.equal(
+        (yield* sink.write({
+          events: [event("summary-stale-completion", { ...newer, title: "Too late" })],
+          updateReasoningTitleOnly: { expectedTitle: title, expectedText: newer.text },
+        })).length,
+        0,
+      );
+      assert.deepEqual(yield* projections.getTurnItem({ threadId, itemId: original.id }), resumed);
+    }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect(
+  "updates only localized tool presentation and rejects translations of a changed authored source",
+  () =>
+    Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:tool-presentation-guard");
+      yield* sink.write({
+        events: [
+          threadCreatedEvent({ id: "presentation-thread", thread: makeThread(threadId, now), now }),
+        ],
+      });
+      const original: Extract<OrchestrationV2TurnItem, { type: "command_execution" }> = {
+        id: TurnItemId.make("presentation-guard"),
+        threadId,
+        runId: null,
+        nodeId: null,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 1,
+        status: "completed",
+        title: null,
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+        type: "command_execution",
+        input: "# Intent: Installierte Version prüfen\nprintf version",
+        output: "original output",
+        exitCode: 0,
+      };
+      const event = (id: string, payload: typeof original): OrchestrationV2DomainEvent => ({
+        id: EventId.make(id),
+        type: "turn-item.updated",
+        threadId,
+        occurredAt: now,
+        payload,
+      });
+      yield* sink.write({ events: [event("presentation-source", original)] });
+      const presentation = {
+        title: "Check installed version",
+        language: "en" as const,
+        sourceTitle: "Installierte Version prüfen",
+      };
+      const guard = { expectedTitle: null, sourceTitle: presentation.sourceTitle };
+      assert.equal(
+        (yield* sink.write({
+          events: [
+            event("presentation-translated", {
+              ...original,
+              title: "must not replace title",
+              input: "must not replace input",
+              activityPresentation: presentation,
+            }),
+          ],
+          updateToolPresentationOnly: guard,
+        })).length,
+        1,
+      );
+      assert.deepEqual(yield* projections.getTurnItem({ threadId, itemId: original.id }), {
+        ...original,
+        activityPresentation: presentation,
+      });
+      const newer = { ...original, input: "# Intent: Andere Version prüfen\nprintf other" };
+      yield* sink.write({ events: [event("presentation-new-source", newer)] });
+      assert.equal(
+        (yield* sink.write({
+          events: [
+            event("presentation-stale", { ...original, activityPresentation: presentation }),
+          ],
+          updateToolPresentationOnly: guard,
+        })).length,
+        0,
+      );
+      assert.deepEqual(yield* projections.getTurnItem({ threadId, itemId: original.id }), newer);
+    }).pipe(Effect.provide(layerTest)),
+);

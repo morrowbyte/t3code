@@ -63,7 +63,7 @@ it("reads an explicit intent after Code Mode's pragma without mining source stri
   ).toBeUndefined();
   expect(authoredCodeIntent('print("# Intent: fabricated")')).toBeUndefined();
   expect(dynamicToolTitle("runtime.added.tool", { code }, "Authored call title")).toBe(
-    "Authored call title",
+    "Inspect current renderer metadata",
   );
 });
 
@@ -74,10 +74,26 @@ it("shows a supplied intent immediately even when the provider sends a generic t
       "Inspect recording permission preferences",
     );
     expect(dynamicToolTitle(toolName, { code }, "Inspect host recording settings")).toBe(
-      "Inspect host recording settings",
+      "Inspect recording permission preferences",
     );
   }
   expect(dynamicToolTitle("js", { code: "await inspect();" }, "Run JavaScript")).toBe(
     "Run JavaScript",
   );
+});
+
+it("reads a leading Intent from an executable shell wrapper without mining quoted data", () => {
+  expect(
+    authoredCodeIntent("#!/usr/bin/env python3\n# Intent: Version prüfen\nprint(version)"),
+  ).toBe("Version prüfen");
+  expect(
+    authoredCodeIntent(
+      '/run/current-system/sw/bin/bash -lc "# Intent: Isolierte Crew-Dev-Instanz starten\nPATH=x node scripts/dev-runner.ts"',
+    ),
+  ).toBe("Isolierte Crew-Dev-Instanz starten");
+  expect(authoredCodeIntent("bash -lc '# Intent: Installierte Version prüfen\nprintf ok' ")).toBe(
+    "Installierte Version prüfen",
+  );
+  expect(authoredCodeIntent('echo "# Intent: fabricated"')).toBeUndefined();
+  expect(authoredCodeIntent('bash -lc "printf ok; # Intent: fabricated"')).toBeUndefined();
 });

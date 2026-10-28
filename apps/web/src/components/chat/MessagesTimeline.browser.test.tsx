@@ -697,3 +697,41 @@ describe("compact reasoning math", () => {
     ]);
   });
 });
+
+it("shows the localized completed reasoning summary collapsed and preserves the original on expansion", async () => {
+  using _state = setup();
+  const summary = "Der Shell-Wrapper wird geprüft, bevor die Ausführung geändert wird.";
+  const original = "Inspect the existing shell wrapper before choosing an executor change.";
+  const entries: Entry[] = [
+    {
+      id: "localized-reasoning",
+      kind: "work",
+      createdAt: CREATED_AT,
+      entry: {
+        id: "localized-reasoning",
+        createdAt: CREATED_AT,
+        label: summary,
+        tone: "thinking",
+        itemType: "reasoning",
+        detail: original,
+        toolLifecycleStatus: "completed",
+        structuredPayload: {
+          id: TurnItemId.make("localized-reasoning"),
+          threadId: ThreadId.make("fixture"),
+          runId: null,
+          type: "reasoning",
+          title: summary,
+          status: "completed",
+          text: original,
+          streaming: false,
+        } as import("@t3tools/contracts").OrchestrationV2TurnItem,
+      },
+    },
+  ];
+  await using screen = await renderTimeline(entries);
+  await expect.element(screen.getByRole("button", { name: new RegExp(summary) })).toBeVisible();
+  expect(screen.text()).not.toContain(original);
+  await click(screen.button(new RegExp(summary)));
+  await vi.waitFor(() => expect(screen.text()).toContain(original));
+  expect(screen.text()).toContain(summary);
+});

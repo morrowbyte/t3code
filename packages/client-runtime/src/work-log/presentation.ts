@@ -21,6 +21,7 @@ import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 import { formatTokens } from "@t3tools/shared/usageFormat";
 import {
   authoredCodeIntent,
+  localizedToolActivityTitle,
   classifyToolActivity,
   dynamicToolTitle,
   isGenericToolActivityTitle,
@@ -157,6 +158,19 @@ export function precedingPublicActivity<T>(
 export function workEntryExplicitIntentLabel(entry: WorkLogPresentationEntry): string | undefined {
   const item = entry.structuredPayload;
   if (item?.type !== "command_execution" && item?.type !== "dynamic_tool") return undefined;
+  const localized = localizedToolActivityTitle(item);
+  if (localized) return localized;
+  const authored = authoredCodeIntent(
+    item.type === "command_execution"
+      ? item.input
+      : typeof item.input === "object" &&
+          item.input !== null &&
+          "code" in item.input &&
+          typeof item.input.code === "string"
+        ? item.input.code
+        : "",
+  );
+  if (authored) return authored;
   const title =
     item.type === "dynamic_tool"
       ? dynamicToolTitle(item.toolName, item.input, item.title)
@@ -181,6 +195,10 @@ export function workEntryExplicitIntentLabel(entry: WorkLogPresentationEntry): s
 
 export function workEntryIntentLabel(entry: WorkLogPresentationEntry): string | undefined {
   const item = entry.structuredPayload;
+  if (item?.type === "command_execution" || item?.type === "dynamic_tool") {
+    const localized = localizedToolActivityTitle(item);
+    if (localized) return localized;
+  }
   if (item?.type === "dynamic_tool") {
     const title = dynamicToolTitle(item.toolName, item.input, item.title);
     if (title) return title;
@@ -191,8 +209,8 @@ export function workEntryIntentLabel(entry: WorkLogPresentationEntry): string | 
   const title = toolCallTitle(item?.title);
   const genericTitle = isGenericToolActivityTitle(title);
   return (
-    (title && title !== command.trim() && !genericTitle ? title : undefined) ??
     authoredCodeIntent(command) ??
+    (title && title !== command.trim() && !genericTitle ? title : undefined) ??
     commandIntentLabel(command)
   );
 }

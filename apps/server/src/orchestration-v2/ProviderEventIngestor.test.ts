@@ -27,6 +27,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Queue from "effect/Queue";
 import * as ToolIntentGeneration from "../textGeneration/ToolIntentGeneration.ts";
+import * as ReasoningSummaryGeneration from "../textGeneration/ReasoningSummaryGeneration.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
@@ -2313,6 +2314,119 @@ it.effect(
         Effect.provide(
           layerTest.pipe(
             Layer.provideMerge(ToolIntentGeneration.layer.pipe(Layer.provide(fakeGeneration))),
+            Layer.provide(NodeServices.layer),
+            Layer.fresh,
+          ),
+        ),
+      );
+    }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "summarizes completed public reasoning asynchronously while preserving its original across provider updates",
+  () =>
+    Effect.gen(function* () {
+      const requests = yield* Queue.make<Deferred.Deferred<{ title: string }>>();
+      const fakeGeneration = Layer.mock(TextGeneration.TextGeneration)({
+        generateThreadTitle: () =>
+          Effect.gen(function* () {
+            const reply = yield* Deferred.make<{ title: string }>();
+            yield* Queue.offer(requests, reply);
+            return yield* Deferred.await(reply);
+          }),
+      });
+      yield* Effect.gen(function* () {
+        const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const allocator = yield* IdAllocator.IdAllocatorV2;
+        const now = yield* DateTime.now;
+        const thread = yield* threadCreatedEvent(now);
+        yield* sink.write({ events: [thread] });
+        const providerSessionId = yield* allocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId: thread.threadId,
+        });
+        const original: Extract<OrchestrationV2TurnItem, { type: "reasoning" }> = {
+          id: TurnItemId.make("localized-public-reasoning"),
+          threadId: thread.threadId,
+          runId: null,
+          nodeId: null,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 1,
+          status: "running",
+          title: null,
+          startedAt: now,
+          completedAt: null,
+          updatedAt: now,
+          type: "reasoning",
+          text: "Check the shell wrapper before changing the executor.",
+          streaming: true,
+        };
+        const ingest = (turnItem: typeof original) =>
+          ingestor.ingestNormalized({
+            providerSessionId,
+            providerInstanceId: modelSelection.instanceId,
+            threadId: thread.threadId,
+            event: { type: "turn_item.updated", driver: CODEX_DRIVER, turnItem },
+          });
+        yield* ingest(original);
+        yield* ingest({ ...original, text: original.text + " More public detail." });
+        assert.equal(yield* Queue.size(requests), 0);
+        const completed = {
+          ...original,
+          status: "completed" as const,
+          streaming: false,
+          completedAt: now,
+        };
+        yield* ingest(completed);
+        const reply = yield* Queue.take(requests);
+        const title = "Der Shell-Wrapper wird vor Änderungen an der Ausführung geprüft.";
+        const persisted = yield* sink
+          .stream({
+            threadId: thread.threadId,
+            afterSequence: yield* sink.latestSequence({ threadId: thread.threadId }),
+          })
+          .pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "turn-item.updated" && stored.event.payload.title === title,
+            ),
+            Stream.take(1),
+            Stream.runCollect,
+            Effect.forkScoped,
+          );
+        yield* Deferred.succeed(reply, { title });
+        yield* Fiber.join(persisted);
+        assert.deepEqual(
+          yield* projections.getTurnItem({ threadId: thread.threadId, itemId: original.id }),
+          { ...completed, title },
+        );
+        yield* ingest(completed);
+        assert.equal(yield* Queue.size(requests), 0);
+        assert.deepEqual(
+          yield* projections.getTurnItem({ threadId: thread.threadId, itemId: original.id }),
+          { ...completed, title },
+        );
+        yield* ingest({ ...completed, text: "New public provider evidence." });
+        const updated = yield* projections.getTurnItem({
+          threadId: thread.threadId,
+          itemId: original.id,
+        });
+        assert.equal(updated?.title, null);
+        assert.equal(
+          updated?.type === "reasoning" ? updated.text : undefined,
+          "New public provider evidence.",
+        );
+      }).pipe(
+        Effect.provide(
+          layerTest.pipe(
+            Layer.provideMerge(
+              ReasoningSummaryGeneration.layer.pipe(Layer.provide(fakeGeneration)),
+            ),
             Layer.provide(NodeServices.layer),
             Layer.fresh,
           ),

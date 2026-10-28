@@ -278,12 +278,20 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
   const questionHeading = workEntry.questionAnswer
     ? getQuestionTextPreview(workEntry.questionAnswer)
     : "";
+  const reasoningSummary =
+    isReasoning && workEntry.toolLifecycleStatus !== "inProgress"
+      ? workEntry.structuredPayload?.title?.trim()
+      : undefined;
   const previewText =
-    isReasoning && expanded
-      ? workEntry.toolLifecycleStatus === "inProgress"
-        ? "Thinking"
-        : "Thought"
-      : questionHeading || (displayLabel ?? workEntryDisplayLabel(workEntry, workspaceRoot));
+    isReasoning &&
+    workEntry.toolLifecycleStatus !== "inProgress" &&
+    workEntry.structuredPayload?.title?.trim()
+      ? workEntry.structuredPayload.title
+      : isReasoning && expanded
+        ? workEntry.toolLifecycleStatus === "inProgress"
+          ? "Thinking"
+          : "Thought"
+        : questionHeading || (displayLabel ?? workEntryDisplayLabel(workEntry, workspaceRoot));
   const answerPreview =
     workEntry.questionAnswer && hasQuestionAnswer(workEntry.questionAnswer)
       ? getQuestionAnswerPreview(workEntry.questionAnswer)
@@ -392,7 +400,7 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
       data-v2-item-type={workEntry.projectedItem?.item.type}
       data-v2-item-visibility={workEntry.projectedItem?.visibility}
       {...rowToggleProps}
-      wrapLabel={executionStatus !== undefined}
+      wrapLabel={executionStatus !== undefined || Boolean(reasoningSummary)}
       icon={
         <span
           className={iconWrapperClass}
@@ -415,14 +423,16 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
                 answerPreview ? "min-w-0" : "min-w-0 flex-1",
                 executionStatus
                   ? "line-clamp-2 whitespace-normal [overflow-wrap:anywhere]"
-                  : "truncate",
+                  : reasoningSummary
+                    ? "line-clamp-2 whitespace-normal"
+                    : "truncate",
                 headingClass,
               )}
             >
               {isReasoning && !expanded ? (
                 <ChatMarkdown
                   inline
-                  text={workEntry.detail ?? previewText}
+                  text={reasoningSummary || workEntry.detail || previewText}
                   cwd={ctx.markdownCwd}
                   parseRawHtml={false}
                   extraRemarkPlugins={[

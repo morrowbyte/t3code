@@ -325,3 +325,36 @@ describe("public activity context", () => {
     ).toBeUndefined();
   });
 });
+
+it("presents a translated authored label only while its original intent is unchanged", () => {
+  const input = 'bash -lc "# Intent: Installierte Version prüfen\nprintf version"';
+  const structuredPayload = commandItem({
+    input,
+    title: "Check Installed Version",
+    activityPresentation: {
+      title: "Check installed version",
+      language: "en",
+      sourceTitle: "Installierte Version prüfen",
+    },
+  });
+  const entry: WorkLogPresentationEntry = {
+    id: "localized",
+    createdAt: "2026-10-28T00:00:00Z",
+    label: "Command",
+    tone: "tool",
+    itemType: "command_execution",
+    structuredPayload,
+  };
+  expect(workEntryExplicitIntentLabel(entry)).toBe("Check installed version");
+  expect(workEntryIntentLabel(entry)).toBe("Check installed version");
+  const updated = {
+    ...entry,
+    structuredPayload: {
+      ...structuredPayload,
+      input: "# Intent: Andere Version prüfen\nprintf other",
+    },
+  };
+  expect(workEntryExplicitIntentLabel(updated)).toBe("Andere Version prüfen");
+  expect(workEntryIntentLabel(updated)).toBe("Andere Version prüfen");
+  expect(structuredPayload.input).toBe(input);
+});

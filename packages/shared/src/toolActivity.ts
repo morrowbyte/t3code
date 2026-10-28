@@ -1,4 +1,4 @@
-import type { ToolLifecycleItemType } from "@t3tools/contracts";
+import type { ToolLifecycleItemType, OrchestrationV2TurnItem } from "@t3tools/contracts";
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -28,10 +28,32 @@ export function isJavaScriptReplTool(toolName: string | null | undefined): boole
   return toolName === "js" || toolName === "cua_repl.js" || toolName === "node_repl.js";
 }
 
-/** An opt-in source comment, never inferred from strings or a script's body. */
+/** Only a leading source comment is intent, including a shell's explicitly quoted script. */
 export function authoredCodeIntent(code: string): string | undefined {
-  return /^(?:[ \t]*\/\/ @exec:[^\r\n]*\r?\n)?(?:\s*\r?\n)*[ \t]*(?:#|\/\/) Intent:[ \t]*([^\r\n]{1,160})[ \t]*(?:\r?\n|$)/u
-    .exec(code.slice(0, 512))?.[1]
+  let source = code.slice(0, 4_096);
+  const wrapper = /^(?:[\w./-]*\/)?(?:bash|sh|zsh|dash|ksh)\s+-(?:lc|c)\s+(['"])/u.exec(source);
+  if (wrapper) {
+    const quote = wrapper[1];
+    const rest = source.slice(wrapper[0].length);
+    let script = "";
+    let closed = false;
+    for (let i = 0; i < rest.length; i += 1) {
+      const char = rest[i]!;
+      if (char === quote) {
+        closed = true;
+        break;
+      }
+      if (quote === '"' && char === "\\" && /["\\$`]/u.test(rest[i + 1] ?? "")) {
+        script += rest[++i];
+      } else {
+        script += char;
+      }
+    }
+    if (!closed) return undefined;
+    source = script;
+  }
+  return /^(?:#![^\r\n]*\r?\n)?(?:[ \t]*\/\/ @exec:[^\r\n]*\r?\n)?(?:\s*\r?\n)*[ \t]*(?:#|\/\/) Intent:[ \t]*([^\r\n]{1,160})[ \t]*(?:\r?\n|$)/u
+    .exec(source.slice(0, 512))?.[1]
     ?.trim();
 }
 
@@ -62,7 +84,7 @@ export function dynamicToolSurface(toolName: string | null | undefined, input: u
 }
 
 export function isGenericToolActivityTitle(title: string | null | undefined): boolean {
-  return /^(?:command|(?:running|ran) [\w./\\-]+|(?:run|running) (?:javascript|python(?: code)?|shell commands)|computer use)$/iu.test(
+  return /^(?:tool(?: call)?|werkzeug(?:aufruf)?|(?:run|execute) command|befehl(?: ausführen)?|activity|aktivität|command|(?:running|ran) [\w./\\-]+|(?:run|running) (?:javascript|python(?: code)?|shell commands)|computer use)$/iu.test(
     title ?? "",
   );
 }
@@ -72,7 +94,10 @@ export function dynamicToolTitle(
   input: unknown,
   retainedTitle?: string | null,
 ): string | undefined {
-  const source = typeof input === "string" ? input : asRecord(input)?.code;
+  const source =
+    typeof input === "string"
+      ? input
+      : (asRecord(input)?.code ?? asRecord(input)?.cmd ?? asRecord(input)?.command);
   if (isJavaScriptReplTool(toolName)) {
     const title = asTrimmedString(retainedTitle);
     const meaningfulTitle =
@@ -83,9 +108,9 @@ export function dynamicToolTitle(
         ? title
         : undefined;
     return (
+      (typeof source === "string" ? authoredCodeIntent(source) : undefined) ??
       asTrimmedString(asRecord(input)?.title) ??
       meaningfulTitle ??
-      (typeof source === "string" ? authoredCodeIntent(source) : undefined) ??
       (dynamicToolSurface(toolName, input) === "computer" ? "Computer use" : "Run JavaScript")
     );
   }
@@ -93,10 +118,30 @@ export function dynamicToolTitle(
   if (skill !== undefined) return `Skill: ${skill.name}`;
   const title = toolCallTitle(retainedTitle, toolName);
   return (
-    (isGenericToolActivityTitle(title) ? undefined : title) ??
     (typeof source === "string" ? authoredCodeIntent(source) : undefined) ??
+    (isGenericToolActivityTitle(title) ? undefined : title) ??
     title
   );
+}
+
+type ToolActivityItem = Extract<
+  OrchestrationV2TurnItem,
+  { type: "command_execution" | "dynamic_tool" }
+>;
+
+export function toolActivitySourceTitle(item: ToolActivityItem): string | undefined {
+  const title =
+    item.type === "dynamic_tool"
+      ? dynamicToolTitle(item.toolName, item.input, item.title)
+      : (authoredCodeIntent(item.input) ?? toolCallTitle(item.title));
+  return title && !isGenericToolActivityTitle(title) && title !== item.input ? title : undefined;
+}
+
+export function localizedToolActivityTitle(item: ToolActivityItem): string | undefined {
+  const presentation = item.activityPresentation;
+  return presentation?.sourceTitle === toolActivitySourceTitle(item)
+    ? presentation?.title
+    : undefined;
 }
 
 function recordHasKeys(

@@ -534,6 +534,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     desktopOnly: true,
   },
   {
+    id: "activity-summary-language",
+    title: "Activity & thinking summary language",
+    to: "/settings/agent-defaults",
+    scope: "project-defaults",
+    searchTerms: [
+      "language Deutsch English Automatic Sprache Aktivität Thinking Zusammenfassung tool intent",
+    ],
+  },
+  {
     id: "text-generation-model",
     title: "Text generation model",
     to: "/settings/agent-defaults",

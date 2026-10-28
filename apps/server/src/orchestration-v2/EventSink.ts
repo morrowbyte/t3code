@@ -26,6 +26,7 @@ import {
   type ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
+import { toolActivitySourceTitle } from "@t3tools/shared/toolActivity";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -92,6 +93,14 @@ export interface EventSinkV2Shape {
   >;
   readonly write: (input: {
     readonly updateToolTitleOnly?: { readonly expectedTitle: string | null };
+    readonly updateToolPresentationOnly?: {
+      readonly expectedTitle: string | null;
+      readonly sourceTitle: string;
+    };
+    readonly updateReasoningTitleOnly?: {
+      readonly expectedTitle: string | null;
+      readonly expectedText: string;
+    };
     /** Return no events if another thread owns this native session at commit time. */
     readonly unlessNativeThreadOwned?: Pick<
       OrchestrationV2ProviderThread,
@@ -103,6 +112,14 @@ export interface EventSinkV2Shape {
   }) => Effect.Effect<ReadonlyArray<OrchestrationV2StoredEvent>, EventSinkV2Error>;
   readonly writeWithEffects: (input: {
     readonly updateToolTitleOnly?: { readonly expectedTitle: string | null };
+    readonly updateToolPresentationOnly?: {
+      readonly expectedTitle: string | null;
+      readonly sourceTitle: string;
+    };
+    readonly updateReasoningTitleOnly?: {
+      readonly expectedTitle: string | null;
+      readonly expectedText: string;
+    };
     /**
      * Rebuilds each run.updated from the stored row with only its delegatedCompletion replaced.
      * The batch must not also change that run's lifecycle.
@@ -520,6 +537,69 @@ const layerBase: Layer.Layer<
             );
             events = updates.flat();
           }
+          if (input.updateToolPresentationOnly) {
+            const { expectedTitle, sourceTitle } = input.updateToolPresentationOnly;
+            const updates = yield* Effect.forEach(events, (event) =>
+              Effect.gen(function* () {
+                if (
+                  event.type !== "turn-item.updated" ||
+                  (event.payload.type !== "command_execution" &&
+                    event.payload.type !== "dynamic_tool")
+                )
+                  return [];
+                const current = yield* projectionStore.getTurnItem({
+                  threadId: event.threadId,
+                  itemId: event.payload.id,
+                });
+                if (
+                  !current ||
+                  (current.type !== "command_execution" && current.type !== "dynamic_tool") ||
+                  current.runId !== event.payload.runId ||
+                  current.title !== expectedTitle ||
+                  toolActivitySourceTitle(current) !== sourceTitle
+                )
+                  return [];
+                const presentation = event.payload.activityPresentation;
+                if (presentation && presentation.sourceTitle !== sourceTitle) return [];
+                if (!presentation && !current.activityPresentation) return [];
+                if (
+                  presentation?.title === current.activityPresentation?.title &&
+                  presentation?.language === current.activityPresentation?.language &&
+                  presentation?.sourceTitle === current.activityPresentation?.sourceTitle
+                )
+                  return [];
+                // Translation owns only presentation; the authored title and executable input stay intact.
+                return [{ ...event, payload: { ...current, activityPresentation: presentation } }];
+              }),
+            );
+            events = updates.flat();
+          }
+          if (input.updateReasoningTitleOnly) {
+            const { expectedTitle, expectedText } = input.updateReasoningTitleOnly;
+            const updates = yield* Effect.forEach(events, (event) =>
+              Effect.gen(function* () {
+                if (event.type !== "turn-item.updated" || event.payload.type !== "reasoning")
+                  return [];
+                const current = yield* projectionStore.getTurnItem({
+                  threadId: event.threadId,
+                  itemId: event.payload.id,
+                });
+                if (
+                  !current ||
+                  current.type !== "reasoning" ||
+                  current.streaming ||
+                  current.status !== "completed" ||
+                  current.title !== expectedTitle ||
+                  current.text !== expectedText ||
+                  current.runId !== event.payload.runId
+                )
+                  return [];
+                // Late enrichment owns the title only; provider evidence and lifecycle stay authoritative.
+                return [{ ...event, payload: { ...current, title: event.payload.title } }];
+              }),
+            );
+            events = updates.flat();
+          }
           const normalized = yield* normalizeEvents(
             input.guardPendingUserInputCancellations === true
               ? yield* guardUserInputCancellations(events)
@@ -696,9 +776,11 @@ const layerBase: Layer.Layer<
                   return {
                     status: "refused" as const,
                     reason:
-                      reason === "stale_owner" || reason === "revision_conflict"
-                        ? reason
-                        : ("request_conflict" as const),
+                      reason === "stale_owner"
+                        ? ("stale_owner" as const)
+                        : reason === "revision_conflict"
+                          ? ("revision_conflict" as const)
+                          : ("request_conflict" as const),
                     events: [],
                   };
                 }

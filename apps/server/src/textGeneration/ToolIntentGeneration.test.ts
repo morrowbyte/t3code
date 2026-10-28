@@ -6,12 +6,20 @@ import {
   ThreadId,
   TurnItemId,
   TextGenerationError,
+  DEFAULT_SERVER_SETTINGS,
+  type ServerSettings,
+  type OrchestrationV2TurnItem,
+  type OrchestrationV2AppThread,
+  ProjectId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
+import * as Ref from "effect/Ref";
+import * as ServerSettingsService from "../serverSettings.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as TextGeneration from "./TextGeneration.ts";
 import * as Service from "./ToolIntentGeneration.ts";
 
@@ -59,7 +67,7 @@ describe("tool intent generation", () => {
             type: "command_execution",
             input: "cat docs/guide.md",
           }),
-        ).toBe(false);
+        ).toBe(true);
         expect(
           Service.toolIntentInput({ ...item, input: { code: "x".repeat(100_000) } }).length,
         ).toBeLessThanOrEqual(4096);
@@ -189,3 +197,186 @@ describe("tool intent generation", () => {
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });
+
+it.effect(
+  "uses the app text model, ignores a stale German reply and caches by selected language",
+  () =>
+    Effect.gen(function* () {
+      const settings = yield* Ref.make<ServerSettings>({
+        ...DEFAULT_SERVER_SETTINGS,
+        toolActivityLanguage: "de",
+        textGenerationModelSelection: {
+          instanceId: ProviderInstanceId.make("configured-text-provider"),
+          model: "configured-small-model",
+        },
+      });
+      const requests = yield* Queue.make<{
+        input: TextGeneration.ThreadTitleGenerationInput;
+        reply: Deferred.Deferred<{ title: string }>;
+      }>();
+      const commits = yield* Queue.make<string>();
+      const service = yield* Service.make.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.mock(ServerSettingsService.ServerSettingsService)({
+              getSettings: Ref.get(settings),
+            }),
+            Layer.mock(TextGeneration.TextGeneration)({
+              generateThreadTitle: (input) =>
+                Effect.gen(function* () {
+                  const reply = yield* Deferred.make<{ title: string }>();
+                  yield* Queue.offer(requests, { input, reply });
+                  return yield* Deferred.await(reply);
+                }),
+            }),
+          ),
+        ),
+      );
+      const observe = (id: string) =>
+        service.observe({
+          ...identity,
+          item: { ...item, id: TurnItemId.make(id) },
+          commitTitle: (title) => Queue.offer(commits, title).pipe(Effect.asVoid),
+        });
+      yield* observe("language-first");
+      const german = yield* Queue.take(requests);
+      expect(german.input.modelSelection).toEqual(
+        (yield* Ref.get(settings)).textGenerationModelSelection,
+      );
+      expect(german.input.instructions).toContain("German");
+      yield* Ref.update(settings, (settings) => ({
+        ...settings,
+        toolActivityLanguage: "en" as const,
+      }));
+      yield* observe("language-first");
+      yield* Deferred.succeed(german.reply, { title: "Veraltete deutsche Aktivität" });
+      const english = yield* Queue.take(requests);
+      expect(yield* Queue.size(commits)).toBe(0);
+      expect(english.input.instructions).toContain("English");
+      yield* Deferred.succeed(english.reply, { title: "Compare shipment quotes" });
+      expect(yield* Queue.take(commits)).toBe("Compare shipment quotes");
+      yield* observe("language-cached");
+      expect(yield* Queue.take(commits)).toBe("Compare shipment quotes");
+      expect(yield* Queue.size(requests)).toBe(0);
+      const wrapped = {
+        ...item,
+        type: "command_execution" as const,
+        input:
+          '/run/current-system/sw/bin/bash -lc "# Intent: Isolierte Crew-Dev-Instanz starten\nnode dev"',
+        title: "Start Isolated Crew Dev Instance",
+      };
+      expect(service.retainedTitle(wrapped)).toBe("Isolierte Crew-Dev-Instanz starten");
+      expect(Service.isToolIntentMissing(wrapped)).toBe(false);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "translates authored German and English labels as presentation without replacing the authored source",
+  () =>
+    Effect.gen(function* () {
+      const settings = yield* Ref.make<ServerSettings>({
+        ...DEFAULT_SERVER_SETTINGS,
+        toolActivityLanguage: "en",
+      });
+      const requests = yield* Queue.make<{
+        input: TextGeneration.ThreadTitleGenerationInput;
+        reply: Deferred.Deferred<{ title: string }>;
+      }>();
+      const committed = yield* Queue.make<{
+        title: string;
+        language: "auto" | "de" | "en";
+        sourceTitle: string;
+      }>();
+      const service = yield* Service.make.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({
+              getThread: () =>
+                Effect.succeed({
+                  title: "Werkzeugbeschriftungen verbessern",
+                  projectId: ProjectId.make("language-project"),
+                } as OrchestrationV2AppThread),
+            }),
+            Layer.mock(ServerSettingsService.ServerSettingsService)({
+              getSettings: Ref.get(settings),
+            }),
+            Layer.mock(TextGeneration.TextGeneration)({
+              generateThreadTitle: (input) =>
+                Effect.gen(function* () {
+                  const reply = yield* Deferred.make<{ title: string }>();
+                  yield* Queue.offer(requests, { input, reply });
+                  return yield* Deferred.await(reply);
+                }),
+            }),
+          ),
+        ),
+      );
+      const german = {
+        ...item,
+        type: "command_execution" as const,
+        input: 'bash -lc "# Intent: Installierte Version prüfen\nprintf version"',
+        title: "Check Installed Version",
+      };
+      const observe = (next: Extract<OrchestrationV2TurnItem, { type: "command_execution" }>) =>
+        service.observe({
+          ...identity,
+          item: next,
+          commitTitle: () => Effect.die("Translation must not overwrite authored title"),
+          commitPresentation: (presentation) =>
+            presentation ? Queue.offer(committed, presentation).pipe(Effect.asVoid) : Effect.void,
+        });
+      yield* observe(german);
+      const englishRequest = yield* Queue.take(requests);
+      expect(englishRequest.input.instructions).toContain("English");
+      expect(englishRequest.input.instructions).toContain("Translate ONLY");
+      expect(englishRequest.input.message).toContain("Installierte Version prüfen");
+      yield* Deferred.succeed(englishRequest.reply, { title: "Check installed version" });
+      expect(yield* Queue.take(committed)).toEqual({
+        title: "Check installed version",
+        sourceTitle: "Installierte Version prüfen",
+        language: "en",
+      });
+      expect(service.retainedPresentation(german)?.title).toBe("Check installed version");
+      expect(german.input).toContain("Installierte Version prüfen");
+      expect(german.title).toBe("Check Installed Version");
+      yield* Ref.update(settings, (settings) => ({
+        ...settings,
+        toolActivityLanguage: "de" as const,
+      }));
+      const english = {
+        ...german,
+        input: "# Intent: Inspect recording permissions\npython3 inspect.py",
+        title: null,
+      };
+      yield* observe(english);
+      const germanRequest = yield* Queue.take(requests);
+      expect(germanRequest.input.instructions).toContain("German");
+      expect(service.retainedPresentation(english)).toBeUndefined();
+      yield* Deferred.succeed(germanRequest.reply, { title: "Aufnahmeberechtigungen prüfen" });
+      expect(yield* Queue.take(committed)).toEqual({
+        title: "Aufnahmeberechtigungen prüfen",
+        sourceTitle: "Inspect recording permissions",
+        language: "de",
+      });
+      expect(
+        service.retainedPresentation({
+          ...english,
+          input: "# Intent: Inspect another source\npython3 other.py",
+        }),
+      ).toBeUndefined();
+      yield* Ref.update(settings, (settings) => ({
+        ...settings,
+        toolActivityLanguage: "auto" as const,
+      }));
+      yield* observe(english);
+      const automatic = yield* Queue.take(requests);
+      expect(automatic.input.instructions).toContain("Do not default to English");
+      expect(automatic.input.message).toContain("Werkzeugbeschriftungen verbessern");
+      yield* Deferred.succeed(automatic.reply, { title: "Aufnahmeberechtigungen prüfen" });
+      expect(yield* Queue.take(committed)).toEqual({
+        title: "Aufnahmeberechtigungen prüfen",
+        sourceTitle: "Inspect recording permissions",
+        language: "auto",
+      });
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);

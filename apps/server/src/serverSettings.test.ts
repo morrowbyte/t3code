@@ -94,6 +94,29 @@ const recordProviderUsage = (provider: string, instanceId: string | null = provi
   });
 
 it.layer(NodeServices.layer)("server settings", (it) => {
+  it.effect(
+    "persists the shared activity and reasoning language without changing the main model",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsModule.ServerSettingsService;
+        const fs = yield* FileSystem.FileSystem;
+        const config = yield* ServerConfig.ServerConfig;
+        const initial = yield* service.getSettings;
+        assert.equal(initial.toolActivityLanguage, "auto");
+        const next = yield* service.updateSettings({ toolActivityLanguage: "de" });
+        assert.equal(next.toolActivityLanguage, "de");
+        assert.deepEqual(next.defaultModelSelection, initial.defaultModelSelection);
+        const persisted = yield* fs
+          .readFileString(config.settingsPath)
+          .pipe(Effect.flatMap(decodeServerSettingsJson));
+        assert.equal(persisted.toolActivityLanguage, "de");
+        assert.equal(
+          (yield* service.updateSettings({ toolActivityLanguage: "en" })).toolActivityLanguage,
+          "en",
+        );
+      }).pipe(Effect.provide(layerServerSettings())),
+  );
+
   it.effect("serializes concurrent model preference edits without cancelling duplicate adds", () =>
     Effect.gen(function* () {
       const service = yield* ServerSettingsModule.ServerSettingsService;

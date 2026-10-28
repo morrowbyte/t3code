@@ -1980,6 +1980,46 @@ export function AgentDefaultsSettingsPanel() {
             )
           }
         />
+        <SettingsRow
+          serverScoped
+          settingKeys={["toolActivityLanguage"]}
+          {...searchableSetting("activity-summary-language")}
+          description="Automatic follows the thread language."
+          control={
+            <Select
+              value={settings.toolActivityLanguage}
+              onValueChange={(value) => {
+                if (value === "auto" || value === "de" || value === "en")
+                  updateSettings({ toolActivityLanguage: value });
+              }}
+            >
+              <SelectTrigger
+                size="sm"
+                className="w-full sm:w-40"
+                aria-label="Activity & thinking summary language"
+              >
+                <SelectValue>
+                  {settings.toolActivityLanguage === "de"
+                    ? "Deutsch"
+                    : settings.toolActivityLanguage === "en"
+                      ? "English"
+                      : "Automatic"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem hideIndicator value="auto">
+                  Automatic
+                </SelectItem>
+                <SelectItem hideIndicator value="de">
+                  Deutsch
+                </SelectItem>
+                <SelectItem hideIndicator value="en">
+                  English
+                </SelectItem>
+              </SelectPopup>
+            </Select>
+          }
+        />
         <ThreadTitleInstructionsSettings />
       </SettingsSection>
     </SettingsPageContainer>

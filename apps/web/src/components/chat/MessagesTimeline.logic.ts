@@ -90,7 +90,13 @@ function workEntryIsActiveTurnActivity(entry: WorkLogEntry): boolean {
 }
 
 function singleToolCallLabel(entry: WorkLogEntry): string {
-  if (entry.itemType === "reasoning") return entry.detail?.trim().replace(/\s+/g, " ") || "Thought";
+  if (entry.itemType === "reasoning")
+    return (
+      entry.structuredPayload?.title?.trim() ||
+      (entry.label !== "Thinking" && entry.label !== "Thought" ? entry.label : undefined) ||
+      entry.detail?.trim().replace(/\s+/g, " ") ||
+      "Thought"
+    );
   const explicitIntent = workEntryExplicitIntentLabel(entry);
   if (explicitIntent) return explicitIntent;
   const toolPresentation = resolveWorkEntryToolPresentation(entry, "completed");
@@ -131,7 +137,10 @@ function workEntryReadPaths(entry: WorkLogEntry, workspaceRoot: string | undefin
 export function workEntryDisplayLabel(entry: WorkLogEntry, workspaceRoot: string | undefined) {
   if (entry.itemType === "system_notice") return entry.label;
   if (entry.itemType === "reasoning" || entry.tone === "thinking") {
-    const thought = entry.detail?.trim().replace(/\s+/g, " ");
+    const thought =
+      (entry.toolLifecycleStatus !== "inProgress"
+        ? entry.structuredPayload?.title?.trim()
+        : undefined) || entry.detail?.trim().replace(/\s+/g, " ");
     return thought || entry.label;
   }
   const explicitIntent = workEntryExplicitIntentLabel(entry);
@@ -239,6 +248,7 @@ export function liveWorkEntryLabel(
   const status = liveActivityToolStatus(entry.toolLifecycleStatus, active);
   if (entry.itemType === "reasoning") {
     return (
+      (status !== "inProgress" ? entry.structuredPayload?.title?.trim() : undefined) ||
       entry.detail?.trim().replace(/\s+/g, " ") ||
       (status === "inProgress" ? "Thinking" : "Thought")
     );
