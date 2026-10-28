@@ -8222,31 +8222,61 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               Effect.catch(() => Effect.succeed(false)),
             ),
             decideIntake: (decisionInput) =>
-              Effect.scoped(
-                Effect.gen(function* () {
-                  const cwd = yield* fileSystem.makeTempDirectoryScoped({
-                    prefix: "t3-voice-intake-",
-                  });
-                  const isolated = yield* clientFactory.open({
-                    instanceId: adapterOptions.instanceId,
-                    threadId: input.threadId,
-                    providerSessionId: ProviderSessionId.make(
-                      `voice-intake:${yield* crypto.randomUUIDv4()}`,
+              Effect.suspend(() => {
+                const startedAt = performance.now();
+                let connectedAt: number | undefined;
+                const timing = () => ({
+                  requestId: decisionInput.snapshot.requestId,
+                  durationMs: Math.round(performance.now() - startedAt),
+                  connectionMs:
+                    connectedAt === undefined ? null : Math.round(connectedAt - startedAt),
+                });
+                return Effect.scoped(
+                  Effect.gen(function* () {
+                    const cwd = yield* fileSystem.makeTempDirectoryScoped({
+                      prefix: "t3-voice-intake-",
+                    });
+                    const isolated = yield* clientFactory.open({
+                      instanceId: adapterOptions.instanceId,
+                      threadId: input.threadId,
+                      providerSessionId: ProviderSessionId.make(
+                        `voice-intake:${yield* crypto.randomUUIDv4()}`,
+                      ),
+                      runtimePolicy: {
+                        runtimeMode: "approval-required",
+                        interactionMode: "default",
+                        cwd,
+                      },
+                      settings: resolvedRuntime?.config ?? adapterOptions.settings,
+                      environment: resolvedRuntime?.environment ?? adapterOptions.environment,
+                    });
+                    connectedAt = performance.now();
+                    return yield* runCodexVoiceIntakeDecision(isolated, { ...decisionInput, cwd });
+                  }).pipe(
+                    Effect.timeout("20 seconds"),
+                    Effect.tap((decision) =>
+                      Effect.logInfo("Voice intake decision completed.", {
+                        ...timing(),
+                        actions: decision.actions.map((action) => action.type),
+                      }),
                     ),
-                    runtimePolicy: {
-                      runtimeMode: "approval-required",
-                      interactionMode: "default",
-                      cwd,
-                    },
-                    settings: resolvedRuntime?.config ?? adapterOptions.settings,
-                    environment: resolvedRuntime?.environment ?? adapterOptions.environment,
-                  });
-                  return yield* runCodexVoiceIntakeDecision(isolated, { ...decisionInput, cwd });
-                }).pipe(
-                  Effect.timeout("8 seconds"),
-                  Effect.mapError(liveVoiceFailure("intake decision")),
-                ),
-              ),
+                    Effect.tapError((error) =>
+                      Effect.logWarning("Voice intake decision failed.", {
+                        ...timing(),
+                        errorType:
+                          typeof error === "object" && error !== null && "_tag" in error
+                            ? String(error._tag)
+                            : "unknown",
+                        reason:
+                          typeof error === "object" && error !== null && "reason" in error
+                            ? String(error.reason)
+                            : null,
+                      }),
+                    ),
+                    Effect.mapError(liveVoiceFailure("intake decision")),
+                  ),
+                );
+              }),
             preparePlanner: Effect.fn("CodexAdapterV2.preparePlanner")((plannerInput) =>
               Effect.gen(function* () {
                 yield* ensureInitialized;

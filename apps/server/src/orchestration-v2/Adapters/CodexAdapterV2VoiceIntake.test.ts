@@ -8,7 +8,10 @@ import * as Sink from "effect/Sink";
 import * as Stdio from "effect/Stdio";
 import * as Stream from "effect/Stream";
 
-import { runCodexVoiceIntakeDecision } from "./CodexAdapterV2VoiceIntake.ts";
+import {
+  runCodexVoiceIntakeDecision,
+  voiceIntakeUnclaimedSpans,
+} from "./CodexAdapterV2VoiceIntake.ts";
 
 const Frame = Schema.Struct({
   id: Schema.optional(Schema.Union([Schema.String, Schema.Number])),
@@ -61,7 +64,38 @@ const decision = {
   actions: [{ type: "defer" as const, reason: "No new work." }],
 };
 
-it.effect.each(["json", "mutation", "clock", "async", "mcp", "shell"] as const)(
+it("keeps new clauses visible after overlapping claimed ranges and ASR corrections", () => {
+  const text = "Reset. Dann Gesendet anzeigen.";
+  const input = {
+    ...snapshot,
+    segments: [{ ...snapshot.segments[0]!, text }],
+    intents: [
+      {
+        id: "old",
+        request: "Reset.",
+        provisional: false,
+        status: "completed",
+        sources: [
+          { segmentId: "segment", revision: 1, start: 0, end: 4 },
+          { segmentId: "segment", revision: 1, start: 2, end: 6 },
+        ],
+        result: null,
+      },
+    ],
+  };
+  assert.deepEqual(voiceIntakeUnclaimedSpans(input), [
+    { segmentId: "segment", revision: 1, text: " Dann Gesendet anzeigen." },
+  ]);
+  assert.deepEqual(
+    voiceIntakeUnclaimedSpans({
+      ...input,
+      segments: [{ ...input.segments[0]!, revision: 2, text: "Stopp. Dann Gesendet anzeigen." }],
+    }),
+    [{ segmentId: "segment", revision: 2, text: "Stopp. Dann Gesendet anzeigen." }],
+  );
+});
+
+it.effect.each(["json", "low", "mutation", "clock", "async", "mcp", "shell"] as const)(
   "isolates the actual protocol client from public delivery and execution (%s)",
   (scenario) =>
     Effect.gen(function* () {
@@ -134,7 +168,7 @@ it.effect.each(["json", "mutation", "clock", "async", "mcp", "shell"] as const)(
                     assert.isFalse(params.config.mcp_servers.inherited!.enabled);
                     yield* reply({
                       model: "gpt-6-luna",
-                      reasoningEffort: "medium",
+                      reasoningEffort: scenario === "low" ? "low" : "medium",
                       serviceTier: "priority",
                       approvalPolicy: "never",
                       sandbox: { type: "readOnly", networkAccess: false },
@@ -229,9 +263,18 @@ it.effect.each(["json", "mutation", "clock", "async", "mcp", "shell"] as const)(
       const result = yield* runCodexVoiceIntakeDecision(client, {
         cwd: "/private",
         snapshot: inputSnapshot,
-        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-luna" },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-6-luna",
+          ...(scenario === "low" ? { options: [{ id: "reasoningEffort", value: "low" }] } : {}),
+        },
       }).pipe(Effect.result);
-      if (scenario === "json" || scenario === "mutation" || scenario === "clock") {
+      if (
+        scenario === "json" ||
+        scenario === "low" ||
+        scenario === "mutation" ||
+        scenario === "clock"
+      ) {
         assert.isTrue(result._tag === "Success");
         if (result._tag === "Success")
           assert.deepEqual(result.success, yield* decodeDecision(expectedDecision));
