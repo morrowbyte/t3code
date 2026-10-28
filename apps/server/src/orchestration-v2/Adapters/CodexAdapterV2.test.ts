@@ -2574,6 +2574,39 @@ describe("CodexAdapterV2 LiveVoice planner preparation", () => {
       }).pipe(Effect.scoped, Effect.provide(dependencies)),
   );
 
+  it.effect("applies work-completion and clarification rules to the actual realtime call", () =>
+    Effect.gen(function* () {
+      const planner = yield* openPlanner();
+      yield* planner.prepare();
+      yield* planner.start({
+        plannerNativeThreadId: "new-live-planner",
+        realtimeSessionId: "test-call",
+        offerSdp: "test-offer",
+      });
+      const prepared = planner.requests.find((request) => request.method === "thread/start");
+      const realtime = planner.requests.find(
+        (request) => request.method === "thread/realtime/start",
+      );
+      if (!prepared || !realtime) return yield* Effect.die("Missing voice setup requests.");
+      const plannerInstructions = (prepared.params as { baseInstructions: string })
+        .baseInstructions;
+      const liveInstructions = (
+        realtime.params as {
+          initialItems: Array<{ role: string; text: string }>;
+        }
+      ).initialItems.find((item) => item.role === "developer")?.text;
+      for (const instructions of [liveInstructions, plannerInstructions]) {
+        assert.isString(instructions);
+        assert.include(
+          instructions!,
+          "Do not turn the user's requested future state into a statement of the current state.",
+        );
+        assert.include(instructions!, "A missing subject is a reason to ask a brief clarification");
+        assert.include(instructions!, "At call start, wait for the user");
+      }
+    }).pipe(Effect.scoped, Effect.provide(dependencies)),
+  );
+
   it.effect.each([
     { model: "other-model" },
     { serviceTier: "other-tier" },

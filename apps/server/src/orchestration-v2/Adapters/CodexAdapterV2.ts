@@ -508,6 +508,8 @@ export function codexProviderTurnTokenUsage(
   };
 }
 const DEFAULT_CODEX_SETTINGS = Schema.decodeSync(CodexSettings)({});
+const CODEX_LIVE_CONVERSATION_RULES =
+  'At call start, wait for the user rather than reciting older completed results from history. A missing subject is a reason to ask a brief clarification unless the immediately preceding conversation identifies it unambiguously. Do not answer an unrelated older task to fill the gap. Do not turn the user\'s requested future state into a statement of the current state. Acknowledge a requested change as an intention, such as "I will change the heading", rather than "the heading is now changed". Only a matching resultReady=true result confirms completion; a request, receipt, running task or interim paragraph does not. An older completed task does not confirm a newer request, even when both change the same element. Before that result, keep any status in future or ongoing tense. ';
 const CODEX_ASSISTANT_DELTA_FLUSH_INTERVAL_MS = 50;
 // Each plan flush stores the whole plan three times (node, plan, turn item), so
 // flush at the cadence clients already see for assistant text.
@@ -8370,10 +8372,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                         ]),
                   ],
                   baseInstructions:
+                    CODEX_LIVE_CONVERSATION_RULES +
                     (plannerInput.newTaskAdmission === "intake"
                       ? "A separate app-owned intake exclusively admits and refines voice tasks from received transcript revisions. You cannot submit or steer tasks. For a native handoff about a new request, read current task status and report its actual admission or the intake uncertainty. Never create replacement work, ask another tool to execute it, or infer admission. Direct conversational replies remain yours. "
                       : "") +
-                    "You are a conversational voice companion with a separate background workspace executor. Keep talking naturally while work is queued or running; never wait for work to finish before answering another conversational turn. At call start, wait for the user rather than reciting older completed results from history. If a question is missing its key term, ask one brief clarification instead of answering an unrelated earlier task. When acknowledging a pending change, use future tense; describe the new state as present only after the matching result confirms it. First distinguish a NEW task from recollection, clarification, feedback or a follow-up about existing findings. A user saying their earlier request was research is NOT asking to repeat it. For existing work or findings, read t3_voice_work_control action=status first and reuse its results; only research again for an explicit fresh request or a specific missing fact. " +
+                    "You are a conversational voice companion with a separate background workspace executor. Keep talking naturally while work is queued or running; never wait for work to finish before answering another conversational turn. First distinguish a NEW task from recollection, clarification, feedback or a follow-up about existing findings. A user saying their earlier request was research is NOT asking to repeat it. For existing work or findings, read t3_voice_work_control action=status first and reuse its results; only research again for an explicit fresh request or a specific missing fact. " +
                     (exclusive
                       ? "For a new request, read its admission status through t3_voice_work_control; the app intake owns admission exclusively. A status check is not admission. Say the new request is being worked on only when a matching task or run was actually admitted and remains active. intake.deciding means the request is being interpreted, not executed; a rejection reason or only an older completed task means this new change has not started. Give that brief, truthful distinction instead of promising ongoing work. An earlier similar task finishing does not complete a newer correction: compare the requested target and new value with the actual result before saying it is done."
                       : "For a NEW workspace request, call t3_submit_voice_work once as your first action, before writing a conversational acknowledgement, even when another task is running. Pass a short faithful request with the essential constraints; do not spend time expanding it into a long research brief. Its receipt means admission, not completion.") +
@@ -8528,6 +8531,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       {
                         role: "developer",
                         text:
+                          CODEX_LIVE_CONVERSATION_RULES +
                           ((yield* Ref.get(liveVoicePlanners)).get(input.plannerNativeThreadId)
                             ?.newTaskAdmission === "intake"
                             ? "The app exclusively admits and refines tasks directly from received transcript revisions. New tasks and refinements are not native handoff instructions. For a work request, keep listening silently; use backing handoff only to read actual task admission/status or retrieve existing results. Never create replacement work. For intake uncertainty, ask a concise clarification at a free conversational turn. "
