@@ -84,6 +84,24 @@ const decodeReplayTranscriptJson = Schema.decodeUnknownEffect(replayTranscriptJs
 const encodeStringJson = Schema.encodeEffect(Schema.fromJsonString(Schema.String));
 
 describe("original LiveVoice transcript segments", () => {
+  it("does not reuse flat source identities after a provider runtime restart", () => {
+    const previous = CodexAdapterV2.makeCodexLiveTranscriptTracker().legacyDelta(
+      "previous-planner",
+      "user",
+      "Change the title.",
+    );
+    const next = CodexAdapterV2.makeCodexLiveTranscriptTracker().legacyDelta(
+      "next-planner",
+      "user",
+      "Change the button.",
+    );
+    assert.isDefined(previous);
+    assert.isDefined(next);
+    assert.notEqual(
+      previous?.type === "transcript" ? previous.segment?.id : undefined,
+      next?.type === "transcript" ? next.segment?.id : undefined,
+    );
+  });
   it("streams flat user and assistant speech independently and finalizes the same rows", () => {
     const tracker = CodexAdapterV2.makeCodexLiveTranscriptTracker();
     const user = tracker.legacyDelta("planner", "user", "Bitte ");

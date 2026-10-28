@@ -416,7 +416,7 @@ export function makeCodexLiveTranscriptTracker() {
       if (!segments) flatSegments.set(threadId, (segments = new Map()));
       const previous = segments.get(role);
       const current = {
-        id: previous?.id ?? `legacy:${++legacySequence}`,
+        id: previous?.id ?? `legacy:${threadId}:${++legacySequence}`,
         revision: (previous?.revision ?? 0) + 1,
         text: (previous?.text ?? "") + delta,
       };
@@ -445,7 +445,7 @@ export function makeCodexLiveTranscriptTracker() {
         role,
         text,
         segment: {
-          id: previous?.id ?? `legacy:${++legacySequence}`,
+          id: previous?.id ?? `legacy:${threadId}:${++legacySequence}`,
           revision: (previous?.revision ?? 0) + 1,
           kind: "snapshot",
           final: true,
