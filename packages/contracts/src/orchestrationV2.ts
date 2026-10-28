@@ -3119,6 +3119,12 @@ export type OrchestrationV2Command = typeof OrchestrationV2Command.Type;
  */
 const OrchestrationV2InternalCommand = Schema.Union([
   Schema.Struct({
+    type: Schema.Literal("privileged-command.run-ended"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    runId: RunId,
+  }),
+  Schema.Struct({
     type: Schema.Literal("privileged-command.submit"),
     commandId: CommandId,
     threadId: ThreadId,

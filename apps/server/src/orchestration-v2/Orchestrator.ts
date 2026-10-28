@@ -505,6 +505,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "approval-review.submit":
     case "approval-review.claim":
     case "approval-review.receipt":
+    case "privileged-command.run-ended":
     case "privileged-command.submit":
     case "privileged-command.claim":
     case "privileged-command.result":
@@ -12046,6 +12047,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         for (const event of planned) yield* emit(events, command)(event);
         break;
       }
+      case "privileged-command.run-ended": {
+        const stopped = yield* PrivilegedCommandCommands.stop({
+          threadId: command.threadId,
+          runId: command.runId,
+          onlyPending: true,
+        }).pipe(Effect.provideService(ProjectionStoreV2, projectionStore));
+        for (const event of stopped) yield* emit(events, command)(event);
+        break;
+      }
       case "privileged-command.submit":
       case "privileged-command.claim":
       case "privileged-command.result":
@@ -12668,6 +12678,36 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       // child lock here would invert that order, and the keyed executor's
       // semaphores are neither reentrant nor deadlock-aware.
       if (delegatedTaskTerminalStatus(run.status) !== null) {
+        yield* Effect.gen(function* () {
+          const { runtimeRequests } = yield* projectionStore.getThreadRecords(
+            threadId,
+            ["runtimeRequests"],
+            { runtimeRequestStatuses: ["pending"] },
+          );
+          if (
+            !runtimeRequests.some(
+              (request) =>
+                request.privilegedCommand?.state === "pending" &&
+                request.privilegedCommand.bundle.runId === run.id,
+            )
+          )
+            return;
+          yield* dispatchWithReceipt({
+            type: "privileged-command.run-ended",
+            commandId: CommandId.make(`privileged-command-run-ended:${run.id}`),
+            threadId,
+            runId: run.id,
+          });
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Failed to close pending privileged requests", {
+              threadId,
+              runId: run.id,
+              cause,
+            }),
+          ),
+        );
+
         yield* threadDispatch.withLock(
           threadId,
           finalizeDelegatedCompletionDelivery(threadId, run.id),

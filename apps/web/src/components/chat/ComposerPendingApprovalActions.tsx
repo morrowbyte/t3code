@@ -86,6 +86,9 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
         });
       } catch (error) {
         const detail = error instanceof Error ? error.message : "";
+        if (detail.includes("DPoP signer")) {
+          return await onRespondToApproval(id, decision, hash);
+        }
         const messages = [
           "T3 Connect approval requires the renderer-bound DPoP signer; this route is not yet supported by the desktop approval transport.",
           "The saved T3 Connect route requires the renderer-bound DPoP signer; this route is not yet supported by the desktop approval transport.",

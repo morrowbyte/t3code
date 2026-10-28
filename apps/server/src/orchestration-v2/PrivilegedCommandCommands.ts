@@ -11,9 +11,9 @@ import * as HumanAuthority from "../auth/ApprovalReviewHumanAuthority.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import { isValidPrivilegedCommand, privilegedCommandHash } from "./PrivilegedCommandPackage.ts";
 
-type Command = Extract<
-  OrchestrationV2InternalCommand,
-  { readonly type: `privileged-command.${string}` }
+type Command = Exclude<
+  Extract<OrchestrationV2InternalCommand, { readonly type: `privileged-command.${string}` }>,
+  { readonly type: "privileged-command.run-ended" }
 >;
 
 // Called while the orchestrator holds the thread lock; its event sink commits the claim.
@@ -237,7 +237,10 @@ export const resolve = Effect.fn("PrivilegedCommandCommands.resolve")(function* 
 ) {
   const authority = request.privilegedCommand;
   const human = yield* HumanAuthority.ApprovalReviewHumanAuthority;
-  if (authority === undefined || human?.method !== "browser-session-cookie")
+  if (
+    authority === undefined ||
+    (human?.method !== "browser-session-cookie" && human?.method !== "dpop-access-token")
+  )
     return yield* new ApprovalReviewError({ reason: "forbidden" });
   if (
     command.packageHash !== authority.packageHash ||
@@ -260,6 +263,7 @@ export const resolve = Effect.fn("PrivilegedCommandCommands.resolve")(function* 
 export const stop = Effect.fn("PrivilegedCommandCommands.stop")(function* (input: {
   readonly threadId: import("@t3tools/contracts").ThreadId;
   readonly runId?: import("@t3tools/contracts").RunId;
+  readonly onlyPending?: boolean;
 }) {
   const store = yield* ProjectionStore.ProjectionStoreV2;
   const now = yield* DateTime.now;
@@ -272,6 +276,7 @@ export const stop = Effect.fn("PrivilegedCommandCommands.stop")(function* (input
     if (
       authority === undefined ||
       (input.runId !== undefined && authority.bundle.runId !== input.runId) ||
+      (input.onlyPending === true && authority.state !== "pending") ||
       !["pending", "approved", "claimed"].includes(authority.state)
     )
       continue;

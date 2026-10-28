@@ -4268,6 +4268,22 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         },
       });
 
+      const pendingRequests = yield* projectionStore.getThreadRecords(
+        threadId,
+        ["runtimeRequests"],
+        { runtimeRequestStatuses: ["pending"] },
+      );
+      assert.deepEqual(
+        pendingRequests.runtimeRequests.map((item) => item.id),
+        [requestId],
+      );
+      const resolvedRequests = yield* projectionStore.getThreadRecords(
+        threadId,
+        ["runtimeRequests"],
+        { runtimeRequestStatuses: ["resolved"] },
+      );
+      assert.deepEqual(resolvedRequests.runtimeRequests, []);
+
       for (const status of [
         "preparing",
         "starting",

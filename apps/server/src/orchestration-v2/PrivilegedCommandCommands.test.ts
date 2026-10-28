@@ -114,6 +114,35 @@ effectIt.effect("keeps a claimed approval waiting until cleanup is confirmed", (
   }),
 );
 
+effectIt.effect("closes only pending privileged requests when their run ends", () =>
+  Effect.gen(function* () {
+    const claimed = {
+      ...request,
+      id: RuntimeRequestId.make("claimed"),
+      privilegedCommand: { ...authority, state: "claimed" as const, claimId: "claim" },
+    };
+    const store = {
+      getThreadRecords: () => Effect.succeed({ runtimeRequests: [request, claimed] }),
+      getRuntimeResponseContext: (_threadId: unknown, id: unknown) =>
+        Effect.succeed({
+          request: id === requestId ? request : claimed,
+          item: undefined,
+          node: undefined,
+        }),
+    } as unknown as ProjectionStore.ProjectionStoreV2["Service"];
+    const events = yield* Commands.stop({ threadId, runId, onlyPending: true }).pipe(
+      Effect.provideService(ProjectionStore.ProjectionStoreV2, store),
+    );
+    const updates = events.filter((event) => event.type === "runtime-request.updated");
+    expect(updates).toHaveLength(1);
+    expect(updates[0]?.payload).toMatchObject({
+      id: requestId,
+      status: "cancelled",
+      privilegedCommand: { state: "rejected" },
+    });
+  }),
+);
+
 describe("privileged command approval", () => {
   it("requires a browser session, exact hash, and one-shot acceptance", async () => {
     const resolve = (command: typeof response, actor?: typeof human) =>
@@ -136,6 +165,26 @@ describe("privileged command approval", () => {
       packageHash,
     );
     expect(privilegedCommandHash(RuntimeRequestId.make("other"), bundle)).not.toBe(packageHash);
+  });
+  it("accepts an environment-scoped DPoP session for a reviewed request", async () => {
+    const result = await Commands.resolve(request, response).pipe(
+      Effect.provideService(HumanAuthority.ApprovalReviewHumanAuthority, {
+        ...human,
+        method: "dpop-access-token",
+      }),
+      Effect.runPromiseExit,
+    );
+    expect(Exit.isSuccess(result) && result.value.state).toBe("approved");
+  });
+  it("does not treat an ordinary bearer session as a human approval", async () => {
+    const result = await Commands.resolve(request, response).pipe(
+      Effect.provideService(HumanAuthority.ApprovalReviewHumanAuthority, {
+        ...human,
+        method: "bearer-access-token",
+      }),
+      Effect.runPromiseExit,
+    );
+    expect(Exit.isFailure(result)).toBe(true);
   });
   it("claims an approved request once and refuses rejected, changed, and claimed requests", async () => {
     let current = {

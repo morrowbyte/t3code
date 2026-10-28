@@ -4,6 +4,14 @@ import { T3_CODE_VISUAL_INSTRUCTIONS } from "./orchestrationInstructions.ts";
 import { parseStreamableUi } from "@t3tools/shared/streamableUi";
 
 describe("buildRuntimeInstructions", () => {
+  it("allows authorized native commands when existing OS rights suffice", () => {
+    const instructions = buildRuntimeInstructions({ harness: "Codex" });
+    expect(instructions).toContain(
+      "existing operating-system rights already permit the authorized action",
+    );
+    expect(instructions).toContain("provider approval policy still applies");
+  });
+
   it.each(["Codex", "Claude Code", "Cursor"])(
     "asks %s to supply semantic labels with executable tool calls",
     (harness) => {
