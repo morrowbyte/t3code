@@ -92,6 +92,7 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
   let noticeVersion = 0;
   let retractionEpoch = 0;
   const sourceEpochs = new WeakMap<VoiceIntakeSource, number>();
+  const segmentRetractions = new Map<string, number>();
   const corrections = new Map<string, number>();
   const segmentStops = new Map<string, string | null | undefined>();
   const gaps = new Set<string>();
@@ -157,8 +158,10 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
       if (
         (previous && !nextText.startsWith(previous.text)) ||
         retractions(nextText) > retractions(previous?.text ?? "")
-      )
+      ) {
         retractionEpoch += 1;
+        segmentRetractions.set(source.id, source.revision);
+      }
       if (previous && !nextText.startsWith(previous.text))
         corrections.set(source.id, source.revision);
       segments.delete(source.id);
@@ -181,7 +184,12 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
                 (intent.provisional &&
                   isActive(intent.status) &&
                   intent.sources.some((source) => source.segmentId === segment.id)) ||
-                intent.pendingSteer?.sources.some((source) => source.segmentId === segment.id),
+                [
+                  ...(intent.pendingSteer ? [intent.pendingSteer] : []),
+                  ...(intent.queuedSteers ?? []),
+                ].some((pending) =>
+                  pending.sources.some((source) => source.segmentId === segment.id),
+                ),
             ),
         );
         if (!removable) break;
@@ -196,7 +204,7 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
       const current = segments.get(source.segmentId);
       return (
         current !== undefined &&
-        sourceEpochs.get(source) === retractionEpoch &&
+        sourceEpochs.get(source) === (segmentRetractions.get(source.segmentId) ?? 0) &&
         source.start < source.end &&
         current.text.slice(source.start, source.end) === source.quote
       );
@@ -205,48 +213,62 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
     intents.set(intent.id, intent);
     yield* input.store(intent);
   });
+  const withPending = (
+    intent: VoiceIntakeIntent,
+    pending: ReadonlyArray<NonNullable<VoiceIntakeIntent["pendingSteer"]>>,
+  ): VoiceIntakeIntent => ({
+    ...intent,
+    pendingSteer: pending[0] ?? null,
+    queuedSteers: pending.slice(1),
+  });
+  const pendingOf = (intent: VoiceIntakeIntent) => [
+    ...(intent.pendingSteer ? [intent.pendingSteer] : []),
+    ...(intent.queuedSteers ?? []),
+  ];
+  const drainPending = Effect.fn("VoiceIntake.drainPending")(function* (intent: VoiceIntakeIntent) {
+    let observed = intent;
+    while (observed.pendingSteer) {
+      const [pending, ...tail] = pendingOf(observed);
+      const currentStopId = yield* input.stopId;
+      const valid =
+        pending!.requestId.startsWith(`${input.leaseId}:${input.generation}:`) &&
+        currentSources(pending!.sources) &&
+        pending!.sources.every((source) => source.stopId === currentStopId) &&
+        pending!.sources.every(
+          (source) => (corrections.get(source.segmentId) ?? 0) <= source.revision,
+        );
+      if (!valid || !isActive(observed.status)) {
+        reason = valid ? "task_inactive" : "source_revised";
+        noticeVersion = version;
+        observed = withPending(observed, tail);
+        yield* persist(observed);
+        continue;
+      }
+      if (observed.provisional && !pending!.readOnly) {
+        yield* input.confirm({ ...observed, provisional: false, sources: pending!.sources });
+        observed = { ...observed, provisional: false };
+        yield* persist(observed);
+      }
+      if (!isSteerable(observed.status)) break;
+      const steered = yield* input.steer(
+        observed,
+        pending!.message,
+        pending!.requestId,
+        pending!.readOnly,
+        pending!.previewContext,
+      );
+      observed = withPending(
+        { ...steered, startedProvisional: steered.startedProvisional && pending!.readOnly },
+        tail,
+      );
+      yield* persist(observed);
+    }
+    return observed;
+  });
   const apply = Effect.fn("VoiceIntake.apply")(function* () {
     if (!enabled || version === 0 || !(yield* input.current)) return;
     for (const intent of intents.values()) {
-      let observed = yield* input.read(intent);
-      const pending = observed.pendingSteer;
-      const currentStopId = yield* input.stopId;
-      if (pending) {
-        const valid =
-          pending.requestId.startsWith(`${input.leaseId}:${input.generation}:`) &&
-          currentSources(pending.sources) &&
-          pending.sources.every((source) => source.stopId === currentStopId) &&
-          pending.sources.every(
-            (source) => (corrections.get(source.segmentId) ?? 0) <= source.revision,
-          );
-        if (valid && isActive(observed.status)) {
-          if (observed.provisional && !pending.readOnly) {
-            yield* input.confirm({ ...observed, provisional: false, sources: pending.sources });
-            observed = { ...observed, provisional: false };
-            yield* persist(observed);
-          }
-          if (!isSteerable(observed.status)) {
-            yield* persist(observed);
-            continue;
-          }
-          observed = yield* input.steer(
-            observed,
-            pending.message,
-            pending.requestId,
-            pending.readOnly,
-            pending.previewContext,
-          );
-          observed = {
-            ...observed,
-            startedProvisional: observed.startedProvisional && pending.readOnly,
-          };
-        } else {
-          reason = valid ? "task_inactive" : "source_revised";
-          noticeVersion = version;
-        }
-        yield* persist({ ...observed, pendingSteer: null });
-        observed = { ...observed, pendingSteer: null };
-      }
+      const observed = yield* drainPending(yield* input.read(intent));
       intents.set(intent.id, observed);
     }
     if (version <= decidedVersion) return;
@@ -291,6 +313,7 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
     decidedVersion = version;
     decisions += 1;
     const capturedEpoch = retractionEpoch;
+    const capturedRetractions = new Map(segmentRetractions);
     const decision = yield* input.decide(snapshot);
     if (!enabled || !(yield* input.current)) return;
     if (capturedEpoch !== retractionEpoch) {
@@ -343,7 +366,7 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
         )
           break;
         const source = { ...anchor, stopId: prior.stopId, start, end: start + anchor.quote.length };
-        sourceEpochs.set(source, capturedEpoch);
+        sourceEpochs.set(source, capturedRetractions.get(source.segmentId) ?? 0);
         sources.push(source);
       }
       const valid =
@@ -479,46 +502,36 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
           reason = "intake_capacity";
           continue;
         }
-        const requestId = `${snapshot.requestId}:${index}`;
-        let claimed = {
-          ...current,
-          pendingSteer: {
-            requestId,
-            message: action.message,
-            readOnly: action.readOnly,
-            sources,
-            previewContext: snapshot.previewContext ?? null,
-          },
-          sources: [...current.sources, ...fresh].slice(-8),
-          claimedSources: [...current.claimedSources, ...fresh],
-        };
-        yield* persist(claimed);
-        // A complete explicit refinement can authorize the existing read-only
-        // child before ASR final. The separate confirm action remains final-only.
-        if (claimed.provisional && !action.readOnly) {
-          yield* input.confirm({ ...claimed, provisional: false, sources });
-          claimed = { ...claimed, provisional: false };
-          yield* persist(claimed);
+        const pending = pendingOf(current);
+        if (pending.length >= 32) {
+          reason = "intake_capacity";
+          continue;
         }
-        if (!isSteerable(claimed.status)) {
+        const claimed = withPending(
+          {
+            ...current,
+            sources: [...current.sources, ...fresh].slice(-8),
+            claimedSources: [...current.claimedSources, ...fresh],
+          },
+          [
+            ...pending,
+            {
+              requestId: `${snapshot.requestId}:${index}`,
+              message: action.message,
+              readOnly: action.readOnly,
+              sources,
+              previewContext: snapshot.previewContext ?? null,
+            },
+          ],
+        );
+        yield* persist(claimed);
+        const observed = yield* drainPending(claimed);
+        intents.set(current.id, observed);
+        if (observed.pendingSteer) {
           reason = "awaiting_steerable_run";
           noticeVersion = snapshot.version;
           continue;
         }
-        const steered = yield* input.steer(
-          claimed,
-          action.message,
-          requestId,
-          action.readOnly,
-          snapshot.previewContext,
-        );
-        yield* persist({
-          ...steered,
-          startedProvisional: steered.startedProvisional && action.readOnly,
-          pendingSteer: null,
-          sources: claimed.sources,
-          claimedSources: claimed.claimedSources,
-        });
         noticeVersion = snapshot.version;
         reason = null;
       }

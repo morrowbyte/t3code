@@ -34,6 +34,15 @@ export const VoiceIntakeProvenance = Schema.Struct({
 });
 export type VoiceIntakeProvenance = typeof VoiceIntakeProvenance.Type;
 
+const PendingSteer = Schema.Struct({
+  requestId: Id,
+  message: Text,
+  readOnly: Schema.Boolean,
+  sources: Sources,
+  previewContext: Schema.optionalKey(
+    Schema.NullOr(Schema.String.check(Schema.isMaxLength(24_000))),
+  ),
+});
 export const VoiceIntakeIntent = Schema.Struct({
   id: Id,
   request: Text,
@@ -44,17 +53,9 @@ export const VoiceIntakeIntent = Schema.Struct({
   runId: Id,
   provisional: Schema.Boolean,
   startedProvisional: Schema.Boolean,
-  pendingSteer: Schema.NullOr(
-    Schema.Struct({
-      requestId: Id,
-      message: Text,
-      readOnly: Schema.Boolean,
-      sources: Sources,
-      previewContext: Schema.optionalKey(
-        Schema.NullOr(Schema.String.check(Schema.isMaxLength(24_000))),
-      ),
-    }),
-  ),
+  pendingSteer: Schema.NullOr(PendingSteer),
+  // Keep the existing head for persisted receipts; retain bounded subsequent constraints.
+  queuedSteers: Schema.optionalKey(Schema.Array(PendingSteer).check(Schema.isMaxLength(31))),
   status: Schema.String,
   result: Schema.NullOr(Text),
 });

@@ -1289,3 +1289,156 @@ it.effect(
       assert.equal((yield* test.engine.state).intents[0]!.taskId, test.admitted[0]!.taskId);
     }),
 );
+
+it.effect.each([null, "a", "b"] as const)(
+  "retains queued refinements A+B with separate sources and preview contexts (corrected: %s)",
+  (corrected) =>
+    Effect.gen(function* () {
+      const first = "Add the settings form.";
+      const constraints = {
+        a: "Keep the submit label.",
+        b: "Announce successful submission to screen readers.",
+      };
+      const test = setup((snapshot) => {
+        const segment = snapshot.segments.at(-1)!;
+        return Effect.succeed({
+          requestId: snapshot.requestId,
+          actions:
+            snapshot.intents.length === 0
+              ? [
+                  {
+                    type: "new" as const,
+                    projectId: null,
+                    request: first,
+                    readOnly: false,
+                    sources: [source(first)],
+                  },
+                ]
+              : segment.revision === 1 && (segment.id === "a" || segment.id === "b")
+                ? [
+                    {
+                      type: "refine" as const,
+                      intentId: snapshot.intents[0]!.id,
+                      message: segment.text,
+                      readOnly: false,
+                      sources: [source(segment.text, segment.id)],
+                    },
+                  ]
+                : [],
+        });
+      });
+      yield* test.engine.observe(transcript(first));
+      yield* test.engine.processLatest();
+      const original = test.admitted[0]!;
+      test.setStatus("preparing");
+      test.setPreviewContext("selection A");
+      yield* test.engine.observe(transcript(constraints.a, 1, true, "a"));
+      yield* test.engine.processLatest();
+      test.setStatus("queued");
+      test.setPreviewContext("selection B");
+      yield* test.engine.observe(transcript(constraints.b, 1, true, "b"));
+      yield* test.engine.processLatest();
+      const intent = (yield* test.engine.state).intents[0]!;
+      const queued = [intent.pendingSteer!, ...intent.queuedSteers!];
+      assert.deepEqual(
+        queued.map((pending) => pending.message),
+        [constraints.a, constraints.b],
+      );
+      assert.deepEqual(
+        queued.map((pending) => pending.previewContext),
+        ["selection A", "selection B"],
+      );
+      assert.notEqual(queued[0]!.requestId, queued[1]!.requestId);
+      if (corrected)
+        yield* test.engine.observe(transcript("This source was replaced.", 2, true, corrected));
+      // Budget eviction must protect both the head and the subsequent source.
+      for (let i = 0; i < 20; i++)
+        yield* test.engine.observe(
+          transcript(
+            `Completed discussion ${i}. ${"details ".repeat(110)}`,
+            1,
+            true,
+            `queued-history-${i}`,
+          ),
+        );
+      test.setStatus("running");
+      test.setPreviewContext("new unrelated selection");
+      yield* test.engine.processLatest();
+      yield* test.engine.processLatest();
+      const expected = ["a", "b"].filter((id) => id !== corrected) as Array<"a" | "b">;
+      assert.deepEqual(
+        test.steered,
+        expected.map((id) => constraints[id]),
+      );
+      assert.deepEqual(
+        test.steeredContexts,
+        expected.map((id) => `selection ${id.toUpperCase()}`),
+      );
+      assert.deepEqual(
+        test.attemptedSteerKeys,
+        queued
+          .filter((pending) => pending.sources[0]!.segmentId !== corrected)
+          .map((pending) => pending.requestId),
+      );
+      const completed = (yield* test.engine.state).intents[0]!;
+      assert.equal(completed.runId, original.runId);
+      assert.equal(completed.taskId, original.taskId);
+      assert.isNull(completed.pendingSteer);
+      assert.deepEqual(completed.queuedSteers, []);
+      assert.equal(test.admitted.length, 1);
+    }),
+);
+
+it.effect(
+  "recovers a lost reply for queued A before delivering B once under its own idempotency key",
+  () =>
+    Effect.gen(function* () {
+      const test = setup(
+        (snapshot) => {
+          const segment = snapshot.segments.at(-1)!;
+          return Effect.succeed({
+            requestId: snapshot.requestId,
+            actions: snapshot.intents.length
+              ? [
+                  {
+                    type: "refine" as const,
+                    intentId: snapshot.intents[0]!.id,
+                    message: segment.text,
+                    readOnly: false,
+                    sources: [source(segment.text, segment.id)],
+                  },
+                ]
+              : [
+                  {
+                    type: "new" as const,
+                    projectId: null,
+                    request: segment.text,
+                    readOnly: false,
+                    sources: [source(segment.text)],
+                  },
+                ],
+          });
+        },
+        true,
+        true,
+      );
+      yield* test.engine.observe(transcript("Add the form."));
+      yield* test.engine.processLatest();
+      test.setStatus("preparing");
+      yield* test.engine.observe(transcript("Retain the label.", 1, false, "a"));
+      yield* test.engine.processLatest();
+      yield* test.engine.observe(transcript("Announce submission.", 1, false, "b"));
+      yield* test.engine.processLatest();
+      const queued = (yield* test.engine.state).intents[0]!;
+      const a = queued.pendingSteer!.requestId;
+      const b = queued.queuedSteers![0]!.requestId;
+      test.setStatus("running");
+      assert.isTrue((yield* test.engine.processLatest().pipe(Effect.exit))._tag === "Failure");
+      assert.equal((yield* test.engine.state).intents[0]!.pendingSteer!.requestId, a);
+      yield* test.engine.processLatest();
+      yield* test.engine.processLatest();
+      assert.deepEqual(test.attemptedSteerKeys, [a, a, b]);
+      assert.deepEqual(test.steered, ["Retain the label.", "Announce submission."]);
+      assert.isNull((yield* test.engine.state).intents[0]!.pendingSteer);
+    }),
+);
