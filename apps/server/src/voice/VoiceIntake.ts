@@ -38,6 +38,29 @@ export interface VoiceIntakeDependencies {
   readonly store: (intent: VoiceIntakeIntent) => Effect.Effect<void, Error>;
 }
 
+type RejectionCode =
+  | "snapshot_retracted"
+  | "decision_mismatch"
+  | "source_anchor_not_found"
+  | "source_anchor_ambiguous"
+  | "source_revision_mismatch"
+  | "source_boundary_whitespace_only"
+  | "source_count_exceeded"
+  | "source_revised"
+  | "source_stopped"
+  | "source_already_owned"
+  | "task_finished_recheck"
+  | "task_finished_requires_new_request";
+type Rejection = {
+  requestId: string;
+  snapshotVersion: number;
+  actionIndex: number | null;
+  anchorIndex: number | null;
+  actionType: VoiceIntakeDecision["actions"][number]["type"] | null;
+  code: RejectionCode;
+  sources: ReadonlyArray<Pick<VoiceIntakeSource, "segmentId" | "revision">>;
+};
+
 // A conservative revocation fence, never an intent detector. Work admission
 // always requires the semantic model. Whole words also catch split ASR tokens.
 const retractionWords = new Set([
@@ -157,6 +180,8 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
   let noticeVersion = 0;
   let retractionEpoch = 0;
   let recheckPending = false;
+  let rejectionVersion = 0;
+  let rejections: Rejection[] = [];
   const terminalRechecks = new Set<string>();
   const sourceEpochs = new WeakMap<VoiceIntakeSource, number>();
   const decisionEpochs = new WeakMap<VoiceIntakeSource, number>();
@@ -164,6 +189,7 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
   const segmentRetractions = new Map<string, number>();
   const corrections = new Map<string, number>();
   const segmentStops = new Map<string, string | null | undefined>();
+  const segmentOrder = new Map<string, number>();
   const gaps = new Set<string>();
   const parts = new Map<string, { revision: number; count: number; chunks: Map<number, string> }>();
   const isActive = (status: string) =>
@@ -201,6 +227,7 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
           return;
         }
         segmentStops.set(source.id, stopId);
+        segmentOrder.set(source.id, segmentOrder.size);
       }
       const capturedStopId = segmentStops.get(source.id);
       if (capturedStopId === undefined) {
@@ -456,14 +483,41 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
     decisions += 1;
     const capturedEpoch = retractionEpoch;
     const capturedRetractions = new Map(segmentRetractions);
+    rejections = [];
     const decision = yield* input.decide(snapshot);
+    const reportRejection = (
+      code: RejectionCode,
+      actionIndex: number | null,
+      action?: VoiceIntakeDecision["actions"][number],
+      anchorIndex: number | null = null,
+    ) => {
+      if (rejections.length >= 8) rejections.shift();
+      rejections.push({
+        requestId: snapshot.requestId,
+        snapshotVersion: snapshot.version,
+        actionIndex,
+        anchorIndex,
+        actionType: action?.type ?? null,
+        code,
+        sources:
+          action && "sources" in action
+            ? action.sources.slice(0, 8).map(({ segmentId, revision }) => ({ segmentId, revision }))
+            : [],
+      });
+      rejectionVersion++;
+    };
     if (!enabled || !(yield* input.current)) return;
     if (capturedEpoch !== retractionEpoch) {
       reason = "source_revised";
+      noticeVersion = version;
+      for (const [index, action] of decision.actions.entries())
+        reportRejection("snapshot_retracted", index, action);
       return;
     }
     if (decision.requestId !== snapshot.requestId) {
       reason = "decision_mismatch";
+      noticeVersion = version;
+      reportRejection("decision_mismatch", null);
       return;
     }
     for (const [index, action] of decision.actions.entries()) {
@@ -494,26 +548,68 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
         noticeVersion = snapshot.version;
         continue;
       }
-      // The model copies an exact quote, but never calculates character offsets.
-      // A unique match binds it to this revision without fuzzy text matching.
+      // Native utterances may split a sentence. Bind only the exact original
+      // characters, in first-observed user-segment order, without adding a separator.
+      // Keep gaps from eviction and later ASR updates from joining unrelated speech.
       const sources: VoiceIntakeSource[] = [];
+      let boundAnchors = 0;
+      let bindingFailure: RejectionCode = "source_anchor_not_found";
+      const ordered = snapshot.segments.toSorted(
+        (a, b) => segmentOrder.get(a.id)! - segmentOrder.get(b.id)!,
+      );
       for (const anchor of action.sources) {
-        const prior = snapshot.segments.find((segment) => segment.id === anchor.segmentId);
-        const start = prior?.text.indexOf(anchor.quote) ?? -1;
-        if (
-          !prior ||
-          anchor.revision !== prior.revision ||
-          start < 0 ||
-          prior.text.lastIndexOf(anchor.quote) !== start
-        )
+        const index = ordered.findIndex((segment) => segment.id === anchor.segmentId);
+        const prior = ordered[index];
+        if (!prior || anchor.revision !== prior.revision) {
+          bindingFailure = "source_revision_mismatch";
           break;
-        const source = { ...anchor, stopId: prior.stopId, start, end: start + anchor.quote.length };
-        sourceEpochs.set(source, capturedRetractions.get(source.segmentId) ?? 0);
-        decisionEpochs.set(source, capturedEpoch);
-        sources.push(source);
+        }
+        const adjacent = [prior];
+        for (let i = index + 1; i < ordered.length; i++) {
+          if (segmentOrder.get(ordered[i]!.id)! !== segmentOrder.get(ordered[i - 1]!.id)! + 1)
+            break;
+          adjacent.push(ordered[i]!);
+        }
+        const original = adjacent.map((segment) => segment.text).join("");
+        const start = original.indexOf(anchor.quote);
+        const again = start < 0 ? -1 : original.indexOf(anchor.quote, start + 1);
+        if (start < 0 || start >= prior.text.length) break;
+        if (again >= 0 && again < prior.text.length) {
+          bindingFailure = "source_anchor_ambiguous";
+          break;
+        }
+        let offset = 0;
+        const bound: VoiceIntakeSource[] = [];
+        for (const segment of adjacent) {
+          const localStart = Math.max(0, start - offset);
+          const localEnd = Math.min(segment.text.length, start + anchor.quote.length - offset);
+          if (localStart < localEnd)
+            bound.push({
+              segmentId: segment.id,
+              revision: segment.revision,
+              stopId: segment.stopId,
+              start: localStart,
+              end: localEnd,
+              quote: segment.text.slice(localStart, localEnd),
+            });
+          offset += segment.text.length;
+          if (offset >= start + anchor.quote.length) break;
+        }
+        if (bound.some((source) => !source.quote.trim())) {
+          bindingFailure = "source_boundary_whitespace_only";
+          break;
+        }
+        for (const source of bound) {
+          sourceEpochs.set(source, capturedRetractions.get(source.segmentId) ?? 0);
+          decisionEpochs.set(source, capturedEpoch);
+          sources.push(source);
+        }
+        boundAnchors++;
       }
       const valid =
-        sources.length === action.sources.length &&
+        sources.length > 0 &&
+        sources.length <= 8 &&
+        boundAnchors === action.sources.length &&
         sources.every((source) => {
           const prior = snapshot.segments.find((segment) => segment.id === source.segmentId)!;
           return segments.get(source.segmentId)?.text.startsWith(prior.text);
@@ -522,11 +618,22 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
       if (!valid) {
         noticeVersion = snapshot.version;
         reason = "source_revised";
+        reportRejection(
+          sources.length > 8
+            ? "source_count_exceeded"
+            : boundAnchors !== action.sources.length
+              ? bindingFailure
+              : "source_revised",
+          index,
+          action,
+          boundAnchors !== action.sources.length ? boundAnchors : null,
+        );
         continue;
       }
       const currentStopId = yield* input.stopId;
       if (sources.some((source) => source.stopId !== currentStopId)) {
         reason = "source_stopped";
+        reportRejection("source_stopped", index, action);
         noticeVersion = snapshot.version;
         continue;
       }
@@ -573,6 +680,8 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
           : undefined;
       if (foreign.length && !transfer) {
         reason = "source_already_owned";
+        noticeVersion = snapshot.version;
+        reportRejection("source_already_owned", index, action);
         continue;
       }
       if (action.type === "confirm") {
@@ -694,7 +803,11 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
             yield* persist(unhandled);
             requestRecheck(unhandled);
             reason = "task_finished_recheck";
-          } else reason = "task_finished_requires_new_request";
+            reportRejection("task_finished_recheck", index, action);
+          } else {
+            reason = "task_finished_requires_new_request";
+            reportRejection("task_finished_requires_new_request", index, action);
+          }
           noticeVersion = snapshot.version;
           continue;
         }
@@ -786,6 +899,8 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
       reason,
       decisions,
       recheckPending,
+      rejectionVersion,
+      rejections,
       noticeVersion,
       running,
       intents: [...intents.values()],

@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import { LiveVoiceError } from "@t3tools/contracts";
+import { LiveVoiceError, VoiceIntakeProvenance } from "@t3tools/contracts";
 import type {
   LiveVoiceEvent,
   VoiceIntakeDecision,
@@ -10,6 +10,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
+import * as Schema from "effect/Schema";
 import {
   makeVoiceIntake,
   transferVoiceIntakeClaim,
@@ -2056,5 +2057,293 @@ it.effect(
         2,
         "durable ownership is complete",
       );
+    }),
+);
+
+it.effect(
+  "admits the R21-shaped completed follow-up by binding a quote across its exact segment boundary",
+  () =>
+    Effect.gen(function* () {
+      const first = "Add the packet log.";
+      const a = "Eine kleine lokale Demo reicht, ohne echten";
+      const b = " Netzwerkverkehr. Danach ein Paket an Port 80 senden.";
+      const test = setup((snapshot) =>
+        Effect.succeed({
+          requestId: snapshot.requestId,
+          actions: [
+            {
+              type: "new" as const,
+              projectId: null,
+              readOnly: false,
+              request: snapshot.intents.length ? "Add port validation." : first,
+              sources: snapshot.intents.length
+                ? [
+                    source(`${a} Netzwerkverkehr.`, "a"),
+                    source("Danach ein Paket an Port 80 senden.", "b"),
+                  ]
+                : [source(first)],
+            },
+          ],
+        }),
+      );
+      yield* test.engine.observe(transcript(first));
+      yield* test.engine.processLatest();
+      test.complete();
+      yield* test.engine.observe(transcript(a, 1, true, "a"));
+      yield* test.engine.observe(transcript(b, 1, true, "b"));
+      yield* test.engine.processLatest();
+      assert.equal(test.admitted.length, 2);
+      assert.deepEqual(
+        test.admitted[1]!.sources.map(({ segmentId, quote, start, end }) => ({
+          segmentId,
+          quote,
+          start,
+          end,
+        })),
+        [
+          { segmentId: "a", quote: a, start: 0, end: a.length },
+          { segmentId: "b", quote: " Netzwerkverkehr.", start: 0, end: 17 },
+          {
+            segmentId: "b",
+            quote: "Danach ein Paket an Port 80 senden.",
+            start: 18,
+            end: b.length,
+          },
+        ],
+      );
+      assert.isTrue(test.engine.validateSourcesNow(test.admitted[1]!.sources));
+      const original = {
+        leaseId: "lease",
+        generation: 1,
+        intentId: test.admitted[1]!.id,
+        stopId: null,
+        provisional: false,
+        sources: test.admitted[1]!.sources,
+      };
+      const codec = Schema.fromJsonString(VoiceIntakeProvenance);
+      const encoded = yield* Schema.encodeEffect(codec)(original);
+      const decoded = yield* Schema.decodeEffect(codec)(encoded);
+      assert.deepEqual(
+        decoded,
+        original,
+        "source offsets and whitespace survive durable/wire provenance roundtrips",
+      );
+      yield* test.engine.processLatest();
+      assert.equal(test.admitted.length, 2);
+    }),
+);
+
+it.effect.each([
+  {
+    name: "ambiguous local and spanning repetition",
+    segments: [
+      ["a", "Keep it. Keep"],
+      ["b", " it."],
+    ],
+    quote: "Keep it.",
+  },
+  {
+    name: "intervening user speech",
+    segments: [
+      ["a", "Change "],
+      ["middle", "something else "],
+      ["b", "port."],
+    ],
+    quote: "Change port.",
+  },
+  {
+    name: "reversed speech order",
+    segments: [
+      ["b", "port."],
+      ["a", "Change "],
+    ],
+    quote: "Change port.",
+  },
+  {
+    name: "invented separator",
+    segments: [
+      ["a", "Change"],
+      ["b", "port."],
+    ],
+    quote: "Change port.",
+  },
+  {
+    name: "anchor starts in a different segment",
+    segments: [
+      ["a", "Unrelated "],
+      ["b", "Change port."],
+    ],
+    quote: "Change port.",
+  },
+])("rejects a spanning quote with $name", ({ name, segments, quote }) =>
+  Effect.gen(function* () {
+    const test = setup((snapshot) =>
+      Effect.succeed({
+        requestId: snapshot.requestId,
+        actions: [
+          {
+            type: "new",
+            projectId: null,
+            request: "Change the port.",
+            readOnly: false,
+            sources: [source(quote, "a")],
+          },
+        ],
+      }),
+    );
+    for (const [id, text] of segments) yield* test.engine.observe(transcript(text!, 1, true, id));
+    yield* test.engine.processLatest();
+    assert.equal(test.admitted.length, 0);
+    const rejected = (yield* test.engine.state).rejections[0]!;
+    assert.equal(rejected.actionIndex, 0);
+    assert.equal(rejected.actionType, "new");
+    assert.equal(
+      rejected.code,
+      name === "ambiguous local and spanning repetition"
+        ? "source_anchor_ambiguous"
+        : "source_anchor_not_found",
+    );
+    assert.deepEqual(rejected.sources, [{ segmentId: "a", revision: 1 }]);
+    assert.notInclude(
+      JSON.stringify(rejected),
+      quote,
+      "diagnostics contain identifiers, never source speech",
+    );
+  }),
+);
+
+it.effect("keeps original user-segment order when ASR revises an earlier segment later", () =>
+  Effect.gen(function* () {
+    const test = setup((snapshot) =>
+      Effect.succeed({
+        requestId: snapshot.requestId,
+        actions: [
+          {
+            type: "new",
+            projectId: null,
+            request: "Change port to 80.",
+            readOnly: false,
+            sources: [source("Change port to 80.", "a", 2)],
+          },
+        ],
+      }),
+    );
+    yield* test.engine.observe(transcript("Change port to", 1, true, "a"));
+    yield* test.engine.observe(transcript(" 80.", 1, true, "b"));
+    yield* test.engine.observe(transcript("Change port to", 2, true, "a"));
+    yield* test.engine.processLatest();
+    assert.equal(test.admitted.length, 1);
+    assert.deepEqual(
+      test.admitted[0]!.sources.map((source) => [source.segmentId, source.revision]),
+      [
+        ["a", 2],
+        ["b", 1],
+      ],
+    );
+  }),
+);
+
+it.effect.each(["correction", "stop", "growth"] as const)(
+  "keeps both spanning revisions fenced during delayed classification: %s",
+  (change) =>
+    Effect.gen(function* () {
+      const held = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const test = setup((snapshot) =>
+        Effect.gen(function* () {
+          yield* Deferred.succeed(held, undefined);
+          yield* Deferred.await(release);
+          return {
+            requestId: snapshot.requestId,
+            actions: [
+              {
+                type: "new" as const,
+                projectId: null,
+                request: "Change port to 80.",
+                readOnly: false,
+                sources: [source("Change port to 80.", "a")],
+              },
+            ],
+          };
+        }),
+      );
+      yield* test.engine.observe(transcript("Change port to", 1, false, "a"));
+      yield* test.engine.observe(transcript(" 80.", 1, false, "b"));
+      const deciding = yield* test.engine.processLatest().pipe(Effect.forkChild);
+      yield* Deferred.await(held);
+      if (change === "stop") test.setStopId("new-stop");
+      else
+        yield* test.engine.observe(
+          transcript(change === "growth" ? " 80. Also show the status." : " 81.", 2, false, "b"),
+        );
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(deciding);
+      assert.equal(test.admitted.length, change === "growth" ? 1 : 0);
+      if (change === "growth") assert.equal(test.admitted[0]!.sources[1]!.revision, 1);
+      else {
+        const state = yield* test.engine.state;
+        assert.equal(
+          state.noticeVersion,
+          state.version,
+          "rejected current speech updates realtime status",
+        );
+      }
+    }),
+);
+
+it.effect("rejects a stale explicit second anchor and a Stop fence on the second segment", () =>
+  Effect.gen(function* () {
+    for (const stale of [true, false]) {
+      const test = setup((snapshot) =>
+        Effect.succeed({
+          requestId: snapshot.requestId,
+          actions: [
+            {
+              type: "new",
+              projectId: null,
+              request: "Change port to 80.",
+              readOnly: false,
+              sources: [
+                source("Change port to 80.", "a"),
+                ...(stale ? [source("80.", "b", 1)] : []),
+              ],
+            },
+          ],
+        }),
+      );
+      yield* test.engine.observe(transcript("Change port to", 1, true, "a"));
+      yield* test.engine.observe(transcript(" 80.", 2, true, "b"), stale ? null : "other-stop");
+      yield* test.engine.processLatest();
+      assert.equal(test.admitted.length, 0);
+    }
+  }),
+);
+
+it.effect.each([8, 9])(
+  "bounds canonical sources after splitting a quote over %s segments",
+  (count) =>
+    Effect.gen(function* () {
+      const texts = Array.from({ length: count }, (_, index) =>
+        index === count - 1 ? "end." : `Part${index} `,
+      );
+      const test = setup((snapshot) =>
+        Effect.succeed({
+          requestId: snapshot.requestId,
+          actions: [
+            {
+              type: "new",
+              projectId: null,
+              request: "Implement these parts.",
+              readOnly: false,
+              sources: [source(texts.join(""), "part-0")],
+            },
+          ],
+        }),
+      );
+      for (const [index, text] of texts.entries())
+        yield* test.engine.observe(transcript(text, 1, true, `part-${index}`));
+      yield* test.engine.processLatest();
+      assert.equal(test.admitted.length, count === 8 ? 1 : 0);
+      if (count === 8) assert.equal(test.admitted[0]!.sources.length, 8);
     }),
 );

@@ -3367,19 +3367,24 @@ it.effect.each([false, true])(
         decideIntakeSnapshot = ({ snapshot }) =>
           Effect.succeed({
             requestId: snapshot.requestId,
-            actions: [
-              {
-                type: "refine",
-                intentId: mainReceipt.intakeIntent.id,
-                message: pendingLabel,
-                readOnly: false,
-                sources: ["Announce Sent to screen readers.", "Do not reload."].map((quote) => ({
-                  segmentId: "preparing-constraint",
-                  revision: 1,
-                  quote,
-                })),
-              },
-            ],
+            actions: snapshot.segments.some((segment) => segment.id === "constraint-end")
+              ? [
+                  {
+                    type: "refine",
+                    intentId: mainReceipt.intakeIntent.id,
+                    message: pendingLabel,
+                    readOnly: false,
+                    sources: [
+                      {
+                        segmentId: "preparing-constraint",
+                        revision: 1,
+                        quote: "Announce Sent to screen readers.",
+                      },
+                      { segmentId: "constraint-end", revision: 1, quote: "Do not reload." },
+                    ],
+                  },
+                ]
+              : [],
           });
         let preparingProcessed = new Promise<void>((resolve) => {
           notifyIntakeProcessed = resolve;
@@ -3387,9 +3392,20 @@ it.effect.each([false, true])(
         yield* Queue.offer(intakeEvents, {
           type: "transcript",
           role: "user",
-          text: pendingClause,
+          text: "Announce Sent to screen",
           plannerNativeThreadId: intakeLease.plannerNativeThreadId!,
           segment: { id: "preparing-constraint", revision: 1, kind: "snapshot", final: false },
+        });
+        yield* Effect.promise(() => preparingProcessed);
+        preparingProcessed = new Promise<void>((resolve) => {
+          notifyIntakeProcessed = resolve;
+        });
+        yield* Queue.offer(intakeEvents, {
+          type: "transcript",
+          role: "user",
+          text: " readers. Do not reload.",
+          plannerNativeThreadId: intakeLease.plannerNativeThreadId!,
+          segment: { id: "constraint-end", revision: 1, kind: "snapshot", final: false },
         });
         yield* Effect.promise(() => preparingProcessed);
         assert.equal(mainRefinements.length, 1, "a preparing run cannot be steered yet");
@@ -3471,7 +3487,8 @@ it.effect.each([false, true])(
           transientCommand,
           "retry preserves the exact command key",
         );
-        assert.include(mainRefinements.at(-1)!.text, "Announce Sent to screen readers.");
+        assert.include(mainRefinements.at(-1)!.text, "Announce Sent to screen");
+        assert.include(mainRefinements.at(-1)!.text, " readers.");
         assert.include(mainRefinements.at(-1)!.text, "Do not reload.");
         assert.notInclude(mainRefinements.at(-1)!.text, "publicly available for everyone");
         assert.equal(

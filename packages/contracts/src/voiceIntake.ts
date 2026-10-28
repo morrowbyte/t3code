@@ -20,7 +20,8 @@ export const VoiceIntakeSource = Schema.Struct({
   revision: Revision,
   start: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   end: Revision,
-  quote: TrimmedNonEmptyString.check(Schema.isMaxLength(2_000)),
+  // Offsets refer to the exact original characters, including boundary whitespace.
+  quote: Schema.String.check(Schema.isPattern(/\S/u), Schema.isMaxLength(2_000)),
 });
 export type VoiceIntakeSource = typeof VoiceIntakeSource.Type;
 const Sources = Schema.Array(VoiceIntakeSource).check(Schema.isMinLength(1), Schema.isMaxLength(8));

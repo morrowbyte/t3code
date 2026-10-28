@@ -2962,6 +2962,7 @@ export const layer: Layer.Layer<
           const subscribed = yield* Deferred.make<void>();
           const output = yield* Queue.sliding<Effect.Success<typeof engine.state>>(1);
           let lastNotice = 0;
+          let lastRejection = 0;
           const outputWorker = yield* Effect.forever(
             Effect.gen(function* () {
               const state = yield* Queue.take(output);
@@ -3019,6 +3020,14 @@ export const layer: Layer.Layer<
                 }),
               );
               const state = yield* engine.state;
+              if (state.rejectionVersion > lastRejection && state.rejections.length) {
+                lastRejection = state.rejectionVersion;
+                yield* Effect.logInfo("Voice intake action rejected.", {
+                  version: state.version,
+                  noticeVersion: state.noticeVersion,
+                  rejections: state.rejections,
+                });
+              }
               if (
                 state.recheckPending ||
                 (failed && state.enabled && state.version > attemptVersion)
