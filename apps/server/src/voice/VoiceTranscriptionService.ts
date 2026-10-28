@@ -20,6 +20,7 @@ import {
 } from "@t3tools/contracts";
 import * as CodexClient from "effect-codex-app-server/client";
 import * as CodexProvider from "../provider/CodexProvider.ts";
+import * as CodexInstallation from "../provider/CodexInstallation.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { resolveCodexLaunchArgs } from "../provider/codexLaunchArgs.ts";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
@@ -454,6 +455,7 @@ export const layer = Layer.effect(
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const registry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
+    const installation = yield* CodexInstallation.CodexInstallation;
     const preferences = yield* makeVoiceSettings;
     const runtimeContext =
       yield* Effect.context<Effect.Services<ReturnType<typeof makeCodexManagedRuntime>>>();
@@ -615,14 +617,22 @@ export const layer = Layer.effect(
                   ),
                 );
               }
+              const instancePath = envelope.environment?.findLast(
+                (variable) => variable.name.toUpperCase() === "PATH",
+              );
+              const binaryPath =
+                config.binaryPath === "codex" && instancePath === undefined
+                  ? (yield* installation.acquire()).executablePath
+                  : config.binaryPath;
               const codexEnvironment = { ...environment };
+              if (instancePath) codexEnvironment.PATH = instancePath.value;
               delete codexEnvironment.T3CODE_TRANSCRIPTION_API_KEY;
               delete codexEnvironment.OPENAI_API_KEY;
               // withCodexAppServerClient supplies the T3 Code originator itself.
               delete codexEnvironment.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;
               const effectiveHomePath = yield* prepareCodexTranscriptionHome(config);
               const { client: codex } = yield* CodexProvider.withCodexAppServerClient({
-                binaryPath: config.binaryPath,
+                binaryPath,
                 homePath: effectiveHomePath,
                 launchArgs: resolveCodexLaunchArgs(config.launchArgs, codexEnvironment),
                 cwd: process.cwd(),
