@@ -67,8 +67,14 @@ const KnownIntent = Schema.Struct({
   status: Schema.String,
   result: Schema.NullOr(Text),
   sources: Schema.Array(
-    Schema.Struct({ segmentId: Id, revision: Revision, start: Schema.Int, end: Schema.Int }),
-  ).check(Schema.isMaxLength(8)),
+    Schema.Struct({
+      segmentId: Id,
+      revision: Revision,
+      start: Schema.Int,
+      end: Schema.Int,
+      quote: Schema.optionalKey(Text),
+    }),
+  ).check(Schema.isMaxLength(128)),
 });
 export const VoiceIntakeSnapshot = Schema.Struct({
   requestId: Id,

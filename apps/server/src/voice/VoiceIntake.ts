@@ -301,11 +301,12 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
           provisional: intent.provisional,
           status: intent.status,
           request: intent.request.slice(0, 200),
-          sources: intent.sources.map(({ segmentId, revision, start, end }) => ({
+          sources: intent.claimedSources.map(({ segmentId, revision, start, end, quote }) => ({
             segmentId,
             revision,
             start,
             end,
+            quote,
           })),
           result: intent.result?.slice(0, 300) ?? null,
         })),
