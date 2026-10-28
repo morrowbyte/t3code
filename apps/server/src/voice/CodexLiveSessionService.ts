@@ -27,7 +27,7 @@ import {
 import * as Deferred from "effect/Deferred";
 import * as Queue from "effect/Queue";
 import * as Semaphore from "effect/Semaphore";
-import { makeVoiceIntake } from "./VoiceIntake.ts";
+import { makeVoiceIntake, transferVoiceIntakeClaim } from "./VoiceIntake.ts";
 import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
@@ -51,6 +51,10 @@ import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as RuntimePolicy from "../orchestration-v2/RuntimePolicy.ts";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import {
+  OrchestratorDispatchError,
+  OrchestratorSteerTemporarilyUnavailableError,
+} from "../orchestration-v2/Orchestrator.ts";
 import type { DispatchRuntimeOptions } from "../orchestration-v2/DispatchRuntimeOptions.ts";
 import * as ConversationWorkCoordinator from "../orchestration-v2/ConversationWorkCoordinator.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
@@ -90,6 +94,8 @@ const encodeRuntimePolicy = Schema.encodeSync(
 const encodeReceipt = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeReceipt = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown));
 const isLiveVoiceError = Schema.is(LiveVoiceError);
+const isDispatchError = Schema.is(OrchestratorDispatchError);
+const isTransientSteerError = Schema.is(OrchestratorSteerTemporarilyUnavailableError);
 const isProviderAdapterError = Schema.is(ProviderAdapter.ProviderAdapterV2Error);
 const isIntakeTimeout = (error: unknown, depth = 0): boolean => {
   if (depth > 6 || typeof error !== "object" || error === null) return false;
@@ -2033,6 +2039,7 @@ export const layer: Layer.Layer<
       readonly validateSource?: Effect.Effect<boolean>;
       readonly previewContext?: string | null;
       readonly dispatchOptions?: DispatchRuntimeOptions;
+      readonly sourceTransfer?: { readonly intentId: string; readonly requestId: string };
     }) {
       const intentTurnId =
         input.requestId === undefined ? input.plannerTurnId : `request:${input.requestId}`;
@@ -2068,17 +2075,73 @@ export const layer: Layer.Layer<
           );
           if (input.validateSource && !(yield* input.validateSource))
             return yield* liveError("stale_lease");
+          let transfer: { before: VoiceIntakeIntent; after: VoiceIntakeIntent } | undefined;
           if (input.voiceIntake) {
             const claimed = yield* sql<{
               receipt_json: string;
-            }>`SELECT receipt_json FROM codex_live_voice_intents WHERE lease_id = ${input.leaseId} AND generation = ${input.generation} AND planner_turn_id <> ${intentTurnId} AND dispatch_state IN ('reserved','admitted') AND receipt_json IS NOT NULL`;
+              planner_turn_id: string;
+            }>`SELECT receipt_json, planner_turn_id FROM codex_live_voice_intents WHERE lease_id = ${input.leaseId} AND generation = ${input.generation} AND planner_turn_id <> ${intentTurnId} AND dispatch_state IN ('reserved','admitted') AND receipt_json IS NOT NULL`;
+            if (input.sourceTransfer) {
+              const existing = yield* sql<{
+                receipt_json: string | null;
+              }>`SELECT receipt_json FROM codex_live_voice_intents
+                WHERE lease_id = ${input.leaseId} AND generation = ${input.generation} AND planner_turn_id = ${intentTurnId}`;
+              const reserved = existing[0]?.receipt_json
+                ? (decodeReceipt(existing[0].receipt_json) as Record<string, unknown>)
+                : undefined;
+              const priorTransfer = reserved?.sourceTransfer;
+              const replay =
+                typeof priorTransfer === "object" &&
+                priorTransfer !== null &&
+                "intentId" in priorTransfer &&
+                priorTransfer.intentId === input.sourceTransfer.intentId &&
+                "requestId" in priorTransfer &&
+                priorTransfer.requestId === input.sourceTransfer.requestId;
+              if (existing.length && !replay) return yield* liveError("dispatch_conflict");
+              if (!replay) {
+                const record = claimed.find(
+                  (record) =>
+                    record.planner_turn_id === `request:${input.sourceTransfer!.intentId}`,
+                );
+                const receipt = record
+                  ? (decodeReceipt(record.receipt_json) as Record<string, unknown>)
+                  : undefined;
+                if (!isIntakeIntent(receipt?.intakeIntent))
+                  return yield* liveError("dispatch_conflict");
+                const owner = receipt.intakeIntent;
+                const transferred = transferVoiceIntakeClaim(
+                  owner,
+                  input.sourceTransfer.requestId,
+                  input.voiceIntake.sources,
+                );
+                if (!transferred) return yield* liveError("dispatch_conflict");
+                const actual = yield* threads.getThreadProjection(ThreadId.make(owner.threadId));
+                const run = actual.runs.find((run) => run.id === owner.runId);
+                if (
+                  !run ||
+                  !["completed", "failed", "interrupted", "cancelled", "rolled_back"].includes(
+                    run.status,
+                  ) ||
+                  actual.messages.some(
+                    (message) =>
+                      message.id === `message:intake-steer:${input.sourceTransfer!.requestId}` &&
+                      message.runId === owner.runId,
+                  )
+                )
+                  return yield* liveError("dispatch_conflict");
+                transfer = { before: owner, after: transferred };
+              }
+            }
             for (const record of claimed) {
               const value = decodeReceipt(record.receipt_json) as Record<string, unknown>;
-              const sources = isIntakeIntent(value.intakeIntent)
-                ? value.intakeIntent.claimedSources
-                : isIntakeProvenance(value.voiceIntake)
-                  ? value.voiceIntake.sources
-                  : [];
+              const sources =
+                transfer && record.planner_turn_id === `request:${transfer.before.id}`
+                  ? transfer.after.claimedSources
+                  : isIntakeIntent(value.intakeIntent)
+                    ? value.intakeIntent.claimedSources
+                    : isIntakeProvenance(value.voiceIntake)
+                      ? value.voiceIntake.sources
+                      : [];
               if (
                 input.voiceIntake.sources.some((source) =>
                   sources.some(
@@ -2108,16 +2171,28 @@ export const layer: Layer.Layer<
           ) {
             return yield* liveError("stale_lease");
           }
-          yield* sql`
+          yield* sql.withTransaction(
+            Effect.gen(function* () {
+              if (transfer) {
+                const changed =
+                  yield* sql`UPDATE codex_live_voice_intents SET receipt_json = json_set(receipt_json, '$.intakeIntent', json(${encodeReceipt(transfer.after)}))
+                WHERE lease_id = ${input.leaseId} AND generation = ${input.generation}
+                  AND planner_turn_id = ${`request:${transfer.before.id}`} AND dispatch_state = 'admitted'
+                  AND json_extract(receipt_json, '$.intakeIntent') = json(${encodeReceipt(transfer.before)}) RETURNING planner_turn_id`;
+                if (changed.length !== 1) return yield* liveError("dispatch_conflict");
+              }
+              yield* sql`
           INSERT OR IGNORE INTO codex_live_voice_intents (
             lease_id, generation, planner_native_thread_id, planner_turn_id, submit_slot,
             call_id, message, command_id, message_id, dispatch_state, receipt_json, updated_at
           ) VALUES (
             ${input.leaseId}, ${input.generation}, ${input.plannerNativeThreadId},
             ${intentTurnId}, 0, ${input.callId}, ${input.message.trim()},
-            ${commandId}, ${messageId}, 'reserved', ${input.requestId === undefined ? null : encodeReceipt({ requestedProjectId: input.projectId ?? null, previewContext: input.previewContext === undefined ? (active.get(leaseKey(input.leaseId, input.generation))?.previewContext ?? null) : input.previewContext, ...(input.voiceIntake === undefined ? {} : { voiceIntake: input.voiceIntake }) })}, ${now}
+            ${commandId}, ${messageId}, 'reserved', ${input.requestId === undefined ? null : encodeReceipt({ requestedProjectId: input.projectId ?? null, previewContext: input.previewContext === undefined ? (active.get(leaseKey(input.leaseId, input.generation))?.previewContext ?? null) : input.previewContext, ...(input.voiceIntake === undefined ? {} : { voiceIntake: input.voiceIntake }), ...(input.sourceTransfer === undefined ? {} : { sourceTransfer: input.sourceTransfer }) })}, ${now}
           )
         `;
+            }),
+          );
           const intents = yield* sql<{
             message: string;
             command_id: string;
@@ -2359,7 +2434,7 @@ export const layer: Layer.Layer<
             );
           if (
             !model ||
-            !hasOption("reasoningEffort", "low") ||
+            !hasOption("reasoningEffort", "medium") ||
             !hasOption("serviceTier", "priority")
           )
             return yield* liveError("planner_restriction_failed");
@@ -2367,7 +2442,7 @@ export const layer: Layer.Layer<
             instanceId: runtime.instanceId,
             model: model.slug,
             options: [
-              { id: "reasoningEffort", value: "low" },
+              { id: "reasoningEffort", value: "medium" },
               { id: "serviceTier", value: "priority" },
             ],
           };
@@ -2443,8 +2518,26 @@ export const layer: Layer.Layer<
             ).pipe(
               Effect.map(({ projection, run }) => {
                 const result = inspectReadback(projection, run.id);
+                const unhandled = [intent.pendingSteer, ...(intent.queuedSteers ?? [])]
+                  .filter(
+                    (pending): pending is NonNullable<VoiceIntakeIntent["pendingSteer"]> =>
+                      pending !== null,
+                  )
+                  .filter(
+                    (pending) =>
+                      !projection.messages.some(
+                        (message) =>
+                          message.id === `message:intake-steer:${pending.requestId}` &&
+                          message.runId === intent.runId &&
+                          message.threadId === projection.thread.id &&
+                          message.text ===
+                            withPreviewContext(pending.message, pending.previewContext),
+                      ),
+                  );
                 return {
                   ...intent,
+                  pendingSteer: unhandled[0] ?? null,
+                  queuedSteers: unhandled.slice(1),
                   runId: run.id,
                   projectId: projection.thread.projectId,
                   status: run.status,
@@ -2542,7 +2635,7 @@ export const layer: Layer.Layer<
                   }),
                 ),
               ),
-            admit: (voiceIntake, request, projectId, previewContext) =>
+            admit: (voiceIntake, request, projectId, previewContext, sourceTransfer) =>
               submitWork({
                 principalSessionId: principal.sessionId,
                 leaseId: row.lease_id,
@@ -2556,6 +2649,7 @@ export const layer: Layer.Layer<
                 previewContext: previewContext ?? null,
                 validateSource: engine.validateSources(voiceIntake.sources),
                 dispatchOptions: commitOptions(voiceIntake.sources),
+                ...(sourceTransfer ? { sourceTransfer } : {}),
                 ...(projectId === undefined ? {} : { projectId }),
               }).pipe(
                 Effect.map((json): VoiceIntakeIntent => {
@@ -2619,7 +2713,7 @@ export const layer: Layer.Layer<
                       },
                       commitOptions(sources),
                     );
-                    return yield* read(intent);
+                    return { intent: yield* read(intent), delivered: true };
                   }
                   const exact = yield* conversationWork.read({
                     threadId: ThreadId.make(row.thread_id),
@@ -2631,11 +2725,7 @@ export const layer: Layer.Layer<
                   if (!provenance || provenance.intentId !== intent.id || !sources?.length)
                     return yield* liveError("dispatch_conflict");
                   const restart = intent.startedProvisional && !readOnly;
-                  if (
-                    restart &&
-                    (provenance.provisional ||
-                      !["starting", "running", "waiting"].includes(exact.run.status))
-                  )
+                  if (restart && (provenance.provisional || exact.run.status !== "running"))
                     return yield* liveError("invalid_state");
                   yield* threads.dispatch(
                     {
@@ -2654,11 +2744,37 @@ export const layer: Layer.Layer<
                     },
                     commitOptions(sources),
                   );
-                  return yield* read({
-                    ...intent,
-                    startedProvisional: intent.startedProvisional && readOnly,
-                  });
-                }),
+                  return {
+                    intent: yield* read({
+                      ...intent,
+                      startedProvisional: intent.startedProvisional && readOnly,
+                    }),
+                    delivered: true,
+                  };
+                }).pipe(
+                  Effect.catch((error) =>
+                    Effect.gen(function* () {
+                      const latest = yield* read(intent);
+                      const unavailable =
+                        isDispatchError(error) &&
+                        isTransientSteerError(error.cause) &&
+                        error.cause.runId === intent.runId;
+                      const terminal = [
+                        "completed",
+                        "failed",
+                        "interrupted",
+                        "cancelled",
+                        "rolled_back",
+                      ].includes(latest.status);
+                      if (!unavailable && !terminal) return yield* Effect.fail(error);
+                      const stillPending = [
+                        latest.pendingSteer,
+                        ...(latest.queuedSteers ?? []),
+                      ].some((pending) => pending?.requestId === requestId);
+                      return { intent: latest, delivered: !stillPending };
+                    }),
+                  ),
+                ),
               ),
             confirm: (intent) =>
               leaseLocks.withLock(
@@ -2829,7 +2945,10 @@ export const layer: Layer.Layer<
                 }),
               );
               const state = yield* engine.state;
-              if (failed && state.enabled && state.version > attemptVersion)
+              if (
+                state.recheckPending ||
+                (failed && state.enabled && state.version > attemptVersion)
+              )
                 yield* Queue.offer(wake, undefined);
               if (state.noticeVersion > lastNotice) {
                 lastNotice = state.noticeVersion;

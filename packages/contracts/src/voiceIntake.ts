@@ -39,6 +39,7 @@ const PendingSteer = Schema.Struct({
   message: Text,
   readOnly: Schema.Boolean,
   sources: Sources,
+  awaitingFollowup: Schema.optionalKey(Schema.Boolean),
   previewContext: Schema.optionalKey(
     Schema.NullOr(Schema.String.check(Schema.isMaxLength(24_000))),
   ),

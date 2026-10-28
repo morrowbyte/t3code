@@ -613,6 +613,19 @@ it.effect.each([false, true])(
                 const target = independentJobs.get(command.threadId) ?? durableProjection;
                 const run = target.runs.find((candidate) => candidate.id === targetRunId);
                 if (
+                  options?.voiceIntakeCommitGuard &&
+                  run &&
+                  (run.status === "starting" || run.status === "waiting")
+                )
+                  return yield* new Orchestrator.OrchestratorDispatchError({
+                    commandId: command.commandId,
+                    commandType: command.type,
+                    cause: new Orchestrator.OrchestratorSteerTemporarilyUnavailableError({
+                      runId: run.id,
+                      status: run.status,
+                    }),
+                  });
+                if (
                   rejectSteerAtAdmission ||
                   !run ||
                   !["running", "starting", "waiting"].includes(run.status)
@@ -654,7 +667,7 @@ it.effect.each([false, true])(
                       slug: "gpt-6-luna",
                       capabilities: {
                         optionDescriptors: [
-                          { id: "reasoningEffort", type: "select", options: [{ id: "low" }] },
+                          { id: "reasoningEffort", type: "select", options: [{ id: "medium" }] },
                           { id: "serviceTier", type: "select", options: [{ id: "priority" }] },
                         ],
                       },
@@ -2989,7 +3002,7 @@ it.effect.each([false, true])(
         intakeDecision = (input) => {
           assert.equal(
             input.modelSelection.options?.find((option) => option.id === "reasoningEffort")?.value,
-            "low",
+            "medium",
           );
           return decideIntakeSnapshot(input);
         };
@@ -3164,7 +3177,9 @@ it.effect.each([false, true])(
                 assert.equal(input.voiceIntakeSourceThreadId, threadId);
                 assert.isFalse(input.voiceIntakeSource!.provisional);
                 mainInputs.push(input);
-                const run = durableProjection.runs[0]!;
+                const run =
+                  durableProjection.runs.find((run) => run.status === "running") ??
+                  durableProjection.runs[0]!;
                 durableProjection = {
                   ...durableProjection,
                   messages: [
@@ -3373,6 +3388,13 @@ it.effect.each([false, true])(
           ...durableProjection,
           runs: durableProjection.runs.map((run) => ({ ...run, status: "running" })),
         };
+        beforeMainCommit = () => {
+          beforeMainCommit = undefined;
+          durableProjection = {
+            ...durableProjection,
+            runs: durableProjection.runs.map((run) => ({ ...run, status: "waiting" })),
+          };
+        };
         preparingProcessed = new Promise<void>((resolve) => {
           notifyIntakeProcessed = resolve;
         });
@@ -3390,9 +3412,48 @@ it.effect.each([false, true])(
           } as never),
         );
         yield* Effect.promise(() => preparingProcessed);
+        const transientCommand = mainRefinements.at(-1)!.commandId;
+        const transientRecord = yield* sql<{
+          receipt_json: string;
+        }>`SELECT receipt_json FROM codex_live_voice_intents WHERE planner_turn_id = ${`request:${mainReceipt.intakeIntent.id}`}`;
+        assert.equal(
+          (
+            decodeJson(transientRecord[0]!.receipt_json) as {
+              intakeIntent: { pendingSteer: { message: string } };
+            }
+          ).intakeIntent.pendingSteer.message,
+          pendingClause,
+          "a typed waiting rejection retains pending work",
+        );
+        durableProjection = {
+          ...durableProjection,
+          runs: durableProjection.runs.map((run) => ({ ...run, status: "running" })),
+        };
+        preparingProcessed = new Promise<void>((resolve) => {
+          notifyIntakeProcessed = resolve;
+        });
+        yield* Queue.offer(
+          t3EventQueues.get("run.updated")!,
+          eventFor({
+            type: "run.updated",
+            id: "main-running-after-transient",
+            threadId,
+            runId: "main-live-work",
+            nodeId: null,
+            providerInstanceId,
+            occurredAt: "2026-10-14T00:00:04.000Z",
+            payload: durableProjection.runs[0]!,
+          } as never),
+        );
+        yield* Effect.promise(() => preparingProcessed);
+        assert.equal(
+          mainRefinements.at(-1)!.commandId,
+          transientCommand,
+          "retry preserves the exact command key",
+        );
         assert.equal(
           mainRefinements.length,
-          2,
+          3,
           "the run event delivers its retained source-bound constraint",
         );
         assert.equal(mainInputs.length, 2);
@@ -3673,6 +3734,64 @@ it.effect.each([false, true])(
           "rejected stale steering cannot reach the new active run",
         );
         assert.equal(mainInputs.length, 2, "a stale refinement cannot auto-start replacement work");
+
+        // A completed-result semantic decision can transfer an unsent claim, never steer the new run.
+        const transferSource = { segmentId: "run-race", revision: 2, quote: raceClause };
+        const beforeTransfer = yield* sql<{
+          receipt_json: string;
+        }>`SELECT receipt_json FROM codex_live_voice_intents WHERE planner_turn_id = ${`request:${mainReceipt.intakeIntent.id}`}`;
+        const transferOwner = (
+          decodeJson(beforeTransfer[0]!.receipt_json) as {
+            intakeIntent: { pendingSteer: { requestId: string; awaitingFollowup: boolean } };
+          }
+        ).intakeIntent;
+        assert.isTrue(transferOwner.pendingSteer.awaitingFollowup);
+        decideIntakeSnapshot = ({ snapshot }) =>
+          Effect.succeed({
+            requestId: snapshot.requestId,
+            actions: [
+              {
+                type: "new",
+                projectId: null,
+                request: raceClause,
+                readOnly: false,
+                sources: [transferSource],
+              },
+            ],
+          });
+        const transferProcessed = new Promise<void>((resolve) => {
+          notifyIntakeProcessed = resolve;
+        });
+        yield* emitSpeech("user", raceClause, "run-race", 2, true);
+        yield* Effect.promise(() => transferProcessed);
+        assert.equal(
+          mainInputs.length,
+          3,
+          "a fresh completed-result decision admits the pending change once",
+        );
+        assert.equal(mainInputs.at(-1)!.mode, "auto");
+        const afterTransfer = yield* sql<{
+          receipt_json: string;
+        }>`SELECT receipt_json FROM codex_live_voice_intents WHERE planner_turn_id = ${`request:${mainReceipt.intakeIntent.id}`}`;
+        const releasedOwner = (
+          decodeJson(afterTransfer[0]!.receipt_json) as {
+            intakeIntent: { pendingSteer: unknown; claimedSources: Array<{ segmentId: string }> };
+          }
+        ).intakeIntent;
+        assert.isNull(releasedOwner.pendingSteer);
+        assert.isFalse(
+          releasedOwner.claimedSources.some((source) => source.segmentId === "run-race"),
+        );
+        const transferred = yield* sql<{
+          receipt_json: string;
+        }>`SELECT receipt_json FROM codex_live_voice_intents WHERE lease_id = ${intakeLease.leaseId} AND json_extract(receipt_json, '$.sourceTransfer.requestId') = ${transferOwner.pendingSteer.requestId}`;
+        assert.equal(transferred.length, 1);
+        yield* service.status(session, intakeLease);
+        assert.equal(
+          mainInputs.length,
+          3,
+          "recovery replays neither the transferred source nor the completed work",
+        );
 
         const decidingBeforeStop = yield* Deferred.make<void>();
         const finishAfterStop = yield* Deferred.make<void>();

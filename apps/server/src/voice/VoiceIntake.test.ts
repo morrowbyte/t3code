@@ -10,7 +10,11 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
-import { makeVoiceIntake, type VoiceIntakeDependencies } from "./VoiceIntake.ts";
+import {
+  makeVoiceIntake,
+  transferVoiceIntakeClaim,
+  type VoiceIntakeDependencies,
+} from "./VoiceIntake.ts";
 
 const source = (
   text: string,
@@ -55,6 +59,8 @@ const setup = (
   let current = true;
   let completed = false;
   let status: string | undefined;
+  let beforeSteer: Effect.Effect<boolean> | undefined;
+  let beforeConfirm: Effect.Effect<void> | undefined;
   let stopId: string | null | undefined = null;
   const engine = makeVoiceIntake({
     leaseId: "lease",
@@ -95,6 +101,8 @@ const setup = (
     steer: (intent, message, requestId, _readOnly, context) =>
       Effect.gen(function* () {
         attemptedSteerKeys.push(requestId);
+        if (beforeSteer && !(yield* beforeSteer))
+          return { intent: { ...intent, status: status ?? intent.status }, delivered: false };
         if (!steerKeys.has(requestId)) {
           steerKeys.add(requestId);
           steered.push(message);
@@ -104,10 +112,11 @@ const setup = (
           loseReply = false;
           return yield* new LiveVoiceError({ code: "runtime_unavailable" });
         }
-        return intent;
+        return { intent, delivered: true };
       }),
     confirm: (intent) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
+        if (beforeConfirm) yield* beforeConfirm;
         confirmed.push(intent.id);
       }),
     store: () => Effect.void,
@@ -139,6 +148,12 @@ const setup = (
     },
     setStatus: (value: string) => {
       status = value;
+    },
+    setBeforeSteer: (value: Effect.Effect<boolean> | undefined) => {
+      beforeSteer = value;
+    },
+    setBeforeConfirm: (value: Effect.Effect<void>) => {
+      beforeConfirm = value;
     },
   };
 };
@@ -1510,16 +1525,185 @@ it.effect(
     }),
 );
 
-it.effect(
-  "admits a fresh authorized follow-up exactly once when its target completes during classification",
-  () =>
+it.effect.each(["starting", "waiting"])(
+  "retains the same FIFO key across a running to %s race",
+  (unavailable) =>
+    Effect.gen(function* () {
+      const held = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const first = "Add a form.";
+      const next = "Announce Sent to screen readers.";
+      const test = setup((snapshot) =>
+        Effect.succeed({
+          requestId: snapshot.requestId,
+          actions: snapshot.intents.length
+            ? [
+                {
+                  type: "refine" as const,
+                  intentId: snapshot.intents[0]!.id,
+                  message: next,
+                  readOnly: false,
+                  sources: [source(next, "next")],
+                },
+              ]
+            : [
+                {
+                  type: "new" as const,
+                  projectId: null,
+                  request: first,
+                  readOnly: false,
+                  sources: [source(first)],
+                },
+              ],
+        }),
+      );
+      yield* test.engine.observe(transcript(first));
+      yield* test.engine.processLatest();
+      test.setStatus(unavailable);
+      yield* test.engine.observe(transcript(next, 1, false, "next"));
+      yield* test.engine.processLatest();
+      assert.deepEqual(test.attemptedSteerKeys, [], "only running is steerable");
+      const key = (yield* test.engine.state).intents[0]!.pendingSteer!.requestId;
+      test.setStatus("running");
+      test.setBeforeSteer(
+        Effect.gen(function* () {
+          yield* Deferred.succeed(held, undefined);
+          yield* Deferred.await(release);
+          return false;
+        }),
+      );
+      const delivery = yield* test.engine.processLatest().pipe(Effect.forkChild);
+      yield* Deferred.await(held);
+      test.setStatus(unavailable);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(delivery);
+      assert.equal((yield* test.engine.state).intents[0]!.pendingSteer!.requestId, key);
+      test.setBeforeSteer(undefined);
+      test.setStatus("running");
+      yield* test.engine.processLatest();
+      yield* test.engine.processLatest();
+      assert.deepEqual(test.attemptedSteerKeys, [key, key]);
+      assert.deepEqual(test.steered, [next]);
+      assert.isNull((yield* test.engine.state).intents[0]!.pendingSteer);
+    }),
+);
+
+it.effect.each(["new", "reference", "refine"] as const)(
+  "rechecks an active-to-completed decision once before accepting %s",
+  (answer) =>
     Effect.gen(function* () {
       const held = yield* Deferred.make<void>();
       const release = yield* Deferred.make<void>();
       const first = "Add the form with the Ready state.";
       const next = "After sending, show Sent, reset the form and announce Sent to screen readers.";
+      let decisions = 0;
       const test = setup((snapshot) =>
         Effect.gen(function* () {
+          decisions++;
+          const owner = snapshot.intents[0];
+          if (!owner)
+            return {
+              requestId: snapshot.requestId,
+              actions: [
+                {
+                  type: "new" as const,
+                  projectId: null,
+                  request: first,
+                  readOnly: false,
+                  sources: [source(first)],
+                },
+              ],
+            };
+          if (owner.status !== "completed") {
+            yield* Deferred.succeed(held, undefined);
+            yield* Deferred.await(release);
+            return {
+              requestId: snapshot.requestId,
+              actions: [
+                {
+                  type: "refine" as const,
+                  intentId: owner.id,
+                  message: next,
+                  readOnly: false,
+                  sources: [source(next, "next")],
+                },
+              ],
+            };
+          }
+          assert.equal(owner.result, "Existing public result.");
+          assert.isFalse(
+            owner.sources.some((source) => source.segmentId === "next"),
+            "unhandled pending sources remain candidates for semantic reconsideration",
+          );
+          return {
+            requestId: snapshot.requestId,
+            actions:
+              answer === "new"
+                ? [
+                    {
+                      type: "new" as const,
+                      projectId: null,
+                      request: next,
+                      readOnly: false,
+                      sources: [source(next, "next")],
+                    },
+                  ]
+                : answer === "reference"
+                  ? [{ type: "reference" as const, intentId: owner.id }]
+                  : [
+                      {
+                        type: "refine" as const,
+                        intentId: owner.id,
+                        message: next,
+                        readOnly: false,
+                        sources: [source(next, "next")],
+                      },
+                    ],
+          };
+        }),
+      );
+      yield* test.engine.observe(transcript(first));
+      yield* test.engine.processLatest();
+      test.setPreviewContext("selected form before completion");
+      yield* test.engine.observe(transcript(next, 1, false, "next"));
+      const deciding = yield* test.engine.processLatest().pipe(Effect.forkChild);
+      yield* Deferred.await(held);
+      test.complete();
+      test.setPreviewContext("different selection");
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(deciding);
+      assert.equal(test.admitted.length, 1, "an active snapshot never blindly becomes new work");
+      yield* test.engine.processLatest();
+      yield* test.engine.processLatest();
+      assert.equal(decisions, 3, "exactly one semantic recheck with the actual result");
+      assert.deepEqual(test.steered, []);
+      assert.equal(test.admitted.length, answer === "new" ? 2 : 1);
+      if (answer === "new") {
+        assert.include(test.admitted[1]!.request, first);
+        assert.include(test.admitted[1]!.request, next);
+        assert.equal(test.admittedContexts[1], "selected form before completion");
+        assert.deepEqual(
+          (yield* test.engine.state).intents[0]!.claimedSources.map((s) => s.quote),
+          [first],
+        );
+      } else if (answer === "refine") {
+        assert.equal((yield* test.engine.state).reason, "task_finished_requires_new_request");
+      }
+    }),
+);
+
+it.effect(
+  "transfers both unhandled FIFO entries after completion with their own frozen selection",
+  () =>
+    Effect.gen(function* () {
+      const held = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const first = "Add the form.";
+      const parts = ["Show Sent then reset.", "Announce Sent to screen readers."];
+      let classify = 0;
+      const test = setup((snapshot) =>
+        Effect.gen(function* () {
+          classify++;
           if (!snapshot.intents.length)
             return {
               requestId: snapshot.requestId,
@@ -1533,17 +1717,30 @@ it.effect(
                 },
               ],
             };
-          yield* Deferred.succeed(held, undefined);
-          yield* Deferred.await(release);
+          if (snapshot.intents[0]!.status === "completed") {
+            yield* Deferred.succeed(held, undefined);
+            yield* Deferred.await(release);
+            return {
+              requestId: snapshot.requestId,
+              actions: parts.map((text, index) => ({
+                type: "new" as const,
+                projectId: null,
+                request: text,
+                readOnly: false,
+                sources: [source(text, `part-${index}`)],
+              })),
+            };
+          }
+          const index = classify - 2;
           return {
             requestId: snapshot.requestId,
             actions: [
               {
                 type: "refine" as const,
                 intentId: snapshot.intents[0]!.id,
-                message: next,
+                message: parts[index]!,
                 readOnly: false,
-                sources: [source(next, "fresh-followup", snapshot.segments.at(-1)!.revision)],
+                sources: [source(parts[index]!, `part-${index}`)],
               },
             ],
           };
@@ -1551,28 +1748,159 @@ it.effect(
       );
       yield* test.engine.observe(transcript(first));
       yield* test.engine.processLatest();
-      test.setPreviewContext("selected form before completion");
-      yield* test.engine.observe(transcript(next, 1, false, "fresh-followup"));
-      const deciding = yield* test.engine.processLatest().pipe(Effect.forkChild);
+      test.setStatus("preparing");
+      for (const [index, part] of parts.entries()) {
+        test.setPreviewContext(`selection ${index}`);
+        yield* test.engine.observe(transcript(part, 1, false, `part-${index}`));
+        yield* test.engine.processLatest();
+      }
+      assert.equal((yield* test.engine.state).intents[0]!.queuedSteers!.length, 1);
+      test.complete();
+      const recheck = yield* test.engine.processLatest().pipe(Effect.forkChild);
+      yield* Deferred.await(held);
+      test.setPreviewContext("unrelated selection");
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(recheck);
+      yield* test.engine.processLatest();
+      assert.equal(test.admitted.length, 3);
+      assert.deepEqual(test.admittedContexts, [null, "selection 0", "selection 1"]);
+      assert.deepEqual(test.steered, []);
+      const old = (yield* test.engine.state).intents[0]!;
+      assert.isNull(old.pendingSteer);
+      assert.deepEqual(
+        old.claimedSources.map((s) => s.quote),
+        [first],
+      );
+      assert.isUndefined(transferVoiceIntakeClaim(old, "absent", [source(parts[0]!, "part-0")]));
+    }),
+);
+
+it.effect(
+  "preserves implementation when provisional research ends inside confirm before refine",
+  () =>
+    Effect.gen(function* () {
+      const held = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const research = "Research the form accessibility.";
+      const change = "Implement the screen reader announcement now.";
+      const test = setup((snapshot) => {
+        const owner = snapshot.intents[0];
+        return Effect.succeed({
+          requestId: snapshot.requestId,
+          actions: !owner
+            ? [
+                {
+                  type: "new" as const,
+                  projectId: null,
+                  request: research,
+                  readOnly: true,
+                  sources: [source(research)],
+                },
+              ]
+            : owner.status === "completed"
+              ? [
+                  {
+                    type: "new" as const,
+                    projectId: null,
+                    request: change,
+                    readOnly: false,
+                    sources: [source(change, "confirm", 1)],
+                  },
+                ]
+              : [
+                  {
+                    type: "confirm" as const,
+                    intentId: owner.id,
+                    sources: [source(change, "confirm", 1)],
+                  },
+                  {
+                    type: "refine" as const,
+                    intentId: owner.id,
+                    message: change,
+                    readOnly: false,
+                    sources: [source(change, "confirm", 1)],
+                  },
+                ],
+        });
+      });
+      yield* test.engine.observe(transcript(research));
+      yield* test.engine.processLatest();
+      test.setBeforeConfirm(
+        Effect.gen(function* () {
+          yield* Deferred.succeed(held, undefined);
+          yield* Deferred.await(release);
+        }),
+      );
+      yield* test.engine.observe(transcript(change, 1, true, "confirm"));
+      const confirming = yield* test.engine.processLatest().pipe(Effect.forkChild);
       yield* Deferred.await(held);
       test.complete();
-      test.setPreviewContext("different selection");
       yield* Deferred.succeed(release, undefined);
-      yield* Fiber.join(deciding);
-      assert.equal(test.admitted.length, 2);
-      assert.deepEqual(test.steered, []);
-      assert.include(test.admitted[1]!.request, first);
-      assert.include(test.admitted[1]!.request, next);
-      assert.equal(test.admitted[1]!.sources[0]!.segmentId, "fresh-followup");
-      assert.equal(test.admittedContexts[1], "selected form before completion");
-      yield* test.engine.observe(transcript(next, 2, true, "fresh-followup"));
+      yield* Fiber.join(confirming);
+      assert.equal(test.admitted.length, 1);
       yield* test.engine.processLatest();
-      assert.equal(
-        test.admitted.length,
-        2,
-        "the old source and fresh follow-up are each admitted once",
+      assert.equal(test.admitted.length, 2);
+      assert.isFalse(test.admitted[1]!.provisional);
+      assert.deepEqual(
+        test.admitted[1]!.sources.map((s) => s.quote),
+        [change],
       );
+      assert.deepEqual(test.steered, []);
+      yield* test.engine.processLatest();
+      assert.equal(test.admitted.length, 2);
     }),
+);
+
+it.effect("a final confirm alone cannot turn completed research into mutation", () =>
+  Effect.gen(function* () {
+    const held = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const text = "Research the form.";
+    const confirm = "Yes, that research is confirmed.";
+    const test = setup((snapshot) =>
+      Effect.gen(function* () {
+        if (!snapshot.intents.length)
+          return {
+            requestId: snapshot.requestId,
+            actions: [
+              {
+                type: "new" as const,
+                projectId: null,
+                request: text,
+                readOnly: true,
+                sources: [source(text)],
+              },
+            ],
+          };
+        yield* Deferred.succeed(held, undefined);
+        yield* Deferred.await(release);
+        return {
+          requestId: snapshot.requestId,
+          actions: [
+            {
+              type: "confirm" as const,
+              intentId: snapshot.intents[0]!.id,
+              sources: [source(confirm, "confirm")],
+            },
+          ],
+        };
+      }),
+    );
+    yield* test.engine.observe(transcript(text));
+    yield* test.engine.processLatest();
+    yield* test.engine.observe(transcript(confirm, 1, true, "confirm"));
+    const deciding = yield* test.engine.processLatest().pipe(Effect.forkChild);
+    yield* Deferred.await(held);
+    test.complete();
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.join(deciding);
+    assert.equal(test.admitted.length, 1);
+    assert.deepEqual(test.confirmed, []);
+    assert.deepEqual(
+      (yield* test.engine.state).intents[0]!.claimedSources.map((s) => s.quote),
+      [text],
+    );
+  }),
 );
 
 it.effect(

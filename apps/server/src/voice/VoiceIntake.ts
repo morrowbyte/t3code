@@ -24,6 +24,7 @@ export interface VoiceIntakeDependencies {
     request: string,
     projectId?: string,
     previewContext?: string | null,
+    transfer?: { readonly intentId: string; readonly requestId: string },
   ) => Effect.Effect<VoiceIntakeIntent, Error>;
   readonly read: (intent: VoiceIntakeIntent) => Effect.Effect<VoiceIntakeIntent, Error>;
   readonly steer: (
@@ -32,7 +33,7 @@ export interface VoiceIntakeDependencies {
     requestId: string,
     readOnly: boolean,
     previewContext?: string | null,
-  ) => Effect.Effect<VoiceIntakeIntent, Error>;
+  ) => Effect.Effect<{ readonly intent: VoiceIntakeIntent; readonly delivered: boolean }, Error>;
   readonly confirm: (intent: VoiceIntakeIntent) => Effect.Effect<void, Error>;
   readonly store: (intent: VoiceIntakeIntent) => Effect.Effect<void, Error>;
 }
@@ -80,6 +81,50 @@ const retractions = (text: string) =>
     retractionWords.has(word.replaceAll("’", "'")),
   ).length;
 
+export function transferVoiceIntakeClaim(
+  intent: VoiceIntakeIntent,
+  requestId: string,
+  sources: ReadonlyArray<VoiceIntakeSource>,
+): VoiceIntakeIntent | undefined {
+  const pending = [intent.pendingSteer, ...(intent.queuedSteers ?? [])].filter(
+    (item): item is NonNullable<VoiceIntakeIntent["pendingSteer"]> => item !== null,
+  );
+  const selected = pending.find((item) => item.requestId === requestId && item.awaitingFollowup);
+  const same = (a: VoiceIntakeSource, b: VoiceIntakeSource) =>
+    a.segmentId === b.segmentId &&
+    a.start === b.start &&
+    a.end === b.end &&
+    a.quote === b.quote &&
+    a.stopId === b.stopId;
+  if (
+    !selected ||
+    selected.sources.length !== sources.length ||
+    !selected.sources.every((source) => sources.some((other) => same(source, other)))
+  )
+    return;
+  const claimedSources = intent.claimedSources.filter(
+    (claim) => !selected.sources.some((source) => same(source, claim)),
+  );
+  if (
+    claimedSources.some((claim) =>
+      sources.some(
+        (source) =>
+          source.segmentId === claim.segmentId &&
+          source.start < claim.end &&
+          claim.start < source.end,
+      ),
+    )
+  )
+    return;
+  const remaining = pending.filter((item) => item.requestId !== requestId);
+  return {
+    ...intent,
+    claimedSources,
+    pendingSteer: remaining[0] ?? null,
+    queuedSteers: remaining.slice(1),
+  };
+}
+
 export function makeVoiceIntake(input: VoiceIntakeDependencies) {
   const segments = new Map<string, VoiceIntakeSnapshot["segments"][number]>();
   const intents = new Map((input.restored ?? []).map((intent) => [intent.id, intent]));
@@ -91,6 +136,8 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
   let decisions = 0;
   let noticeVersion = 0;
   let retractionEpoch = 0;
+  let recheckPending = false;
+  const terminalRechecks = new Set<string>();
   const sourceEpochs = new WeakMap<VoiceIntakeSource, number>();
   const decisionEpochs = new WeakMap<VoiceIntakeSource, number>();
   const queuedSources = new WeakSet<VoiceIntakeSource>();
@@ -101,7 +148,17 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
   const parts = new Map<string, { revision: number; count: number; chunks: Map<number, string> }>();
   const isActive = (status: string) =>
     ["preparing", "starting", "running", "waiting", "queued"].includes(status);
-  const isSteerable = (status: string) => ["starting", "running", "waiting"].includes(status);
+  const isSteerable = (status: string) => status === "running";
+  const isTerminal = (status: string) =>
+    ["completed", "interrupted", "failed", "cancelled", "rolled_back"].includes(status);
+  const requestRecheck = (intent: VoiceIntakeIntent) => {
+    if (intent.status === "completed" && intent.result === null) return;
+    const key = `${intent.id}:${intent.runId}:${intent.status}`;
+    if (terminalRechecks.has(key)) return;
+    terminalRechecks.add(key);
+    decidedVersion = Math.min(decidedVersion, version - 1);
+    recheckPending = true;
+  };
   const observe = (event: LiveVoiceEvent, stopId?: string | null) =>
     Effect.sync(() => {
       const identity = event.type === "status" ? event.session : event;
@@ -263,6 +320,15 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
         pending!.sources.every(
           (source) => (corrections.get(source.segmentId) ?? 0) <= source.revision,
         );
+      if (valid && isTerminal(observed.status)) {
+        observed = withPending(
+          observed,
+          pendingOf(observed).map((item) => ({ ...item, awaitingFollowup: true })),
+        );
+        requestRecheck(observed);
+        yield* persist(observed);
+        break;
+      }
       if (!valid || !isActive(observed.status)) {
         reason = valid ? "task_inactive" : "source_revised";
         noticeVersion = version;
@@ -276,16 +342,22 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
         yield* persist(observed);
       }
       if (!isSteerable(observed.status)) break;
-      const steered = yield* input.steer(
+      const delivery = yield* input.steer(
         observed,
         pending!.message,
         pending!.requestId,
         pending!.readOnly,
         pending!.previewContext,
       );
+      observed = delivery.intent;
+      if (!delivery.delivered) {
+        yield* persist(observed);
+        if (isTerminal(observed.status)) continue;
+        break;
+      }
       observed = withPending(
-        { ...steered, startedProvisional: steered.startedProvisional && pending!.readOnly },
-        tail,
+        { ...observed, startedProvisional: observed.startedProvisional && pending!.readOnly },
+        pendingOf(observed).filter((item) => item.requestId !== pending!.requestId),
       );
       yield* persist(observed);
     }
@@ -293,8 +365,11 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
   });
   const apply = Effect.fn("VoiceIntake.apply")(function* () {
     if (!enabled || version === 0 || !(yield* input.current)) return;
+    recheckPending = false;
     for (const intent of intents.values()) {
-      const observed = yield* drainPending(yield* input.read(intent));
+      const latest = yield* input.read(intent);
+      if (pendingOf(latest).length !== pendingOf(intent).length) yield* persist(latest);
+      const observed = yield* drainPending(latest);
       intents.set(intent.id, observed);
     }
     if (version <= decidedVersion) return;
@@ -335,6 +410,11 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
                 .filter((source) => {
                   const segment = visibleSources.get(source.segmentId);
                   return (
+                    !pendingOf(intent).some(
+                      (pending) =>
+                        pending.awaitingFollowup &&
+                        pending.sources.some((unhandled) => overlap(source, unhandled)),
+                    ) &&
                     segment !== undefined &&
                     (source.revision === segment.revision ||
                       segment.text.slice(source.start, source.end) === source.quote)
@@ -443,14 +523,21 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
         reason = "intent_unknown";
         continue;
       }
-      const foreign = [...intents.values()].some(
+      const foreign = [...intents.values()].filter(
         (intent) =>
           intent.id !== owner?.id &&
           sources.some((source) =>
             intent.claimedSources.some((claimed) => overlap(source, claimed)),
           ),
       );
-      if (foreign) {
+      const transfer =
+        action.type === "new" && foreign.length === 1 && isTerminal(foreign[0]!.status)
+          ? pendingOf(foreign[0]!).flatMap((pending) => {
+              const transferred = transferVoiceIntakeClaim(foreign[0]!, pending.requestId, sources);
+              return transferred ? [{ owner: foreign[0]!, pending, transferred }] : [];
+            })[0]
+          : undefined;
+      if (foreign.length && !transfer) {
         reason = "source_already_owned";
         continue;
       }
@@ -459,17 +546,24 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
           reason = "awaiting_final_intent";
           continue;
         }
+        const current = yield* input.read(owner);
+        if (!isActive(current.status)) {
+          yield* persist(current);
+          reason = "task_finished";
+          noticeVersion = snapshot.version;
+          continue;
+        }
         const claimedSources = [
-          ...owner.claimedSources,
+          ...current.claimedSources,
           ...sources.filter(
-            (source) => !owner.claimedSources.some((claimed) => overlap(source, claimed)),
+            (source) => !current.claimedSources.some((claimed) => overlap(source, claimed)),
           ),
         ];
         if (claimedSources.length > 128) {
           reason = "intake_capacity";
           continue;
         }
-        const confirmed = { ...owner, provisional: false, sources, claimedSources };
+        const confirmed = { ...current, provisional: false, sources, claimedSources };
         yield* input.confirm(confirmed);
         yield* persist(confirmed);
         noticeVersion = snapshot.version;
@@ -496,10 +590,16 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
             provisional,
             sources: sources,
           },
-          action.request,
-          action.projectId ?? undefined,
-          snapshot.previewContext,
+          transfer
+            ? `Completed work (context only, do not repeat):\n${transfer.owner.request.slice(0, 2_000)}\nNew authorized change:\n${action.request}`
+            : action.request,
+          transfer?.owner.projectId ?? action.projectId ?? undefined,
+          transfer ? transfer.pending.previewContext : snapshot.previewContext,
+          transfer
+            ? { intentId: transfer.owner.id, requestId: transfer.pending.requestId }
+            : undefined,
         );
+        if (transfer) yield* persist(transfer.transferred);
         yield* persist(intent);
         noticeVersion = snapshot.version;
         reason = null;
@@ -510,44 +610,6 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
           continue;
         }
         const fresh = sources.filter((source) => !coveredByClaims(source, current.claimedSources));
-        if (!isActive(current.status)) {
-          yield* persist(current);
-          const terminal = [
-            "completed",
-            "interrupted",
-            "failed",
-            "cancelled",
-            "rolled_back",
-          ].includes(current.status);
-          // A semantic refine may outlive its target run. Only entirely new,
-          // explicitly authorized mutation sources can become follow-up work.
-          if (
-            terminal &&
-            !action.readOnly &&
-            fresh.length === sources.length &&
-            sources.every(
-              (source) => !current.claimedSources.some((claim) => overlap(source, claim)),
-            )
-          ) {
-            const followup = yield* input.admit(
-              {
-                leaseId: input.leaseId,
-                generation: input.generation,
-                intentId: `${snapshot.requestId}:${index}:followup`,
-                stopId: sources[0]!.stopId,
-                provisional: false,
-                sources,
-              },
-              `Completed work (context only, do not repeat):\n${current.request.slice(0, 2_000)}\nNew authorized change:\n${action.message}`,
-              current.projectId,
-              snapshot.previewContext,
-            );
-            yield* persist(followup);
-            reason = null;
-          } else reason = "task_inactive";
-          noticeVersion = snapshot.version;
-          continue;
-        }
         const confirmedContinuation =
           current.startedProvisional &&
           !current.provisional &&
@@ -561,6 +623,46 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
                 confirmed.quote === source.quote,
             ),
           );
+        if (!isActive(current.status)) {
+          yield* persist(current);
+          const wasActive = snapshot.intents.some(
+            (intent) => intent.id === current.id && isActive(intent.status),
+          );
+          const transferable =
+            confirmedContinuation ||
+            (fresh.length === sources.length &&
+              sources.every(
+                (source) => !current.claimedSources.some((claim) => overlap(source, claim)),
+              ));
+          if (
+            isTerminal(current.status) &&
+            wasActive &&
+            transferable &&
+            !action.readOnly &&
+            pendingOf(current).length < 32
+          ) {
+            for (const source of sources) queuedSources.add(source);
+            const unhandled = withPending(
+              { ...current, claimedSources: [...current.claimedSources, ...fresh] },
+              [
+                ...pendingOf(current),
+                {
+                  requestId: `${snapshot.requestId}:${index}`,
+                  message: action.message,
+                  readOnly: false,
+                  sources,
+                  awaitingFollowup: true,
+                  previewContext: snapshot.previewContext ?? null,
+                },
+              ],
+            );
+            yield* persist(unhandled);
+            requestRecheck(unhandled);
+            reason = "task_finished_recheck";
+          } else reason = "task_finished_requires_new_request";
+          noticeVersion = snapshot.version;
+          continue;
+        }
         if (!fresh.length && !confirmedContinuation && !(current.provisional && !action.readOnly)) {
           yield* persist(current);
           continue;
@@ -648,6 +750,7 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
       version,
       reason,
       decisions,
+      recheckPending,
       noticeVersion,
       running,
       intents: [...intents.values()],
