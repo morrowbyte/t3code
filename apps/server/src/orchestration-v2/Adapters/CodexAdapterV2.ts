@@ -326,6 +326,10 @@ type CodexFileChangeKinds = Readonly<
 
 export function makeCodexLiveTranscriptTracker() {
   const structuredRoles = new Map<string, Set<string>>();
+  const flatSegments = new Map<
+    string,
+    Map<string, { id: string; revision: number; text: string }>
+  >();
   const threads = new Map<
     string,
     Map<
@@ -351,6 +355,7 @@ export function makeCodexLiveTranscriptTracker() {
       let roles = structuredRoles.get(threadId);
       if (!roles) structuredRoles.set(threadId, (roles = new Set()));
       roles.add(item.role);
+      flatSegments.get(threadId)?.delete(item.role);
       const previous = segments.get(item.id);
       if (
         previous &&
@@ -396,6 +401,34 @@ export function makeCodexLiveTranscriptTracker() {
         segment: { id: itemId, revision, kind: "delta", final: false },
       };
     },
+    legacyDelta(
+      threadId: string,
+      role: string,
+      delta: string,
+    ): ProviderAdapter.ProviderAdapterV2LiveVoiceEvent | undefined {
+      if (
+        !delta ||
+        structuredRoles.get(threadId)?.has(role) ||
+        (role !== "user" && role !== "assistant")
+      )
+        return;
+      let segments = flatSegments.get(threadId);
+      if (!segments) flatSegments.set(threadId, (segments = new Map()));
+      const previous = segments.get(role);
+      const current = {
+        id: previous?.id ?? `legacy:${++legacySequence}`,
+        revision: (previous?.revision ?? 0) + 1,
+        text: (previous?.text ?? "") + delta,
+      };
+      segments.set(role, current);
+      return {
+        type: "transcript",
+        plannerNativeThreadId: threadId,
+        role,
+        text: current.text,
+        segment: { id: current.id, revision: current.revision, kind: "snapshot", final: false },
+      };
+    },
     legacy(
       threadId: string,
       role: string,
@@ -404,17 +437,25 @@ export function makeCodexLiveTranscriptTracker() {
       // Structured and flat notifications mirror the same provider transcript.
       if (structuredRoles.get(threadId)?.has(role) || (role !== "user" && role !== "assistant"))
         return;
+      const previous = flatSegments.get(threadId)?.get(role);
+      flatSegments.get(threadId)?.delete(role);
       return {
         type: "transcript",
         plannerNativeThreadId: threadId,
         role,
         text,
-        segment: { id: `legacy:${++legacySequence}`, revision: 1, kind: "snapshot", final: true },
+        segment: {
+          id: previous?.id ?? `legacy:${++legacySequence}`,
+          revision: (previous?.revision ?? 0) + 1,
+          kind: "snapshot",
+          final: true,
+        },
       };
     },
     close(threadId: string) {
       threads.delete(threadId);
       structuredRoles.delete(threadId);
+      flatSegments.delete(threadId);
     },
   };
 }
@@ -7306,6 +7347,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         );
         yield* client.handleServerNotification("thread/realtime/transcript/done", (payload) =>
           offerTranscript(transcriptTracker.legacy(payload.threadId, payload.role, payload.text)),
+        );
+        yield* client.handleServerNotification("thread/realtime/transcript/delta", (payload) =>
+          offerTranscript(
+            transcriptTracker.legacyDelta(payload.threadId, payload.role, payload.delta),
+          ),
         );
         yield* client.handleServerRequest("item/tool/call", (payload) =>
           payload.tool === "t3_observatory"

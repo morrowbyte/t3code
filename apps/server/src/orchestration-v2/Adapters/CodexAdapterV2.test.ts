@@ -84,6 +84,40 @@ const decodeReplayTranscriptJson = Schema.decodeUnknownEffect(replayTranscriptJs
 const encodeStringJson = Schema.encodeEffect(Schema.fromJsonString(Schema.String));
 
 describe("original LiveVoice transcript segments", () => {
+  it("streams flat user and assistant speech independently and finalizes the same rows", () => {
+    const tracker = CodexAdapterV2.makeCodexLiveTranscriptTracker();
+    const user = tracker.legacyDelta("planner", "user", "Bitte ");
+    const assistant = tracker.legacyDelta("planner", "assistant", "Ich ");
+    const continued = tracker.legacyDelta("planner", "user", "stoppen");
+    assert.equal(continued?.type === "transcript" ? continued.text : null, "Bitte stoppen");
+    assert.equal(
+      continued?.type === "transcript" ? continued.segment?.id : null,
+      user?.type === "transcript" ? user.segment?.id : null,
+    );
+    assert.notEqual(
+      assistant?.type === "transcript" ? assistant.segment?.id : null,
+      user?.type === "transcript" ? user.segment?.id : null,
+    );
+    const final = tracker.legacy("planner", "user", "Bitte stoppen.");
+    assert.equal(
+      final?.type === "transcript" ? final.segment?.id : null,
+      user?.type === "transcript" ? user.segment?.id : null,
+    );
+    assert.equal(final?.type === "transcript" ? final.segment?.final : null, true);
+    const next = tracker.legacyDelta("planner", "user", "Weiter");
+    assert.notEqual(
+      next?.type === "transcript" ? next.segment?.id : null,
+      user?.type === "transcript" ? user.segment?.id : null,
+    );
+    const interrupted = tracker.legacyDelta("planner", "assistant", "helfe");
+    assert.equal(interrupted?.type === "transcript" ? interrupted.text : null, "Ich helfe");
+    tracker.close("planner");
+    const restarted = tracker.legacyDelta("planner", "assistant", "Neu");
+    assert.equal(restarted?.type === "transcript" ? restarted.text : null, "Neu");
+    assert.isUndefined(tracker.legacyDelta("planner", "system", "hidden"));
+    assert.isUndefined(tracker.legacyDelta("planner", "user", ""));
+  });
+
   it("retains provider IDs, raw deltas and corrected finals without flat mirrors or late partials", () => {
     const tracker = CodexAdapterV2.makeCodexLiveTranscriptTracker();
     const item = {
@@ -7153,13 +7187,13 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               },
               {
                 type: "emit_inbound",
-                label: "synthetic-user-transcript",
+                label: "synthetic-user-transcript-partial",
                 frame: {
-                  method: "thread/realtime/transcript/done",
+                  method: "thread/realtime/transcript/delta",
                   params: {
                     threadId: "synthetic-live-planner",
                     role: "user",
-                    text: "Synthetic received speech",
+                    delta: "Synthetic received speech",
                   },
                 },
               },
@@ -7203,6 +7237,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             event.type === "transcript" ? event.text : null,
             "Synthetic received speech",
           );
+          assert.equal(event.type === "transcript" ? event.segment?.final : null, false);
           assert.equal(harness.terminalEvents()[0]?.status, "failed");
           yield* Deferred.succeed(releaseResponse, undefined);
         }).pipe(
