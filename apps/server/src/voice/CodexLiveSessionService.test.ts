@@ -3771,8 +3771,12 @@ it.effect.each([false, true])(
       });
       yield* program.pipe(
         Effect.withTracer(deliveryTracer),
-        Effect.provide(Logger.layer([warningLogger], { mergeWithExisting: false })),
-        Effect.provide(Layer.provideMerge(CodexLiveSessionService.layer, dependencies)),
+        Effect.provide(
+          Layer.merge(
+            Logger.layer([warningLogger], { mergeWithExisting: false }),
+            Layer.provideMerge(CodexLiveSessionService.layer, dependencies),
+          ),
+        ),
       );
     }),
 );
