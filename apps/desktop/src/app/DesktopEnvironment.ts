@@ -108,11 +108,11 @@ export function resolveDesktopAppBranding(input: {
   readonly productName?: string;
 }): DesktopAppBranding {
   const stageLabel = resolveDesktopAppStageLabel(input);
+  const productName = input.productName === "Morrowbyte" ? APP_BASE_NAME : input.productName;
   return {
-    baseName: input.productName ?? APP_BASE_NAME,
+    baseName: productName ?? APP_BASE_NAME,
     stageLabel,
-    displayName:
-      input.productName ?? (input.profileId ? "Crew" : `${APP_BASE_NAME} (${stageLabel})`),
+    displayName: productName ?? (input.profileId ? "Crew" : `${APP_BASE_NAME} (${stageLabel})`),
   };
 }
 
