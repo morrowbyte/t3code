@@ -1,4 +1,5 @@
 import { assert, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import {
   CommandId,
   MessageId,
@@ -24,6 +25,7 @@ import * as Fiber from "effect/Fiber";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
+import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -36,6 +38,7 @@ import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
+import { DispatchModeLimit, type DispatchModeRefusal } from "./DispatchModeLimit.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -61,6 +64,160 @@ const layerTest = Layer.mergeAll(
     ProviderAdapterRegistry.layerFromAdapters([adapter]),
     { databaseLayer: layerDatabase, runEffectWorker: false },
   ),
+);
+
+it.effect.each([false, true])(
+  "commits task cancellation before wakeups and preserves late mode refusal (%s)",
+  (raiseMode) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const locks = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+      const threadId = ThreadId.make(`parent:atomic-cancel:${raiseMode}`);
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`create:${raiseMode}`),
+        threadId,
+        projectId: ProjectId.make(`project:atomic-cancel:${raiseMode}`),
+        title: "Atomic cancel",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`delegate:${raiseMode}`),
+        threadId,
+        messageId: MessageId.make(`delegate:${raiseMode}`),
+        text: "Remain active",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "voice",
+        delegation: { modelSelection },
+      });
+      const parent = yield* projections.getThreadProjection(threadId);
+      const task = parent.subagents[0]!;
+      const childThreadId = task.childThreadId!;
+      yield* orchestrator.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make(`restrict:${raiseMode}`),
+        threadId: childThreadId,
+        runtimeMode: "approval-required",
+      });
+      const child = yield* projections.getThreadProjection(childThreadId);
+      assert.equal(child.thread.runtimeMode, "approval-required");
+      const held = yield* Deferred.make<void>();
+      const requested = yield* Deferred.make<void>();
+      const changeMode = yield* Deferred.make<void>();
+      const changed = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const holder = yield* locks
+        .withLock(
+          childThreadId,
+          Effect.gen(function* () {
+            yield* Deferred.succeed(held, undefined);
+            yield* Deferred.await(changeMode);
+            if (raiseMode)
+              yield* sink.write({
+                events: [
+                  {
+                    id: EventId.make("raised-after-preflight"),
+                    type: "thread.metadata-updated",
+                    threadId: childThreadId,
+                    occurredAt: yield* DateTime.now,
+                    payload: { ...child.thread, runtimeMode: "full-access" },
+                  },
+                ],
+              });
+            yield* Deferred.succeed(changed, undefined);
+            yield* Deferred.await(release);
+          }),
+        )
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(held);
+      const withLock = locks.withLock;
+      const observeLock: ThreadCommandExecutor.ThreadCommandExecutor["Service"]["withLock"] = (
+        key,
+        effect,
+      ) =>
+        key === childThreadId
+          ? Deferred.succeed(requested, undefined).pipe(Effect.andThen(withLock(key, effect)))
+          : withLock(key, effect);
+      using _locks = vi.spyOn(locks, "withLock").mockImplementation(observeLock);
+      const observations: Array<boolean> = [];
+      const signal = outbox.signalCancellations;
+      using _signal = vi.spyOn(outbox, "signalCancellations").mockImplementation((ids) =>
+        Effect.gen(function* () {
+          const current = yield* projections.getThreadProjection(threadId);
+          observations.push(
+            current.subagents.find((candidate) => candidate.id === task.id)?.completionDelivery
+              ?.state === "disposed",
+          );
+          yield* signal(ids);
+        }).pipe(Effect.orDie),
+      );
+      const commandId = CommandId.make(`cancel:${raiseMode}`);
+      const stopping = yield* orchestrator
+        .dispatch(
+          { type: "thread.stop", commandId, threadId: childThreadId, stopDelegatedTasks: false },
+          {
+            delegatedTaskCancellation: { parentThreadId: threadId, taskId: task.id },
+          },
+        )
+        .pipe(
+          Effect.provideService(DispatchModeLimit, {
+            runtimeMode: "approval-required",
+            interactionMode: "default",
+            refused: yield* Ref.make<DispatchModeRefusal | undefined>(undefined),
+          }),
+          Effect.result,
+          Effect.forkChild({ startImmediately: true }),
+        );
+      yield* Deferred.await(requested);
+      yield* Deferred.succeed(changeMode, undefined);
+      yield* Deferred.await(changed);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(holder);
+      const stopped = yield* Fiber.join(stopping);
+      const after = yield* projections.getThreadProjection(threadId);
+      if (raiseMode) {
+        assert.isTrue(Result.isFailure(stopped));
+        if (Result.isFailure(stopped))
+          assert.equal(stopped.failure._tag, "OrchestratorThreadAboveModeLimitError");
+        assert.deepEqual(after.subagents[0]?.completionDelivery, task.completionDelivery);
+        assert.deepEqual(observations, []);
+        assert.equal(
+          (yield* projections.getThreadProjection(childThreadId)).runs[0]?.status,
+          child.runs[0]?.status,
+        );
+        assert.equal(
+          (yield* sink.readByCommandId({ commandId }).pipe(Stream.runCollect)).length,
+          0,
+        );
+      } else {
+        assert.isTrue(Result.isSuccess(stopped));
+        assert.equal(after.subagents[0]?.completionDelivery?.state, "disposed");
+        assert.deepEqual(observations, [true]);
+        if (Result.isSuccess(stopped)) {
+          assert.isTrue(
+            stopped.success.storedEvents.some(
+              (stored) =>
+                stored.event.threadId === threadId && stored.event.type === "subagent.updated",
+            ),
+          );
+          assert.isTrue(
+            stopped.success.storedEvents.some((stored) => stored.event.threadId === childThreadId),
+          );
+        }
+      }
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
 );
 
 it.effect.each([

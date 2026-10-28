@@ -11900,6 +11900,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   const dispatchOnce = Effect.fn("orchestrationV2.dispatch.once")(function* (
     command: OrchestrationV2ServerCommand,
+    options?: DispatchRuntimeOptions,
   ): Effect.fn.Return<
     {
       readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
@@ -12194,6 +12195,32 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "thread.stop":
         cancelUnsettledEffects = yield* dispatchThreadStop(command, events, effects);
+        if (options?.delegatedTaskCancellation !== undefined) {
+          const { parentThreadId, taskId } = options.delegatedTaskCancellation;
+          const parent = yield* projectionStore
+            .getThreadRecords(parentThreadId, ["subagents"])
+            .pipe(mapDispatchError(command));
+          if (
+            !parent.subagents.some(
+              (task) => task.id === taskId && task.childThreadId === command.threadId,
+            )
+          ) {
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: "The cancelled task does not own this child thread.",
+            });
+          }
+          yield* dispatchDelegatedTaskCompletionDeliveryResolution(
+            {
+              type: "delegated_task.completion-delivery.dispose",
+              commandId: command.commandId,
+              parentThreadId,
+              taskId,
+            },
+            events,
+          );
+        }
         for (const event of yield* PrivilegedCommandCommands.stop({
           threadId: command.threadId,
         }).pipe(Effect.provideService(ProjectionStoreV2, projectionStore)))
@@ -12492,7 +12519,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (shell !== null) yield* refuseAboveDispatchModeLimit(command, threadId, shell);
     }
 
-    const plan = yield* dispatchOnce(command).pipe(
+    const plan = yield* dispatchOnce(command, options).pipe(
       Effect.flatMap((planned) =>
         planned.events.length > 0 ||
         command.type === "thread.background-work.settle" ||
@@ -12659,6 +12686,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     command: OrchestrationV2ServerCommand,
     options?: DispatchRuntimeOptions,
   ) {
+    if (options?.delegatedTaskCancellation !== undefined) {
+      const { parentThreadId } = options.delegatedTaskCancellation;
+      if (
+        command.type !== "thread.stop" ||
+        parentThreadId === command.threadId ||
+        (yield* appOwnedSubagentParentThreadId(command.threadId).pipe(
+          mapDispatchError(command),
+        )) !== parentThreadId
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "Task cancellation requires its exact parent and child Stop.",
+        });
+      }
+      return yield* threadDispatch.withLock(
+        parentThreadId,
+        threadDispatch.withLock(command.threadId, dispatchWithReceiptEffect(command, options)),
+      );
+    }
     if (command.type === "message.dispatch" && command.delegation?.caller !== undefined) {
       const parent = yield* appOwnedSubagentParentThreadId(command.threadId).pipe(
         mapDispatchError(command),

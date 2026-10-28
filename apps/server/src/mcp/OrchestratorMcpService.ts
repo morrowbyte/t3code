@@ -2170,40 +2170,20 @@ const make = Effect.gen(function* () {
         const parentTask = parentProjection.subagents.find(
           (task) => task.id === input.taskId && task.origin === "app_owned",
         );
-        const disposeCompletionDelivery =
-          parentTask?.completionDelivery?.state === "disposed"
-            ? Effect.void
-            : threadManagement
-                .dispatch({
-                  type: "delegated_task.completion-delivery.dispose",
-                  commandId: stableCommandId({
-                    scope,
-                    requestKey: key,
-                    operation: "cancel-task-completion-delivery",
-                  }),
-                  parentThreadId: parentThreadId,
-                  taskId: input.taskId,
-                })
-                .pipe(
-                  Effect.asVoid,
-                  Effect.mapError((error) =>
-                    failure(
-                      "orchestration_error",
-                      `Unable to dispose delegated task ${input.taskId} completion delivery: ${errorMessage(error)}`,
-                    ),
-                  ),
-                );
         const stopChild = Effect.gen(function* () {
           const commandId = stableCommandId({ scope, requestKey: key, operation: "cancel-task" });
           const reason = input.reason;
           yield* threadManagement
-            .dispatch({
-              type: "thread.stop",
-              commandId,
-              threadId: current.childThreadId,
-              stopDelegatedTasks: false,
-              ...(reason === undefined ? {} : { reason }),
-            })
+            .dispatch(
+              {
+                type: "thread.stop",
+                commandId,
+                threadId: current.childThreadId,
+                stopDelegatedTasks: false,
+                ...(reason === undefined ? {} : { reason }),
+              },
+              { delegatedTaskCancellation: { parentThreadId, taskId: input.taskId } },
+            )
             .pipe(
               Effect.mapError((error) =>
                 failure(
@@ -2298,7 +2278,6 @@ const make = Effect.gen(function* () {
           // The child can still run work for another turn, so it is stopped either way.
           yield* stopWithinLimit;
           const cancelled = yield* cancelOrphan;
-          yield* disposeCompletionDelivery;
           return {
             taskId: input.taskId,
             status: cancelled ? "cancelled" : current.status,
@@ -2325,14 +2304,6 @@ const make = Effect.gen(function* () {
           );
         }
         yield* stopWithinLimit;
-        yield* disposeCompletionDelivery.pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("orchestrator-mcp.cancel-task.delivery-dispose-failed", {
-              taskId: input.taskId,
-              cause,
-            }),
-          ),
-        );
         return {
           taskId: input.taskId,
           status: "cancel_requested",
