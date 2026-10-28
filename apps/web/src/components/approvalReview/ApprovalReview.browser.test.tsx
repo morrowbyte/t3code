@@ -12,6 +12,7 @@ import {
   type ReviewBundle,
 } from "@t3tools/client-runtime/approvalReview";
 import { hashTelemetryId as sha256 } from "@t3tools/shared/telemetryId";
+import { EditorView } from "@codemirror/view";
 import { expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
 import { act, render } from "../../../test/render";
@@ -433,7 +434,9 @@ it("submits an ordinary provider approval only once through its existing request
   expect(onRespond).toHaveBeenCalledExactlyOnceWith(approval.requestId, "accept");
 });
 
-function privilegedFixture() {
+function privilegedFixture(
+  source: Partial<Pick<PrivilegedCommandAuthority["bundle"], "script" | "shell" | "cwd">> = {},
+) {
   const bundle = {
     environmentId: EnvironmentId.make("test-host"),
     threadId: ThreadId.make("thread-1"),
@@ -444,6 +447,7 @@ function privilegedFixture() {
     shell: "powershell" as const,
     cwd: "C:\\work",
     timeoutMs: 12000,
+    ...source,
   };
   const requestId = RuntimeRequestId.make("privileged-request");
   const canonical = JSON.stringify(
@@ -468,8 +472,40 @@ function privilegedFixture() {
   return { privilegedCommand, approval };
 }
 
-it("reviews the frozen privileged script and submits its exact hash once", async () => {
-  const { privilegedCommand, approval } = privilegedFixture();
+it.each([
+  {
+    shell: "sh" as const,
+    cwd: "/var/tmp",
+    script: [
+      "set -eu",
+      "",
+      "PATH='/usr/sbin:/usr/bin:/sbin:/bin'",
+      "export PATH",
+      "report_dir='/var/tmp/T3 diagnostics'",
+      "",
+      'mkdir -p "$report_dir"',
+      'ss -ltn > "$report_dir/listeners.txt"',
+      "printf '%s\\n' 'Prüfung abgeschlossen'",
+      "",
+    ].join("\n"),
+  },
+  {
+    shell: "powershell" as const,
+    cwd: "C:\\ProgramData",
+    script: [
+      "$ErrorActionPreference = 'Stop'",
+      "",
+      "$reportDirectory = 'C:\\ProgramData\\T3 diagnostics'",
+      "New-Item -ItemType Directory -Path $reportDirectory -Force | Out-Null",
+      "",
+      "Get-Service -Name 'sshd' |",
+      "    Out-File -LiteralPath (Join-Path $reportDirectory 'services.txt')",
+      'Write-Output "Prüfung: $reportDirectory"',
+      "",
+    ].join("\n"),
+  },
+])("reviews the frozen $shell script and submits its exact hash once", async (source) => {
+  const { privilegedCommand, approval } = privilegedFixture(source);
   const onRespond = vi.fn(async () => undefined);
   await using screen = await render(
     <ApprovalReview
@@ -485,11 +521,13 @@ it("reviews the frozen privileged script and submits its exact hash once", async
   const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
   expect(dialog.textContent).toContain("Workstation");
   expect(dialog.textContent).toContain("Repair the service");
-  expect(dialog.textContent).toContain("powershell");
-  expect(dialog.textContent).toContain("C:\\work");
-  await expect
-    .poll(() => document.querySelector(".cm-content")?.textContent)
-    .toContain("Write-Output 'hello'");
+  expect(dialog.textContent).toContain(source.shell);
+  expect(dialog.textContent).toContain(source.cwd);
+  await vi.waitFor(() => {
+    const content = dialog.querySelector<HTMLElement>(".cm-content");
+    expect(content).not.toBeNull();
+    expect(EditorView.findFromDOM(content!)?.state.sliceDoc()).toBe(source.script);
+  });
   expect(document.querySelector(".cm-content")?.getAttribute("contenteditable")).toBe("false");
   expect(document.querySelector('[aria-label="Source file"]')).toBeNull();
   await userEvent.click(screen.getByRole("button", { name: "Approve once" }));

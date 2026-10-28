@@ -16,9 +16,41 @@ import * as McpToolAccessTestkit from "../../McpToolAccess.testkit.ts";
 import * as Handlers from "./handlers.ts";
 import { PrivilegedCommandToolkit } from "./tools.ts";
 
-it.effect(
-  "derives the proposal identity from the live invocation and offers no approval tool",
-  () =>
+it.effect.each([
+  {
+    shell: "sh" as const,
+    cwd: "/var/tmp",
+    script: [
+      "set -eu",
+      "",
+      "PATH='/usr/sbin:/usr/bin:/sbin:/bin'",
+      "export PATH",
+      "report_dir='/var/tmp/T3 diagnostics'",
+      "",
+      'mkdir -p "$report_dir"',
+      'ss -ltn > "$report_dir/listeners.txt"',
+      "printf '%s\\n' 'Prüfung abgeschlossen'",
+      "",
+    ].join("\n"),
+  },
+  {
+    shell: "powershell" as const,
+    cwd: "C:\\ProgramData",
+    script: [
+      "$ErrorActionPreference = 'Stop'",
+      "",
+      "$reportDirectory = 'C:\\ProgramData\\T3 diagnostics'",
+      "New-Item -ItemType Directory -Path $reportDirectory -Force | Out-Null",
+      "",
+      "Get-Service -Name 'sshd' |",
+      "    Out-File -LiteralPath (Join-Path $reportDirectory 'services.txt')",
+      'Write-Output "Prüfung: $reportDirectory"',
+      "",
+    ].join("\r\n"),
+  },
+])(
+  "preserves the $shell proposal bytes through the tool contract while binding caller identity",
+  ({ shell, cwd, script }) =>
     Effect.gen(function* () {
       const calls: unknown[] = [];
       const identity = {
@@ -28,9 +60,9 @@ it.effect(
       };
       const input = {
         purpose: "Inspect temporary artifacts",
-        script: "printf 'reviewed bytes\\n'\n",
-        shell: "sh" as const,
-        cwd: "/tmp",
+        script,
+        shell,
+        cwd,
         timeoutMs: 1000,
       };
       const requestId = RuntimeRequestId.make("privileged-command:test");
@@ -86,3 +118,13 @@ it.effect(
       ]);
     }),
 );
+
+it("describes readable scripts as proposal guidance without adding a style approval", () => {
+  const description = PrivilegedCommandToolkit.tools.privileged_command_request.description;
+  expect(description).toContain("Check the task and host context before proposing");
+  expect(description).toContain("POSIX shell or PowerShell");
+  expect(description).toContain("reuse repeated paths and values");
+  expect(description).toContain("Keep one-off literals inline when naming adds no clarity");
+  expect(description).toContain("No extra approval round solely for style");
+  expect(description).toContain("Never reformat an approved script");
+});

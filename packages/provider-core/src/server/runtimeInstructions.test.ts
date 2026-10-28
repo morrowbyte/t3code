@@ -13,6 +13,29 @@ describe("buildRuntimeInstructions", () => {
   });
 
   it.each(["Codex", "Claude Code", "Cursor"])(
+    "guides %s to prepare readable native scripts before the existing approval",
+    (harness) => {
+      const instructions = buildRuntimeInstructions({ harness });
+      expect(instructions).toContain(
+        "Before proposing a script, check the available task and host context",
+      );
+      expect(instructions).toContain("PATH of the elevated process");
+      expect(instructions).toContain("POSIX shell and PowerShell");
+      expect(instructions).toContain("reuse repeated paths and values");
+      expect(instructions).toContain(
+        "Keep one-off literals inline when a variable adds no clarity",
+      );
+      expect(instructions).toContain(
+        "use it consistently instead of repeating absolute executable paths",
+      );
+      expect(instructions).toContain(
+        "exact submitted script is what the user reviews and the host executes",
+      );
+      expect(instructions).toContain("Do not add an approval round solely for style");
+    },
+  );
+
+  it.each(["Codex", "Claude Code", "Cursor"])(
     "asks %s to supply semantic labels with executable tool calls",
     (harness) => {
       const instructions = buildRuntimeInstructions({ harness });
