@@ -244,14 +244,10 @@ export const make = Effect.gen(function* () {
     yield* gate.withPermit(work).pipe(Effect.forkIn(scope));
   });
   return {
-    retainedTitle: (item: ToolItem) => {
-      const source = toolActivitySourceTitle(item);
-      return source && source !== item.title
-        ? source
-        : isToolIntentMissing(item) && retainedInputs.get(itemKey(item)) === toolIntentInput(item)
-          ? retained.get(itemKey(item))
-          : undefined;
-    },
+    retainedTitle: (item: ToolItem) =>
+      isToolIntentMissing(item) && retainedInputs.get(itemKey(item)) === toolIntentInput(item)
+        ? retained.get(itemKey(item))
+        : undefined,
     retainedPresentation: (item: ToolItem) => {
       const presentation = presentations.get(itemKey(item));
       return presentation?.sourceTitle === toolActivitySourceTitle(item) ? presentation : undefined;

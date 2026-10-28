@@ -22,6 +22,7 @@ import * as ServerSettingsService from "../serverSettings.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as TextGeneration from "./TextGeneration.ts";
 import * as Service from "./ToolIntentGeneration.ts";
+import { toolActivitySourceTitle } from "@t3tools/shared/toolActivity";
 
 const item = {
   id: TurnItemId.make("new-runtime-tool"),
@@ -265,7 +266,8 @@ it.effect(
           '/run/current-system/sw/bin/bash -lc "# Intent: Isolierte Crew-Dev-Instanz starten\nnode dev"',
         title: "Start Isolated Crew Dev Instance",
       };
-      expect(service.retainedTitle(wrapped)).toBe("Isolierte Crew-Dev-Instanz starten");
+      expect(service.retainedTitle(wrapped)).toBeUndefined();
+      expect(toolActivitySourceTitle(wrapped)).toBe("Isolierte Crew-Dev-Instanz starten");
       expect(Service.isToolIntentMissing(wrapped)).toBe(false);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

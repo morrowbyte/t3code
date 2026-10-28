@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  DEFAULT_SERVER_SETTINGS,
   CheckpointId,
   CheckpointRef,
   CheckpointScopeId,
@@ -40,6 +41,7 @@ import * as Stream from "effect/Stream";
 import { toolOutputImages } from "@t3tools/shared/toolOutput";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerConfig from "../config.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
@@ -2426,6 +2428,153 @@ it.effect(
           layerTest.pipe(
             Layer.provideMerge(
               ReasoningSummaryGeneration.layer.pipe(Layer.provide(fakeGeneration)),
+            ),
+            Layer.provide(NodeServices.layer),
+            Layer.fresh,
+          ),
+        ),
+      );
+    }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "preserves the native tool title through authored-comment translation and later provider updates",
+  () =>
+    Effect.gen(function* () {
+      const requests = yield* Queue.make<{
+        input: TextGeneration.ThreadTitleGenerationInput;
+        reply: Deferred.Deferred<{ title: string }>;
+      }>();
+      const fakeGeneration = Layer.mock(TextGeneration.TextGeneration)({
+        generateThreadTitle: (input) =>
+          Effect.gen(function* () {
+            const reply = yield* Deferred.make<{ title: string }>();
+            yield* Queue.offer(requests, { input, reply });
+            return yield* Deferred.await(reply);
+          }),
+      });
+      const settings = Layer.mock(ServerSettings.ServerSettingsService)({
+        getSettings: Effect.succeed({ ...DEFAULT_SERVER_SETTINGS, toolActivityLanguage: "en" }),
+      });
+      yield* Effect.gen(function* () {
+        const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const allocator = yield* IdAllocator.IdAllocatorV2;
+        const now = yield* DateTime.now;
+        const thread = yield* threadCreatedEvent(now);
+        yield* sink.write({ events: [thread] });
+        const providerSessionId = yield* allocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId: thread.threadId,
+        });
+        const original: Extract<OrchestrationV2TurnItem, { type: "command_execution" }> = {
+          id: TurnItemId.make("native-title-preserved"),
+          threadId: thread.threadId,
+          runId: null,
+          nodeId: null,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 1,
+          status: "running",
+          title: "Check Installed Version",
+          startedAt: now,
+          completedAt: null,
+          updatedAt: now,
+          type: "command_execution",
+          input:
+            '/run/current-system/sw/bin/bash -lc "# Intent: Installierte Version prüfen\nprintf version"',
+        };
+        const ingest = (turnItem: typeof original) =>
+          ingestor.ingestNormalized({
+            providerSessionId,
+            providerInstanceId: modelSelection.instanceId,
+            threadId: thread.threadId,
+            event: { type: "turn_item.updated", driver: CODEX_DRIVER, turnItem },
+          });
+        const first = yield* ingest(original);
+        assert.equal(
+          first[0]?.event.type === "turn-item.updated" ? first[0].event.payload.title : undefined,
+          original.title,
+        );
+        assert.equal(
+          (yield* projections.getTurnItem({ threadId: original.threadId, itemId: original.id }))
+            ?.title,
+          original.title,
+        );
+        const request = yield* Queue.take(requests);
+        assert.include(request.input.message, "Installierte Version prüfen");
+        assert.include(request.input.instructions ?? "", "English");
+        const completed = {
+          ...original,
+          status: "completed" as const,
+          completedAt: now,
+          output: "installed version",
+          exitCode: 0,
+        };
+        const completion = yield* ingest(completed);
+        assert.equal(
+          completion[0]?.event.type === "turn-item.updated"
+            ? completion[0].event.payload.title
+            : undefined,
+          original.title,
+        );
+        const presentation = {
+          title: "Check installed version",
+          sourceTitle: "Installierte Version prüfen",
+          language: "en" as const,
+        };
+        const translated = yield* sink
+          .stream({
+            threadId: original.threadId,
+            afterSequence: yield* sink.latestSequence({ threadId: original.threadId }),
+          })
+          .pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "turn-item.updated" &&
+                stored.event.payload.type === "command_execution" &&
+                stored.event.payload.activityPresentation?.title === presentation.title,
+            ),
+            Stream.take(1),
+            Stream.runCollect,
+            Effect.forkScoped,
+          );
+        yield* Deferred.succeed(request.reply, { title: presentation.title });
+        const translationEvents = yield* Fiber.join(translated);
+        assert.equal(
+          translationEvents[0]?.event.type === "turn-item.updated"
+            ? translationEvents[0].event.payload.title
+            : undefined,
+          original.title,
+        );
+        assert.deepEqual(
+          yield* projections.getTurnItem({ threadId: original.threadId, itemId: original.id }),
+          { ...completed, activityPresentation: presentation },
+        );
+        const later = { ...completed, output: "newer provider output" };
+        const laterEvents = yield* ingest(later);
+        assert.equal(
+          laterEvents[0]?.event.type === "turn-item.updated"
+            ? laterEvents[0].event.payload.title
+            : undefined,
+          original.title,
+        );
+        assert.deepEqual(
+          yield* projections.getTurnItem({ threadId: original.threadId, itemId: original.id }),
+          { ...later, activityPresentation: presentation },
+        );
+        assert.equal(yield* Queue.size(requests), 0);
+      }).pipe(
+        Effect.provide(
+          layerTest.pipe(
+            Layer.provideMerge(
+              ToolIntentGeneration.layer.pipe(
+                Layer.provide(fakeGeneration),
+                Layer.provide(settings),
+              ),
             ),
             Layer.provide(NodeServices.layer),
             Layer.fresh,
