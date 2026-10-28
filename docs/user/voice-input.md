@@ -48,3 +48,12 @@ brief spoken explanation, and follow-up questions can use those results without
 starting the same task again. You can interrupt speech or redirect an active
 task. Interrupting speech leaves the background task running. A new call has
 bounded recent chat context; ask for a result again if more detail is needed.
+
+Describe a complete change and keep talking: the agent can start clear requests
+before your whole contribution ends. Later corrections refine the existing work.
+You do not need to say a special command to submit a spoken request.
+
+For visual feedback, select an element in the browser preview and then talk about
+it. The current selection is shared with the call without a typed comment. Clear
+the selection or select another element when you change targets. The selection
+contains a snapshot of the page at the time you picked it.

@@ -213,6 +213,16 @@ picker, and a finished download is offered for you to save. Popups such as
 sign-in windows open as their own tabs. Downloads stay on the host until the
 tab closes. Audio does not play on your device.
 
+For live development, run your project's development server and open its address
+in the browser beside the chat. Its hot updates continue while the agent edits
+files; state preservation depends on the framework and the kind of change. Use
+the development server rather than a production build when you want hot updates.
+
+Select a page element to share visual feedback with the agent. You can speak
+about the selection during a voice call, send a comment immediately, or add it
+to your draft. An optional screenshot gives the agent the visible page as well
+as the selected element's context. Navigation clears the selection.
+
 On a phone, tap the floating preview's corner dot to show its controls, then
 **Pop into separate window** to keep watching in picture-in-picture over other
 apps.
