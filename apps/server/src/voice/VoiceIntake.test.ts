@@ -1,5 +1,9 @@
 import { assert, it } from "@effect/vitest";
-import { LiveVoiceError, VoiceIntakeProvenance } from "@t3tools/contracts";
+import {
+  LiveVoiceError,
+  VoiceIntakeProvenance,
+  VoiceIntakeDecision as VoiceIntakeDecisionSchema,
+} from "@t3tools/contracts";
 import type {
   LiveVoiceEvent,
   VoiceIntakeDecision,
@@ -16,6 +20,8 @@ import {
   transferVoiceIntakeClaim,
   type VoiceIntakeDependencies,
 } from "./VoiceIntake.ts";
+
+const decodeIntakeDecision = Schema.decodeEffect(Schema.fromJsonString(VoiceIntakeDecisionSchema));
 
 const source = (
   text: string,
@@ -2345,5 +2351,110 @@ it.effect.each([8, 9])(
       yield* test.engine.processLatest();
       assert.equal(test.admitted.length, count === 8 ? 1 : 0);
       if (count === 8) assert.equal(test.admitted[0]!.sources.length, 8);
+    }),
+);
+
+it.effect.each([0, 1, 2])(
+  "fences growth of crossed segment %s while only the last segment may append",
+  (changed) =>
+    Effect.gen(function* () {
+      const held = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const parts = ['Use "#', "send-", 'packet" as selector.'];
+      const test = setup((snapshot) =>
+        Effect.gen(function* () {
+          yield* Deferred.succeed(held, undefined);
+          yield* Deferred.await(release);
+          return {
+            requestId: snapshot.requestId,
+            actions: [
+              {
+                type: "new" as const,
+                projectId: null,
+                request: "Use the selector.",
+                readOnly: false,
+                sources: [source(parts.join(""), "p0")],
+              },
+            ],
+          };
+        }),
+      );
+      for (const [index, text] of parts.entries())
+        yield* test.engine.observe(transcript(text, 1, false, `p${index}`));
+      const deciding = yield* test.engine.processLatest().pipe(Effect.forkChild);
+      yield* Deferred.await(held);
+      yield* test.engine.observe(
+        transcript(parts[changed]! + " additional characters", 2, false, `p${changed}`),
+      );
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(deciding);
+      assert.equal(test.admitted.length, changed === 2 ? 1 : 0);
+    }),
+);
+
+it.effect(
+  "preserves boundary whitespace through the real New decoder when transferring a pending group",
+  () =>
+    Effect.gen(function* () {
+      const initial = "Add the form.";
+      const test = setup((snapshot) =>
+        Effect.gen(function* () {
+          const owner = snapshot.intents[0];
+          if (!owner)
+            return {
+              requestId: snapshot.requestId,
+              actions: [
+                {
+                  type: "new" as const,
+                  projectId: null,
+                  request: initial,
+                  readOnly: false,
+                  sources: [source(initial)],
+                },
+              ],
+            };
+          if (owner.status !== "completed")
+            return {
+              requestId: snapshot.requestId,
+              actions: [
+                {
+                  type: "refine" as const,
+                  intentId: owner.id,
+                  message: "Change the port.",
+                  readOnly: false,
+                  sources: [source("Change port.", "a")],
+                },
+              ],
+            };
+          return yield* decodeIntakeDecision(
+            JSON.stringify({
+              requestId: snapshot.requestId,
+              actions: [
+                {
+                  type: "new",
+                  projectId: null,
+                  request: "Change the port.",
+                  readOnly: false,
+                  sources: [source("Change ", "a"), source("port.", "b")],
+                },
+              ],
+            }),
+          );
+        }),
+      );
+      yield* test.engine.observe(transcript(initial));
+      yield* test.engine.processLatest();
+      test.setStatus("preparing");
+      yield* test.engine.observe(transcript("Change ", 1, true, "a"));
+      yield* test.engine.observe(transcript("port.", 1, true, "b"));
+      yield* test.engine.processLatest();
+      test.complete();
+      yield* test.engine.processLatest();
+      assert.equal(test.admitted.length, 2);
+      assert.isNull((yield* test.engine.state).intents[0]!.pendingSteer);
+      assert.deepEqual(
+        test.admitted[1]!.sources.map((source) => source.quote),
+        ["Change ", "port."],
+      );
     }),
 );

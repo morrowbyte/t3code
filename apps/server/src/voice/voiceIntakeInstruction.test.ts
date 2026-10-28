@@ -46,3 +46,15 @@ it("rejects an out-of-contract input without silently cutting its authorization"
   assert.isUndefined(voiceIntakeInstruction([{ quote: "x" }], "p".repeat(24_001)));
   assert.isUndefined(voiceIntakeInstruction([{ quote: "x" }], null, []));
 });
+
+it("joins durable fragments of one original anchor without altering a literal selector", () => {
+  const sources = [
+    { quote: 'Use "#send-' },
+    { quote: 'packet" as selector.', continuesPrevious: true },
+    { quote: "Keep the existing label." },
+  ];
+  const text = voiceIntakeInstruction(sources)!;
+  assert.include(text, 'Use "#send-packet" as selector.');
+  assert.include(text, "selector.\n\nKeep the existing label.");
+  assert.notInclude(text, "#send-\n");
+});

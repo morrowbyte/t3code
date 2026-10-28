@@ -329,10 +329,16 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
     return false;
   };
   const currentSources = (sources: ReadonlyArray<VoiceIntakeSource>) =>
-    sources.every((source) => {
+    sources.every((source, index) => {
       const current = segments.get(source.segmentId);
+      const previous = sources[index - 1];
       return (
         current !== undefined &&
+        (!source.continuesPrevious ||
+          (previous !== undefined &&
+            source.start === 0 &&
+            segmentOrder.get(source.segmentId) === segmentOrder.get(previous.segmentId)! + 1 &&
+            segments.get(previous.segmentId)?.text.length === previous.end)) &&
         sourceEpochs.get(source) === (segmentRetractions.get(source.segmentId) ?? 0) &&
         (queuedSources.has(source) || decisionEpochs.get(source) === retractionEpoch) &&
         source.start < source.end &&
@@ -591,6 +597,7 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
               start: localStart,
               end: localEnd,
               quote: segment.text.slice(localStart, localEnd),
+              ...(bound.length ? { continuesPrevious: true } : {}),
             });
           offset += segment.text.length;
           if (offset >= start + anchor.quote.length) break;
@@ -682,6 +689,12 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
         reason = "source_already_owned";
         noticeVersion = snapshot.version;
         reportRejection("source_already_owned", index, action);
+        continue;
+      }
+      if (transfer && !transfer.pending.every((pending) => currentSources(pending.sources))) {
+        reason = "source_revised";
+        noticeVersion = snapshot.version;
+        reportRejection("source_revised", index, action);
         continue;
       }
       if (action.type === "confirm") {

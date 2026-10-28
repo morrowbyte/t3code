@@ -5,6 +5,7 @@ import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 const Text = Schema.String.check(Schema.isMaxLength(8_000));
 const Id = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
 const Revision = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));
+const OriginalQuote = Schema.String.check(Schema.isPattern(/\S/u), Schema.isMaxLength(2_000));
 export const VoiceIntakeSegment = Schema.Struct({
   id: Id,
   revision: Revision,
@@ -20,8 +21,10 @@ export const VoiceIntakeSource = Schema.Struct({
   revision: Revision,
   start: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   end: Revision,
+  // This fragment immediately continues the previous source's original anchor.
+  continuesPrevious: Schema.optionalKey(Schema.Boolean),
   // Offsets refer to the exact original characters, including boundary whitespace.
-  quote: Schema.String.check(Schema.isPattern(/\S/u), Schema.isMaxLength(2_000)),
+  quote: OriginalQuote,
 });
 export type VoiceIntakeSource = typeof VoiceIntakeSource.Type;
 const Sources = Schema.Array(VoiceIntakeSource).check(Schema.isMinLength(1), Schema.isMaxLength(8));
@@ -101,7 +104,7 @@ const DecisionSources = Schema.Array(
   Schema.Struct({
     segmentId: Id,
     revision: Revision,
-    quote: TrimmedNonEmptyString.check(Schema.isMaxLength(2_000)),
+    quote: OriginalQuote,
   }),
 ).check(Schema.isMinLength(1), Schema.isMaxLength(8));
 export const VoiceIntakeDecision = Schema.Struct({

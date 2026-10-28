@@ -131,6 +131,7 @@ it.effect.each([false, true])(
       const childIntakeSteers: string[] = [];
       let rejectSteerAtAdmission = false;
       let beforeMainCommit: (() => void) | undefined;
+      let mainDispatchCandidate: string | undefined;
       let quietSpeechSignal: Deferred.Deferred<void> | undefined;
       let sends = 0;
       let mainSend:
@@ -3166,6 +3167,7 @@ it.effect.each([false, true])(
         };
         mainSend = (input, options) =>
           Effect.gen(function* () {
+            mainDispatchCandidate = input.text;
             assert.isDefined(
               options?.voiceIntakeCommitGuard,
               "intake carries its runtime commit fence",
@@ -3419,6 +3421,15 @@ it.effect.each([false, true])(
             }
           ).intakeIntent.pendingSteer.message,
           pendingLabel,
+        );
+        assert.deepEqual(
+          (
+            decodeJson(pendingRecord[0]!.receipt_json) as {
+              intakeIntent: { pendingSteer: { sources: Array<{ continuesPrevious?: boolean }> } };
+            }
+          ).intakeIntent.pendingSteer.sources.map((source) => source.continuesPrevious ?? false),
+          [false, true, false],
+          "pending anchor grouping survives the durable receipt",
         );
         durableProjection = {
           ...durableProjection,
@@ -3679,6 +3690,67 @@ it.effect.each([false, true])(
           questionText,
           "pending public questions reach realtime without waiting for completion",
         );
+
+        const selectorStart = 'Use "#send-';
+        const selectorEnd = 'packet" as selector.';
+        decideIntakeSnapshot = ({ snapshot }) =>
+          Effect.succeed({
+            requestId: snapshot.requestId,
+            actions:
+              snapshot.segments.some((segment) => segment.id === "selector-end") &&
+              snapshot.segments.find((segment) => segment.id === "selector-start")?.revision === 1
+                ? [
+                    {
+                      type: "new",
+                      projectId: null,
+                      request: "Use the selector.",
+                      readOnly: false,
+                      sources: [
+                        {
+                          segmentId: "selector-start",
+                          revision: 1,
+                          quote: selectorStart + selectorEnd,
+                        },
+                      ],
+                    },
+                  ]
+                : [],
+          });
+        const selectorPrepared = new Promise<void>((resolve) => {
+          notifyIntakeProcessed = resolve;
+        });
+        yield* emitSpeech("user", selectorStart, "selector-start", 1, false);
+        yield* Effect.promise(() => selectorPrepared);
+        const boundaryStarted =
+          yield* Deferred.make<NonNullable<DispatchRuntimeOptions["voiceIntakeCommitGuard"]>>();
+        const boundaryRelease = yield* Deferred.make<void>();
+        beforeSourceCommit = { started: boundaryStarted, release: boundaryRelease };
+        yield* emitSpeech("user", selectorEnd, "selector-end", 1, false);
+        const boundaryGuard = yield* Deferred.await(boundaryStarted);
+        assert.include(
+          mainDispatchCandidate!,
+          selectorStart + selectorEnd,
+          "actual worker payload preserves the literal selector",
+        );
+        assert.notInclude(mainDispatchCandidate!, "#send-\n");
+        assert.isTrue(boundaryGuard.isCurrent());
+        yield* emitSpeech(
+          "user",
+          selectorStart + 'other", falling back to "#send-',
+          "selector-start",
+          2,
+          false,
+        );
+        assert.isFalse(
+          boundaryGuard.isCurrent(),
+          "prefix-preserving insertion before the next fragment cannot commit",
+        );
+        const boundaryRefused = new Promise<void>((resolve) => {
+          notifyIntakeProcessed = resolve;
+        });
+        yield* Deferred.succeed(boundaryRelease, undefined);
+        yield* Effect.promise(() => boundaryRefused);
+        assert.equal(mainInputs.length, 2, "the changed original selector is never dispatched");
 
         const staleClause = "Change the selected button to purple.";
         decideIntakeSnapshot = ({ snapshot }) =>

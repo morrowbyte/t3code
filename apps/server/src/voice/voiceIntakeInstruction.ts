@@ -1,10 +1,11 @@
 import type { VoiceIntakeSource } from "@t3tools/contracts";
 
-type Quotes = ReadonlyArray<Pick<VoiceIntakeSource, "quote">>;
+type Quotes = ReadonlyArray<Pick<VoiceIntakeSource, "quote" | "continuesPrevious">>;
 
 const validQuotes = (sources: Quotes) =>
   sources.length >= 1 &&
   sources.length <= 8 &&
+  !sources[0]?.continuesPrevious &&
   sources.every((source) => source.quote.trim().length > 0 && source.quote.length <= 2_000);
 
 // Only exact, validated speech authorizes work. Classifier summaries are labels.
@@ -20,7 +21,10 @@ export function voiceIntakeInstruction(
     (previewContext !== undefined && previewContext !== null && previewContext.length > 24_000)
   )
     return;
-  const quotes = (items: Quotes) => items.map((source) => source.quote).join("\n\n");
+  const quotes = (items: Quotes) =>
+    items
+      .map((source, index) => `${index && !source.continuesPrevious ? "\n\n" : ""}${source.quote}`)
+      .join("");
   return [
     ...(completedSources
       ? [

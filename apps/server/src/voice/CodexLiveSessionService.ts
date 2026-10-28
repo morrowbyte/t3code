@@ -2658,6 +2658,7 @@ export const layer: Layer.Layer<
           intakeLease.sourceSemaphore = sourceSemaphore;
           function commitOptions(
             sources: VoiceIntakeProvenance["sources"],
+            originalGroups: ReadonlyArray<VoiceIntakeProvenance["sources"]> = [],
           ): DispatchRuntimeOptions {
             return {
               voiceIntakeCommitGuard: {
@@ -2665,7 +2666,8 @@ export const layer: Layer.Layer<
                 isCurrent: () =>
                   active.get(leaseKey(row.lease_id, row.generation)) === intakeLease &&
                   intakeLease!.acceptingWork !== false &&
-                  engine.validateSourcesNow(sources),
+                  engine.validateSourcesNow(sources) &&
+                  originalGroups.every((group) => engine.validateSourcesNow(group)),
               },
             };
           }
@@ -2705,8 +2707,34 @@ export const layer: Layer.Layer<
                   }),
                 ),
               ),
-            admit: (voiceIntake, request, projectId, previewContext, sourceTransfer) =>
-              submitWork({
+            admit: Effect.fn("CodexLiveSessionService.admitIntake")(function* (
+              voiceIntake: VoiceIntakeProvenance,
+              request: string,
+              projectId?: string,
+              previewContext?: string | null,
+              sourceTransfer?: {
+                readonly intentId: string;
+                readonly requestIds: ReadonlyArray<string>;
+              },
+            ) {
+              const originals = sourceTransfer
+                ? (yield* engine.state).intents.flatMap((intent) =>
+                    intent.id === sourceTransfer.intentId
+                      ? [intent.pendingSteer, ...(intent.queuedSteers ?? [])]
+                          .filter(
+                            (pending): pending is NonNullable<VoiceIntakeIntent["pendingSteer"]> =>
+                              pending !== null &&
+                              sourceTransfer.requestIds.includes(pending.requestId),
+                          )
+                          .map((pending) => pending.sources)
+                      : [],
+                  )
+                : [];
+              if (sourceTransfer && originals.length !== sourceTransfer.requestIds.length)
+                return yield* liveError("dispatch_conflict");
+              // A reclassification may quote pieces separately. The original
+              // pending anchor groups still fence the exact transferred work.
+              const json = yield* submitWork({
                 principalSessionId: principal.sessionId,
                 leaseId: row.lease_id,
                 generation: row.generation,
@@ -2717,31 +2745,35 @@ export const layer: Layer.Layer<
                 message: request,
                 voiceIntake,
                 previewContext: previewContext ?? null,
-                validateSource: engine.validateSources(voiceIntake.sources),
-                dispatchOptions: commitOptions(voiceIntake.sources),
+                validateSource: engine
+                  .validateSources(voiceIntake.sources)
+                  .pipe(
+                    Effect.map(
+                      (valid) =>
+                        valid && originals.every((group) => engine.validateSourcesNow(group)),
+                    ),
+                  ),
+                dispatchOptions: commitOptions(voiceIntake.sources, originals),
                 ...(sourceTransfer ? { sourceTransfer } : {}),
                 ...(projectId === undefined ? {} : { projectId }),
-              }).pipe(
-                Effect.map((json): VoiceIntakeIntent => {
-                  const receipt = decodeReceipt(json) as Record<string, unknown>;
-                  return {
-                    id: voiceIntake.intentId,
-                    request,
-                    sources: voiceIntake.sources,
-                    claimedSources: voiceIntake.sources,
-                    provisional: voiceIntake.provisional,
-                    startedProvisional: voiceIntake.provisional,
-                    pendingSteer: null,
-                    projectId: String(receipt.projectId),
-                    taskId:
-                      typeof receipt.taskId === "string" ? receipt.taskId : voiceIntake.intentId,
-                    threadId: String(receipt.threadId),
-                    runId: String(receipt.runId),
-                    status: String(receipt.status),
-                    result: null,
-                  };
-                }),
-              ),
+              });
+              const receipt = decodeReceipt(json) as Record<string, unknown>;
+              return {
+                id: voiceIntake.intentId,
+                request,
+                sources: voiceIntake.sources,
+                claimedSources: voiceIntake.sources,
+                provisional: voiceIntake.provisional,
+                startedProvisional: voiceIntake.provisional,
+                pendingSteer: null,
+                projectId: String(receipt.projectId),
+                taskId: typeof receipt.taskId === "string" ? receipt.taskId : voiceIntake.intentId,
+                threadId: String(receipt.threadId),
+                runId: String(receipt.runId),
+                status: String(receipt.status),
+                result: null,
+              };
+            }),
             read,
             steer: (intent, _message, requestId, readOnly, previewContext) =>
               leaseLocks.withLock(
