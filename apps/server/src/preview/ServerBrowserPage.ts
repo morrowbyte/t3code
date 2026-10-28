@@ -1196,6 +1196,9 @@ interface InspectableElement {
   id: string;
   tagName: string;
   outerHTML: string;
+  isContentEditable: boolean;
+  textContent: string | null;
+  cloneNode: (deep: boolean) => InspectableElement;
   clientLeft: number;
   clientTop: number;
   parentElement: InspectableElement | null;
@@ -1297,13 +1300,31 @@ export const inspectAtPoint = async (
             node.ownerDocument.querySelectorAll(selector).length === 1
               ? selector
               : null;
+          // textContent joins text across spans/BR, so its value cannot reliably match
+          // serialized HTML. Remove protected editable subtrees from a copy first.
+          const html = node.cloneNode(true);
+          const redactEditable = (original: InspectableElement, copy: InspectableElement) => {
+            if (original.isContentEditable) {
+              const dots = browser
+                .getComputedStyle(original)
+                .getPropertyValue("-webkit-text-security");
+              if (dots !== "" && dots !== "none") {
+                copy.textContent = mask.replacement;
+                return;
+              }
+            }
+            for (let index = 0; index < original.children.length; index++) {
+              redactEditable(original.children[index]!, copy.children[index]!);
+            }
+          };
+          redactEditable(node, html);
           return {
             tagName: node.tagName.toLowerCase(),
             selector: uniqueSelector,
             // Mask before truncation and before returning HTML from the browser process.
             htmlPreview: (mask.source
-              ? node.outerHTML.replace(new RegExp(mask.source, "gu"), mask.replacement)
-              : node.outerHTML
+              ? html.outerHTML.replace(new RegExp(mask.source, "gu"), mask.replacement)
+              : html.outerHTML
             ).slice(0, 12000),
             styles: [
               "display",

@@ -70,6 +70,33 @@ describe("server browser element refs", () => {
   };
   const repeatedRows = `<ul>${Array.from({ length: 5 }, (_, i) => `<li>row ${i + 1}<button data-testid="delete-row" onclick="this.parentElement.remove()">delete</button></li>`).join("")}</ul>`;
 
+  it.each(["#masked", "#container"])(
+    "redacts structured masked editable HTML when inspecting %s without changing the page",
+    async (selector) => {
+      const normal = '<p id="normal">Normal <em>formatted</em><br>text</p>';
+      const protectedContent =
+        selector === "#masked"
+          ? "secret<br>value"
+          : "<span>sec</span>ret<br>va<span><b>lue</b></span>";
+      await page.setContent(
+        `<section id="container" style="padding:24px"><div id="masked" contenteditable style="-webkit-text-security:disc;padding:12px">${protectedContent}</div>${normal}<output>secretvalue</output></section>`,
+      );
+      const box = await page.locator(selector).boundingBox();
+      expect(box).not.toBeNull();
+      const annotation = await ServerBrowserPage.inspectAtPoint(page, box!.x + 2, box!.y + 2, cdp);
+      const selected = annotation?.elements[0]?.element;
+      expect(selected?.tagName).toBe(selector === "#masked" ? "div" : "section");
+      expect(selected?.htmlPreview).toMatch(/id="masked"[^>]*>••••••••<\/div>/);
+      expect(selected?.htmlPreview).not.toContain("secret");
+      expect(selected?.htmlPreview).not.toContain("value");
+      if (selector === "#container") {
+        expect(selected?.htmlPreview).toContain(normal);
+        expect(selected?.htmlPreview).toContain("<output>••••••••</output>");
+      }
+      expect(await page.content()).toContain(protectedContent);
+    },
+  );
+
   it("patches exact GUI text once while preserving all text outside the matches", async () => {
     await page.setContent(
       '<textarea id="source">Review. Restart. Wait30. Table30. Keep.</textarea><output id="events">0</output><script>source.oninput=()=>events.textContent=String(Number(events.textContent)+1)</script>',

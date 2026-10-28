@@ -6,20 +6,53 @@ type Page = Parameters<typeof nativeInspectAtPoint>[0];
 type Cdp = Parameters<typeof nativeInspectAtPoint>[3];
 const element = (label: string) => {
   const ownerDocument = { querySelectorAll: (_selector: string) => ({ length: 1 }) };
-  return {
+  const node = {
     id: "save",
     tagName: "BUTTON",
     outerHTML: `<button id="save">${label}</button>`,
     parentElement: null,
-    children: [],
+    children: [] as Array<object>,
+    isContentEditable: false,
+    masked: false,
+    textContent: label,
+    cloneNode: (): object => ({ ...node }),
     clientLeft: 0,
     clientTop: 0,
     ownerDocument,
     getRootNode: (): object => ownerDocument,
     getBoundingClientRect: () => ({ x: 10, y: 20, width: 40, height: 25 }),
   };
+  return node;
 };
 type Node = ReturnType<typeof element>;
+
+// Minimal tree fixture for clone/textContent semantics; evaluation still uses native callback rules.
+function treeElement(tag: string, parts: Array<string | Node>, masked = false): Node {
+  const node = element("");
+  node.tagName = tag.toUpperCase();
+  node.isContentEditable = masked;
+  node.masked = masked;
+  Object.defineProperties(node, {
+    children: { get: () => parts.filter((part) => typeof part !== "string") },
+    textContent: {
+      get: () => parts.map((part) => (typeof part === "string" ? part : part.textContent)).join(""),
+      set: (value: string) => {
+        parts = [value];
+      },
+    },
+    outerHTML: {
+      get: () =>
+        `<${tag}${masked ? ' contenteditable="true" style="-webkit-text-security: disc;"' : ""}>${parts.map((part) => (typeof part === "string" ? part : part.outerHTML)).join("")}${tag === "br" ? "" : `</${tag}>`}`,
+    },
+  });
+  node.cloneNode = () =>
+    treeElement(
+      tag,
+      parts.map((part) => (typeof part === "string" ? part : (part.cloneNode() as Node))),
+      masked,
+    );
+  return node;
+}
 
 // Playwright invokes function arguments with the handle. Strings are expressions, not callbacks.
 function evaluate(
@@ -33,7 +66,7 @@ function evaluate(
       node,
       arg,
       CSS: { escape: (value: string) => value },
-      getComputedStyle: () => ({ getPropertyValue: () => "" }),
+      getComputedStyle: (node: Node) => ({ getPropertyValue: () => (node.masked ? "disc" : "") }),
     },
   );
   return typeof value === "function" ? undefined : value;
@@ -168,6 +201,48 @@ describe("server browser element inspection", () => {
       expect(html).toContain("••••••••");
       expect(html).toContain('<input name="email" value="normal@example.test">');
       expect(html).toContain("<label>Email</label>");
+    },
+  );
+  it.each(["editable", "ancestor"])(
+    "structurally redacts a masked subtree when selecting its %s without changing the live DOM",
+    async (selection) => {
+      const protectedNode = treeElement(
+        "div",
+        selection === "editable"
+          ? ["secret", treeElement("br", []), "value"]
+          : [
+              treeElement("span", ["sec"]),
+              "ret",
+              treeElement("br", []),
+              "va",
+              treeElement("span", [treeElement("b", ["lue"])]),
+            ],
+        true,
+      );
+      const normal = treeElement("p", [
+        "Normal ",
+        treeElement("em", ["formatted"]),
+        treeElement("br", []),
+        "text",
+      ]);
+      const node =
+        selection === "editable"
+          ? protectedNode
+          : treeElement("section", [normal, protectedNode, treeElement("output", ["secretvalue"])]);
+      const original = node.outerHTML;
+      const main = frame(node, [protectedNode]);
+      const html = (await inspectAtPoint(page(main), 15, 25))?.elements[0]?.element.htmlPreview;
+      expect(html).toContain(
+        '<div contenteditable="true" style="-webkit-text-security: disc;">••••••••</div>',
+      );
+      expect(html).not.toContain("secret");
+      expect(html).not.toContain("value");
+      if (selection === "ancestor") {
+        expect(html).toContain(normal.outerHTML);
+        expect(html).toContain("<output>••••••••</output>");
+      }
+      expect(node.outerHTML).toBe(original);
+      expect(protectedNode.textContent).toBe("secretvalue");
     },
   );
   it("redacts a selected password field's current and default values", async () => {
