@@ -61,10 +61,41 @@ const decision = {
   actions: [{ type: "defer" as const, reason: "No new work." }],
 };
 
-it.effect.each(["json", "clock", "async", "mcp", "shell"] as const)(
+it.effect.each(["json", "mutation", "clock", "async", "mcp", "shell"] as const)(
   "isolates the actual protocol client from public delivery and execution (%s)",
   (scenario) =>
     Effect.gen(function* () {
+      const inputSnapshot =
+        scenario === "mutation"
+          ? {
+              ...snapshot,
+              previewContext: "button#selected",
+              segments: [
+                { ...snapshot.segments[0]!, text: "Change this selected button to green." },
+              ],
+            }
+          : snapshot;
+      const expectedDecision =
+        scenario === "mutation"
+          ? {
+              requestId: snapshot.requestId,
+              actions: [
+                {
+                  type: "new" as const,
+                  projectId: null,
+                  request: "Make the selected button green.",
+                  readOnly: false,
+                  sources: [
+                    {
+                      segmentId: "segment",
+                      revision: 1,
+                      quote: "Change this selected button to green.",
+                    },
+                  ],
+                },
+              ],
+            }
+          : decision;
       const inbound = yield* Queue.unbounded<Uint8Array>();
       const methods: string[] = [];
       const responses: unknown[] = [];
@@ -116,6 +147,11 @@ it.effect.each(["json", "clock", "async", "mcp", "shell"] as const)(
                     yield* reply({ data: [], nextCursor: null });
                     break;
                   case "turn/start": {
+                    if (scenario === "mutation")
+                      assert.include(
+                        (frame.params as { input: Array<{ text: string }> }).input[0]!.text,
+                        "button#selected",
+                      );
                     assertStrictObjects((frame.params as { outputSchema: unknown }).outputSchema);
                     yield* reply({ turn: { id: "decision-turn" } });
                     if (scenario === "mcp" || scenario === "shell") {
@@ -157,7 +193,7 @@ it.effect.each(["json", "clock", "async", "mcp", "shell"] as const)(
                             type: "agentMessage",
                             id: "result",
                             phase: "final_answer",
-                            text: encode(decision),
+                            text: encode(expectedDecision),
                             ...(scenario === "async"
                               ? {
                                   delivery: "async",
@@ -192,13 +228,13 @@ it.effect.each(["json", "clock", "async", "mcp", "shell"] as const)(
       );
       const result = yield* runCodexVoiceIntakeDecision(client, {
         cwd: "/private",
-        snapshot,
+        snapshot: inputSnapshot,
         modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-luna" },
       }).pipe(Effect.result);
-      if (scenario === "json" || scenario === "clock") {
+      if (scenario === "json" || scenario === "mutation" || scenario === "clock") {
         assert.isTrue(result._tag === "Success");
         if (result._tag === "Success")
-          assert.deepEqual(result.success, yield* decodeDecision(decision));
+          assert.deepEqual(result.success, yield* decodeDecision(expectedDecision));
       } else assert.isTrue(result._tag === "Failure");
       assert.include(methods, "thread/unsubscribe");
       assert.notInclude(methods, "thread/archive");

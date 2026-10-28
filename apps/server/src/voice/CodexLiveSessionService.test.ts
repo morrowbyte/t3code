@@ -126,12 +126,24 @@ it.effect.each([false, true])(
       let steers = 0;
       let authorizedRestarts = 0;
       let rejectSteerAtAdmission = false;
+      let beforeMainCommit: (() => void) | undefined;
+      let quietSpeechSignal: Deferred.Deferred<void> | undefined;
       let sends = 0;
+      let mainSend:
+        | ThreadManagementService.ThreadManagementServiceShape["sendToThread"]
+        | undefined;
+      const mainRefinements: Array<
+        Extract<
+          Parameters<ThreadManagementService.ThreadManagementServiceShape["dispatch"]>[0],
+          { type: "message.dispatch" }
+        >
+      > = [];
       let stops = 0;
       const spoken: Array<{ plannerNativeThreadId: string; text: string }> = [];
       const contexts: Array<{ plannerNativeThreadId: string; text: string }> = [];
       const contextSignals = new Map<string, Deferred.Deferred<void>>();
       let contextAppendGate: Deferred.Deferred<void> | undefined;
+      let previewContextGate: Deferred.Deferred<void> | undefined;
       const deliveryWaiters = new Map<string, () => void>();
       const waitForDelivery = (messageId: string) =>
         new Promise<void>((resolve) => deliveryWaiters.set(messageId, resolve));
@@ -291,6 +303,11 @@ it.effect.each([false, true])(
               contextAppendGate = undefined;
               const signal = contextSignals.get(input.text);
               if (signal) yield* Deferred.succeed(signal, undefined);
+              if (previewContextGate && input.text.startsWith("Selected preview context")) {
+                const held = previewContextGate;
+                previewContextGate = undefined;
+                yield* Deferred.await(held);
+              }
               if (gate) yield* Deferred.await(gate);
             }),
           appendSpeech: (input: { plannerNativeThreadId: string; text: string }) =>
@@ -305,6 +322,8 @@ it.effect.each([false, true])(
                   }),
                 );
               spoken.push(input);
+              if (input.text.startsWith("Die Arbeit läuft noch.") && quietSpeechSignal)
+                yield* Deferred.succeed(quietSpeechSignal, undefined);
               resolveSpeech?.();
             }),
         },
@@ -482,21 +501,27 @@ it.effect.each([false, true])(
             Stream.fromQueue(
               (independentQueues.get(input.threadId) ?? t3EventQueues).get(input.eventType ?? "")!,
             ),
-          sendToThread: () =>
-            Effect.gen(function* () {
-              sends += 1;
-              if (sends === 1)
-                yield* Deferred.await(workCompletion).pipe(
-                  Effect.tap(() =>
-                    Effect.sync(() => {
-                      completedWork += 1;
-                    }),
-                  ),
-                  Effect.tap(() => Deferred.succeed(workFinished, undefined)),
-                  Effect.forkChild,
-                );
-              return { delivery: "queued", run: { id: `durable-run-${sends}` } };
-            }),
+          sendToThread: (
+            input: Parameters<
+              ThreadManagementService.ThreadManagementServiceShape["sendToThread"]
+            >[0],
+          ) =>
+            mainSend
+              ? mainSend(input)
+              : Effect.gen(function* () {
+                  sends += 1;
+                  if (sends === 1)
+                    yield* Deferred.await(workCompletion).pipe(
+                      Effect.tap(() =>
+                        Effect.sync(() => {
+                          completedWork += 1;
+                        }),
+                      ),
+                      Effect.tap(() => Deferred.succeed(workFinished, undefined)),
+                      Effect.forkChild,
+                    );
+                  return { delivery: "queued", run: { id: `durable-run-${sends}` } };
+                }),
           dispatch: (
             command: Extract<
               Parameters<ThreadManagementService.ThreadManagementServiceShape["dispatch"]>[0],
@@ -536,6 +561,13 @@ it.effect.each([false, true])(
                   cause: "Expected exact, fail-closed steering.",
                 });
               const targetRunId = command.dispatchMode.targetRunId;
+              if (command.voiceIntakeSourceThreadId !== undefined) {
+                assert.equal(command.voiceIntakeSourceThreadId, command.threadId);
+                assert.equal(command.threadId, threadId);
+                assert.isFalse(command.voiceIntakeSource!.provisional);
+                mainRefinements.push(command);
+                beforeMainCommit?.();
+              }
               const target = independentJobs.get(command.threadId) ?? durableProjection;
               const run = target.runs.find((candidate) => candidate.id === targetRunId);
               if (
@@ -3023,7 +3055,12 @@ it.effect.each([false, true])(
             role: "user",
             plannerNativeThreadId: intakeLease.plannerNativeThreadId!,
             text: "Yes, implement that confirmed task now.",
-            segment: { id: "confirmed-continuation", revision, kind: "snapshot", final: true },
+            segment: {
+              id: "confirmed-continuation",
+              revision,
+              kind: "snapshot",
+              final: revision > 1,
+            },
           });
           yield* TestClock.adjust("3 seconds");
           yield* Effect.promise(() => continued);
@@ -3031,7 +3068,7 @@ it.effect.each([false, true])(
         assert.equal(
           authorizedRestarts,
           1,
-          "final confirmation continues the exact provisional run only once",
+          "complete nonfinal refinement promotes and restarts the same provisional run only once",
         );
         assert.deepEqual(
           independentJobs.get(continuing.intakeIntent.threadId)!.runs.map((run) => run.id),
@@ -3041,6 +3078,436 @@ it.effect.each([false, true])(
           independentJobs.get(continuing.intakeIntent.threadId)!.thread.voiceIntake!.provisional,
         );
         assert.equal(admissions, 6, "authorized continuation is not a replacement admission");
+        const mainInputs: Array<Parameters<NonNullable<typeof mainSend>>[0]> = [];
+        const mainReceipts = new Map<
+          string,
+          Effect.Success<ReturnType<NonNullable<typeof mainSend>>>
+        >();
+        durableProjection = makeRunProjection("main-live-work", "running");
+        durableProjection = {
+          ...durableProjection,
+          runs: durableProjection.runs.map((run) => ({
+            ...run,
+            status: "running",
+            completedAt: null,
+          })),
+        };
+        mainSend = (input) =>
+          Effect.sync(() => {
+            const prior = mainReceipts.get(input.commandId);
+            if (prior) return prior;
+            assert.equal(input.mode, "auto");
+            assert.equal(input.threadId, threadId);
+            assert.equal(input.voiceIntakeSourceThreadId, threadId);
+            assert.isFalse(input.voiceIntakeSource!.provisional);
+            mainInputs.push(input);
+            const run = durableProjection.runs[0]!;
+            durableProjection = {
+              ...durableProjection,
+              messages: [
+                ...durableProjection.messages,
+                {
+                  ...durableProjection.messages[0]!,
+                  id: input.messageId,
+                  threadId,
+                  runId: run.id,
+                  role: "user",
+                  text: input.text,
+                },
+              ],
+            };
+            const result = {
+              delivery: mainInputs.length === 1 ? "started" : "steered",
+              run,
+            } as Effect.Success<ReturnType<NonNullable<typeof mainSend>>>;
+            mainReceipts.set(input.commandId, result);
+            return result;
+          });
+        const mainDecisions = yield* Queue.unbounded<{
+          snapshot: Parameters<typeof decideIntakeSnapshot>[0]["snapshot"];
+          answer: Deferred.Deferred<Effect.Success<ReturnType<typeof decideIntakeSnapshot>>>;
+        }>();
+        decideIntakeSnapshot = ({ snapshot }) =>
+          Effect.gen(function* () {
+            const answer =
+              yield* Deferred.make<Effect.Success<ReturnType<typeof decideIntakeSnapshot>>>();
+            yield* Queue.offer(mainDecisions, { snapshot, answer });
+            return yield* Deferred.await(answer);
+          });
+        const selected = "button#selected-before-classification";
+        const previewObserved = yield* Deferred.make<void>();
+        contextSignals.set(
+          `Selected preview context (reference data):\n${selected}`,
+          previewObserved,
+        );
+        const releasePreview = yield* Deferred.make<void>();
+        previewContextGate = releasePreview;
+        yield* service.context(session, { ...intakeLease, revision: 1, context: selected });
+        yield* Deferred.await(previewObserved);
+        const mainClause = "Change the selected button to green.";
+        yield* Queue.offer(intakeEvents, {
+          type: "transcript",
+          role: "user",
+          plannerNativeThreadId: intakeLease.plannerNativeThreadId!,
+          text: mainClause,
+          segment: { id: "authorized-main", revision: 1, kind: "snapshot", final: false },
+        });
+        const mainFirst = yield* Queue.take(mainDecisions);
+        assert.equal(mainFirst.snapshot.previewContext, selected);
+        yield* service.context(session, { ...intakeLease, revision: 2, context: null });
+        yield* service.context(session, {
+          ...intakeLease,
+          revision: 1,
+          context: "stale selection",
+        });
+        yield* sql`UPDATE intake_receipt_update_probe SET used = 0`;
+        let mainProcessed = new Promise<void>((resolve) => {
+          notifyIntakeProcessed = resolve;
+        });
+        yield* Deferred.succeed(mainFirst.answer, {
+          requestId: mainFirst.snapshot.requestId,
+          actions: [
+            {
+              type: "new",
+              projectId: null,
+              request: mainClause,
+              readOnly: false,
+              sources: [{ segmentId: "authorized-main", revision: 1, quote: mainClause }],
+            },
+          ],
+        });
+        yield* Effect.promise(() => mainProcessed);
+        assert.equal(
+          mainInputs.length,
+          1,
+          "native context acknowledgement does not block work admission",
+        );
+        assert.include(mainInputs[0]!.text, selected);
+        assert.notInclude(mainInputs[0]!.text, "stale selection");
+        yield* Deferred.succeed(releasePreview, undefined);
+        const mainStored = yield* sql<{
+          receipt_json: string;
+        }>`SELECT receipt_json FROM codex_live_voice_intents
+          WHERE lease_id = ${intakeLease.leaseId} AND message = ${mainClause} AND dispatch_state = 'admitted'`;
+        assert.equal(
+          mainStored.length,
+          1,
+          "committed Main message repairs a lost auxiliary receipt update",
+        );
+        const mainReceipt = decodeJson(mainStored[0]!.receipt_json) as {
+          previewContext: string;
+          intakeIntent: { id: string; threadId: string; provisional: boolean };
+        };
+        assert.equal(mainReceipt.previewContext, selected);
+        assert.equal(mainReceipt.intakeIntent.threadId, threadId);
+        assert.isFalse(mainReceipt.intakeIntent.provisional);
+        const laterText = `${mainClause} Keep its existing label. Also add a search field.`;
+        yield* Queue.offer(intakeEvents, {
+          type: "transcript",
+          role: "user",
+          plannerNativeThreadId: intakeLease.plannerNativeThreadId!,
+          text: laterText,
+          segment: { id: "authorized-main", revision: 2, kind: "snapshot", final: false },
+        });
+        const mainLater = yield* Queue.take(mainDecisions);
+        assert.isNull(mainLater.snapshot.previewContext, "a stale revision cannot undo Clear");
+        mainProcessed = new Promise<void>((resolve) => {
+          notifyIntakeProcessed = resolve;
+        });
+        const anchor = (quote: string) => ({ segmentId: "authorized-main", revision: 2, quote });
+        yield* Deferred.succeed(mainLater.answer, {
+          requestId: mainLater.snapshot.requestId,
+          actions: [
+            {
+              type: "new",
+              projectId: null,
+              request: mainClause,
+              readOnly: false,
+              sources: [anchor(mainClause)],
+            },
+            {
+              type: "refine",
+              intentId: mainReceipt.intakeIntent.id,
+              message: "Keep the existing label.",
+              readOnly: false,
+              sources: [anchor("Keep its existing label.")],
+            },
+            {
+              type: "new",
+              projectId: null,
+              request: "Add a search field.",
+              readOnly: false,
+              sources: [anchor("Also add a search field.")],
+            },
+          ],
+        });
+        yield* Effect.promise(() => mainProcessed);
+        assert.equal(mainInputs.length, 2, "two independent requests use auto admission");
+        assert.equal(mainRefinements.length, 1, "the refinement targets its exact existing run");
+        assert.deepEqual(mainRefinements[0]!.dispatchMode, {
+          type: "steer_active",
+          targetRunId: RunId.make("main-live-work"),
+          onInactive: "reject",
+        });
+        assert.equal(admissions, 6, "authorized Main work creates no forced child");
+        yield* service.status(session, intakeLease);
+        assert.equal(mainInputs.length, 2, "recovery never resends committed Main work");
+        const mainStatus = decodeJson(
+          yield* controlWork!({
+            plannerNativeThreadId: intakeLease.plannerNativeThreadId!,
+            plannerTurnId: "main-status",
+            callId: "main-status",
+            action: "status",
+            runId: "main-live-work",
+          }),
+        ) as { tasks: Array<{ runId: string }> };
+        assert.equal(mainStatus.tasks[0]!.runId, "main-live-work");
+        // Preparing/queued runs retain a constraint until that exact run is steerable.
+        durableProjection = {
+          ...durableProjection,
+          runs: durableProjection.runs.map((run) => ({ ...run, status: "preparing" })),
+        };
+        const pendingClause = "Keep focus on the search field after submit.";
+        decideIntakeSnapshot = ({ snapshot }) =>
+          Effect.succeed({
+            requestId: snapshot.requestId,
+            actions: [
+              {
+                type: "refine",
+                intentId: mainReceipt.intakeIntent.id,
+                message: pendingClause,
+                readOnly: false,
+                sources: [{ segmentId: "preparing-constraint", revision: 1, quote: pendingClause }],
+              },
+            ],
+          });
+        let preparingProcessed = new Promise<void>((resolve) => {
+          notifyIntakeProcessed = resolve;
+        });
+        yield* Queue.offer(intakeEvents, {
+          type: "transcript",
+          role: "user",
+          text: pendingClause,
+          plannerNativeThreadId: intakeLease.plannerNativeThreadId!,
+          segment: { id: "preparing-constraint", revision: 1, kind: "snapshot", final: false },
+        });
+        yield* Effect.promise(() => preparingProcessed);
+        assert.equal(mainRefinements.length, 1, "a preparing run cannot be steered yet");
+        const pendingRecord = yield* sql<{
+          receipt_json: string;
+        }>`SELECT receipt_json FROM codex_live_voice_intents WHERE planner_turn_id = ${`request:${mainReceipt.intakeIntent.id}`}`;
+        assert.equal(
+          (
+            decodeJson(pendingRecord[0]!.receipt_json) as {
+              intakeIntent: { pendingSteer: { message: string } };
+            }
+          ).intakeIntent.pendingSteer.message,
+          pendingClause,
+        );
+        durableProjection = {
+          ...durableProjection,
+          runs: durableProjection.runs.map((run) => ({ ...run, status: "running" })),
+        };
+        preparingProcessed = new Promise<void>((resolve) => {
+          notifyIntakeProcessed = resolve;
+        });
+        yield* Queue.offer(
+          t3EventQueues.get("run.updated")!,
+          eventFor({
+            type: "run.updated",
+            id: "main-became-steerable",
+            threadId,
+            runId: "main-live-work",
+            nodeId: null,
+            providerInstanceId,
+            occurredAt: "2026-10-14T00:00:04.000Z",
+            payload: durableProjection.runs[0]!,
+          } as never),
+        );
+        yield* Effect.promise(() => preparingProcessed);
+        assert.equal(
+          mainRefinements.length,
+          2,
+          "the run event delivers its retained source-bound constraint",
+        );
+        assert.equal(mainInputs.length, 2);
+
+        // Only the Main run is active during this quiet-call observation.
+        const savedJobs = new Map(independentJobs);
+        for (const [id, job] of savedJobs)
+          independentJobs.set(id, {
+            ...job,
+            runs: job.runs.map((run) => ({ ...run, status: "completed" })),
+          });
+        const quietCount = () =>
+          spoken.filter((item) => item.text.startsWith("Die Arbeit läuft noch.")).length;
+        const beforeQuiet = quietCount();
+        yield* TestClock.adjust("45 seconds");
+        assert.equal(quietCount(), beforeQuiet, "current user speech suppresses quiet progress");
+        decideIntakeSnapshot = ({ snapshot }) =>
+          Effect.succeed({ requestId: snapshot.requestId, actions: [] });
+        const emitSpeech = Effect.fnUntraced(function* (
+          role: "user" | "assistant",
+          text: string,
+          id: string,
+          revision: number,
+          final: boolean,
+        ) {
+          const subscribed = yield* Deferred.make<void>();
+          const delivered = yield* service.subscribe(session, intakeLease).pipe(
+            Stream.tap((event) =>
+              event.type === "status" ? Deferred.succeed(subscribed, undefined) : Effect.void,
+            ),
+            Stream.filter(
+              (event) => event.type === "transcript" && event.role === role && event.text === text,
+            ),
+            Stream.runHead,
+            Effect.forkChild({ startImmediately: true }),
+          );
+          yield* Deferred.await(subscribed);
+          yield* Queue.offer(intakeEvents, {
+            type: "transcript",
+            role,
+            text,
+            plannerNativeThreadId: intakeLease.plannerNativeThreadId!,
+            segment: { id, revision, kind: "snapshot", final },
+          });
+          yield* Fiber.join(delivered);
+        });
+        yield* emitSpeech("user", laterText, "authorized-main", 3, true);
+        yield* emitSpeech("assistant", "Ich höre weiter zu.", "speaking-assistant", 1, false);
+        yield* TestClock.adjust("45 seconds");
+        assert.equal(
+          quietCount(),
+          beforeQuiet,
+          "current assistant speech suppresses quiet progress",
+        );
+        yield* emitSpeech("assistant", "Ich höre weiter zu.", "speaking-assistant", 2, true);
+        quietSpeechSignal = yield* Deferred.make<void>();
+        yield* TestClock.adjust("45 seconds");
+        yield* Deferred.await(quietSpeechSignal);
+        assert.equal(
+          quietCount(),
+          beforeQuiet + 1,
+          "one factual spoken update after a quiet threshold",
+        );
+        yield* TestClock.adjust("90 seconds");
+        assert.equal(quietCount(), beforeQuiet + 1, "unchanged evidence never repeats as filler");
+        for (const [id, job] of savedJobs) independentJobs.set(id, job);
+        const requestId = "voice-public-question";
+        const publicQuestion = "Soll die Suche auch archivierte Einträge finden?";
+        const questionText = JSON.stringify({
+          type: "background_task_question",
+          runId: "main-live-work",
+          questions: [{ question: publicQuestion, options: ["Nur aktive", "Auch archivierte"] }],
+        });
+        const questionDelivered = yield* Deferred.make<void>();
+        contextSignals.set(questionText, questionDelivered);
+        const questionItem = {
+          ...durableProjection.turnItems[0]!,
+          id: "voice-public-question-item",
+          type: "user_input_request",
+          requestId,
+          ordinal: 10,
+          questions: [
+            {
+              id: "archive",
+              header: "Suchumfang",
+              question: publicQuestion,
+              options: [
+                { label: "Nur aktive", description: "Aktive Einträge" },
+                { label: "Auch archivierte", description: "Alle Einträge" },
+              ],
+            },
+          ],
+        };
+        durableProjection = {
+          ...durableProjection,
+          turnItems: [...durableProjection.turnItems, questionItem as never],
+          runtimeRequests: [
+            ...(durableProjection.runtimeRequests ?? []),
+            {
+              id: requestId,
+              nodeId: questionItem.nodeId,
+              providerTurnId: questionItem.providerTurnId,
+              nativeRequestRef: null,
+              kind: "user_input",
+              status: "pending",
+              responseCapability: { type: "message" },
+              createdAt: "2026-10-14T00:00:04.000Z",
+              resolvedAt: null,
+            } as never,
+          ],
+        };
+        yield* Queue.offer(
+          t3EventQueues.get("turn-item.updated")!,
+          eventFor({
+            type: "turn-item.updated",
+            id: "main-public-question",
+            threadId,
+            runId: "main-live-work",
+            nodeId: questionItem.nodeId,
+            providerInstanceId,
+            occurredAt: "2026-10-14T00:00:04.000Z",
+            payload: questionItem,
+          } as never),
+        );
+        yield* Deferred.await(questionDelivered);
+        assert.equal(
+          contexts.at(-1)!.text,
+          questionText,
+          "pending public questions reach realtime without waiting for completion",
+        );
+
+        // End the owned run exactly after read, while another run becomes active.
+        const oldRun = durableProjection.runs[0]!;
+        beforeMainCommit = () => {
+          beforeMainCommit = undefined;
+          durableProjection = {
+            ...durableProjection,
+            runs: [
+              { ...oldRun, status: "completed" },
+              {
+                ...oldRun,
+                id: RunId.make("unrelated-new-run"),
+                status: "running",
+                ordinal: oldRun.ordinal + 1,
+              },
+            ],
+          };
+        };
+        const raceClause = "Keep the existing accessible name.";
+        decideIntakeSnapshot = ({ snapshot }) =>
+          Effect.succeed({
+            requestId: snapshot.requestId,
+            actions: [
+              {
+                type: "refine",
+                intentId: mainReceipt.intakeIntent.id,
+                message: raceClause,
+                readOnly: false,
+                sources: [{ segmentId: "run-race", revision: 1, quote: raceClause }],
+              },
+            ],
+          });
+        const beforeRaceMessages = durableProjection.messages.length;
+        const raceProcessed = new Promise<void>((resolve) => {
+          notifyIntakeProcessed = resolve;
+        });
+        yield* emitSpeech("user", raceClause, "run-race", 1, false);
+        yield* Effect.promise(() => raceProcessed);
+        assert.deepEqual(mainRefinements.at(-1)!.dispatchMode, {
+          type: "steer_active",
+          targetRunId: oldRun.id,
+          onInactive: "reject",
+        });
+        assert.equal(
+          durableProjection.messages.length,
+          beforeRaceMessages,
+          "rejected stale steering cannot reach the new active run",
+        );
+        assert.equal(mainInputs.length, 2, "a stale refinement cannot auto-start replacement work");
+
         const decidingBeforeStop = yield* Deferred.make<void>();
         const finishAfterStop = yield* Deferred.make<void>();
         decideIntakeSnapshot = ({ snapshot }) =>
@@ -3115,6 +3582,21 @@ it.effect.each([false, true])(
           "the service also rejects native submissions in exclusive mode",
         );
         yield* service.stop(session, { ...intakeLease, clientRequestId: "exclusive-end" });
+        const afterStopQuiet = quietCount();
+        yield* TestClock.adjust("90 seconds");
+        assert.equal(quietCount(), afterStopQuiet, "ended leases cannot speak quiet progress");
+        assert.isTrue(
+          Exit.isFailure(
+            yield* service
+              .context(session, {
+                ...intakeLease,
+                revision: 3,
+                context: "closed lease selection",
+              })
+              .pipe(Effect.exit),
+          ),
+        );
+
         assert.equal(
           [...independentJobs.values()].filter((job) => job.runs[0]?.status === "running").length >=
             3,

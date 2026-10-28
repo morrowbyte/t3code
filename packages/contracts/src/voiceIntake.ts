@@ -45,7 +45,15 @@ export const VoiceIntakeIntent = Schema.Struct({
   provisional: Schema.Boolean,
   startedProvisional: Schema.Boolean,
   pendingSteer: Schema.NullOr(
-    Schema.Struct({ requestId: Id, message: Text, readOnly: Schema.Boolean, sources: Sources }),
+    Schema.Struct({
+      requestId: Id,
+      message: Text,
+      readOnly: Schema.Boolean,
+      sources: Sources,
+      previewContext: Schema.optionalKey(
+        Schema.NullOr(Schema.String.check(Schema.isMaxLength(24_000))),
+      ),
+    }),
   ),
   status: Schema.String,
   result: Schema.NullOr(Text),
@@ -63,6 +71,9 @@ const KnownIntent = Schema.Struct({
 });
 export const VoiceIntakeSnapshot = Schema.Struct({
   requestId: Id,
+  previewContext: Schema.optionalKey(
+    Schema.NullOr(Schema.String.check(Schema.isMaxLength(24_000))),
+  ),
   leaseId: Id,
   generation: Revision,
   version: Revision,
