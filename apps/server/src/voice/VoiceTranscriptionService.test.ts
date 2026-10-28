@@ -8,6 +8,7 @@ import * as ServerConfig from "../config.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as CodexInstallation from "../provider/CodexInstallation.ts";
 import * as CodexManagedTokenBroker from "../provider/CodexManagedTokenBroker.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
@@ -38,10 +39,10 @@ import {
   AuthSessionId,
   EnvironmentAuthenticatedPrincipal,
   CodexSettings,
+  ProviderDriverKind,
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as Crypto from "effect/Crypto";
 import * as Data from "effect/Data";
 import * as Fiber from "effect/Fiber";
 import * as HttpClient from "effect/http/HttpClient";
@@ -300,13 +301,12 @@ it.effect(
 it.effect("passes an explicit environment to Codex spawn without extending ambient API keys", () =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
-    const crypto = yield* Crypto.Crypto;
-    const suffix = yield* crypto.randomUUIDv4();
-    const root = `/tmp/t3-voice-transcription-${suffix}`;
-    const sharedHome = `${root}/shared`;
-    const shadowHome = `${root}/shadow`;
+    const path = yield* Path.Path;
+    const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-voice-transcription-" });
+    const sharedHome = path.join(root, "shared");
+    const shadowHome = path.join(root, "shadow");
     const settings = yield* Schema.decodeUnknownEffect(CodexSettings)({
-      binaryPath: "/usr/bin/env",
+      binaryPath: path.join(root, "codex.exe"),
       homePath: sharedHome,
       shadowHomePath: shadowHome,
     });
@@ -324,7 +324,7 @@ it.effect("passes an explicit environment to Codex spawn without extending ambie
       }).pipe(Effect.andThen(Effect.fail(failedSpawn))),
     );
     const exit = yield* CodexProvider.withCodexAppServerClient({
-      binaryPath: settings.binaryPath ?? "/usr/bin/env",
+      binaryPath: settings.binaryPath,
       homePath: effectiveHomePath,
       cwd: process.cwd(),
       environment: { PATH: process.env.PATH },
@@ -344,8 +344,7 @@ it.effect("passes an explicit environment to Codex spawn without extending ambie
     assert.strictEqual(captured?.options?.env?.OPENAI_API_KEY, undefined);
     assert.strictEqual(captured?.options?.env?.T3CODE_TRANSCRIPTION_API_KEY, undefined);
     assert.strictEqual(captured?.options?.env?.CODEX_HOME, shadowHome);
-    yield* fileSystem.remove(root, { recursive: true });
-  }).pipe(Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 it.effect("reports upstream 403 without retaining the raw response or request", () =>
@@ -481,7 +480,14 @@ it.effect("forces redirect rejection for provider HTTP requests", () =>
   }),
 );
 
-function recoveryServiceLayer(calls: { spawns: number }) {
+function recoveryServiceLayer(
+  calls: { spawns: number; commands?: Array<string>; environments?: Array<NodeJS.ProcessEnv> },
+  options: {
+    instances?: ReadonlyArray<ProviderInstance>;
+    acquire?: CodexInstallation.CodexInstallation["Service"]["acquire"];
+    spawnFailure?: ReturnType<typeof PlatformError.badArgument>;
+  } = {},
+) {
   const unexpected = Effect.die("Unexpected provider runtime access");
   return VoiceService.layer.pipe(
     Layer.provide(
@@ -491,7 +497,7 @@ function recoveryServiceLayer(calls: { spawns: number }) {
     Layer.provide(
       Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
         getInstance: () => Effect.succeed(undefined),
-        listInstances: Effect.succeed([]),
+        listInstances: Effect.succeed(options.instances ?? []),
         listUnavailable: Effect.succeed([]),
         streamChanges: Stream.empty,
         subscribeChanges: unexpected,
@@ -501,7 +507,7 @@ function recoveryServiceLayer(calls: { spawns: number }) {
       Layer.succeed(CodexInstallation.CodexInstallation, {
         managedDirectory: "/fixture-unused-managed-runtime",
         resolve: () => unexpected,
-        acquire: () => unexpected,
+        acquire: options.acquire ?? (() => unexpected),
         start: unexpected,
         cancel: () => unexpected,
         state: unexpected,
@@ -517,10 +523,16 @@ function recoveryServiceLayer(calls: { spawns: number }) {
     Layer.provide(
       Layer.succeed(
         ChildProcessSpawner.ChildProcessSpawner,
-        ChildProcessSpawner.make(() =>
+        ChildProcessSpawner.make((command) =>
           Effect.sync(() => {
             calls.spawns += 1;
-          }).pipe(Effect.andThen(unexpected)),
+            if (command._tag === "StandardCommand") {
+              calls.commands?.push(command.command);
+              calls.environments?.push(command.options.env ?? {});
+            }
+          }).pipe(
+            Effect.andThen(options.spawnFailure ? Effect.fail(options.spawnFailure) : unexpected),
+          ),
         ),
       ),
     ),
@@ -534,6 +546,91 @@ function recoveryServiceLayer(calls: { spawns: number }) {
     ),
   );
 }
+
+it.effect.each(["installed", "explicit", "instance-path"] as const)(
+  "uses the %s executable for native account transcription",
+  (choice) => {
+    const instanceId = ProviderInstanceId.make("codex-voice-test");
+    const calls = {
+      spawns: 0,
+      commands: [] as Array<string>,
+      environments: [] as Array<NodeJS.ProcessEnv>,
+      acquired: 0,
+      released: 0,
+    };
+    let executablePath = "";
+    const instances = [
+      { instanceId, driverKind: ProviderDriverKind.make("codex"), enabled: true },
+    ] as Array<ProviderInstance>;
+    return Effect.gen(function* () {
+      const service = yield* VoiceService.VoiceTranscriptionService;
+      const settings = yield* ServerSettings.ServerSettingsService;
+      const preferences = yield* makeVoiceSettings;
+      const config = yield* ServerConfig.ServerConfig;
+      const path = yield* Path.Path;
+      executablePath = path.join(config.stateDir, "installed-codex.exe");
+      const explicitPath = path.join(config.stateDir, "custom-codex.exe");
+      yield* settings.updateProviderInstance({
+        operation: "upsert",
+        instanceId,
+        instance: {
+          driver: ProviderDriverKind.make("codex"),
+          config: {
+            homePath: config.stateDir,
+            ...(choice === "explicit" ? { binaryPath: explicitPath } : {}),
+          },
+          ...(choice === "instance-path"
+            ? { environment: [{ name: "Path", value: "fixture-codex-path", sensitive: false }] }
+            : {}),
+        },
+      });
+      yield* preferences.write({ provider: "codex-account", instanceId, model: "gpt-transcribe" });
+      yield* service
+        .transcribe({
+          bytes: new Uint8Array([1]),
+          contentType: "audio/webm",
+          fileName: "voice.webm",
+        })
+        .pipe(Effect.result);
+      assert.deepEqual(calls.commands, [
+        choice === "installed" ? executablePath : choice === "explicit" ? explicitPath : "codex",
+      ]);
+      assert.equal(calls.acquired, choice === "installed" ? 1 : 0);
+      assert.equal(calls.released, choice === "installed" ? 1 : 0);
+      if (choice === "instance-path") {
+        assert.equal(calls.environments[0]?.PATH, "fixture-codex-path");
+      }
+    }).pipe(
+      Effect.provide(
+        recoveryServiceLayer(calls, {
+          instances,
+          spawnFailure: PlatformError.badArgument({
+            module: "ChildProcessSpawner",
+            method: "spawn",
+            description: "Synthetic transcription launch captured",
+          }),
+          acquire: () =>
+            Effect.acquireRelease(
+              Effect.sync(() => {
+                calls.acquired += 1;
+                return {
+                  executablePath,
+                  source: "managed" as const,
+                  version: "0.163.0",
+                  managedVersionDirectory: "fixture-managed-codex",
+                };
+              }),
+              () =>
+                Effect.sync(() => {
+                  calls.released += 1;
+                }),
+            ),
+        }),
+      ),
+      Effect.scoped,
+    );
+  },
+);
 
 it.effect(
   "returns actionable settings for missing, tampered and legacy keys while transcription stays fail closed",
