@@ -7,15 +7,21 @@ export type AuthAccessHttpContext = Parameters<typeof fetchEnvironmentSessionSta
 export const createEnvironmentPairingCredential = (
   context: AuthAccessHttpContext,
   input: { readonly label?: string; readonly scopes?: ReadonlyArray<AuthGrantScope> },
-) =>
-  executeAuthenticatedEnvironmentHttpRequest({
+) => {
+  const label = input.label?.trim();
+  return executeAuthenticatedEnvironmentHttpRequest({
     ...context,
     group: "auth",
     method: "POST",
     url: (urls) => urls.pairingCredential(),
     timeoutMs: 10_000,
-    request: ({ client, headers }) => client.pairingCredential({ headers, payload: input }),
+    request: ({ client, headers }) =>
+      client.pairingCredential({
+        headers,
+        payload: { ...(label ? { label } : {}), ...(input.scopes ? { scopes: input.scopes } : {}) },
+      }),
   });
+};
 
 export const revokeEnvironmentPairingLink = (context: AuthAccessHttpContext, id: string) =>
   executeAuthenticatedEnvironmentHttpRequest({

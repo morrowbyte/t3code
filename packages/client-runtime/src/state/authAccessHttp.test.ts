@@ -43,6 +43,17 @@ const pairingResponse = () =>
   });
 
 describe("environment access management", () => {
+  it.effect("allows an empty optional label when creating a pairing link", () =>
+    Effect.gen(function* () {
+      const h = harness("https://laptop.example.test", "test-token", pairingResponse);
+      yield* createEnvironmentPairingCredential(h.input, {
+        label: "  ",
+        scopes: [AuthAccessWriteScope],
+      }).pipe(Effect.provide(h.layer));
+      expect(JSON.parse(String(h.calls[0]?.init.body))).toEqual({ scopes: [AuthAccessWriteScope] });
+    }),
+  );
+
   it.effect("creates on the selected environment with its credential and requested scopes", () =>
     Effect.gen(function* () {
       const first = harness("https://laptop.example.test", "laptop-test-token", pairingResponse);
