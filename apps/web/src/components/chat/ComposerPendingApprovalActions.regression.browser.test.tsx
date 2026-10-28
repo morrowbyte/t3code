@@ -168,7 +168,7 @@ describe("ComposerPendingApprovalActions", () => {
     Reflect.deleteProperty(window, "desktopBridge");
   });
 
-  it("shows a concrete unsupported route error for privileged desktop rejection", async () => {
+  it("sends a privileged decision through the signed environment connection when the desktop route requires DPoP", async () => {
     using _fixture = testFixture();
 
     const error =
@@ -196,10 +196,7 @@ describe("ComposerPendingApprovalActions", () => {
       }),
     );
     await act(async () => button(screen.container, "Deny").click());
-    expect(screen.container.textContent).toContain(
-      "Desktop approval over T3 Connect is not supported yet.",
-    );
-    expect(respond).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledExactlyOnceWith(requestId, "decline", "a".repeat(64));
   });
 
   it("submits actual provider decisions, including reject and cancel", async () => {

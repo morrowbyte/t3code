@@ -105,6 +105,22 @@ export type SavedApprovalRoute =
     }
   | { readonly kind: "unsupported"; readonly message: string };
 
+export function selectLocalApprovalRoute(
+  routes: readonly { environmentId: string; backendId: string; httpBaseUrl: string }[],
+  credentials: Catalog["credentials"],
+  environmentId: string,
+): { httpBaseUrl: string; token: string } | null {
+  const matching = routes.filter((route) => route.environmentId === environmentId);
+  if (matching.length !== 1) return null;
+  const route = matching[0]!;
+  const credential = credentials.find(
+    (item) => item.connectionId === `local:${route.backendId}`,
+  )?.credential;
+  if (!credential || credential._tag !== "BearerConnectionCredential" || !credential.token)
+    return null;
+  return { httpBaseUrl: route.httpBaseUrl, token: credential.token };
+}
+
 /** Select only an enabled, saved route for the requested environment. */
 export function selectSavedApprovalRoute(
   catalog: Catalog,
@@ -231,25 +247,77 @@ export const respond = Effect.fn("desktop.privilegedDecision.respond")(function*
     bearer = route.token;
   } else {
     const pool = yield* DesktopBackendPool.DesktopBackendPool;
-    const primary = yield* pool.primary;
-    const config = yield* primary.currentConfig;
-    if (Option.isNone(config))
+    const instances = yield* pool.list;
+    const candidates = yield* Effect.all(
+      instances.map((instance) =>
+        instance.currentConfig.pipe(Effect.map((config) => ({ instance, config }))),
+      ),
+    );
+    const routes = yield* Effect.promise(() =>
+      Promise.all(
+        candidates.map(async ({ instance, config }) => {
+          if (Option.isNone(config)) return null;
+          try {
+            const base = config.value.httpBaseUrl;
+            const response = await fetch(new URL("/.well-known/t3/environment", base), {
+              redirect: "error",
+              signal: AbortSignal.timeout(10_000),
+            });
+            if (!response.ok) return null;
+            const descriptor: unknown = await response.json();
+            if (
+              !descriptor ||
+              typeof descriptor !== "object" ||
+              !("environmentId" in descriptor) ||
+              typeof descriptor.environmentId !== "string"
+            )
+              return null;
+            return {
+              environmentId: descriptor.environmentId,
+              backendId: instance.id,
+              httpBaseUrl: base.href,
+            };
+          } catch {
+            return null;
+          }
+        }),
+      ),
+    );
+    const available = routes.filter((item): item is NonNullable<typeof item> => item !== null);
+    const matching = available.filter((item) => item.environmentId === input.environmentId);
+    if (matching.length !== 1)
       return yield* new DesktopPrivilegedDecisionError({
         message: "No saved route or local backend is available for this environment.",
       });
-    httpBaseUrl = config.value.httpBaseUrl.href;
+    const selected = matching[0]!;
+    const primary = yield* pool.primary;
+    if (selected.backendId === primary.id) {
+      const auth = yield* DesktopLocalEnvironmentAuth.DesktopLocalEnvironmentAuth;
+      bearer = yield* auth.getBearerToken.pipe(
+        Effect.mapError(
+          () =>
+            new DesktopPrivilegedDecisionError({
+              message: "Local desktop authentication is unavailable.",
+            }),
+        ),
+      );
+      httpBaseUrl = selected.httpBaseUrl;
+    } else {
+      const localRoute = selectLocalApprovalRoute(
+        available,
+        catalog?.credentials ?? [],
+        input.environmentId,
+      );
+      if (localRoute === null)
+        return yield* new DesktopPrivilegedDecisionError({
+          message: "The local target has no authenticated session.",
+        });
+      httpBaseUrl = localRoute.httpBaseUrl;
+      bearer = localRoute.token;
+    }
     const ws = new URL(httpBaseUrl);
     ws.protocol = ws.protocol === "https:" ? "wss:" : "ws:";
     wsBaseUrl = ws.href;
-    const auth = yield* DesktopLocalEnvironmentAuth.DesktopLocalEnvironmentAuth;
-    bearer = yield* auth.getBearerToken.pipe(
-      Effect.mapError(
-        () =>
-          new DesktopPrivilegedDecisionError({
-            message: "Local desktop authentication is unavailable.",
-          }),
-      ),
-    );
   }
   const socketUrl = yield* Effect.try({
     try: () => approvalSocketUrl(httpBaseUrl, wsBaseUrl),

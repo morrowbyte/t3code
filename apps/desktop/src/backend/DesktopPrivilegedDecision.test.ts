@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   approvalSocketUrl,
   createApprovalCookie,
+  selectLocalApprovalRoute,
   selectSavedApprovalRoute,
 } from "./DesktopPrivilegedDecision.ts";
 
@@ -68,6 +69,27 @@ describe("desktop privileged approval bootstrap", () => {
     await expect(createApprovalCookie(base, bearer, "local-id")).rejects.toThrow(
       "Browser session cookie missing.",
     );
+  });
+});
+
+describe("local approval routes", () => {
+  it("selects the matching WSL environment and its existing session", () => {
+    const routes = [
+      { environmentId: "windows", backendId: "primary", httpBaseUrl: "http://127.0.0.1:3773/" },
+      { environmentId: "wsl", backendId: "wsl:Ubuntu", httpBaseUrl: "http://127.0.0.1:3774/" },
+    ];
+    const credentials = [
+      {
+        connectionId: "local:wsl:Ubuntu",
+        credential: { _tag: "BearerConnectionCredential" as const, token: "wsl-session" },
+      },
+    ];
+    expect(selectLocalApprovalRoute(routes, credentials, "wsl")).toEqual({
+      httpBaseUrl: "http://127.0.0.1:3774/",
+      token: "wsl-session",
+    });
+    expect(selectLocalApprovalRoute(routes, credentials, "other")).toBeNull();
+    expect(selectLocalApprovalRoute(routes, [], "wsl")).toBeNull();
   });
 });
 

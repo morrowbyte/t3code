@@ -369,6 +369,14 @@ export interface NativeAgentRosterPage {
 }
 
 export interface ProjectionRecordFilter {
+  readonly runtimeRequestStatuses?: ReadonlyArray<
+    OrchestrationV2ThreadProjection["runtimeRequests"][number]["status"]
+  >;
+  readonly runtimeRequestPrivilegedStates?: ReadonlyArray<
+    NonNullable<
+      OrchestrationV2ThreadProjection["runtimeRequests"][number]["privilegedCommand"]
+    >["state"]
+  >;
   readonly messageRoles?: ReadonlyArray<OrchestrationV2ConversationMessage["role"]>;
   readonly turnItemRunId?: RunId;
   readonly messageIds?: ReadonlyArray<MessageId>;
@@ -3434,6 +3442,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             SELECT payload_json
             FROM orchestration_v2_projection_runtime_requests
             WHERE thread_id = ${threadId}
+              ${filter?.runtimeRequestStatuses === undefined ? sql`` : sql`AND status IN (SELECT value FROM json_each(${encodeIdList(filter.runtimeRequestStatuses)}))`}
+              ${filter?.runtimeRequestPrivilegedStates === undefined ? sql`` : sql`AND json_extract(payload_json, '$.privilegedCommand.state') IN (SELECT value FROM json_each(${encodeIdList(filter.runtimeRequestPrivilegedStates)}))`}
             ORDER BY created_at ASC, runtime_request_id ASC
           `
               : sql<PayloadRow>`
