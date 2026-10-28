@@ -890,11 +890,13 @@ export function LiveVoiceControl(props: {
 
   useEffect(() => {
     const lease = state.lease;
+    // WebRTC can be ready before the active status reaches the renderer. The
+    // context RPC also accepts prepared/starting leases and validates identity.
     if (
       !targetPresent ||
       (state.phase !== "live" && state.phase !== "playback-blocked") ||
       !lease ||
-      lease.status !== "active" ||
+      !["prepared", "starting", "active"].includes(lease.status) ||
       lease.environmentId !== props.environmentId ||
       lease.threadId !== props.threadId ||
       lease.providerInstanceId !== props.providerInstanceId

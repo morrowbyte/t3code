@@ -698,6 +698,33 @@ describe("selected preview context during a call", () => {
     expect(commands.stop).not.toHaveBeenCalled();
   });
 
+  it.each(["prepared", "starting"] as const)(
+    "shares selected context once transport is live while the last lease status is %s",
+    async (status) => {
+      using _environment = setupEnvironment();
+      await using control = await setupControl();
+      const ref = { environmentId: environmentA, threadId: thread };
+      usePreviewSelectionStore.getState().replaceSelection(ref, selection("connected", "Target"));
+      await control.render(loaded);
+      const state = activeState();
+      await act(async () =>
+        voiceFixture.publish?.({ ...state, lease: { ...state.lease!, status } }),
+      );
+      expect(commands.context).toHaveBeenCalledOnce();
+      expect(commands.context).toHaveBeenLastCalledWith({
+        environmentId: environmentA,
+        input: {
+          leaseId: "selected-context-lease",
+          generation: 1,
+          revision: 1,
+          context: expect.stringContaining("Target"),
+        },
+      });
+      expect(commands.start).not.toHaveBeenCalled();
+      expect(commands.stop).not.toHaveBeenCalled();
+    },
+  );
+
   it("rejects foreign and inactive leases and resends bounded context for a new generation", async () => {
     using _environment = setupEnvironment();
     await using control = await setupControl();
@@ -711,7 +738,8 @@ describe("selected preview context during a call", () => {
       { ...state.lease!, environmentId: environmentB },
       { ...state.lease!, threadId: ThreadId.make("other") },
       { ...state.lease!, providerInstanceId: ProviderInstanceId.make("other") },
-      { ...state.lease!, status: "starting" as const },
+      { ...state.lease!, status: "preparing" as const },
+      { ...state.lease!, status: "closed" as const },
     ])
       await act(async () => voiceFixture.publish?.({ ...state, lease }));
     expect(commands.context).not.toHaveBeenCalled();
