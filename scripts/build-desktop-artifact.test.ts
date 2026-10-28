@@ -3,7 +3,7 @@ import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
-import { execFileSync } from "node:child_process";
+import * as NodeChildProcess from "node:child_process";
 import * as NodeAssert from "node:assert/strict";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -88,7 +88,6 @@ import {
 } from "./update-release-package-versions.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
-import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
 import { createStageWorkspaceConfig } from "./build-desktop-artifact.ts";
 import { DESKTOP_ELECTRON_LANGUAGES } from "./build-desktop-artifact.ts";
 import { WSL_RUNTIME_EXTRA_RESOURCES } from "./build-desktop-artifact.ts";
@@ -119,7 +118,13 @@ it("release stages can restage a dependency already installed from the same pnpm
   const bytes = "export const original = true;\n";
   await NodeFSP.writeFile(NodePath.join(contents, "index.js"), bytes);
   const archive = NodePath.join(root, "dependency.tgz");
-  execFileSync("tar", ["-czf", archive, "-C", NodePath.dirname(contents), "package"]);
+  NodeChildProcess.execFileSync("tar", [
+    "-czf",
+    archive,
+    "-C",
+    NodePath.dirname(contents),
+    "package",
+  ]);
   const source = NodePath.join(root, "source");
   const destination = NodePath.join(root, "stage");
   const hardlinked = NodePath.join(root, "hardlinked-stage");
@@ -132,12 +137,20 @@ it("release stages can restage a dependency already installed from the same pnpm
     await NodeFSP.writeFile(NodePath.join(project, "pnpm-workspace.yaml"), "nodeLinker: hoisted\n");
   }
   const offline = ["--offline", "--ignore-scripts", "--store-dir", NodePath.join(root, "store")];
-  execFileSync("vp", ["install", "--prod", "--", "--package-import-method=hardlink", ...offline], {
-    cwd: source,
-  });
-  execFileSync("vp", ["install", "--prod", "--", "--package-import-method=hardlink", ...offline], {
-    cwd: hardlinked,
-  });
+  NodeChildProcess.execFileSync(
+    "vp",
+    ["install", "--prod", "--", "--package-import-method=hardlink", ...offline],
+    {
+      cwd: source,
+    },
+  );
+  NodeChildProcess.execFileSync(
+    "vp",
+    ["install", "--prod", "--", "--package-import-method=hardlink", ...offline],
+    {
+      cwd: hardlinked,
+    },
+  );
   await NodeAssert.rejects(
     NodeFSP.cp(
       NodePath.join(source, "node_modules/stage-copy-fixture"),
@@ -146,7 +159,7 @@ it("release stages can restage a dependency already installed from the same pnpm
     ),
     /src and dest cannot be the same/u,
   );
-  execFileSync("vp", [...STAGE_INSTALL_ARGS, ...offline], { cwd: destination });
+  NodeChildProcess.execFileSync("vp", [...STAGE_INSTALL_ARGS, ...offline], { cwd: destination });
   const dependency = "node_modules/stage-copy-fixture";
   const original = NodePath.join(source, dependency, "index.js");
   const staged = NodePath.join(destination, dependency, "index.js");
@@ -323,24 +336,18 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.equal(resolveDesktopUpdateChannel("0.0.17"), "latest");
   });
 
-  it("switches desktop packaging product names to nightly for nightly builds", () => {
-    assert.equal(resolveDesktopProductName("0.1.0"), "T3 Code (Beta)");
-    assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "T3 Code (Nightly)");
+  it("brands desktop display names while preserving channel executable names", () => {
+    assert.equal(resolveDesktopProductName("0.1.0"), "Crew");
+    assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "Crew (Nightly)");
     assert.equal(resolveWindowsExecutableName("0.1.0"), "T3 Code (Beta)");
     assert.equal(resolveWindowsExecutableName("0.0.17-nightly.20260413.42"), "T3 Code (Nightly)");
   });
 
-  it("switches desktop packaging icons to the nightly artwork for nightly versions", () => {
-    assert.deepStrictEqual(resolveDesktopBuildIconAssets("0.0.17"), {
-      macIconPng: BRAND_ASSET_PATHS.productionMacIconPng,
-      linuxIconPng: BRAND_ASSET_PATHS.productionLinuxIconPng,
-      windowsIconIco: BRAND_ASSET_PATHS.productionWindowsIconIco,
-    });
-
-    assert.deepStrictEqual(resolveDesktopBuildIconAssets("0.0.17-nightly.20260413.42"), {
-      macIconPng: BRAND_ASSET_PATHS.nightlyMacIconPng,
-      linuxIconPng: BRAND_ASSET_PATHS.nightlyLinuxIconPng,
-      windowsIconIco: BRAND_ASSET_PATHS.nightlyWindowsIconIco,
+  it("uses Crew artwork without requiring a release profile", () => {
+    assert.deepStrictEqual(resolveDesktopBuildIconAssets(), {
+      macIconPng: "assets/crew/desktop-1024.png",
+      linuxIconPng: "assets/crew/desktop-1024.png",
+      windowsIconIco: "assets/crew/native.ico",
     });
   });
 
@@ -857,7 +864,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         "**/*.map",
       ]);
       assert.deepStrictEqual(mac.dmg, {
-        title: "T3 Code (Beta) 1.2.3 Installer",
+        title: "Crew 1.2.3 Installer",
         background: "dmg/dmg-background-latest.png",
         window: { width: 640, height: 432 },
         contents: [
@@ -870,10 +877,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       // An upstream Linux AppImage build also emits the .deb from the same run.
       assert.deepStrictEqual((linux.linux as Record<string, unknown>).target, ["AppImage", "deb"]);
       assert.deepStrictEqual((linux.linux as Record<string, unknown>).protocols, [
-        { name: "T3 Code", schemes: ["t3code", "t3code-dev"] },
+        { name: "Crew", schemes: ["t3code", "t3code-dev"] },
       ]);
       assert.deepStrictEqual((mac.mac as Record<string, unknown>).protocols, [
-        { name: "T3 Code", schemes: ["t3code", "t3code-dev"] },
+        { name: "Crew", schemes: ["t3code", "t3code-dev"] },
         { name: "Web site URL", schemes: ["http", "https"], role: "Viewer" },
       ]);
       const macInfo = (mac.mac as { extendInfo: Record<string, unknown> }).extendInfo;
@@ -897,7 +904,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.propertyVal(
         (mac.mac as Record<string, unknown>).extendInfo as Record<string, unknown>,
         "NSLocalNetworkUsageDescription",
-        "T3 Code connects to devices on your local network for remote environments and commands run by terminals and coding agents.",
+        "Crew connects to devices on your local network for remote environments and commands run by terminals and coding agents.",
       );
       for (const config of [linux, win]) {
         assert.deepStrictEqual(config.electronLanguages, DESKTOP_ELECTRON_LANGUAGES);
@@ -940,12 +947,14 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     const previousName = process.env.T3CODE_DESKTOP_PRODUCT_NAME;
     const previousAppId = process.env.T3CODE_DESKTOP_APP_ID;
     const previousInstallerGuid = process.env.T3CODE_DESKTOP_INSTALLER_GUID;
+    const previousExecutable = process.env.T3CODE_DESKTOP_EXECUTABLE_NAME;
+    delete process.env.T3CODE_DESKTOP_EXECUTABLE_NAME;
     process.env.T3CODE_DESKTOP_PROFILE = "morrowbyte";
     process.env.T3CODE_DESKTOP_APP_ID = "com.morrowbyte.t3code";
-    process.env.T3CODE_DESKTOP_PRODUCT_NAME = "Morrowbyte";
+    process.env.T3CODE_DESKTOP_PRODUCT_NAME = "Crew";
     process.env.T3CODE_DESKTOP_INSTALLER_GUID = "11111111-2222-3333-4444-555555555555";
     return Effect.gen(function* () {
-      assert.equal(resolveDesktopProductName("1.2.3-nightly.20261014.1"), "Morrowbyte");
+      assert.equal(resolveDesktopProductName("1.2.3-nightly.20261014.1"), "Crew");
       const win = yield* createBuildConfig(
         "win",
         "nsis",
@@ -964,13 +973,18 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         undefined,
         undefined,
       );
-      assert.equal(win.productName, "Morrowbyte");
-      assert.equal(linux.productName, "Morrowbyte");
+      assert.deepStrictEqual(resolveDesktopBuildIconAssets(), {
+        macIconPng: "assets/crew/desktop-1024.png",
+        linuxIconPng: "assets/crew/desktop-1024.png",
+        windowsIconIco: "assets/crew/native.ico",
+      });
+      assert.equal(win.productName, "Crew");
+      assert.equal(linux.productName, "Crew");
       assert.equal(resolveWindowsExecutableName("1.2.3-nightly.20261014.1"), "Morrowbyte");
       assert.equal((win.win as Record<string, unknown>).executableName, "Morrowbyte");
       assert.equal((linux.linux as Record<string, unknown>).executableName, "t3code");
-      assert.equal((win.nsis as Record<string, unknown>).shortcutName, "Morrowbyte");
-      assert.equal((win.nsis as Record<string, unknown>).uninstallDisplayName, "Morrowbyte");
+      assert.equal((win.nsis as Record<string, unknown>).shortcutName, "Crew");
+      assert.equal((win.nsis as Record<string, unknown>).uninstallDisplayName, "Crew");
       assert.equal((win.nsis as Record<string, unknown>).include, "morrowbyte-installer.nsh");
       assert.equal(win.artifactName, "T3-Code-${version}-${arch}.${ext}");
       assert.equal(linux.artifactName, "T3-Code-${version}-x86_64.${ext}");
@@ -979,9 +993,14 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         (win.nsis as Record<string, unknown>).guid,
         "11111111-2222-3333-4444-555555555555",
       );
+      process.env.T3CODE_DESKTOP_EXECUTABLE_NAME = "T3 Code (Morrowbyte Nightly)";
+      assert.equal(
+        resolveWindowsExecutableName("1.2.3-nightly.20261014.1"),
+        "T3 Code (Morrowbyte Nightly)",
+      );
       assert.deepStrictEqual(win.extraMetadata, {
         t3codeProfile: "morrowbyte",
-        t3codeProductName: "Morrowbyte",
+        t3codeProductName: "Crew",
         t3codeAppId: "com.morrowbyte.t3code",
       });
     }).pipe(
@@ -995,6 +1014,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           else process.env.T3CODE_DESKTOP_APP_ID = previousAppId;
           if (previousInstallerGuid === undefined) delete process.env.T3CODE_DESKTOP_INSTALLER_GUID;
           else process.env.T3CODE_DESKTOP_INSTALLER_GUID = previousInstallerGuid;
+          if (previousExecutable === undefined) delete process.env.T3CODE_DESKTOP_EXECUTABLE_NAME;
+          else process.env.T3CODE_DESKTOP_EXECUTABLE_NAME = previousExecutable;
         }),
       ),
       Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),

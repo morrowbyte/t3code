@@ -3,6 +3,7 @@ import {
   AuthSessionId,
   CommandId,
   EventId,
+  EnvironmentId,
   MessageId,
   NodeId,
   ProjectId,
@@ -24,6 +25,10 @@ import {
 import { hashTelemetryId as hash } from "@t3tools/shared/telemetryId";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
+import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -33,6 +38,8 @@ import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
+import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+import * as ProviderTurnStartService from "./ProviderTurnStartService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as HumanAuthority from "../auth/ApprovalReviewHumanAuthority.ts";
@@ -41,9 +48,14 @@ import * as ApprovalReviewOrderPolicy from "./ApprovalReviewOrderPolicy.ts";
 import * as ApprovalReviewService from "./ApprovalReviewService.ts";
 import * as HostOrders from "./ApprovalReviewHostOrders.ts";
 import { frozenReview } from "./ApprovalReviewPackage.ts";
+import { privilegedCommandHash } from "./PrivilegedCommandPackage.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
+import * as PrivilegedCommandService from "./PrivilegedCommandService.ts";
+import * as PrivilegedCommandCommands from "./PrivilegedCommandCommands.ts";
+import * as PrivilegedCommandExecutor from "../privilegedCommands/PrivilegedCommandExecutor.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 
 const recoverySource = "def execute(request):\n    raise RuntimeError('inert recovery test')\n";
 const recoveryTarget = {
@@ -87,6 +99,946 @@ const layerExternalRecovery = Layer.mergeAll(
       channels: [],
     }),
   ),
+);
+
+it.effect("commits a confirmed result and its cleanup receipt atomically", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const events = yield* EventSink.EventSinkV2;
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const outbox = yield* EffectOutbox.EffectOutboxV2;
+    const threadId = ThreadId.make("thread:confirmed-cleanup"),
+      runId = RunId.make("run:confirmed-cleanup");
+    const requestId = RuntimeRequestId.make("privileged-command:confirmed-cleanup"),
+      instanceId = ProviderInstanceId.make("unconfigured");
+    const modelSelection = { instanceId, model: "unused" },
+      claimId = "claim-confirmed-cleanup";
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create:confirmed-cleanup"),
+      threadId,
+      projectId: ProjectId.make("project:confirmed-cleanup"),
+      title: "Cleanup",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const now = yield* DateTime.now;
+    const bundle = {
+      environmentId: EnvironmentId.make("env"),
+      threadId,
+      runId,
+      providerSessionId: "session",
+      purpose: "Repair",
+      script: "inert",
+      shell: "sh" as const,
+      cwd: "/tmp",
+      timeoutMs: 1000,
+    };
+    const packageHash = privilegedCommandHash(requestId, bundle);
+    yield* events.write({
+      events: [
+        {
+          id: EventId.make("event:confirmed-run"),
+          type: "run.updated",
+          threadId,
+          runId,
+          occurredAt: now,
+          payload: {
+            id: runId,
+            threadId,
+            ordinal: 1,
+            providerInstanceId: instanceId,
+            modelSelection,
+            providerThreadId: null,
+            userMessageId: MessageId.make("message:confirmed"),
+            rootNodeId: NodeId.make("node:confirmed-root"),
+            activeAttemptId: null,
+            status: "running",
+            requestedAt: now,
+            startedAt: now,
+            completedAt: null,
+            checkpointId: null,
+            contextHandoffId: null,
+          },
+        },
+        {
+          id: EventId.make("event:confirmed-request"),
+          type: "runtime-request.updated",
+          threadId,
+          occurredAt: now,
+          payload: {
+            id: requestId,
+            nodeId: NodeId.make("node:confirmed"),
+            providerTurnId: null,
+            nativeRequestRef: null,
+            kind: "command",
+            status: "resolved",
+            decision: "accept",
+            responseCapability: { type: "external" },
+            createdAt: now,
+            resolvedAt: now,
+            privilegedCommand: { bundle, packageHash, state: "approved" },
+          },
+        },
+      ],
+    });
+    const claimCommandId = CommandId.make(`privileged-command-claim:${claimId}`);
+    yield* orchestrator.dispatch({
+      type: "privileged-command.claim",
+      commandId: claimCommandId,
+      threadId,
+      requestId,
+      packageHash,
+      claimId,
+      recoveryIdentity: {
+        platform: "linux",
+        bootId: "boot-fixture",
+        processId: 123,
+        processStart: "start-fixture",
+      },
+    });
+    const [cleanup] = yield* outbox.listByCommandId(claimCommandId);
+    assert.equal(cleanup?.request.type, "privileged-command.cleanup");
+    if (cleanup?.request.type !== "privileged-command.cleanup")
+      return assert.fail("missing cleanup");
+    assert.equal(cleanup.request.identity.bootId, "boot-fixture");
+    assert.equal(cleanup.request.identity.processId, 123);
+    assert.equal(cleanup.request.identity.processStart, "start-fixture");
+    assert.deepEqual(
+      (yield* store.getRuntimeRequest(threadId, requestId))?.privilegedCommand?.recoveryIdentity,
+      cleanup.request.identity,
+    );
+    yield* orchestrator.dispatch({
+      type: "privileged-command.result",
+      commandId: CommandId.make("command:confirmed-result"),
+      threadId,
+      requestId,
+      packageHash,
+      claimId,
+      cleanupConfirmed: true,
+      result: { status: "succeeded", exitCode: 0, stdout: "", stderr: "" },
+    });
+    assert.equal(
+      (yield* store.getRuntimeRequest(threadId, requestId))?.privilegedCommand?.state,
+      "completed",
+    );
+    assert.equal(Option.getOrUndefined(yield* outbox.get(cleanup.id))?.status, "succeeded");
+  }).pipe(Effect.provide(layerExternalRecovery)),
+);
+
+it.effect("keeps the thread blocked after process loss until cleanup is confirmed", () =>
+  Effect.gen(function* () {
+    const outbox = yield* EffectOutbox.EffectOutboxV2;
+    const threadId = ThreadId.make("thread:cleanup-recovery");
+    const requestId = RuntimeRequestId.make("privileged-command:cleanup-recovery");
+    const laterId = RuntimeRequestId.make("privileged-command:later");
+    yield* outbox.enqueue([
+      {
+        id: "effect:cleanup-old",
+        commandId: CommandId.make("command:cleanup-old"),
+        threadId,
+        request: { type: "privileged-command.execute", requestId, packageHash: "a".repeat(64) },
+      },
+    ]);
+    assert.isTrue(
+      Option.isSome(yield* outbox.claimNext({ workerId: "before-crash", leaseDurationMs: 30_000 })),
+    );
+    yield* outbox.enqueue([
+      {
+        id: "effect:cleanup-barrier",
+        commandId: CommandId.make("command:cleanup-barrier"),
+        threadId,
+        request: {
+          type: "privileged-command.cleanup",
+          requestId,
+          shell: "sh",
+          identity: {
+            platform: "linux",
+            bootId: "test-boot",
+          },
+        },
+      },
+    ]);
+    yield* outbox.reconcileAfterProcessLoss;
+    assert.equal(
+      Option.getOrUndefined(yield* outbox.get("effect:cleanup-old"))?.status,
+      "cancelled",
+    );
+    yield* outbox.enqueue([
+      {
+        id: "effect:cleanup-later",
+        commandId: CommandId.make("command:cleanup-later"),
+        threadId,
+        request: {
+          type: "privileged-command.execute",
+          requestId: laterId,
+          packageHash: "b".repeat(64),
+        },
+      },
+    ]);
+    let confirmed = false;
+    let cleanupAttempts = 0;
+    const workerLayer = EffectWorker.layerWithOptions({
+      workerId: "cleanup-recovery",
+      maxAttempts: 1,
+    }).pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(EffectOutbox.EffectOutboxV2, outbox),
+          Layer.succeed(EffectWorker.OrchestrationEffectExecutorV2, {
+            execute: (effect) => {
+              assert.equal(effect.request.type, "privileged-command.cleanup");
+              cleanupAttempts += 1;
+              return confirmed
+                ? Effect.void
+                : Effect.fail(
+                    new EffectWorker.OrchestrationEffectExecutionError({
+                      effectId: effect.id,
+                      effectType: effect.request.type,
+                    }),
+                  );
+            },
+          }),
+        ),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      yield* worker.runOnce;
+      assert.equal(
+        Option.getOrUndefined(yield* outbox.get("effect:cleanup-barrier"))?.status,
+        "pending",
+      );
+      assert.isTrue(
+        Option.isNone(yield* outbox.claimNext({ workerId: "blocked", leaseDurationMs: 30_000 })),
+      );
+      yield* TestClock.adjust(100);
+      confirmed = true;
+      yield* worker.runOnce;
+    }).pipe(Effect.provide(workerLayer));
+    assert.equal(cleanupAttempts, 2);
+    assert.equal(
+      Option.getOrUndefined(
+        yield* outbox.claimNext({ workerId: "after-cleanup", leaseDurationMs: 30_000 }),
+      )?.id,
+      "effect:cleanup-later",
+    );
+    const priorityThread = ThreadId.make("thread:cleanup-priority");
+    yield* outbox.enqueue([
+      {
+        id: "effect:older-pending",
+        commandId: CommandId.make("command:older-pending"),
+        threadId: priorityThread,
+        request: {
+          type: "privileged-command.execute",
+          requestId: laterId,
+          packageHash: "b".repeat(64),
+        },
+      },
+      {
+        id: "effect:newer-cleanup",
+        commandId: CommandId.make("command:newer-cleanup"),
+        threadId: priorityThread,
+        request: {
+          type: "privileged-command.cleanup",
+          requestId,
+          shell: "sh",
+          identity: {
+            platform: "linux",
+            bootId: "test-boot",
+            processId: 123,
+            processStart: "start-fixture",
+          },
+        },
+      },
+    ]);
+    assert.equal(
+      Option.getOrUndefined(
+        yield* outbox.claimNext({ workerId: "priority", leaseDurationMs: 30_000 }),
+      )?.id,
+      "effect:newer-cleanup",
+    );
+  }).pipe(Effect.provide(layerExternalRecovery)),
+);
+
+it.effect("stopping an old run cancels only its privileged outbox request", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const events = yield* EventSink.EventSinkV2;
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const outbox = yield* EffectOutbox.EffectOutboxV2;
+    const threadId = ThreadId.make("thread:stop-old-run"),
+      oldRun = RunId.make("run:old"),
+      newRun = RunId.make("run:new");
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create:stop-old-run"),
+      threadId,
+      projectId: ProjectId.make("project:stop-old-run"),
+      title: "Stop",
+      modelSelection: { instanceId: ProviderInstanceId.make("unconfigured"), model: "unused" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const now = yield* DateTime.now;
+    const ids = [
+      RuntimeRequestId.make("privileged-command:old"),
+      RuntimeRequestId.make("privileged-command:new"),
+    ];
+    const bundles = [oldRun, newRun].map((runId) => ({
+      environmentId: EnvironmentId.make("env"),
+      threadId,
+      runId,
+      providerSessionId: "session",
+      purpose: "Repair",
+      script: "inert",
+      shell: "sh" as const,
+      cwd: "/tmp",
+      timeoutMs: 1000,
+    }));
+    yield* events.write({
+      events: ids.map((id, index) => ({
+        id: EventId.make(`event:stop-old:${index}`),
+        type: "runtime-request.updated" as const,
+        threadId,
+        occurredAt: now,
+        payload: {
+          id,
+          nodeId: NodeId.make(`node:stop-old:${index}`),
+          providerTurnId: null,
+          nativeRequestRef: null,
+          kind: "command" as const,
+          status: "resolved" as const,
+          decision: "accept" as const,
+          responseCapability: { type: "external" as const },
+          createdAt: now,
+          resolvedAt: now,
+          privilegedCommand: {
+            bundle: bundles[index]!,
+            packageHash: privilegedCommandHash(id, bundles[index]!),
+            state: "approved" as const,
+          },
+        },
+      })),
+    });
+    yield* outbox.enqueue(
+      ids.map((id, index) => ({
+        id: `effect:stop-old:${index}`,
+        commandId: CommandId.make(`command:stop-old:${index}`),
+        threadId,
+        request: {
+          type: "privileged-command.execute" as const,
+          requestId: id,
+          packageHash: privilegedCommandHash(id, bundles[index]!),
+        },
+      })),
+    );
+    const planned = yield* PrivilegedCommandCommands.stop({ threadId, runId: oldRun }).pipe(
+      Effect.provideService(ProjectionStore.ProjectionStoreV2, store),
+    );
+    const requestIds = planned.flatMap((event) =>
+      event.type === "runtime-request.updated"
+        ? [(event.payload as import("@t3tools/contracts").OrchestrationV2RuntimeRequest).id]
+        : [],
+    );
+    yield* events.commitCommand({
+      commandId: CommandId.make("command:stop-old"),
+      commandType: "run.interrupt",
+      threadId,
+      acceptedAt: now,
+      events: planned.map((event, index) => ({
+        ...event,
+        id: EventId.make(`event:stop-old-result:${index}`),
+      })) as import("@t3tools/contracts").OrchestrationV2DomainEvent[],
+      effects: [],
+      cancelUnsettledEffects: {
+        effectTypes: ["privileged-command.execute"],
+        privilegedRequestIds: requestIds,
+        reason: "stopped",
+      },
+    });
+    assert.equal(
+      (yield* store.getRuntimeRequest(threadId, ids[0]!))?.privilegedCommand?.state,
+      "unknown",
+    );
+    assert.equal(
+      (yield* store.getRuntimeRequest(threadId, ids[1]!))?.privilegedCommand?.state,
+      "approved",
+    );
+    assert.equal(
+      Option.getOrUndefined(yield* outbox.get("effect:stop-old:0"))?.status,
+      "cancelled",
+    );
+    assert.equal(Option.getOrUndefined(yield* outbox.get("effect:stop-old:1"))?.status, "pending");
+  }).pipe(Effect.provide(layerExternalRecovery)),
+);
+
+it.effect.each(["approved", "claimed"] as const)(
+  "marks a %s privileged command unknown after restart without re-executing it",
+  (state) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const events = yield* EventSink.EventSinkV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
+      const threadId = ThreadId.make("thread:privileged-recovery");
+      const requestId = RuntimeRequestId.make("privileged-command:recovery");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("create:privileged-recovery"),
+        threadId,
+        projectId: ProjectId.make("project:privileged-recovery"),
+        title: "Recovery",
+        modelSelection: { instanceId: ProviderInstanceId.make("unconfigured"), model: "unused" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const now = yield* DateTime.now;
+      const bundle = {
+        environmentId: EnvironmentId.make("env"),
+        threadId,
+        runId: RunId.make("run:lost"),
+        providerSessionId: "session",
+        purpose: "Repair",
+        script: "inert fixture",
+        shell: "sh" as const,
+        cwd: "/tmp",
+        timeoutMs: 1000,
+      };
+      yield* events.write({
+        events: [
+          {
+            id: EventId.make("event:privileged-recovery"),
+            type: "runtime-request.updated",
+            threadId,
+            occurredAt: now,
+            payload: {
+              id: requestId,
+              nodeId: NodeId.make("node:privileged-recovery"),
+              providerTurnId: null,
+              nativeRequestRef: null,
+              kind: "command",
+              status: "resolved",
+              decision: "accept",
+              responseCapability: { type: "external" },
+              createdAt: now,
+              resolvedAt: now,
+              privilegedCommand: {
+                bundle,
+                packageHash: privilegedCommandHash(requestId, bundle),
+                state,
+              },
+            },
+          },
+          {
+            id: EventId.make("event:privileged-recovery-item"),
+            type: "turn-item.updated",
+            threadId,
+            nodeId: NodeId.make("node:privileged-recovery"),
+            occurredAt: now,
+            payload: {
+              id: TurnItemId.make("item:privileged-recovery"),
+              threadId,
+              runId: bundle.runId,
+              nodeId: NodeId.make("node:privileged-recovery"),
+              providerThreadId: null,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: 1,
+              status: "waiting",
+              title: "Run one privileged script",
+              startedAt: now,
+              completedAt: null,
+              updatedAt: now,
+              type: "approval_request",
+              requestId,
+              requestKind: "command",
+              prompt: "Repair",
+              privilegedCommand: {
+                bundle,
+                packageHash: privilegedCommandHash(requestId, bundle),
+                state,
+              },
+            },
+          },
+        ],
+      });
+      yield* recovery.reconcile("startup");
+      const request = yield* projections.getRuntimeRequest(threadId, requestId);
+      assert.equal(request?.privilegedCommand?.state, "unknown");
+      assert.equal(request?.privilegedCommand?.result?.status, "unknown");
+      const item = (yield* projections.getRuntimeResponseContext(threadId, requestId)).item;
+      assert.equal(item?.status, state === "claimed" ? "waiting" : "cancelled");
+      if (state === "claimed") assert.isNull(item?.completedAt);
+      yield* recovery.reconcile("startup");
+      assert.equal(
+        (yield* projections.getRuntimeRequest(threadId, requestId))?.privilegedCommand?.state,
+        "unknown",
+      );
+    }).pipe(Effect.provide(layerExternalRecovery)),
+);
+
+it.effect(
+  "serializes competing privileged claims and never replays a claimed execution after recovery",
+  () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const events = yield* EventSink.EventSinkV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const threadId = ThreadId.make("thread:privileged-claim-race");
+      const runId = RunId.make("run:privileged-claim-race");
+      const requestId = RuntimeRequestId.make("privileged-command:race");
+      const environmentId = EnvironmentId.make("race-environment");
+      const instanceId = ProviderInstanceId.make("unconfigured");
+      const modelSelection = { instanceId, model: "unused" };
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("create:privileged-race"),
+        threadId,
+        projectId: ProjectId.make("project:privileged-race"),
+        title: "Race",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const now = yield* DateTime.now;
+      const bundle = {
+        environmentId,
+        threadId,
+        runId,
+        providerSessionId: "session",
+        purpose: "Repair",
+        script: "inert fixture",
+        shell: "sh" as const,
+        cwd: "/tmp",
+        timeoutMs: 1000,
+      };
+      const packageHash = privilegedCommandHash(requestId, bundle);
+      yield* events.write({
+        events: [
+          {
+            id: EventId.make("event:privileged-race-run"),
+            type: "run.updated",
+            threadId,
+            runId,
+            occurredAt: now,
+            payload: {
+              id: runId,
+              threadId,
+              ordinal: 1,
+              providerInstanceId: instanceId,
+              modelSelection,
+              providerThreadId: null,
+              userMessageId: MessageId.make("message:race"),
+              rootNodeId: NodeId.make("node:root-race"),
+              activeAttemptId: null,
+              status: "running",
+              requestedAt: now,
+              startedAt: now,
+              completedAt: null,
+              checkpointId: null,
+              contextHandoffId: null,
+            },
+          },
+          {
+            id: EventId.make("event:privileged-race-request"),
+            type: "runtime-request.updated",
+            threadId,
+            occurredAt: now,
+            payload: {
+              id: requestId,
+              nodeId: NodeId.make("node:privileged-race"),
+              providerTurnId: null,
+              nativeRequestRef: null,
+              kind: "command",
+              status: "pending",
+              responseCapability: { type: "external" },
+              createdAt: now,
+              resolvedAt: null,
+              privilegedCommand: { bundle, packageHash, state: "pending" },
+            },
+          },
+        ],
+      });
+      yield* orchestrator
+        .dispatch({
+          type: "runtime-request.respond",
+          commandId: CommandId.make("decision:privileged-race"),
+          threadId,
+          requestId,
+          decision: "accept",
+          packageHash,
+        })
+        .pipe(
+          Effect.provideService(HumanAuthority.ApprovalReviewHumanAuthority, {
+            sessionId: AuthSessionId.make("human"),
+            subject: "owner",
+            method: "browser-session-cookie",
+          }),
+        );
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const startedAgain = yield* Deferred.make<void>();
+      const cleanupStarted = yield* Deferred.make<void>();
+      const cleanupRelease = yield* Deferred.make<void>();
+      let starts = 0;
+      const serviceLayer = PrivilegedCommandService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.succeed(Orchestrator.OrchestratorV2, orchestrator),
+            Layer.succeed(ProjectionStore.ProjectionStoreV2, projections),
+            Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+              ownsMcpCredential: () => Effect.succeed(true),
+            }),
+            Layer.succeed(EventSink.EventSinkV2, events),
+            Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
+              getEnvironmentId: Effect.succeed(environmentId),
+            }),
+            Layer.succeed(PrivilegedCommandExecutor.PrivilegedCommandExecutor, {
+              captureRecoveryIdentity: () =>
+                Effect.succeed({
+                  platform: "linux" as const,
+                  bootId: "test-boot",
+                  processId: 123,
+                  processStart: "start-fixture",
+                }),
+              cleanup: () => Effect.succeed({ status: "confirmed" as const }),
+              validate: () => Effect.void,
+              execute: () =>
+                Effect.gen(function* () {
+                  starts += 1;
+                  yield* Deferred.succeed(started, undefined);
+                  if (starts > 1) yield* Deferred.succeed(startedAgain, undefined);
+                  yield* Deferred.await(release).pipe(
+                    Effect.onInterrupt(() =>
+                      starts > 1
+                        ? Deferred.succeed(cleanupStarted, undefined).pipe(
+                            Effect.andThen(Deferred.await(cleanupRelease)),
+                          )
+                        : Effect.die(new Error("cleanup finalizer failed")),
+                    ),
+                  );
+                  return { status: "succeeded" as const, exitCode: 0, stdout: "", stderr: "" };
+                }),
+            }),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* PrivilegedCommandService.PrivilegedCommandService;
+        const input = { threadId, requestId, packageHash };
+        const finished =
+          yield* Deferred.make<Exit.Exit<void, import("@t3tools/contracts").ApprovalReviewError>>();
+        const attempt = service.executeApproved(input).pipe(
+          Effect.exit,
+          Effect.tap((result) => Deferred.succeed(finished, result)),
+        );
+        const first = yield* attempt.pipe(Effect.forkScoped);
+        const second = yield* attempt.pipe(Effect.forkScoped);
+        yield* Deferred.await(started);
+        assert.isTrue(Exit.isFailure(yield* Deferred.await(finished)));
+        assert.equal(starts, 1);
+        assert.equal(
+          (yield* projections.getRuntimeRequest(threadId, requestId))?.privilegedCommand?.state,
+          "claimed",
+        );
+        yield* recovery.reconcile("startup");
+        const recoveredClaim = (yield* projections.getRuntimeRequest(threadId, requestId))
+          ?.privilegedCommand?.claimId;
+        const recoveredCleanup = (yield* outbox.listByCommandId(
+          CommandId.make(`privileged-command-claim:${recoveredClaim}`),
+        ))[0];
+        assert.equal(recoveredCleanup?.status, "pending");
+        assert.equal(
+          (yield* projections.getRuntimeRequest(threadId, requestId))?.privilegedCommand?.state,
+          "unknown",
+        );
+        yield* Fiber.interrupt(first);
+        yield* Fiber.interrupt(second);
+        if (recoveredCleanup === undefined) return assert.fail("cleanup barrier missing");
+        assert.equal(
+          Option.getOrUndefined(yield* outbox.get(recoveredCleanup.id))?.status,
+          "pending",
+        );
+        const cleanupClaim = yield* outbox.claimNext({
+          workerId: "recovery-cleanup-test",
+          leaseDurationMs: 30_000,
+        });
+        assert.isTrue(Option.isSome(cleanupClaim));
+        if (Option.isNone(cleanupClaim)) return assert.fail("cleanup barrier missing");
+        yield* outbox.succeed({
+          effectId: cleanupClaim.value.id,
+          workerId: "recovery-cleanup-test",
+        });
+        yield* service.executeApproved(input);
+        assert.equal(starts, 1);
+        const staleId = RuntimeRequestId.make("privileged-command:stale");
+        const staleHash = privilegedCommandHash(staleId, bundle);
+        yield* events.write({
+          events: [
+            {
+              id: EventId.make("event:privileged-stale"),
+              type: "runtime-request.updated",
+              threadId,
+              occurredAt: now,
+              payload: {
+                id: staleId,
+                nodeId: NodeId.make("node:privileged-stale"),
+                providerTurnId: null,
+                nativeRequestRef: null,
+                kind: "command",
+                status: "pending",
+                responseCapability: { type: "external" },
+                createdAt: now,
+                resolvedAt: null,
+                privilegedCommand: { bundle, packageHash: staleHash, state: "pending" },
+              },
+            },
+          ],
+        });
+        const stale = yield* Effect.exit(
+          orchestrator
+            .dispatch({
+              type: "runtime-request.respond",
+              commandId: CommandId.make("decision:stale"),
+              threadId,
+              requestId: staleId,
+              decision: "accept",
+              packageHash: staleHash,
+            })
+            .pipe(
+              Effect.provideService(HumanAuthority.ApprovalReviewHumanAuthority, {
+                sessionId: AuthSessionId.make("human"),
+                subject: "owner",
+                method: "browser-session-cookie",
+              }),
+            ),
+        );
+        assert.isTrue(Exit.isFailure(stale));
+        // A new active job runs through the real outbox worker. Stop must interrupt it,
+        // but retain its thread slot until the executor's cleanup has actually finished.
+        const priorRun = (yield* projections.getThreadRecords(threadId, ["runs"])).runs.find(
+          (run) => run.id === runId,
+        );
+        if (priorRun === undefined) return assert.fail("missing run");
+        const stopId = RuntimeRequestId.make("privileged-command:stop");
+        const stopHash = privilegedCommandHash(stopId, bundle);
+        const stopProviderThreadId = ProviderThreadId.make("provider-thread:storage-stop");
+        const stopProviderTurnId = ProviderTurnId.make("provider-turn:storage-stop");
+        const stopRootId = NodeId.make("node:root-race");
+        yield* events.write({
+          events: [
+            {
+              id: EventId.make("event:privileged-stop-run"),
+              type: "run.updated",
+              threadId,
+              runId,
+              occurredAt: now,
+              payload: {
+                ...priorRun,
+                status: "running",
+                completedAt: null,
+                providerThreadId: stopProviderThreadId,
+              },
+            },
+            {
+              id: EventId.make("event:storage-stop-root"),
+              type: "node.updated",
+              threadId,
+              runId,
+              nodeId: stopRootId,
+              occurredAt: now,
+              payload: {
+                id: stopRootId,
+                threadId,
+                runId,
+                parentNodeId: null,
+                rootNodeId: stopRootId,
+                kind: "root_turn",
+                status: "running",
+                countsForRun: true,
+                providerThreadId: stopProviderThreadId,
+                providerTurnId: stopProviderTurnId,
+                nativeItemRef: null,
+                runtimeRequestId: null,
+                checkpointScopeId: null,
+                startedAt: now,
+                completedAt: null,
+              },
+            },
+            {
+              id: EventId.make("event:storage-stop-provider-thread"),
+              type: "provider-thread.updated",
+              threadId,
+              nodeId: stopRootId,
+              occurredAt: now,
+              payload: {
+                id: stopProviderThreadId,
+                driver: ProviderDriverKind.make("codex"),
+                providerInstanceId: instanceId,
+                providerSessionId: null,
+                appThreadId: threadId,
+                ownerNodeId: stopRootId,
+                nativeThreadRef: null,
+                nativeConversationHeadRef: null,
+                status: "active",
+                firstRunOrdinal: 1,
+                lastRunOrdinal: 1,
+                handoffIds: [],
+                forkedFrom: null,
+                createdAt: now,
+                updatedAt: now,
+              },
+            },
+            {
+              id: EventId.make("event:storage-stop-provider-turn"),
+              type: "provider-turn.updated",
+              threadId,
+              nodeId: stopRootId,
+              occurredAt: now,
+              payload: {
+                id: stopProviderTurnId,
+                providerThreadId: stopProviderThreadId,
+                nodeId: stopRootId,
+                runAttemptId: null,
+                nativeTurnRef: null,
+                ordinal: 1,
+                status: "running",
+                startedAt: now,
+                completedAt: null,
+              },
+            },
+            {
+              id: EventId.make("event:privileged-stop-request"),
+              type: "runtime-request.updated",
+              threadId,
+              occurredAt: now,
+              payload: {
+                id: stopId,
+                nodeId: NodeId.make("node:privileged-stop"),
+                providerTurnId: null,
+                nativeRequestRef: null,
+                kind: "command",
+                status: "pending",
+                responseCapability: { type: "external" },
+                createdAt: now,
+                resolvedAt: null,
+                privilegedCommand: { bundle, packageHash: stopHash, state: "pending" },
+              },
+            },
+          ],
+        });
+        const decisionId = CommandId.make("decision:privileged-stop");
+        yield* orchestrator
+          .dispatch({
+            type: "runtime-request.respond",
+            commandId: decisionId,
+            threadId,
+            requestId: stopId,
+            decision: "accept",
+            packageHash: stopHash,
+          })
+          .pipe(
+            Effect.provideService(HumanAuthority.ApprovalReviewHumanAuthority, {
+              sessionId: AuthSessionId.make("human"),
+              subject: "owner",
+              method: "browser-session-cookie",
+            }),
+          );
+        const rows = yield* outbox.listByCommandId(decisionId);
+        const queued = rows.find((row) => row.request.type === "privileged-command.execute");
+        if (queued === undefined) return assert.fail("missing outbox effect");
+        const workerLayer = EffectWorker.layerWithOptions({
+          workerId: "privileged-stop-test",
+        }).pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.succeed(EffectOutbox.EffectOutboxV2, outbox),
+              Layer.succeed(EffectWorker.OrchestrationEffectExecutorV2, {
+                execute: (effect) =>
+                  effect.request.type === "privileged-command.execute"
+                    ? service
+                        .executeApproved({
+                          threadId: effect.threadId,
+                          requestId: effect.request.requestId,
+                          packageHash: effect.request.packageHash,
+                        })
+                        .pipe(
+                          Effect.mapError(
+                            (cause) =>
+                              new EffectWorker.OrchestrationEffectExecutionError({
+                                effectId: effect.id,
+                                effectType: effect.request.type,
+                                cause,
+                              }),
+                          ),
+                        )
+                    : Effect.void,
+              }),
+            ),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const executing = yield* worker.runOnce.pipe(Effect.forkScoped);
+          yield* Deferred.await(startedAgain);
+          yield* ProviderTurnStartService.storageRunInterrupt(orchestrator)({
+            threadId,
+            runId,
+            reason: "Storage pressure fixture",
+          });
+          assert.equal(
+            (yield* projections.getRuntimeRequest(threadId, stopId))?.privilegedCommand?.state,
+            "unknown",
+          );
+          yield* Deferred.await(cleanupStarted);
+          assert.equal(Option.getOrUndefined(yield* outbox.get(queued.id))?.status, "running");
+          assert.equal(
+            (yield* projections.getRuntimeRequest(threadId, stopId))?.privilegedCommand?.state,
+            "unknown",
+          );
+          const stopClaim = (yield* projections.getRuntimeRequest(threadId, stopId))
+            ?.privilegedCommand?.claimId;
+          const stopCleanup = (yield* outbox.listByCommandId(
+            CommandId.make(`privileged-command-claim:${stopClaim}`),
+          ))[0];
+          if (stopCleanup === undefined) return assert.fail("stop cleanup barrier missing");
+          assert.equal(stopCleanup.status, "pending");
+          yield* Deferred.succeed(cleanupRelease, undefined);
+          yield* Fiber.join(executing);
+          assert.equal(Option.getOrUndefined(yield* outbox.get(queued.id))?.status, "cancelled");
+          assert.equal(
+            Option.getOrUndefined(yield* outbox.get(stopCleanup.id))?.status,
+            "succeeded",
+          );
+          assert.equal(
+            (yield* projections.getRuntimeRequest(threadId, stopId))?.privilegedCommand?.state,
+            "unknown",
+          );
+          assert.equal(starts, 2);
+        }).pipe(Effect.provide(workerLayer));
+      }).pipe(Effect.provide(serviceLayer));
+    }).pipe(Effect.provide(layerExternalRecovery)),
 );
 
 it.effect.each([false, true] as const)(
@@ -854,6 +1806,7 @@ it.effect(
       assert.equal(summary.stoppedSessions, 1);
       assert.equal(summary.retiredEffects, 2);
       assert.deepEqual(committedInput?.cancelUnsettledEffects?.effectTypes, [
+        "privileged-command.execute",
         "provider-turn.start",
         "provider-turn.interrupt",
         "provider-turn.steer",

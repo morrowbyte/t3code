@@ -31,5 +31,3 @@ const parsed = parseApprovalReviewDetail({
 if (parsed.kind !== "bundle") throw new Error("Invalid bundled GitLab example");
 
 export const gitlabExampleBundle = parsed.bundle;
-
-export const gitlabExampleBundleHash = gitlabExampleBundle.hash;

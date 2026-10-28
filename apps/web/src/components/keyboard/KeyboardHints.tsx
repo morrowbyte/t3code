@@ -6,7 +6,7 @@ const alphabet = "asdfghjklqwertyuiopzxcvbnm";
 const selector =
   'button,a[href],summary,input:not([type="hidden"]),textarea,select,[role="button"],[role="combobox"],[role="tab"],[contenteditable="true"],[tabindex="0"]';
 
-export function keyboardHintTargets(root: ParentNode = document) {
+function keyboardHintTargets(root: ParentNode = document) {
   return Array.from(root.querySelectorAll<HTMLElement>(selector))
     .filter((element) => {
       if (element.closest('[inert],[aria-hidden="true"],[data-keyboard-hints]')) return false;

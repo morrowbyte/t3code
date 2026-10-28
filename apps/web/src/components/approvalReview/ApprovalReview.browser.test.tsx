@@ -1,4 +1,12 @@
-import { AuthSessionId, RuntimeRequestId, type ApprovalReviewAuthority } from "@t3tools/contracts";
+import {
+  AuthSessionId,
+  EnvironmentId,
+  ThreadId,
+  RunId,
+  RuntimeRequestId,
+  type ApprovalReviewAuthority,
+  type PrivilegedCommandAuthority,
+} from "@t3tools/contracts";
 import {
   canonicalReviewBundleSnapshot,
   type ReviewBundle,
@@ -12,10 +20,13 @@ import { ComposerPendingApprovalPanel } from "../chat/ComposerPendingApprovalPan
 import { usePendingApprovalSelection } from "../chat/usePendingApprovalSelection";
 import type { PendingApproval } from "../../session-logic";
 import { gitlabExampleBundle } from "./gitlabExample";
+import { ApprovalReview } from "./ApprovalReview";
 import { syntheticOriginalOrder } from "@t3tools/client-runtime/testing/approval-review";
 
+const REVIEW_NOW = Date.UTC(2026, 9, 27, 18);
+
 function externalApproval(sourceKind: "human" | "synthetic" = "human") {
-  const original = syntheticOriginalOrder(Date.now() + 60_000);
+  const original = syntheticOriginalOrder(REVIEW_NOW + 60_000);
   const originalOrder =
     sourceKind === "human"
       ? original
@@ -34,7 +45,7 @@ function externalApproval(sourceKind: "human" | "synthetic" = "human") {
   const authority: ApprovalReviewAuthority = {
     packageHash: bundle.hash,
     verifiedTargetId: "test-target",
-    expiresAt: Date.now() + 60_000,
+    expiresAt: REVIEW_NOW + 60_000,
     state: "pending",
     requesterSubject: "test-requester",
     workerSubject: "test-worker",
@@ -98,16 +109,13 @@ function PendingQueue({
 }
 
 it("shows the immutable human excerpt and complete original separately from the agent rationale", async () => {
+  using _now = vi.spyOn(Date, "now").mockReturnValue(REVIEW_NOW);
   const approval = externalApproval();
   const onRespond = vi.fn(async () => undefined);
   await using screen = await render(<PendingQueue approvals={[approval]} onRespond={onRespond} />);
   await userEvent.click(screen.getByRole("button", { name: "Review action" }));
   const dialog = document.querySelector<HTMLElement>('[role="dialog"][data-keyboard-local]')!;
-  await act(async () =>
-    [...dialog.querySelectorAll("button")]
-      .find((button) => button.textContent === "Order")!
-      .click(),
-  );
+  await userEvent.click(screen.getByText("Details", { exact: true }));
   const order = dialog.querySelector<HTMLElement>('[aria-label="Original host order"]')!;
   await expect.poll(() => order.textContent).toContain("Host order and request channel verified");
   expect(order.textContent).toContain(approval.approvalReview.originalOrder!.excerpt.text);
@@ -124,12 +132,13 @@ it("shows the immutable human excerpt and complete original separately from the 
 });
 
 it("keeps verified synthetic provenance distinct from failed package integrity", async () => {
+  using _now = vi.spyOn(Date, "now").mockReturnValue(REVIEW_NOW);
   const onRespond = vi.fn(async () => undefined);
   await using screen = await render(
     <PendingQueue approvals={[externalApproval("synthetic")]} onRespond={onRespond} />,
   );
   await userEvent.click(screen.getByRole("button", { name: "Review action" }));
-  await userEvent.click(screen.getByRole("button", { name: "Order", exact: true }));
+  await userEvent.click(screen.getByText("Details", { exact: true }));
   await expect
     .element(screen.getByText("Synthetic test · execution disabled", { exact: true }))
     .toBeVisible();
@@ -143,6 +152,7 @@ it("keeps verified synthetic provenance distinct from failed package integrity",
 });
 
 it("keeps an unsigned legacy host request inspectable but blocks approval", async () => {
+  using _now = vi.spyOn(Date, "now").mockReturnValue(REVIEW_NOW);
   const approval = externalApproval();
   const { originalOrder: _original, ...snapshot } = (
     JSON.parse(approval.detail) as { approvalReview: ReviewBundle }
@@ -162,11 +172,7 @@ it("keeps an unsigned legacy host request inspectable but blocks approval", asyn
   await using screen = await render(<PendingQueue approvals={[legacy]} onRespond={onRespond} />);
   await userEvent.click(screen.getByRole("button", { name: "Review action" }));
   const dialog = document.querySelector<HTMLElement>('[role="dialog"][data-keyboard-local]')!;
-  await act(async () =>
-    [...dialog.querySelectorAll("button")]
-      .find((button) => button.textContent === "Order")!
-      .click(),
-  );
+  await userEvent.click(screen.getByText("Details", { exact: true }));
   expect(dialog.textContent).toContain("No independently captured original order was supplied");
   expect(
     [...dialog.querySelectorAll<HTMLButtonElement>("button")].find(
@@ -182,6 +188,7 @@ it("keeps an unsigned legacy host request inspectable but blocks approval", asyn
 });
 
 it("invalidates an open review when authoritative original metadata changes without a new hash", async () => {
+  using _now = vi.spyOn(Date, "now").mockReturnValue(REVIEW_NOW);
   const approval = externalApproval();
   const onRespond = vi.fn(async () => undefined);
   await using screen = await render(<PendingQueue approvals={[approval]} onRespond={onRespond} />);
@@ -211,6 +218,7 @@ it("invalidates an open review when authoritative original metadata changes with
 });
 
 it("can review a second request while an earlier disconnected example remains pending", async () => {
+  using _now = vi.spyOn(Date, "now").mockReturnValue(REVIEW_NOW);
   const next = externalApproval();
   const first: PendingApproval = {
     ...next,
@@ -228,11 +236,7 @@ it("can review a second request while an earlier disconnected example remains pe
   await userEvent.click(screen.getByRole("button", { name: "Review action" }));
   const dialog = document.querySelector<HTMLElement>('[role="dialog"][data-keyboard-local]')!;
   expect(dialog.textContent).toContain("Isolated test target");
-  await act(async () =>
-    [...dialog.querySelectorAll("button")]
-      .find((button) => button.textContent === "Evidence")!
-      .click(),
-  );
+  await userEvent.click(screen.getByText("Details", { exact: true }));
   expect(dialog.textContent).toContain(next.requestId);
   expect(dialog.textContent).toContain(next.approvalReview.packageHash);
   await userEvent.click(screen.getByRole("button", { name: "Close review" }));
@@ -242,6 +246,7 @@ it("can review a second request while an earlier disconnected example remains pe
 });
 
 it("enables an exact verified external package only inside review and sends its frozen hash", async () => {
+  using _now = vi.spyOn(Date, "now").mockReturnValue(REVIEW_NOW);
   const onRespond = vi.fn(async () => undefined);
   const approval = externalApproval();
   await using screen = await render(
@@ -274,6 +279,7 @@ it("enables an exact verified external package only inside review and sends its 
 });
 
 it("does not label a resolved failure result as submitted approval", async () => {
+  using _now = vi.spyOn(Date, "now").mockReturnValue(REVIEW_NOW);
   const onRespond = vi.fn(async () => ({ _tag: "Failure" as const }));
   const approval = externalApproval();
   await using screen = await render(
@@ -336,18 +342,16 @@ it("opens the real approval action as a viewport review and never responds to an
       ?.disabled,
   ).toBe(true);
   expect(onRespond).not.toHaveBeenCalled();
-  await act(async () =>
-    dialog.querySelector<HTMLButtonElement>('[aria-label="Next step"]')!.click(),
-  );
-  expect(dialog.textContent).toContain("Installation prüfen");
-  await act(async () =>
-    [...dialog.querySelectorAll("button")]
-      .find((button) => button.textContent === "Source")!
-      .click(),
-  );
+  await expect.poll(() => dialog.querySelector(".cm-content")?.textContent).toContain("import");
+  const sourceFile = screen.getByLabelText("Source file");
+  expect(dialog.querySelector(".cm-content")?.getAttribute("contenteditable")).toBe("false");
+  await userEvent.selectOptions(sourceFile, "review.py");
   await expect
-    .poll(() => dialog.querySelector(".cm-activeLine")?.textContent)
-    .toContain("check_expected_installation");
+    .poll(() => dialog.querySelector(".cm-content")?.textContent)
+    .toContain(
+      gitlabExampleBundle.files.find((file) => file.path === "review.py")!.content.split("\n")[0],
+    );
+  expect(dialog.querySelector('[aria-label="Review views"]')).toBeNull();
   await act(async () =>
     dialog.querySelector<HTMLButtonElement>('[aria-label="Find in file"]')!.click(),
   );
@@ -427,4 +431,220 @@ it("submits an ordinary provider approval only once through its existing request
     approve.click();
   });
   expect(onRespond).toHaveBeenCalledExactlyOnceWith(approval.requestId, "accept");
+});
+
+function privilegedFixture() {
+  const bundle = {
+    environmentId: EnvironmentId.make("test-host"),
+    threadId: ThreadId.make("thread-1"),
+    runId: RunId.make("run-1"),
+    providerSessionId: "session-1",
+    purpose: "Repair the service",
+    script: "Write-Output 'hello'\nGet-Service example",
+    shell: "powershell" as const,
+    cwd: "C:\\work",
+    timeoutMs: 12000,
+  };
+  const requestId = RuntimeRequestId.make("privileged-request");
+  const canonical = JSON.stringify(
+    Object.fromEntries(
+      Object.entries({ version: 1, requestId, ...bundle }).sort(([a], [b]) =>
+        a < b ? -1 : a > b ? 1 : 0,
+      ),
+    ),
+  );
+  const privilegedCommand: PrivilegedCommandAuthority = {
+    bundle,
+    packageHash: sha256(canonical),
+    state: "pending",
+  };
+  const approval: PendingApproval = {
+    requestId,
+    requestKind: "command",
+    createdAt: "2026-10-27T00:00:00Z",
+    responseCapability: "external",
+    detail: "",
+  };
+  return { privilegedCommand, approval };
+}
+
+it("reviews the frozen privileged script and submits its exact hash once", async () => {
+  const { privilegedCommand, approval } = privilegedFixture();
+  const onRespond = vi.fn(async () => undefined);
+  await using screen = await render(
+    <ApprovalReview
+      open
+      onOpenChange={() => {}}
+      approval={approval}
+      environmentId={privilegedCommand.bundle.environmentId}
+      targetLabel="Workstation"
+      privilegedCommand={privilegedCommand}
+      onRespond={onRespond}
+    />,
+  );
+  const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+  expect(dialog.textContent).toContain("Workstation");
+  expect(dialog.textContent).toContain("Repair the service");
+  expect(dialog.textContent).toContain("powershell");
+  expect(dialog.textContent).toContain("C:\\work");
+  await expect
+    .poll(() => document.querySelector(".cm-content")?.textContent)
+    .toContain("Write-Output 'hello'");
+  expect(document.querySelector(".cm-content")?.getAttribute("contenteditable")).toBe("false");
+  expect(document.querySelector('[aria-label="Source file"]')).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: "Approve once" }));
+  expect(onRespond).toHaveBeenCalledExactlyOnceWith(
+    approval.requestId,
+    "accept",
+    privilegedCommand.packageHash,
+  );
+});
+
+it("routes privileged approval through the composer review with its frozen hash", async () => {
+  const { privilegedCommand, approval } = privilegedFixture();
+  const onRespond = vi.fn(async () => undefined);
+  await using screen = await render(
+    <ComposerPendingApprovalActions
+      approval={{ ...approval, privilegedCommand }}
+      environmentId={privilegedCommand.bundle.environmentId}
+      targetLabel="Windows test host"
+      requestId={approval.requestId}
+      canRespond
+      isResponding={false}
+      onRespondToApproval={onRespond}
+      options={[
+        { decision: "accept", label: "Approve" },
+        { decision: "decline", label: "Decline" },
+      ]}
+    />,
+  );
+  await expect
+    .element(screen.getByRole("button", { name: "Approve", exact: true }))
+    .not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Review action" }));
+  await expect.element(screen.getByText("Windows test host", { exact: false })).toBeVisible();
+  await expect
+    .poll(() => document.querySelector(".cm-content")?.textContent)
+    .toContain("Get-Service example");
+  await userEvent.click(screen.getByRole("button", { name: "Approve once", exact: true }));
+  expect(onRespond).toHaveBeenCalledExactlyOnceWith(
+    approval.requestId,
+    "accept",
+    privilegedCommand.packageHash,
+  );
+});
+
+it.each(["claimed", "unknown"] as const)(
+  "does not offer a second decision when privileged execution is %s",
+  async (state) => {
+    const { privilegedCommand, approval } = privilegedFixture();
+    const onRespond = vi.fn(async () => undefined);
+    await using screen = await render(
+      <ApprovalReview
+        open
+        onOpenChange={() => {}}
+        approval={approval}
+        environmentId={privilegedCommand.bundle.environmentId}
+        privilegedCommand={{ ...privilegedCommand, state }}
+        onRespond={onRespond}
+      />,
+    );
+    await expect.element(screen.getByRole("button", { name: "Approve once" })).toBeDisabled();
+    await expect.element(screen.getByRole("button", { name: "Reject" })).toBeDisabled();
+    await expect
+      .element(screen.getByText("Execution outcome unconfirmed · no new decision available"))
+      .toBeVisible();
+    expect(onRespond).not.toHaveBeenCalled();
+  },
+);
+
+it("keeps completed output readable without offering another execution", async () => {
+  const { privilegedCommand, approval } = privilegedFixture();
+  await using screen = await render(
+    <ApprovalReview
+      open
+      onOpenChange={() => {}}
+      approval={{ ...approval, responseCapability: "not_resumable" }}
+      environmentId={privilegedCommand.bundle.environmentId}
+      privilegedCommand={{
+        ...privilegedCommand,
+        state: "completed",
+        result: {
+          status: "failed",
+          exitCode: 1,
+          stdout: "Überprüfung abgeschlossen",
+          stderr: "Service remains stopped",
+        },
+      }}
+      disabled
+    />,
+  );
+  await userEvent.click(screen.getByText("Details", { exact: true }));
+  await expect
+    .element(screen.getByLabelText("Standard output"))
+    .toHaveTextContent("Überprüfung abgeschlossen");
+  await expect
+    .element(screen.getByLabelText("Error output"))
+    .toHaveTextContent("Service remains stopped");
+  await expect.element(screen.getByRole("button", { name: "Approve once" })).toBeDisabled();
+});
+
+it("blocks a changed script under the old hash", async () => {
+  const { privilegedCommand, approval } = privilegedFixture();
+  const onRespond = vi.fn(async () => undefined);
+  await using screen = await render(
+    <ApprovalReview
+      open
+      onOpenChange={() => {}}
+      approval={approval}
+      environmentId={privilegedCommand.bundle.environmentId}
+      privilegedCommand={{
+        ...privilegedCommand,
+        bundle: { ...privilegedCommand.bundle, script: "different" },
+      }}
+      onRespond={onRespond}
+    />,
+  );
+  await expect.element(screen.getByRole("button", { name: "Approve once" })).toBeDisabled();
+  await expect.element(screen.getByRole("button", { name: "Reject" })).toBeDisabled();
+  expect(onRespond).not.toHaveBeenCalled();
+});
+
+it("rejects a privileged package with its hash and blocks a different host", async () => {
+  const { privilegedCommand, approval } = privilegedFixture();
+  const onRespond = vi.fn(async () => undefined);
+  await using screen = await render(
+    <ApprovalReview
+      open
+      onOpenChange={() => {}}
+      approval={approval}
+      environmentId={privilegedCommand.bundle.environmentId}
+      privilegedCommand={privilegedCommand}
+      onRespond={onRespond}
+    />,
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Reject" }));
+  expect(onRespond).toHaveBeenCalledExactlyOnceWith(
+    approval.requestId,
+    "decline",
+    privilegedCommand.packageHash,
+  );
+});
+
+it("blocks a privileged package for a different environment", async () => {
+  const { privilegedCommand, approval } = privilegedFixture();
+  const onRespond = vi.fn(async () => undefined);
+  await using screen = await render(
+    <ApprovalReview
+      open
+      onOpenChange={() => {}}
+      approval={approval}
+      environmentId={EnvironmentId.make("other-host")}
+      privilegedCommand={privilegedCommand}
+      onRespond={onRespond}
+    />,
+  );
+  await expect.element(screen.getByRole("button", { name: "Approve once" })).toBeDisabled();
+  await expect.element(screen.getByRole("button", { name: "Reject" })).toBeDisabled();
+  expect(onRespond).not.toHaveBeenCalled();
 });

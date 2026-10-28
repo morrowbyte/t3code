@@ -35,6 +35,7 @@ interface ElectronAppCalls {
   readonly setAboutPanelOptions: Array<Electron.AboutPanelOptionsOptions>;
   readonly setDockIcon: string[];
   readonly setName: string[];
+  readonly setAppUserModelId?: string[];
 }
 
 const layerElectronApp = (calls: ElectronAppCalls) =>
@@ -56,7 +57,10 @@ const layerElectronApp = (calls: ElectronAppCalls) =>
       Effect.sync(() => {
         calls.setAboutPanelOptions.push(options);
       }),
-    setAppUserModelId: () => Effect.void,
+    setAppUserModelId: (id) =>
+      Effect.sync(() => {
+        calls.setAppUserModelId?.push(id);
+      }),
     getAppMetrics: Effect.succeed([]),
     setAsDefaultProtocolClient: () => Effect.succeed(true),
     setDesktopName: () => Effect.void,
@@ -172,25 +176,52 @@ describe("DesktopAppIdentity", () => {
     ),
   );
 
+  it.effect("shows Crew while preserving existing Morrowbyte app and user-data identities", () => {
+    const calls: ElectronAppCalls = { setAboutPanelOptions: [], setDockIcon: [], setName: [] };
+    return withIdentity(
+      Effect.gen(function* () {
+        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+        yield* identity.configure;
+        assert.deepEqual(calls.setName, ["Morrowbyte"]);
+        assert.equal(calls.setAboutPanelOptions[0]?.applicationName, "Crew");
+        const environment = yield* DesktopEnvironment.DesktopEnvironment;
+        assert.equal(environment.appUserModelId, "com.morrowbyte.t3code");
+        assert.equal(environment.baseDir, "/Users/alice/.t3-morrowbyte");
+        assert.equal(
+          yield* identity.resolveUserDataPath,
+          "/Users/alice/Library/Application Support/t3code-morrowbyte",
+        );
+      }),
+      { calls, environment: { env: { T3CODE_DESKTOP_PROFILE: "morrowbyte" } } },
+    );
+  });
+
   it.effect(
-    "shows Morrowbyte while preserving existing Morrowbyte app and user-data identities",
+    "keeps Windows profile, safeStorage identity and AppUserModelID after renaming to Crew",
     () => {
-      const calls: ElectronAppCalls = { setAboutPanelOptions: [], setDockIcon: [], setName: [] };
+      const calls: ElectronAppCalls = {
+        setAboutPanelOptions: [],
+        setDockIcon: [],
+        setName: [],
+        setAppUserModelId: [],
+      };
       return withIdentity(
         Effect.gen(function* () {
           const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
           yield* identity.configure;
           assert.deepEqual(calls.setName, ["Morrowbyte"]);
-          assert.equal(calls.setAboutPanelOptions[0]?.applicationName, "Morrowbyte");
-          const environment = yield* DesktopEnvironment.DesktopEnvironment;
-          assert.equal(environment.appUserModelId, "com.morrowbyte.t3code");
-          assert.equal(environment.baseDir, "/Users/alice/.t3-morrowbyte");
+          assert.deepEqual(calls.setAppUserModelId, ["com.morrowbyte.t3code"]);
           assert.equal(
             yield* identity.resolveUserDataPath,
-            "/Users/alice/Library/Application Support/t3code-morrowbyte",
+            "/Users/alice/AppData/Roaming/t3code-morrowbyte",
           );
+          assert.equal(calls.setAboutPanelOptions[0]?.applicationName, "Crew");
+          assert.include(calls.setAboutPanelOptions[0]?.copyright ?? "", "T3 Code");
         }),
-        { calls, environment: { env: { T3CODE_DESKTOP_PROFILE: "morrowbyte" } } },
+        {
+          calls,
+          environment: { platform: "win32", env: { T3CODE_DESKTOP_PROFILE: "morrowbyte" } },
+        },
       );
     },
   );
@@ -237,7 +268,7 @@ describe("DesktopAppIdentity", () => {
         assert.isDefined(runtimeName);
         assert.equal(runtimeName, `T3 Code ${stage}`);
         assert.match(runtimeName.replaceAll(" ", ""), /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/);
-        assert.equal(calls.setAboutPanelOptions[0]?.applicationName, `T3 Code (${stage})`);
+        assert.equal(calls.setAboutPanelOptions[0]?.applicationName, `Crew (${stage})`);
       }),
       { calls, environment },
     );

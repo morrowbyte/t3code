@@ -65,6 +65,9 @@ import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as HostResources from "./resourceTelemetry/HostResources.ts";
 import * as ManagedProjectFolders from "./project/ManagedProjectFolders.ts";
 import * as McpAppRequests from "./mcpApps/McpAppRequests.ts";
+import type * as ConnectedEnvironmentBroker from "./mcp/connectedEnvironment/Broker.ts";
+import type * as ConnectedEnvironmentAdmission from "./mcp/connectedEnvironment/Admission.ts";
+import type * as OrchestratorMcpService from "./mcp/OrchestratorMcpService.ts";
 import * as ModelManifest from "./provider/ModelManifest.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as OtlpEndpointCheck from "./observability/OtlpEndpointCheck.ts";
@@ -684,6 +687,9 @@ it.effect(
             {},
             yield* PreviewAutomationBroker.PreviewAutomationBroker,
             yield* ServerBrowser.ServerBrowser,
+            {} as ConnectedEnvironmentBroker.ConnectedEnvironmentBroker["Service"],
+            {} as ConnectedEnvironmentAdmission.ConnectedEnvironmentAdmission["Service"],
+            {} as OrchestratorMcpService.OrchestratorMcpService["Service"],
           ).pipe(Layer.provide(configRpcServices)),
         ),
       );

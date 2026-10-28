@@ -3,7 +3,9 @@ import {
   type ProviderApprovalOption,
   type RuntimeRequestId,
   type EnvironmentId,
+  type ThreadId,
 } from "@t3tools/contracts";
+import { useStableCallback } from "../../hooks/useStableCallback";
 import { parseApprovalReviewDetail } from "@t3tools/client-runtime/approvalReview";
 import type { PendingApproval } from "../../session-logic";
 import { ApprovalReview } from "../approvalReview/ApprovalReview";
@@ -18,6 +20,8 @@ import { handleObjectActionKey } from "./objectKeyboardActions";
 interface ComposerPendingApprovalActionsProps {
   approval?: PendingApproval | undefined;
   environmentId?: EnvironmentId | undefined;
+  threadId?: ThreadId | null | undefined;
+  targetLabel?: string | undefined;
   requestId: RuntimeRequestId;
   isResponding: boolean;
   canRespond: boolean;
@@ -40,6 +44,8 @@ const DEFAULT_APPROVAL_OPTIONS = [
 export const ComposerPendingApprovalActions = memo(function ComposerPendingApprovalActions({
   approval,
   environmentId,
+  threadId,
+  targetLabel,
   requestId,
   isResponding,
   canRespond,
@@ -48,27 +54,93 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
   onRespondToApproval,
 }: ComposerPendingApprovalActionsProps) {
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [desktopRouteError, setDesktopRouteError] = useState<{
+    requestId: RuntimeRequestId;
+    message: string;
+  } | null>(null);
+  const respondToDecision: typeof onRespondToApproval = useStableCallback(
+    async (id, decision, hash) => {
+      if (!approval?.privilegedCommand || !window.desktopBridge) {
+        return hash === undefined
+          ? onRespondToApproval(id, decision)
+          : onRespondToApproval(id, decision, hash);
+      }
+      if (
+        !environmentId ||
+        !threadId ||
+        !hash ||
+        (decision !== "accept" && decision !== "decline")
+      ) {
+        throw new Error(
+          "Desktop privileged approval requires a matching environment, thread and hash.",
+        );
+      }
+      setDesktopRouteError(null);
+      try {
+        return await window.desktopBridge.respondToPrivilegedDecision({
+          environmentId,
+          threadId,
+          requestId: id,
+          packageHash: hash,
+          decision,
+        });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "";
+        if (detail.includes("DPoP signer")) {
+          return await onRespondToApproval(id, decision, hash);
+        }
+        const messages = [
+          "T3 Connect approval requires the renderer-bound DPoP signer; this route is not yet supported by the desktop approval transport.",
+          "The saved T3 Connect route requires the renderer-bound DPoP signer; this route is not yet supported by the desktop approval transport.",
+          "The saved target environment is disabled.",
+          "The saved route has no authenticated bearer session.",
+          "The saved SSH route could not be connected.",
+          "The saved HTTP and WebSocket routes do not share a safe origin.",
+          "Target environment mismatch.",
+        ];
+        const message = messages.find((item) => detail.includes(item));
+        if (message) {
+          setDesktopRouteError({
+            requestId: id,
+            message: message.includes("DPoP signer")
+              ? "Desktop approval over T3 Connect is not supported yet. Use a saved direct or SSH connection."
+              : message,
+          });
+          setReviewOpen(false);
+        }
+        throw error;
+      }
+    },
+  );
+  const scopedOptions = approval?.privilegedCommand
+    ? options.filter((option) => option.decision === "accept" || option.decision === "decline")
+    : options;
   const review = parseApprovalReviewDetail(approval?.detail);
   const blockedExample = review.kind === "bundle" && review.bundle.exampleOnly;
   const decisionBlocked = (decision: ProviderApprovalDecision) =>
-    blockedExample || (review.kind !== "none" && decision !== "decline" && decision !== "cancel");
+    blockedExample ||
+    ((review.kind !== "none" || approval?.privilegedCommand !== undefined) &&
+      decision !== "decline" &&
+      decision !== "cancel");
   const latest = useRef({
     detail: approval?.detail,
+    privilegedCommand: approval?.privilegedCommand,
     requestId,
     disabled,
     isResponding,
     canRespond,
-    options,
+    options: scopedOptions,
     onRespondToApproval,
   });
   useLayoutEffect(() => {
     latest.current = {
       detail: approval?.detail,
+      privilegedCommand: approval?.privilegedCommand,
       requestId,
       disabled,
       isResponding,
       canRespond,
-      options,
+      options: scopedOptions,
       onRespondToApproval,
     };
   });
@@ -94,6 +166,7 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
     if (
       current.requestId !== requestId ||
       current.detail !== approval?.detail ||
+      current.privilegedCommand !== approval?.privilegedCommand ||
       decisionBlocked(decision) ||
       current.onRespondToApproval !== onRespondToApproval ||
       current.disabled ||
@@ -109,7 +182,9 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
     refreshResponses();
     setFailedRequest(null);
     await (async () => {
-      if (approval?.approvalReview)
+      if (approval?.privilegedCommand)
+        await respondToDecision(requestId, decision, approval.privilegedCommand.packageHash);
+      else if (approval?.approvalReview)
         await onRespondToApproval(requestId, decision, approval.approvalReview.packageHash);
       else await onRespondToApproval(requestId, decision);
     })()
@@ -127,10 +202,12 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
         refreshResponses();
       });
   };
-  const primaryOptions = options.filter(
-    (option) => option.decision === "decline" || option.decision === "accept",
+  const primaryOptions = scopedOptions.filter(
+    (option) =>
+      option.decision === "decline" ||
+      (option.decision === "accept" && !approval?.privilegedCommand),
   );
-  const moreOptions = options.filter(
+  const moreOptions = scopedOptions.filter(
     (option) => option.decision !== "decline" && option.decision !== "accept",
   );
 
@@ -157,10 +234,12 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
           </Button>
           <ApprovalReview
             approval={approval}
+            privilegedCommand={approval.privilegedCommand}
             environmentId={environmentId}
+            targetLabel={targetLabel}
             open={reviewOpen}
             onOpenChange={setReviewOpen}
-            onRespond={onRespondToApproval}
+            onRespond={respondToDecision}
             disabled={responseDisabled}
           />
         </>
@@ -236,9 +315,18 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
           </MenuPopup>
         </Menu>
       ) : null}
-      {failedRequest?.requestId === requestId && failedRequest.responder === onRespondToApproval ? (
+      {desktopRouteError?.requestId === requestId ? (
         <span role="status" className="text-xs text-destructive">
-          Could not send this decision. The request is still pending.
+          {desktopRouteError.message}
+        </span>
+      ) : null}
+      {failedRequest?.requestId === requestId &&
+      failedRequest.responder === onRespondToApproval &&
+      desktopRouteError?.requestId !== requestId ? (
+        <span role="status" className="text-xs text-destructive">
+          {approval?.privilegedCommand
+            ? "Could not confirm this decision. Check the request before trying again."
+            : "Could not send this decision. The request is still pending."}
         </span>
       ) : null}
     </div>

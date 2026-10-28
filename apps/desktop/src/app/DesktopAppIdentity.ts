@@ -91,16 +91,17 @@ export const make = Effect.gen(function* () {
 
   const configure = Effect.gen(function* () {
     const commitHash = yield* resolveAboutCommitHash;
-    // Electron removes spaces from this name to build the native User-Agent
-    // product token, but leaves parentheses intact. Keep the runtime name valid
-    // without rewriting preview sessions (which breaks Turnstile, #7110).
+    // Electron's runtime name also scopes OS key storage. Keep the pre-Crew name
+    // while menus, windows and About use the display branding. Spaces are removed
+    // for the native User-Agent token; parentheses would break Turnstile (#7110).
     yield* electronApp.setName(
       Option.isSome(environment.profileId ?? Option.none())
-        ? environment.branding.baseName
-        : `${environment.branding.baseName} ${environment.branding.stageLabel}`,
+        ? "Morrowbyte"
+        : `T3 Code ${environment.branding.stageLabel}`,
     );
     yield* electronApp.setAboutPanelOptions({
       applicationName: environment.displayName,
+      copyright: "Crew by Morrowbyte. Based on T3 Code by T3 Tools and contributors. MIT License.",
       applicationVersion: environment.appVersion,
       version: Option.getOrElse(commitHash, () => "unknown"),
     });

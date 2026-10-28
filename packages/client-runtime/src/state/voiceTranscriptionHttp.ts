@@ -16,7 +16,7 @@ import * as ManagedRelay from "../relay/managedRelay.ts";
 import { executeAuthenticatedEnvironmentHttpRequest } from "./environmentHttpAuth.ts";
 import type { VoiceTranscriptionSettingsInput } from "@t3tools/contracts";
 
-export class VoiceSettingsStorageUnavailable extends Data.TaggedError(
+class VoiceSettingsStorageUnavailable extends Data.TaggedError(
   "VoiceSettingsStorageUnavailable",
 )<{}> {}
 

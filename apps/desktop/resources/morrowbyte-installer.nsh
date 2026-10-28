@@ -7,7 +7,7 @@
   Pop $1
   ${If} $0 != 0
     SetErrorLevel 20
-    MessageBox MB_OK|MB_ICONSTOP "Morrowbyte cannot safely continue this installation. Close Morrowbyte and retry. No application processes were terminated." /SD IDOK
+    MessageBox MB_OK|MB_ICONSTOP "Crew cannot safely continue this installation. Close Crew and retry. No application processes were terminated." /SD IDOK
     Abort
   ${EndIf}
 !macroend

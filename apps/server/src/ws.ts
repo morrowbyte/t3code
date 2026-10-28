@@ -207,6 +207,10 @@ import * as TerminalManager from "./terminal/Manager.ts";
 import * as YaziPicker from "./attachments/YaziPicker.ts";
 import { terminalOutputStream, withTerminalOutputWindow } from "./terminal/OutputProtocol.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
+import * as ConnectedEnvironmentBroker from "./mcp/connectedEnvironment/Broker.ts";
+import * as ConnectedEnvironmentAdmission from "./mcp/connectedEnvironment/Admission.ts";
+import { executeConnectedEnvironmentRequest } from "./mcp/connectedEnvironment/target.ts";
+import * as OrchestratorMcpService from "./mcp/OrchestratorMcpService.ts";
 import * as ServerBrowser from "./preview/ServerBrowser.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
@@ -714,6 +718,11 @@ const CoreFirstWsRpcGroup = CoreWsRpcGroup.omit(
   WS_METHODS.subscribeResourceTelemetry,
 );
 const CoreSecondWsRpcGroup = CoreWsRpcGroup.omit(
+  WS_METHODS.connectedEnvironmentSubscribe,
+  WS_METHODS.connectedEnvironmentRespond,
+  WS_METHODS.connectedEnvironmentRead,
+  WS_METHODS.connectedEnvironmentPrepare,
+  WS_METHODS.connectedEnvironmentSend,
   WS_METHODS.approvalReviewOrderCreate,
   WS_METHODS.approvalReviewOrderRead,
   WS_METHODS.approvalReviewOrderCancel,
@@ -1514,6 +1523,9 @@ const layerCoreWsRpc = (
   clientAnalyticsProps: Readonly<Record<string, unknown>>,
   previewAutomationBroker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
   serverBrowser: ServerBrowser.ServerBrowser["Service"],
+  connectedEnvironment: ConnectedEnvironmentBroker.ConnectedEnvironmentBroker["Service"],
+  connectedAdmission: ConnectedEnvironmentAdmission.ConnectedEnvironmentAdmission["Service"],
+  connectedEnvironmentMcp: OrchestratorMcpService.OrchestratorMcpService["Service"],
 ) =>
   Layer.unwrap(
     Effect.gen(function* () {
@@ -1621,6 +1633,15 @@ const layerCoreWsRpc = (
       const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
+      const connectedEnvironmentSend = Effect.fn("connectedEnvironment.send")(function* (
+        input: import("@t3tools/contracts").ConnectedEnvironmentRelayRequest & {
+          readonly admissionId: string;
+        },
+      ) {
+        const expiresAt = yield* connectedAdmission.consume(currentSessionId, input.admissionId);
+        const id = yield* serverEnvironment.getEnvironmentId;
+        return yield* executeConnectedEnvironmentRequest(id, input, expiresAt);
+      });
       const desktopDiagnostics = yield* DesktopTelemetryReceiver.DesktopTelemetryReceiver;
       const localMainDiagnostics = yield* Effect.serviceOption(
         MainRendererDiagnosticsLocalClient.MainRendererDiagnosticsLocalClient,
@@ -2174,6 +2195,40 @@ const layerCoreWsRpc = (
         [WS_METHODS.nativeAuthorRead]: nativeAuthorRpcHandler,
         [WS_METHODS.nativeAuthorWrite]: nativeAuthorRpcHandler,
         ...agentObservatoryReadHandlers(observatoryService),
+        [WS_METHODS.connectedEnvironmentSubscribe]: () =>
+          Stream.unwrap(connectedEnvironment.connect(currentSessionId)),
+        [WS_METHODS.connectedEnvironmentRespond]: (input) =>
+          connectedEnvironment.respond(currentSessionId, input),
+        [WS_METHODS.connectedEnvironmentPrepare]: () =>
+          Effect.map(connectedAdmission.create(currentSessionId), (admissionId) => ({
+            admissionId,
+          })),
+        [WS_METHODS.connectedEnvironmentRead]: (input) =>
+          Effect.flatMap(serverEnvironment.getEnvironmentId, (id) =>
+            executeConnectedEnvironmentRequest(id, input),
+          ).pipe(
+            Effect.provideService(
+              OrchestratorMcpService.OrchestratorMcpService,
+              connectedEnvironmentMcp,
+            ),
+            Effect.provideService(
+              ThreadManagementService.ThreadManagementService,
+              threadManagement,
+            ),
+            Effect.provideService(ProjectService.ProjectService, projectService),
+          ),
+        [WS_METHODS.connectedEnvironmentSend]: (input) =>
+          connectedEnvironmentSend(input).pipe(
+            Effect.provideService(
+              OrchestratorMcpService.OrchestratorMcpService,
+              connectedEnvironmentMcp,
+            ),
+            Effect.provideService(
+              ThreadManagementService.ThreadManagementService,
+              threadManagement,
+            ),
+            Effect.provideService(ProjectService.ProjectService, projectService),
+          ),
         [WS_METHODS.liveVoicePrepare]: (input) => liveVoiceService.prepare(currentSession, input),
         [WS_METHODS.liveVoiceStart]: (input) => liveVoiceService.start(currentSession, input),
         [WS_METHODS.liveVoiceStop]: (input) => liveVoiceService.stop(currentSession, input),
@@ -3598,6 +3653,9 @@ export const layer = Layer.unwrap(
     const hostOrders = yield* ApprovalReviewHostOrders.ApprovalReviewHostOrders;
     const orderProvenance = yield* ApprovalReviewProvenance.ApprovalReviewProvenance;
     const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+    const connectedEnvironment = yield* ConnectedEnvironmentBroker.ConnectedEnvironmentBroker;
+    const connectedAdmission = yield* ConnectedEnvironmentAdmission.ConnectedEnvironmentAdmission;
+    const connectedEnvironmentMcp = yield* OrchestratorMcpService.OrchestratorMcpService;
     const serverBrowser = yield* ServerBrowser.ServerBrowser;
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const pullRequests = yield* PullRequestService.PullRequestService;
@@ -3661,7 +3719,11 @@ export const layer = Layer.unwrap(
                           })
                           .pipe(Effect.ignore);
                   },
-                  { sessionId: session.sessionId, subject: session.subject },
+                  {
+                    sessionId: session.sessionId,
+                    subject: session.subject,
+                    method: session.method,
+                  },
                 ),
                 rpcInstrumentationLayer,
               ),
@@ -3678,6 +3740,9 @@ export const layer = Layer.unwrap(
               clientAnalyticsProps,
               previewAutomationBroker,
               serverBrowser,
+              connectedEnvironment,
+              connectedAdmission,
+              connectedEnvironmentMcp,
             ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               Layer.provide(

@@ -142,7 +142,9 @@ describe("Pi MCP tool exposure", () => {
       const bridge = await loadMcpBridge({ modern, toolSearchAvailable: true });
       const start = bridge.handlers.get("before_agent_start")!;
       const event = { systemPrompt: "Pi system prompt" };
-      const prompt = (await start(event, discoveryContext)).systemPrompt;
+      const result = await start(event, discoveryContext);
+      assert.isDefined(result);
+      const prompt = result!.systemPrompt;
       assert.isTrue(prompt.startsWith("Pi system prompt\n\n"));
       assert.include(prompt, "through the Pi harness");
       assert.include(prompt, "use relevant native t3-ui visuals by default");
@@ -157,7 +159,9 @@ describe("Pi MCP tool exposure", () => {
         assert.equal(prompt.split(marker).length - 1, 1);
       }
       assert.equal(event.systemPrompt, "Pi system prompt");
-      assert.equal((await start(event, discoveryContext)).systemPrompt, prompt);
+      const repeated = await start(event, discoveryContext);
+      assert.isDefined(repeated);
+      assert.equal(repeated!.systemPrompt, prompt);
     },
   );
 

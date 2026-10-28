@@ -22,7 +22,7 @@ export interface VisualTable extends VisualBase {
   rows: Array<Array<string | number | null>>;
 }
 
-export const CHART_KINDS = [
+const CHART_KINDS = [
   "line",
   "area",
   "bar",
@@ -99,7 +99,7 @@ export interface VisualReport extends VisualBase {
   sections: Array<{ key: string; title: string; text?: string | undefined; facts: VisualFact[] }>;
 }
 
-export const UML_KINDS = ["sequence", "class", "state", "usecase", "activity"] as const;
+const UML_KINDS = ["sequence", "class", "state", "usecase", "activity"] as const;
 export interface VisualUml extends VisualBase {
   type: "uml";
   title: string;

@@ -1,8 +1,10 @@
-# Morrowbyte
+# Crew
 
-**One workspace for coding agents, remote machines, and the work happening between them.**
+<img src="assets/crew/native.svg" width="96" height="96" alt="Crew" />
 
-Morrowbyte is an independent fork of [T3 Code](https://github.com/pingdotgg/t3code).
+**Your workspace for agentic work. Your crew, your direction.**
+
+Crew is built by **Morrowbyte** as an independent fork of [T3 Code](https://github.com/pingdotgg/t3code).
 It keeps T3 Code's local-first agent server and desktop, web, and mobile clients,
 while exploring richer conversations, visible background work, and practical
 multi-machine workflows. Bring your own supported provider account; the machine
@@ -29,14 +31,14 @@ hosting an environment runs its agents and owns its project files.
   Linux x64, NixOS packaging, and Android ARM64 artifacts through its own
   [nightly releases](https://github.com/morrowbyte/t3code/releases).
 
-Morrowbyte also retains upstream support for providers including Codex, Claude
+Crew also retains upstream support for providers including Codex, Claude
 Code, Cursor, Grok, OpenCode, and Antigravity. Availability depends on the provider
 installation, authentication, and client version. Provider subscriptions and
 third-party services are separate from this project.
 
-## Install Morrowbyte
+## Install Crew
 
-Start with the [Morrowbyte releases](https://github.com/morrowbyte/t3code/releases)
+Start with the [Crew releases](https://github.com/morrowbyte/t3code/releases)
 and read the notes for the version you choose. These are development builds;
 keep a working version available when updating.
 
@@ -54,10 +56,15 @@ The upstream app stores, package-manager entries, `npx t3`, and installers at
 ARM64 artifacts are not currently published by the Morrowbyte release workflow.
 Do not assume upstream and fork profiles or update channels are interchangeable.
 
+The native app is **Crew**; the installed browser app is **Crew Web**, with the
+same C mark inside a browser frame. Existing package IDs, profiles, deep links,
+and update artifact names retain their Morrowbyte/T3 identifiers so existing
+installations can continue updating without losing their connections or data.
+
 ## Get started
 
 1. Install and authenticate a supported provider on the environment host.
-2. Open Morrowbyte, add a project, and start a thread.
+2. Open Crew, add a project, and start a thread.
 3. To work from another device, follow [remote access](docs/user/remote-access.md).
 4. Review [permission modes](docs/user/permission-modes.md) before granting agents
    access to files, commands, browsers, or devices.
@@ -68,7 +75,7 @@ Further guides: [composer](docs/user/composer.md),
 [outside agents and MCP](docs/user/outside-agents.md),
 [updating](docs/user/updating.md), and [provider setup](docs/user/providers-codex.md).
 Some inherited guides describe upstream distribution channels; use the fork
-release links above when installing Morrowbyte.
+release links above when installing Crew.
 
 ## Develop
 
@@ -89,7 +96,7 @@ When reporting upstream issues, reproduce them on upstream T3 Code first.
 
 ## Upstream and license
 
-Morrowbyte builds on the work of the T3 Code maintainers and contributors. It is
+Crew builds on the work of the T3 Code maintainers and contributors. It is
 not an official T3 Code release and is not endorsed by the upstream project.
 The original [MIT license](LICENSE) and third-party notices remain in place;
 see [open-source licenses](docs/user/open-source-licenses.md).

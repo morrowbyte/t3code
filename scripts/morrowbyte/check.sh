@@ -234,7 +234,6 @@ approval_tests=(
   apps/server/src/orchestration-v2/ApprovalReviewOrderPolicy.test.ts
   apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts
   apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts
-  apps/web/src/components/chat/ComposerPendingApprovalActions.test.tsx
   apps/web/src/components/chat/ApprovalActionSummary.test.tsx
   apps/mobile/src/features/threads/PendingApprovalCard.test.tsx
   apps/mobile/src/state/use-selected-thread-requests.test.tsx
@@ -419,6 +418,7 @@ renderer_tests=(
   apps/web/src/components/chat/MessagesTimeline.browser.test.tsx
   apps/web/src/components/chat/QueuedRunsControl.browser.test.tsx
   apps/web/src/components/chat/ComposerPendingApprovalActions.browser.test.tsx
+  apps/web/src/components/chat/ComposerPendingApprovalActions.regression.browser.test.tsx
   apps/web/src/components/chat/ComposerPendingUserInputPanel.navigation.browser.test.tsx
   apps/web/src/components/diffs/AnnotatableCodeView.browser.test.tsx
   apps/web/src/components/files/FileSelectionActions.browser.test.tsx

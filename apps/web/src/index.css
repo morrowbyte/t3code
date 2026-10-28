@@ -166,6 +166,9 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
    the variables and Settings -> Appearance can override them at runtime. The
    default stacks are mirrored in `appearanceFonts.ts`. */
 @theme {
+  --color-crew-ink: #292b2e;
+  --color-crew-paper: #f2f1ec;
+  --color-crew-accent: #789c90;
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --font-mono:
     ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
@@ -651,37 +654,36 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     background-color: color-mix(in oklab, var(--primary) 45%, transparent);
   }
   :root {
-    /* Keep the original T3 Code artwork palettes as the defaults. Built-in
-       themes override them with their own pigments in the components layer. */
-    --stage-art-top: oklch(0.782169 0.123386 240.226);
-    --stage-art-mid: oklch(0.616111 0.195824 259.735);
-    --stage-art-bottom: oklch(0.441553 0.232394 265.474);
-    --stage-art-highlight: oklch(0.951597 0.037289 215.482);
-    --stage-art-secondary: oklch(0.794668 0.12136 235.46);
-    --stage-art-tertiary: oklch(0.678991 0.170261 275.365);
-    --stage-art-line: oklch(0.959666 0.029238 218.179);
-    --stage-art-celeste-highlight: oklch(0.968763 0.045822 196.42);
-    --stage-art-celeste-secondary: oklch(0.827395 0.126071 211.26);
-    --stage-art-violet-highlight: oklch(0.895381 0.053248 286.447);
-    --stage-art-grid-line: oklch(0.966822 0.01757 239.99);
-    --stage-night-base-top: oklch(0.283792 0.117327 297.201);
-    --stage-night-base-mid: oklch(0.227147 0.086086 277.99);
-    --stage-night-base-bottom: oklch(0.200528 0.055699 261.216);
+    /* Crew defaults; explicitly selected themes retain their own artwork palettes. */
+    --stage-art-top: #454d4b;
+    --stage-art-mid: #343a39;
+    --stage-art-bottom: #292b2e;
+    --stage-art-highlight: #f2f1ec;
+    --stage-art-secondary: #789c90;
+    --stage-art-tertiary: #526c63;
+    --stage-art-line: #f2f1ec;
+    --stage-art-celeste-highlight: #c2d0ca;
+    --stage-art-celeste-secondary: #789c90;
+    --stage-art-violet-highlight: #c2d0ca;
+    --stage-art-grid-line: #f2f1ec;
+    --stage-night-base-top: #343a39;
+    --stage-night-base-mid: #292b2e;
+    --stage-night-base-bottom: #202224;
     --stage-night-top: var(--stage-night-base-top);
     --stage-night-mid: var(--stage-night-base-mid);
     --stage-night-bottom: var(--stage-night-base-bottom);
-    --stage-night-highlight: oklch(0.707246 0.157418 252.091);
-    --stage-night-secondary: oklch(0.600473 0.182225 277.296);
-    --stage-night-tertiary: oklch(0.62583 0.210886 305.994);
-    --stage-night-line: oklch(0.938794 0.029114 273.103);
-    --stage-night-glow-highlight: oklch(0.553749 0.176543 271.958);
-    --stage-night-glow-secondary: oklch(0.345571 0.117466 273.568);
-    --stage-night-sparkle: oklch(0.880867 0.057747 269.011);
+    --stage-night-highlight: #789c90;
+    --stage-night-secondary: #526c63;
+    --stage-night-tertiary: #454d4b;
+    --stage-night-line: #f2f1ec;
+    --stage-night-glow-highlight: #789c90;
+    --stage-night-glow-secondary: #454d4b;
+    --stage-night-sparkle: #f2f1ec;
 
     @variant dark {
-      --stage-art-top: oklch(0.581473 0.149124 256.9);
-      --stage-art-mid: oklch(0.456509 0.159377 261.945);
-      --stage-art-bottom: oklch(0.291327 0.136578 267.649);
+      --stage-art-top: #454d4b;
+      --stage-art-mid: #343a39;
+      --stage-art-bottom: #292b2e;
     }
   }
 

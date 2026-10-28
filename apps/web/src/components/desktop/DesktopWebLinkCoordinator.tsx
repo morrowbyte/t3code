@@ -160,7 +160,7 @@ export function DesktopWebLinkCoordinator() {
       return;
     }
     if (!URL.canParse(url) || !["http:", "https:", "file:"].includes(new URL(url).protocol)) {
-      reportFailure(url, "This link is not a supported T3 Code or web link.");
+      reportFailure(url, "This link is not a supported Crew or web link.");
       return;
     }
     if (openChangeRequest(externalClick, url)) return;

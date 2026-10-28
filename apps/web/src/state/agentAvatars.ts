@@ -35,7 +35,7 @@ const pollingReads = Atom.family((query: ReturnType<typeof readAgentAvatar>) =>
 export const agentAvatarRead = (target: Parameters<typeof readAgentAvatar>[0]) =>
   pollingReads(readAgentAvatar(target));
 
-export const agentAvatarGenerate = createEnvironmentRpcCommand(connectionAtomRuntime, {
+const agentAvatarGenerate = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "agent-avatar:generate",
   tag: WS_METHODS.agentAvatarGenerate,
   onSettled: (target, registry) =>
@@ -49,7 +49,7 @@ export const agentAvatarGenerate = createEnvironmentRpcCommand(connectionAtomRun
     ),
 });
 
-export const agentAvatarCancel = createEnvironmentRpcCommand(connectionAtomRuntime, {
+const agentAvatarCancel = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "agent-avatar:cancel",
   tag: WS_METHODS.agentAvatarCancel,
   onSettled: (target, registry) =>

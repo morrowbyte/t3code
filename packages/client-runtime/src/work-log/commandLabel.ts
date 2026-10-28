@@ -1362,6 +1362,8 @@ export function commandProgramName(command: string, depth = 0): string | null {
 
 /** A short identifier, never a replacement for the original command. */
 export function commandActivityLabel(command: string): string {
+  const intent = authoredCodeIntent(command) ?? authoredCodeIntent(withoutShellWrapper(command));
+  if (intent) return intent;
   const program = commandProgramName(command);
   if (program === null) return "Command";
   let remaining: string | null = withoutShellWrapper(command);
@@ -1386,7 +1388,7 @@ export function commandActivityLabel(command: string): string {
 
 /** Conservative display only; this is neither an effect prediction nor a safety check. */
 export function commandIntentLabel(command: string): string {
-  const intent = authoredCodeIntent(command);
+  const intent = authoredCodeIntent(command) ?? authoredCodeIntent(withoutShellWrapper(command));
   if (intent) return intent;
   const code = withoutShellWrapper(command);
   const program = commandProgramName(code);

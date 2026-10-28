@@ -173,6 +173,25 @@ it.each(["command_execution", "dynamic_tool"] as const)(
     expect(
       "input" in titled.entry.structuredPayload ? titled.entry.structuredPayload.input : undefined,
     ).toBe(input);
+    const source =
+      type === "command_execution"
+        ? "# Intent: Inspect recording permission preferences\npython3 inspect.py"
+        : { code: "// Intent: Inspect recording permission preferences\nawait inspect();" };
+    const initial = {
+      ...work.entry,
+      structuredPayload: {
+        ...item,
+        input: source,
+        title: "Run shell commands",
+      } as import("@t3tools/contracts").OrchestrationV2TurnItem,
+    };
+    expect(liveWorkEntryLabel(initial, undefined, true)).toBe(
+      "Inspect recording permission preferences",
+    );
+    expect(workEntryDisplayLabel(initial, undefined)).toBe(
+      "Inspect recording permission preferences",
+    );
+    expect("input" in initial.structuredPayload && initial.structuredPayload.input).toBe(source);
     const nextRound = { ...work, entry: { ...work.entry, runId: RunId.make("next-run") } };
     expect(
       renderRows([commentary, nextRound]).some(

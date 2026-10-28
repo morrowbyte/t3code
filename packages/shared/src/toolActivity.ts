@@ -76,7 +76,10 @@ export function dynamicToolTitle(
   if (isJavaScriptReplTool(toolName)) {
     const title = asTrimmedString(retainedTitle);
     const meaningfulTitle =
-      title && title.toLowerCase() !== "js" && title.toLowerCase() !== toolName?.toLowerCase()
+      title &&
+      title.toLowerCase() !== "js" &&
+      title.toLowerCase() !== toolName?.toLowerCase() &&
+      !isGenericToolActivityTitle(title)
         ? title
         : undefined;
     return (
@@ -87,10 +90,13 @@ export function dynamicToolTitle(
     );
   }
   const skill = claudeSkillInvocation(toolName, input);
-  return skill === undefined
-    ? (toolCallTitle(retainedTitle, toolName) ??
-        (typeof source === "string" ? authoredCodeIntent(source) : undefined))
-    : `Skill: ${skill.name}`;
+  if (skill !== undefined) return `Skill: ${skill.name}`;
+  const title = toolCallTitle(retainedTitle, toolName);
+  return (
+    (isGenericToolActivityTitle(title) ? undefined : title) ??
+    (typeof source === "string" ? authoredCodeIntent(source) : undefined) ??
+    title
+  );
 }
 
 function recordHasKeys(

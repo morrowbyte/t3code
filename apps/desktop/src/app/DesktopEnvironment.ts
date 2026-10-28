@@ -88,7 +88,7 @@ export class DesktopEnvironment extends Context.Service<
   }
 >()("@t3tools/desktop/app/DesktopEnvironment") {}
 
-const APP_BASE_NAME = "T3 Code";
+const APP_BASE_NAME = "Crew";
 
 function resolveDesktopAppStageLabel(input: {
   readonly isDevelopment: boolean;
@@ -109,10 +109,10 @@ export function resolveDesktopAppBranding(input: {
 }): DesktopAppBranding {
   const stageLabel = resolveDesktopAppStageLabel(input);
   return {
-    baseName: input.productName ?? (input.profileId ? "Morrowbyte" : APP_BASE_NAME),
+    baseName: input.productName ?? APP_BASE_NAME,
     stageLabel,
     displayName:
-      input.productName ?? (input.profileId ? "Morrowbyte" : `${APP_BASE_NAME} (${stageLabel})`),
+      input.productName ?? (input.profileId ? "Crew" : `${APP_BASE_NAME} (${stageLabel})`),
   };
 }
 

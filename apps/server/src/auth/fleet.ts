@@ -92,7 +92,7 @@ export const readFleetConnections = Effect.gen(function* () {
   });
 });
 
-export function delegatedFleetScopes(
+function delegatedFleetScopes(
   caller: ReadonlySet<AuthEnvironmentScope>,
   allowed: readonly string[],
 ) {

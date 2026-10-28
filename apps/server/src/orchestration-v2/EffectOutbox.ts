@@ -12,6 +12,7 @@ import {
   ProviderTurnId,
   RunId,
   RuntimeRequestId,
+  PrivilegedCommandRecoveryIdentity,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -30,6 +31,17 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { forkParked } from "../serverActivation.ts";
 
 export const OrchestrationEffectRequestV2 = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("privileged-command.cleanup"),
+    requestId: RuntimeRequestId,
+    shell: Schema.Literals(["powershell", "sh"]),
+    identity: PrivilegedCommandRecoveryIdentity,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("privileged-command.execute"),
+    requestId: RuntimeRequestId,
+    packageHash: Schema.String,
+  }),
   Schema.Struct({
     type: Schema.Literal("provider-runtime.continue"),
     sourceRunId: RunId,
@@ -123,6 +135,7 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
 export type OrchestrationEffectRequestV2 = typeof OrchestrationEffectRequestV2.Type;
 
 export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
+  "privileged-command.cleanup",
   "provider-runtime.continue",
   "provider-session.detach",
   "provider-thread.rollback",
@@ -136,6 +149,7 @@ export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
 ] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
 
 export const PROCESS_BOUND_EFFECT_TYPES = [
+  "privileged-command.execute",
   "provider-turn.start",
   "provider-turn.interrupt",
   "provider-turn.steer",
@@ -216,11 +230,21 @@ export interface EffectOutboxV2Shape {
   readonly cancelUnsettled: (input: {
     readonly threadId: ThreadId;
     readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
+    readonly privilegedRequestIds?: ReadonlyArray<RuntimeRequestId>;
     readonly reason: string;
   }) => Effect.Effect<ReadonlyArray<string>, EffectOutboxError>;
   readonly signalCancellations: (effectIds: ReadonlyArray<string>) => Effect.Effect<void>;
   readonly awaitCancellation: (effectId: string) => Effect.Effect<void>;
   readonly clearCancellation: (effectId: string) => Effect.Effect<void>;
+  readonly finishCancellation: (input: {
+    readonly effectId: string;
+    readonly workerId: string;
+  }) => Effect.Effect<boolean, EffectOutboxError>;
+  readonly confirmCleanup: (input: {
+    readonly threadId: ThreadId;
+    readonly effectId: string;
+  }) => Effect.Effect<boolean, EffectOutboxError>;
+  readonly signalCleanupConfirmed: (effectId: string) => Effect.Effect<void>;
   /** Resolves once the effect is neither pending nor running, or right away when it does not exist. */
   readonly awaitSettled: (effectId: string) => Effect.Effect<void, EffectOutboxError>;
   readonly reconcileAfterProcessLoss: Effect.Effect<
@@ -332,6 +356,12 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             : sql`candidate.available_at <= ${availableBefore}`
         }
         AND candidate.status = 'pending'
+        AND (candidate.effect_type IN ('privileged-command.cleanup', 'thread-title.generate') OR NOT EXISTS (
+          SELECT 1 FROM orchestration_v2_effect_outbox AS cleanup
+          WHERE cleanup.thread_id = candidate.thread_id
+            AND cleanup.effect_type = 'privileged-command.cleanup'
+            AND cleanup.status IN ('pending', 'running')
+        ))
         AND NOT EXISTS (
           SELECT 1
           FROM orchestration_v2_effect_outbox AS active
@@ -341,6 +371,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
               OR (
                 active.status = 'pending'
                 AND active.rowid < candidate.rowid
+                AND candidate.effect_type != 'privileged-command.cleanup'
                 AND ${
                   excludeRestartContinuations
                     ? sql`active.effect_type != 'provider-runtime.continue'`
@@ -449,21 +480,28 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           ),
         ),
       cancelUnsettled: Effect.fn("EffectOutbox.cancelUnsettled")(
-        function* ({ threadId, effectTypes, reason }) {
+        function* ({ threadId, effectTypes, reason, privilegedRequestIds }) {
           if (effectTypes.length === 0) return [];
           const now = DateTime.formatIso(yield* DateTime.now);
           const rows = yield* sql<{ readonly effect_id: string }>`
             UPDATE orchestration_v2_effect_outbox
             SET
-              status = 'cancelled',
-              lease_owner = NULL,
-              lease_expires_at = NULL,
-              completed_at = ${now},
+              status = CASE WHEN effect_type = 'privileged-command.execute' AND status = 'running' THEN 'running' ELSE 'cancelled' END,
+              lease_owner = CASE WHEN effect_type = 'privileged-command.execute' AND status = 'running' THEN lease_owner ELSE NULL END,
+              lease_expires_at = CASE WHEN effect_type = 'privileged-command.execute' AND status = 'running' THEN lease_expires_at ELSE NULL END,
+              completed_at = CASE WHEN effect_type = 'privileged-command.execute' AND status = 'running' THEN NULL ELSE ${now} END,
               updated_at = ${now},
               last_error = ${reason}
             WHERE thread_id = ${threadId}
               AND status IN ('pending', 'running')
               AND effect_type IN ${sql.in(effectTypes)}
+              ${
+                privilegedRequestIds === undefined
+                  ? sql``
+                  : privilegedRequestIds.length === 0
+                    ? sql`AND effect_type != 'privileged-command.execute'`
+                    : sql`AND (effect_type != 'privileged-command.execute' OR json_extract(payload_json, '$.requestId') IN ${sql.in(privilegedRequestIds)})`
+              }
             RETURNING effect_id
           `;
           return rows.map(({ effect_id }) => effect_id);
@@ -479,7 +517,17 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           },
           { discard: true },
         );
-        yield* signalSettled(effectIds);
+        // A running privileged effect retains the thread slot until its interrupted executor has cleaned up.
+        for (const effectId of effectIds) {
+          const row = yield* service.get(effectId).pipe(Effect.option);
+          if (
+            Option.isSome(row) &&
+            Option.isSome(row.value) &&
+            row.value.value.status === "running"
+          )
+            continue;
+          yield* signalSettled([effectId]);
+        }
         if (effectIds.length > 0) yield* notifyAvailable(effectIds.length);
       }),
       awaitCancellation: (effectId) => Deferred.await(cancellationSignal(effectId)),
@@ -487,6 +535,47 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         Effect.sync(() => {
           cancellationSignals.delete(effectId);
         }),
+      finishCancellation: Effect.fn("EffectOutbox.finishCancellation")(
+        function* ({ effectId, workerId }) {
+          const now = DateTime.formatIso(yield* DateTime.now);
+          const rows = yield* sql<{ readonly effect_id: string }>`
+          UPDATE orchestration_v2_effect_outbox SET status = 'cancelled', lease_owner = NULL,
+            lease_expires_at = NULL, completed_at = ${now}, updated_at = ${now}
+          WHERE effect_id = ${effectId} AND status = 'running' AND lease_owner = ${workerId}
+          RETURNING effect_id`;
+          if (rows.length === 1) {
+            yield* signalSettled([effectId]);
+            yield* notifyAvailable();
+          }
+          return rows.length === 1;
+        },
+        (effect, { effectId }) =>
+          effect.pipe(
+            Effect.mapError(
+              (cause) => new EffectOutboxError({ operation: "cancel-unsettled", effectId, cause }),
+            ),
+          ),
+      ),
+      confirmCleanup: Effect.fn("EffectOutbox.confirmCleanup")(
+        function* ({ threadId, effectId }) {
+          const now = DateTime.formatIso(yield* DateTime.now);
+          const rows = yield* sql<{
+            readonly effect_id: string;
+          }>`UPDATE orchestration_v2_effect_outbox
+          SET status = 'succeeded', completed_at = ${now}, updated_at = ${now}, last_error = NULL
+          WHERE effect_id = ${effectId} AND thread_id = ${threadId} AND effect_type = 'privileged-command.cleanup'
+            AND status = 'pending' RETURNING effect_id`;
+          return rows.length === 1;
+        },
+        (effect, { effectId }) =>
+          effect.pipe(
+            Effect.mapError(
+              (cause) => new EffectOutboxError({ operation: "confirm-cleanup", effectId, cause }),
+            ),
+          ),
+      ),
+      signalCleanupConfirmed: (effectId) =>
+        signalSettled([effectId]).pipe(Effect.andThen(notifyAvailable())),
       awaitSettled: Effect.fn("EffectOutbox.awaitSettled")(function* (effectId) {
         // Registered before the read, so a settle right after it still resolves.
         const signal = settledSignals.get(effectId) ?? Deferred.makeUnsafe<void>();

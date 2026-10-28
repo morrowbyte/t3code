@@ -31,11 +31,7 @@ import {
   updateReleasePackageVersions,
 } from "./update-release-package-versions.ts";
 import { applyWebBrandAssets } from "./apply-web-brand-assets.ts";
-import {
-  BRAND_ASSET_PATHS,
-  resolveWebAssetBrandForChannel,
-  type WebAssetBrand,
-} from "./lib/brand-assets.ts";
+import { resolveWebAssetBrandForChannel, type WebAssetBrand } from "./lib/brand-assets.ts";
 import { getDefaultBuildArch } from "./lib/build-target-arch.ts";
 import {
   findInlinedExternalPackages,
@@ -988,7 +984,12 @@ interface StagePackageJson {
 
 // Cua restages UniFFI files from the same pnpm store. Hardlinks make fs.cp reject
 // those source/destination files as identical, so release stages need private copies.
-export const STAGE_INSTALL_ARGS = ["install", "--prod", "--", "--package-import-method=copy"] as const;
+export const STAGE_INSTALL_ARGS = [
+  "install",
+  "--prod",
+  "--",
+  "--package-import-method=copy",
+] as const;
 export const DESKTOP_ELECTRON_LANGUAGES = ["en-US"] as const;
 export const DESKTOP_FILE_EXCLUSIONS = [
   // Cursor finds platform assets by walking up from argv[1]. Keep them outside
@@ -2788,26 +2789,11 @@ export function resolveDesktopWebAssetBrand(version: string): WebAssetBrand {
   return resolveWebAssetBrandForChannel(resolveDesktopUpdateChannel(version));
 }
 
-export function resolveDesktopBuildIconAssets(version: string): DesktopBuildIconAssets {
-  if (Boolean(process.env.T3CODE_DESKTOP_PROFILE?.trim())) {
-    return {
-      macIconPng: "assets/morrowbyte/fork-1024.png",
-      linuxIconPng: "assets/morrowbyte/fork-1024.png",
-      windowsIconIco: "assets/morrowbyte/fork.ico",
-    };
-  }
-  if (resolveDesktopUpdateChannel(version) === "nightly") {
-    return {
-      macIconPng: BRAND_ASSET_PATHS.nightlyMacIconPng,
-      linuxIconPng: BRAND_ASSET_PATHS.nightlyLinuxIconPng,
-      windowsIconIco: BRAND_ASSET_PATHS.nightlyWindowsIconIco,
-    };
-  }
-
+export function resolveDesktopBuildIconAssets(): DesktopBuildIconAssets {
   return {
-    macIconPng: BRAND_ASSET_PATHS.productionMacIconPng,
-    linuxIconPng: BRAND_ASSET_PATHS.productionLinuxIconPng,
-    windowsIconIco: BRAND_ASSET_PATHS.productionWindowsIconIco,
+    macIconPng: "assets/crew/desktop-1024.png",
+    linuxIconPng: "assets/crew/desktop-1024.png",
+    windowsIconIco: "assets/crew/native.ico",
   };
 }
 
@@ -2831,14 +2817,22 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
 export function resolveDesktopProductName(version: string): string {
   const override = process.env.T3CODE_DESKTOP_PRODUCT_NAME?.trim();
   if (override) return override;
-  if (process.env.T3CODE_DESKTOP_PROFILE?.trim()) return "Morrowbyte";
+  if (process.env.T3CODE_DESKTOP_PROFILE?.trim()) return "Crew";
   return resolveDesktopUpdateChannel(version) === "nightly"
-    ? "T3 Code (Nightly)"
-    : (desktopPackageJson.productName ?? "T3 Code");
+    ? "Crew (Nightly)"
+    : (desktopPackageJson.productName ?? "Crew");
 }
 
 export function resolveWindowsExecutableName(version: string): string {
-  return process.env.T3CODE_DESKTOP_EXECUTABLE_NAME?.trim() || resolveDesktopProductName(version);
+  // Product branding must not rename the installed executable used by shortcuts and updates.
+  return (
+    process.env.T3CODE_DESKTOP_EXECUTABLE_NAME?.trim() ||
+    (process.env.T3CODE_DESKTOP_PROFILE?.trim()
+      ? "Morrowbyte"
+      : resolveDesktopUpdateChannel(version) === "nightly"
+        ? "T3 Code (Nightly)"
+        : "T3 Code (Beta)")
+  );
 }
 
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
@@ -2933,13 +2927,13 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
         // macOS 26 offers Messages/Mail codes in every text field unless opted out.
         NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac: true,
         NSLocalNetworkUsageDescription:
-          "T3 Code connects to devices on your local network for remote environments and commands run by terminals and coding agents.",
+          "Crew connects to devices on your local network for remote environments and commands run by terminals and coding agents.",
         NSScreenCaptureUsageDescription:
-          "T3 Code captures the active window when you use the window capture shortcut.",
+          "Crew captures the active window when you use the window capture shortcut.",
         NSCameraUsageDescription:
-          "T3 Code lets commands run by terminals and coding agents use the camera.",
+          "Crew lets commands run by terminals and coding agents use the camera.",
         NSMicrophoneUsageDescription:
-          "T3 Code lets commands run by terminals and coding agents use the microphone.",
+          "Crew lets commands run by terminals and coding agents use the microphone.",
         // macOS lists an app under Default web browser only when it opens web
         // pages as documents as well as http and https links (see protocols).
         CFBundleDocumentTypes: [
@@ -2955,7 +2949,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
         ? []
         : [
             {
-              name: "T3 Code",
+              name: "Crew",
               schemes: ["t3code", "t3code-dev"],
             },
             // Lets people choose T3 Code as their default web browser, which opens
@@ -3023,7 +3017,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
         ? []
         : [
             {
-              name: "T3 Code",
+              name: "Crew",
               schemes: ["t3code", "t3code-dev"],
             },
           ],
@@ -3070,8 +3064,8 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       include: "apps/desktop/resources/installer.nsh",
       ...(Boolean(profile)
         ? {
-            shortcutName: "Morrowbyte",
-            uninstallDisplayName: "Morrowbyte",
+            shortcutName: resolveDesktopProductName(version),
+            uninstallDisplayName: resolveDesktopProductName(version),
             include: "morrowbyte-installer.nsh",
           }
         : {}),
@@ -3079,7 +3073,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     const winConfig: Record<string, unknown> = {
       target: [target],
       // Keep existing shortcuts, protocol handlers and rollout launchers working.
-      ...(Boolean(profile) ? { executableName: resolveWindowsExecutableName(version) } : {}),
+      executableName: resolveWindowsExecutableName(version),
       icon: "icon.ico",
       // Smart App Control validates unpacked native addons independently from
       // the signed desktop executable. Extend release signing to every native
@@ -3811,7 +3805,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   });
 
   const appVersion = options.version ?? serverPackageJson.version;
-  const iconAssets = resolveDesktopBuildIconAssets(appVersion);
+  const iconAssets = resolveDesktopBuildIconAssets();
   const commitHash = yield* resolveGitCommitHash(repoRoot);
   const mkdir = options.keepStage ? fs.makeTempDirectory : fs.makeTempDirectoryScoped;
   const stageRoot = yield* mkdir({
@@ -4041,10 +4035,10 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     private: true,
     packageManager: rootPackageJson.packageManager,
     description:
-      "T3 Code is an open-source desktop app for coding agents. Work with your existing agent subscriptions, review code changes, and run commands in your projects. Connect from desktop, web, or mobile to continue working remotely.",
+      "Crew by Morrowbyte is based on the open-source T3 Code app for coding agents. Work with your existing agent subscriptions, review code changes, and run commands in your projects. Connect from desktop, web, or mobile to continue working remotely.",
     license: "MIT",
-    homepage: "https://t3.codes",
-    author: "T3 Tools",
+    homepage: "https://github.com/morrowbyte/t3code",
+    author: "Morrowbyte",
     main: "apps/desktop/dist-electron/boot.cjs",
     build: yield* createBuildConfig(
       options.platform,
@@ -4339,7 +4333,7 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
     Flag.optional,
   ),
 }).pipe(
-  Command.withDescription("Build a desktop artifact for T3 Code."),
+  Command.withDescription("Build a desktop artifact for Crew."),
   Command.withHandler((input) => Effect.flatMap(resolveBuildOptions(input), buildDesktopArtifact)),
 );
 

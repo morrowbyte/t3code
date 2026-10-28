@@ -2868,7 +2868,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           EMPTY_PROVIDER_ENTRIES
                         }
                         isHighlighted={activeSearchResultIndex === index}
-                        isRouteActive={routeRowThreadKey === threadKey}
+                        isRouteActive={routeThreadKey === threadKey}
                         resultId={`sidebar-thread-search-result-${index}`}
                         searchMatch={
                           threadSearchMatchByKey.get(
@@ -3036,7 +3036,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                   : null
                               }
                               wokeAt={threadWokeAt(thread, { now: snoozeNow })}
-                              isActive={routeRowThreadKey === threadKey}
+                              isActive={routeThreadKey === threadKey}
                               isRouteThread={routeThreadKey === threadKey}
                               openPullRequestsInRightPanel={routeThreadRef !== null}
                               jumpLabel={

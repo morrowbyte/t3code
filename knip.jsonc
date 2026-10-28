@@ -25,11 +25,17 @@
         // These fixture scripts are injected into a browser page by path.
         "fixtures/issue-16534/*.js",
         "knip-schemas.ts",
+        // Original T3 artwork exporters remain documented, manually invoked tools.
+        "export-brand-icons.ts",
+        "export-android-icons.ts",
         "mobile-native-client.ts",
         "setup-worktree.ts",
         "sign-macos.ts",
         "verify-windows-desktop-artifact.ts",
         "smoke-cua-runtime.mjs",
+        // Documented manual requester and dynamically imported UI fixture.
+        "approval-review/request.mjs",
+        "morrowbyte/composer-mobile-fixture.tsx",
       ],
       "ignoreDependencies": ["esbuild"],
       // The `t3` npm package's files: copied into the package, never imported.
@@ -75,6 +81,9 @@
         "src/preview-pip-preload.ts!",
         "src/mac-permission-preload.ts!",
         "src/preview/Annotation.css!",
+        // Chrome extension manifest loads these fixture scripts by filename.
+        "scripts/fixtures/proton-pass-compatibility/background.js",
+        "scripts/fixtures/proton-pass-compatibility/content.js",
       ],
       // The injected runtime resolves Playwright by string; release tooling runs
       // electron-builder from this workspace, outside its package scripts.

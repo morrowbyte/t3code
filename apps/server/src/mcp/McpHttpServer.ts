@@ -2,6 +2,10 @@ import * as ApprovalReviewOrderAgent from "../orchestration-v2/ApprovalReviewOrd
 import * as ApprovalReviewOrderAgentToolkit from "../orchestration-v2/ApprovalReviewOrderAgentToolkit.ts";
 import * as ApprovalReviewOrderForward from "../orchestration-v2/ApprovalReviewOrderForward.ts";
 import * as ApprovalReviewProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as PrivilegedCommandHandlers from "./toolkits/privilegedCommand/handlers.ts";
+import * as ConnectedEnvironmentHandlers from "./toolkits/connectedEnvironment/handlers.ts";
+import { ConnectedEnvironmentToolkit } from "./toolkits/connectedEnvironment/tools.ts";
+import { PrivilegedCommandToolkit } from "./toolkits/privilegedCommand/tools.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -26,6 +30,7 @@ import {
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
+import { BrowserArtifactBudgetError, writeBrowserScreenshot } from "../browserArtifactBudget.ts";
 import * as DeviceService from "../device/DeviceService.ts";
 import * as HtmlRender from "../htmlRender/HtmlRender.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
@@ -363,11 +368,14 @@ const boundSnapshotMetadata = (metadata: SnapshotMetadata) => {
   return { value: value(), text, omitted };
 };
 
+const isBrowserArtifactBudgetError = Schema.is(BrowserArtifactBudgetError);
+
 export class PreviewScreenshotSaveError extends Schema.TaggedError<PreviewScreenshotSaveError>()(
   "PreviewScreenshotSaveError",
   { screenshotPath: Schema.String, cause: Schema.Defect() },
 ) {
   override get message(): string {
+    if (isBrowserArtifactBudgetError(this.cause)) return this.cause.message;
     return `Could not save preview screenshot to ${this.screenshotPath}.`;
   }
 }
@@ -393,17 +401,17 @@ const saveScreenshot = Effect.fn("McpHttpServer.saveScreenshot")(function* (
   data: Uint8Array,
 ) {
   const config = yield* ServerConfig.ServerConfig;
-  const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const millis = yield* Clock.currentTimeMillis;
   const crypto = yield* Crypto.Crypto;
   const unique = (yield* crypto.randomUUIDv4().pipe(Effect.orDie)).slice(0, 8);
   const fileName = `browser-screenshot-${screenshotSiteSlug(pageUrl)}-${millis.toString(36)}-${unique}.png`;
   const screenshotPath = path.join(config.browserArtifactsDir, fileName);
-  yield* fileSystem.makeDirectory(config.browserArtifactsDir, { recursive: true }).pipe(
-    Effect.andThen(fileSystem.writeFile(screenshotPath, data)),
-    Effect.mapError((cause) => new PreviewScreenshotSaveError({ screenshotPath, cause })),
-  );
+  yield* writeBrowserScreenshot({
+    directory: config.browserArtifactsDir,
+    fileName,
+    data,
+  }).pipe(Effect.mapError((cause) => new PreviewScreenshotSaveError({ screenshotPath, cause })));
   return screenshotPath;
 });
 
@@ -1109,9 +1117,11 @@ export const layerMcpTransport = McpServer.layerHttp({
 }).pipe(Layer.provide(layerMcpAuthMiddleware));
 
 export const layer = Layer.mergeAll(
+  toolkitRegistration(ConnectedEnvironmentToolkit, ConnectedEnvironmentHandlers.layer),
   layerPreviewToolkit,
   layerOrchestratorToolkit,
   layerApprovalReviewOrderToolkit,
+  toolkitRegistration(PrivilegedCommandToolkit, PrivilegedCommandHandlers.layer),
   layerThreadToolkit,
   layerAttachmentToolkit,
   layerProjectRegistration,

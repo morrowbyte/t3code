@@ -85,5 +85,7 @@ export * from "./featureTiming.ts";
 export * from "./uml.ts";
 
 export * from "./approvalReviewAuthority.ts";
+export * from "./privilegedCommand.ts";
 
 export * from "./voiceRecording.ts";
+export * from "./connectedEnvironmentMcp.ts";

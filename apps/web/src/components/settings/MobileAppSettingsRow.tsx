@@ -1,4 +1,4 @@
-import { AndroidIcon, AppleIcon } from "../Icons";
+import { AndroidIcon } from "../Icons";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTitle, PopoverTrigger } from "../ui/popover";
 import { QRCodeSvg } from "../ui/qr-code";
@@ -7,15 +7,9 @@ import { searchableSetting } from "./settingsSearch";
 
 const stores = [
   {
-    label: "iPhone and iPad",
-    store: "App Store",
-    url: "https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824",
-    Icon: AppleIcon,
-  },
-  {
-    label: "Android",
-    store: "Google Play",
-    url: "https://play.google.com/store/apps/details?id=com.t3tools.t3code",
+    label: "Android APK",
+    store: "Crew releases",
+    url: "https://github.com/morrowbyte/t3code/releases",
     Icon: AndroidIcon,
   },
 ];
@@ -24,7 +18,7 @@ export function MobileAppSettingsRow() {
   return (
     <SettingsRow
       {...searchableSetting("mobile-app")}
-      description="Connect to your server from your phone or tablet."
+      description="Install Crew for Android, or add Crew Web to your browser’s home screen."
       control={
         <div className="flex flex-wrap items-center gap-2">
           {stores.map(({ label, store, url, Icon }) => (

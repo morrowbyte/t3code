@@ -111,7 +111,7 @@ export const runProtonPassEffect = (args: readonly string[]) =>
 const cliProcessLayer = NodeChildProcessSpawner.layer.pipe(
   Layer.provide(Layer.mergeAll(NodeFileSystem.layer, NodePath.layer)),
 );
-export const runProtonPass: RunProtonPass = async (args) => {
+const runProtonPass: RunProtonPass = async (args) => {
   const result = await Effect.runPromise(
     runProtonPassEffect(args).pipe(Effect.result, Effect.provide(cliProcessLayer)),
   );

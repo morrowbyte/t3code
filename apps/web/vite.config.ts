@@ -116,7 +116,13 @@ const browserTestProject = {
     browser: {
       enabled: true,
       headless: true,
-      provider: playwright(),
+      // Use an explicitly selected local browser on hosts with managed browser binaries.
+      // CI keeps Playwright's bundled browser when this override is absent.
+      provider: playwright({
+        launchOptions: process.env.T3CODE_TEST_CHROMIUM_EXECUTABLE_PATH
+          ? { executablePath: process.env.T3CODE_TEST_CHROMIUM_EXECUTABLE_PATH }
+          : {},
+      }),
       instances: [{ browser: "chromium" }],
       screenshotFailures: false,
       commands: {

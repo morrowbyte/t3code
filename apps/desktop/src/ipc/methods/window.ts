@@ -2,6 +2,7 @@ import {
   ContextMenuItemSchema,
   DesktopAppBrandingSchema,
   DesktopEnvironmentBootstrapSchema,
+  DesktopPrivilegedDecision,
   DesktopThemeSchema,
   EDITORS,
   EditorId,
@@ -25,6 +26,7 @@ import * as Schema from "effect/Schema";
 
 import * as DesktopBackendConfiguration from "../../backend/DesktopBackendConfiguration.ts";
 import * as DesktopBackendPool from "../../backend/DesktopBackendPool.ts";
+import * as DesktopPrivilegedDecisionService from "../../backend/DesktopPrivilegedDecision.ts";
 import * as DesktopLocalEnvironmentAuth from "../../backend/DesktopLocalEnvironmentAuth.ts";
 import * as DesktopEnvironment from "../../app/DesktopEnvironment.ts";
 import * as DesktopAppSettings from "../../settings/DesktopAppSettings.ts";
@@ -167,6 +169,28 @@ export const getLocalEnvironmentBearerToken = DesktopIpc.makeIpcMethod({
   handler: Effect.fn("desktop.ipc.window.getLocalEnvironmentBearerToken")(function* () {
     const localAuth = yield* DesktopLocalEnvironmentAuth.DesktopLocalEnvironmentAuth;
     return yield* localAuth.getBearerToken;
+  }),
+});
+
+export const respondToPrivilegedDecision = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.RESPOND_TO_PRIVILEGED_DECISION_CHANNEL,
+  payload: DesktopPrivilegedDecision,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.window.respondToPrivilegedDecision")(function* (input, event) {
+    const windows = yield* ElectronWindow.ElectronWindow;
+    const main = yield* windows.main;
+    if (
+      !event ||
+      Option.isNone(main) ||
+      main.value.isDestroyed() ||
+      main.value.webContents.id !== event.sender.id ||
+      event.senderFrame?.parent !== null
+    ) {
+      return yield* new DesktopPrivilegedDecisionService.DesktopPrivilegedDecisionError({
+        message: "Privileged decision requires the main desktop window.",
+      });
+    }
+    yield* DesktopPrivilegedDecisionService.respond(input);
   }),
 });
 

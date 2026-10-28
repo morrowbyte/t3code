@@ -1,10 +1,63 @@
 import type { PendingBackgroundWorkPresentation } from "@t3tools/client-runtime/state/thread-execution";
-import { withVisibleControlCharacters } from "@t3tools/client-runtime/work-log/command-label";
+import {
+  commandHighlightLanguage,
+  withVisibleControlCharacters,
+} from "@t3tools/client-runtime/work-log/command-label";
 import type { ThreadId } from "@t3tools/contracts";
 import { ChevronRightIcon, SquareIcon, TerminalIcon } from "lucide-react";
-import { useId, useState } from "react";
+import { Suspense, useId, useState } from "react";
 
+import { embeddedScripts } from "../../lib/embeddedScripts";
+import { useTheme } from "../../hooks/useTheme";
+import { RenderErrorBoundary } from "../RenderErrorBoundary";
 import { Button, InlineButton } from "../ui/button";
+import { HighlightedTokens } from "./HighlightedTokens";
+
+const commandCodeClassName =
+  "max-h-64 overflow-auto rounded-lg border border-border/60 bg-background/50 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap wrap-anywhere outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring";
+
+function BackgroundCommandCode({ command }: { command: string }) {
+  const { resolvedTheme } = useTheme();
+  const text = withVisibleControlCharacters(command);
+  const scripts = text.length <= 100_000 ? embeddedScripts(text) : [];
+  const inner = scripts.filter((script) => script.language !== "shellscript");
+  const script = inner.length === 1 ? inner[0] : undefined;
+  const code = script?.text ?? text;
+  const language = script?.language ?? commandHighlightLanguage(text);
+  return (
+    <>
+      <pre
+        aria-label={script ? "Embedded script" : "Full command"}
+        tabIndex={0}
+        className={commandCodeClassName}
+      >
+        {code.length > 100_000 ? (
+          code
+        ) : (
+          <RenderErrorBoundary fallback={code}>
+            <Suspense fallback={code}>
+              <HighlightedTokens
+                code={code}
+                language={language}
+                embedded={script ? [] : scripts}
+                theme={resolvedTheme}
+                lineNumbers
+              />
+            </Suspense>
+          </RenderErrorBoundary>
+        )}
+      </pre>
+      {script ? (
+        <details>
+          <summary className="cursor-pointer text-xs text-muted-foreground">Full command</summary>
+          <pre aria-label="Full command" tabIndex={0} className={commandCodeClassName}>
+            {text}
+          </pre>
+        </details>
+      ) : null}
+    </>
+  );
+}
 
 const COMMAND_STATUS_LABELS = {
   pending: "Pending",
@@ -80,11 +133,11 @@ export function BackgroundWorkActivity({
                       return next;
                     })
                   }
-                  className="flex min-h-9 min-w-0 flex-1 basis-40 cursor-pointer items-center gap-2 rounded-md px-1 text-start text-foreground outline-none hover:bg-accent/50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                  className="flex min-h-9 min-w-0 flex-1 basis-full cursor-pointer items-center gap-2 rounded-md px-1 text-start text-foreground outline-none hover:bg-accent/50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:basis-40"
                 >
                   <TerminalIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate font-medium">
+                    <span className="block font-medium wrap-anywhere">
                       {item.commandLabel ?? item.label}
                     </span>
                     <span id={`${panelId}-status`} className="block text-xs text-muted-foreground">
@@ -105,13 +158,7 @@ export function BackgroundWorkActivity({
                       {item.label}
                     </p>
                   ) : (
-                    <pre
-                      aria-label="Full command"
-                      tabIndex={0}
-                      className="max-h-44 overflow-y-auto rounded-lg border border-border/60 bg-background/50 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap text-foreground/85 wrap-anywhere outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-                    >
-                      {withVisibleControlCharacters(item.commandLine)}
-                    </pre>
+                    <BackgroundCommandCode command={item.commandLine} />
                   )}
                   {childThreadId === undefined ? null : (
                     <InlineButton onClick={() => onOpenThread(childThreadId)}>

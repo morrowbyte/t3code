@@ -24,8 +24,32 @@ import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Orchestrator from "./Orchestrator.ts";
+
+export class StorageRunInterrupt extends Context.Reference<
+  | ((input: {
+      readonly threadId: ThreadId;
+      readonly runId: RunId;
+      readonly reason: string;
+    }) => Effect.Effect<void, unknown>)
+  | undefined
+>("t3/orchestration-v2/StorageRunInterrupt", { defaultValue: () => undefined }) {}
+
+export const storageRunInterrupt =
+  (orchestrator: Orchestrator.OrchestratorV2["Service"]) =>
+  (input: { readonly threadId: ThreadId; readonly runId: RunId; readonly reason: string }) =>
+    orchestrator
+      .dispatch({
+        type: "run.interrupt",
+        commandId: CommandId.make(`storage-pressure-interrupt:${input.runId}`),
+        threadId: input.threadId,
+        runId: input.runId,
+        reason: input.reason,
+      })
+      .pipe(Effect.asVoid);
 
 import * as ServerConfig from "../config.ts";
+import * as StoragePressure from "../storagePressure.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -106,6 +130,7 @@ export const layer: Layer.Layer<
   | FileSystem.FileSystem
   | Path.Path
   | ServerConfig.ServerConfig
+  | StoragePressure.StoragePressure
   | ServerSettings.ServerSettingsService
   | GitWorkflowService.GitWorkflowService
   | ProjectService.ProjectService
@@ -123,6 +148,8 @@ export const layer: Layer.Layer<
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const serverConfig = yield* ServerConfig.ServerConfig;
+    const storagePressure = yield* StoragePressure.StoragePressure;
+    const storageRunInterrupt = yield* StorageRunInterrupt;
     const serverSettings = yield* ServerSettings.ServerSettingsService;
     const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
     const projects = yield* ProjectService.ProjectService;
@@ -539,6 +566,24 @@ export const layer: Layer.Layer<
         modelSelection: run.modelSelection,
       });
       if (!(yield* isCurrentAttemptInStatus("starting"))) return;
+      const storagePaths = [serverConfig.stateDir, resolvedRuntimePolicy.cwd ?? serverConfig.cwd];
+      const storageError = yield* Effect.promise(() => storagePressure.check(storagePaths));
+      if (!(yield* isCurrentAttemptInStatus("starting"))) return;
+      if (storageError !== null) {
+        yield* settleRunBeforeStart({
+          signal: "storage-pressure",
+          status: "failed",
+          now: yield* DateTime.now,
+          providerInstanceId: run.providerInstanceId,
+          itemProviderThreadId: providerThread.id,
+          item: {
+            type: "error",
+            title: "Not enough disk space to start work",
+            failure: makeProviderFailure({ class: "validation_error", message: storageError }),
+          },
+        });
+        return;
+      }
       const existingSessionProjection = projection.providerSessions.find(
         (candidate) => candidate.id === providerSessionId,
       );
@@ -1338,6 +1383,11 @@ export const layer: Layer.Layer<
         },
         modelSelection: run.modelSelection,
         runtimePolicy: resolvedRuntimePolicy,
+        storagePressure: {
+          guard: storagePressure,
+          paths: storagePaths,
+          ...(storageRunInterrupt === undefined ? {} : { interrupt: storageRunInterrupt }),
+        },
       });
     });
 

@@ -224,6 +224,53 @@ it.effect("rebuilds event history one bounded page at a time", () =>
 );
 
 it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
+  it.effect(
+    "rolls back an admission that expires before transaction completion and permits retry",
+    () =>
+      Effect.gen(function* () {
+        const sink = yield* EventSink.EventSinkV2;
+        const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+        const events = yield* EventStore.EventStoreV2;
+        const projection = yield* ProjectionStore.ProjectionStoreV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread:late-admission-fixture");
+        const commandId = CommandId.make("command:late-admission-fixture");
+        const event = threadCreatedEvent({
+          id: "event:late-admission-fixture",
+          thread: makeThread(threadId, now),
+          now,
+        });
+        // The request has already spent its admission budget in planning or a DB wait.
+        const deadline = 0;
+        const commit = {
+          commandId,
+          threadId,
+          commandType: "thread.create",
+          acceptedAt: now,
+          events: [event],
+          effects: [],
+        };
+        const refused = yield* Effect.result(
+          sink.commitCommand({ ...commit, admissionDeadlineMonotonicMs: deadline }),
+        );
+        assert.equal(refused._tag, "Failure");
+        assert.isTrue(Option.isNone(yield* receipts.getByCommandId(commandId)));
+        assert.isNull(yield* projection.getThreadShell(threadId));
+        assert.equal(
+          (yield* events.readByCommandId({ commandId }).pipe(Stream.runCollect)).length,
+          0,
+        );
+        const accepted = yield* sink.commitCommand({
+          ...commit,
+          admissionDeadlineMonotonicMs: Number.MAX_SAFE_INTEGER,
+        });
+        assert.isTrue(accepted.committed);
+        const replay = yield* sink.commitCommand({ ...commit, admissionDeadlineMonotonicMs: 0 });
+        assert.isFalse(replay.committed);
+        assert.equal(replay.receipt.resultSequence, accepted.receipt.resultSequence);
+      }),
+  );
+
   it.effect("projects oversized tool bodies before both replay and live RPC retention", () =>
     Effect.scoped(
       Effect.gen(function* () {

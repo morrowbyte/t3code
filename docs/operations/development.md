@@ -181,6 +181,10 @@ In `apps/web`, a test that renders React or touches the DOM is named `*.browser.
 and runs in headless Chromium with the React Compiler on, like the app. There is no jsdom; other
 `*.test.ts` files run in Node.
 
+On hosts with a managed Chromium installation, set
+`T3CODE_TEST_CHROMIUM_EXECUTABLE_PATH` to its executable when running browser tests or
+`vp run check:changed`. Without this override, tests use Playwright's bundled browser.
+
 TypeScript workspaces typecheck with `tsc`. The `typescript` catalog entry is
 `@tsc-rs/typescript`, the tsc-rs drop-in, with Effect diagnostics, quick fixes, and
 refactors built in. VS Code uses it through `js/ts.tsdk.path` in `.vscode/settings.json`.

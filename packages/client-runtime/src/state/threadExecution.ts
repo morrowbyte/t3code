@@ -36,6 +36,7 @@ import {
 } from "./models.ts";
 import { formatSubagentDisplayTitle } from "./subagentDisplay.ts";
 import { commandActivityLabel } from "../work-log/commandLabel.ts";
+import { isGenericToolActivityTitle, toolCallTitle } from "@t3tools/shared/toolActivity";
 
 const ACTIVITY_RUN_STATUSES = new Set(["preparing", "starting", "running", "waiting"]);
 const INTERRUPTIBLE_RUN_STATUSES = new Set(["preparing", "starting", "running"]);
@@ -321,6 +322,7 @@ export function presentPendingBackgroundWork(
   turnItems: ReadonlyArray<
     Pick<OrchestrationV2TurnItem, "id" | "type" | "nativeItemRef"> & {
       readonly input?: unknown;
+      readonly title?: string | null;
       readonly status?: OrchestrationV2TurnItem["status"];
     }
   > = [],
@@ -348,6 +350,7 @@ export function presentPendingBackgroundWork(
           : task.kind === "command"
             ? description
             : undefined;
+      const title = toolCallTitle(commandItem?.title);
       return {
         taskId: task.taskId,
         kind: task.kind,
@@ -358,7 +361,13 @@ export function presentPendingBackgroundWork(
         childThreadId: task.kind === "subagent" ? task.childThreadId : undefined,
         ...(commandLine === undefined
           ? {}
-          : { commandLine, commandLabel: commandActivityLabel(commandLine) }),
+          : {
+              commandLine,
+              commandLabel:
+                title && !isGenericToolActivityTitle(title) && title !== commandLine.trim()
+                  ? title
+                  : commandActivityLabel(commandLine),
+            }),
         ...(commandItem?.status === "running" ||
         commandItem?.status === "pending" ||
         commandItem?.status === "waiting"

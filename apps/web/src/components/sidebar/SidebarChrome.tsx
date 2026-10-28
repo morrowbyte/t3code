@@ -12,6 +12,8 @@ import {
   SidebarStageBackdrop,
   useEnvironmentStageLabel,
 } from "../SidebarStageBackdrop";
+import { APP_BASE_NAME } from "../../branding";
+import { Logo } from "../Logo";
 import { Badge } from "../ui/badge";
 import {
   SidebarFooter,
@@ -103,7 +105,7 @@ export function SidebarBrandWidthProbe({
 function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
   return (
     <Link
-      aria-label="Morrowbyte — go to threads"
+      aria-label={`${APP_BASE_NAME}, go to threads`}
       className={cn(
         "relative z-10 ml-[var(--workspace-titlebar-content-left)] flex h-7 w-fit min-w-0 shrink-0 items-center overflow-hidden rounded-md outline-hidden ring-ring focus-visible:ring-2 focus-visible:ring-inset",
         onBackdrop ? "text-white" : "text-foreground",
@@ -117,14 +119,15 @@ function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
 
 function SidebarBrandMark({ onBackdrop }: { onBackdrop: boolean }) {
   return (
-    <span className="inline-flex min-w-0 items-baseline gap-1 text-sm font-medium tracking-tight">
+    <span className="inline-flex min-w-0 items-center gap-1.5 text-sm font-medium tracking-tight">
+      <Logo className={cn("size-6 shrink-0", onBackdrop && "text-crew-paper")} />
       <span
         className={cn(
           "truncate [text-box:trim-both_cap_alphabetic] supports-[text-box:trim-both_cap_alphabetic]:py-1",
           onBackdrop ? "text-white" : "text-foreground",
         )}
       >
-        Morrowbyte
+        {APP_BASE_NAME}
       </span>
     </span>
   );

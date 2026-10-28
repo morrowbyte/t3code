@@ -49,6 +49,7 @@ export interface McpInvocationScope {
   readonly capabilities: ReadonlySet<McpCapability>;
   readonly issuedAt: number;
   readonly requestNamespace: string;
+  readonly remoteSender?: { readonly environmentId: EnvironmentId; readonly threadId: ThreadId };
   readonly thread: McpThreadCaller | undefined;
   readonly client: McpClientCaller | undefined;
 }

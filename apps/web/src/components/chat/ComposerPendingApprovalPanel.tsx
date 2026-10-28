@@ -18,6 +18,7 @@ interface ComposerPendingApprovalPanelProps {
   approvals?: readonly PendingApproval[];
   onSelectRequest?: (requestId: RuntimeRequestId) => void;
   environmentId?: EnvironmentId | undefined;
+  environmentLabel?: string | undefined;
   runtimeMode?: RuntimeMode | undefined;
   className?: string;
 }

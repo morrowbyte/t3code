@@ -9,6 +9,11 @@ import * as Ref from "effect/Ref";
 
 import type { McpProviderSessionConfig } from "./mcpSession.ts";
 
+/** A manager-authorized snapshot for one native runtime admission. */
+export class RuntimeMcpSessionSnapshot extends Context.Reference<
+  { readonly threadId: ThreadId; readonly config: McpProviderSessionConfig | undefined } | undefined
+>("@t3tools/provider-core/server/RuntimeMcpSessionSnapshot", { defaultValue: () => undefined }) {}
+
 // Other providers may never consume these references.
 const MAX_KEPT_HTML_RENDERS = 64;
 
@@ -92,7 +97,12 @@ const make = Effect.gen(function* () {
       }
       yield* Ref.update(sessions, (current) => new Map(current).set(config.threadId, config));
     }),
-    read: (threadId) => Ref.get(sessions).pipe(Effect.map((current) => current.get(threadId))),
+    read: Effect.fn("McpProviderSessions.read")(function* (threadId) {
+      const snapshot = yield* RuntimeMcpSessionSnapshot;
+      if (snapshot !== undefined)
+        return snapshot.threadId === threadId ? snapshot.config : undefined;
+      return (yield* Ref.get(sessions)).get(threadId);
+    }),
     clear: (threadId) =>
       Ref.update(sessions, (current) => {
         const next = new Map(current);

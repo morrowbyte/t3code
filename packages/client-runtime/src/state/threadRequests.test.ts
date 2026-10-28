@@ -1,8 +1,11 @@
 import {
   AuthSessionId,
+  EnvironmentId,
   NodeId,
   ProviderSessionId,
   RuntimeRequestId,
+  RunId,
+  ThreadId,
   TurnItemId,
   type OrchestrationV2ThreadProjection,
   type ApprovalReviewAuthority,
@@ -51,6 +54,59 @@ const reviewAuthority: ApprovalReviewAuthority = {
 };
 
 describe("approval response authority", () => {
+  it("binds a privileged decision to pending immutable script authority without session grants", () => {
+    const privilegedCommand = {
+      bundle: {
+        environmentId: EnvironmentId.make("host"),
+        threadId: ThreadId.make("task"),
+        runId: RunId.make("run"),
+        providerSessionId: "provider",
+        purpose: "Inspect temporary files",
+        script: "Get-ChildItem -LiteralPath $env:TEMP\n",
+        shell: "powershell" as const,
+        cwd: "C:\\Users\\User",
+        timeoutMs: 30_000,
+      },
+      state: "pending" as const,
+      packageHash: "e".repeat(64),
+    };
+    const approval: ThreadPendingApproval = {
+      requestId,
+      requestKind: "command",
+      createdAt: "2026-10-27T00:00:00Z",
+      responseCapability: "external",
+      privilegedCommand,
+    };
+    for (const decision of ["accept", "decline", "cancel"] as const) {
+      expect(canRespondToThreadApproval(approval, decision, privilegedCommand.packageHash)).toBe(
+        true,
+      );
+      expect(canRespondToThreadApproval(approval, decision)).toBe(false);
+      expect(canRespondToThreadApproval(approval, decision, "f".repeat(64))).toBe(false);
+    }
+    expect(
+      canRespondToThreadApproval(approval, "acceptForSession", privilegedCommand.packageHash),
+    ).toBe(false);
+    for (const state of ["approved", "rejected", "claimed", "completed", "unknown"] as const) {
+      expect(
+        canRespondToThreadApproval(
+          {
+            ...approval,
+            privilegedCommand: { ...privilegedCommand, state },
+          },
+          "accept",
+          privilegedCommand.packageHash,
+        ),
+      ).toBe(false);
+    }
+    expect(
+      canRespondToThreadApproval(
+        { ...approval, responseCapability: "live" },
+        "accept",
+        privilegedCommand.packageHash,
+      ),
+    ).toBe(false);
+  });
   const hostApproval: ThreadPendingApproval = {
     requestId,
     requestKind: "command",

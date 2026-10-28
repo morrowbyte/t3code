@@ -66,3 +66,18 @@ it("reads an explicit intent after Code Mode's pragma without mining source stri
     "Authored call title",
   );
 });
+
+it("shows a supplied intent immediately even when the provider sends a generic title", () => {
+  const code = "// Intent: Inspect recording permission preferences\nawait inspect();";
+  for (const toolName of ["js", "functions.exec", "node_repl.js"]) {
+    expect(dynamicToolTitle(toolName, { code }, "Run shell commands")).toBe(
+      "Inspect recording permission preferences",
+    );
+    expect(dynamicToolTitle(toolName, { code }, "Inspect host recording settings")).toBe(
+      "Inspect host recording settings",
+    );
+  }
+  expect(dynamicToolTitle("js", { code: "await inspect();" }, "Run JavaScript")).toBe(
+    "Run JavaScript",
+  );
+});
