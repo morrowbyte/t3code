@@ -115,6 +115,10 @@ jobs:
       - name: Checkout promoted source
         uses: actions/checkout@v4
         with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
           ref: ${{ inputs.source_sha }}
           fetch-depth: 0
 
@@ -887,6 +891,10 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
           ref: ${{ needs.preflight.outputs.source_sha }}
           fetch-depth: 1
 
@@ -995,6 +1003,10 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
           ref: ${{ needs.preflight.outputs.source_sha }}
           fetch-depth: 1
 
@@ -1140,6 +1152,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
           ref: ${{ needs.preflight.outputs.source_sha }}
       - name: Use local release build storage
         if: inputs.runner_backend != 'blacksmith'
@@ -1152,7 +1168,7 @@ jobs:
         if: inputs.runner_backend == 'blacksmith'
         run: sudo apt-get update && sudo apt-get install -y zstd
       - name: Verify updater against a real Nix Store fixture
-        run: python3 packaging/nixos/test-updater.py
+        run: env -u NIX_REMOTE python3 packaging/nixos/test-updater.py
       - uses: actions/download-artifact@v4
         with:
           name: morrowbyte-release-linux
@@ -1181,6 +1197,10 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
           ref: ${{ needs.preflight.outputs.source_sha }}
           fetch-depth: 0
 
@@ -1336,6 +1356,10 @@ jobs:
       - name: Checkout exact promoted source
         uses: actions/checkout@v4
         with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
           ref: ${{ needs.preflight.outputs.android_source_sha || needs.preflight.outputs.source_sha }}
           fetch-depth: 1
 
@@ -1722,6 +1746,10 @@ jobs:
       - name: Checkout promoted source for receipt metadata
         uses: actions/checkout@v4
         with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
           ref: ${{ needs.preflight.outputs.source_sha }}
           fetch-depth: 1
 
@@ -2078,6 +2106,10 @@ jobs:
       - name: Checkout exact Android release source
         uses: actions/checkout@v4
         with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
           ref: ${{ needs.preflight.outputs.source_sha }}
           fetch-depth: 1
 
@@ -2206,6 +2238,10 @@ jobs:
       - name: Checkout promoted source
         uses: actions/checkout@v4
         with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
           ref: ${{ needs.preflight.outputs.source_sha }}
           fetch-depth: 0
       - name: Use local release build storage

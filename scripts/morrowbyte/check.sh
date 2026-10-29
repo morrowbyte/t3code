@@ -17,7 +17,8 @@ python3 scripts/morrowbyte/release68-continuation.test.py
 python3 scripts/morrowbyte/release75-continuation.test.py
 
 bash scripts/morrowbyte/test.sh
-python3 packaging/nixos/test-updater.py
+# Consumer fixtures must exist in the host store, not the builder's private store.
+env -u NIX_REMOTE python3 packaging/nixos/test-updater.py
 
 vp_cmd() {
   if command -v vp >/dev/null 2>&1; then
