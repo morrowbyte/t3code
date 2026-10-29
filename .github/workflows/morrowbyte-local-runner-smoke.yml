@@ -1,0 +1,25 @@
+name: Morrowbyte local runner smoke
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  smoke:
+    if: github.repository == 'morrowbyte/t3code' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, morrowbyte-local-e2e-20261029]
+    timeout-minutes: 5
+    steps:
+      - name: Verify isolated local execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_OS" = Linux
+          test "$RUNNER_ARCH" = X64
+          test ! -S /var/run/docker.sock
+          test -w "$RUNNER_TEMP"
+          command -v bash
+          command -v git
+          command -v curl
+          printf '%s\n' 'Local runner smoke passed.'
