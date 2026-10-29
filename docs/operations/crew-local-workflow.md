@@ -17,7 +17,8 @@ vp run dev
 
 Keep WSL checkouts in the Linux filesystem, such as `~/src/t3code`, rather than
 under `/mnt/c`. On NixOS, enter `nix-shell` before compiling desktop packages;
-the repository shell supplies the C/Rust toolchains and native library headers.
+the repository shell supplies the C/Rust toolchains, native library headers
+and a managed browser for focused browser tests.
 It also loads an installed Vite+ shell environment.
 
 The terminal prints the actual web address and pairing link. Development uses

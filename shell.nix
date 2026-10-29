@@ -7,6 +7,7 @@ pkgs.mkShell {
     gcc
     cargo
     rustc
+    chromium
   ];
   buildInputs = with pkgs; [
     libsecret
@@ -14,6 +15,7 @@ pkgs.mkShell {
     wayland
   ];
   shellHook = ''
+    export T3CODE_TEST_CHROMIUM_EXECUTABLE_PATH="${pkgs.chromium}/bin/chromium"
     if [ -f "''${XDG_CONFIG_HOME:-$HOME/.config}/vite-plus/env" ]; then
       . "''${XDG_CONFIG_HOME:-$HOME/.config}/vite-plus/env"
     fi

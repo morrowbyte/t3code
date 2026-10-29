@@ -93,21 +93,39 @@ jobs:
       ]
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-          clean: false
-          sparse-checkout: |
-            /*
-            !/.repos/
-          sparse-checkout-cone-mode: false
-      - name: Remove stale untracked sources while retaining ignored tool caches
-        run: git clean -ffd
-      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
-        with:
-          node-version-file: package.json
-          cache: false
-          run-install: false
+      - name: Update the isolated runner checkout
+        env:
+          CHECKOUT_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          repository_url="https://github.com/$GITHUB_REPOSITORY.git"
+          if [[ ! -d .git ]]; then
+            git init
+            git remote add origin "$repository_url"
+          fi
+          actual_url="$(git remote get-url origin)"
+          test "${actual_url%.git}" = "${repository_url%.git}"
+          CHECKOUT_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$CHECKOUT_TOKEN" | base64 -w0)" \
+            git --config-env=http.https://github.com/.extraheader=CHECKOUT_HEADER \
+            -c protocol.version=2 fetch --no-tags --depth=2 --filter=blob:none origin "$GITHUB_SHA"
+          unset CHECKOUT_TOKEN
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git checkout --force --detach "$GITHUB_SHA"
+          git clean -ffd
+      - name: Use the machine's installed Vite toolchain
+        run: |
+          set -euo pipefail
+          for directory in "$HOME/.vite-plus/bin" "$HOME/.local/share/vite-plus/bin"; do
+            if [[ -x "$directory/vp" ]]; then
+              export PATH="$directory:$PATH"
+              printf '%s\n' "$directory" >> "$GITHUB_PATH"
+              break
+            fi
+          done
+          command -v vp || { echo 'Install Vite+ once for the runner user before enabling CI.' >&2; exit 1; }
+          vp env install
+          vp node --version
       - name: Install dependencies
         run: vp install --frozen-lockfile
       - name: Prepare pinned Electron runtime before desktop imports
@@ -134,11 +152,14 @@ jobs:
         if: github.event_name != 'workflow_dispatch' || inputs.integrationOnly
         env:
           BASE_REF: ${{ inputs.integrationBase || github.event.pull_request.base.sha || github.event.before }}
+          CHECKOUT_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           [[ "$BASE_REF" =~ ^[A-Za-z0-9_][A-Za-z0-9_./-]*$ ]]
           if [[ "$BASE_REF" == 0000000000000000000000000000000000000000 ]]; then BASE_REF=main; fi
-          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          CHECKOUT_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$CHECKOUT_TOKEN" | base64 -w0)" \
+            git --config-env=http.https://github.com/.extraheader=CHECKOUT_HEADER \
+            fetch --no-tags --depth=1 origin "$BASE_REF"
           BASE_SHA="$(git rev-parse FETCH_HEAD)"
           vp run check:integration --exact-base "$BASE_SHA"
       - name: Run focused source gates
