@@ -4,6 +4,13 @@ run-name: Morrowbyte ${{ inputs.windows_only && 'Windows' || inputs.android_only
 on:
   workflow_dispatch:
     inputs:
+      runner_backend:
+        description: Own runners by default; Blacksmith only for an explicitly authorized run
+        type: choice
+        default: self-hosted
+        options:
+          - self-hosted
+          - blacksmith
       publish:
         description: Publish the built release (false keeps artifacts only)
         type: boolean
@@ -68,7 +75,7 @@ permissions:
 jobs:
   preflight:
     if: github.repository == (vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code')
-    runs-on: [self-hosted, "${{ vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux' }}"]
+    runs-on: ${{ inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
     timeout-minutes: 15
     outputs:
       source_sha: ${{ steps.continuation75.outputs.source_sha || steps.continuation.outputs.source_sha || steps.windows_recovery.outputs.source_sha || steps.recovery.outputs.source_sha || steps.release.outputs.source_sha }}
@@ -863,7 +870,7 @@ jobs:
   build_bundle:
     if: inputs.android_only != true && inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && !inputs.continue_release75_run_id
     needs: [preflight]
-    runs-on: [self-hosted, "${{ vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux' }}"]
+    runs-on: ${{ inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
     timeout-minutes: 30
     steps:
       - name: Checkout source
@@ -961,7 +968,7 @@ jobs:
           ((inputs.continue_release68_run_id == '' && !inputs.continue_release75_run_id && needs.build_bundle.result == 'success') ||
            (inputs.continue_release68_run_id == '40291055865' && needs.build_bundle.result == 'skipped')) }}
     needs: [preflight, build_bundle]
-    runs-on: [self-hosted, "${{ vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux' }}"]
+    runs-on: ${{ inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
     timeout-minutes: 80
     permissions:
       contents: read
@@ -1102,7 +1109,7 @@ jobs:
           (needs.build_linux.result == 'success' ||
            (inputs.continue_release68_run_id == '40297878651' && needs.build_linux.result == 'skipped')) }}
     needs: [preflight, build_linux]
-    runs-on: [self-hosted, "${{ vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux' }}"]
+    runs-on: ${{ inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -1135,7 +1142,7 @@ jobs:
            (inputs.recover_windows_run_id == '39182028263' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'skipped') ||
            (inputs.continue_release68_run_id == '40291055865' && inputs.recover_windows_run_id == '' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'success')) }}
     needs: [preflight, build_bundle, build_linux]
-    runs-on: [self-hosted, "${{ vars.MORROWBYTE_WINDOWS_RUNNER || 'morrowbyte-windows' }}"]
+    runs-on: ${{ inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-windows-2025' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_WINDOWS_RUNNER || 'morrowbyte-windows')) }}
     timeout-minutes: 50
     steps:
       - name: Checkout source
@@ -1290,7 +1297,7 @@ jobs:
     name: Build Morrowbyte Android APK
     if: ${{ !inputs.windows_candidate_only && !inputs.windows_only && !inputs.desktop_only && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' }}
     needs: [preflight]
-    runs-on: [self-hosted, "${{ vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux' }}"]
+    runs-on: ${{ inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
     timeout-minutes: 60
     outputs:
       apk_sha256: ${{ steps.apk.outputs.apk_sha256 }}
@@ -1674,7 +1681,7 @@ jobs:
            (inputs.continue_release68_run_id == '40291055865' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'success' && needs.build_nixos.result == 'success' && needs.build_windows.result == 'success') ||
            (inputs.continue_release68_run_id == '40297878651' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'skipped' && needs.build_nixos.result == 'success' && needs.build_windows.result == 'skipped')) }}
     needs: [preflight, build_bundle, build_linux, build_nixos, build_windows, build_android_apk]
-    runs-on: [self-hosted, "${{ vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux' }}"]
+    runs-on: ${{ inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
     timeout-minutes: 15
     permissions:
       contents: write
@@ -2012,7 +2019,7 @@ jobs:
   publish_android:
     if: inputs.android_only && inputs.publish
     needs: [preflight, build_android_apk]
-    runs-on: [self-hosted, "${{ vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux' }}"]
+    runs-on: ${{ inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
     timeout-minutes: 15
     permissions:
       contents: write
@@ -2147,7 +2154,7 @@ jobs:
           needs.build_windows.result == 'success' && needs.build_linux.result == 'skipped' &&
           needs.build_nixos.result == 'skipped' && needs.build_android_apk.result == 'skipped' }}
     needs: [preflight, build_bundle, build_linux, build_nixos, build_windows, build_android_apk]
-    runs-on: [self-hosted, "${{ vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux' }}"]
+    runs-on: ${{ inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
     timeout-minutes: 15
     permissions:
       contents: write

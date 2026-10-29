@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - runs before `vp i`, so only Node built-ins exist.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { checkStorageAdmission } from "../packages/shared/src/node/storagePressure.ts";
 
@@ -52,12 +53,37 @@ if (!projectRoot) {
   throw new Error("T3CODE_PROJECT_ROOT is not set. Run this through the t3.json setup action.");
 }
 
-// Use the shell for Windows vp shims. Unattended installs need pnpm's confirmation
-// flag and closed stdin so other prompts fail. A stale lockfile must fail, not be rewritten.
-// Pipe output so the failure marker can keep its tail.
-const install = NodeChildProcess.spawn("vp i --frozen-lockfile -- --yes", {
+// oxlint-disable-next-line t3code/no-global-process-runtime -- Bootstrap runs before workspace dependencies exist.
+const vpBinaryName = process.platform === "win32" ? "vp.exe" : "vp";
+const vpHomes = [
+  ...(process.env.VP_HOME ? [process.env.VP_HOME] : []),
+  NodePath.join(
+    process.env.XDG_DATA_HOME ?? NodePath.join(NodeOS.homedir(), ".local", "share"),
+    "vite-plus",
+  ),
+  NodePath.join(NodeOS.homedir(), ".vite-plus"),
+  ...[process.env.LOCALAPPDATA, process.env.APPDATA].flatMap((directory) =>
+    directory ? [NodePath.join(directory, "vite-plus")] : [],
+  ),
+];
+// A running desktop can retain the PATH from before Vite+ was installed.
+const vpOnPath = (process.env.PATH ?? "")
+  .split(NodePath.delimiter)
+  .some((directory) =>
+    (vpBinaryName === "vp.exe" ? ["vp.exe", "vp.cmd", "vp.bat"] : ["vp"]).some((name) =>
+      NodeFS.existsSync(NodePath.join(directory, name)),
+    ),
+  );
+const vpExecutable =
+  (vpOnPath
+    ? "vp"
+    : vpHomes
+        .map((directory) => NodePath.join(directory, "bin", vpBinaryName))
+        .find((file) => NodeFS.existsSync(file))) ?? "vp";
+
+const install = NodeChildProcess.spawn(vpExecutable, ["i", "--frozen-lockfile", "--", "--yes"], {
   cwd: worktree,
-  shell: true,
+  shell: vpExecutable === "vp" && vpBinaryName === "vp.exe",
   stdio: ["ignore", "pipe", "pipe"],
 });
 activeInstall = install;

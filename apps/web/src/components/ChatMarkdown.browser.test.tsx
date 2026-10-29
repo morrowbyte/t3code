@@ -144,13 +144,15 @@ describe("ChatMarkdown math", () => {
   });
 
   it("recognizes closed equations inside quotes and indented math fences while text keeps streaming", async () => {
+    // This case tests parsing, independently of loading the lazy typesetter chunk.
+    await import("./chat/MathTypeset");
     using _math = setupMath();
     await using containerScreen = await renderText(
       "> $$\n> x^2\n> $$\n\n   ```math\n   y^2\n   ```\n\nStill streaming.",
       { isStreaming: true },
     );
     const container = containerScreen.container;
-    await expect.poll(() => container.querySelectorAll("msup").length).toBe(2);
+    await vi.waitFor(() => expect(container.querySelectorAll("msup")).toHaveLength(2));
     expect(container.querySelectorAll('[data-math-state="pending"]')).toHaveLength(0);
   });
   it("renders completed inline and display equations and preserves their Markdown for copying", async () => {
