@@ -231,131 +231,162 @@ it.effect("commits a confirmed result and its cleanup receipt atomically", () =>
   }).pipe(Effect.provide(layerExternalRecovery)),
 );
 
-it.effect("keeps the thread blocked after process loss until cleanup is confirmed", () =>
-  Effect.gen(function* () {
-    const outbox = yield* EffectOutbox.EffectOutboxV2;
-    const threadId = ThreadId.make("thread:cleanup-recovery");
-    const requestId = RuntimeRequestId.make("privileged-command:cleanup-recovery");
-    const laterId = RuntimeRequestId.make("privileged-command:later");
-    yield* outbox.enqueue([
-      {
-        id: "effect:cleanup-old",
-        commandId: CommandId.make("command:cleanup-old"),
-        threadId,
-        request: { type: "privileged-command.execute", requestId, packageHash: "a".repeat(64) },
-      },
-    ]);
-    assert.isTrue(Option.isSome(yield* outbox.claimNext({ workerId: "before-crash" })));
-    yield* outbox.enqueue([
-      {
-        id: "effect:cleanup-barrier",
-        commandId: CommandId.make("command:cleanup-barrier"),
-        threadId,
-        request: {
-          type: "privileged-command.cleanup",
-          requestId,
-          shell: "sh",
-          identity: {
-            platform: "linux",
-            bootId: "test-boot",
-          },
+it.effect.each(["process-loss", "interrupted", "other-request"] as const)(
+  "keeps later work blocked until cleanup is confirmed after %s",
+  (mode) =>
+    Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const threadId = ThreadId.make("thread:cleanup-recovery");
+      const requestId = RuntimeRequestId.make("privileged-command:cleanup-recovery");
+      const laterId = RuntimeRequestId.make("privileged-command:later");
+      yield* outbox.enqueue([
+        {
+          id: "effect:cleanup-old",
+          commandId: CommandId.make("command:cleanup-old"),
+          threadId,
+          request: { type: "privileged-command.execute", requestId, packageHash: "a".repeat(64) },
         },
-      },
-    ]);
-    yield* outbox.reconcileAfterProcessLoss;
-    assert.equal(
-      Option.getOrUndefined(yield* outbox.get("effect:cleanup-old"))?.status,
-      "cancelled",
-    );
-    yield* outbox.enqueue([
-      {
-        id: "effect:cleanup-later",
-        commandId: CommandId.make("command:cleanup-later"),
-        threadId,
-        request: {
-          type: "privileged-command.execute",
-          requestId: laterId,
-          packageHash: "b".repeat(64),
-        },
-      },
-    ]);
-    let confirmed = false;
-    let cleanupAttempts = 0;
-    const workerLayer = EffectWorker.layerWithOptions({
-      workerId: "cleanup-recovery",
-      maxAttempts: 1,
-    }).pipe(
-      Layer.provide(
-        Layer.mergeAll(
-          Layer.succeed(EffectOutbox.EffectOutboxV2, outbox),
-          Layer.succeed(EffectWorker.OrchestrationEffectExecutorV2, {
-            execute: (effect) => {
-              assert.equal(effect.request.type, "privileged-command.cleanup");
-              cleanupAttempts += 1;
-              return confirmed
-                ? Effect.void
-                : Effect.fail(
-                    new EffectWorker.OrchestrationEffectExecutionError({
-                      effectId: effect.id,
-                      effectType: effect.request.type,
-                    }),
-                  );
+      ]);
+      assert.isTrue(Option.isSome(yield* outbox.claimNext({ workerId: "before-crash" })));
+      yield* outbox.enqueue([
+        {
+          id: "effect:cleanup-barrier",
+          commandId: CommandId.make("command:cleanup-barrier"),
+          threadId,
+          request: {
+            type: "privileged-command.cleanup",
+            requestId:
+              mode === "other-request"
+                ? RuntimeRequestId.make("privileged-command:other")
+                : requestId,
+            shell: "sh",
+            identity: {
+              platform: "linux",
+              bootId: "test-boot",
             },
-          }),
-        ),
-      ),
-    );
-    yield* Effect.gen(function* () {
-      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-      yield* worker.runOnce;
-      assert.equal(
-        Option.getOrUndefined(yield* outbox.get("effect:cleanup-barrier"))?.status,
-        "pending",
-      );
-      assert.isTrue(Option.isNone(yield* outbox.claimNext({ workerId: "blocked" })));
-      yield* TestClock.adjust(100);
-      confirmed = true;
-      yield* worker.runOnce;
-    }).pipe(Effect.provide(workerLayer));
-    assert.equal(cleanupAttempts, 2);
-    assert.equal(
-      Option.getOrUndefined(yield* outbox.claimNext({ workerId: "after-cleanup" }))?.id,
-      "effect:cleanup-later",
-    );
-    const priorityThread = ThreadId.make("thread:cleanup-priority");
-    yield* outbox.enqueue([
-      {
-        id: "effect:older-pending",
-        commandId: CommandId.make("command:older-pending"),
-        threadId: priorityThread,
-        request: {
-          type: "privileged-command.execute",
-          requestId: laterId,
-          packageHash: "b".repeat(64),
-        },
-      },
-      {
-        id: "effect:newer-cleanup",
-        commandId: CommandId.make("command:newer-cleanup"),
-        threadId: priorityThread,
-        request: {
-          type: "privileged-command.cleanup",
-          requestId,
-          shell: "sh",
-          identity: {
-            platform: "linux",
-            bootId: "test-boot",
-            processId: 123,
-            processStart: "start-fixture",
           },
         },
-      },
-    ]);
-    assert.equal(
-      Option.getOrUndefined(yield* outbox.claimNext({ workerId: "priority" }))?.id,
-      "effect:newer-cleanup",
-    );
-  }).pipe(Effect.provide(layerExternalRecovery)),
+      ]);
+      assert.isTrue(Option.isNone(yield* outbox.claimNext({ workerId: "before-stop" })));
+      if (mode === "process-loss") {
+        yield* outbox.reconcileAfterProcessLoss;
+      } else {
+        yield* outbox.cancelUnsettled({
+          threadId,
+          effectTypes: ["privileged-command.execute"],
+          privilegedRequestIds: [requestId],
+          reason: "Thread was stopped.",
+        });
+      }
+      assert.equal(
+        Option.getOrUndefined(yield* outbox.get("effect:cleanup-old"))?.status,
+        mode === "process-loss" ? "cancelled" : "running",
+      );
+      yield* outbox.enqueue([
+        {
+          id: "effect:cleanup-later",
+          commandId: CommandId.make("command:cleanup-later"),
+          threadId,
+          request: {
+            type: "privileged-command.execute",
+            requestId: laterId,
+            packageHash: "b".repeat(64),
+          },
+        },
+      ]);
+      let confirmed = false;
+      let cleanupAttempts = 0;
+      const workerLayer = EffectWorker.layerWithOptions({
+        workerId: "cleanup-recovery",
+        maxAttempts: 1,
+      }).pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.succeed(EffectOutbox.EffectOutboxV2, outbox),
+            Layer.succeed(EffectWorker.OrchestrationEffectExecutorV2, {
+              execute: (effect) => {
+                assert.equal(effect.request.type, "privileged-command.cleanup");
+                cleanupAttempts += 1;
+                return confirmed
+                  ? Effect.void
+                  : Effect.fail(
+                      new EffectWorker.OrchestrationEffectExecutionError({
+                        effectId: effect.id,
+                        effectType: effect.request.type,
+                      }),
+                    );
+              },
+            }),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        yield* worker.runOnce;
+        assert.equal(
+          Option.getOrUndefined(yield* outbox.get("effect:cleanup-barrier"))?.status,
+          "pending",
+        );
+        assert.isTrue(Option.isNone(yield* outbox.claimNext({ workerId: "blocked" })));
+        if (mode === "other-request") {
+          assert.equal(cleanupAttempts, 0);
+          return;
+        }
+        yield* TestClock.adjust(100);
+        confirmed = true;
+        yield* worker.runOnce;
+      }).pipe(Effect.provide(workerLayer));
+      if (mode === "other-request") return;
+      assert.equal(cleanupAttempts, 2);
+      if (mode === "interrupted") {
+        assert.isTrue(
+          Option.isNone(yield* outbox.claimNext({ workerId: "before-execution-exit" })),
+        );
+        assert.isTrue(
+          yield* outbox.finishCancellation({
+            effectId: "effect:cleanup-old",
+            workerId: "before-crash",
+          }),
+        );
+      }
+      assert.equal(
+        Option.getOrUndefined(yield* outbox.claimNext({ workerId: "after-cleanup" }))?.id,
+        "effect:cleanup-later",
+      );
+      const priorityThread = ThreadId.make("thread:cleanup-priority");
+      yield* outbox.enqueue([
+        {
+          id: "effect:older-pending",
+          commandId: CommandId.make("command:older-pending"),
+          threadId: priorityThread,
+          request: {
+            type: "privileged-command.execute",
+            requestId: laterId,
+            packageHash: "b".repeat(64),
+          },
+        },
+        {
+          id: "effect:newer-cleanup",
+          commandId: CommandId.make("command:newer-cleanup"),
+          threadId: priorityThread,
+          request: {
+            type: "privileged-command.cleanup",
+            requestId,
+            shell: "sh",
+            identity: {
+              platform: "linux",
+              bootId: "test-boot",
+              processId: 123,
+              processStart: "start-fixture",
+            },
+          },
+        },
+      ]);
+      assert.equal(
+        Option.getOrUndefined(yield* outbox.claimNext({ workerId: "priority" }))?.id,
+        "effect:newer-cleanup",
+      );
+    }).pipe(Effect.provide(layerExternalRecovery)),
 );
 
 it.effect("stopping an old run cancels only its privileged outbox request", () =>

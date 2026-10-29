@@ -358,6 +358,14 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           WHERE active.thread_id = candidate.thread_id
             -- A terminal turn can checkpoint while cleanup still fences new work.
             AND (candidate.effect_type != 'checkpoint.capture' OR active.effect_type != 'privileged-command.cleanup')
+            -- Claims clear last_error; only cancellation sets it while an execution remains running.
+            AND NOT (
+              candidate.effect_type = 'privileged-command.cleanup'
+              AND active.effect_type = 'privileged-command.execute'
+              AND active.status = 'running'
+              AND active.last_error IS NOT NULL
+              AND json_extract(candidate.payload_json, '$.requestId') = json_extract(active.payload_json, '$.requestId')
+            )
             AND (
               active.status = 'running'
               OR (
