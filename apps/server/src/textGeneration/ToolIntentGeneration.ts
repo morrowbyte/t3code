@@ -231,7 +231,7 @@ export const make = Effect.gen(function* () {
         yield* commit(subscriber, title, context, sourceTitle);
       }
     }).pipe(
-      Effect.catchCause(() => Effect.void),
+      Effect.ignoreCause,
       Effect.ensuring(
         Effect.sync(() => {
           pending -= 1;

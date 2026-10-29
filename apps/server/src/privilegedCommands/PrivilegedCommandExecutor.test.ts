@@ -6,6 +6,7 @@ import * as Deferred from "effect/Deferred";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as NodeZlib from "node:zlib";
 
 import * as ProcessRunner from "../processRunner.ts";
@@ -104,6 +105,7 @@ describe("PrivilegedCommandExecutor", () => {
       Effect.provide(Executor.layer),
       Effect.provideService(ProcessRunner.ProcessRunner, runner),
       Effect.provideService(HostProcess.Platform, "linux"),
+      Effect.provide(Path.layer),
       Effect.provideService(HostProcess.Environment, { PATH: "/trusted" }),
       Effect.provideService(FileSystem.FileSystem, linuxFs),
       Effect.provide(NodeServices.layer),
@@ -127,6 +129,7 @@ describe("PrivilegedCommandExecutor", () => {
       Effect.provide(Executor.layer),
       Effect.provideService(ProcessRunner.ProcessRunner, runner),
       Effect.provideService(HostProcess.Platform, "linux"),
+      Effect.provide(Path.layer),
       Effect.provideService(HostProcess.Environment, { PATH: "/trusted" }),
       Effect.provideService(FileSystem.FileSystem, linuxFs),
       Effect.provide(NodeServices.layer),
@@ -147,6 +150,7 @@ describe("PrivilegedCommandExecutor", () => {
         Effect.provide(Executor.layer),
         Effect.provideService(ProcessRunner.ProcessRunner, runner),
         Effect.provideService(HostProcess.Platform, "linux"),
+        Effect.provide(Path.layer),
         Effect.provideService(HostProcess.Environment, { PATH: "/trusted" }),
         Effect.provideService(FileSystem.FileSystem, linuxFs),
         Effect.provide(NodeServices.layer),
@@ -181,6 +185,7 @@ describe("PrivilegedCommandExecutor", () => {
       Effect.provide(Executor.layer),
       Effect.provideService(ProcessRunner.ProcessRunner, runner),
       Effect.provideService(HostProcess.Platform, "linux"),
+      Effect.provide(Path.layer),
       Effect.provideService(HostProcess.Environment, { PATH: "/trusted" }),
       Effect.provideService(FileSystem.FileSystem, linuxFs),
       Effect.provide(NodeServices.layer),
@@ -230,6 +235,7 @@ describe("PrivilegedCommandExecutor", () => {
         Effect.provide(Executor.layer),
         Effect.provideService(ProcessRunner.ProcessRunner, runner),
         Effect.provideService(HostProcess.Platform, "linux"),
+        Effect.provide(Path.layer),
         Effect.provideService(HostProcess.Environment, { PATH: "/trusted" }),
         Effect.provideService(FileSystem.FileSystem, fs),
         Effect.provide(NodeServices.layer),
@@ -260,6 +266,7 @@ describe("PrivilegedCommandExecutor", () => {
       Effect.provide(Executor.layer),
       Effect.provideService(ProcessRunner.ProcessRunner, runner),
       Effect.provideService(HostProcess.Platform, "linux"),
+      Effect.provide(Path.layer),
       Effect.provideService(HostProcess.Environment, { PATH: "/trusted" }),
       Effect.provideService(FileSystem.FileSystem, linuxFs),
       Effect.provide(NodeServices.layer),
@@ -325,6 +332,7 @@ describe("PrivilegedCommandExecutor", () => {
         Effect.provide(Executor.layer),
         Effect.provideService(ProcessRunner.ProcessRunner, runner),
         Effect.provideService(HostProcess.Platform, "linux"),
+        Effect.provide(Path.layer),
         Effect.provideService(HostProcess.Environment, { PATH: "/trusted" }),
         Effect.provideService(FileSystem.FileSystem, fs),
         Effect.provide(NodeServices.layer),
@@ -369,6 +377,7 @@ describe("PrivilegedCommandExecutor", () => {
       Effect.provide(Executor.layer),
       Effect.provideService(ProcessRunner.ProcessRunner, runner),
       Effect.provideService(HostProcess.Platform, "linux"),
+      Effect.provide(Path.layer),
       Effect.provideService(HostProcess.Environment, { PATH: "/trusted" }),
       Effect.provideService(FileSystem.FileSystem, fs),
       Effect.provide(NodeServices.layer),
@@ -438,6 +447,7 @@ describe("PrivilegedCommandExecutor", () => {
       Effect.provide(Executor.layer),
       Effect.provideService(ProcessRunner.ProcessRunner, runner),
       Effect.provideService(HostProcess.Platform, "linux"),
+      Effect.provide(Path.layer),
       Effect.provideService(HostProcess.Environment, { PATH: "/trusted" }),
       Effect.provideService(FileSystem.FileSystem, linuxFs),
       Effect.provide(NodeServices.layer),
@@ -539,6 +549,7 @@ describe("PrivilegedCommandExecutor", () => {
       Effect.provide(Executor.layer),
       Effect.provideService(ProcessRunner.ProcessRunner, runner),
       Effect.provideService(HostProcess.Platform, "linux"),
+      Effect.provide(Path.layer),
       Effect.provideService(HostProcess.Environment, { PATH: "" }),
       Effect.provideService(FileSystem.FileSystem, linuxFs),
       Effect.provide(NodeServices.layer),
@@ -567,6 +578,7 @@ describe("PrivilegedCommandExecutor", () => {
       Effect.provide(Executor.layer),
       Effect.provideService(ProcessRunner.ProcessRunner, runner),
       Effect.provideService(HostProcess.Platform, "linux"),
+      Effect.provide(Path.layer),
       Effect.provideService(HostProcess.Environment, { PATH: "/trusted" }),
       Effect.provideService(FileSystem.FileSystem, linuxFs),
       Effect.provide(NodeServices.layer),

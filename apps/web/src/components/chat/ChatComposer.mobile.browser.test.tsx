@@ -330,7 +330,7 @@ it("opens the production grouped configuration deliberately, preserves choices a
   const trigger = control(container, "Model and configuration");
   expect(trigger.getAttribute("aria-description")).toBe("GPT-6.1-Sol");
   expect(trigger.textContent).toBe("Model");
-  expect(document.querySelector('[aria-label="Runtime mode"]')).toBeNull();
+  expect(document.querySelector('[aria-label^="Permissions:"]')).toBeNull();
   expect(changedMode).not.toHaveBeenCalled();
   expect(changedInteraction).not.toHaveBeenCalled();
   expectPassive();
@@ -339,11 +339,11 @@ it("opens the production grouped configuration deliberately, preserves choices a
     trigger.click();
   });
   expect(trigger.getAttribute("aria-expanded")).toBe("true");
-  const runtime = document.querySelector<HTMLButtonElement>('[aria-label="Runtime mode"]');
+  const runtime = document.querySelector<HTMLButtonElement>('[aria-label^="Permissions:"]');
   if (!runtime) throw new Error("Missing actual runtime picker");
   await act(async () => runtime.click());
-  const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((element) =>
-    element.textContent?.includes("Full access"),
+  const option = document.querySelector<HTMLElement>(
+    '[role="menuitemradio"][aria-label="Full access"]',
   );
   if (!option) throw new Error("Missing actual Full access choice");
   await act(async () => option.click());
@@ -361,7 +361,7 @@ it("opens the production grouped configuration deliberately, preserves choices a
   expect(trigger.getAttribute("aria-expanded")).toBe("false");
   await expect.poll(() => document.activeElement).toBe(trigger);
   await act(async () => trigger.click());
-  expect(document.querySelector('[aria-label="Runtime mode"]')?.textContent).toContain(
+  expect(document.querySelector('[aria-label^="Permissions:"]')?.textContent).toContain(
     "Full access",
   );
   expect(

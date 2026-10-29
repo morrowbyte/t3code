@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import {
+  AGENT_IDENTITY_THEMES,
+  AGENT_IDENTITY_THEME_OPTIONS,
+  EnvironmentId,
+  ThreadId,
+} from "@t3tools/contracts";
 import { deriveAgentIdentity, resolveAgentProjectColor } from "./agentIdentity.ts";
 
 const ref = {
@@ -23,9 +28,9 @@ describe("agent identity", () => {
       { ...ref, threadId: ThreadId.make("thread-b") },
       { ...ref, environmentId: EnvironmentId.make("environment-b") },
     ];
-    for (const theme of ["neutral", "weasel"] as const) {
-      const names = refs.map((candidate) => deriveAgentIdentity(candidate, null, theme).name);
-      expect(new Set(names).size).toBe(refs.length);
+    for (const { value: theme } of AGENT_IDENTITY_THEME_OPTIONS) {
+      const keys = refs.map((candidate) => deriveAgentIdentity(candidate, null, theme).key);
+      expect(new Set(keys).size).toBe(refs.length);
     }
   });
 
@@ -34,33 +39,54 @@ describe("agent identity", () => {
     const neutral = deriveAgentIdentity(ref, { relationshipToParent: "subagent" });
     expect(child.role).toBe("Subagent");
     expect(child.key).toBe(neutral.key);
-    expect(child.name).toBe(neutral.name);
+    expect(child.name).not.toBe(neutral.name);
     expect(child.icon).toBe("weasel");
     expect(child.avatarVariant).toBe(neutral.avatarVariant);
-    expect(child.name).not.toBe(
-      deriveAgentIdentity({ ...ref, threadId: ThreadId.make("thread-b") }, null, "weasel").name,
+    expect(child.key).not.toBe(
+      deriveAgentIdentity({ ...ref, threadId: ThreadId.make("thread-b") }, null, "weasel").key,
     );
     expect(deriveAgentIdentity(ref, { relationshipToParent: "fork" }).role).toBe("Fork-Agent");
   });
 
-  it("uses a human name in both styles and keeps the technical reference out of the label", () => {
-    for (const theme of ["neutral", "weasel"] as const) {
+  it("uses deterministic theme names and keeps the technical reference out of the label", () => {
+    for (const { value: theme } of AGENT_IDENTITY_THEME_OPTIONS) {
       const identity = deriveAgentIdentity(ref, { relationshipToParent: null }, theme);
-      expect(identity.name).toMatch(/^[A-Z][a-z]+ [A-Z][a-z]+$/u);
+      expect(identity.name).toMatch(/^[\p{Lu}][\p{Ll}]+ [\p{Lu}][\p{Ll}]+$/u);
+      const endings = AGENT_IDENTITY_THEMES[theme].nameEndings;
+      if (endings) expect(endings).toContain(identity.name.split(" ")[1]);
       expect(identity.label).toBe(identity.name);
       expect(identity.label).not.toContain(identity.discriminator);
       expect(identity.key).toBe(JSON.stringify([ref.environmentId, ref.threadId]));
     }
   });
 
+  it("honors manual names without changing scoped identity or portrait", () => {
+    const original = deriveAgentIdentity(ref);
+    for (const { value: theme } of AGENT_IDENTITY_THEME_OPTIONS) {
+      const named = deriveAgentIdentity(ref, null, theme, "  Custom companion  ");
+      expect(named.name).toBe("Custom companion");
+      expect(named.label).toBe(named.name);
+      expect(named.key).toBe(original.key);
+      expect(named.discriminator).toBe(original.discriminator);
+      expect(named.avatarVariant).toBe(original.avatarVariant);
+      expect(deriveAgentIdentity(ref, null, theme, null)).toEqual(
+        deriveAgentIdentity(ref, null, theme),
+      );
+    }
+  });
+
   it("retains its portrait when a thread becomes a child or fork", () => {
     const identity = deriveAgentIdentity(ref);
     for (const relationshipToParent of [null, "subagent", "fork"] as const) {
-      for (const theme of ["neutral", "weasel"] as const) {
+      for (const { value: theme } of AGENT_IDENTITY_THEME_OPTIONS) {
         const otherView = deriveAgentIdentity(ref, { relationshipToParent }, theme);
-        expect(otherView.avatarVariant).toBe(identity.avatarVariant);
-        expect(otherView.name).toBe(identity.name);
-        expect(otherView.label).toBe(identity.name);
+        expect(otherView).toEqual({
+          ...identity,
+          name: deriveAgentIdentity(ref, null, theme).name,
+          label: deriveAgentIdentity(ref, null, theme).label,
+          role: otherView.role,
+          icon: theme === "neutral" ? "agent" : theme,
+        });
         expect(otherView.avatarVariant).toBeGreaterThanOrEqual(0);
         expect(otherView.avatarVariant).toBeLessThan(4);
       }

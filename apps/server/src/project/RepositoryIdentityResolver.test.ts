@@ -68,6 +68,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
         });
         expect(identity?.origin).toEqual({
           canonicalKey: "github.com/morrowbyte/t3code",
+          remoteUrl: "git@github.com:morrowbyte/t3code.git",
           displayName: "morrowbyte/t3code",
         });
       }).pipe(Effect.provide(layerResolver));
@@ -116,7 +117,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
             identity.canonicalKey.startsWith("ssh.forge.test/")
               ? {
                   ...identity,
-                  provider: "forgejo",
+                  provider: SourceControlProviderKind.make("forgejo"),
                   webUrl: "http://forge.test:3000/git/team/repo",
                 }
               : identity,
@@ -239,8 +240,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
 
       const resolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
       const identity = yield* resolver.resolve(cwd);
-      // Native realpath, since git reports the long form of a directory the
-      // temp dir may name by its 8.3 short form on Windows.
+      // Native realpath matches git's long paths when Windows temp dirs use 8.3 names.
       const resolvedIdentityRoot =
         identity?.rootPath === undefined ? "" : NodeFS.realpathSync.native(identity.rootPath);
       const resolvedCwd = NodeFS.realpathSync.native(cwd);

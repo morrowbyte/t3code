@@ -134,7 +134,7 @@ const make = Effect.gen(function* () {
         AND lease_id = ${target.leaseId} AND generation = ${target.generation} ORDER BY event_id`;
       if (rows.length === 0) return yield* new LiveVoiceHistoryError({ reason: "not_found" });
       const events = yield* Effect.forEach(rows, (row) =>
-        Schema.decodeUnknownEffect(eventJson)(row.event_json).pipe(
+        Schema.decodeEffect(eventJson)(row.event_json).pipe(
           Effect.map((event) => ({ eventId: row.event_id, recordedAt: row.recorded_at, event })),
         ),
       );

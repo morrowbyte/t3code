@@ -66,13 +66,15 @@ export class ApprovalReviewOrderPolicy extends Context.Reference<typeof Policy.T
   "t3/ApprovalReviewOrderPolicy",
   { defaultValue: () => ({ enabled: false, humans: [], channels: [] }) },
 ) {}
+const decodePolicyJson = Schema.decodeEffect(Schema.fromJsonString(Policy));
+
 export const layer = Layer.effect(
   ApprovalReviewOrderPolicy,
   Effect.gen(function* () {
     const json = yield* Config.String("T3CODE_APPROVAL_REVIEW_HOST_POLICY").pipe(
       Config.withDefault('{"enabled":false,"humans":[],"channels":[]}'),
     );
-    return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Policy))(json, {
+    return yield* decodePolicyJson(json, {
       onExcessProperty: "error",
     });
   }),

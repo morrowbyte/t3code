@@ -1,5 +1,4 @@
 // @effect-diagnostics nodeBuiltinImport:off - Tests execute the generated Linux env boundary without starting WSL.
-import * as NodeChildProcess from "node:child_process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { currentDesktopBootstrapToken } from "@t3tools/shared/desktopBootstrapToken";
@@ -20,6 +19,7 @@ import * as DesktopServerExposure from "./DesktopServerExposure.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopWslEnvironment from "../wsl/DesktopWslEnvironment.ts";
 import * as DesktopWslServerTree from "../wsl/DesktopWslServerTree.ts";
+import { runShell } from "../shell/PosixTestShell.ts";
 
 const layerShellEnvironment = (prepared = true) =>
   Layer.succeed(DesktopShellEnvironment.DesktopShellEnvironment, {
@@ -531,15 +531,17 @@ describe("DesktopBackendConfiguration", () => {
             const runtimeEntry = "/home/test user/.t3-morrowbyte/wsl-runtime/cache/t3";
             const commandStart = first.args.indexOf(runtimeEntry);
             assert.isAbove(commandStart, envStart);
-            const inherited = NodeChildProcess.spawnSync(
-              "env",
+            const inherited = runShell(
               [
+                "-c",
+                'exec env "$@"',
+                "wsl-env",
                 ...first.args.slice(envStart, commandStart),
-                process.execPath,
-                "-p",
-                "process.env.T3CODE_HOME ?? 'unset'",
+                "/bin/sh",
+                "-c",
+                'printf "%s\\n" "${T3CODE_HOME-unset}"',
               ],
-              { env: { ...process.env, T3CODE_HOME: "/foreign/upstream/.t3" }, encoding: "utf8" },
+              { env: { ...process.env, T3CODE_HOME: "/foreign/upstream/.t3" } },
             );
             assert.equal(inherited.status, 0, inherited.stderr);
             assert.equal(inherited.stdout.trim(), "unset");
@@ -812,7 +814,7 @@ describe("DesktopBackendConfiguration", () => {
     ),
   );
 
-  it.effect("resolveWsl carries the kill switch into the distro", () =>
+  it.effect("resolveWsl carries the kill switch and resource attributes into the distro", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
@@ -822,10 +824,12 @@ describe("DesktopBackendConfiguration", () => {
       const previousWslEnv = process.env.WSLENV;
       const previousDisabled = process.env.OTEL_SDK_DISABLED;
       const previousTelemetry = process.env.T3CODE_TELEMETRY_ENABLED;
+      const previousResourceAttributes = process.env.OTEL_RESOURCE_ATTRIBUTES;
       try {
         delete process.env.WSLENV;
         process.env.OTEL_SDK_DISABLED = "true";
         process.env.T3CODE_TELEMETRY_ENABLED = "false";
+        process.env.OTEL_RESOURCE_ATTRIBUTES = "deployment.environment.name=staging";
 
         yield* Effect.gen(function* () {
           const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
@@ -835,6 +839,8 @@ describe("DesktopBackendConfiguration", () => {
           assert.include((config.env.WSLENV ?? "").split(":"), "OTEL_SDK_DISABLED");
           assert.equal(config.env.T3CODE_TELEMETRY_ENABLED, "false");
           assert.include((config.env.WSLENV ?? "").split(":"), "T3CODE_TELEMETRY_ENABLED");
+          assert.equal(config.env.OTEL_RESOURCE_ATTRIBUTES, "deployment.environment.name=staging");
+          assert.include((config.env.WSLENV ?? "").split(":"), "OTEL_RESOURCE_ATTRIBUTES");
         }).pipe(
           Effect.provide(
             layerBackendConfiguration().pipe(
@@ -856,6 +862,7 @@ describe("DesktopBackendConfiguration", () => {
         restoreEnv("WSLENV", previousWslEnv);
         restoreEnv("OTEL_SDK_DISABLED", previousDisabled);
         restoreEnv("T3CODE_TELEMETRY_ENABLED", previousTelemetry);
+        restoreEnv("OTEL_RESOURCE_ATTRIBUTES", previousResourceAttributes);
       }
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );

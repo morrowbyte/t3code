@@ -2,6 +2,7 @@ import {
   LiveVoiceError,
   liveVoicePublicErrorMessage,
   type LiveVoiceEvent,
+  type LiveVoiceActivity,
   type LiveVoicePrepareInput,
   type LiveVoiceSession,
   type LiveVoiceStartInput,
@@ -9,6 +10,11 @@ import {
   type LiveVoiceSubscribeInput,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+import * as DateTime from "effect/DateTime";
+import {
+  liveVoiceActivityIsTerminal,
+  retainLiveVoiceActivity,
+} from "@t3tools/shared/liveVoiceActivity";
 import { acquireMicrophoneOwnership } from "./microphoneOwnership.ts";
 
 /** Owns one browser WebRTC session; all authenticated lease/signaling work is injected. */
@@ -89,6 +95,7 @@ export type LiveVoiceState = {
   readonly localMuted: boolean;
   readonly outputMuted: boolean;
   readonly transcript: ReadonlyArray<LiveVoiceTranscript>;
+  readonly activities?: ReadonlyArray<LiveVoiceActivity>;
   readonly sessionStatus: LiveVoiceSession["status"] | null;
   readonly lease: LiveVoiceLease | null;
   readonly error: string | null;
@@ -160,7 +167,12 @@ function eventMatchesLease(event: LiveVoiceEvent, lease: LiveVoiceSession): bool
       event.session.providerInstanceId === lease.providerInstanceId
     );
   }
-  return event.leaseId === lease.leaseId && event.generation === lease.generation;
+  return (
+    event.leaseId === lease.leaseId &&
+    event.generation === lease.generation &&
+    (event.type !== "activity" ||
+      (event.environmentId === lease.environmentId && event.threadId === lease.threadId))
+  );
 }
 
 function sessionMatchesLease(session: LiveVoiceSession, lease: LiveVoiceSession): boolean {
@@ -525,7 +537,13 @@ export class LiveVoiceController {
     } catch (error) {
       if (operation === this.operation) {
         const message = safeErrorMessage(error);
-        this.setState({ ...this.state, phase: "error", error: message });
+        const activities = this.interruptActivities();
+        this.setState({
+          ...this.state,
+          phase: "error",
+          error: message,
+          ...(activities ? { activities } : {}),
+        });
         // Release locally before stop RPC so a slow server cannot retain the mic.
         await this.release(lease, microphoneOwnership);
         if (lease) await this.stopLease(lease);
@@ -586,9 +604,10 @@ export class LiveVoiceController {
   async end(): Promise<void> {
     const lease = this.identity;
     const transcript = this.state.transcript;
+    const activities = this.interruptActivities();
     const microphoneOwnership = this.microphoneOwnership;
     const operation = ++this.operation;
-    this.setState({ ...this.state, phase: "stopping" });
+    this.setState({ ...this.state, phase: "stopping", ...(activities ? { activities } : {}) });
     this.abortController?.abort();
     this.rejectAnswer?.(new Error("Live session ended."));
     this.rejectPrepared?.(new Error("Live session ended."));
@@ -597,7 +616,13 @@ export class LiveVoiceController {
     await this.release(lease, microphoneOwnership);
     if (lease) await this.stopLease(lease);
     if (operation === this.operation)
-      this.setState({ ...IDLE_STATE, phase: "ended", lease, transcript });
+      this.setState({
+        ...IDLE_STATE,
+        phase: "ended",
+        lease,
+        transcript,
+        ...(activities ? { activities } : {}),
+      });
   }
 
   private onSignal(operation: number, event: LiveVoiceSignalEvent): void {
@@ -613,6 +638,11 @@ export class LiveVoiceController {
         this.resolveSubscriptionReady = null;
         this.rejectSubscriptionReady = null;
       }
+    }
+    if (event.type === "activity") {
+      const previous = this.state.activities ?? [];
+      const activities = retainLiveVoiceActivity(previous, event.activity);
+      if (activities !== previous) this.setState({ ...this.state, activities });
     }
     if (event.type === "answer") this.answer?.(event.sdp);
     if (event.type === "error")
@@ -682,7 +712,8 @@ export class LiveVoiceController {
       this.transcriptSegments.delete(this.transcriptSegments.keys().next().value!);
     const transcript = this.state.transcript.filter((item) => item.segmentId !== segment.id);
     const index = this.state.transcript.findIndex((item) => item.segmentId === segment.id);
-    if (entry.text.trim()) transcript.splice(index < 0 ? transcript.length : index, 0, entry);
+    // Empty snapshots retract speech; observers need the revision to remove their earlier receipt.
+    transcript.splice(index < 0 ? transcript.length : index, 0, entry);
     this.setState({ ...this.state, transcript: transcript.slice(-MAX_TRANSCRIPT_ENTRIES) });
   }
 
@@ -798,10 +829,32 @@ export class LiveVoiceController {
     }
   }
 
+  private interruptActivities() {
+    const activities = this.state.activities;
+    if (!activities?.some((activity) => !liveVoiceActivityIsTerminal(activity))) return activities;
+    const updatedAt = DateTime.formatIso(DateTime.nowUnsafe());
+    return activities.map((activity) =>
+      liveVoiceActivityIsTerminal(activity)
+        ? activity
+        : {
+            ...activity,
+            revision: activity.revision + 1,
+            status: "interrupted" as const,
+            updatedAt,
+          },
+    );
+  }
+
   private async failAndStop(operation: number, lease: LiveVoiceLease, error: Error): Promise<void> {
     if (!this.isCurrentLease(operation, lease)) return;
+    const activities = this.interruptActivities();
     ++this.operation;
-    this.setState({ ...this.state, phase: "error", error: error.message });
+    this.setState({
+      ...this.state,
+      phase: "error",
+      error: error.message,
+      ...(activities ? { activities } : {}),
+    });
     this.abortController?.abort();
     this.rejectAnswer?.(error);
     this.rejectPrepared?.(error);

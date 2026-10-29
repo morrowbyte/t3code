@@ -68,6 +68,15 @@ const mapTransportFailure = (error: JarvisClient.JarvisTransportError) =>
 const bindingCodec = Schema.fromJsonString(JarvisNativeBinding);
 const jsonCodec = Schema.fromJsonString(Schema.Json);
 
+const isJsonObject = Schema.is(Schema.JsonObject);
+const decodeJarvisNativeRequest = Schema.decodeUnknownEffect(JarvisNativeRequest);
+const encodeJarvisCapabilityJobRequestJson = Schema.encodeEffect(
+  Schema.toCodecJson(JarvisCapabilityJobRequest),
+);
+const encodeJarvisNativeNotificationJson = Schema.encodeEffect(
+  Schema.toCodecJson(JarvisNativeNotification),
+);
+
 const make = Effect.gen(function* () {
   const client = yield* JarvisClient.JarvisClient;
   const threads = yield* ThreadManagement.ThreadManagementService;
@@ -191,7 +200,7 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       if ("error" in response) {
         const detail = response.error.data;
-        if (Schema.is(Schema.JsonObject)(detail) && detail.code === "outcome_unknown")
+        if (isJsonObject(detail) && detail.code === "outcome_unknown")
           return yield* unknownOutcome();
         return yield* failure("host_error", response.error.message);
       }
@@ -215,7 +224,7 @@ const make = Effect.gen(function* () {
             "The caller's configured plan mode does not submit capability work.",
           );
         const id = yield* crypto.randomUUIDv4().pipe(Effect.mapError(unavailable));
-        const request = yield* Schema.decodeUnknownEffect(JarvisNativeRequest)({
+        const request = yield* decodeJarvisNativeRequest({
           jsonrpc: "2.0",
           id,
           method,
@@ -229,7 +238,7 @@ const make = Effect.gen(function* () {
         yield* recheck(scope, binding);
         const result = yield* resultFrom(response);
         if (
-          Schema.is(Schema.JsonObject)(result) &&
+          isJsonObject(result) &&
           "engineSessionId" in result &&
           result.engineSessionId !== binding.engineSessionId
         )
@@ -245,25 +254,27 @@ const make = Effect.gen(function* () {
             "invalid_request",
             "Invocation belongs to another configured engine.",
           );
-        return yield* Schema.encodeEffect(Schema.toCodecJson(JarvisCapabilityJobRequest))(
-          invocation,
-        ).pipe(Effect.mapError(() => failure("invalid_request", "Invalid canonical invocation.")));
+        return yield* encodeJarvisCapabilityJobRequestJson(invocation).pipe(
+          Effect.mapError(() => failure("invalid_request", "Invalid canonical invocation.")),
+        );
       }),
   );
 
   return JarvisService.of({
-    catalog: (scope) => call(scope, "jarvis.catalog"),
-    observe: (scope, input) =>
+    catalog: Effect.fn("JarvisService.catalog")((scope) => call(scope, "jarvis.catalog")),
+    observe: Effect.fn("JarvisService.observe")((scope, input) =>
       call(scope, "jarvis.observe", {
         query: {
           engineSessionId: client.engineSessionId,
           ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
         },
       }),
-    prepare: (scope, invocation) =>
+    ),
+    prepare: Effect.fn("JarvisService.prepare")((scope, invocation) =>
       invocationFields(invocation).pipe(
         Effect.flatMap((encoded) => call(scope, "jarvis.prepare", { invocation: encoded })),
       ),
+    ),
     submit: Effect.fn("JarvisService.submit")((scope, input) =>
       Effect.gen(function* () {
         const { binding } = yield* bindingFor(scope);
@@ -279,7 +290,9 @@ const make = Effect.gen(function* () {
         );
       }),
     ),
-    status: (scope, input) => call(scope, "jarvis.status", { jobId: input.jobId }),
+    status: Effect.fn("JarvisService.status")((scope, input) =>
+      call(scope, "jarvis.status", { jobId: input.jobId }),
+    ),
     cancel: Effect.fn("JarvisService.cancel")((scope, input) =>
       Effect.gen(function* () {
         const { binding } = yield* bindingFor(scope);
@@ -293,7 +306,7 @@ const make = Effect.gen(function* () {
         );
       }),
     ),
-    events: (scope, input) =>
+    events: Effect.fn("JarvisService.events")((scope, input) =>
       Effect.scoped(
         Effect.gen(function* () {
           const { binding } = yield* bindingFor(scope);
@@ -318,7 +331,7 @@ const make = Effect.gen(function* () {
                 if ("id" in message) {
                   const snapshot = yield* resultFrom(message);
                   if (
-                    !Schema.is(Schema.JsonObject)(snapshot) ||
+                    !isJsonObject(snapshot) ||
                     snapshot.schema !== "jarvis.v1" ||
                     snapshot.engineSessionId !== binding.engineSessionId
                   )
@@ -331,9 +344,9 @@ const make = Effect.gen(function* () {
                   message.params.engineSessionId !== binding.engineSessionId
                 )
                   return yield* unknownOutcome();
-                const event = yield* Schema.encodeEffect(
-                  Schema.toCodecJson(JarvisNativeNotification),
-                )(message).pipe(Effect.mapError(unknownOutcome));
+                const event = yield* encodeJarvisNativeNotificationJson(message).pipe(
+                  Effect.mapError(unknownOutcome),
+                );
                 yield* Ref.update(captured, (messages) => [...messages, event]);
               }),
             ),
@@ -359,6 +372,7 @@ const make = Effect.gen(function* () {
           };
         }),
       ),
+    ),
   });
 });
 

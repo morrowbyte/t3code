@@ -18,7 +18,7 @@ export async function readFleetConnections(environmentId: EnvironmentId) {
     Effect.gen(function* () {
       const prepared = get(environmentSession.preparedConnectionValueAtom(environmentId));
       if (Option.isNone(prepared))
-        return yield* Effect.fail(new FleetUnavailable({ message: "Environment disconnected." }));
+        return yield* new FleetUnavailable({ message: "Environment disconnected." });
       const signer = yield* Effect.serviceOption(ManagedRelay.ManagedRelayDpopSigner);
       const remoteAuthorization = yield* Effect.serviceOption(RemoteEnvironmentAuthorization);
       return yield* requestFleetConnections({
@@ -26,11 +26,11 @@ export async function readFleetConnections(environmentId: EnvironmentId) {
         signer,
         remoteAuthorization,
       }).pipe(
-        Effect.catch((error) =>
-          error._tag === "EnvironmentResourceNotFoundError" ||
-          (error._tag === "RemoteEnvironmentAuthUndeclaredStatusError" && error.status === 404)
-            ? Effect.succeed({ connections: [] })
-            : Effect.fail(error),
+        Effect.catchIf(
+          (error) =>
+            error._tag === "EnvironmentResourceNotFoundError" ||
+            (error._tag === "RemoteEnvironmentAuthUndeclaredStatusError" && error.status === 404),
+          () => Effect.succeed({ connections: [] }),
         ),
       );
     }).pipe(Effect.withTracerEnabled(false)),
@@ -45,7 +45,7 @@ export async function createFleetPairing(environmentId: EnvironmentId, peerId: E
     Effect.gen(function* () {
       const prepared = get(environmentSession.preparedConnectionValueAtom(environmentId));
       if (Option.isNone(prepared))
-        return yield* Effect.fail(new FleetUnavailable({ message: "Environment disconnected." }));
+        return yield* new FleetUnavailable({ message: "Environment disconnected." });
       const signer = yield* Effect.serviceOption(ManagedRelay.ManagedRelayDpopSigner);
       const remoteAuthorization = yield* Effect.serviceOption(RemoteEnvironmentAuthorization);
       return yield* requestFleetPairingCredential({

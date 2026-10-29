@@ -28,12 +28,7 @@ export function AgentObservatoryPage() {
       onOpenThread={openThread}
       renderTool={(row, ref) => (
         <Suspense fallback={<p>Loading selected entry…</p>}>
-          <V2ItemInspector
-            projectedItem={row}
-            environmentId={ref.environmentId}
-            onOpenThread={(threadId) => openThread({ ...ref, threadId })}
-            onOpenTurnDiff={() => openThread(ref)}
-          />
+          <V2ItemInspector projectedItem={row} environmentId={ref.environmentId} />
         </Suspense>
       )}
     />

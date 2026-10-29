@@ -1,5 +1,6 @@
 import {
   AgentAvatarError,
+  AGENT_IDENTITY_THEMES,
   CodexSettings,
   type AgentAvatarGenerateInput,
   type ModelSelection,
@@ -34,6 +35,12 @@ import {
 } from "../provider/Drivers/CodexHomeLayout.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
+
+const isAgentAvatarError = Schema.is(AgentAvatarError);
+const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
+const AvatarNameJson = Schema.fromJsonString(Schema.String);
+const encodeAvatarNameJson = Schema.encodeEffect(AvatarNameJson);
+const decodeCodexSettings = Schema.decodeEffect(CodexSettings);
 
 export class CodexAvatarGenerator extends Context.Service<
   CodexAvatarGenerator,
@@ -105,7 +112,7 @@ export const readCodexAvatarImage = Effect.fn("CodexAvatarGenerator.readImage")(
   },
   Effect.scoped,
   Effect.mapError((cause) =>
-    Schema.is(AgentAvatarError)(cause)
+    isAgentAvatarError(cause)
       ? cause
       : new AgentAvatarError({ message: "The generated Codex image could not be read." }),
   ),
@@ -123,7 +130,7 @@ export const generateCodexAvatar = Effect.fn("CodexAvatarGenerator.generateImage
     >(method: M, params: CodexRpc.ClientRequestParamsByMethod[M]) {
       return yield* client.request(method, params).pipe(
         Effect.catch((cause) => {
-          const rpc = Schema.is(CodexErrors.CodexAppServerRequestError)(cause) ? cause : undefined;
+          const rpc = isCodexAppServerRequestError(cause) ? cause : undefined;
           const reason =
             rpc?.code === -32601
               ? "method_unavailable"
@@ -221,15 +228,13 @@ export const generateCodexAvatar = Effect.fn("CodexAvatarGenerator.generateImage
         ? Deferred.succeed(completed, notification).pipe(Effect.asVoid)
         : Effect.void,
     );
-    const encodedName = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.String))(
-      input.name,
-    );
+    const encodedName = yield* encodeAvatarNameJson(input.name);
     const turn = yield* request("turn/start", {
       threadId: nativeThreadId,
       input: [
         {
           type: "text",
-          text: `Create exactly ONE square agent portrait. Agent name: ${encodedName}. Style: ${input.theme === "weasel" ? "a distinctive expressive weasel character, illustrated portrait" : "a distinctive friendly individual character, polished illustrated portrait"}. Head and shoulders, centered face, simple background, readable at small avatar sizes, no text or lettering. Use image generation once; no variants or retries.`,
+          text: `Create exactly ONE square agent portrait. Agent name: ${encodedName}. Style: ${AGENT_IDENTITY_THEMES[input.theme].avatarPrompt}. Head and shoulders, centered face, simple background, readable at small avatar sizes, no text or lettering. Use image generation once; no variants or retries.`,
           text_elements: [],
         },
       ],
@@ -272,7 +277,7 @@ export const generateCodexAvatar = Effect.fn("CodexAvatarGenerator.generateImage
     return yield* readCodexAvatarImage(item.savedPath);
   },
   Effect.mapError((cause) =>
-    Schema.is(AgentAvatarError)(cause)
+    isAgentAvatarError(cause)
       ? cause
       : new AgentAvatarError({ message: "The Codex image generation request failed." }),
   ),
@@ -311,7 +316,7 @@ const make = Effect.gen(function* () {
             : "No enabled Codex provider instance is available.",
         });
       const envelope = settings.providerInstances[selected.instanceId];
-      const config = yield* Schema.decodeEffect(CodexSettings)(envelope?.config ?? {});
+      const config = yield* decodeCodexSettings(envelope?.config ?? {});
       if (envelope?.enabled === false || !config.enabled)
         return yield* new AgentAvatarError({ message: "The selected Codex instance is disabled." });
       const environment = { ...(yield* mergeProviderInstanceEnvironment(envelope?.environment)) };
@@ -378,11 +383,11 @@ const make = Effect.gen(function* () {
     Effect.tapError((cause) =>
       Effect.logWarning("Codex avatar generation failed", {
         stage: "runtime",
-        tag: Schema.is(AgentAvatarError)(cause) ? "AgentAvatarError" : cause._tag,
+        tag: isAgentAvatarError(cause) ? "AgentAvatarError" : cause._tag,
       }),
     ),
     Effect.mapError((cause) =>
-      Schema.is(AgentAvatarError)(cause)
+      isAgentAvatarError(cause)
         ? cause
         : new AgentAvatarError({
             message: "Codex avatar generation failed or timed out. Generate again to retry.",

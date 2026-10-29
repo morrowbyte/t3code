@@ -219,7 +219,7 @@ export const make = Effect.gen(function* () {
           ]) {
             yield* fs.remove(path.join(folder, name), { force: true });
           }
-          yield* fs.remove(folder).pipe(Effect.catch(() => Effect.void));
+          yield* fs.remove(folder).pipe(Effect.ignore());
         }
         const prefs = yield* readPrefs();
         const current = Object.fromEntries(

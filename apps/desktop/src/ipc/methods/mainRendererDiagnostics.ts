@@ -220,10 +220,11 @@ export const make = Effect.fn("desktop.mainRendererDiagnostics.make")(function* 
         );
       }),
     ),
-    cancelSource: (source) =>
+    cancelSource: Effect.fn("MainRendererDiagnostics.cancelSource")((source) =>
       Effect.sync(() => {
         if (pending?.source === source) stop("source-closed");
       }),
+    ),
     respond: Effect.fn("mainRendererDiagnostics.respond")((response, event) =>
       Effect.gen(function* () {
         const p = pending;

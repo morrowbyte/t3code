@@ -1,267 +1,232 @@
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import {
-  createHashHistory,
-  createRootRoute,
-  createRoute,
-  createRouter,
-  Outlet,
-  RouterProvider,
-} from "@tanstack/react-router";
-import { StrictMode } from "react";
-import { act, render } from "../../../test/render";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { EnvironmentId, ProjectId } from "@t3tools/contracts";
+import type { Atom } from "effect/reactivity";
+import { expect, it, vi } from "vite-plus/test";
 
-const mocks = vi.hoisted(() => ({
-  connected: ["primary", "24efa85c-862c-4de4-9b5e-aaaa041e28a4"],
-  openThread: vi.fn(),
-  openScratchProject: vi.fn(),
-  openPreview: vi.fn(),
-  toast: vi.fn(),
+import { act, render, stubGlobal } from "../../../test/render";
+
+const state = vi.hoisted(() => ({
+  projects: [] as never[],
+  navigate: vi.fn(async (): Promise<void> => undefined),
+  openScratchProject: vi.fn(async () => null),
+  confirm: vi.fn(async (_message: string) => true),
+  connectPairing: vi.fn(async (_input: { pairingUrl: string }) => ({ _tag: "Success" })),
+  localEnvironmentDisabled: false,
 }));
 
+// One connected primary environment that can read pull requests. Its project list and
+// discovery flag start empty so a test can deliver links before they arrive.
+vi.mock(import("@tanstack/react-router"), async (original) => ({
+  ...(await original()),
+  useNavigate: (() => state.navigate) as never,
+  useRouter: (() => ({ navigate: state.navigate, state: { matches: [] } })) as never,
+}));
 vi.mock(import("../../state/environments"), async (original) => ({
   ...(await original()),
-  usePrimaryEnvironment: (() => ({
-    environmentId: "primary",
-    connection: { phase: "connected" },
-    serverConfig: {},
-  })) as never,
-  useConnectedEnvironmentIds: () => mocks.connected.map((id) => EnvironmentId.make(id)),
-  useEnvironmentHttpBaseUrl: () => null,
+  usePrimaryEnvironmentId: () => "local" as EnvironmentId,
+  usePrimaryEnvironment: (() =>
+    state.localEnvironmentDisabled
+      ? null
+      : {
+          environmentId: "local",
+          connection: { phase: "connected" },
+          serverConfig: {},
+        }) as never,
 }));
-vi.mock(import("../../hooks/useScratchProject"), () => ({
-  useScratchProject: () => ({
-    scratchWorkspaceRootFor: () => null,
-    scratchEnvironmentId: () => EnvironmentId.make("primary"),
-    openScratchProject: mocks.openScratchProject,
-    startScratchThread: vi.fn(),
-  }),
+vi.mock(import("../../localEnvironment"), () => ({
+  isLocalEnvironmentDisabled: () => state.localEnvironmentDisabled,
 }));
-vi.mock(import("../../hooks/useHandleNewThread"), () => ({
-  useNewThreadHandler: () => mocks.openThread,
-}));
-vi.mock(import("../../state/use-atom-command"), () => ({
-  useAtomCommand: (() => mocks.openPreview) as never,
-}));
-vi.mock(import("../../state/use-atom-query-runner"), () => ({
-  useAtomQueryRunner: (() => vi.fn()) as never,
-}));
-vi.mock(import("../ui/toast"), async (original) => ({
-  ...(await original()),
-  toastManager: { add: mocks.toast } as never,
-  stackedThreadToast: ((value: unknown) => value) as never,
-}));
-
-import { DesktopWebLinkCoordinator } from "./DesktopWebLinkCoordinator";
-import { useComposerDraftStore } from "../../composerDraftStore";
-
-const environmentId = "24efa85c-862c-4de4-9b5e-aaaa041e28a4";
-const threadId =
-  "thread:delegated-task:command%3Amcp%3A474c7d68-6293-4de4-9859-011aec7f079b%3Adelegate-task%3At3-iui-rich-components-e2e-20261018-bootstrap-v1";
-const encodedLink = `t3code://threads/${environmentId}/${encodeURIComponent(threadId)}`;
-const threadRef = scopeThreadRef(EnvironmentId.make(environmentId), ThreadId.make(threadId));
-let history: ReturnType<typeof createHashHistory>;
-let listener: ((url: string) => void) | undefined;
-let pending: string[];
-const setReady = vi.fn(async (ready: boolean) => {
-  if (ready) for (const url of pending.splice(0)) listener?.(url);
+vi.mock(import("../../state/server"), async (original) => {
+  const { Atom } = await import("effect/reactivity");
+  const capabilities = { pullRequests: true, threadPullRequests: true };
+  return {
+    ...(await original()),
+    environmentServerConfigsAtom: Atom.make(
+      new Map([["local", { environment: { capabilities } }]]),
+    ) as never,
+  };
 });
+vi.mock(import("../../state/shell"), async (original) => {
+  const { Atom } = await import("effect/reactivity");
+  return { ...(await original()), allReachableShellsLiveAtom: Atom.make(false) };
+});
+vi.mock(import("../../state/entities"), async (original) => ({
+  ...(await original()),
+  readProjects: () => state.projects,
+}));
+vi.mock(import("../../hooks/useScratchProject"), async (original) => ({
+  ...(await original()),
+  useScratchProject: (() => ({
+    scratchEnvironmentId: () => "local",
+    openScratchProject: state.openScratchProject,
+  })) as never,
+}));
+
+vi.mock(import("../../confirmDialog"), async (original) => ({
+  ...(await original()),
+  requestConfirmDialog: state.confirm,
+}));
+vi.mock(import("../../connection/onboarding"), async (original) => ({
+  ...(await original()),
+  connectPairing: "connectPairing" as never,
+}));
+vi.mock(import("../../state/use-atom-command"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    useAtomCommand: ((command: unknown, options: never) =>
+      command === "connectPairing"
+        ? state.connectPairing
+        : actual.useAtomCommand(command as never, options)) as never,
+  };
+});
+
+import { AppAtomRegistryProvider, appAtomRegistry } from "../../rpc/atomRegistry";
+import { allReachableShellsLiveAtom } from "../../state/shell";
+import { DesktopWebLinkCoordinator } from "./DesktopWebLinkCoordinator";
+
+const discoverySettled = allReachableShellsLiveAtom as Atom.Writable<boolean>;
+const environmentId = EnvironmentId.make("local");
+const projectId = ProjectId.make("effect");
+const project = {
+  id: projectId,
+  environmentId,
+  repositoryIdentity: {
+    provider: "github",
+    displayName: "Effect-TS/effect",
+    canonicalKey: "github.com/effect-ts/effect",
+    locator: {
+      source: "git-remote",
+      remoteName: "origin",
+      remoteUrl: "https://github.com/Effect-TS/effect.git",
+    },
+  },
+} as never;
+const pullRequestUrl = "https://github.com/Effect-TS/effect/pull/9339";
+const pullRequestView = {
+  to: "/pull-requests",
+  search: {
+    involvement: "all",
+    state: "all",
+    repository: "effect-ts/effect",
+    number: 9339,
+    selectedHost: "github.com",
+    selectedProjectId: projectId,
+    selectedEnvironmentId: environmentId,
+  },
+};
+
+const pairingUrl = "https://vps.example.com/pair#token=ABC123";
+const pairLink = `t3code://pair?pairingUrl=${encodeURIComponent(pairingUrl)}`;
 
 function setup() {
   vi.clearAllMocks();
-  mocks.connected = ["primary", environmentId];
-  useComposerDraftStore.getState().setPrompt(threadRef, "");
-  pending = [];
-  listener = undefined;
-  vi.stubGlobal("desktopBridge", {
-    webLinks: {
-      setReady,
-      onOpen: (next: typeof listener) => {
-        listener = next;
-        return () => {
-          listener = undefined;
-        };
-      },
-    },
-  });
-  window.history.replaceState(null, "", "/#/primary/current");
-  history = createHashHistory();
-  return {
-    [Symbol.dispose]() {
-      history.destroy();
-      vi.unstubAllGlobals();
-      vi.restoreAllMocks();
-    },
-  };
+  state.confirm.mockResolvedValue(true);
+  state.localEnvironmentDisabled = false;
+  state.projects = [];
+  appAtomRegistry.set(discoverySettled, false);
 }
 
-async function openApp() {
-  const rootRoute = createRootRoute({
-    component: () => (
-      <>
-        <DesktopWebLinkCoordinator />
-        <Outlet />
-      </>
-    ),
-  });
-  const threadRoute = createRoute({
-    getParentRoute: () => rootRoute,
-    path: "/$environmentId/$threadId",
-    component: () => <output>{JSON.stringify(threadRoute.useParams())}</output>,
-  });
-  const newRoute = createRoute({ getParentRoute: () => rootRoute, path: "/new" });
-  const router = createRouter({
-    routeTree: rootRoute.addChildren([threadRoute, newRoute]),
-    history,
-  });
-  await router.load();
+/** Mounts the coordinator behind a desktop bridge that hands over `urls` once the renderer is ready. */
+async function mount(...urls: string[]) {
+  let deliver: ((url: string) => void) | undefined;
   await using stack = new AsyncDisposableStack();
-  const screen = stack.use(
+  stack.use(
+    stubGlobal("desktopBridge", {
+      getClientSettings: async () => null,
+      webLinks: {
+        onOpen: (listener: (url: string) => void) => {
+          deliver = listener;
+          return () => undefined;
+        },
+        setReady: async (ready: boolean) => {
+          if (ready) for (const url of urls.splice(0)) deliver?.(url);
+        },
+      },
+    }),
+  );
+  stack.use(
     await render(
-      <StrictMode>
-        <RouterProvider router={router} />
-      </StrictMode>,
-      { router: false }, // This case owns hash history to exercise desktop deep links.
+      <AppAtomRegistryProvider>
+        <DesktopWebLinkCoordinator />
+      </AppAtomRegistryProvider>,
     ),
   );
-  await vi.waitFor(() => expect(setReady).toHaveBeenCalledWith(true));
-  const owned = stack.move();
-  return { router, screen, [Symbol.asyncDispose]: () => owned[Symbol.asyncDispose]() };
+  return stack.move();
 }
 
-function expectNoCreation() {
-  expect(mocks.openThread).not.toHaveBeenCalled();
-  expect(mocks.openScratchProject).not.toHaveBeenCalled();
-  expect(mocks.openPreview).not.toHaveBeenCalled();
-}
+it("holds a launch PR link until project discovery settles, then opens the PR view", async () => {
+  setup();
+  await using _coordinator = await mount(pullRequestUrl);
+  expect(state.navigate).not.toHaveBeenCalled();
+  expect(state.openScratchProject).not.toHaveBeenCalled();
 
-describe("desktop existing thread links", () => {
-  it("opens a queued encoded child in its connected remote environment using desktop hash history", async () => {
-    using _state = setup();
-    pending.push(encodedLink);
-    await using app = await openApp();
-    const {
-      router,
-      screen: { container },
-    } = app;
-    await vi.waitFor(() =>
-      expect(container.textContent).toBe(JSON.stringify({ environmentId, threadId })),
-    );
-    expect(router.state.location.pathname).toBe(
-      `/${environmentId}/${encodeURIComponent(threadId)}`,
-    );
-    expect(window.location.hash).toBe(`#/${environmentId}/${encodeURIComponent(threadId)}`);
-    expect(mocks.toast).not.toHaveBeenCalled();
-    expectNoCreation();
-
-    await act(async () => listener!("t3code://threads/primary/normal-thread"));
-    await vi.waitFor(() =>
-      expect(container.textContent).toBe(
-        JSON.stringify({ environmentId: "primary", threadId: "normal-thread" }),
-      ),
-    );
-    expectNoCreation();
+  state.projects = [project];
+  const navigated = new Promise<void>((resolve) => {
+    state.navigate.mockImplementationOnce(async () => resolve());
   });
-
-  it("leaves the current thread in place when the destination environment is not connected", async () => {
-    using _state = setup();
-    mocks.connected = ["primary"];
-    await using app = await openApp();
-    const {
-      router,
-      screen: { container },
-    } = app;
-    await act(async () => listener!(encodedLink));
-    await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalled());
-    expect(router.state.location.pathname).toBe("/primary/current");
-    expect(mocks.toast.mock.calls[0]?.[0].description).toContain("Connect to");
-    expectNoCreation();
+  await act(async () => {
+    appAtomRegistry.set(discoverySettled, true);
+    await navigated;
   });
+  expect(state.navigate).toHaveBeenCalledExactlyOnceWith(pullRequestView);
+  expect(state.openScratchProject).not.toHaveBeenCalled();
+});
 
-  it.each(['"fix"', "true", "123", '{ "fix": true }', "[1, 2]"])(
-    "preserves the raw linked prompt %s through existing-thread navigation",
-    async (prompt) => {
-      using _state = setup();
-      await using app = await openApp();
-      const {
-        router,
-        screen: { container },
-      } = app;
-      const search = `?prompt=${encodeURIComponent(prompt)}&panel=diff`;
-      await act(async () => listener!(`${encodedLink}${search}`));
-      await vi.waitFor(() =>
-        expect(container.textContent).toBe(JSON.stringify({ environmentId, threadId })),
-      );
-      await vi.waitFor(() =>
-        expect(useComposerDraftStore.getState().getComposerDraft(threadRef)?.prompt).toBe(prompt),
-      );
-      expect(router.state.location.searchStr).toBe("?panel=diff");
-      expect(window.location.hash).toBe(
-        `#/${environmentId}/${encodeURIComponent(threadId)}?panel=diff`,
-      );
-      expectNoCreation();
-    },
+it("adds the backend from a pairing link after the user confirms its host", async () => {
+  setup();
+  await using _coordinator = await mount(pairLink);
+  await vi.waitFor(() =>
+    expect(state.connectPairing).toHaveBeenCalledExactlyOnceWith({ pairingUrl }),
   );
+  expect(state.confirm).toHaveBeenCalledExactlyOnceWith(
+    "Add the backend at https://vps.example.com?",
+  );
+  expect(state.navigate).not.toHaveBeenCalled();
+});
 
-  it("keeps an existing draft until the linked prompt is explicitly accepted", async () => {
-    using _state = setup();
-    useComposerDraftStore.getState().setPrompt(threadRef, "Keep my draft");
-    await using _app = await openApp();
-    await act(async () => listener!(`${encodedLink}?prompt=%22fix%22`));
-    await vi.waitFor(() =>
-      expect(mocks.toast).toHaveBeenCalledWith(
-        expect.objectContaining({ title: "Linked prompt ready" }),
-      ),
-    );
-    expect(useComposerDraftStore.getState().getComposerDraft(threadRef)?.prompt).toBe(
-      "Keep my draft",
-    );
-    expectNoCreation();
-  });
+it("does not spend the pairing token when the user declines", async () => {
+  setup();
+  const otherPairingUrl = "https://other.example.com/pair#token=XYZ789";
+  state.confirm.mockResolvedValueOnce(false);
+  await using _coordinator = await mount(
+    pairLink,
+    `t3code://pair?pairingUrl=${encodeURIComponent(otherPairingUrl)}`,
+  );
+  await vi.waitFor(() => expect(state.connectPairing).toHaveBeenCalled());
+  expect(state.confirm).toHaveBeenCalledTimes(2);
+  expect(state.connectPairing).toHaveBeenCalledExactlyOnceWith({ pairingUrl: otherPairingUrl });
+});
 
-  it.each([
-    "t3code://threads/primary/%invalid",
-    "threads/primary/child",
-    "t3code://threads/primary/child/extra",
-  ])("does not turn an invalid app destination into a browser tab: %s", async (link) => {
-    using _state = setup();
-    await using app = await openApp();
-    const {
-      router,
-      screen: { container },
-    } = app;
-    await act(async () => listener!(link));
-    await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalled());
-    expect(router.state.location.pathname).toBe("/primary/current");
-    expectNoCreation();
-  });
+it("skips a repeat of a pairing link that already paired", async () => {
+  setup();
+  const otherPairingUrl = "https://other.example.com/pair#token=XYZ789";
+  await using _coordinator = await mount(
+    pairLink,
+    pairLink,
+    `t3code://pair?pairingUrl=${encodeURIComponent(otherPairingUrl)}`,
+  );
+  await vi.waitFor(() =>
+    expect(state.connectPairing).toHaveBeenLastCalledWith({ pairingUrl: otherPairingUrl }),
+  );
+  expect(state.confirm).toHaveBeenCalledTimes(2);
+  expect(state.connectPairing.mock.calls).toEqual([
+    [{ pairingUrl }],
+    [{ pairingUrl: otherPairingUrl }],
+  ]);
+});
 
-  it("preserves the existing new-prompt path", async () => {
-    using _state = setup();
-    await using app = await openApp();
-    const {
-      router,
-      screen: { container },
-    } = app;
-    await act(async () => listener!("t3code://new?prompt=hello"));
-    await vi.waitFor(() => expect(router.state.location.href).toBe("/new?prompt=hello"));
-    expectNoCreation();
-  });
+it("pairs with Local environment disabled, where there is no primary environment to wait for", async () => {
+  setup();
+  state.localEnvironmentDisabled = true;
+  await using _coordinator = await mount(pairLink);
+  await vi.waitFor(() =>
+    expect(state.connectPairing).toHaveBeenCalledExactlyOnceWith({ pairingUrl }),
+  );
+});
 
-  it("reports failed navigation and keeps receiving subsequent links", async () => {
-    using _state = setup();
-    await using app = await openApp();
-    const {
-      router,
-      screen: { container },
-    } = app;
-    vi.spyOn(router, "navigate").mockRejectedValueOnce(new Error("Navigation failed"));
-    await act(async () => listener!(encodedLink));
-    await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalled());
-    expect(router.state.location.pathname).toBe("/primary/current");
-    await act(async () => listener!("t3code://threads/primary/normal-thread"));
-    await vi.waitFor(() => expect(router.state.location.pathname).toBe("/primary/normal-thread"));
-    expectNoCreation();
-  });
+it("does not hold a PR link for project discovery that never settles with Local environment disabled", async () => {
+  setup();
+  state.localEnvironmentDisabled = true;
+  await using _coordinator = await mount(pullRequestUrl);
+  await vi.waitFor(() => expect(state.openScratchProject).toHaveBeenCalledOnce());
 });

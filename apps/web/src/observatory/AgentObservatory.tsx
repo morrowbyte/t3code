@@ -36,9 +36,7 @@ export function AgentObservatory({
       <header className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4">
         <div>
           <h1 className="text-lg font-semibold">Agent observatory</h1>
-          <p className="text-sm text-muted-foreground">
-            Live observed activity · Read-only dashboard
-          </p>
+          <p className="text-sm text-muted-foreground">Live activity · Read-only</p>
         </div>
         <div className="flex gap-2">
           {selection && (
@@ -52,20 +50,20 @@ export function AgentObservatory({
         </div>
       </header>
       <section aria-label="Environment coverage" className="border-b px-5 py-3 text-sm">
-        {!view.catalogReady && <p>Environment coverage unknown: catalog not ready.</p>}
+        {!view.catalogReady && <p>Environment coverage unknown · Catalog not ready</p>}
         {view.sources.map((source) => (
           <p key={source.environmentId}>
             {source.label}: {source.status} · {source.visibleThreads} on this page /{" "}
-            {source.totalThreads ?? "unknown"} known authorized live threads
+            {source.totalThreads ?? "unknown"} authorized live threads
             {source.omittedThreads !== null &&
               source.omittedThreads > 0 &&
               ` · ${source.omittedThreads} outside page (${source.filteredThreads} filtered, ${source.offPageThreads} other pages)`}
           </p>
         ))}
-        <p className="text-muted-foreground">
-          {view.nativeAgentCoverage} Agent-authored updates are unavailable until the canonical
-          service is connected.
-        </p>
+        <details className="text-muted-foreground">
+          <summary>Selected thread details · Native roster unavailable</summary>
+          {view.nativeAgentCoverage} Agent editing unavailable.
+        </details>
       </section>
       <div className="min-h-0 flex-1 overflow-auto p-5">
         {selection ? (
@@ -84,8 +82,8 @@ export function AgentObservatory({
             {view.nodes.length === 0 && (
               <p className="text-sm text-muted-foreground">
                 {view.page.totalKnownThreads > 0
-                  ? "No threads match this environment and search. Clear filters to browse all known authorized live threads."
-                  : "No currently authorized live threads available. Offline and unknown coverage is shown above."}
+                  ? "No matching threads. Clear filters to see more."
+                  : "No authorized live threads · See environment coverage above"}
               </p>
             )}
             {mode === "graph" ? (
@@ -254,27 +252,27 @@ function Dashboard({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold">{title}</h2>
-          <p className="text-sm text-muted-foreground">
-            Observed status: {selection.node.nativeStatus}. Silence does not establish pause or
-            completion.
-          </p>
+          <p className="text-sm text-muted-foreground">Observed: {selection.node.nativeStatus}</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => setShowText(!showText)}>
             {showText ? "Hide text" : "Show text"}
           </Button>
           <Button variant="outline" onClick={() => onOpenThread(selection.node.ref)}>
-            Open canonical thread
+            Open thread
           </Button>
         </div>
       </div>
-      <p className="text-sm">
-        Declarative dashboard:{" "}
-        {authored
-          ? `Recorded ${authored.snapshot.provenance} state · revision ${authored.snapshot.revision} · service status: ${authored.serviceStatus}. Worker availability is observed separately`
-          : selection.visual.status}
-        . Editing from an agent is unavailable until the canonical owner invocation is wired.
-      </p>
+      <details className="text-sm text-muted-foreground">
+        <summary>
+          {authored
+            ? `Agent updates · Revision ${authored.snapshot.revision} · ${authored.serviceStatus}`
+            : `Agent updates · ${selection.visual.status}`}
+        </summary>
+        {authored && <p>Source: {authored.snapshot.provenance}</p>}
+        <p>Worker availability is observed separately. Agent editing is unavailable.</p>
+        <p>Silence does not confirm pause or completion.</p>
+      </details>
       <section
         aria-label="Agent overview"
         className="grid gap-3 rounded-lg border bg-card p-4 text-sm sm:grid-cols-2 lg:grid-cols-3"
@@ -308,20 +306,18 @@ function Dashboard({
         <p>
           <strong>Pausepoint:</strong>{" "}
           {state?.requestedCheckpoint
-            ? `${state.requestedCheckpoint.label} · ${authored?.checkpointReached ? "Reached with canonical evidence" : "Requested, not proven reached"}`
-            : "No reached evidence"}
+            ? `${state.requestedCheckpoint.label} · ${authored?.checkpointReached ? "Reached · Confirmed" : "Requested · Unconfirmed"}`
+            : "No confirmed pausepoint"}
         </p>
       </section>
       {detail === null ? (
-        <p role="status">
-          Selected details unavailable or synchronizing. Cached activity is hidden.
-        </p>
+        <p role="status">Details unavailable or syncing · Cached activity hidden</p>
       ) : (
         <>
           <section aria-label="Pending requests" className="rounded-lg border p-4">
             <h3 className="font-medium">Pending requests · observed native events</h3>
             {detail.pendingRequests.length === 0 ? (
-              <p className="text-sm">No pending requests in the loaded projection.</p>
+              <p className="text-sm">No pending requests in loaded data.</p>
             ) : (
               detail.pendingRequests.map((request) => (
                 <p className="text-sm" key={request.id}>
@@ -377,8 +373,8 @@ function Dashboard({
                     {detail.nextSteps[0]?.text ?? "Unknown / not recorded"}
                   </p>
                   <ul>
-                    {detail.steps.map((step, index) => (
-                      <li key={index}>
+                    {detail.steps.map((step) => (
+                      <li key={step.id}>
                         {step.status}: {step.text}
                       </li>
                     ))}
@@ -412,7 +408,7 @@ function Dashboard({
                   ))}
                 </ul>
               ) : (
-                <p className="text-sm">Shown in the observed plan when available.</p>
+                <p className="text-sm">No separate todo list</p>
               )}
             </details>
             <section className="rounded-lg border p-4" aria-label="Checkpoint">
@@ -424,25 +420,21 @@ function Dashboard({
                   </p>
                   <p>
                     {authored?.checkpointReached
-                      ? "Reached · canonical event evidence"
-                      : "Requested · not proven reached"}
+                      ? "Reached · Confirmed"
+                      : "Requested · Unconfirmed"}
                   </p>
-                  <p className="text-sm">
-                    This does not grant approval or prove the runtime paused.
-                  </p>
+                  <details className="text-sm">
+                    <summary>Pausepoint details</summary>
+                    A reached pausepoint does not grant approval or confirm the runtime is paused.
+                  </details>
                 </>
               ) : (
-                <p className="text-sm">
-                  No canonical agent-authored checkpoint available. No pause inferred.
-                </p>
+                <p className="text-sm">No pausepoint recorded · Pause unconfirmed</p>
               )}
             </section>
             <details open={state ? !collapsed("tools") : false} className="rounded-lg border p-4">
-              <summary className="font-medium">Commands and tools · observed native</summary>
-              <p className="text-sm">
-                {detail.omittedTools} older loaded entries omitted. Open one entry to inspect its
-                authorized arguments and result.
-              </p>
+              <summary className="font-medium">Commands and tools · Observed</summary>
+              <p className="text-sm">{detail.omittedTools} older loaded entries omitted.</p>
               <ul>
                 {detail.tools.map((row) => (
                   <li key={row.sourceItemId}>
@@ -457,9 +449,7 @@ function Dashboard({
                     </Button>
                     {(row.item.type === "dynamic_tool" || row.item.type === "command_execution") &&
                       row.item.outputOmitted && (
-                        <span className="text-xs">
-                          Output omitted; explicit inspection may read this entry.
-                        </span>
+                        <span className="text-xs">Output omitted · Open to inspect</span>
                       )}
                   </li>
                 ))}
@@ -467,7 +457,7 @@ function Dashboard({
               {chosenTool && renderTool(chosenTool, selection.node.ref)}
             </details>
             <section className="rounded-lg border p-4">
-              <h3 className="font-medium">Compaction boundaries · observed native</h3>
+              <h3 className="font-medium">Compactions · Observed</h3>
               <p className="text-sm">
                 {detail.compactions.length} loaded · {detail.omittedCompactions} omitted from view.
                 Earlier history may be incomplete.
@@ -488,18 +478,17 @@ function Dashboard({
               {detail.subagents.map((agent) => (
                 <p key={agent.id} className="text-sm">
                   {agent.status} ·{" "}
-                  {agent.childThreadId === null ? "No navigable child thread" : agent.childThreadId}
+                  {agent.childThreadId === null ? "Child thread unavailable" : agent.childThreadId}
                 </p>
               ))}
               <p className="text-sm">
-                {detail.subagents.length} recorded here. Environment-wide native roster unavailable;
-                this is not a complete fleet.
+                {detail.subagents.length} recorded in this thread · Environment roster unavailable
               </p>
             </section>
           </div>
           {showText && (
             <section aria-label="Conversation text" className="rounded-lg border p-4">
-              <h3 className="font-medium">Conversation · loaded current run only</h3>
+              <h3 className="font-medium">Conversation · Loaded current turn</h3>
               <p className="text-sm">
                 {detail.omittedChat} older loaded messages omitted. Text is limited to 8,000
                 characters per item.
@@ -517,8 +506,8 @@ function Dashboard({
           <p className="text-sm text-muted-foreground">
             History:{" "}
             {detail.history.hasMoreHistory
-              ? "Earlier entries not loaded; open canonical thread to expand history."
-              : "Loaded snapshot boundary; no claim about unrecorded activity."}
+              ? "Earlier entries not loaded · Open thread for history"
+              : "Loaded snapshot only · Unrecorded activity unknown"}
           </p>
         </>
       )}

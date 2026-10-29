@@ -156,7 +156,7 @@ function sampleInterval(
   return LIVE_SAMPLE_INTERVAL;
 }
 
-/** @public Service construction is part of the canonical Effect module API. */
+/** @public */
 export const make = Effect.fn("desktop.telemetryPublisher.make")(function* () {
   const diagnosticService = yield* Effect.serviceOption(
     MainRendererDiagnostics.MainRendererDiagnostics,

@@ -397,6 +397,8 @@ it.effect(
   },
 );
 
+const decodeApprovalReviewSubmit = Schema.decodeEffect(ApprovalReviewSubmit);
+
 it.effect(
   "denies fake human, foreign/missing channel, copied order IDs and forged original fields",
   () => {
@@ -467,7 +469,7 @@ it.effect(
       };
       assert.isTrue(
         Exit.isFailure(
-          yield* Schema.decodeUnknownEffect(ApprovalReviewSubmit)(raw, {
+          yield* decodeApprovalReviewSubmit(raw, {
             onExcessProperty: "error",
           }).pipe(Effect.exit),
         ),

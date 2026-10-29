@@ -3,7 +3,6 @@ import { expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Fleet from "./fleet.ts";
 import * as ServerSecretStore from "./ServerSecretStore.ts";
 
@@ -26,13 +25,11 @@ const scopes = new Set<AuthEnvironmentScope>([
 const layer = (entries: unknown[]) =>
   Layer.succeed(ServerSecretStore.ServerSecretStore, {
     get: (key) =>
-      Effect.succeed(
-        Option.some(
-          new TextEncoder().encode(
-            key === Fleet.FLEET_CONNECTIONS_SECRET
-              ? JSON.stringify({ schemaVersion: 1, connections: entries })
-              : "synthetic-private-authority",
-          ),
+      Effect.succeedSome(
+        new TextEncoder().encode(
+          key === Fleet.FLEET_CONNECTIONS_SECRET
+            ? JSON.stringify({ schemaVersion: 1, connections: entries })
+            : "synthetic-private-authority",
         ),
       ),
     set: () => Effect.void,

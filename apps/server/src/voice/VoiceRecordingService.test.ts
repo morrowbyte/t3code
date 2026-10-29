@@ -7,6 +7,7 @@ import {
   type EnvironmentSessionPrincipalShape,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
@@ -68,58 +69,102 @@ const fixture = <A, E, R>(
     Effect.scoped,
   );
 
-it.effect("defaults off; opt-in, lease, environment and file ownership remain session bound", () =>
-  fixture((service) =>
-    Effect.gen(function* () {
-      assert.isFalse((yield* service.settings(session)).enabled);
-      assert.equal((yield* service.start(session, input).pipe(Effect.result))._tag, "Failure");
-      yield* service.updateSettings(session, true);
-      assert.isFalse((yield* service.settings(other)).enabled);
-      assert.equal(
-        (yield* service
-          .start(session, { ...input, environmentId: EnvironmentId.make("wrong-env") })
-          .pipe(Effect.result))._tag,
-        "Failure",
-      );
-      const entry = yield* service.start(session, input);
-      yield* service.append(session, chunk(entry.id));
-      yield* service.append(session, chunk(entry.id, "assistant"));
-      assert.equal(
-        (yield* service.append(other, chunk(entry.id)).pipe(Effect.result))._tag,
-        "Failure",
-      );
-      assert.equal(
-        (yield* service.file(other, entry.id, "user").pipe(Effect.result))._tag,
-        "Failure",
-      );
-      assert.deepEqual(yield* service.list(other), []);
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const root = (yield* service.settings(session)).directory;
-      for (const filename of [root, path.join(root, entry.id)])
-        assert.equal((yield* fs.stat(filename)).mode & 0o777, 0o700);
-      for (const filename of ["user.ogg", "assistant.ogg", "manifest.json", "timeline.ndjson"])
-        assert.equal((yield* fs.stat(path.join(root, entry.id, filename))).mode & 0o777, 0o600);
-      assert.equal(
-        yield* fs.readFileString(path.join(root, entry.id, "user.ogg")),
-        "synthetic-opus-fixture",
-      );
-      const sql = yield* SqlClient.SqlClient;
-      yield* sql`UPDATE codex_live_voice_leases SET status = 'closed'`;
-      yield* service.append(session, chunk(entry.id, "user", 1));
-      yield* TestClock.adjust(30_001);
-      assert.equal(
-        (yield* service.append(session, chunk(entry.id, "user", 2)).pipe(Effect.result))._tag,
-        "Failure",
-      );
-      yield* service.finish(session, entry.id);
-      assert.isNotNull((yield* service.list(session))[0]?.endedAt);
-      assert.equal(
-        (yield* service.append(session, chunk(entry.id, "user", 1)).pipe(Effect.result))._tag,
-        "Failure",
-      );
-    }),
-  ),
+it.effect(
+  "defaults off; opt-in, lease, environment and file ownership remain session bound",
+  () => {
+    const permissions = new Map<string, number | undefined>();
+    return fixture(
+      (service) =>
+        Effect.gen(function* () {
+          assert.isFalse((yield* service.settings(session)).enabled);
+          assert.equal((yield* service.start(session, input).pipe(Effect.result))._tag, "Failure");
+          yield* service.updateSettings(session, true);
+          assert.isFalse((yield* service.settings(other)).enabled);
+          assert.equal(
+            (yield* service
+              .start(session, { ...input, environmentId: EnvironmentId.make("wrong-env") })
+              .pipe(Effect.result))._tag,
+            "Failure",
+          );
+          const entry = yield* service.start(session, input);
+          yield* service.append(session, chunk(entry.id));
+          yield* service.append(session, chunk(entry.id, "assistant"));
+          assert.equal(
+            (yield* service.append(other, chunk(entry.id)).pipe(Effect.result))._tag,
+            "Failure",
+          );
+          assert.equal(
+            (yield* service.file(other, entry.id, "user").pipe(Effect.result))._tag,
+            "Failure",
+          );
+          assert.deepEqual(yield* service.list(other), []);
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const root = (yield* service.settings(session)).directory;
+          const posixModes = (yield* HostProcess.Platform) !== "win32";
+          for (const filename of [root, path.join(root, entry.id)]) {
+            assert.equal(permissions.get(filename), 0o700);
+            if (posixModes) assert.equal((yield* fs.stat(filename)).mode & 0o777, 0o700);
+          }
+          for (const filename of [
+            "user.ogg",
+            "assistant.ogg",
+            "manifest.json",
+            "timeline.ndjson",
+          ]) {
+            const file = path.join(root, entry.id, filename);
+            assert.equal(permissions.get(file), 0o600);
+            if (posixModes) assert.equal((yield* fs.stat(file)).mode & 0o777, 0o600);
+          }
+          assert.equal(
+            yield* fs.readFileString(path.join(root, entry.id, "user.ogg")),
+            "synthetic-opus-fixture",
+          );
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`UPDATE codex_live_voice_leases SET status = 'closed'`;
+          yield* service.append(session, chunk(entry.id, "user", 1));
+          yield* TestClock.adjust(30_001);
+          assert.equal(
+            (yield* service.append(session, chunk(entry.id, "user", 2)).pipe(Effect.result))._tag,
+            "Failure",
+          );
+          yield* service.finish(session, entry.id);
+          assert.isNotNull((yield* service.list(session))[0]?.endedAt);
+          assert.equal(
+            (yield* service.append(session, chunk(entry.id, "user", 1)).pipe(Effect.result))._tag,
+            "Failure",
+          );
+        }),
+      (fs) =>
+        FileSystem.make({
+          ...fs,
+          makeDirectory: (path, options) =>
+            fs.makeDirectory(path, options).pipe(
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  permissions.set(path, options?.mode);
+                }),
+              ),
+            ),
+          writeFile: (path, bytes, options) =>
+            fs.writeFile(path, bytes, options).pipe(
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  permissions.set(path, options?.mode);
+                }),
+              ),
+            ),
+          rename: (from, to) =>
+            fs.rename(from, to).pipe(
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  permissions.set(to, permissions.get(from));
+                }),
+              ),
+            ),
+        }),
+    );
+  },
 );
 
 it.effect("opt-out rejects further bytes and sequence/size limits reject before writing", () =>
@@ -262,7 +307,9 @@ it.effect("startup and the idle hourly worker clean expired files without anothe
             .remove(filename, options)
             .pipe(
               Effect.tap(() =>
-                filename.endsWith("/user.ogg") ? Deferred.succeed(removed, undefined) : Effect.void,
+                /[\\/]user\.ogg$/.test(filename)
+                  ? Deferred.succeed(removed, undefined)
+                  : Effect.void,
               ),
             ),
       }),

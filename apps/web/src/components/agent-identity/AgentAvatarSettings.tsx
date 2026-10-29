@@ -8,9 +8,9 @@ import { AgentIdentityLabel } from "./AgentIdentityLabel";
 import { useAgentIdentityTheme } from "./useAgentIdentityTheme";
 
 export function AgentAvatarSettings({ threadRef }: { threadRef: ScopedThreadRef }) {
-  const [theme] = useAgentIdentityTheme();
+  const [theme, manualName] = useAgentIdentityTheme(threadRef);
   const thread = useQuietThreadShell(threadRef);
-  const identity = deriveAgentIdentity(threadRef, thread?.lineage, theme);
+  const identity = deriveAgentIdentity(threadRef, thread?.lineage, theme, manualName);
   const avatar = useAgentAvatar(threadRef, theme);
   const actions = useAgentAvatarActions(threadRef, theme);
   const generating = avatar.data?.status === "generating";

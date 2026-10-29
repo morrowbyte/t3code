@@ -1,6 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
+  ProviderInstanceId,
+  ThreadId,
+  type LiveVoiceEvent,
+  type LiveVoiceSession,
   type PreviewEvent,
   type TerminalAttachInput,
   type TerminalAttachStreamEvent,
@@ -33,6 +37,7 @@ import * as EnvironmentRegistry from "../connection/registry.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import { EnvironmentRpcUnavailableError } from "../rpc/client.ts";
 import type * as RpcSession from "../rpc/session.ts";
+import { createLiveVoiceEnvironmentAtoms } from "./liveVoice.ts";
 import { createPreviewEnvironmentAtoms } from "./preview.ts";
 import type { QueryPersistence } from "./queryPersistence.ts";
 import { createTerminalEnvironmentAtoms } from "./terminal.ts";
@@ -42,8 +47,10 @@ import {
   selectEnvironmentQueryData,
   createEnvironmentSubscriptionAtomFamily,
   createRuntimeCommand,
+  environmentSessionGenerationAtom,
   scheduleAtomCommandEffect,
   executeAtomQuery,
+  type QueryAnswerHandler,
 } from "./runtime.ts";
 
 const QUERY_ENVIRONMENT = new PrimaryConnectionTarget({
@@ -92,8 +99,10 @@ const makeEnvironmentQueryHarness = Effect.fn("TestEnvironmentQuery.makeHarness"
     initialState,
     rpcSession,
     isFinal,
+    onAnswer,
   }: {
     readonly refreshTrigger?: Atom.Atom<unknown>;
+    readonly onAnswer?: QueryAnswerHandler<undefined, A>;
     readonly isFinal?: (value: A) => boolean;
     readonly idleTtlMs?: number;
     readonly persistence?: QueryPersistence<A>;
@@ -142,6 +151,7 @@ const makeEnvironmentQueryHarness = Effect.fn("TestEnvironmentQuery.makeHarness"
     ...(refreshTrigger === undefined ? {} : { refreshTrigger: () => refreshTrigger }),
     ...(idleTtlMs === undefined ? {} : { idleTtlMs }),
     ...(isFinal === undefined ? {} : { isFinal }),
+    ...(onAnswer === undefined ? {} : { onAnswer }),
   });
 
   return {
@@ -250,6 +260,101 @@ describe("preview event subscriptions", () => {
         yield* Deferred.succeed(releaseEvents, undefined);
         yield* Deferred.await(sawLast);
         expect(observed).toEqual([...opened, ...closed]);
+      }),
+    ),
+  );
+});
+
+describe("live voice event subscriptions", () => {
+  it.effect("delivers the status barrier and every activity replay in one reconnect chunk", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const session: LiveVoiceSession = {
+          leaseId: "voice-lease",
+          generation: 1,
+          environmentId: QUERY_ENVIRONMENT.environmentId,
+          threadId: ThreadId.make("voice-thread"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          providerSessionId: null,
+          plannerNativeThreadId: "voice-planner",
+          status: "active",
+        };
+        const initial: LiveVoiceEvent = {
+          type: "status",
+          session: { ...session, status: "prepared" },
+        };
+        const replay: LiveVoiceEvent[] = [
+          { type: "status", session },
+          ...(["completed", "failed", "interrupted"] as const).map((status, index) => ({
+            type: "activity" as const,
+            leaseId: session.leaseId,
+            generation: session.generation,
+            environmentId: session.environmentId,
+            threadId: session.threadId,
+            activity: {
+              id: "voice-tool-" + index,
+              revision: 3,
+              action: "read-work" as const,
+              status,
+              occurredAt: "2026-10-28T10:00:00.000Z",
+              updatedAt: "2026-10-28T10:01:00.000Z",
+            },
+          })),
+        ];
+        const started = yield* Queue.unbounded<void>();
+        const batches = yield* Queue.unbounded<ReadonlyArray<LiveVoiceEvent>>();
+        // One iterable models the RPC chunk containing the entire reconnect replay.
+        const stream = Stream.fromEffect(Queue.offer(started, undefined)).pipe(
+          Stream.drain,
+          Stream.concat(
+            Stream.fromEffect(Queue.take(batches)).pipe(
+              Stream.flatMap((batch) => Stream.fromIterable(batch)),
+            ),
+          ),
+          Stream.concat(Stream.never),
+        );
+        const harness = yield* makeEnvironmentQueryHarness(Effect.void, {
+          rpcSession: {
+            client: { [WS_METHODS.liveVoiceSubscribe]: () => stream },
+          } as unknown as RpcSession.RpcSession,
+        });
+        const atom = createLiveVoiceEnvironmentAtoms(harness.runtime).events({
+          environmentId: QUERY_ENVIRONMENT.environmentId,
+          input: {
+            leaseId: session.leaseId,
+            generation: session.generation,
+            includeActivities: true,
+          },
+        });
+        const registry = AtomRegistry.make();
+        const observed: LiveVoiceEvent[] = [];
+        const sawInitial = yield* Deferred.make<void>();
+        const sawLast = yield* Deferred.make<void>();
+        const unsubscribe = registry.subscribe(
+          atom,
+          (result) => {
+            if (!AsyncResult.isSuccess(result)) return;
+            observed.push(result.value);
+            if (result.value === initial) Deferred.doneUnsafe(sawInitial, Exit.void);
+            if (result.value === replay.at(-1)) Deferred.doneUnsafe(sawLast, Exit.void);
+          },
+          { immediate: true },
+        );
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            unsubscribe();
+            registry.dispose();
+          }),
+        );
+        yield* Queue.take(started);
+        yield* Queue.offer(batches, [initial]);
+        yield* Deferred.await(sawInitial);
+        expect(observed).toEqual([initial]);
+        yield* SubscriptionRef.update(harness.streamGeneration, (generation) => generation + 1);
+        yield* Queue.take(started);
+        yield* Queue.offer(batches, replay);
+        yield* Deferred.await(sawLast);
+        expect(observed).toEqual([initial, ...replay]);
       }),
     ),
   );
@@ -472,7 +577,7 @@ describe("environment query lifecycle", () => {
   );
 
   it.effect(
-    "retries an interrupted query without exposing a failure during session replacement",
+    "hides a session replacement, reports the relay backoff, and recovers on reconnect",
     () =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -530,25 +635,33 @@ describe("environment query lifecycle", () => {
             queryConnectionState({ phase: "connecting", stage: "preparing" }),
           );
           yield* Effect.yieldNow;
+          const relayFailure = new ConnectionTransientError({
+            reason: "transport",
+            detail: "Relay session is reconnecting.",
+          });
           yield* SubscriptionRef.set(
             harness.supervisorState,
             queryConnectionState({
               phase: "backoff",
               stage: null,
-              lastFailure: new ConnectionTransientError({
-                reason: "transport",
-                detail: "Relay session is reconnecting.",
-              }),
+              lastFailure: relayFailure,
               retryAt: 1,
             }),
           );
           yield* Effect.yieldNow;
+          // The query has never answered, so it reports why the environment is retrying.
+          const backingOff = registry.get(harness.atom);
+          expect(backingOff.waiting).toBe(false);
+          expect(AsyncResult.isFailure(backingOff) && Cause.squash(backingOff.cause)).toBe(
+            relayFailure,
+          );
 
           yield* SubscriptionRef.set(harness.supervisorSession, Option.some(QUERY_RPC_SESSION));
           yield* SubscriptionRef.set(
             harness.supervisorState,
             queryConnectionState({ generation: 2 }),
           );
+          yield* Effect.yieldNow;
           expect(
             yield* AtomRegistry.getResult(registry, harness.atom, {
               suspendOnWaiting: true,
@@ -699,6 +812,87 @@ describe("environment query lifecycle", () => {
         if (AsyncResult.isFailure(result) && expectedFailure !== null) {
           expect(Cause.squash(result.cause)).toBe(expectedFailure);
         }
+      }),
+    ),
+  );
+
+  it.effect.each([
+    { phase: "backoff", stage: null, retryAt: 1 },
+    { phase: "connecting", stage: "opening", retryAt: null },
+  ] as const)(
+    "settles a query it never answered while its environment retries ($phase)",
+    (retrying) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeEnvironmentQueryHarness(Effect.succeed("connected"), {
+            initialState: queryConnectionState({ ...retrying, lastFailure: OFFLINE_QUERY_FAILURE }),
+          });
+          const registry = yield* mountEnvironmentQuery(harness.atom);
+          yield* Effect.yieldNow;
+
+          const result = registry.get(harness.atom);
+          expect(result.waiting).toBe(false);
+          expect(AsyncResult.isFailure(result) && Cause.squash(result.cause)).toBe(
+            OFFLINE_QUERY_FAILURE,
+          );
+
+          yield* SubscriptionRef.set(harness.supervisorState, queryConnectionState());
+          yield* Effect.yieldNow;
+          expect(yield* readEnvironmentQuery(registry, harness.atom)).toBe("connected");
+        }),
+      ),
+  );
+
+  it.effect("a refresh started on a new session generation answers from that session", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeEnvironmentQueryHarness(Effect.succeed("connected"), {
+          initialState: queryConnectionState({
+            phase: "backoff",
+            stage: null,
+            lastFailure: OFFLINE_QUERY_FAILURE,
+            retryAt: 1,
+          }),
+        });
+        const registry = yield* mountEnvironmentQuery(harness.atom);
+        // Callers hold the failure a read got while the environment was retrying.
+        const failed = yield* Effect.promise(() =>
+          executeAtomQuery(registry, harness.atom, { reportFailure: false }),
+        );
+        expect(AsyncResult.isFailure(failed)).toBe(true);
+
+        const answered = yield* Deferred.make<AsyncResult.AsyncResult<string, unknown>>();
+        const sessionGeneration = environmentSessionGenerationAtom(
+          harness.runtime,
+          QUERY_ENVIRONMENT.environmentId,
+        );
+        const unmount = registry.mount(sessionGeneration);
+        const unsubscribe = registry.subscribe(sessionGeneration, () => {
+          void executeAtomQuery(registry, harness.atom, {
+            refresh: true,
+            reportFailure: false,
+          }).then((result) => Deferred.doneUnsafe(answered, Effect.succeed(result)));
+        });
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            unsubscribe();
+            unmount();
+          }),
+        );
+        yield* Effect.yieldNow;
+
+        yield* SubscriptionRef.set(
+          harness.supervisorSession,
+          Option.some({} as RpcSession.RpcSession),
+        );
+        yield* SubscriptionRef.set(
+          harness.supervisorState,
+          queryConnectionState({ generation: 2 }),
+        );
+        expect(yield* Deferred.await(answered)).toMatchObject({
+          _tag: "Success",
+          value: "connected",
+        });
       }),
     ),
   );
@@ -1152,6 +1346,55 @@ describe("persisted environment queries", () => {
       ),
   );
 
+  it.effect("hands each server answer to onAnswer before readers see it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const answers: Array<readonly [string, string | null]> = [];
+        let served = 0;
+        const recorded = Atom.make<string | null>(null).pipe(Atom.keepAlive);
+        const harness = yield* makeEnvironmentQueryHarness(
+          Effect.sync(() => `answer-${++served}`),
+          {
+            onAnswer: (_target, value, registry) =>
+              Effect.sync(() => {
+                answers.push([value, registry.get(recorded)]);
+                registry.set(recorded, value);
+              }),
+          },
+        );
+        const registry = yield* mountEnvironmentQuery(harness.atom);
+        expect(yield* readEnvironmentQuery(registry, harness.atom)).toBe("answer-1");
+        expect(registry.get(recorded)).toBe("answer-1");
+        registry.refresh(harness.atom);
+        expect(yield* readEnvironmentQuery(registry, harness.atom)).toBe("answer-2");
+        expect(answers).toEqual([
+          ["answer-1", null],
+          ["answer-2", "answer-1"],
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("does not hand a value restored from persistence to onAnswer", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const answers: Array<string> = [];
+        const harness = yield* makeEnvironmentQueryHarness(Effect.succeed("server"), {
+          persistence: { load: () => Effect.succeedSome("cached"), save: () => Effect.void },
+          initialState: queryConnectionState({ phase: "offline", network: "offline" }),
+          onAnswer: (_target, value) => Effect.sync(() => answers.push(value)),
+        });
+        const registry = yield* mountEnvironmentQuery(harness.atom);
+        expect(yield* readEnvironmentQuery(registry, harness.atom)).toBe("cached");
+        expect(answers).toEqual([]);
+        yield* SubscriptionRef.set(harness.supervisorState, queryConnectionState());
+        yield* Effect.yieldNow;
+        expect(yield* readEnvironmentQuery(registry, harness.atom)).toBe("server");
+        expect(answers).toEqual(["server"]);
+      }),
+    ),
+  );
+
   it.effect("keeps cached content available when revalidation fails", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -1163,7 +1406,7 @@ describe("persisted environment queries", () => {
         );
         const registry = yield* mountEnvironmentQuery(harness.atom);
         yield* Effect.result(readEnvironmentQuery(registry, harness.atom));
-        expect(Option.getOrNull(AsyncResult.value(registry.get(harness.atom)))).toBe("cached");
+        expect(AsyncResult.getOrElse(registry.get(harness.atom), () => null)).toBe("cached");
       }),
     ),
   );

@@ -165,12 +165,7 @@ export interface EventSinkV2Shape {
     },
     EventSinkV2Error
   >;
-  /**
-   * Atomically commit only when the provider thread is still owned by the
-   * expected run attempt and ordinal. Used for late post-terminal
-   * provider_thread updates so a completed or superseded attempt cannot clobber
-   * a newer attempt that already claimed the thread.
-   */
+  /** Commits only if the expected attempt and ordinal still own the provider thread, protecting newer attempts. */
   readonly writeIfProviderThreadOwner: (input: {
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
@@ -186,12 +181,7 @@ export interface EventSinkV2Shape {
     },
     EventSinkV2Error
   >;
-  /**
-   * Atomically commit only while the stored provider thread still equals
-   * `expected`, the row its writer read, so a read-modify-write of the row
-   * cannot overwrite an update published in between. The whole row is
-   * compared because not every writer moves `updatedAt`.
-   */
+  /** Commits only if the full provider row equals expected; some writers do not advance updatedAt. */
   readonly writeIfProviderThreadUnchanged: (input: {
     readonly expected: OrchestrationV2ProviderThread;
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
@@ -219,6 +209,8 @@ export interface EventSinkV2Shape {
         >;
         readonly reason: string;
       };
+      /** Like writeWithEffects' updateDelegatedCompletionOnly, for this run's run.updated only. */
+      readonly updateDelegatedCompletionOnlyRunId?: RunId;
     },
     options?: DispatchRuntimeOptions,
   ) => Effect.Effect<
@@ -272,6 +264,9 @@ export interface EventSinkV2Shape {
 export class EventSinkV2 extends Context.Service<EventSinkV2, EventSinkV2Shape>()(
   "t3/orchestration-v2/EventSink/EventSinkV2",
 ) {}
+
+const decodeAgentObservatorySnapshot = Schema.decodeEffect(AgentObservatorySnapshot);
+const isAgentObservatoryRefusal = Schema.is(AgentObservatoryRefusal);
 
 const layerBase: Layer.Layer<
   EventSinkV2,
@@ -327,10 +322,7 @@ const layerBase: Layer.Layer<
           Effect.andThen(publishLiveEvents(events)),
         );
 
-    // Transactions commit one at a time, but each writer publishes after its
-    // commit. If a writer is descheduled in between, a later commit reaches
-    // subscribers first, and clients drop any event at or below the newest
-    // sequence they have applied.
+    // Serialize commit and publish; reordered publication makes clients drop earlier sequences.
     const publishLane = yield* Semaphore.make(1);
     const commitThenPublish = <A, E, R>(
       transaction: Effect.Effect<A, E, R>,
@@ -338,7 +330,7 @@ const layerBase: Layer.Layer<
       validate?: (committed: A) => Effect.Effect<void, EventSinkV2Error>,
       sourceCommitSemaphore?: Semaphore.Semaphore,
     ) =>
-      Effect.suspend(() => {
+      Effect.uninterruptibleMask((restore) => {
         let holdsLane = false;
         let holdsSourcePermit = false;
         const takeLane = publishLane.take(1).pipe(
@@ -349,9 +341,12 @@ const layerBase: Layer.Layer<
           ),
           Effect.uninterruptible,
         );
+        // Cancellation may roll back the transaction's work. Once it commits,
+        // every subscriber must hear about it before this writer can exit.
+        // Otherwise a failed child run can leave its parent's task running.
         return sql
           .withTransaction(
-            Effect.tap(transaction, (result) =>
+            Effect.tap(restore(transaction), (result) =>
               takeLane.pipe(
                 Effect.andThen(
                   sourceCommitSemaphore === undefined
@@ -510,6 +505,28 @@ const layerBase: Layer.Layer<
         return yield* runOutcomes.prepare(storedEvents);
       });
 
+    // The enclosing write or commit span already traces this per-event projection merge.
+    const updateDelegatedCompletionOnly = Effect.fnUntraced(function* (
+      events: ReadonlyArray<OrchestrationV2DomainEvent>,
+      includesRun: (runId: RunId) => boolean,
+    ) {
+      return yield* Effect.forEach(events, (event) =>
+        Effect.gen(function* () {
+          if (event.type !== "run.updated" || !includesRun(event.payload.id)) return event;
+          const { runs } = yield* projectionStore.getThreadRecords(event.threadId, ["runs"], {
+            runIds: [event.payload.id],
+          });
+          const current = runs[0];
+          return current === undefined
+            ? event
+            : {
+                ...event,
+                payload: { ...current, delegatedCompletion: event.payload.delegatedCompletion },
+              };
+        }),
+      );
+    });
+
     const writeEffect = Effect.fn("orchestrationV2.EventSink.write")(function* (
       input: Parameters<EventSinkV2Shape["writeWithEffects"]>[0],
     ) {
@@ -538,26 +555,7 @@ const layerBase: Layer.Layer<
           // Checkpoint capture can finish after a cohort writer reads its parent run.
           // Merge in this transaction so the event log and projection keep that completion.
           let events = input.updateDelegatedCompletionOnly
-            ? yield* Effect.forEach(input.events, (event) =>
-                Effect.gen(function* () {
-                  if (event.type !== "run.updated") return event;
-                  const { runs } = yield* projectionStore.getThreadRecords(
-                    event.threadId,
-                    ["runs"],
-                    { runIds: [event.payload.id] },
-                  );
-                  const current = runs[0];
-                  return current === undefined
-                    ? event
-                    : {
-                        ...event,
-                        payload: {
-                          ...current,
-                          delegatedCompletion: event.payload.delegatedCompletion,
-                        },
-                      };
-                }),
-              )
+            ? yield* updateDelegatedCompletionOnly(input.events, () => true)
             : input.events;
           if (input.updateToolTitleOnly) {
             const expectedTitle = input.updateToolTitleOnly.expectedTitle;
@@ -798,7 +796,7 @@ const layerBase: Layer.Layer<
             }),
           );
           const canonical = yield* Schema.encodeEffect(codec)(submitted);
-          const input = yield* Schema.decodeUnknownEffect(codec)(canonical);
+          const input = yield* Schema.decodeEffect(codec)(canonical);
           const bytes = yield* crypto.digest("SHA-256", new TextEncoder().encode(canonical));
           const identity = `observatory.update:${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
           const result = yield* commitThenPublish(
@@ -1003,11 +1001,11 @@ const layerBase: Layer.Layer<
             return yield* new AgentObservatoryRefusal({ reason: result.reason });
           return {
             replayed: result.replayed,
-            snapshot: yield* Schema.decodeUnknownEffect(AgentObservatorySnapshot)(result.snapshot),
+            snapshot: yield* decodeAgentObservatorySnapshot(result.snapshot),
           };
         }).pipe(
           Effect.mapError((cause) =>
-            Schema.is(AgentObservatoryRefusal)(cause)
+            isAgentObservatoryRefusal(cause)
               ? cause
               : new EventSinkWriteError({
                   eventCount: 1,
@@ -1090,7 +1088,12 @@ const layerBase: Layer.Layer<
             return { ...existing, committed: false as const, cancelledEffectIds: [] };
           }
 
-          const normalized = yield* normalizeEvents(input.events);
+          const runId = input.updateDelegatedCompletionOnlyRunId;
+          const normalized = yield* normalizeEvents(
+            runId === undefined
+              ? input.events
+              : yield* updateDelegatedCompletionOnly(input.events, (id) => id === runId),
+          );
           const storedEvents = yield* eventStore.append({
             commandId: input.commandId,
             events: normalized,
@@ -1467,10 +1470,7 @@ const layerBase: Layer.Layer<
   }),
 );
 
-/**
- * Keeping the outbox instance shared with the worker is important because enqueue notifications
- * are in-memory wakeups backed by the durable SQL queue.
- */
+/** Share the worker's outbox instance: enqueue wakeups are in-memory. */
 export const layerFromStores = layerBase;
 
 export const layer: Layer.Layer<

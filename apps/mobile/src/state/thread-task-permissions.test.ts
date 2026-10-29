@@ -71,11 +71,9 @@ vi.mock("react", () => ({
 }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => "uuid" }));
 vi.mock("expo-file-system", () => ({
-  File: class {
-    constructor() {
-      throw new Error("A permission-only fixture must not access native files");
-    }
-  },
+  File: vi.fn(function File() {
+    throw new Error("A permission-only fixture must not access native files");
+  }),
 }));
 vi.mock("../lib/attachmentUpload", () => ({ prepareTurnAttachments: vi.fn() }));
 vi.mock("../lib/uuid", () => ({ uuidv4: () => "uuid" }));
@@ -124,6 +122,7 @@ vi.mock("./threads", async () => {
     environmentThreadDetails: {
       queueWorkflowAtom: () => Atom.make(null),
       checkpointSummariesAtom: () => Atom.make([]),
+      pendingRequestsAtom: () => Atom.make(state.pendingRequests),
     },
     threadEnvironment: {
       respondToApproval: state.approve,
@@ -170,7 +169,6 @@ vi.mock("./use-composer-drafts", async () => {
 });
 vi.mock("../lib/composerImages", () => ({
   convertPastedImagesToAttachments: vi.fn(),
-  pasteComposerClipboard: vi.fn(),
   pickComposerFiles: vi.fn(),
   pickComposerMedia: vi.fn(),
 }));

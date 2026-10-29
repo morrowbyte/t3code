@@ -75,6 +75,16 @@ export class ApprovalReviewHostOrders extends Context.Service<
   }
 >()("t3/orchestration-v2/ApprovalReviewHostOrders") {}
 
+const decodeApprovalReviewHostSourceJson = Schema.decodeEffect(
+  Schema.fromJsonString(ApprovalReviewHostSource),
+);
+const decodePairedVmJson = Schema.decodeEffect(Schema.fromJsonString(Policy.PairedVm));
+const decodeAssignmentJson = Schema.decodeEffect(
+  Schema.fromJsonString(Schema.NullOr(ApprovalReviewForwardAck)),
+);
+const decodeApprovalReviewHostOrder = Schema.decodeEffect(ApprovalReviewHostOrder);
+const decodeApprovalReviewOrderCreate = Schema.decodeEffect(ApprovalReviewOrderCreate);
+
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const policy = yield* Policy.ApprovalReviewOrderPolicy;
@@ -85,16 +95,14 @@ const make = Effect.gen(function* () {
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
   const storageError = () => new ApprovalReviewError({ reason: "storage" });
   const decode = Effect.fn("ApprovalReviewHostOrders.decode")(function* (row: OrderRow) {
-    const source = yield* Schema.decodeUnknownEffect(
-      Schema.fromJsonString(ApprovalReviewHostSource),
-    )(row.source_json).pipe(Effect.mapError(storageError));
-    const channel = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Policy.PairedVm))(
-      row.channel_json,
-    ).pipe(Effect.mapError(storageError));
-    const assignment = yield* Schema.decodeUnknownEffect(
-      Schema.fromJsonString(Schema.NullOr(ApprovalReviewForwardAck)),
-    )(row.assignment_json ?? "null").pipe(Effect.mapError(storageError));
-    const order = yield* Schema.decodeUnknownEffect(ApprovalReviewHostOrder)({
+    const source = yield* decodeApprovalReviewHostSourceJson(row.source_json).pipe(
+      Effect.mapError(storageError),
+    );
+    const channel = yield* decodePairedVmJson(row.channel_json).pipe(Effect.mapError(storageError));
+    const assignment = yield* decodeAssignmentJson(row.assignment_json ?? "null").pipe(
+      Effect.mapError(storageError),
+    );
+    const order = yield* decodeApprovalReviewHostOrder({
       source,
       vmId: channel.vmId,
       targetThreadId: channel.threadId,
@@ -218,7 +226,7 @@ const make = Effect.gen(function* () {
     const human = Policy.humanFor(policy, actor);
     if (human === undefined || !actor.scopes.has("orchestration:operate"))
       return yield* new ApprovalReviewError({ reason: "forbidden" });
-    const input = yield* Schema.decodeUnknownEffect(ApprovalReviewOrderCreate)(raw, {
+    const input = yield* decodeApprovalReviewOrderCreate(raw, {
       onExcessProperty: "error",
     }).pipe(Effect.mapError(() => new ApprovalReviewError({ reason: "invalid-action" })));
     const prior =
@@ -450,7 +458,7 @@ const make = Effect.gen(function* () {
     const { order, channel } = loaded.value;
     const isActive = yield* active(order).pipe(
       Effect.as(true),
-      Effect.catch(() => Effect.succeed(false)),
+      Effect.orElseSucceed(() => false),
     );
     if (
       !isActive ||

@@ -1,10 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off - Bridges Playwright's WebSocket transport to the desktop's fds.
-/**
- * Playwright connects over CDP only through a WebSocket URL, so each attached
- * desktop tab gets a loopback endpoint with an unguessable path. Its frames
- * cross the bootstrap file descriptors to the desktop's relay, which owns the
- * tab's `webContents.debugger`.
- */
+/** Playwright needs a CDP WebSocket; the secret loopback endpoint relays desktop debugger frames over bootstrap fds. */
 import * as NodeStream from "@effect/platform-node/NodeStream";
 import * as NodeSocketServer from "@effect/platform-node/NodeSocketServer";
 import {
@@ -185,6 +180,8 @@ export class DesktopBrowserChannel extends Context.Service<
       key: DesktopTabKey,
       pointer: { readonly phase: "move" | "click"; readonly x: number; readonly y: number },
     ) => Effect.Effect<void>;
+    /** Never fails. A failed write means a broken channel; the next backend starts with no turns. */
+    readonly turn: (threadId: string, active: boolean) => Effect.Effect<void>;
   }
 >()("t3/preview/DesktopBrowserChannel") {}
 
@@ -200,15 +197,32 @@ const make = Effect.gen(function* () {
   if (inputFd === undefined || controlFd === undefined) {
     return DesktopBrowserChannel.of({
       available: false,
-      registerPrivateEntryHandler: () => Effect.void,
-      isCurrentPrivateEntryAttachment: () => Effect.succeed(false),
-      sendPrivateEntry: () => Effect.succeed(false),
-      awaitAttached: () => Effect.succeed(false),
+      registerPrivateEntryHandler: Effect.fn("DesktopBrowserChannel.registerPrivateEntryHandler")(
+        () => Effect.void,
+      ),
+      isCurrentPrivateEntryAttachment: Effect.fn(
+        "DesktopBrowserChannel.isCurrentPrivateEntryAttachment",
+      )(() => Effect.succeed(false)),
+      sendPrivateEntry: Effect.fn("DesktopBrowserChannel.sendPrivateEntry")(() =>
+        Effect.succeed(false),
+      ),
+      awaitAttached: Effect.fn("DesktopBrowserChannel.awaitAttached")(function () {
+        return Effect.succeed(false);
+      }),
       detached: Stream.empty,
       attached: Stream.empty,
-      isAttached: () => Effect.succeed(false),
-      endpoint: () => Effect.die("No desktop app is attached to this server."),
-      pointer: () => Effect.void,
+      isAttached: Effect.fn("DesktopBrowserChannel.isAttached")(function () {
+        return Effect.succeed(false);
+      }),
+      endpoint: Effect.fn("DesktopBrowserChannel.endpoint")(function () {
+        return Effect.die("No desktop app is attached to this server.");
+      }),
+      turn: Effect.fn("DesktopBrowserChannel.turn")(function () {
+        return Effect.void;
+      }),
+      pointer: Effect.fn("DesktopBrowserChannel.pointer")(function () {
+        return Effect.void;
+      }),
     });
   }
 
@@ -232,8 +246,7 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  // Socket reads can be cancelled while the desktop keeps its write end open.
-  // Filesystem reads on this pipe keep Node alive after scope shutdown.
+  // Use cancellable socket reads; filesystem pipe reads keep Node alive after scope shutdown.
   const readable = yield* Effect.acquireRelease(
     Effect.sync(() => new NodeNet.Socket({ fd: inputFd, readable: true, writable: false })),
     (stream) => Effect.sync(() => stream.destroy()),
@@ -351,8 +364,8 @@ const make = Effect.gen(function* () {
     registerPrivateEntryHandler: privateEntries.registerPrivateEntryHandler,
     isCurrentPrivateEntryAttachment: privateEntries.isCurrentPrivateEntryAttachment,
     sendPrivateEntry: privateEntries.sendPrivateEntry,
-    awaitAttached: (key, timeout) =>
-      Effect.scoped(
+    awaitAttached: Effect.fn("DesktopBrowserChannel.awaitAttached")(function (key, timeout) {
+      return Effect.scoped(
         Effect.gen(function* () {
           const subscription = yield* PubSub.subscribe(changes);
           if (attachedTabs.has(keyOf(key))) return true;
@@ -364,7 +377,8 @@ const make = Effect.gen(function* () {
             Effect.map((result) => Option.getOrElse(result, () => false)),
           );
         }),
-      ),
+      );
+    }),
     detached: Stream.fromPubSub(changes).pipe(
       Stream.filter((change) => !change.attached),
       Stream.map((change) => change.key),
@@ -373,9 +387,16 @@ const make = Effect.gen(function* () {
       Stream.filter((change) => change.attached),
       Stream.map((change) => change.key),
     ),
-    isAttached: (key) => Effect.sync(() => attachedTabs.has(keyOf(key))),
+    isAttached: Effect.fn("DesktopBrowserChannel.isAttached")(function (key) {
+      return Effect.sync(() => attachedTabs.has(keyOf(key)));
+    }),
     endpoint,
-    pointer: (key, pointer) => command({ type: "pointer", ...key, ...pointer }),
+    turn: Effect.fn("DesktopBrowserChannel.turn")(function (threadId, active) {
+      return command({ type: "turn", threadId, active });
+    }),
+    pointer: Effect.fn("DesktopBrowserChannel.pointer")(function (key, pointer) {
+      return command({ type: "pointer", ...key, ...pointer });
+    }),
   });
 });
 

@@ -123,10 +123,24 @@ const intakeFailureClass = (cause: Cause.Cause<unknown>) => {
 
 const isIntakeIntent = Schema.is(VoiceIntakeIntent);
 const isIntakeProvenance = Schema.is(VoiceIntakeProvenance);
+const readbackFields = [
+  "runs",
+  "attempts",
+  "providerTurns",
+  "nodes",
+  "turnItems",
+  "messages",
+  "runtimeRequests",
+  "subagents",
+] as const;
+type ReadbackProjection = Pick<
+  OrchestrationV2ThreadProjection,
+  "thread" | (typeof readbackFields)[number]
+>;
 const encodeIntakeProvenance = Schema.encodeSync(Schema.fromJsonString(VoiceIntakeProvenance));
 const readbackContextMatches = (
   row: LeaseRow,
-  projection: OrchestrationV2ThreadProjection,
+  projection: Pick<OrchestrationV2ThreadProjection, "thread">,
   policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
 ) =>
   projection.thread.id === row.thread_id &&
@@ -180,6 +194,8 @@ export class CodexLiveSessionService extends Context.Service<
   }
 >()("t3/voice/CodexLiveSessionService") {}
 
+const isProviderAdapterProtocolError = Schema.is(ProviderAdapter.ProviderAdapterProtocolError);
+
 export const layer: Layer.Layer<
   CodexLiveSessionService,
   never,
@@ -229,7 +245,7 @@ export const layer: Layer.Layer<
         if (row.marker_type === null) return null;
         return row.marker_type === "text" && row.stop_id?.trim() ? row.stop_id : undefined;
       },
-      Effect.catch(() => Effect.succeed(undefined)),
+      Effect.orElseSucceed(() => undefined),
     );
     const readbackWorkers = new Map<string, Fiber.Fiber<void, never>>();
     const nativeEventRuntimes = new Set<ProviderAdapter.ProviderAdapterV2SessionRuntime>();
@@ -329,7 +345,7 @@ export const layer: Layer.Layer<
     const readbackWorkerKey = (leaseId: string, generation: number, runId: string) =>
       `${leaseId}:${generation}:${runId}`;
 
-    const readbackResult = (projection: OrchestrationV2ThreadProjection, runId: string) => {
+    const readbackResult = (projection: ReadbackProjection, runId: string) => {
       const run = projection.runs.find((candidate) => candidate.id === runId);
       if (run === undefined || run.status !== "completed" || run.rootNodeId === null)
         return undefined;
@@ -397,7 +413,7 @@ export const layer: Layer.Layer<
       };
     };
 
-    const publicReadbackResults = (projection: OrchestrationV2ThreadProjection, runId: string) => {
+    const publicReadbackResults = (projection: ReadbackProjection, runId: string) => {
       const run = projection.runs.find((candidate) => candidate.id === runId);
       if (
         run &&
@@ -562,7 +578,7 @@ export const layer: Layer.Layer<
       });
     };
 
-    const inspectReadback = (projection: OrchestrationV2ThreadProjection, runId: string) => {
+    const inspectReadback = (projection: ReadbackProjection, runId: string) => {
       const run = projection.runs.find((candidate) => candidate.id === runId);
       if (
         run === undefined ||
@@ -585,11 +601,7 @@ export const layer: Layer.Layer<
       return { type: "ready", ...result } as const;
     };
 
-    const quietStatus = (
-      projection: OrchestrationV2ThreadProjection,
-      runId: string,
-      now: DateTime.Utc,
-    ) => {
+    const quietStatus = (projection: ReadbackProjection, runId: string, now: DateTime.Utc) => {
       const run = projection.runs.find((run) => run.id === runId);
       if (!run || !["running", "waiting"].includes(run.status) || run.activeAttemptId === null)
         return;
@@ -637,7 +649,10 @@ export const layer: Layer.Layer<
         const worker = Effect.gen(function* () {
           const afterSequence = yield* threads.getThreadEventSequence(input.threadId);
           const readProjection = () =>
-            threads.getProjectThread({ projectId: input.projectId, threadId: input.threadId });
+            threads.getProjectThreadRecords(
+              { projectId: input.projectId, threadId: input.threadId },
+              readbackFields,
+            );
           yield* Effect.forever(
             Effect.sleep("45 seconds").pipe(
               Effect.andThen(
@@ -654,7 +669,7 @@ export const layer: Layer.Layer<
               ),
             ),
           ).pipe(Effect.forkScoped);
-          const appendPublic = (projection: OrchestrationV2ThreadProjection) =>
+          const appendPublic = (projection: ReadbackProjection) =>
             Effect.forEach(
               publicReadbackResults(projection, input.runId),
               (update) => appendDurableOutput({ ...input, ...update, kind: "context" }),
@@ -853,10 +868,10 @@ export const layer: Layer.Layer<
               )
             )
               return;
-            const latestProjection = yield* threads.getProjectThread({
-              projectId: input.projectId,
-              threadId: input.threadId,
-            });
+            const latestProjection = yield* threads.getProjectThreadRecords(
+              { projectId: input.projectId, threadId: input.threadId },
+              readbackFields,
+            );
             const sourceProjection =
               input.threadId === row.thread_id
                 ? latestProjection
@@ -866,8 +881,8 @@ export const layer: Layer.Layer<
               modelSelection: sourceProjection.thread.modelSelection,
             });
             const targetMatches = (
-              projection: OrchestrationV2ThreadProjection,
-              source: OrchestrationV2ThreadProjection,
+              projection: Pick<OrchestrationV2ThreadProjection, "thread">,
+              source: Pick<OrchestrationV2ThreadProjection, "thread" | "subagents">,
             ) =>
               receipt.taskId === undefined
                 ? projection.thread.id === row.thread_id
@@ -951,10 +966,10 @@ export const layer: Layer.Layer<
             // Refresh after the principal lookup: native error/closed events can
             // commit while that lookup is suspended, without taking this lease lock.
             const stillPublic = yield* Effect.gen(function* () {
-              const currentProjection = yield* threads.getProjectThread({
-                projectId: input.projectId,
-                threadId: input.threadId,
-              });
+              const currentProjection = yield* threads.getProjectThreadRecords(
+                { projectId: input.projectId, threadId: input.threadId },
+                readbackFields,
+              );
               const currentSource =
                 input.threadId === row.thread_id
                   ? currentProjection
@@ -1074,7 +1089,7 @@ export const layer: Layer.Layer<
     );
 
     const toLiveError = (error: unknown) =>
-      Schema.is(LiveVoiceError)(error) ? error : liveError("runtime_unavailable");
+      isLiveVoiceError(error) ? error : liveError("runtime_unavailable");
 
     const prepare: CodexLiveSessionService["Service"]["prepare"] = (session, input) =>
       leaseLocks
@@ -1375,7 +1390,7 @@ export const layer: Layer.Layer<
               })
               .pipe(
                 Effect.mapError((error) =>
-                  Schema.is(ProviderAdapter.ProviderAdapterProtocolError)(error) &&
+                  isProviderAdapterProtocolError(error) &&
                   error.detail === "Managed ChatGPT account is required for Codex Live."
                     ? liveError("managed_account_required")
                     : liveError("planner_restriction_failed"),
@@ -1384,7 +1399,7 @@ export const layer: Layer.Layer<
                   Effect.gen(function* () {
                     const failed = yield* getLease(leaseId, generation);
                     if (failed !== undefined) yield* updateStatus(failed, "failed");
-                    return yield* Effect.fail(error);
+                    return yield* error;
                   }),
                 ),
               );
@@ -1618,7 +1633,13 @@ export const layer: Layer.Layer<
           yield* recoverPendingIntents(input.leaseId, input.generation);
           row = yield* getOwnedLease(session.sessionId, input.leaseId, input.generation);
           yield* eventHub.register(sessionFromRow(row));
-          return eventHub.subscribe(input);
+          return eventHub
+            .subscribe(input)
+            .pipe(
+              Stream.filter(
+                (event) => input.includeActivities === true || event.type !== "activity",
+              ),
+            );
         }),
       ).pipe(Stream.mapError(toLiveError));
 
@@ -1748,7 +1769,7 @@ export const layer: Layer.Layer<
                 encodeReceipt({ accepted: true, delivery: "steered", ...steered }),
               ),
               Effect.catchTags({
-                ConversationWorkError: (error) =>
+                ConversationWorkError: Effect.fn("ConversationWorkError")((error) =>
                   Effect.gen(function* () {
                     if (error.reason !== "inactive") return yield* liveError("dispatch_conflict");
                     const latest = yield* conversationWork.read({
@@ -1780,6 +1801,7 @@ export const layer: Layer.Layer<
                       resultTruncated: result.type === "ready" && result.text.length > 16_384,
                     });
                   }),
+                ),
               }),
               Effect.mapError((error) =>
                 isLiveVoiceError(error) ? error : liveError("dispatch_conflict"),
@@ -1839,7 +1861,7 @@ export const layer: Layer.Layer<
                 if (child.origin !== "app_owned" || child.childThreadId === null) return base;
                 const snapshot = yield* threads.getThreadProjection(child.childThreadId).pipe(
                   Effect.timeoutOption("1 second"),
-                  Effect.catch(() => Effect.succeed(Option.none())),
+                  Effect.orElseSucceed(() => Option.none()),
                 );
                 if (Option.isNone(snapshot)) return base;
                 const target = snapshot.value;
@@ -2325,12 +2347,15 @@ export const layer: Layer.Layer<
             });
           }
           const projection = yield* threads
-            .getProjectThread({
-              projectId: (yield* threads.getThreadProjection(
-                currentRow.thread_id as LiveVoiceSession["threadId"],
-              )).thread.projectId,
-              threadId: currentRow.thread_id as LiveVoiceSession["threadId"],
-            })
+            .getProjectThreadRecords(
+              {
+                projectId: (yield* threads.getThreadProjection(
+                  currentRow.thread_id as LiveVoiceSession["threadId"],
+                )).thread.projectId,
+                threadId: currentRow.thread_id as LiveVoiceSession["threadId"],
+              },
+              [],
+            )
             .pipe(Effect.mapError(() => liveError("session_not_found")));
           const providerInstance = yield* providerInstances.getInstance(
             projection.thread.providerInstanceId,
@@ -2520,7 +2545,7 @@ export const layer: Layer.Layer<
                 ["starting", "active"].includes(lease.status) &&
                 lease.planner_native_thread_id === row.planner_native_thread_id,
             ),
-            Effect.catch(() => Effect.succeed(false)),
+            Effect.orElseSucceed(() => false),
           );
           const saved = yield* sql<{ receipt_json: string; message: string }>`
           SELECT i.receipt_json, i.message FROM codex_live_voice_intents i
@@ -2563,7 +2588,7 @@ export const layer: Layer.Layer<
             intent.threadId === row.thread_id && intent.taskId === intent.id;
           const read = (intent: VoiceIntakeIntent) =>
             (isMainIntent(intent)
-              ? threads.getThreadProjection(ThreadId.make(row.thread_id)).pipe(
+              ? threads.getThreadRecords(ThreadId.make(row.thread_id), readbackFields).pipe(
                   Effect.flatMap((projection) => {
                     const run = projection.runs.find((run) => run.id === intent.runId);
                     return run
@@ -2614,9 +2639,11 @@ export const layer: Layer.Layer<
                   result: result.type === "ready" ? result.text.slice(0, 8_000) : null,
                 };
               }),
-              Effect.catch(() =>
-                Effect.succeed({ ...intent, status: "unavailable", result: null }),
-              ),
+              Effect.orElseSucceed(() => ({
+                ...intent,
+                status: "unavailable" as const,
+                result: null,
+              })),
             );
           const projectCatalog = (yield* projects.listShells())
             .slice(0, 24)
@@ -2689,14 +2716,14 @@ export const layer: Layer.Layer<
               decide({ snapshot, modelSelection: selection }).pipe(
                 Effect.catch((error) =>
                   Effect.gen(function* () {
-                    if (!isIntakeTimeout(error)) return yield* Effect.fail(error);
+                    if (!isIntakeTimeout(error)) return yield* error;
                     const latest = yield* engine.state;
                     if (
                       !latest.enabled ||
                       latest.version !== snapshot.version ||
                       intakeLease.acceptingWork === false
                     )
-                      return yield* Effect.fail(error);
+                      return yield* error;
                     yield* Effect.logWarning("Voice intake decision retrying.", {
                       failureClass: "TimeoutError",
                       version: snapshot.version,
@@ -2872,7 +2899,7 @@ export const layer: Layer.Layer<
                         "cancelled",
                         "rolled_back",
                       ].includes(latest.status);
-                      if (!unavailable && !terminal) return yield* Effect.fail(error);
+                      if (!unavailable && !terminal) return yield* error;
                       const stillPending = [
                         latest.pendingSteer,
                         ...(latest.queuedSteers ?? []),
@@ -3117,6 +3144,19 @@ export const layer: Layer.Layer<
         )
           return;
         switch (event.type) {
+          case "activity": {
+            if (!["starting", "active", "stopping"].includes(row.status)) return;
+            const receivedAt = DateTime.formatIso(yield* DateTime.now);
+            yield* eventHub.publish({
+              type: "activity",
+              leaseId,
+              generation,
+              environmentId: sessionFromRow(row).environmentId,
+              threadId: sessionFromRow(row).threadId,
+              activity: { ...event.activity, occurredAt: receivedAt, updatedAt: receivedAt },
+            });
+            return;
+          }
           case "started": {
             if (row.status !== "starting" && row.status !== "active") return;
             if (

@@ -1,3 +1,6 @@
+import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
+import * as PortScanner from "../preview/PortScanner.ts";
 import * as CuaControl from "../cua/CuaControl.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
@@ -94,7 +97,7 @@ const layerMcpRegistry = Layer.succeed(
           browserToolsAvailable: false,
         },
       }),
-    resolve: () => Effect.succeed(undefined),
+    resolve: () => Effect.sync(() => undefined),
     touch: () => Effect.void,
     revokeProviderSession: () => Effect.void,
     revokeThread: () => Effect.void,
@@ -219,9 +222,10 @@ const layerContinuationWorker = ProviderContinuationService.layer.pipe(
   Layer.provide(IdAllocator.layer),
   Layer.provide(ProviderContinuationRequests.layer),
 );
-const layerLive = layerContinuationWorker.pipe(Layer.provideMerge(layerOrchestration));
-
-const STEP_WAIT_SECONDS = Number(process.env.OPENCODE2_STEP_WAIT ?? "120");
+const layerLive = layerContinuationWorker.pipe(
+  Layer.provideMerge(layerOrchestration),
+  Layer.provide(Layer.mock(PortScanner.PortDiscovery)({ trackAgent: () => () => undefined })),
+);
 
 const settled = (projection: OrchestrationV2ThreadProjection) =>
   projection.runs.length > 0 &&
@@ -234,20 +238,13 @@ const waitFor = Effect.fn("OpenCode2Live.waitFor")(function* (
   done: (projection: OrchestrationV2ThreadProjection) => boolean,
 ) {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
-  for (let attempt = 0; attempt < STEP_WAIT_SECONDS * 2; attempt += 1) {
-    const projection = yield* orchestrator.getThreadProjection(threadId);
-    if (done(projection)) return projection;
-    yield* Effect.sleep("500 millis");
-  }
-  const last = yield* orchestrator.getThreadProjection(threadId);
-  const items = last.turnItems.map((item) =>
-    item.type === "error" ? `error:${item.failure.message}` : `${item.type}:${item.status}`,
-  );
-  return yield* Effect.die(
-    new Error(
-      `Timed out waiting on OpenCode 2 thread ${threadId}: runs ${last.runs.map((run) => run.status).join(",")}; items ${items.join(",")}`,
-    ),
-  );
+  const afterSequence = yield* orchestrator.getThreadEventSequence(threadId);
+  return yield* Stream.concat(
+    Stream.fromEffect(orchestrator.getThreadProjection(threadId)),
+    orchestrator
+      .streamStoredEventsFrom({ threadId, afterSequence })
+      .pipe(Stream.mapEffect(() => orchestrator.getThreadProjection(threadId))),
+  ).pipe(Stream.filter(done), Stream.runHead, Effect.map(Option.getOrThrow));
 });
 
 const send = Effect.fn("OpenCode2Live.send")(function* (
@@ -670,7 +667,8 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
             projection.subagents[0] !== undefined &&
             projection.subagents[0].status !== "running",
         );
-        yield* Effect.sleep("5 seconds");
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        yield* worker.drain();
         const final = yield* orchestrator.getThreadProjection(stopThread);
         assert.lengthOf(final.runs, 1);
         assert.equal(final.subagents[0]?.status, "interrupted");

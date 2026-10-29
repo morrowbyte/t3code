@@ -1,18 +1,18 @@
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
-import type { AgentIdentityTheme } from "@t3tools/client-runtime/state/agent-identity";
+import type { ScopedThreadRef } from "@t3tools/contracts";
 
-import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
+import { mobilePreferencesAtom } from "../../state/preferences";
+import { serverEnvironment } from "../../state/server";
 
-export function useAgentIdentityTheme() {
+export function useAgentIdentityTheme(threadRef: ScopedThreadRef) {
   const preferences = useAtomValue(mobilePreferencesAtom);
-  const update = useAtomSet(updateMobilePreferencesAtom);
-  const ready = AsyncResult.isSuccess(preferences);
-  const theme: AgentIdentityTheme =
-    ready && preferences.value.agentIdentityTheme === "weasel" ? "weasel" : "neutral";
+  const settings = useAtomValue(serverEnvironment.settingsValueAtom(threadRef.environmentId));
+  const legacyTheme = AsyncResult.isSuccess(preferences)
+    ? (preferences.value.agentIdentityTheme ?? "neutral")
+    : "neutral";
   return {
-    theme,
-    ready,
-    setTheme: (value: AgentIdentityTheme) => update({ agentIdentityTheme: value }),
+    theme: settings?.agentIdentityTheme ?? legacyTheme,
+    manualName: settings?.agentIdentityNames[threadRef.threadId],
   };
 }

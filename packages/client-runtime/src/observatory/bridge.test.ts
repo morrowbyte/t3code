@@ -33,7 +33,7 @@ import * as Option from "effect/Option";
 import { v2Projection, v2ShellSnapshot, v2ThreadId } from "../state/orchestrationV2TestFixtures.ts";
 import { EMPTY_THREAD_HISTORY_META } from "../state/threadHistoryMerge.ts";
 import type { EnvironmentThreadState } from "../state/threads.ts";
-import type { EnvironmentShellState } from "../state/shell.ts";
+import { EMPTY_SHELL_STATE, type EnvironmentShellState } from "../state/shell.ts";
 import {
   createLiveObservatory,
   createObservatoryProjectionBridge,
@@ -102,6 +102,8 @@ describe("observatory live access boundary", () => {
       expect(scopes).toHaveLength(1);
       const first = scopes[0]!;
       registry.set(first.shell, {
+        ...EMPTY_SHELL_STATE,
+        generation: 1,
         status: "live",
         snapshot: Option.some(v2ShellSnapshot),
         error: Option.none(),
@@ -120,6 +122,8 @@ describe("observatory live access boundary", () => {
       expect(scopes).toHaveLength(1);
       // A late projection from the old scope cannot re-expose data.
       registry.set(first.shell, {
+        ...EMPTY_SHELL_STATE,
+        generation: 1,
         status: "live",
         snapshot: Option.some(v2ShellSnapshot),
         error: Option.none(),
@@ -277,6 +281,8 @@ const makeStreamScope = (
     return {
       trace: (boundary, effect) => traceAwait(`${name}:${boundary}`, effect),
       shell: yield* SubscriptionRef.make<EnvironmentShellState>({
+        ...EMPTY_SHELL_STATE,
+        generation: 1,
         status: "live",
         snapshot: Option.some({
           ...v2ShellSnapshot,
@@ -341,9 +347,9 @@ effectIt.effect(
       });
     // Pinned Vitest TestContext hook; registration precedes all asynchronous work.
     // It reads this sanitized record only, never the registry or the failure object.
-    testContext.onTestFailed(() =>
-      Effect.runPromise(
-        Effect.logError("observatory-stream-diagnostic", {
+    testContext.onTestFailed(async () => {
+      await testContext.annotate(
+        JSON.stringify({
           ...diagnostic,
           enteredAwaits: [...enteredAwaits],
           completedAwaits: [...completedAwaits],
@@ -351,8 +357,9 @@ effectIt.effect(
           // from a shell/detail stream result or add a diagnostic-only Atom read.
           runtimeAsyncResultTag: "UNKNOWN",
         }),
-      ),
-    );
+        "observatory-stream-diagnostic",
+      );
+    });
     return Effect.scoped(
       Effect.gen(function* () {
         const controlled = yield* Effect.all({
@@ -394,6 +401,7 @@ effectIt.effect(
           subscribeServerConfig: () => Stream.die("Unexpected config subscription"),
           ready: Effect.void,
           probe: Effect.void,
+          inboundFrames: Effect.succeed(0),
           closed: Effect.never,
         };
         const connection = yield* SubscriptionRef.make<SupervisorConnectionState>({

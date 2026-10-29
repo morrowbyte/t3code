@@ -1,5 +1,5 @@
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { useNavigation } from "@react-navigation/native";
+import { useOpenLinkedThread } from "./useOpenLinkedThread";
 import { memo, useRef, useState, type ComponentRef, type ReactNode } from "react";
 import { Pressable, View } from "react-native";
 
@@ -19,9 +19,11 @@ export const AgentMessage = memo(function AgentMessage(
     readonly previewText?: string;
     readonly environmentId: EnvironmentId;
     readonly senderThreadId?: ThreadId;
+    readonly senderEnvironmentId?: EnvironmentId;
     readonly direction?: "incoming" | "outgoing";
     readonly deliveryLabel?: string;
     readonly attachments?: ReactNode;
+    readonly technicalDetails?: ReactNode;
     readonly timestampLabel: string;
     readonly streaming: boolean;
     readonly children: (bodyText: string) => ReactNode;
@@ -31,10 +33,11 @@ export const AgentMessage = memo(function AgentMessage(
   ),
 ) {
   const originalOrder = props.attribution === "human" || props.attribution === "synthetic";
-  const navigation = useNavigation();
+  const openLinkedThread = useOpenLinkedThread();
+  const senderEnvironmentId = props.senderEnvironmentId ?? props.environmentId;
   const sender = useThreadShell(
     props.senderThreadId && !originalOrder
-      ? { environmentId: props.environmentId, threadId: props.senderThreadId }
+      ? { environmentId: senderEnvironmentId, threadId: props.senderThreadId }
       : null,
   );
   const [expanded, setExpanded] = useState(false);
@@ -75,7 +78,7 @@ export const AgentMessage = memo(function AgentMessage(
       {props.senderThreadId && !originalOrder ? (
         <View className="min-w-0 flex-1">
           <AgentIdentityLabel
-            threadRef={{ environmentId: props.environmentId, threadId: props.senderThreadId }}
+            threadRef={{ environmentId: senderEnvironmentId, threadId: props.senderThreadId }}
             featureTitle={sender?.title}
             size="md"
             avatarSize={24}
@@ -104,8 +107,8 @@ export const AgentMessage = memo(function AgentMessage(
             accessibilityLabel={`Open ${props.direction === "outgoing" ? "receiving" : "sending"} thread, ${sender?.title ?? actor}`}
             onPress={() => {
               if (props.senderThreadId) {
-                navigation.navigate("Thread", {
-                  environmentId: String(props.environmentId),
+                openLinkedThread({
+                  environmentId: String(senderEnvironmentId),
                   threadId: String(props.senderThreadId),
                 });
               }
@@ -164,28 +167,41 @@ export const AgentMessage = memo(function AgentMessage(
                 {props.text}
               </Text>
             ) : structured?.kind === "structured" ? (
-              structured.sections.map((section, index) =>
-                section.kind === "technical" ? (
-                  <View key={index}>
-                    <Button
-                      label={technical ? "Technik verbergen" : "Technik"}
-                      tone="text"
-                      onPress={() => setTechnical((value) => !value)}
-                    />
-                    {technical ? props.children(section.text) : null}
-                  </View>
-                ) : (
-                  <View key={index} className="gap-2">
+              structured.sections
+                .filter((section) => section.kind !== "technical")
+                .map((section) => (
+                  <View key={`${section.kind}:${section.label}:${section.text}`} className="gap-2">
                     <Text className="font-t3-medium text-sm text-foreground-muted">
                       {section.label}
                     </Text>
                     {props.children(section.text)}
                   </View>
-                ),
-              )
+                ))
             ) : (
               props.children(props.text)
             )}
+            {props.technicalDetails ||
+            structured?.sections.some((section) => section.kind === "technical") ? (
+              <View className="gap-2">
+                <Button
+                  label={technical ? "Technik verbergen" : "Technik"}
+                  tone="text"
+                  onPress={() => setTechnical((value) => !value)}
+                />
+                {technical ? (
+                  <View className="gap-3">
+                    {structured?.sections
+                      .filter((section) => section.kind === "technical")
+                      .map((section) => (
+                        <View key={`${section.kind}:${section.label}:${section.text}`}>
+                          {props.children(section.text)}
+                        </View>
+                      ))}
+                    {props.technicalDetails}
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
           </View>
         ) : null}
         {expanded ? (

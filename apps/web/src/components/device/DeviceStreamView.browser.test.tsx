@@ -140,7 +140,7 @@ it("balances keys on client replacement and unmount without releasing them to th
   await userEvent.keyboard("{Control>}{Shift>}");
   await screen.rerender(<Stream deviceId="replacement" />);
   await fixture.admit(1);
-  expect(first.close).toHaveBeenCalledOnce();
+  await vi.waitFor(() => expect(first.close).toHaveBeenCalledOnce());
   expect(fixture.messages()).toEqual([...modifierDowns, ...modifierUps]);
   await userEvent.keyboard("{/Shift}{/Control}{Control>}{Shift>}");
   expect(fixture.messages(1)).toEqual(modifierDowns);

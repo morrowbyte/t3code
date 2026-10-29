@@ -69,103 +69,94 @@ export const PreviewBatchResult = Schema.Struct({
 export type PreviewBatchResult = typeof PreviewBatchResult.Type;
 
 /** Every step uses the ordinary caller-bound broker. No action is retried or substituted. */
-export function executePreviewBatch<E, R>(
+export const executePreviewBatch = Effect.fn("PreviewBatch.execute")(function* <E, R>(
   input: PreviewBatchInput,
   executor: {
     readonly status: Effect.Effect<PreviewAutomationStatus, E, R>;
     readonly snapshot: Effect.Effect<PreviewAutomationSnapshot, E, R>;
     readonly action: (step: PreviewBatchStep) => Effect.Effect<unknown, E, R>;
   },
-): Effect.Effect<PreviewBatchResult, never, R> {
-  return Effect.gen(function* () {
-    const start = performance.now();
-    const steps: Array<typeof StepResult.Type> = [];
-    let stoppedAt: number | null = null,
-      reason: string | null = null,
-      deliveryUnknown = false;
-    for (const [index, step] of input.steps.entries()) {
-      const stepStart = performance.now();
-      const status = yield* executor.status.pipe(
-        Effect.match({ onFailure: () => null, onSuccess: (value) => value }),
-      );
-      let allowed = false;
-      try {
-        allowed =
-          status?.tabId === input.tabId &&
-          status.control?.owner === "agent" &&
-          status.control.ownedByCaller === true &&
-          !status.dialog &&
-          !status.fileChooser &&
-          new URL(status.url ?? "").origin === input.expectedOrigin;
-      } catch {
-        /* Unknown page identity stops before mutation. */
-      }
-      if (!allowed) {
-        stoppedAt = index;
-        reason = "Tab, origin, ownership, or dialog guard failed before this step.";
-        steps.push({
-          index,
-          operation: step.operation,
-          outcome: "blocked",
-          elapsedMs: performance.now() - stepStart,
-        });
-        break;
-      }
-      const returned = yield* executor.action(step).pipe(
-        Effect.match({
-          onFailure: (cause) => ({
-            ok: false,
-            unsupported:
-              typeof cause === "object" &&
-              cause !== null &&
-              "_tag" in cause &&
-              cause._tag === "PreviewAutomationUnsupportedClientError",
-          }),
-          onSuccess: () => ({ ok: true, unsupported: false }),
-        }),
-      );
+): Effect.fn.Return<PreviewBatchResult, never, R> {
+  const start = performance.now();
+  const steps: Array<typeof StepResult.Type> = [];
+  let stoppedAt: number | null = null,
+    reason: string | null = null,
+    deliveryUnknown = false;
+  for (const [index, step] of input.steps.entries()) {
+    const stepStart = performance.now();
+    const status = yield* executor.status.pipe(
+      Effect.match({ onFailure: () => null, onSuccess: (value) => value }),
+    );
+    const allowed =
+      status?.tabId === input.tabId &&
+      status.control?.owner === "agent" &&
+      status.control.ownedByCaller === true &&
+      !status.dialog &&
+      !status.fileChooser &&
+      URL.canParse(status.url ?? "") &&
+      new URL(status.url!).origin === input.expectedOrigin;
+    if (!allowed) {
+      stoppedAt = index;
+      reason = "Tab, origin, ownership, or dialog guard failed before this step.";
       steps.push({
         index,
         operation: step.operation,
-        outcome: returned.ok ? "returned" : "failed",
+        outcome: "blocked",
         elapsedMs: performance.now() - stepStart,
       });
-      if (!returned.ok) {
-        stoppedAt = index;
-        deliveryUnknown = !returned.unsupported && step.operation !== "waitFor";
-        reason = returned.unsupported
-          ? "This browser client does not support the requested operation. No substitute was attempted."
-          : "Step failed. Inspect state before any retry; completed actions were not replayed.";
-        break;
-      }
+      break;
     }
-    const state = yield* executor.snapshot.pipe(
-      Effect.match({ onFailure: () => null, onSuccess: (value) => value }),
+    const returned = yield* executor.action(step).pipe(
+      Effect.match({
+        onFailure: (cause) => ({
+          ok: false,
+          unsupported:
+            typeof cause === "object" &&
+            cause !== null &&
+            "_tag" in cause &&
+            cause._tag === "PreviewAutomationUnsupportedClientError",
+        }),
+        onSuccess: () => ({ ok: true, unsupported: false }),
+      }),
     );
-    if (stoppedAt === null) {
-      let observedOriginMatches = false;
-      try {
-        observedOriginMatches =
-          state !== null && new URL(state.url).origin === input.expectedOrigin;
-      } catch {
-        /* A missing or foreign final state is incomplete. */
-      }
-      if (!observedOriginMatches) {
-        stoppedAt = input.steps.length;
-        reason = "Fresh final state on expectedOrigin is unavailable. Read before continuing.";
-      }
+    steps.push({
+      index,
+      operation: step.operation,
+      outcome: returned.ok ? "returned" : "failed",
+      elapsedMs: performance.now() - stepStart,
+    });
+    if (!returned.ok) {
+      stoppedAt = index;
+      deliveryUnknown = !returned.unsupported && step.operation !== "waitFor";
+      reason = returned.unsupported
+        ? "This browser client does not support the requested operation. No substitute was attempted."
+        : "Step failed. Inspect state before any retry; completed actions were not replayed.";
+      break;
     }
-    // A returned browser action never establishes the requested business result.
-    return {
-      status: stoppedAt === null ? "actions_completed" : "incomplete",
-      taskSuccessVerified: false,
-      steps,
-      stoppedAt,
-      deliveryUnknown,
-      readBeforeRetry: stoppedAt !== null,
-      reason,
-      elapsedMs: performance.now() - start,
-      state,
-    };
-  });
-}
+  }
+  const state = yield* executor.snapshot.pipe(
+    Effect.match({ onFailure: () => null, onSuccess: (value) => value }),
+  );
+  if (stoppedAt === null) {
+    const observedOriginMatches =
+      state !== null &&
+      URL.canParse(state.url) &&
+      new URL(state.url).origin === input.expectedOrigin;
+    if (!observedOriginMatches) {
+      stoppedAt = input.steps.length;
+      reason = "Fresh final state on expectedOrigin is unavailable. Read before continuing.";
+    }
+  }
+  // A returned browser action never establishes the requested business result.
+  return {
+    status: stoppedAt === null ? "actions_completed" : "incomplete",
+    taskSuccessVerified: false,
+    steps,
+    stoppedAt,
+    deliveryUnknown,
+    readBeforeRetry: stoppedAt !== null,
+    reason,
+    elapsedMs: performance.now() - start,
+    state,
+  };
+});

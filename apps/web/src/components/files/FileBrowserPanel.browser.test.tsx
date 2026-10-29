@@ -4,6 +4,7 @@ import { act, render } from "../../../test/render";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import FileBrowserPanel from "./FileBrowserPanel";
+import { COMPOSER_MENTION_DRAG_TYPE } from "~/components/chat/composerMentionDrag";
 
 const files = vi.hoisted(() => ({
   directoryEntries: [] as ProjectEntry[],
@@ -41,7 +42,9 @@ vi.mock("~/hooks/useWorkspaceMutationRefresh", () => ({ useWorkspaceMutationRefr
 vi.mock("~/composerHandleContext", () => ({
   useComposerHandleContext: () => ({ current: { insertTextAtEnd: files.insert } }),
 }));
-vi.mock("~/fileContextMenu", () => ({ useFileContextMenu: () => ({}) }));
+vi.mock("~/fileContextMenu", () => ({
+  useFileContextMenu: () => ({ buildItems: () => [], activate: () => Promise.resolve() }),
+}));
 vi.mock("~/localApi", () => ({ readLocalApi: () => undefined }));
 vi.mock("~/components/ui/toast", () => ({ toastManager: { add: vi.fn() } }));
 vi.mock("~/components/MorphIcon", () => ({ MorphIcon: () => null }));
@@ -50,6 +53,14 @@ vi.mock("~/components/ui/tooltip", () => ({
   TooltipTrigger: ({ render }: { render: ReactNode }) => render,
   TooltipPopup: () => null,
 }));
+
+function findTreeRow(path: string): HTMLElement | null {
+  for (const host of document.querySelectorAll("*")) {
+    const row = host.shadowRoot?.querySelector<HTMLElement>(`[data-item-path="${path}"]`);
+    if (row) return row;
+  }
+  return null;
+}
 
 describe("Files panel search", () => {
   function setup() {
@@ -236,5 +247,35 @@ describe("Files panel search", () => {
     expect(visiblePaths(container)).toEqual([]);
     expect(hasMessage(container, "No matching files.")).toBe(false);
     expect(container.textContent).toContain("Workspace search failed.");
+  });
+  it("dragging a file row carries a composer mention without opening it, and dragend releases it", async () => {
+    const { props, container } = setup();
+    files.directoryEntries = [
+      { path: "src", kind: "directory" },
+      { path: "README.md", kind: "file" },
+    ];
+    const onOpenFile = vi.fn();
+    await using _screen = await render(<FileBrowserPanel {...props} onOpenFile={onOpenFile} />, {
+      container,
+    });
+    await vi.waitFor(() => expect(findTreeRow("README.md")).not.toBeNull());
+    const row = findTreeRow("README.md")!;
+
+    const dataTransfer = new DataTransfer();
+    row.dispatchEvent(
+      new DragEvent("dragstart", { bubbles: true, cancelable: true, composed: true, dataTransfer }),
+    );
+    // The tree selects the row the drag picked up; mid-drag that must not open it.
+    row.click();
+    await vi.waitFor(() => expect(row.getAttribute("aria-selected")).toBe("true"));
+
+    expect(dataTransfer.getData(COMPOSER_MENTION_DRAG_TYPE)).toContain("README.md");
+    expect(onOpenFile).not.toHaveBeenCalled();
+
+    row.dispatchEvent(new DragEvent("dragend", { bubbles: true, composed: true, dataTransfer }));
+    await vi.waitFor(() => expect(row.getAttribute("aria-selected")).not.toBe("true"));
+
+    row.click();
+    await vi.waitFor(() => expect(onOpenFile).toHaveBeenCalledTimes(1));
   });
 });

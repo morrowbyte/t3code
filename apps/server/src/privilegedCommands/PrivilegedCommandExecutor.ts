@@ -465,10 +465,12 @@ const make = Effect.gen(function* () {
               ),
             );
             const stop = fs.writeFileString(`${control}.stop`, "stop").pipe(Effect.ignore);
-            const wait = Effect.raceFirst(
-              waitFinished.pipe(Effect.map((result) => ({ kind: "done" as const, result }))),
-              Effect.sleep(timeoutMs).pipe(Effect.as({ kind: "timeout" as const })),
-            ).pipe(
+            const wait = waitFinished.pipe(
+              Effect.map((result) => ({ kind: "done" as const, result })),
+              Effect.timeoutOrElse({
+                duration: timeoutMs,
+                orElse: () => Effect.succeed({ kind: "timeout" as const }),
+              }),
               Effect.flatMap((result) =>
                 result.kind === "done"
                   ? Effect.succeed(result.result)

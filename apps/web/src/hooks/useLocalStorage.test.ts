@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import { AgentIdentityTheme, AGENT_IDENTITY_THEME_OPTIONS } from "@t3tools/contracts";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 function createStorage(overrides: Partial<Storage> = {}): Storage {
@@ -43,5 +44,19 @@ describe("local storage errors", () => {
     );
     blocked = false;
     expect(getLocalStorageItem("read-key", Schema.String)).toBe("saved value");
+  });
+});
+
+describe("agent identity theme storage", () => {
+  it("round-trips every theme under the existing local preference key", async () => {
+    const storage = createStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+    const { getLocalStorageItem, setLocalStorageItem } = await import("./useLocalStorage");
+    const key = "t3code:agent-identity-theme";
+    for (const { value } of AGENT_IDENTITY_THEME_OPTIONS) {
+      setLocalStorageItem(key, value, AgentIdentityTheme);
+      expect(storage.getItem(key)).toBe(JSON.stringify(value));
+      expect(getLocalStorageItem(key, AgentIdentityTheme)).toBe(value);
+    }
   });
 });

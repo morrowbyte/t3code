@@ -1,3 +1,6 @@
+import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
+import * as PortScanner from "../preview/PortScanner.ts";
 import * as CuaControl from "../cua/CuaControl.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
@@ -136,25 +139,30 @@ const layerLive = RuntimeLayer.layer.pipe(
   Layer.provide(layerBackgroundPolicy),
   Layer.provide(layerPlatformTest),
   Layer.provide(McpProviderSessions.layer),
+  Layer.provide(Layer.mock(PortScanner.PortDiscovery)({ trackAgent: () => () => undefined })),
 );
 
 const waitForIdle = Effect.fn("CursorOrchestratorV2Live.waitForIdle")(function* (
   threadId: ThreadId,
 ) {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
-  for (let attempt = 0; attempt < 600; attempt += 1) {
-    const projection = yield* orchestrator.getThreadProjection(threadId);
-    if (
-      projection.runs.length > 0 &&
-      projection.runs.every(
-        (run) => !["queued", "starting", "running", "waiting"].includes(run.status),
-      )
-    ) {
-      return projection;
-    }
-    yield* Effect.sleep("500 millis");
-  }
-  return yield* Effect.die(new Error(`Timed out waiting for Cursor thread ${threadId}.`));
+  const afterSequence = yield* orchestrator.getThreadEventSequence(threadId);
+  return yield* Stream.concat(
+    Stream.fromEffect(orchestrator.getThreadProjection(threadId)),
+    orchestrator
+      .streamStoredEventsFrom({ threadId, afterSequence })
+      .pipe(Stream.mapEffect(() => orchestrator.getThreadProjection(threadId))),
+  ).pipe(
+    Stream.filter(
+      (projection) =>
+        projection.runs.length > 0 &&
+        projection.runs.every(
+          (run) => !["queued", "starting", "running", "waiting"].includes(run.status),
+        ),
+    ),
+    Stream.runHead,
+    Effect.map(Option.getOrThrow),
+  );
 });
 
 describe.runIf(process.env.T3_CURSOR_LIVE_ORCHESTRATOR === "1")(

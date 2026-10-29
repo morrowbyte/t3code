@@ -659,12 +659,30 @@ describe("LiveVoiceController", () => {
     } as unknown as LiveVoicePeer;
     const harness = createHarness({ peer: brokenPeer });
     const starting = harness.controller.start(target);
-    await vi.waitFor(() => expect(harness.calls).toContain("subscribe"));
+    await harness.subscribed;
     harness.emit(statusEvent(lease));
-    await vi.waitFor(() => expect(harness.calls).toContain("signaling-start"));
+    await harness.signalingStarted;
+    harness.emit({
+      type: "activity",
+      leaseId: lease.leaseId,
+      generation: lease.generation,
+      environmentId: lease.environmentId,
+      threadId: lease.threadId,
+      activity: {
+        id: "startup-tool",
+        action: "read-work",
+        revision: 2,
+        status: "running",
+        occurredAt: "first",
+        updatedAt: "first",
+      },
+    });
     harness.emit(answerEvent);
     await starting;
-    expect(harness.controller.currentState).toMatchObject({ phase: "error" });
+    expect(harness.controller.currentState).toMatchObject({
+      phase: "error",
+      activities: [{ id: "startup-tool", revision: 3, status: "interrupted", occurredAt: "first" }],
+    });
     expect(harness.controller.currentState.error).not.toContain("private upstream detail");
     expect(brokenPeer.close).toHaveBeenCalledOnce();
     expect(harness.stoppedTracks).toBe(1);
@@ -909,6 +927,16 @@ describe("LiveVoiceController", () => {
         revision: 6,
       },
     ]);
+    emit(7, "snapshot", "", true);
+    expect(harness.controller.currentState.transcript).toEqual([
+      {
+        speaker: "user",
+        text: "",
+        final: true,
+        segmentId: "native-segment",
+        revision: 7,
+      },
+    ]);
     expect(harness.signaling.start).toHaveBeenCalledOnce();
     await harness.controller.end();
   });
@@ -1012,6 +1040,94 @@ describe("LiveVoiceController", () => {
     expect(harness.calls.filter((call) => call === "unsubscribe")).toHaveLength(1);
   });
 });
+
+it.each(["end", "error"] as const)(
+  "preserves terminal Live-tool receipts and interrupts open call activities on local %s",
+  async (finish) => {
+    const remoteStop = deferred<LiveVoiceLease>();
+    const h = createHarness({ stop: () => remoteStop.promise });
+    await connectFirst(h, h.controller.start(target));
+    const event: Extract<LiveVoiceSignalEvent, { type: "activity" }> = {
+      type: "activity",
+      leaseId: lease.leaseId,
+      generation: lease.generation,
+      environmentId: lease.environmentId,
+      threadId: lease.threadId,
+      activity: {
+        id: "live-tool",
+        action: "read-work",
+        revision: 2,
+        status: "running",
+        occurredAt: "first",
+        updatedAt: "first",
+      },
+    };
+    h.emit(event);
+    h.emit({
+      ...event,
+      environmentId: "other" as typeof lease.environmentId,
+      activity: { ...event.activity, id: "foreign" },
+    });
+    h.emit({
+      ...event,
+      generation: lease.generation + 1,
+      activity: { ...event.activity, id: "old-call" },
+    });
+    h.emit({
+      ...event,
+      activity: {
+        ...event.activity,
+        revision: 3,
+        status: "completed",
+        occurredAt: "later",
+        updatedAt: "later",
+      },
+    });
+    h.emit(event);
+    const completed = h.controller.currentState.activities;
+    expect(completed).toEqual([
+      { ...event.activity, revision: 3, status: "completed", updatedAt: "later" },
+    ]);
+    for (const status of ["failed", "interrupted"] as const) {
+      h.emit({ ...event, activity: { ...event.activity, id: status, status } });
+    }
+    const terminal = h.controller.currentState.activities!;
+    for (const status of ["started", "running", "waiting"] as const) {
+      h.emit({ ...event, activity: { ...event.activity, id: status, status } });
+    }
+    const ending = finish === "end" ? h.controller.end() : undefined;
+    if (finish === "error") {
+      h.emit({
+        type: "error",
+        leaseId: lease.leaseId,
+        generation: lease.generation,
+        code: "runtime_unavailable",
+      });
+    }
+    await h.stopRequested;
+    expect(h.controller.currentState.phase).toBe(finish === "end" ? "stopping" : "error");
+    const settled = h.controller.currentState.activities!;
+    expect(settled).toHaveLength(6);
+    for (const receipt of terminal) {
+      expect(settled.find((activity) => activity.id === receipt.id)).toBe(receipt);
+    }
+    for (const id of ["started", "running", "waiting"]) {
+      expect(settled.find((activity) => activity.id === id)).toEqual({
+        ...event.activity,
+        id,
+        revision: 3,
+        status: "interrupted",
+        updatedAt: expect.any(String),
+      });
+    }
+    h.emit({ ...event, activity: { ...event.activity, revision: 20, status: "completed" } });
+    expect(h.controller.currentState.activities).toBe(settled);
+    remoteStop.resolve({ ...lease, status: "closed" });
+    if (ending) await ending;
+    else await h.controller.end();
+    expect(h.controller.currentState.activities).toBe(settled);
+  },
+);
 
 it("attaches recording only after both call streams are ready and isolates hook failures", async () => {
   const attach = vi.fn(() => {

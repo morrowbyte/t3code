@@ -30,16 +30,16 @@ export const makeContextResolver = Effect.gen(function* () {
     const thread = Option.isSome(projections)
       ? yield* projections.value
           .getThread(input.item.threadId)
-          .pipe(Effect.catch(() => Effect.succeed(undefined)))
+          .pipe(Effect.orElseSucceed(() => undefined))
       : undefined;
     const message =
       Option.isSome(projections) && input.item.runId !== null
         ? yield* projections.value
             .getRunMessage(input.item.threadId, input.item.runId)
-            .pipe(Effect.catch(() => Effect.succeed(undefined)))
+            .pipe(Effect.orElseSucceed(() => undefined))
         : undefined;
     const settings = Option.isSome(settingsService)
-      ? yield* settingsService.value.getSettings.pipe(Effect.catch(() => Effect.succeed(undefined)))
+      ? yield* settingsService.value.getSettings.pipe(Effect.orElseSucceed(() => undefined))
       : undefined;
     const resolved =
       settings && thread ? resolveProjectSettings(settings, thread.projectId).settings : settings;

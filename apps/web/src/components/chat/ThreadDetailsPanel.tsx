@@ -16,7 +16,7 @@ import ProjectScriptsControl, {
   type NewProjectScriptInput,
   type ProjectScriptActionResult,
 } from "../ProjectScriptsControl";
-import { memo, useRef, type ComponentProps } from "react";
+import { memo, use, useRef, type ComponentProps } from "react";
 import { AgentAvatarSettings } from "../agent-identity/AgentAvatarSettings";
 import { ThreadDetailsCard } from "./ThreadDetailsCard";
 import { OpenInPicker } from "./OpenInPicker";
@@ -25,14 +25,16 @@ import { ThreadAutomationsPanel } from "./ThreadAutomationsPanel";
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
 import { useKeyboardCommands } from "../keyboard/keyboardCommands";
 import { useRightPanelStore } from "../../rightPanelStore";
-import type { ThreadPanelPresentation } from "../../rightPanelLayout";
+import { useChatCanvas } from "./ChatCanvasContext";
+import { BackgroundThreadContext } from "./backgroundThread";
 import { useStableCallback } from "../../hooks/useStableCallback";
+import { ThreadServersPanel } from "./ThreadServersPanel";
 
 const GitActionsControl = memo(BaseGitActionsControl);
 
-export interface ThreadDetailsPanelProps extends Pick<
+interface ThreadDetailsPanelProps extends Pick<
   ComponentProps<typeof ThreadDetailsCard>,
-  "anchor" | "handle" | "onPresentationChange"
+  "anchor" | "handle"
 > {
   forceNewWorktree?: boolean;
   environmentId: EnvironmentId;
@@ -74,7 +76,8 @@ export interface ThreadDetailsPanelProps extends Pick<
 }
 
 export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
-  const presentation = useRef<ThreadPanelPresentation>("popover");
+  const presentation = useChatCanvas()?.detailsCardPlacement ? "inline" : "popover";
+  const backgroundThread = use(BackgroundThreadContext);
   const gitActionsControl = useRef<GitActionsControlHandle | null>(null);
   const pendingGitActions = useRef<{ environmentId: EnvironmentId; threadId: ThreadId } | null>(
     null,
@@ -94,26 +97,30 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
       control.openKeyboardActions();
     });
   });
-  useKeyboardCommands({
-    "git.actions": () => {
-      if (!props.gitCwd || !props.activeProjectName) return false;
-      const control = gitActionsControl.current;
-      if (!control)
-        pendingGitActions.current = {
-          environmentId: props.environmentId,
-          threadId: props.threadId,
-        };
-      useRightPanelStore
-        .getState()
-        .setThreadPanelOpen(
-          { environmentId: props.environmentId, threadId: props.threadId },
-          presentation.current,
-          true,
-        );
-      if (control) return control.openKeyboardActions();
-      return true;
-    },
-  });
+  useKeyboardCommands(
+    backgroundThread
+      ? {}
+      : {
+          "git.actions": () => {
+            if (!props.gitCwd || !props.activeProjectName) return false;
+            const control = gitActionsControl.current;
+            if (!control)
+              pendingGitActions.current = {
+                environmentId: props.environmentId,
+                threadId: props.threadId,
+              };
+            useRightPanelStore
+              .getState()
+              .setThreadPanelOpen(
+                { environmentId: props.environmentId, threadId: props.threadId },
+                presentation,
+                true,
+              );
+            if (control) return control.openKeyboardActions();
+            return true;
+          },
+        },
+  );
   const fileScripts = useT3ProjectFileScripts(
     props.environmentId,
     props.activeProjectScripts ? props.gitCwd : null,
@@ -150,10 +157,6 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
       threadRef={{ environmentId: props.environmentId, threadId: props.threadId }}
       anchor={props.anchor}
       handle={props.handle}
-      onPresentationChange={(nextPresentation) => {
-        presentation.current = nextPresentation;
-        props.onPresentationChange(nextPresentation);
-      }}
     >
       {(density) => (
         <>
@@ -219,7 +222,6 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                 {props.activeProjectName ? (
                   <GitActionsControl
                     keyboardActionsRef={attachGitActionsControl}
-                    displayMode="panel"
                     compact={density !== "full"}
                     gitCwd={props.gitCwd}
                     activeThreadRef={activeThreadRef}
@@ -232,6 +234,10 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
           ) : null}
 
           {!props.draftId ? <AgentAvatarSettings threadRef={activeThreadRef} /> : null}
+
+          {density === "full" && !props.draftId ? (
+            <ThreadServersPanel environmentId={props.environmentId} threadId={props.threadId} />
+          ) : null}
 
           {density === "full" && !props.draftId ? (
             <ThreadAutomationsPanel environmentId={props.environmentId} threadId={props.threadId} />

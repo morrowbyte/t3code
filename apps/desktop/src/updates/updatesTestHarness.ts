@@ -176,11 +176,25 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
       ? DesktopBackendPool.layerTest(options.backendInstances ?? [stubBackendInstance])
       : Layer.succeed(DesktopBackendPool.DesktopBackendPool, {
           primary: Effect.succeed(stubBackendInstance),
-          get: () => Effect.succeedSome(stubBackendInstance),
+          get: Effect.fn("DesktopBackendPool.get")(() => Effect.succeedSome(stubBackendInstance)),
           list: Effect.succeed([stubBackendInstance]),
-          register: () => Effect.die("unexpected backend registration"),
-          unregister: () => Effect.die("unexpected backend removal"),
-          withUpdateInventory: (use) => use([stubBackendInstance]).pipe(Effect.map(Option.some)),
+          register: Effect.fn("DesktopBackendPool.register")(() =>
+            Effect.die("unexpected backend registration"),
+          ),
+          unregister: Effect.fn("DesktopBackendPool.unregister")(() =>
+            Effect.die("unexpected backend removal"),
+          ),
+          withUpdateInventory: Effect.fn("DesktopBackendPool.withUpdateInventory")(function* <
+            A,
+            E,
+            R,
+          >(
+            use: (
+              instances: ReadonlyArray<DesktopBackendPool.DesktopBackendInstance>,
+            ) => Effect.Effect<A, E, R>,
+          ): Effect.fn.Return<Option.Option<A>, E, R> {
+            return Option.some(yield* use([stubBackendInstance]));
+          }),
         });
 
   const layerEnvironment = DesktopEnvironment.layer({
@@ -254,32 +268,38 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
   const isInstallRecord = (path: string) =>
     path.endsWith(DesktopUpdates.DESKTOP_UPDATE_INSTALL_RECORD_FILE);
   const layerFileSystem = FileSystem.layerNoop({
-    readFileString: (path) => {
-      if (
-        path.endsWith(DesktopUpdates.DESKTOP_UPDATE_HISTORY_FILE) &&
-        !historyFiles.has(path) &&
-        options.historyFile !== undefined
-      )
-        return Effect.succeed(options.historyFile);
-      if (historyFiles.has(path)) return Effect.succeed(historyFiles.get(path)!);
-      const installRecord = isInstallRecord(path)
-        ? (installRecords.get(path) ?? previousInstallRecord)
-        : undefined;
-      if (installRecord !== undefined) return Effect.succeed(installRecord);
-      if (path === "/missing/resources/app-update.yml" && options.appUpdateYml !== undefined) {
-        return Effect.succeed(options.appUpdateYml);
-      }
-      return path === "/missing/resources/package-type" && options.packageType !== undefined
-        ? Effect.succeed(options.packageType)
-        : Effect.fail(
-            PlatformError.systemError({
-              module: "FileSystem",
-              method: "readFileString",
-              _tag: "NotFound",
-              pathOrDescriptor: path,
-            }),
-          );
-    },
+    readFileString: Effect.fn("readFileString")(
+      (path: string): Effect.Effect<string, PlatformError.PlatformError> => {
+        if (
+          path.endsWith(DesktopUpdates.DESKTOP_UPDATE_HISTORY_FILE) &&
+          !historyFiles.has(path) &&
+          options.historyFile !== undefined
+        )
+          return Effect.succeed(options.historyFile);
+        if (historyFiles.has(path)) return Effect.succeed(historyFiles.get(path)!);
+        const installRecord = isInstallRecord(path)
+          ? (installRecords.get(path) ?? previousInstallRecord)
+          : undefined;
+        if (installRecord !== undefined) return Effect.succeed(installRecord);
+        if (
+          path.replaceAll("\\", "/") === "/missing/resources/app-update.yml" &&
+          options.appUpdateYml !== undefined
+        ) {
+          return Effect.succeed(options.appUpdateYml);
+        }
+        return path.replaceAll("\\", "/") === "/missing/resources/package-type" &&
+          options.packageType !== undefined
+          ? Effect.succeed(options.packageType)
+          : Effect.fail(
+              PlatformError.systemError({
+                module: "FileSystem",
+                method: "readFileString",
+                _tag: "NotFound",
+                pathOrDescriptor: path,
+              }),
+            );
+      },
+    ),
     makeDirectory: () => Effect.void,
     writeFileString: (path, data) =>
       Effect.sync(() => {

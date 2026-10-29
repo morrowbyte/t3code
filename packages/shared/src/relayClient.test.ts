@@ -9,6 +9,7 @@ import * as Hex from "effect/encoding/Hex";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
+import * as Path from "effect/Path";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/http";
@@ -17,8 +18,7 @@ import * as HostProcess from "./HostProcess.ts";
 
 import * as RelayClient from "./relayClient.ts";
 
-// The suite runs the linux code path against the real filesystem, checking
-// POSIX exec bits that NTFS never reports; the win32 branch skips that check.
+// POSIX exec-bit checks do not apply on NTFS.
 const windowsHost = HostProcess.Platform.defaultValue() === "win32";
 
 const layerHostRuntime = (env: Record<string, string> = {}, platform: NodeJS.Platform = "linux") =>
@@ -111,8 +111,28 @@ const makeLockedRenames = (
   Effect.gen(function* () {
     const firstAttempt = yield* Deferred.make<void>();
     const renames = { attempts: 0 };
+    const executablePaths = new Set<string>();
     const locked = FileSystem.make({
       ...fileSystem,
+      chmod: (path, mode) =>
+        fileSystem.chmod(path, mode).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              if ((mode & 0o111) !== 0) executablePaths.add(path);
+            }),
+          ),
+        ),
+      // NTFS cannot retain the execute bits requested by the simulated Linux install.
+      stat: (path) =>
+        fileSystem
+          .stat(path)
+          .pipe(
+            Effect.map((info) =>
+              windowsHost && executablePaths.has(path)
+                ? { ...info, mode: info.mode | 0o111 }
+                : info,
+            ),
+          ),
       rename: (from, to) =>
         Effect.suspend(() => {
           if ((to.endsWith(".tmp") ? "staging" : "activation") !== input.rename) {
@@ -149,8 +169,15 @@ describe("RelayClient", () => {
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-cloudflared-test-" });
-      const directory = `${baseDir}/tools/cloudflared/${RelayClient.CLOUDFLARED_VERSION}/linux-x64`;
-      const lockPath = `${directory}/cloudflared.lock`;
+      const path = yield* Path.Path;
+      const directory = path.join(
+        baseDir,
+        "tools",
+        "cloudflared",
+        RelayClient.CLOUDFLARED_VERSION,
+        "linux-x64",
+      );
+      const lockPath = path.join(directory, "cloudflared.lock");
       yield* fileSystem.makeDirectory(directory, { recursive: true });
       yield* fileSystem.writeFileString(lockPath, "other-installer");
       const contended = yield* Deferred.make<void>();

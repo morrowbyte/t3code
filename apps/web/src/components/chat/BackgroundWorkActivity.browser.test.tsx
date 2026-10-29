@@ -67,7 +67,7 @@ describe("background process activity", () => {
           {
             id: "background-work:test",
             variant: "default",
-            priority: "activity",
+            group: "attention",
             title: presentation.title,
             icon: null,
             content: (

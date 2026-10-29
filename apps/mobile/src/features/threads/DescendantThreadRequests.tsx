@@ -8,8 +8,8 @@ import {
   type ScopedThreadRef,
   type RuntimeRequestId,
 } from "@t3tools/contracts";
-import { useNavigation } from "@react-navigation/native";
 import { useState } from "react";
+import { useDerivedValue } from "react-native-reanimated";
 import { Pressable, ScrollView, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
@@ -20,6 +20,7 @@ import { environmentThreadDetails, environmentThreadShells } from "../../state/t
 import { useThreadRequests } from "../../state/use-selected-thread-requests";
 import { PendingApprovalCard } from "./PendingApprovalCard";
 import { PendingUserInputCard } from "./PendingUserInputCard";
+import { useOpenLinkedThread } from "./useOpenLinkedThread";
 
 const requestsAtom = createDescendantThreadRequestsAtom({
   threadsAtom: environmentThreadShells.environmentThreadsAtom,
@@ -33,6 +34,7 @@ function RequestCard(props: {
   readonly canOperate: boolean;
 }) {
   const [collapsed, setCollapsed] = useState(false);
+  const maxHeight = useDerivedValue(() => 320);
   const { connectedEnvironments } = useRemoteConnections();
   const environmentLabel = connectedEnvironments.find(
     (entry) => entry.environmentId === props.group.origin.environmentId,
@@ -57,8 +59,9 @@ function RequestCard(props: {
       {request.activePendingUserInput ? (
         <PendingUserInputCard
           origin={props.group.origin}
+          environmentId={props.group.origin.environmentId}
           pendingUserInput={request.activePendingUserInput}
-          maxHeight={320}
+          maxHeight={maxHeight}
           collapsed={collapsed}
           onToggleCollapsed={() => setCollapsed((value) => !value)}
           canOperateThread={props.canOperate}
@@ -162,12 +165,12 @@ export function DescendantThreadRequestGroups(props: {
 export function DescendantThreadRequests(props: { readonly parent: ScopedThreadRef }) {
   const groups = useAtomValue(requestsAtom(props.parent));
   const canOperate = useEnvironmentScope(props.parent.environmentId, AuthOrchestrationOperateScope);
-  const navigation = useNavigation();
+  const openLinkedThread = useOpenLinkedThread();
   return (
     <DescendantThreadRequestGroups
       groups={groups}
       canOperate={canOperate}
-      onOpenThread={(ref) => navigation.navigate("Thread", ref)}
+      onOpenThread={openLinkedThread}
     />
   );
 }

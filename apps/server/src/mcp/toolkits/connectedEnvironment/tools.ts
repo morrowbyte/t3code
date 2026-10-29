@@ -36,8 +36,8 @@ const list = Tool.make("t3_connected_thread_list", {
   ...common,
   description: "List threads in an already connected environment and project.",
   parameters: Schema.Struct({
-    environmentId: EnvironmentId,
     ...OrchestratorMcpThreadListInput.fields,
+    environmentId: EnvironmentId,
   }),
   success: OrchestratorMcpThreadListResult,
 }).annotate(Tool.Readonly, true);
@@ -57,8 +57,8 @@ const read = Tool.make("t3_connected_thread_read", {
   ...common,
   description: "Read an existing thread in an already connected environment.",
   parameters: Schema.Struct({
-    environmentId: EnvironmentId,
     ...OrchestratorMcpThreadReadInput.fields,
+    environmentId: EnvironmentId,
   }),
   success: OrchestratorMcpThreadReadResult,
 }).annotate(Tool.Readonly, true);

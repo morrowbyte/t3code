@@ -140,69 +140,106 @@ describe("CodexAvatarGenerator", () => {
   );
 
   it.effect(
-    "registers handlers before turn/start, accepts immediate notifications and makes exactly one request",
+    "registers handlers before turn/start and requests one portrait with the selected theme",
     () =>
       Effect.gen(function* () {
         const f = yield* fixture;
-        const requests: Array<{ method: string; input: unknown }> = [];
-        let imageHandler:
-          | ((input: CodexSchema.V2ItemCompletedNotification) => Effect.Effect<void>)
-          | undefined;
-        let turnHandler:
-          | ((input: CodexSchema.V2TurnCompletedNotification) => Effect.Effect<void>)
-          | undefined;
-        const completed = {
-          threadId: "native-thread",
-          turn: { id: "native-turn", status: "completed", items: [], error: null },
-        } as unknown as CodexSchema.V2TurnCompletedNotification;
-        const client = {
-          request: (method: string, params: unknown) =>
-            Effect.gen(function* () {
-              requests.push({ method, input: params });
-              if (method === "account/read") return { account: { type: "chatgpt" } };
-              if (method === "modelProvider/capabilities/read") return { imageGeneration: true };
-              if (method === "config/read")
-                return { config: { mcp_servers: { private: { command: "never-launch" } } } };
-              if (method === "thread/start") return { thread: { id: "native-thread" } };
-              expect(method).toBe("turn/start");
-              expect(imageHandler).toBeDefined();
-              expect(turnHandler).toBeDefined();
-              yield* imageHandler!({
-                threadId: "native-thread",
-                turnId: "native-turn",
-                completedAtMs: 0,
-                item: {
-                  type: "imageGeneration",
-                  id: "image-1",
-                  status: "completed",
-                  result: "",
-                  savedPath: f.savedPath,
-                },
-              });
-              yield* turnHandler!(completed);
-              return { turn: { id: "native-turn" } };
-            }),
-          handleServerNotification: (method: string, handler: unknown) =>
-            Effect.sync(() => {
-              if (method === "item/completed") imageHandler = handler as typeof imageHandler;
-              if (method === "turn/completed") turnHandler = handler as typeof turnHandler;
-            }),
-        } as unknown as CodexClient.CodexAppServerClient["Service"];
-        const image = yield* generateCodexAvatar(
-          client,
-          { threadId: ThreadId.make("local-thread"), theme: "weasel", name: "Casey" },
-          f.root,
-          "selected-model",
-        );
-        expect(image.bytes).toEqual(new Uint8Array(f.bytes));
-        expect(requests.filter((request) => request.method === "turn/start")).toHaveLength(1);
-        expect(requests.find((request) => request.method === "thread/start")?.input).toMatchObject({
-          ephemeral: true,
-          modelProvider: "openai",
-          cwd: f.root,
-          model: "selected-model",
-          config: { "mcp_servers.private.enabled": false, "features.shell_tool": false },
-        });
+        for (const [theme, style] of [
+          ["neutral", "a distinctive friendly individual character, polished illustrated portrait"],
+          ["weasel", "a distinctive expressive weasel character, illustrated portrait"],
+          ["dog", "a distinctive expressive dog character, illustrated portrait"],
+          ["cat", "a distinctive expressive cat character, illustrated portrait"],
+          ["fox", "a distinctive expressive fox character, illustrated portrait"],
+          ["otter", "a distinctive expressive otter character, illustrated portrait"],
+          ["raccoon", "a distinctive expressive raccoon character, illustrated portrait"],
+          ["owl", "a distinctive expressive owl character, illustrated portrait"],
+          ["raven", "a distinctive expressive raven character, illustrated portrait"],
+          [
+            "red-panda",
+            "a distinctive expressive red panda character with reddish fur and a ringed tail, illustrated portrait",
+          ],
+          [
+            "capybara",
+            "a distinctive expressive capybara character with a broad muzzle and small rounded ears, illustrated portrait",
+          ],
+          ["bear", "a distinctive expressive bear character, illustrated portrait"],
+          [
+            "turtle",
+            "a distinctive expressive turtle character with a visible shell, illustrated portrait",
+          ],
+        ] as const) {
+          const requests: Array<{ method: string; input: unknown }> = [];
+          let imageHandler:
+            | ((input: CodexSchema.V2ItemCompletedNotification) => Effect.Effect<void>)
+            | undefined;
+          let turnHandler:
+            | ((input: CodexSchema.V2TurnCompletedNotification) => Effect.Effect<void>)
+            | undefined;
+          const completed = {
+            threadId: "native-thread",
+            turn: { id: "native-turn", status: "completed", items: [], error: null },
+          } as unknown as CodexSchema.V2TurnCompletedNotification;
+          const client = {
+            request: (method: string, params: unknown) =>
+              Effect.gen(function* () {
+                requests.push({ method, input: params });
+                if (method === "account/read") return { account: { type: "chatgpt" } };
+                if (method === "modelProvider/capabilities/read") return { imageGeneration: true };
+                if (method === "config/read")
+                  return { config: { mcp_servers: { private: { command: "never-launch" } } } };
+                if (method === "thread/start") return { thread: { id: "native-thread" } };
+                expect(method).toBe("turn/start");
+                expect(imageHandler).toBeDefined();
+                expect(turnHandler).toBeDefined();
+                yield* imageHandler!({
+                  threadId: "native-thread",
+                  turnId: "native-turn",
+                  completedAtMs: 0,
+                  item: {
+                    type: "imageGeneration",
+                    id: "image-1",
+                    status: "completed",
+                    result: "",
+                    savedPath: f.savedPath,
+                  },
+                });
+                yield* turnHandler!(completed);
+                return { turn: { id: "native-turn" } };
+              }),
+            handleServerNotification: (method: string, handler: unknown) =>
+              Effect.sync(() => {
+                if (method === "item/completed") imageHandler = handler as typeof imageHandler;
+                if (method === "turn/completed") turnHandler = handler as typeof turnHandler;
+              }),
+          } as unknown as CodexClient.CodexAppServerClient["Service"];
+          const image = yield* generateCodexAvatar(
+            client,
+            { threadId: ThreadId.make("local-thread"), theme, name: "Casey" },
+            f.root,
+            "selected-model",
+          );
+          expect(image.bytes).toEqual(new Uint8Array(f.bytes));
+          expect(requests.filter((request) => request.method === "turn/start")).toHaveLength(1);
+          expect(
+            requests.find((request) => request.method === "thread/start")?.input,
+          ).toMatchObject({
+            ephemeral: true,
+            modelProvider: "openai",
+            cwd: f.root,
+            model: "selected-model",
+            config: { "mcp_servers.private.enabled": false, "features.shell_tool": false },
+          });
+          expect(requests.find((request) => request.method === "turn/start")?.input).toMatchObject({
+            input: [
+              {
+                type: "text",
+                text: expect.stringContaining(
+                  'Agent name: "Casey". Style: ' + style + ". Head and shoulders",
+                ),
+              },
+            ],
+          });
+        }
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 

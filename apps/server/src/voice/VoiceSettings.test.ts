@@ -5,12 +5,31 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Option from "effect/Option";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ServerConfig from "../config.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { makeVoiceSettings } from "./VoiceSettings.ts";
 
-it.effect("keeps an unchanged key private and removes only the explicitly saved key", () =>
-  Effect.gen(function* () {
+it.effect("keeps an unchanged key private and removes only the explicitly saved key", () => {
+  const permissions = new Map<string, number>();
+  const fileSystem = Layer.effect(
+    FileSystem.FileSystem,
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      return FileSystem.make({
+        ...fs,
+        chmod: (path, mode) =>
+          fs.chmod(path, mode).pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                permissions.set(path, mode);
+              }),
+            ),
+          ),
+      });
+    }),
+  ).pipe(Layer.provideMerge(NodeServices.layer));
+  return Effect.gen(function* () {
     const store = yield* makeVoiceSettings;
     const config = yield* ServerConfig.ServerConfig;
     const fs = yield* FileSystem.FileSystem;
@@ -23,8 +42,13 @@ it.effect("keeps an unchanged key private and removes only the explicitly saved 
     const secretPath = path.join(config.secretsDir, "voice-transcription-api-key.bin");
     const encrypted = yield* fs.readFile(secretPath);
     assert.isFalse(new TextDecoder().decode(encrypted).includes("fixture-private-key"));
-    assert.equal((yield* fs.stat(secretPath)).mode & 0o777, 0o600);
-    assert.equal((yield* fs.stat(config.secretsDir)).mode & 0o777, 0o700);
+    assert.equal(permissions.get(secretPath), 0o600);
+    assert.equal(permissions.get(config.secretsDir), 0o700);
+    // NTFS cannot represent POSIX modes; requested permissions remain checked on every host.
+    if ((yield* HostProcess.Platform) !== "win32") {
+      assert.equal((yield* fs.stat(secretPath)).mode & 0o777, 0o600);
+      assert.equal((yield* fs.stat(config.secretsDir)).mode & 0o777, 0o700);
+    }
     const reopened = yield* makeVoiceSettings;
     assert.equal((yield* reopened.read).apiKey, "fixture-private-key");
     yield* store.write({ ...settings, model: "another-model" });
@@ -42,12 +66,12 @@ it.effect("keeps an unchanged key private and removes only the explicitly saved 
     Effect.provide(
       ServerSecretStore.layer.pipe(
         Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "voice-settings-" })),
-        Layer.provideMerge(NodeServices.layer),
+        Layer.provideMerge(fileSystem),
       ),
     ),
     Effect.scoped,
-  ),
-);
+  );
+});
 
 it.effect("rejects tampering, missing wrapping keys and plaintext without rewriting secrets", () =>
   Effect.gen(function* () {

@@ -248,10 +248,8 @@ export const respond = Effect.fn("desktop.privilegedDecision.respond")(function*
   } else {
     const pool = yield* DesktopBackendPool.DesktopBackendPool;
     const instances = yield* pool.list;
-    const candidates = yield* Effect.all(
-      instances.map((instance) =>
-        instance.currentConfig.pipe(Effect.map((config) => ({ instance, config }))),
-      ),
+    const candidates = yield* Effect.forEach(instances, (instance) =>
+      instance.currentConfig.pipe(Effect.map((config) => ({ instance, config }))),
     );
     const routes = yield* Effect.promise(() =>
       Promise.all(

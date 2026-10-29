@@ -16,6 +16,7 @@ export const AgentSendMessage = memo(function AgentSendMessage(props: {
   readonly environmentId: EnvironmentId;
   readonly row: OrchestrationV2ProjectedTurnItem;
   readonly timestampLabel: string;
+  readonly technicalDetails?: ReactNode;
   readonly children: (text: string) => ReactNode;
 }) {
   const projected = props.row.item;
@@ -38,9 +39,13 @@ export const AgentSendMessage = memo(function AgentSendMessage(props: {
   if (item.type !== "dynamic_tool" && !delegation) return null;
   const send = item.type === "dynamic_tool" ? readAgentSend(item) : null;
   const text = delegation?.firstParagraph ?? send?.text ?? null;
+  const remoteChild =
+    item.type === "subagent" ? (liveTask?.remoteChild ?? item.remoteChild) : undefined;
+  const localChildThreadId =
+    item.type === "subagent" ? (liveTask?.childThreadId ?? item.childThreadId) : null;
   const targetThreadId =
     item.type === "subagent"
-      ? (item.childThreadId ?? undefined)
+      ? (localChildThreadId ?? remoteChild?.threadId)
       : send?.targetThreadId
         ? ThreadId.make(send.targetThreadId)
         : undefined;
@@ -51,9 +56,11 @@ export const AgentSendMessage = memo(function AgentSendMessage(props: {
       direction="outgoing"
       environmentId={props.environmentId}
       senderThreadId={targetThreadId}
+      senderEnvironmentId={localChildThreadId ? props.environmentId : remoteChild?.environmentId}
       timestampLabel={props.timestampLabel}
       text={text ?? ""}
       previewText={delegation?.firstParagraph}
+      technicalDetails={props.technicalDetails}
       streaming={!delegation && item.status === "running"}
       deliveryLabel={
         delegation

@@ -52,8 +52,6 @@ it.each([true, false])(
       current: {
         focusAtEnd: focusComposer,
         focusAt: unexpected,
-        restoreAfterTimelineReachedEnd: unexpected,
-        collapseForTimelineScrollKey: unexpected,
         addDroppedFiles: unexpected,
         addDroppedFolders: unexpected,
         hasPendingAttachments: unexpected,

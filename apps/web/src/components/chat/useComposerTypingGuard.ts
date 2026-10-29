@@ -44,6 +44,7 @@ export function useComposerTypingGuard(scope: string, requestIds: readonly strin
   const onBlur = () => dispatch({ type: "blur" });
   const onSend = () => dispatch({ type: "send" });
   const onVoiceDraftActiveChange = (active: boolean) => dispatch({ type: "voice", active });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- schedules a timer that releases held requests once typing has been idle long enough
   useEffect(() => {
     if (state.held.size === 0 || state.voiceDraftActive) return;
     const timeout = window.setTimeout(

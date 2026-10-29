@@ -5,7 +5,6 @@ import {
   cliArchivePlatformKey,
   cliArchiveTarCommand,
   cliReleaseDownloadBaseUrl,
-  cliReleaseChannelOf,
   cliReleaseIndexPageUrl,
   cliReleaseHasAssets,
   newestCliReleaseVersion,

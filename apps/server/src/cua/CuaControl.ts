@@ -260,7 +260,9 @@ const make = Effect.gen(function* () {
       if (!sameCaller(current.owner, caller)) return;
       yield* halt(false);
     }),
-    stop: (target) => requireTarget(target).pipe(Effect.andThen(halt(true))),
+    stop: Effect.fn("CuaControl.stop")((target) =>
+      requireTarget(target).pipe(Effect.andThen(halt(true))),
+    ),
   });
 });
 

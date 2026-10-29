@@ -69,7 +69,7 @@ installations can continue updating without losing their connections or data.
 4. Review [permission modes](docs/user/permission-modes.md) before granting agents
    access to files, commands, browsers, or devices.
 
-Further guides: [composer](docs/user/composer.md),
+Further guides: [FAQ](docs/user/faq.md), [composer](docs/user/composer.md),
 [keyboard shortcuts](docs/user/keybindings.md),
 [project settings](docs/user/project-settings.md),
 [outside agents and MCP](docs/user/outside-agents.md),

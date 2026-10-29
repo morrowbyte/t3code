@@ -307,15 +307,13 @@ it.effect.each([false, true])(
                 yield* Deferred.await(gate.release);
               }
               if (gate !== undefined || plannerFailure !== undefined) {
-                return yield* Effect.fail(
-                  new ProviderAdapter.ProviderAdapterProtocolError({
-                    driver: ProviderDriverKind.make("codex"),
-                    detail:
-                      plannerFailure === "managed_account_required"
-                        ? "Managed ChatGPT account is required for Codex Live."
-                        : "Codex Live planner settings were not confirmed.",
-                  }),
-                );
+                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver: ProviderDriverKind.make("codex"),
+                  detail:
+                    plannerFailure === "managed_account_required"
+                      ? "Managed ChatGPT account is required for Codex Live."
+                      : "Codex Live planner settings were not confirmed.",
+                });
               }
               return yield* Effect.sync(() => {
                 plannerCalls += 1;
@@ -354,12 +352,10 @@ it.effect.each([false, true])(
               appendAttempts += 1;
               resolveAppendAttempt?.();
               if (appendSpeechFails)
-                return yield* Effect.fail(
-                  new ProviderAdapter.ProviderAdapterProtocolError({
-                    driver: ProviderDriverKind.make("codex"),
-                    detail: "Ambiguous native append acknowledgement.",
-                  }),
-                );
+                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver: ProviderDriverKind.make("codex"),
+                  detail: "Ambiguous native append acknowledgement.",
+                });
               spoken.push(input);
               if (input.text.startsWith("Die Arbeit läuft noch.") && quietSpeechSignal)
                 yield* Deferred.succeed(quietSpeechSignal, undefined);
@@ -477,11 +473,9 @@ it.effect.each([false, true])(
               }
               if (failNextLookup) {
                 failNextLookup = false;
-                return yield* Effect.fail(
-                  new ProviderSessionManager.ProviderSessionLookupError({
-                    providerSessionId,
-                  }),
-                );
+                return yield* new ProviderSessionManager.ProviderSessionLookupError({
+                  providerSessionId,
+                });
               }
               const existing = runtimes.get(providerSessionId);
               return existing === undefined ? Option.none() : Option.some(existing);
@@ -527,7 +521,13 @@ it.effect.each([false, true])(
                 ? { ...durableProjection, thread: { ...durableProjection.thread, id } }
                 : durableProjection;
             }),
-          getProjectThread: (input: { threadId: string }) =>
+          getThreadRecords: (id: typeof threadId) =>
+            Effect.sync(() => {
+              if (independentJobs.has(id)) return independentJobs.get(id)!;
+              if (childProjection?.thread.id === id) return childProjection;
+              return durableProjection;
+            }),
+          getProjectThreadRecords: (input: { threadId: string }) =>
             Effect.sync(() => {
               if (independentJobs.has(input.threadId)) return independentJobs.get(input.threadId)!;
               if (childProjection?.thread.id === input.threadId) return childProjection;
@@ -708,6 +708,7 @@ it.effect.each([false, true])(
           .subscribe(session, {
             leaseId: prepared.leaseId,
             generation: prepared.generation,
+            includeActivities: true,
           })
           .pipe(
             Stream.runForEach((event) =>
@@ -761,6 +762,38 @@ it.effect.each([false, true])(
           (event) => event.type === "status" && event.session.status === "active",
         );
         assert.equal(activeEvent.type, "status");
+
+        const legacyDelivered = yield* Queue.unbounded<LiveVoiceEvent>();
+        yield* service
+          .subscribe(session, {
+            leaseId: prepared.leaseId,
+            generation: prepared.generation,
+          })
+          .pipe(
+            Stream.runForEach((event) => Queue.offer(legacyDelivered, event)),
+            Effect.forkChild({ startImmediately: true }),
+          );
+        assert.equal((yield* Queue.take(legacyDelivered)).type, "status");
+
+        yield* Queue.offer(nativeEvents, {
+          type: "activity",
+          plannerNativeThreadId: "planner-native-1",
+          activity: {
+            id: "live-status-call",
+            action: "read-work",
+            status: "completed",
+            revision: 3,
+          },
+        });
+        const activityEvent = yield* waitForEvent((event) => event.type === "activity");
+        assert.equal(activityEvent.type, "activity");
+        if (activityEvent.type === "activity") {
+          assert.equal(activityEvent.leaseId, prepared.leaseId);
+          assert.equal(activityEvent.generation, prepared.generation);
+          assert.equal(activityEvent.environmentId, prepared.environmentId);
+          assert.equal(activityEvent.threadId, prepared.threadId);
+          assert.equal(activityEvent.activity.status, "completed");
+        }
 
         assert.isTrue(typeof submitWork === "function");
         const invokeWithPlanner = (
@@ -1897,6 +1930,16 @@ it.effect.each([false, true])(
             event.session.generation === prepared.generation &&
             event.session.status === "closed",
         );
+        const legacyEvents = yield* Stream.runCollect(
+          Stream.fromQueue(legacyDelivered).pipe(
+            Stream.takeUntil(
+              (event) =>
+                event.type === "status" &&
+                ["closed", "failed", "unknown"].includes(event.session.status),
+            ),
+          ),
+        );
+        assert.isFalse(Array.from(legacyEvents).some((event) => event.type === "activity"));
 
         assert.isFalse(
           observedStatuses.slice(statusesBeforeLateReadiness).includes("active"),
@@ -2371,12 +2414,12 @@ it.effect.each([false, true])(
           WHERE client_request_id = 'prepare-binding-failure'`;
         const racingPrincipals = [session, previousClient];
         const attemptsBeforeRace = plannerAttempts;
-        const racing = yield* Effect.all(
-          racingPrincipals.map((principal, index) =>
+        const racing = yield* Effect.forEach(
+          racingPrincipals,
+          (principal, index) =>
             service
               .prepare(principal, { threadId, clientRequestId: `orphan-race-${index}` })
               .pipe(Effect.exit),
-          ),
           { concurrency: "unbounded" },
         );
         assert.equal(racing.filter(Exit.isSuccess).length, 1, "only one new lease wins admission");

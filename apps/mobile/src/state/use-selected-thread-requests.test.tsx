@@ -124,6 +124,7 @@ import {
   ThreadId,
   type ApprovalReviewAuthority,
 } from "@t3tools/contracts";
+import { userInputDraftKey } from "@t3tools/client-runtime/state/thread-requests";
 import { questionAttachmentDraftKey } from "./question-attachments";
 import { useSelectedThreadRequests, useThreadRequests } from "./use-selected-thread-requests";
 
@@ -236,7 +237,7 @@ describe("descendant request origin", () => {
     fixture.drafts = {};
     fixture.pending = pending;
     fixture.answers = {
-      [String(environmentId) + ":" + requestId]: {
+      [userInputDraftKey(environmentId, origin.threadId, requestId)]: {
         scope: { selectedOptionValues: ["  fixtures_only  "], customAnswer: "" },
       },
     };
@@ -274,11 +275,13 @@ describe("descendant request origin", () => {
     ]);
   });
   it("transports the reviewed host hash at the original child and rechecks authority and permissions", async () => {
+    const now = 1_800_000_000_000;
+    using _clock = vi.spyOn(Date, "now").mockReturnValue(now);
     prepare();
     const authority: ApprovalReviewAuthority = {
       packageHash: "a".repeat(64),
       verifiedTargetId: "fixture-host",
-      expiresAt: Date.now() + 60_000,
+      expiresAt: now + 60_000,
       state: "pending",
       approverSessionId: AuthSessionId.make("fixture-approver-session"),
       approverSubject: "fixture-approver",
@@ -295,7 +298,7 @@ describe("descendant request origin", () => {
         implementationHash: "b".repeat(64),
       },
       implementationSource: "fixture only",
-      originalOrder: syntheticOriginalOrder(Date.now() + 60_000),
+      originalOrder: syntheticOriginalOrder(now + 60_000),
       provenance: { status: "verified", reason: "trusted-original" },
     };
     const hostPending = {

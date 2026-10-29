@@ -13,6 +13,13 @@ import { clientRpcRequiredScopes } from "./clientRpcPermissions.ts";
 import { AuthOrchestrationOperateScope } from "./auth.ts";
 import { LiveVoiceContextInput } from "./liveVoiceContext.ts";
 
+const decodeLiveVoiceStartInput = Schema.decodeSync(LiveVoiceStartInput);
+const decodeLiveVoiceGeneration = Schema.decodeSync(LiveVoiceGeneration);
+const decodeLiveVoiceSession = Schema.decodeSync(LiveVoiceSession);
+const decodeLiveVoicePrepareInput = Schema.decodeSync(LiveVoicePrepareInput);
+const decodeUnknownLiveVoicePrepareInput = Schema.decodeUnknownSync(LiveVoicePrepareInput);
+const decodeLiveVoiceSubscribeInput = Schema.decodeSync(LiveVoiceSubscribeInput);
+
 describe("subscription Codex Live contracts", () => {
   it("registers selected context as a unary RPC with a void response", () => {
     const rpc = WsRpcGroup.requests.get(WS_METHODS.liveVoiceContext);
@@ -66,11 +73,41 @@ describe("subscription Codex Live contracts", () => {
       { ...segment, final: true },
     ])
       expect(() => decode({ ...legacy, segment: invalid })).toThrow();
+    const activity = {
+      type: "activity",
+      leaseId: "lease",
+      generation: 1,
+      environmentId: "env",
+      threadId: "thread",
+      activity: {
+        id: "native-call",
+        revision: 2,
+        action: "read-work",
+        status: "running",
+        occurredAt: "received",
+        updatedAt: "received",
+      },
+    };
+    expect(
+      decode({
+        ...activity,
+        activity: { ...activity.activity, input: "private", output: "private" },
+      }),
+    ).toEqual(activity);
+    expect(() =>
+      decode({
+        ...activity,
+        activity: { ...activity.activity, action: "private payload as label" },
+      }),
+    ).toThrow();
+    expect(() =>
+      decode({ ...activity, activity: { ...activity.activity, revision: 0 } }),
+    ).toThrow();
   });
 
   it("bounds offer size and requires a positive lease generation", () => {
     expect(
-      Schema.decodeUnknownSync(LiveVoiceStartInput)({
+      decodeLiveVoiceStartInput({
         leaseId: "lease-1",
         generation: 1,
         offerSdp: "v=0",
@@ -78,21 +115,19 @@ describe("subscription Codex Live contracts", () => {
       }).generation,
     ).toBe(1);
     expect(() =>
-      Schema.decodeUnknownSync(LiveVoiceStartInput)({
+      decodeLiveVoiceStartInput({
         leaseId: "lease-1",
         generation: 0,
         offerSdp: "v=0",
         clientRequestId: "request-1",
       }),
     ).toThrow();
-    expect(() =>
-      Schema.decodeUnknownSync(LiveVoiceGeneration)(Number.MAX_SAFE_INTEGER + 1),
-    ).toThrow();
+    expect(() => decodeLiveVoiceGeneration(Number.MAX_SAFE_INTEGER + 1)).toThrow();
   });
 
   it("represents preparation and recovery without fabricated provider identities", () => {
     expect(
-      Schema.decodeUnknownSync(LiveVoiceSession)({
+      decodeLiveVoiceSession({
         leaseId: "lease-1",
         generation: 1,
         environmentId: "env-1",
@@ -106,13 +141,13 @@ describe("subscription Codex Live contracts", () => {
   });
 
   it("keeps client signaling free of provider credentials and arbitrary targets", () => {
-    const input = Schema.decodeUnknownSync(LiveVoicePrepareInput)({
+    const input = decodeLiveVoicePrepareInput({
       threadId: "thread-1",
       clientRequestId: "request-1",
     });
     expect(input.threadId).toBe("thread-1");
     expect(
-      Schema.decodeUnknownSync(LiveVoicePrepareInput)({
+      decodeUnknownLiveVoicePrepareInput({
         threadId: "thread-1",
         clientRequestId: "request-1",
         provider: "claude",
@@ -134,9 +169,10 @@ describe("subscription Codex Live contracts", () => {
     expect(clientRpcRequiredScopes(WS_METHODS.liveVoiceSubscribe, {})).toEqual([
       AuthOrchestrationOperateScope,
     ]);
+    expect(decodeLiveVoiceSubscribeInput({ leaseId: "lease-1", generation: 1 }).generation).toBe(1);
     expect(
-      Schema.decodeUnknownSync(LiveVoiceSubscribeInput)({ leaseId: "lease-1", generation: 1 })
-        .generation,
-    ).toBe(1);
+      decodeLiveVoiceSubscribeInput({ leaseId: "lease-1", generation: 1, includeActivities: true })
+        .includeActivities,
+    ).toBe(true);
   });
 });

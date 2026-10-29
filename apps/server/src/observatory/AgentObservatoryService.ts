@@ -55,6 +55,18 @@ export class AgentObservatoryService extends Context.Service<
 >()("t3/observatory/AgentObservatoryService") {}
 
 const unavailable = () => new AgentObservatoryRefusal({ reason: "unavailable" });
+const decodeAgentObservatorySnapshot = Schema.decodeEffect(AgentObservatorySnapshot);
+const decodeAgentObservatoryReadNativeRosterInput = Schema.decodeEffect(
+  AgentObservatoryReadNativeRosterInput,
+);
+const decodeAgentObservatoryNativeRosterPage = Schema.decodeUnknownEffect(
+  AgentObservatoryNativeRosterPage,
+);
+const isAgentObservatoryRefusal = Schema.is(AgentObservatoryRefusal);
+const decodeAgentObservatorySubscribeNativeRosterInput = Schema.decodeEffect(
+  AgentObservatorySubscribeNativeRosterInput,
+);
+
 const make = Effect.gen(function* () {
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const sink = yield* EventSink.EventSinkV2;
@@ -84,7 +96,7 @@ const make = Effect.gen(function* () {
           metadata.nativeFrontier.sequence >= stored.sequence
         )
           return yield* unavailable();
-        return yield* Schema.decodeUnknownEffect(AgentObservatorySnapshot)({
+        return yield* decodeAgentObservatorySnapshot({
           ...metadata,
           sequence: stored.sequence,
         });
@@ -142,9 +154,7 @@ const make = Effect.gen(function* () {
   const readNativeRoster = Effect.fn("AgentObservatoryService.readNativeRoster")(
     (submitted: AgentObservatoryReadNativeRosterInput) =>
       Effect.gen(function* () {
-        const input = yield* Schema.decodeUnknownEffect(AgentObservatoryReadNativeRosterInput)(
-          submitted,
-        );
+        const input = yield* decodeAgentObservatoryReadNativeRosterInput(submitted);
         const environmentId = yield* environment.getEnvironmentId;
         const threadIds = [...input.threadIds].sort();
         if (input.cursor && input.cursor.environmentId !== environmentId)
@@ -163,7 +173,7 @@ const make = Effect.gen(function* () {
           limit: input.limit,
           ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
         });
-        return yield* Schema.decodeUnknownEffect(AgentObservatoryNativeRosterPage)({
+        return yield* decodeAgentObservatoryNativeRosterPage({
           ...page,
           environmentId,
           threadIds,
@@ -177,7 +187,7 @@ const make = Effect.gen(function* () {
         // Decode/detach before yielding to the trusted host operation.
         const codec = Schema.fromJsonString(AgentObservatoryUpdate);
         const encoded = yield* Schema.encodeEffect(codec)(submitted);
-        const update = yield* Schema.decodeUnknownEffect(codec)(encoded);
+        const update = yield* Schema.decodeEffect(codec)(encoded);
         const invocation = yield* AgentObservatoryInvocation;
         const environmentId = yield* environment.getEnvironmentId;
         return yield* invocation.withOwner((owner, principal) => {
@@ -186,9 +196,7 @@ const make = Effect.gen(function* () {
           return sink.commitObservatoryUpdate({ owner, principal, update });
         });
       }).pipe(
-        Effect.mapError((cause) =>
-          Schema.is(AgentObservatoryRefusal)(cause) ? cause : unavailable(),
-        ),
+        Effect.mapError((cause) => (isAgentObservatoryRefusal(cause) ? cause : unavailable())),
       ),
     ),
     read,
@@ -232,9 +240,7 @@ const make = Effect.gen(function* () {
     subscribeNativeRoster: (submitted) =>
       Stream.unwrap(
         Effect.gen(function* () {
-          const input = yield* Schema.decodeUnknownEffect(
-            AgentObservatorySubscribeNativeRosterInput,
-          )(submitted);
+          const input = yield* decodeAgentObservatorySubscribeNativeRosterInput(submitted);
           const initial = yield* readNativeRoster(input);
           if (initial.threadIds.length === 0) return Stream.succeed(initial);
           const selected = new Set(initial.threadIds);

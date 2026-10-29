@@ -35,7 +35,9 @@ export function shouldOpenMarkdownFileLinkInBrowserByDefault(path: string): bool
 
 export function rewriteMarkdownFileUriHref(href: string | undefined): string | null {
   if (!href) return null;
-  const target = parseFileUrlHref(normalizeMarkdownLinkDestination(href));
+  const normalized = normalizeMarkdownLinkDestination(href);
+  if (!normalized.toLowerCase().startsWith("file:")) return null;
+  const target = parseFileUrlHref(normalized);
   return target ? `${target.path}${target.hash}` : null;
 }
 

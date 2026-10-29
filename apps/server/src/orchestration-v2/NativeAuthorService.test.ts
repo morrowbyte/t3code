@@ -1,4 +1,5 @@
-// @effect-diagnostics nodeBuiltinImport:off -- The protocol fixture owns only its temporary Unix socket and exercises no desktop or provider process.
+import * as HostProcess from "@t3tools/shared/HostProcess";
+// @effect-diagnostics nodeBuiltinImport:off -- The protocol fixture owns only its temporary IPC endpoint and exercises no desktop or provider process.
 import * as NodeFSP from "node:fs/promises";
 import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
@@ -24,7 +25,6 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
@@ -60,40 +60,37 @@ const database = Sqlite.layerMemory;
 const stores = Layer.mergeAll(EventStore.layer, CommandReceiptStore.layer).pipe(
   Layer.provide(database),
 );
-const threadLayer = ThreadManagement.layer
-  .pipe(
-    Layer.provideMerge(
-      ProviderReplayHarness.layerWithRegistry(
-        { name: "native-author" },
-        ProviderAdapterRegistry.layerFromAdapters([adapter]),
-        { databaseLayer: database, runEffectWorker: false },
-      ),
+const threadLayer = ThreadManagement.layer.pipe(
+  Layer.provideMerge(
+    ProviderReplayHarness.layerWithRegistry(
+      { name: "native-author" },
+      ProviderAdapterRegistry.layerFromAdapters([adapter]),
+      { databaseLayer: database, runEffectWorker: false },
     ),
-    Layer.provideMerge(stores),
-    Layer.provideMerge(ServerSettings.layerTest({ defaultModelSelection: modelSelection })),
-  )
-  .pipe(Layer.provideMerge(NodeServices.layer));
+  ),
+  Layer.provideMerge(stores),
+  Layer.provideMerge(ServerSettings.layerTest({ defaultModelSelection: modelSelection })),
+  Layer.provideMerge(NodeServices.layer),
+);
 const dependencies = Layer.mergeAll(
   threadLayer,
   Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
     namedProjectsRoot: "/tmp/native-author-fixture-projects",
     ensureScratchProject: Effect.succeed({ projectId }),
-    folderForThread: () => Effect.succeed(Option.some("/tmp/native-author-fixture-scratch")),
+    folderForThread: () => Effect.succeedSome("/tmp/native-author-fixture-scratch"),
   }),
   Layer.mock(ProjectService.ProjectService)({
     getById: () =>
-      Effect.succeed(
-        Option.some({
-          id: projectId,
-          title: "Scratch",
-          workspaceRoot: "/tmp/native-author-fixture-scratch",
-          defaultModelSelection: modelSelection,
-          scripts: [],
-          createdAt: IsoDateTime.make("2026-10-17T00:00:00.000Z"),
-          updatedAt: IsoDateTime.make("2026-10-17T00:00:00.000Z"),
-          deletedAt: null,
-        }),
-      ),
+      Effect.succeedSome({
+        id: projectId,
+        title: "Scratch",
+        workspaceRoot: "/tmp/native-author-fixture-scratch",
+        defaultModelSelection: modelSelection,
+        scripts: [],
+        createdAt: IsoDateTime.make("2026-10-17T00:00:00.000Z"),
+        updatedAt: IsoDateTime.make("2026-10-17T00:00:00.000Z"),
+        deletedAt: null,
+      }),
   }),
   Layer.mock(ServerEnvironment.ServerEnvironment)({
     getEnvironmentId: Effect.succeed(EnvironmentId.make("fixture-primary")),
@@ -314,12 +311,15 @@ it.effect(
           const directory = await NodeFSP.mkdtemp(
             NodePath.join(NodeOS.tmpdir(), "native-author-socket-"),
           );
-          const address = NodePath.join(directory, "control.sock");
+          const windows = HostProcess.Platform.defaultValue() === "win32";
+          const address = windows
+            ? `\\\\.\\pipe\\${NodePath.basename(directory)}`
+            : NodePath.join(directory, "control.sock");
           let opens = 0;
           let brokerCalls = 0;
           const server = await startDesktopAppControlServer({
             address,
-            directory,
+            directory: windows ? null : directory,
             userId: process.getuid?.(),
             onReclaimError: () => undefined,
             cancel: () => {

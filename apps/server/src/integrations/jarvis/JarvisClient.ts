@@ -47,16 +47,16 @@ const unknownOutcome = () =>
   );
 const jsonCodec = Schema.fromJsonString(Schema.Json);
 
-// A bounded NDJSON reader retains fragments across pulls and queued frames.
+// Keep buffered bytes outside the repeatable read effect so ACK and events can share a pull.
 // UTF-8 is decoded only after assembling a complete bounded byte frame.
-const frameReader = (reader: Socket.Reader) => {
+const makeFrameReader = (reader: Socket.Reader) => {
   let chunks: ReadonlyArray<Uint8Array | string> = [];
   let chunkIndex = 0;
   let current: Uint8Array = new Uint8Array();
   let offset = 0;
   const frame = new Uint8Array(MAX_FRAME);
   let size = 0;
-  return Effect.gen(function* () {
+  return Effect.fn("frameReader")(function* () {
     while (true) {
       if (offset === current.length) {
         if (chunkIndex === chunks.length) {
@@ -90,7 +90,7 @@ const frameReader = (reader: Socket.Reader) => {
         try: () => new TextDecoder("utf-8", { fatal: true }).decode(complete),
         catch: () => transportError("invalid_frame", "Native response is not valid UTF-8."),
       });
-      return yield* Schema.decodeUnknownEffect(jsonCodec)(text).pipe(
+      return yield* Schema.decodeEffect(jsonCodec)(text).pipe(
         Effect.mapError(() =>
           transportError("invalid_frame", "Native response is not valid JSON."),
         ),
@@ -98,6 +98,10 @@ const frameReader = (reader: Socket.Reader) => {
     }
   });
 };
+
+const encodeJarvisNativeRequestJson = Schema.encodeEffect(
+  Schema.fromJsonString(JarvisNativeRequest),
+);
 
 const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -154,9 +158,7 @@ const make = Effect.gen(function* () {
             "The native endpoint must be private and owned by this OS user.",
           );
       }
-      const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(JarvisNativeRequest))(
-        request,
-      ).pipe(
+      const encoded = yield* encodeJarvisNativeRequestJson(request).pipe(
         Effect.mapError(() =>
           transportError("invalid_binding", "Invalid canonical native request."),
         ),
@@ -171,7 +173,7 @@ const make = Effect.gen(function* () {
       );
       const writer = yield* socket.writer;
       yield* writer.write(encoded + "\n").pipe(Effect.mapError(unknownOutcome));
-      const next = frameReader(reader);
+      const next = makeFrameReader(reader)();
       const response = yield* next.pipe(
         Effect.flatMap(Schema.decodeUnknownEffect(JarvisNativeResponse)),
         Effect.mapError(() => unknownOutcome()),
@@ -186,12 +188,13 @@ const make = Effect.gen(function* () {
   );
   return JarvisClient.of({
     engineSessionId,
-    call: (request) =>
+    call: Effect.fn("JarvisClient.call")((request) =>
       connect(request).pipe(
         Effect.map(({ response }) => response),
         Effect.scoped,
         Effect.timeoutOrElse({ duration: 35_000, orElse: () => Effect.fail(unknownOutcome()) }),
       ),
+    ),
     subscribe: (request) =>
       Stream.unwrap(
         Effect.gen(function* () {

@@ -23,26 +23,25 @@ vi.mock("../ui/button", async () => {
             : "",
       )
       .join("");
-  return {
-    Button: ({
-      children,
-      onClick,
-      disabled,
-      "aria-label": label,
-    }: {
-      children?: ReactNode;
-      onClick?: () => void;
-      disabled?: boolean;
-      "aria-label"?: string;
-    }) => {
-      if (onClick) harness.handlers.set(label ?? text(children), onClick);
-      return (
-        <button disabled={disabled} aria-label={label} onClick={onClick}>
-          {children}
-        </button>
-      );
-    },
+  const Button = ({
+    children,
+    onClick,
+    disabled,
+    "aria-label": label,
+  }: {
+    children?: ReactNode;
+    onClick?: () => void;
+    disabled?: boolean;
+    "aria-label"?: string;
+  }) => {
+    if (onClick) harness.handlers.set(label ?? text(children), onClick);
+    return (
+      <button disabled={disabled} aria-label={label} onClick={onClick}>
+        {children}
+      </button>
+    );
   };
+  return { Button, InlineButton: Button };
 });
 vi.mock("../ui/menu", async () => {
   const React = await import("react");

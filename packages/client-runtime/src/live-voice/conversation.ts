@@ -2,6 +2,7 @@ import type {
   LiveVoiceCallSummary,
   LiveVoiceCallTranscript,
   LiveVoiceHistoryEntry,
+  ScopedThreadRef,
 } from "@t3tools/contracts";
 import type { LiveVoiceState } from "./controller.ts";
 
@@ -21,7 +22,11 @@ export type VoiceConversationItem = {
   readonly createdAt: string;
   readonly callKey: string;
 } & (
-  | { readonly kind: "speech"; readonly entry: LiveVoiceHistoryEntry }
+  | {
+      readonly kind: "speech";
+      readonly entry: LiveVoiceHistoryEntry;
+      readonly bubble?: ScopedThreadRef & { readonly settled: boolean };
+    }
   | { readonly kind: "call-start" | "call-end"; readonly call: LiveVoiceCallSummary }
   | { readonly kind: "notice"; readonly text: string }
 );
@@ -31,12 +36,16 @@ export const voiceCallKey = (call: Pick<LiveVoiceCallSummary, "leaseId" | "gener
 
 export function sameVoiceConversationItem(a: VoiceConversationItem, b: VoiceConversationItem) {
   if (a === b) return true;
-  if (a.id !== b.id || a.kind !== b.kind || a.createdAt !== b.createdAt) return false;
+  if (a.id !== b.id || a.kind !== b.kind || a.createdAt !== b.createdAt || a.callKey !== b.callKey)
+    return false;
   if (a.kind === "speech" && b.kind === "speech")
     return (
       a.entry.text === b.entry.text &&
       a.entry.final === b.entry.final &&
-      a.entry.speaker === b.entry.speaker
+      a.entry.speaker === b.entry.speaker &&
+      a.bubble?.environmentId === b.bubble?.environmentId &&
+      a.bubble?.threadId === b.bubble?.threadId &&
+      a.bubble?.settled === b.bubble?.settled
     );
   if (a.kind === "notice" && b.kind === "notice") return a.text === b.text;
   if (a.kind === "call-end" && b.kind === "call-end") return a.call.status === b.call.status;

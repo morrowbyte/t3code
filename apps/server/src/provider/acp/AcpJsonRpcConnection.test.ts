@@ -251,44 +251,48 @@ describe("AcpSessionRuntime", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("retires a native runtime when its prompt caller is interrupted", () =>
-    Effect.gen(function* () {
-      const dispatched = yield* Deferred.make<void>();
-      const runtime = yield* AcpSessionRuntime.make({
-        ...mockRuntimeOptions,
-        spawn: {
-          ...mockRuntimeOptions.spawn,
-          env: { T3_ACP_COMPLETE_FIRST_PROMPT_ON_CANCEL: "1" },
-        },
-        cancelBehavior: "wait-for-prompt",
-      });
-      yield* runtime.start();
-      const prompt = yield* runtime
-        .prompt(
-          {
-            prompt: [{ type: "text", text: "first" }],
+  it.effect.each([false, true])(
+    "retires a native runtime when its prompt caller is interrupted (owned process tree: %s)",
+    (ownDetachedProcessGroup) =>
+      Effect.gen(function* () {
+        const dispatched = yield* Deferred.make<void>();
+        const runtime = yield* AcpSessionRuntime.make({
+          ...mockRuntimeOptions,
+          spawn: {
+            ...mockRuntimeOptions.spawn,
+            env: { T3_ACP_COMPLETE_FIRST_PROMPT_ON_CANCEL: "1" },
           },
-          { dispatched },
-        )
-        .pipe(Effect.forkChild);
-      yield* Deferred.await(dispatched);
-      yield* Fiber.interrupt(prompt);
-      const events = yield* runtime.getEvents().pipe(
-        Stream.filter((event) => event._tag === "ConnectionTerminated"),
-        Stream.take(1),
-        Stream.runCollect,
-      );
-      expect(events[0]).toMatchObject({
-        error: { _tag: "AcpTransportError", method: "session/prompt" },
-      });
-      expect(
-        yield* runtime
-          .prompt({
-            prompt: [{ type: "text", text: "must not run" }],
-          })
-          .pipe(Effect.flip),
-      ).toBe(events[0]?.error);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+          cancelBehavior: "wait-for-prompt",
+          ownDetachedProcessGroup,
+          processGroupPlatform: yield* HostProcess.Platform,
+        });
+        yield* runtime.start();
+        const prompt = yield* runtime
+          .prompt(
+            {
+              prompt: [{ type: "text", text: "first" }],
+            },
+            { dispatched },
+          )
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(dispatched);
+        yield* Fiber.interrupt(prompt);
+        const events = yield* runtime.getEvents().pipe(
+          Stream.filter((event) => event._tag === "ConnectionTerminated"),
+          Stream.take(1),
+          Stream.runCollect,
+        );
+        expect(events[0]).toMatchObject({
+          error: { _tag: "AcpTransportError", method: "session/prompt" },
+        });
+        expect(
+          yield* runtime
+            .prompt({
+              prompt: [{ type: "text", text: "must not run" }],
+            })
+            .pipe(Effect.flip),
+        ).toBe(events[0]?.error);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
   it.effect("fails a pending request when the stderr handler rejects the runtime", () =>

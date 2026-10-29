@@ -6,6 +6,7 @@ import { useThreadFindHighlights } from "./chat/threadFindHighlights";
 import { AsyncResult } from "effect/reactivity";
 import { type ReactElement } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { page, userEvent } from "vite-plus/test/browser";
 
 import { act, render } from "../../test/render";
 import "../index.css";
@@ -13,6 +14,7 @@ import "../index.css";
 import { filesystemEnvironment } from "../state/filesystem";
 import { useRightPanelStore } from "../rightPanelStore";
 import { setMarkdownTaskChecked } from "./files/filePreviewMode";
+import { HostImageUrlContext } from "./chat/hostImageUrl";
 
 const { workspaceSearch, filesystemMetadata } = vi.hoisted(() => ({
   workspaceSearch: vi.fn(),
@@ -34,7 +36,6 @@ vi.mock(import("../state/server"), async (original) => {
     serverEnvironment: { ...actual.serverEnvironment, configValueAtom: (() => noConfig) as never },
   };
 });
-// A standard client session, so environment-owned file links can open.
 vi.mock(import("../state/session"), async (original) => {
   const { AuthStandardClientScopes } = await import("@t3tools/contracts");
   const granted = new Set<string>(AuthStandardClientScopes);
@@ -77,6 +78,29 @@ vi.mock(import("../hooks/useSettings"), async (original) => {
 });
 
 import ChatMarkdown from "./ChatMarkdown";
+import { AudioPreview } from "./files/AudioPreview";
+
+it("keeps compact audio playback loaded across signed URL renewals", async () => {
+  const original =
+    "data:audio/wav;base64,UklGRiUAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQEAAACA";
+  const renewed = `${original}#renewed`;
+  const preview = (src: string, revision = "clip-v1") => (
+    <AudioPreview compact name="clip.wav" src={src} revision={revision} />
+  );
+  await using screen = await render(preview(original));
+  const audio = screen.container.querySelector("audio")!;
+  await act(() => {
+    audio.dispatchEvent(new Event("loadedmetadata"));
+    audio.dispatchEvent(new Event("play"));
+  });
+  await screen.rerender(preview(renewed));
+  expect(screen.container.querySelector("audio")).toBe(audio);
+  expect(audio.getAttribute("src")).toBe(original);
+  await expect.element(screen.getByRole("button", { name: "Pause clip.wav" })).toBeEnabled();
+  await screen.rerender(preview(renewed, "clip-v2"));
+  expect(screen.container.querySelector("audio")).not.toBe(audio);
+  expect(screen.container.querySelector("audio")?.getAttribute("src")).toBe(renewed);
+});
 
 function setup() {
   settingsOverrides.mathRenderingEnabled = false;
@@ -97,12 +121,6 @@ function buttonsLabelled(container: HTMLElement, label: string) {
   return [...container.querySelectorAll<HTMLButtonElement>("button")].filter(
     (button) => button.getAttribute("aria-label") === label,
   );
-}
-
-function fileOptions(container: HTMLElement) {
-  return [...container.querySelectorAll("button")]
-    .map((button) => button.getAttribute("aria-label"))
-    .filter((label) => label?.startsWith("File options for "));
 }
 
 function setupMath(): Disposable {
@@ -329,6 +347,30 @@ describe("ChatMarkdown context references", () => {
   });
 });
 
+it("shows unavailable audio when a workspace embed has no thread", async () => {
+  setup();
+  await using screen = await renderText("![recording](clip.wav)");
+  expect(screen.container.textContent).toContain("Audio unavailable");
+  expect(screen.container.textContent).not.toContain("Loading audio");
+  expect(screen.container.querySelector("audio")).toBeNull();
+});
+
+it("loads a host image through the page's own route when there is no environment", async () => {
+  setup();
+  const pixel =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+  const hostImageUrl = vi.fn((_path: string) => pixel);
+  await using screen = await render(
+    <HostImageUrlContext value={hostImageUrl}>
+      <ChatMarkdown cwd={undefined} text="![Shot](</work/my shot.png>)" />
+    </HostImageUrlContext>,
+  );
+  await expect.element(screen.getByAltText("Shot")).toHaveAttribute("src", pixel);
+  expect(new Set(hostImageUrl.mock.calls.map(([path]) => path))).toEqual(
+    new Set(["/work/my shot.png"]),
+  );
+});
+
 describe("ChatMarkdown favicon privacy", () => {
   it("suppresses private link images while preserving public links across updates", async () => {
     setup();
@@ -468,6 +510,37 @@ describe("ChatMarkdown workspace file opens", () => {
   });
 });
 
+describe("ChatMarkdown skill chips", () => {
+  it("shows the skill's details and opens its instructions", async () => {
+    setup();
+    const threadRef = {
+      environmentId: EnvironmentId.make("workspace"),
+      threadId: ThreadId.make("thread"),
+    };
+    await using screen = await renderText("Run $review now", {
+      threadRef,
+      skills: [
+        {
+          name: "review",
+          displayName: "Review",
+          description: "Reviews the current branch.",
+          path: "/skills/review/SKILL.md",
+          enabled: true,
+        },
+      ],
+    });
+    using openFile = vi
+      .spyOn(useRightPanelStore.getState(), "openFile")
+      .mockImplementation(() => {});
+
+    await userEvent.click(screen.getByRole("button", { name: "Skill Review. Show details" }));
+    await expect.element(page.getByText("Reviews the current branch.")).toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "View instructions" }));
+
+    expect(openFile).toHaveBeenCalledExactlyOnceWith(threadRef, "/skills/review/SKILL.md");
+  });
+});
+
 describe("ChatMarkdown headings", () => {
   it("never gives two headings the same id, even when a suffix matches another heading", async () => {
     setup();
@@ -484,6 +557,22 @@ describe("ChatMarkdown headings", () => {
       "user-content-install",
       "user-content-install-2",
     ]);
+  });
+});
+
+describe("ChatMarkdown inline code selection", () => {
+  it("selects the whole inline code span on double-click, but only a word in fenced code", async () => {
+    setup();
+    await using screen = await renderText(
+      "Run `migration-gate --dry-run` first.\n\n```txt\nfenced-block word\n```",
+    );
+    await userEvent.dblClick(screen.getByText("migration-gate --dry-run"));
+    expect(window.getSelection()?.toString()).toBe("migration-gate --dry-run");
+
+    window.getSelection()?.removeAllRanges();
+    const fenced = screen.container.querySelector("pre code")!;
+    await userEvent.dblClick(fenced, { position: { x: 4, y: 4 } });
+    expect(window.getSelection()?.toString()).toBe("fenced");
   });
 });
 
@@ -569,8 +658,6 @@ describe("ChatMarkdown thread find", () => {
       </div>
     );
   }
-  const frame = () =>
-    act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
   const activeHighlights = () =>
     [...(CSS.highlights.get("t3-thread-find-active") ?? [])].map((range) =>
       (range as Range).toString(),
@@ -606,17 +693,14 @@ describe("ChatMarkdown thread find", () => {
     await show("", 0);
     expect(container.textContent).not.toContain("nothing here");
     await show("needle", 0);
-    await frame();
-    expect(openStates()).toEqual(["false", "false", "false"]);
+    await vi.waitFor(() => expect(openStates()).toEqual(["false", "false", "false"]));
     expect(container.textContent).toContain("nothing here");
-    expect(activeHighlights()).toEqual(["needle"]);
+    await vi.waitFor(() => expect(activeHighlights()).toEqual(["needle"]));
     expect(CSS.highlights.get("t3-thread-find")?.size ?? 0).toBe(0);
 
     await show("needle", 1);
-    await frame();
-    await frame();
-    expect(openStates()).toEqual(["false", "true", "true"]);
-    expect(CSS.highlights.get("t3-thread-find-active")?.size).toBe(1);
+    await vi.waitFor(() => expect(openStates()).toEqual(["false", "true", "true"]));
+    await vi.waitFor(() => expect(CSS.highlights.get("t3-thread-find-active")?.size).toBe(1));
   });
 
   it("keeps Mermaid diagrams rendered until find selects a match in their source", async () => {
@@ -635,12 +719,9 @@ describe("ChatMarkdown thread find", () => {
     const diagrams = () => container.querySelectorAll('svg[aria-label="Diagram"]').length;
 
     await show("Needle");
-    await frame();
-    expect(diagrams()).toBe(2);
+    await vi.waitFor(() => expect(diagrams()).toBe(2));
     await show("Alpha");
-    await frame();
-    await frame();
-    expect(diagrams()).toBe(1);
+    await vi.waitFor(() => expect(diagrams()).toBe(1));
     await vi.waitFor(() => expect(activeHighlights()).toEqual(["Alpha"]));
   });
 
@@ -678,7 +759,9 @@ describe("ChatMarkdown thread find", () => {
   ])(
     "highlights the indexed occurrences of $query in $text",
     async ({ text, query, count, lineBreaks, user, withTemplate }) => {
-      const skills = [{ name: "test-t3-app", displayName: "T3 App Testing" }];
+      const skills = [
+        { name: "test-t3-app", displayName: "T3 App Testing", path: "/test-t3-app", enabled: true },
+      ];
       await using screen = await render(<></>);
       const container = screen.container;
       using _highlights = { [Symbol.dispose]: () => CSS.highlights.clear() };
@@ -696,9 +779,6 @@ describe("ChatMarkdown thread find", () => {
           </FindProbe>,
         ),
       );
-      await frame();
-      // Lazy blocks such as Mermaid can swap their source text after the first frame,
-      // emptying a range for a moment, so wait for the highlights to settle.
       await vi.waitFor(() => {
         const ranges = [...CSS.highlights.values()].flatMap((value) => [...value]);
         expect(ranges.map((range) => (range as Range).toString())).toEqual(

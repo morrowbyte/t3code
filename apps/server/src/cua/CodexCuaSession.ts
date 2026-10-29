@@ -27,7 +27,7 @@ export const make = Effect.fn("CodexCuaSession.make")(function* (input: {
       Effect.catchTags({
         CuaUnavailableError: (error) =>
           ["disabled", "unsupportedPlatform", "busy"].includes(error.reason)
-            ? Effect.succeed(undefined)
+            ? Effect.void
             : Effect.fail(error),
       }),
     ),

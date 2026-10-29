@@ -87,8 +87,6 @@ vi.mock(import("../../state/use-atom-command"), async (original) => ({
   ...(await original()),
   useAtomCommand: ((command: unknown) => command) as never,
 }));
-// The queries behave like live subscriptions: changing `setup.auth` and calling
-// `publish()` re-renders the sections that read them.
 const queryListeners = vi.hoisted(() => new Set<() => void>());
 vi.mock(import("../../state/query"), async (original) => {
   const { useSyncExternalStore } = await import("react");
@@ -316,7 +314,7 @@ describe("Antigravity setup", () => {
   it("installs native Codex before offering explicit sign-in to the same instance", async () => {
     resetSetup();
     await using screen = decorateSetupScreen(await render(<></>));
-    const { container, button, click } = screen;
+    const { container: _container, button, click } = screen;
 
     setup.auth = authState({ phase: "idle", flowId: null, authorizationUrl: null });
     setup.refreshProviders.mockResolvedValue({ _tag: "Success", value: undefined });
@@ -448,7 +446,7 @@ describe("Antigravity setup", () => {
   it("does not qualify an unavailable custom Codex binary from another installed runtime", async () => {
     resetSetup();
     await using screen = decorateSetupScreen(await render(<></>));
-    const { container, button, click } = screen;
+    const { container, button, click: _click } = screen;
 
     setup.installation = { ...setup.installation!, installedVersion: "0.156.1" };
     await act(async () =>
@@ -478,7 +476,7 @@ describe("Antigravity setup", () => {
   it("offers an explicit native sign-in choice without disconnecting a managed account", async () => {
     resetSetup();
     await using screen = decorateSetupScreen(await render(<></>));
-    const { container, button, click } = screen;
+    const { container, button: _button, click } = screen;
 
     setup.auth = authState({ phase: "idle", flowId: null, authorizationUrl: null });
     setup.installation = { ...setup.installation!, installedVersion: "0.156.1" };
@@ -513,7 +511,7 @@ describe("Antigravity setup", () => {
     async (mode) => {
       resetSetup();
       await using screen = decorateSetupScreen(await render(<></>));
-      const { container, button, click } = screen;
+      const { container: _container, button: _button, click: _click } = screen;
 
       const close = vi.fn();
       await act(async () =>
@@ -585,13 +583,13 @@ describe("Antigravity setup", () => {
           },
         ]),
       );
-      expect(close).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
     },
   );
   it("routes a default account through real native setup without starting token sharing", async () => {
     resetSetup();
     await using screen = decorateSetupScreen(await render(<></>));
-    const { container, button, click } = screen;
+    const { container: _container, button: _button, click: _click } = screen;
 
     const close = vi.fn();
     await act(async () =>
@@ -653,12 +651,12 @@ describe("Antigravity setup", () => {
         },
       ]),
     );
-    expect(close).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
   });
   it("shows the native device code for a remote host and opens only the user-selected verification page", async () => {
     resetSetup();
     await using screen = decorateSetupScreen(await render(<></>));
-    const { container, button, click } = screen;
+    const { container, button: _button, click } = screen;
 
     const url = "https://auth.openai.com/codex/device";
     setup.auth = authState({

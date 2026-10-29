@@ -1,6 +1,6 @@
 import { describe, it, assert } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import * as Events from "node:events";
+import * as NodeEvents from "node:events";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -30,6 +30,16 @@ import {
   respond as respondMethod,
   invalidate as invalidateMethod,
 } from "./mainRendererDiagnostics.ts";
+
+const decodeDiagnosticsResponse = Schema.decodeUnknownOption(MainRendererDiagnosticsResponse);
+const decodeTelemetryHello = Schema.decodeOption(DesktopHostTelemetryHello);
+const decodeLegacyHello = Schema.decodeSync(
+  Schema.Struct({
+    version: Schema.Literal(1),
+    type: Schema.Literal("desktopTelemetryHello"),
+    electronPid: PositiveInt,
+  }),
+);
 
 const target = {
   environmentId: "24efa85c-862c-4de4-9b5e-aaaa041e28a4",
@@ -62,7 +72,7 @@ function response(binding: Request): Response {
 }
 const fixture = Effect.gen(function* () {
   const requests = yield* Queue.unbounded<Request>();
-  const events = new Events.EventEmitter();
+  const events = new NodeEvents.EventEmitter();
   const wc = Object.assign(events, {
     id: 70,
     isDestroyed: () => false,
@@ -225,8 +235,9 @@ describe("passive main renderer diagnostics", () => {
       }).pipe(Effect.scoped),
   );
 
-  for (const oldOperation of ["respond", "invalidate"] as const) {
-    it.effect(`delayed old ${oldOperation} cannot invalidate the replacement pending request`, () =>
+  it.effect.each(["respond", "invalidate"] as const)(
+    "delayed old %s cannot invalidate the replacement pending request",
+    (oldOperation) =>
       Effect.gen(function* () {
         const f = yield* fixture;
         const first = yield* f.service.read("A", () => true, f.input).pipe(Effect.forkScoped);
@@ -257,17 +268,11 @@ describe("passive main renderer diagnostics", () => {
         assert.equal(yield* f.service.respond(response(b), sender), true);
         assert.equal((yield* Fiber.join(second)).status, "ready");
       }).pipe(Effect.scoped),
-    );
-  }
+  );
 
-  for (const boundary of [
-    "navigation",
-    "crash",
-    "source-close",
-    "replacement",
-    "expiry",
-  ] as const) {
-    it.effect(`refuses a reply after ${boundary}`, () =>
+  it.effect.each(["navigation", "crash", "source-close", "replacement", "expiry"] as const)(
+    "refuses a reply after %s",
+    (boundary) =>
       Effect.gen(function* () {
         const f = yield* fixture;
         let alive = true;
@@ -287,8 +292,7 @@ describe("passive main renderer diagnostics", () => {
         assert.equal(yield* f.service.respond(response(request), sender), false);
         assert.equal((yield* Fiber.join(read)).status, "unavailable");
       }).pipe(Effect.scoped),
-    );
-  }
+  );
 
   it("explicit strict diagnostic decoder rejects foreign scope, raw fields, invalid enum, absent sequence and oversized nonce", () => {
     const binding = {
@@ -320,7 +324,7 @@ describe("passive main renderer diagnostics", () => {
     const gate = ready.result.status === "ready" ? ready.result.gate : undefined;
     assert.equal(
       Option.isNone(
-        Schema.decodeUnknownOption(MainRendererDiagnosticsResponse)({
+        decodeDiagnosticsResponse({
           ...ready,
           result: { status: "ready", gate: { ...gate, phase: "invented" } },
         }),
@@ -392,23 +396,17 @@ describe("passive main renderer diagnostics", () => {
   );
 
   it("actual legacy hello decoder accepts the optional advertisement without diagnostic emission", () => {
-    // Exact pre-feature hello schema, not the new union decoding itself.
-    const oldHello = Schema.Struct({
-      version: Schema.Literal(1),
-      type: Schema.Literal("desktopTelemetryHello"),
-      electronPid: PositiveInt,
-    });
     const hello = {
       version: 1,
       type: "desktopTelemetryHello",
       electronPid: 1,
       mainRendererDiagnostics: { revision: 1, desktopNonce: "nonce" },
     } as const;
-    assert.deepEqual(Schema.decodeUnknownSync(oldHello)(hello), {
+    assert.deepEqual(decodeLegacyHello(hello), {
       version: 1,
       type: "desktopTelemetryHello",
       electronPid: 1,
     });
-    assert.equal(Option.isSome(Schema.decodeUnknownOption(DesktopHostTelemetryHello)(hello)), true);
+    assert.equal(Option.isSome(decodeTelemetryHello(hello)), true);
   });
 });

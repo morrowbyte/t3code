@@ -24,8 +24,13 @@ export const AgentIdentityLabel = memo(function AgentIdentityLabel(props: {
   const project = useProject(
     thread ? { environmentId: props.threadRef.environmentId, projectId: thread.projectId } : null,
   );
-  const { theme } = useAgentIdentityTheme();
-  const identity = deriveAgentIdentity(props.threadRef, thread?.lineage ?? props.lineage, theme);
+  const { theme, manualName } = useAgentIdentityTheme(props.threadRef);
+  const identity = deriveAgentIdentity(
+    props.threadRef,
+    thread?.lineage ?? props.lineage,
+    theme,
+    manualName,
+  );
   const content = (
     <View
       className={`min-w-0 flex-row items-center gap-1.5 ${props.size === "md" ? "" : "py-0.5"}`}

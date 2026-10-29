@@ -39,10 +39,7 @@ export function PreviewEmptyState({
           <Globe className="size-4.5 text-muted-foreground" />
         </EmptyMedia>
         <EmptyTitle>No preview yet</EmptyTitle>
-        <EmptyDescription>
-          Type a URL above, or run a dev script. Browser-ready localhost servers will show up here
-          automatically.
-        </EmptyDescription>
+        <EmptyDescription>Enter a URL or run a dev script.</EmptyDescription>
       </Empty>
     );
   }
@@ -85,9 +82,6 @@ export function PreviewEmptyState({
                 />
               ))}
             </DiscoveryList>
-            <p className="px-1 text-xs text-muted-foreground">
-              Select a live local server to open it in this browser tab.
-            </p>
           </div>
         ) : null}
       </div>

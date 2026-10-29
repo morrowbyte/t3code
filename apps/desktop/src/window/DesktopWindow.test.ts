@@ -343,6 +343,7 @@ function layerTest(input: {
           attachGuest: () => () => {},
         }),
         Layer.mock(PreviewManager.PreviewManager)({
+          // @effect-diagnostics-next-line effectSucceedWithVoid:off -- An unavailable autofill target is represented by undefined, not void.
           getAutofillTarget: () => Effect.succeed(undefined),
           getBrowserSession: () => Effect.succeed({} as Electron.Session),
           setMainWindow: input.setPreviewMainWindow ?? (() => Effect.void),
@@ -465,6 +466,7 @@ const makeSplashScenario = (
             attachGuest: () => () => {},
           }),
           Layer.mock(PreviewManager.PreviewManager)({
+            // @effect-diagnostics-next-line effectSucceedWithVoid:off -- An unavailable autofill target is represented by undefined, not void.
             getAutofillTarget: () => Effect.succeed(undefined),
             getBrowserSession: () => beforeBrowserSession.pipe(Effect.as({} as Electron.Session)),
             setMainWindow: (window) =>
@@ -994,8 +996,6 @@ describe("DesktopWindow", () => {
     }),
   );
 
-  // Ctrl+wheel bypasses the menu accelerators, so it has to take the same
-  // zoom step, preview restore included, from the window's zoom-changed event.
   it.effect("zooms the app from Ctrl+wheel like the menu does", () =>
     Effect.gen(function* () {
       const fakeWindow = makeFakeBrowserWindow();

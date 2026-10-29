@@ -8,6 +8,8 @@ import { openCommandPalette } from "../commandPaletteBus";
 import { primaryServerKeybindingsAtom } from "../state/server";
 import { LeaderNavigation } from "./keyboard/LeaderNavigation";
 import { isNavigationMode, leaveNavigationMode } from "./keyboard/navigationMode";
+import { createMemoryHistory, createRootRoute, createRouter } from "@tanstack/react-router";
+import { installCommandPaletteCommands } from "../shortcuts/commandPaletteCommands";
 
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
@@ -26,6 +28,8 @@ vi.mock("@effect/atom-react", async (importOriginal) => {
 vi.mock("../hooks/useTheme", () => ({
   useRenderedAppearance: () => "light",
   useTheme: () => ({ theme: "default", resolvedTheme: "light", appearanceMode: "light" }),
+  getThemeSnapshot: () => ({ theme: "default", resolvedTheme: "light", appearanceMode: "light" }),
+  setAppearanceMode: () => true,
 }));
 vi.mock("../hooks/useCustomThemes", () => ({ useCustomThemes: () => [] }));
 vi.mock("../hooks/useEnvironmentTheme", () => ({ useEnvironmentThemeDefinitions: () => [] }));
@@ -37,7 +41,17 @@ vi.mock("../hooks/useScratchProject", () => ({
   useScratchProject: () => ({ scratchEnvironmentId: () => null }),
 }));
 vi.mock("../hooks/useNewProject", () => ({ useNewProject: () => vi.fn() }));
-vi.mock("../hooks/useHandleNewThread", () => ({ useHandleNewThread: () => ({}) }));
+vi.mock("../hooks/useHandleNewThread", () => ({
+  useHandleNewThread: () => ({
+    activeDraftThread: null,
+    activeThread: null,
+    defaultProjectRef: null,
+    handleNewThread: vi.fn(),
+    routeDraftId: null,
+    routeThreadRef: null,
+  }),
+  useNewThreadHandler: () => vi.fn(),
+}));
 vi.mock("../hooks/useOpenPanelPullRequestUrl", () => ({ useOpenPanelPullRequestUrl: () => null }));
 vi.mock("../connection/useDesktopLocalBootstraps", () => ({ useDesktopLocalBootstraps: () => [] }));
 vi.mock("../state/use-atom-command", () => ({ useAtomCommand: () => vi.fn() }));
@@ -55,7 +69,7 @@ vi.mock("../state/entities", async (importOriginal) => ({
 }));
 vi.mock("../state/queries", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../state/queries")>()),
-  useThreadSearch: () => ({ matches: [] }),
+  useThreadSearch: () => ({ matches: [], query: "", isPending: false }),
 }));
 vi.mock("../state/session", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../state/session")>()),
@@ -72,6 +86,13 @@ vi.mock("./settings/useAvailableSettingsSearchItems", () => ({
 function setup() {
   const resources = new AsyncDisposableStack();
   resources.use(fakeTimers());
+  const router = createRouter({
+    routeTree: createRootRoute(),
+    history: createMemoryHistory({ initialEntries: ["/settings"] }),
+  });
+  resources.defer(
+    installCommandPaletteCommands(router, { keybindings: () => DEFAULT_RESOLVED_KEYBINDINGS }),
+  );
   resources.defer(async () => {
     await act(() => vi.runOnlyPendingTimersAsync());
     leaveNavigationMode();

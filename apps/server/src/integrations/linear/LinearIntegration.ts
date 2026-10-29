@@ -144,12 +144,12 @@ const make = Effect.gen(function* () {
     URL.canParse(oauth.redirectUri) &&
     new URL(oauth.redirectUri).pathname === "/api/integrations/linear/oauth/callback";
   const save = Effect.fnUntraced(function* (next: typeof State.Type) {
-    const encoded = yield* encodeState(next).pipe(Effect.mapError(storageError));
+    const encoded = yield* encodeState(next);
     yield* fs
       .writeFileString(`${filename}.tmp`, encoded, { mode: 0o600 })
-      .pipe(Effect.andThen(fs.rename(`${filename}.tmp`, filename)), Effect.mapError(storageError));
+      .pipe(Effect.andThen(fs.rename(`${filename}.tmp`, filename)));
     state = next;
-  });
+  }, Effect.mapError(storageError));
   const readSecret = (name: string) =>
     secrets.get(name).pipe(
       Effect.mapError(storageError),

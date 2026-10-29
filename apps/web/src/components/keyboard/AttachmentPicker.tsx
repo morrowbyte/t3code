@@ -32,6 +32,7 @@ function YaziTerminal(props: {
 }) {
   const mount = useRef<HTMLDivElement>(null);
   const latest = useRef(props);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Supplies committed attachment handlers to the long-lived Yazi terminal callbacks without restarting its session.
   useLayoutEffect(() => {
     latest.current = props;
   });
@@ -41,6 +42,7 @@ function YaziTerminal(props: {
   const [attaching, setAttaching] = useState(false);
   const retrySelection = useRef<(() => void) | null>(null);
   const allowed = useAtomValue(openYaziPicker.permissionAtom(props.environmentId));
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Owns the Yazi session, terminal surface and poll timer until access changes or the picker unmounts.
   useEffect(() => {
     const element = mount.current;
     if (!element || !allowed) return;
@@ -338,8 +340,8 @@ export function AttachmentPicker(props: {
           ) : (
             <div role="status" className="px-4 pb-6 text-sm text-muted-foreground">
               {window.desktopBridge
-                ? "Enable this device’s local environment in Connections to use Yazi here."
-                : "Choose a local folder to browse its files, or use the system file picker. Yazi is available in the thread environment."}
+                ? "Yazi needs this device’s local environment enabled in Connections."
+                : "Yazi uses the thread’s environment."}
             </div>
           )}
           {error ? (

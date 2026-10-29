@@ -1,20 +1,14 @@
 import type { EnvironmentId, PullRequestLinkedThreadsResult } from "@t3tools/contracts";
 
+import { dispatchCommandPalette, isCommandPaletteMounted } from "./commandPaletteStore";
+
 export interface CommandPaletteLinkedThreads {
   readonly environmentId: EnvironmentId;
   readonly threads: PullRequestLinkedThreadsResult["threads"];
 }
 
-const COMMAND_PALETTE_OPEN_EVENT = "t3code:open-command-palette";
-const COMMAND_PALETTE_CLOSE_EVENT = "t3code:close-command-palette";
-
 export function closeCommandPalette(): void {
-  window.dispatchEvent(new Event(COMMAND_PALETTE_CLOSE_EVENT));
-}
-
-export function onCloseCommandPalette(listener: () => void): () => void {
-  window.addEventListener(COMMAND_PALETTE_CLOSE_EVENT, listener);
-  return () => window.removeEventListener(COMMAND_PALETTE_CLOSE_EVENT, listener);
+  dispatchCommandPalette({ _tag: "SetOpen", open: false });
 }
 
 export interface CommandPaletteOpenDetail {
@@ -23,22 +17,26 @@ export interface CommandPaletteOpenDetail {
   readonly linkedThreads?: CommandPaletteLinkedThreads;
 }
 
-export function openCommandPalette(detail?: CommandPaletteOpenDetail): void {
-  window.dispatchEvent(
-    new CustomEvent(COMMAND_PALETTE_OPEN_EVENT, detail ? { detail } : undefined),
-  );
+export function openCommandPalette(detail: CommandPaletteOpenDetail = {}): void {
+  // With no palette on screen (e.g. /pair) the request is dropped; kept in the
+  // store, it would pop a stale palette once the app shell mounts.
+  if (!isCommandPaletteMounted()) return;
+  if (detail.open === "new-thread-in") {
+    dispatchCommandPalette({ _tag: "OpenNewThreadIn" });
+  } else if (detail.open === "add-project") {
+    dispatchCommandPalette({ _tag: "OpenAddProject" });
+  } else if (detail.query !== undefined) {
+    dispatchCommandPalette({
+      _tag: "OpenSearch",
+      query: detail.query,
+      ...(detail.linkedThreads ? { linkedThreads: detail.linkedThreads } : {}),
+    });
+  } else {
+    dispatchCommandPalette({ _tag: "SetOpen", open: true });
+  }
 }
 
-export function onOpenCommandPalette(
-  listener: (detail: CommandPaletteOpenDetail) => void,
-): () => void {
-  const handler = (event: Event) => {
-    listener((event as CustomEvent<CommandPaletteOpenDetail>).detail ?? {});
-  };
-  window.addEventListener(COMMAND_PALETTE_OPEN_EVENT, handler);
-  return () => window.removeEventListener(COMMAND_PALETTE_OPEN_EVENT, handler);
-}
-
+/** True while the palette popup is on screen, including its closing animation. */
 export function isCommandPaletteOpen(): boolean {
   return (
     typeof document !== "undefined" && document.querySelector("[data-command-palette]") !== null

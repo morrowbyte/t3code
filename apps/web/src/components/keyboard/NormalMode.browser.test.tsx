@@ -12,7 +12,6 @@ import { AlertDialog, AlertDialogPopup, AlertDialogTitle } from "../ui/alert-dia
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { isNavigationMode, leaveNavigationMode, requestNavigationMode } from "./navigationMode";
 import { dispatchKeyboardCommand } from "./keyboardCommands";
-import { useEscapeToGoBack } from "../../hooks/useNavigateBack";
 import {
   Combobox,
   ComboboxItem,
@@ -124,8 +123,7 @@ it("enters Normal mode when a focused app button's tooltip consumes Escape", asy
   await expect.element(page.getByRole("dialog", { name: /Keyboard navigation/ })).toBeVisible();
 });
 
-function SettingsFixture({ onExit }: { onExit: () => void }) {
-  useEscapeToGoBack(onExit);
+function SettingsFixture() {
   return (
     <main data-keyboard-region="settings" aria-label="Settings">
       <div data-keyboard-object="Setting" tabIndex={-1} aria-label="First setting">
@@ -138,25 +136,23 @@ function SettingsFixture({ onExit }: { onExit: () => void }) {
   );
 }
 
-it("enters Normal mode within Settings without exiting and navigates the settings rows", async () => {
+it("enters Normal mode within Settings and navigates the settings rows", async () => {
   using _mode = setup();
-  const exit = vi.fn();
   await using screen = await render(
     <>
-      <SettingsFixture onExit={exit} />
+      <SettingsFixture />
       <Navigation />
     </>,
   );
   await screen.getByRole("textbox").click();
   await userEvent.keyboard("{Control>}{Shift>} {/Shift}{/Control}");
   expect(isNavigationMode()).toBe(true);
-  expect(exit).not.toHaveBeenCalled();
   await userEvent.keyboard("j");
   expect(document.activeElement?.getAttribute("aria-label")).toBe("Second setting");
   await userEvent.keyboard("k");
   expect(document.activeElement?.getAttribute("aria-label")).toBe("First setting");
   await userEvent.keyboard("{Escape}");
-  await vi.waitFor(() => expect(exit).toHaveBeenCalledOnce());
+  expect(isNavigationMode()).toBe(true);
 });
 
 it("gives a local cancellation handler first refusal before entering Normal mode", async () => {
@@ -442,12 +438,9 @@ it("respects a dialog that refuses to close without showing an unreachable Norma
   );
   await expect.element(page.getByRole("dialog", { name: "Custom preview" })).toBeVisible();
   await userEvent.keyboard("{Control>}{Shift>} {/Shift}{/Control}");
-  await act(async () => {
-    const layer = document.querySelector('[aria-label="Custom preview"]')!;
-    await Promise.allSettled(layer.getAnimations().map((animation) => animation.finished));
-    await new Promise<void>((resolve) =>
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-    );
+  await vi.waitFor(() => {
+    expect(isNavigationMode()).toBe(false);
+    expect(document.activeElement?.closest('[aria-label="Custom preview"]')).not.toBeNull();
   });
   await expect.element(page.getByRole("dialog", { name: "Custom preview" })).toBeVisible();
   expect(isNavigationMode()).toBe(false);

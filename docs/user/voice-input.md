@@ -43,6 +43,20 @@ Voice contributions stay in the conversation without automatically becoming new
 agent prompts. Leaving the thread ends its call; already submitted agent work
 continues independently.
 
+**Speech bubbles · Experimental** is off by default. Enable it in the call
+controls or voice transcript for a live bubble view with the agent's avatar and a
+separate microphone side for you. On mobile, the switch is labeled
+**Sprechblasen · Experimentell**. Public conversation text updates as it arrives;
+longer contributions are split for readability. This choice is saved on your
+device; turn it off to return to the original transcript.
+
+The live view shows real public tool activity, including recent GPT Live
+completions and summaries of active thread tools. It does not expose hidden thinking.
+Results, shared context, agent messages, approvals, and questions stay in chat.
+
+Change the agent's theme under **Settings → Appearance → Agent identity**;
+see [Agent identity](./appearance.md#agent-identity).
+
 Keep talking while the agent works. Finished results return to the call for a
 brief spoken explanation, and follow-up questions can use those results without
 starting the same task again. You can interrupt speech or redirect an active

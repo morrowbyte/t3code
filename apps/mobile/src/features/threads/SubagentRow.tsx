@@ -13,7 +13,7 @@ import { cn } from "../../lib/cn";
 import { useEnvironmentServerConfig, useProject, useThreadShell } from "../../state/entities";
 import { subagentCardDetail } from "./subagent-card-presentation";
 import { SUBAGENT_TONE_TEXT_CLASS, SubagentStatusDot } from "./SubagentStatusDot";
-import { resolveSubagentRowPresentation } from "./threadAgentsPresentation";
+import { subagentThreadTarget, resolveSubagentRowPresentation } from "./threadAgentsPresentation";
 
 type SubagentRowSubagent = Pick<
   OrchestrationV2Subagent,
@@ -27,6 +27,7 @@ type SubagentRowSubagent = Pick<
   | "status"
   | "progress"
   | "result"
+  | "remoteChild"
 >;
 
 export function SubagentRow(props: {
@@ -34,9 +35,16 @@ export function SubagentRow(props: {
   readonly subagent: SubagentRowSubagent;
   readonly elapsed: ReactNode;
   readonly conversation?: boolean;
+  /** The task runs in a linked environment this app is connected to. */
+  readonly canOpenRemote?: boolean;
 }) {
-  const presentation = resolveSubagentRowPresentation(props.subagent);
+  const presentation = resolveSubagentRowPresentation(props.subagent, props.canOpenRemote);
   const detail = subagentCardDetail(presentation.detail);
+  const identityRef = subagentThreadTarget(
+    props.subagent,
+    props.environmentId,
+    () => props.canOpenRemote === true,
+  );
   return (
     <View className="flex-row gap-3">
       <View className="h-5 justify-center">
@@ -53,13 +61,10 @@ export function SubagentRow(props: {
       <View className="min-w-0 flex-1 gap-1">
         <View className="min-h-5 flex-row items-center gap-2">
           <View className="min-w-0 flex-1 flex-row items-baseline gap-1.5">
-            {props.conversation && props.subagent.childThreadId ? (
+            {props.conversation && identityRef ? (
               <View className="min-w-0 flex-1">
                 <AgentIdentityLabel
-                  threadRef={{
-                    environmentId: props.environmentId,
-                    threadId: props.subagent.childThreadId,
-                  }}
+                  threadRef={identityRef}
                   featureTitle={presentation.title}
                   avatarSize={24}
                 />
@@ -90,6 +95,11 @@ export function SubagentRow(props: {
                   {presentation.statusLabel}
                 </Text>
               </>
+            ) : null}
+            {presentation.runsOn !== null ? (
+              <Text numberOfLines={1} className="shrink text-xs text-foreground-muted">
+                on {presentation.runsOn}
+              </Text>
             ) : null}
           </View>
           {props.conversation ? (
@@ -136,7 +146,8 @@ function SubagentMetadata(props: {
   readonly subagent: SubagentRowSubagent;
 }) {
   const { environmentId, subagent } = props;
-  const config = useEnvironmentServerConfig(environmentId);
+  // A task in a linked environment runs a provider instance of that environment.
+  const config = useEnvironmentServerConfig(subagent.remoteChild?.environmentId ?? environmentId);
   const provider = config?.providers.find(
     (candidate) => candidate.instanceId === subagent.providerInstanceId,
   );
@@ -168,9 +179,7 @@ function SubagentMetadata(props: {
         {modelLabel}
       </Text>
       {workspace.map(({ label, value }) => (
-        // The row reads this label in place of the icon. collapsable keeps the
-        // view (and label) from being flattened away without making it a
-        // separate accessibility stop.
+        // Preserve the label against flattening without making it a separate accessibility stop.
         <View
           key={label}
           collapsable={false}

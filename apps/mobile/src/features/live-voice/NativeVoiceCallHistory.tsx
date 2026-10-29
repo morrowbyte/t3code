@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useAtomSubscribe } from "@effect/atom-react";
+import { AsyncResult, type Atom } from "effect/reactivity";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { View } from "react-native";
 import type { EnvironmentId, LiveVoiceCallSummary, ThreadId } from "@t3tools/contracts";
 import {
@@ -8,6 +10,11 @@ import {
   type VoiceConversationItem,
   type VoiceTranscriptSnapshot,
 } from "@t3tools/client-runtime/live-voice";
+import { voiceSpeechBubbles } from "@t3tools/client-runtime/live-voice/bubbles";
+import {
+  NativeVoiceBubbleViewToggle,
+  useNativeVoiceBubbleView,
+} from "./NativeVoiceBubbleViewToggle";
 import { Button } from "../../components/ui/Button";
 import { AppText } from "../../components/ui/AppText";
 import { useEnvironmentQuery } from "../../state/query";
@@ -30,47 +37,61 @@ function TranscriptLoader({
   readonly call: LiveVoiceCallSummary;
   readonly register: (key: string, snapshot: Snapshot) => void;
 }) {
-  const query = useEnvironmentQuery(
-    voiceCallTranscriptQuery({
-      environmentId,
-      input: {
-        threadId: call.threadId,
-        leaseId: call.leaseId,
-        generation: call.generation,
-        lastEventId: call.lastEventId,
-      },
-    }),
+  const query = voiceCallTranscriptQuery({
+    environmentId,
+    input: {
+      threadId: call.threadId,
+      leaseId: call.leaseId,
+      generation: call.generation,
+      lastEventId: call.lastEventId,
+    },
+  });
+  const receiveSnapshot = useCallback(
+    (result: Atom.Type<typeof query>) => {
+      const snapshot = AsyncResult.isFailure(result)
+        ? "error"
+        : AsyncResult.getOrElse(result, () => null);
+      if (snapshot)
+        register(
+          voiceCallKey(call),
+          snapshot === "error"
+            ? "error"
+            : { transcript: snapshot, throughEventId: call.lastEventId },
+        );
+    },
+    [call, register],
   );
-  const snapshot = query.error ? "error" : query.data;
-  useEffect(() => {
-    if (snapshot)
-      register(
-        voiceCallKey(call),
-        snapshot === "error" ? "error" : { transcript: snapshot, throughEventId: call.lastEventId },
-      );
-  }, [call, register, snapshot]);
+  useAtomSubscribe(query, receiveSnapshot, { immediate: true });
   return null;
 }
 
-function EarlierCalls({
-  environmentId,
-  threadId,
-  before,
-  register,
-}: HistoryProps & {
+type EarlierCallsProps = HistoryProps & {
   readonly before: string;
   readonly register: (calls: ReadonlyArray<LiveVoiceCallSummary>) => void;
-}) {
+};
+
+function EarlierCalls(props: EarlierCallsProps) {
   const [expanded, setExpanded] = useState(false);
-  const query = useEnvironmentQuery(
-    expanded ? earlierVoiceCallHistoryQuery({ environmentId, input: { threadId, before } }) : null,
+  return expanded ? (
+    <EarlierCallsPage {...props} />
+  ) : (
+    <Button label="Frühere Gespräche" tone="text" onPress={() => setExpanded(true)} />
   );
-  const calls = query.error ? null : query.data?.calls;
-  useEffect(() => {
-    if (calls) register(calls);
-  }, [calls, register]);
-  if (!expanded)
-    return <Button label="Frühere Gespräche" tone="text" onPress={() => setExpanded(true)} />;
+}
+
+function EarlierCallsPage({ environmentId, threadId, before, register }: EarlierCallsProps) {
+  const atom = earlierVoiceCallHistoryQuery({ environmentId, input: { threadId, before } });
+  const receiveCalls = useCallback(
+    (result: Atom.Type<typeof atom>) => {
+      const calls = AsyncResult.isFailure(result)
+        ? null
+        : AsyncResult.getOrElse(result, () => null)?.calls;
+      if (calls) register(calls);
+    },
+    [register],
+  );
+  useAtomSubscribe(atom, receiveCalls, { immediate: true });
+  const query = useEnvironmentQuery(atom);
   if (query.error)
     return (
       <HistoryError text="Frühere Gespräche konnten nicht geladen werden." retry={query.refresh} />
@@ -113,7 +134,15 @@ export function NativeVoiceCallHistory({
   const query = useEnvironmentQuery(voiceCallHistoryQuery({ environmentId, input: { threadId } }));
   const [retained, setRetained] = useState<ReadonlyArray<LiveVoiceCallSummary>>([]);
   const [transcripts, setTranscripts] = useState<ReadonlyMap<string, Snapshot>>(new Map());
-  const observed = useNativeVoiceObserved();
+  const observedCalls = useNativeVoiceObserved();
+  const observed = useMemo(
+    () =>
+      observedCalls.filter(
+        (value) => value.environmentId === environmentId && value.call.threadId === threadId,
+      ),
+    [observedCalls, environmentId, threadId],
+  );
+  const { enabled: bubbles } = useNativeVoiceBubbleView();
   const incoming = query.error ? null : query.data?.calls;
   const registerCalls = useCallback(
     (calls: ReadonlyArray<LiveVoiceCallSummary>) =>
@@ -132,12 +161,13 @@ export function NativeVoiceCallHistory({
     [query.error, retained, incoming],
   );
   if (!query.error && calls !== retained) setRetained(calls);
-  const items = useMemo(
-    () => (query.error ? [] : voiceConversationItems(calls, transcripts, observed)),
-    [query.error, calls, transcripts, observed],
-  );
+  const items = useMemo(() => {
+    const received = voiceConversationItems(calls, transcripts, observed);
+    return bubbles ? voiceSpeechBubbles(received, { environmentId, threadId }) : received;
+  }, [calls, transcripts, observed, bubbles, environmentId, threadId]);
   const controls = (
     <View>
+      {items.length > 0 && <NativeVoiceBubbleViewToggle />}
       {query.error ? (
         <HistoryError text="Gesprächsverlauf konnte nicht geladen werden." retry={query.refresh} />
       ) : (

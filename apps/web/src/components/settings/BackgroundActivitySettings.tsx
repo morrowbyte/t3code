@@ -57,9 +57,9 @@ const BACKGROUND_ACTIVITY_PROFILE_OPTION_LABELS: Record<BackgroundActivityProfil
 };
 
 const BACKGROUND_ACTIVITY_PROFILE_DESCRIPTIONS: Record<BackgroundActivityProfile, string> = {
-  balanced: "Pauses probes for idle clients, locked hosts, or low power mode.",
-  performance: "Allows scoped background probes while any subscribed client remains connected.",
-  "battery-saver": "Also pauses background probes when the host or client is on battery.",
+  balanced: "Pauses checks for idle clients, locked hosts, or low power mode.",
+  performance: "Runs background checks while a subscribed client is connected.",
+  "battery-saver": "Also pauses checks when the host or client is on battery.",
 };
 
 const ADVANCED_BACKGROUND_ACTIVITY_DESCRIPTION = "Uses custom intervals.";
@@ -124,9 +124,7 @@ function BackgroundActivityAdvancedDialog({
       <DialogPopup className="max-w-xl">
         <DialogHeader>
           <DialogTitle>Background Activity</DialogTitle>
-          <DialogDescription>
-            Tune the shared power policy and the background intervals that feed it.
-          </DialogDescription>
+          <DialogDescription>Applies to Git fetches and provider checks.</DialogDescription>
         </DialogHeader>
         <DialogPanel>
           <fieldset
@@ -135,10 +133,7 @@ function BackgroundActivityAdvancedDialog({
           >
             <div className="flex flex-col gap-3 border-b px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0 space-y-1">
-                <div className="text-sm font-medium">Shared policy</div>
-                <p className="text-xs leading-relaxed text-muted-foreground">
-                  Controls whether background work may run after a subscribed interval fires.
-                </p>
+                <div className="text-sm font-medium">Power policy</div>
               </div>
               <Select
                 value={activeProfile}
@@ -402,10 +397,7 @@ export function BackgroundActivitySettingsRow() {
       title={
         <span className="inline-flex items-center gap-1.5">
           {searchableSetting("background-activity").title}
-          <PolicyTooltip>
-            This shared policy gates background work such as Git refreshes and provider health
-            probes after their individual intervals elapse.
-          </PolicyTooltip>
+          <PolicyTooltip>Applies to Git fetches and provider checks.</PolicyTooltip>
         </span>
       }
       description={backgroundActivityDescription}

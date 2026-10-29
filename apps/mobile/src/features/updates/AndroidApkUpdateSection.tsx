@@ -5,7 +5,7 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Menu } from "../../components/ui/Menu";
 import { androidApkNative } from "../../native/AndroidApkUpdates";
-import { SettingsActionRow } from "../settings/components/SettingsActionRow";
+import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActionRow";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { useSettingsEnvironmentFilter } from "../settings/settings-environment-filter";
 import { createAndroidApkTransport } from "./android-apk-transport";
@@ -14,6 +14,7 @@ import { createAndroidApkUpdater, type AndroidApkUpdater } from "./android-apk-u
 export function AndroidApkUpdatePanel(props: { readonly updater: AndroidApkUpdater }) {
   const [state, setState] = useState(props.updater.getState);
   const [showNotes, setShowNotes] = useState(false);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Subscribes to the native APK updater and releases the listener on unmount.
   useEffect(() => props.updater.subscribe(setState), [props.updater]);
   const busy = ["checking", "downloading", "verifying", "installing"].includes(state.phase);
   const percent = state.release ? Math.floor((state.bytes / state.release.apk.size) * 100) : 0;
@@ -119,6 +120,7 @@ function ConnectedAndroidApkUpdate(props: { readonly environmentId: EnvironmentI
   const [updater] = useState(() =>
     createAndroidApkUpdater(createAndroidApkTransport(props.environmentId), androidApkNative),
   );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Disposes native APK download resources when this environment's settings unmount.
   useEffect(
     () => () => {
       void updater.dispose();

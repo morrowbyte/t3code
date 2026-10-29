@@ -51,9 +51,7 @@ export async function voiceSettingsRequest(
     Effect.gen(function* () {
       const prepared = get(environmentSession.preparedConnectionValueAtom(environmentId));
       if (Option.isNone(prepared) || prepared.value.environmentId !== environmentId)
-        return yield* Effect.fail(
-          new VoiceSettingsUnavailable({ message: "Environment disconnected." }),
-        );
+        return yield* new VoiceSettingsUnavailable({ message: "Environment disconnected." });
       const signer = yield* Effect.serviceOption(ManagedRelay.ManagedRelayDpopSigner);
       const remoteAuthorization = yield* Effect.serviceOption(RemoteEnvironmentAuthorization);
       return yield* requestEnvironmentVoiceSettings({

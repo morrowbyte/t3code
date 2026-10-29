@@ -14,6 +14,7 @@ import {
 } from "./CodexAdapterV2VoiceIsolation.ts";
 
 const decodeDecision = Schema.decodeUnknownEffect(Schema.fromJsonString(VoiceIntakeDecision));
+const decodeJson = Schema.decodeUnknownSync(Schema.Json);
 const encodeSnapshot = Schema.encodeEffect(Schema.fromJsonString(VoiceIntakeSnapshot));
 const encodeUnclaimedSpans = Schema.encodeEffect(
   Schema.fromJsonString(
@@ -88,7 +89,7 @@ export function voiceIntakeDecisionOutputSchema(snapshot: VoiceIntakeSnapshot) {
     variant.properties.intentId = { ...variant.properties.intentId, enum: ids };
     return true;
   });
-  return Schema.decodeUnknownSync(Schema.Json)({ ...schema, $defs: document.definitions });
+  return decodeJson({ ...schema, $defs: document.definitions });
 }
 class DecisionRefused extends Schema.TaggedError<DecisionRefused>()("VoiceIntakeDecisionRefused", {
   reason: Schema.String,

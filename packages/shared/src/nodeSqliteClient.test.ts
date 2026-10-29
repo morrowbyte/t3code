@@ -16,18 +16,29 @@ import * as SqliteClient from "./nodeSqliteClient.ts";
 
 const startedWorkers = vi.hoisted((): Array<NodeWorkerThreads.Worker> => []);
 const silentWorkers = vi.hoisted(() => ({ on: false, readyOnTerminate: false }));
-const failingWorkers = vi.hoisted(() => ({ message: undefined as string | undefined }));
+const failingWorkers = vi.hoisted(() => ({
+  message: undefined as string | undefined,
+  filename: undefined as string | undefined,
+}));
 
 vi.mock("node:worker_threads", async (importOriginal) => {
   const actual = await importOriginal<typeof NodeWorkerThreads>();
   class RecordedWorker extends actual.Worker {
     constructor(...args: ConstructorParameters<typeof actual.Worker>) {
+      const data: unknown = args[1]?.workerData;
+      const workerArgs: ConstructorParameters<typeof actual.Worker> =
+        failingWorkers.filename !== undefined &&
+        typeof data === "object" &&
+        data !== null &&
+        "prepareCacheSize" in data
+          ? [args[0], { ...args[1], workerData: { ...data, filename: failingWorkers.filename } }]
+          : args;
       super(
         ...((silentWorkers.on
           ? ["setInterval(() => {}, 1 << 30);", { eval: true }]
           : failingWorkers.message !== undefined
             ? [`throw new Error(${JSON.stringify(failingWorkers.message)});`, { eval: true }]
-            : args) as ConstructorParameters<typeof actual.Worker>),
+            : workerArgs) as ConstructorParameters<typeof actual.Worker>),
       );
       startedWorkers.push(this);
     }
@@ -176,8 +187,7 @@ it.effect("keeps another connection from committing between a transaction's read
           const [row] = yield* sql<{ readonly value: number }>`
             SELECT value FROM counters WHERE id = 1
           `;
-          // With a deferred BEGIN this commit lands and the write below fails
-          // with SQLITE_BUSY_SNAPSHOT, which no busy timeout can wait out.
+          // Deferred BEGIN permits a competing commit, causing SQLITE_BUSY_SNAPSHOT that no timeout can resolve.
           yield* Effect.sync(() =>
             assert.throws(
               () => other.exec("UPDATE counters SET value = value + 1 WHERE id = 1"),
@@ -329,12 +339,21 @@ it.effect("uses the writer when the reader cannot open the database", () =>
       yield* sql`PRAGMA journal_mode = WAL`;
       yield* sql`CREATE TABLE entries(name TEXT NOT NULL)`;
       yield* sql`INSERT INTO entries VALUES ('kept')`;
-      yield* (yield* FileSystem.FileSystem).remove(filename);
+      // Windows cannot unlink the open writer; only the reader receives a missing database.
+      failingWorkers.filename = `${filename}.missing`;
       const startedBefore = startedWorkers.length;
 
-      assert.equal(yield* sql.withTransaction(countEntries(sql)).pipe(SqliteClient.readOnly), 1);
-      assert.equal(yield* sql.withTransaction(countEntries(sql)).pipe(SqliteClient.readOnly), 1);
-      assert.equal(startedWorkers.length, startedBefore + 1);
+      yield* Effect.gen(function* () {
+        assert.equal(yield* sql.withTransaction(countEntries(sql)).pipe(SqliteClient.readOnly), 1);
+        assert.equal(yield* sql.withTransaction(countEntries(sql)).pipe(SqliteClient.readOnly), 1);
+        assert.equal(startedWorkers.length, startedBefore + 1);
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            failingWorkers.filename = undefined;
+          }),
+        ),
+      );
     }),
   ),
 );

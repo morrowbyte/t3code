@@ -4,7 +4,10 @@ import { createRef } from "react";
 import { expect, it, vi } from "vite-plus/test";
 
 import { serializeEditorDoc } from "~/composer-rich-text-doc";
-import { ComposerPromptEditor, type ComposerPromptEditorHandle } from "./ComposerPromptEditor";
+import {
+  ComposerPromptEditorTiptap as ComposerPromptEditor,
+  type ComposerPromptEditorHandle,
+} from "./ComposerPromptEditorTiptap";
 import { LeaderNavigation } from "./keyboard/LeaderNavigation";
 import { act, render } from "../../test/render";
 import { leaveNavigationMode } from "./keyboard/navigationMode";

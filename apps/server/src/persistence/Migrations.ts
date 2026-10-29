@@ -68,17 +68,18 @@ import Migration0062 from "./Migrations/062_ThreadFailureLookupIndex.ts";
 import Migration0063 from "./Migrations/063_CodexLiveVoice.ts";
 import Migration0064 from "./Migrations/064_DropUnusedV1Projections.ts";
 import Migration0065 from "./Migrations/065_CanonicalizeThreadPullRequestLinks.ts";
-// Morrowbyte shipped Voice as migration 63; new upstream migrations append after 65.
+// Preserve shipped fork IDs; append upstream migrations after the fork's latest ID.
 import Migration0066 from "./Migrations/065_CodexUsageNativeTurnIndex.ts";
 import Migration0067 from "./Migrations/066_RepairClientSettlementTimestamps.ts";
 import Migration0068 from "./Migrations/067_WebhookDedupe.ts";
-
 import Migration0069 from "./Migrations/068_ApprovalReviewReadyIndex.ts";
-
 import Migration0070 from "./Migrations/069_ApprovalReviewHostOrders.ts";
 import Migration0071 from "./Migrations/068_ShellStopRequestIndex.ts";
-
 import Migration0072 from "./Migrations/072_LiveVoiceHistoryEvents.ts";
+import Migration0073 from "./Migrations/073_ThreadMessageSearch.ts";
+import Migration0074 from "./Migrations/074_PeerLinks.ts";
+import Migration0075 from "./Migrations/075_PeerLinkFence.ts";
+import Migration0076 from "./Migrations/076_WaitingLinkRequestIndex.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -154,6 +155,10 @@ const migrationEntries = [
   [70, "ApprovalReviewHostOrders", Migration0070],
   [71, "ShellStopRequestIndex", Migration0071],
   [72, "LiveVoiceHistoryEvents", Migration0072],
+  [73, "ThreadMessageSearch", Migration0073],
+  [74, "PeerLinks", Migration0074],
+  [75, "PeerLinkFence", Migration0075],
+  [76, "WaitingLinkRequestIndex", Migration0076],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
@@ -169,12 +174,7 @@ const makeMigrationLoader = (throughId?: number) =>
 
 const FIRST_V2_MIGRATION_ID = 55;
 
-/**
- * Fail before migrating when the migrator would skip one of V2's own
- * migrations. It skips every id up to the highest recorded one, whatever name
- * was recorded, so a database that took a V2 id for another migration would
- * start without V2's schema and fail on first use.
- */
+// Migrators skip ids up to the highest recorded; reject collisions that would skip V2 schema.
 const assertV2MigrationsCanRun = Effect.fn("assertV2MigrationsCanRun")(function* (
   throughId?: number,
 ) {

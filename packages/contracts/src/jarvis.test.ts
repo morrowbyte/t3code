@@ -14,10 +14,17 @@ import {
 const submitGolden =
   '{"schema":"jarvis.v1","kind":"submit_capability","requestId":"bridge-request-1","conversationId":"conversation-1","clientMessageId":"message-1","invocation":{"engineSessionId":"engine-1","capabilityId":"browser.fill","operationId":"fill","registrationRevision":"browser-1","arguments":{"text":"bounded example"},"target":{"targetId":"field-1","targetKind":"browser_input","surfaceId":"owned-tab-1","generation":"1","observedContextId":"context-1","observedObservationId":"observation-1"}}}';
 
+const decodeUnknownJarvisNativeResponse = Schema.decodeUnknownSync(JarvisNativeResponse);
+const decodeUnknownJarvisNativeRequest = Schema.decodeUnknownSync(JarvisNativeRequest);
+const decodeJarvisSubmitCapabilityText = Schema.decodeSync(
+  Schema.fromJsonString(JarvisSubmitCapability),
+);
+const decodeJarvisNativeRequestText = Schema.decodeSync(Schema.fromJsonString(JarvisNativeRequest));
+
 describe("canonical Jarvis data boundary", () => {
   it("round-trips the canonical Rust submit bytes without replacing retained target identity", () => {
     const codec = Schema.fromJsonString(JarvisSubmitCapability);
-    const request = Schema.decodeUnknownSync(codec)(submitGolden);
+    const request = Schema.decodeSync(codec)(submitGolden);
     expect(Schema.encodeSync(codec)(request)).toBe(submitGolden);
     expect(request.invocation.target.observedObservationId).toBe("observation-1");
     expect(request.invocation.registrationRevision).toBe("browser-1");
@@ -35,9 +42,7 @@ describe("canonical Jarvis data boundary", () => {
   });
 
   it("rejects omitted observation identity and unknown invocation authority fields", () => {
-    const submit = Schema.decodeUnknownSync(Schema.fromJsonString(JarvisSubmitCapability))(
-      submitGolden,
-    );
+    const submit = decodeJarvisSubmitCapabilityText(submitGolden);
     const decode = Schema.decodeUnknownSync(JarvisCapabilityJobRequest);
     const { observedContextId: _context, ...unbound } = submit.invocation.target;
     expect(() => decode({ ...submit.invocation, target: unbound })).toThrow();
@@ -59,7 +64,7 @@ const observeRpcGolden =
 describe("canonical Jarvis native transport", () => {
   it("round-trips Rust JSON-RPC bytes with the actual separate child root binding", () => {
     const codec = Schema.fromJsonString(JarvisNativeRequest);
-    const request = Schema.decodeUnknownSync(codec)(observeRpcGolden);
+    const request = Schema.decodeSync(codec)(observeRpcGolden);
     expect(Schema.encodeSync(codec)(request)).toBe(observeRpcGolden);
     expect(request.params.binding.origin.childRootNodeId).toBe("child-root-1");
     expect(request.params.binding.origin.childRootNodeId).not.toBe(
@@ -68,9 +73,7 @@ describe("canonical Jarvis native transport", () => {
   });
   it("rejects caller-chosen methods, numeric IDs and missing actual child roots", () => {
     const decode = Schema.decodeUnknownSync(JarvisNativeRequest);
-    const request = Schema.decodeUnknownSync(Schema.fromJsonString(JarvisNativeRequest))(
-      observeRpcGolden,
-    );
+    const request = decodeJarvisNativeRequestText(observeRpcGolden);
     expect(() => decode({ ...request, method: "jarvis.launch_shell" })).toThrow();
     expect(() => decode({ ...request, id: 1 })).toThrow();
     const { childRootNodeId: _childRoot, ...origin } = request.params.binding.origin;
@@ -81,7 +84,7 @@ describe("canonical Jarvis native transport", () => {
       }),
     ).toThrow();
     expect(() =>
-      Schema.decodeUnknownSync(JarvisNativeResponse)({ jsonrpc: "2.0", id: 1, result: {} }),
+      decodeUnknownJarvisNativeResponse({ jsonrpc: "2.0", id: 1, result: {} }),
     ).toThrow();
   });
 });
@@ -92,11 +95,11 @@ const submitRpcGolden =
   '{"jsonrpc":"2.0","id":"rpc-1","method":"jarvis.submit","params":{"binding":{"engineSessionId":"engine-1","origin":{"environmentId":"environment-1","projectId":"project-1","parentThreadId":"parent-1","parentRunId":"run-1","parentRootNodeId":"root-1","taskId":"task-1","childThreadId":"child-1","childRunId":"child-run-1","childRootNodeId":"child-root-1"}},"requestId":"bridge-request-1","clientMessageId":"message-1","invocation":{"engineSessionId":"engine-1","capabilityId":"browser.fill","operationId":"fill","registrationRevision":"browser-1","arguments":{"text":"bounded example"},"target":{"targetId":"field-1","targetKind":"browser_input","surfaceId":"owned-tab-1","generation":"1","observedContextId":"context-1","observedObservationId":"observation-1"}}}}';
 it("uses the canonical Host-bound submit wrapper and rejects caller conversation or commands", () => {
   const codec = Schema.fromJsonString(JarvisNativeRequest);
-  const request = Schema.decodeUnknownSync(codec)(submitRpcGolden);
+  const request = Schema.decodeSync(codec)(submitRpcGolden);
   expect(Schema.encodeSync(codec)(request)).toBe(submitRpcGolden);
   for (const key of ["conversationId", "envelope", "command", "schema"]) {
     expect(() =>
-      Schema.decodeUnknownSync(JarvisNativeRequest)({
+      decodeUnknownJarvisNativeRequest({
         ...request,
         params: { ...request.params, [key]: "caller-controlled" },
       }),

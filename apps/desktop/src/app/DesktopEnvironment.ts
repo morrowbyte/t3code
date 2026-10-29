@@ -78,6 +78,7 @@ export class DesktopEnvironment extends Context.Service<
     readonly linuxDesktopEntryName: string;
     readonly linuxWmClass: string;
     readonly linuxApplicationsDir: string;
+    readonly desktopLauncherPath: Option.Option<string>;
     readonly appImagePath: Option.Option<string>;
     readonly linuxUrlHandlerLauncher: Option.Option<string>;
     readonly linuxUrlHandlerHome: Option.Option<string>;
@@ -260,6 +261,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
           : "t3code",
     ),
     linuxApplicationsDir,
+    desktopLauncherPath: config.desktopLauncherPath,
     appImagePath: config.appImagePath,
     linuxUrlHandlerLauncher: Option.filter(config.linuxUrlHandlerLauncher, path.isAbsolute),
     linuxUrlHandlerHome: config.t3Home,

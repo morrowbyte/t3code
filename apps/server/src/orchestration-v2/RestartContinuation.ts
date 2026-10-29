@@ -33,13 +33,8 @@ const CONTINUE_PROMPT = "Continue where you left off.";
 const MAX_CONTINUATION_CHAIN = 3;
 const CONTINUATION_LOOP_WINDOW_MS = 5 * 60 * 1_000;
 
-/**
- * Whether a restart must leave this run for the user: the thread is put away,
- * the provider turn already ended, or the user owes an answer. Checked when
- * intent is recorded and again when the continuation is delivered. A
- * `settled` run is woken for the awaited work it lost, so its ended provider
- * turn does not block it.
- */
+// Check before recording and delivering intent; settled runs resume awaited work
+// even when their previous provider turn ended.
 function restartContinuationBlocked(
   projection: Pick<
     ProjectionRuntimeRecoveryState,
@@ -89,10 +84,7 @@ function restartContinuationBlocked(
   );
 }
 
-/**
- * Open awaited work (see `isAwaitedWork`) on a provider thread. App-owned
- * delegations are not counted: their own threads continue and report back.
- */
+/** App-owned delegations continue in their own threads and report back. */
 function hasOpenAwaitedWork(
   projection: Pick<ProjectionRuntimeRecoveryState, "runs" | "turnItems">,
   providerThread: ProjectionRuntimeRecoveryState["providerThreads"][number],
@@ -118,12 +110,7 @@ function hasOpenAwaitedWork(
   );
 }
 
-/**
- * The run a restart continues: an unfinished root turn, or a settled one
- * waiting on awaited work that the restart cancels. A settled run needs a
- * live session, so stale records from an older crash never wake it. Other
- * leftover work is cleaned up and reported on the next user turn.
- */
+/** Settled runs require a live session so stale crash records cannot wake them. */
 export function restartContinuationRun(
   projection: Pick<
     ProjectionRuntimeRecoveryState,
@@ -173,8 +160,7 @@ export function restartContinuationRun(
   const session = projection.providerSessions.find(
     (candidate) => candidate.id === providerThread.providerSessionId,
   );
-  // Most adapters keep a live session "ready" through its turns, so only a
-  // stopped or failed session rules out a live turn.
+  // Adapters remain ready during turns; only stopped or failed sessions rule out liveness.
   if (
     session === undefined ||
     session.providerInstanceId !== run.providerInstanceId ||
@@ -315,11 +301,7 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
         restartContinuationOfRunId: input.sourceRunId,
       })
       .pipe(
-        // The project turned this instance off since the restart. No turn
-        // resumes, and the success path below still runs so a delegated
-        // child waiting on this run is recovered immediately instead of
-        // after EffectWorker exhausts its retries on a refusal that will
-        // not change.
+        // Disabled instances cannot resume; still run success cleanup so delegated children recover without futile retries.
         Effect.catchTags({
           ThreadManagementProviderInstanceDisabledError: (error) =>
             Effect.logInfo("orchestration-v2.restart-continuation.instance-disabled", {
@@ -331,8 +313,7 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
         }),
       );
   },
-  // A delegated child this declined to continue still owes its parent a
-  // result. Once a continuation run exists this is a no-op; that run settles it.
+  // Declined child continuations still owe parent results; existing continuation runs settle them instead.
   (effect, input) =>
     effect.pipe(
       Effect.andThen(

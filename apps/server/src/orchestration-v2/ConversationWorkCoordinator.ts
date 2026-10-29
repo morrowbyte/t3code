@@ -52,7 +52,7 @@ const make = Effect.gen(function* () {
     input: ThreadManagementDelegateInput,
     options?: DispatchRuntimeOptions,
   ) {
-    yield* threads.getProjectThread(input);
+    yield* threads.getProjectThreadRecords(input, []);
     const result = yield* threads.dispatch(
       {
         type: "message.dispatch",

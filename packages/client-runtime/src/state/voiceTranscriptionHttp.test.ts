@@ -192,6 +192,7 @@ describe("transcribeEnvironmentVoiceRecording", () => {
         }
         globalThis.FormData = NativeFormData as unknown as typeof FormData;
         try {
+          // @effect-diagnostics-next-line abortControllerInEffect:off - Exercise caller cancellation during the native multipart upload.
           const abort = new AbortController();
           const fetchFn = ((url, init) => {
             expect(String(url)).toBe(
@@ -226,7 +227,7 @@ describe("transcribeEnvironmentVoiceRecording", () => {
     () =>
       Effect.gen(function* () {
         const calls: Array<readonly [RequestInfo | URL, RequestInit]> = [];
-        const controller = new AbortController();
+        const signal = yield* Effect.abortSignal;
         const fetchFn = ((request, init) => {
           calls.push([request, init ?? {}]);
           return Promise.resolve(Response.json({ transcript: "recognized words" }));
@@ -236,7 +237,7 @@ describe("transcribeEnvironmentVoiceRecording", () => {
           prepared: PREPARED,
           audio,
           filename: "voice-message.wav",
-          signal: controller.signal,
+          signal,
           signer: Option.none(),
           remoteAuthorization: Option.none(),
         }).pipe(Effect.provide(RpcHttp.layerRemoteHttpClient(fetchFn)));
@@ -271,7 +272,7 @@ describe("transcribeEnvironmentVoiceRecording", () => {
         prepared: PREPARED,
         audio: new Blob(["sample"], { type: "audio/webm" }),
         filename: "voice-message.webm",
-        signal: new AbortController().signal,
+        signal: yield* Effect.abortSignal,
         signer: Option.none(),
         remoteAuthorization: Option.none(),
       }).pipe(Effect.provide(RpcHttp.layerRemoteHttpClient(fetchFn)), Effect.flip);
@@ -298,7 +299,7 @@ describe("transcribeEnvironmentVoiceRecording", () => {
         prepared: PREPARED,
         audio: new Blob(["sample"], { type: "audio/webm" }),
         filename: "voice-message.webm",
-        signal: new AbortController().signal,
+        signal: yield* Effect.abortSignal,
         signer: Option.none(),
         remoteAuthorization: Option.none(),
       }).pipe(Effect.provide(RpcHttp.layerRemoteHttpClient(fetchFn)), Effect.flip);
@@ -361,7 +362,7 @@ describe("transcribeEnvironmentVoiceRecording", () => {
         prepared,
         audio: new Blob(["sample"], { type: "audio/webm" }),
         filename: "voice-message.webm",
-        signal: new AbortController().signal,
+        signal: yield* Effect.abortSignal,
         signer,
         remoteAuthorization,
       }).pipe(Effect.provide(RpcHttp.layerRemoteHttpClient(fetchFn)));

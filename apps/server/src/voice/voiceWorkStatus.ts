@@ -5,7 +5,10 @@ export const isVoiceWorkActive = (status: string) =>
   ["idle", "pending", "preparing", "queued", "starting", "running", "waiting"].includes(status);
 
 export function voiceRunStatus(
-  projection: OrchestrationV2ThreadProjection,
+  projection: Pick<
+    OrchestrationV2ThreadProjection,
+    "attempts" | "providerTurns" | "turnItems" | "messages"
+  >,
   run: OrchestrationV2Run,
   observedAt: DateTime.Utc,
 ) {

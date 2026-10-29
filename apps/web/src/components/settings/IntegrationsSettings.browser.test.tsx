@@ -70,15 +70,19 @@ async function openSettings() {
 }
 
 describe("Integrations browser discovery", () => {
-  it("keeps agent browser access in the single Browser section", async () => {
+  it("keeps agent browser access in its dedicated Browser settings section", async () => {
     listBrowserImportSources.mockClear();
     await using screen = await openSettings();
     const container = screen.container;
 
-    expect(page.getByRole("heading", { name: "Browser", exact: true }).elements()).toHaveLength(1);
+    expect(
+      page.getByRole("heading", { name: "Agent access", exact: true }).elements(),
+    ).toHaveLength(1);
     const access = page.getByRole("switch", { name: "Agent browser access", exact: true });
     await expect.element(access).toBeVisible();
-    expect(access.element().closest("section")).toBe(container.querySelector("section#browser"));
+    expect(access.element().closest("section")).toBe(
+      container.querySelector("section#browser-agent-access"),
+    );
     expect(access.element().closest("#agent-browser-access")).not.toBeNull();
   });
 

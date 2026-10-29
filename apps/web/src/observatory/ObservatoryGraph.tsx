@@ -27,10 +27,7 @@ export function ObservatoryGraph({
   });
   return (
     <section aria-label="Agent graph">
-      <p className="mb-2 text-xs text-muted-foreground">
-        {edges.length} observed parent-child edges. Pan horizontally on narrow screens. Parents
-        outside this page or loaded coverage have no invented edge.
-      </p>
+      <p className="mb-2 text-xs text-muted-foreground">{edges.length} observed connections</p>
       <div className="overflow-auto rounded-lg border">
         <svg
           width={width}

@@ -15,7 +15,7 @@ vi.mock("../../state/environments", async (original) => ({
   useEnvironments: () => ({ environments: [] }),
 }));
 
-import { SettingsScopeBoundary } from "../../routes/settings";
+import { SettingsScopeBoundary } from "../../routes/_chat.settings";
 
 function setup(removed: boolean) {
   fixture.scope = resolveSettingsScope(

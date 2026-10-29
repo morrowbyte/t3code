@@ -32,6 +32,7 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as Ndjson from "effect/encoding/Ndjson";
 
+import { eventVersion as messageVersion } from "./NativeTelemetryClient.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { subscribeBeforeSnapshotWithoutMutex } from "../utils/subscribeBeforeSnapshot.ts";
@@ -281,12 +282,6 @@ function normalizeReceiverError(error: unknown): DesktopTelemetryReceiverError {
   return new DesktopTelemetryDecodeFailed({ cause: error });
 }
 
-function messageVersion(value: unknown): number | undefined {
-  if (typeof value !== "object" || value === null) return undefined;
-  const version = Reflect.get(value, "version");
-  return typeof version === "number" ? version : undefined;
-}
-
 export const writeAllToFileDescriptor = Effect.fn(
   "resourceTelemetry.desktopTelemetryReceiver.writeAllToFileDescriptor",
 )(function* (fd: number, payload: Buffer) {
@@ -346,7 +341,7 @@ export function requireDesktopTelemetryWriteProgress(
     : Effect.fail(new DesktopTelemetryControlStalled({ fd, remainingBytes }));
 }
 
-/** @public Service construction is part of the canonical Effect module API. */
+/** @public */
 export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")(function* (io?: {
   readonly readable?: NodeStream.Readable;
   readonly write?: typeof writeAllToFileDescriptor;
@@ -503,8 +498,7 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
 
   if (config.desktopTelemetryFd !== undefined) {
     const fd = config.desktopTelemetryFd;
-    // The parent waits for this server before closing its pipe. Socket reads
-    // can be cancelled; filesystem reads would keep process.exit waiting.
+    // The parent waits before closing; use cancellable socket reads so filesystem reads cannot block exit.
     const readable = yield* Effect.acquireRelease(
       Effect.try({
         try: () => io?.readable ?? new NodeNet.Socket({ fd, readable: true, writable: false }),
@@ -754,7 +748,7 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
           return unavailable("expired");
         return result.value;
       }).pipe(
-        Effect.catch(() => Effect.succeed(unavailable("source-closed"))),
+        Effect.orElseSucceed(() => unavailable("source-closed")),
         Effect.ensuring(
           Effect.sync(() => {
             if (diagnosticPending === p) diagnosticPending = undefined;
@@ -780,23 +774,34 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
     health: Ref.get(health),
     subscribeHealth: subscribeBeforeSnapshotWithoutMutex(healthChanges, Ref.get(health)),
     setDiagnosticsDemand,
-    requestDesktopUpdateHistory: (requestId, deleteId) =>
-      sendControlMessage({
-        version: 1,
-        type: "desktopUpdateHistoryRequest",
-        requestId,
-        ...(deleteId === undefined ? {} : { deleteId }),
-      }),
-    requestDesktopUpdate: (requestId) =>
-      sendControlMessage({
-        version: 1,
-        type: "requestDesktopUpdate",
-        requestId,
-      }),
-    commitDesktopUpdate: (requestId) =>
-      sendControlMessage({ version: 1, type: "commitDesktopUpdate", requestId }),
-    cancelDesktopUpdate: (requestId) =>
-      sendControlMessage({ version: 1, type: "cancelDesktopUpdate", requestId }),
+    requestDesktopUpdateHistory: Effect.fn("DesktopTelemetryReceiver.requestDesktopUpdateHistory")(
+      (requestId, deleteId) =>
+        sendControlMessage({
+          version: 1,
+          type: "desktopUpdateHistoryRequest",
+          requestId,
+          ...(deleteId === undefined ? {} : { deleteId }),
+        }),
+    ),
+    requestDesktopUpdate: Effect.fn("DesktopTelemetryReceiver.requestDesktopUpdate")(
+      function (requestId) {
+        return sendControlMessage({
+          version: 1,
+          type: "requestDesktopUpdate",
+          requestId,
+        });
+      },
+    ),
+    commitDesktopUpdate: Effect.fn("DesktopTelemetryReceiver.commitDesktopUpdate")(
+      function (requestId) {
+        return sendControlMessage({ version: 1, type: "commitDesktopUpdate", requestId });
+      },
+    ),
+    cancelDesktopUpdate: Effect.fn("DesktopTelemetryReceiver.cancelDesktopUpdate")(
+      function (requestId) {
+        return sendControlMessage({ version: 1, type: "cancelDesktopUpdate", requestId });
+      },
+    ),
     desktopUpdates: Effect.gen(function* () {
       const subscription = yield* PubSub.subscribe(updateReportChanges);
       const initial = yield* Ref.get(latestUpdateReport);
@@ -844,10 +849,18 @@ export const layerTest = (
             changes: Stream.empty,
           })),
         ),
-      setDiagnosticsDemand: () => Effect.void,
-      requestDesktopUpdate: () => Effect.void,
-      commitDesktopUpdate: () => Effect.void,
-      cancelDesktopUpdate: () => Effect.void,
+      setDiagnosticsDemand: Effect.fn("DesktopTelemetryReceiver.setDiagnosticsDemand")(function () {
+        return Effect.void;
+      }),
+      requestDesktopUpdate: Effect.fn("DesktopTelemetryReceiver.requestDesktopUpdate")(function () {
+        return Effect.void;
+      }),
+      commitDesktopUpdate: Effect.fn("DesktopTelemetryReceiver.commitDesktopUpdate")(function () {
+        return Effect.void;
+      }),
+      cancelDesktopUpdate: Effect.fn("DesktopTelemetryReceiver.cancelDesktopUpdate")(function () {
+        return Effect.void;
+      }),
       desktopUpdates:
         overrides.desktopUpdates ??
         Effect.succeed({

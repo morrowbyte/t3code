@@ -97,6 +97,7 @@ it.effect("keeps hosts independent when serials collide and another host fails",
           return "/host-config.json";
         }),
       undefined,
+      undefined,
       () => Effect.succeed(ProjectId.make("test-project")),
     ).pipe(Effect.provide(NodeCrypto.layer), Effect.provideService(HttpClient.HttpClient, http));
     expect(yield* service.agentReadinessIfSupported("b")).not.toBeNull();

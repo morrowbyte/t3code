@@ -1,4 +1,8 @@
-import type { ScopedThreadRef, AgentAvatarKey } from "@t3tools/contracts";
+import {
+  AGENT_IDENTITY_THEMES,
+  type ScopedThreadRef,
+  type AgentAvatarKey,
+} from "@t3tools/contracts";
 import { useAgentAvatar } from "../../state/agentAvatars";
 import { useAssetUrl } from "../../state/assets";
 import { assetImageSource } from "../../lib/assetImageSource";
@@ -37,13 +41,15 @@ export function AgentAvatar({
   readonly projectColor: string;
   readonly size?: 20 | 24;
 }) {
-  const portraits = PORTRAITS[identity.icon];
+  const portraits =
+    identity.icon === "agent" || identity.icon === "weasel" ? PORTRAITS[identity.icon] : null;
+  const glyph = AGENT_IDENTITY_THEMES[theme].glyph;
   const avatar = useAgentAvatar(threadRef, theme);
   const resource = avatar.data?.attachmentId
     ? { _tag: "attachment" as const, attachmentId: avatar.data.attachmentId }
     : null;
   const url = useAssetUrl(threadRef.environmentId, resource);
-  const fallbackSource = portraits[identity.avatarVariant] ?? portraits[0];
+  const fallbackSource = portraits?.[identity.avatarVariant] ?? portraits?.[0] ?? null;
   const [failedSources, setFailedSources] = useState<ReadonlySet<string | number>>(() => new Set());
   const sourceKey = url && !failedSources.has(url) ? url : fallbackSource;
   const source =
@@ -63,12 +69,26 @@ export function AgentAvatar({
       accessibilityElementsHidden
       importantForAccessibility="no-hide-descendants"
     >
-      {failedSources.has(sourceKey) ? (
-        <AppText className="text-3xs text-foreground-muted" allowFontScaling={false}>
-          {identity.name
-            .split(" ")
-            .map((word) => word[0])
-            .join("")}
+      {!sourceKey || !source || failedSources.has(sourceKey) ? (
+        <AppText
+          className="text-3xs text-foreground-muted"
+          allowFontScaling={false}
+          style={
+            glyph
+              ? {
+                  fontSize: size - 6,
+                  lineHeight: size - 4,
+                  textAlign: "center",
+                  includeFontPadding: false,
+                }
+              : undefined
+          }
+        >
+          {glyph ??
+            identity.name
+              .split(" ")
+              .map((word) => word[0])
+              .join("")}
         </AppText>
       ) : (
         <Image

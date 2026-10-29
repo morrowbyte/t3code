@@ -82,9 +82,12 @@ const routeContext = {
   },
 };
 
+const decodeProviderInstanceIdSync = Schema.decodeSync(ProviderInstanceId);
+const decodeCodexSettingsSync = Schema.decodeSync(CodexSettings);
+
 it("uses the registry's implicit default Codex when persisted providerInstances is empty", () => {
   const hydrated = deriveProviderInstanceConfigMap(DEFAULT_SERVER_SETTINGS);
-  const codexId = Schema.decodeSync(ProviderInstanceId)("codex");
+  const codexId = decodeProviderInstanceIdSync("codex");
   assert.strictEqual(hydrated[codexId]?.driver, "codex");
   const live = [{ instanceId: codexId, driverKind: hydrated[codexId]!.driver, enabled: true }];
   const selected = selectCodexTranscriptionInstance(
@@ -93,10 +96,7 @@ it("uses the registry's implicit default Codex when persisted providerInstances 
     undefined,
   );
   assert.strictEqual(selected?.[0], "codex");
-  assert.strictEqual(
-    Schema.decodeUnknownSync(CodexSettings)(selected?.[1].config ?? {}).binaryPath,
-    "codex",
-  );
+  assert.strictEqual(decodeCodexSettingsSync(selected?.[1].config ?? {}).binaryPath, "codex");
   assert.isUndefined(
     selectCodexTranscriptionInstance(
       liveCodexTranscriptionConfigs({}, [{ ...live[0]!, enabled: false }]),
@@ -298,6 +298,8 @@ it.effect(
     }),
 );
 
+const decodeCodexSettings = Schema.decodeEffect(CodexSettings);
+
 it.effect("passes an explicit environment to Codex spawn without extending ambient API keys", () =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
@@ -305,7 +307,7 @@ it.effect("passes an explicit environment to Codex spawn without extending ambie
     const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-voice-transcription-" });
     const sharedHome = path.join(root, "shared");
     const shadowHome = path.join(root, "shadow");
-    const settings = yield* Schema.decodeUnknownEffect(CodexSettings)({
+    const settings = yield* decodeCodexSettings({
       binaryPath: path.join(root, "codex.exe"),
       homePath: sharedHome,
       shadowHomePath: shadowHome,
@@ -496,7 +498,7 @@ function recoveryServiceLayer(
     Layer.provideMerge(ServerSettings.layerTest()),
     Layer.provide(
       Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
-        getInstance: () => Effect.succeed(undefined),
+        getInstance: () => Effect.sync(() => undefined),
         listInstances: Effect.succeed(options.instances ?? []),
         listUnavailable: Effect.succeed([]),
         streamChanges: Stream.empty,

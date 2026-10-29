@@ -235,7 +235,7 @@ it.effect(
           (yield* service.capture(captured, changed).pipe(Effect.flip)).reason,
           "stale_owner",
         );
-    }).pipe(Effect.provide(Layer.fresh(serviceLayer(() => Effect.succeed(Option.some(runtime)))))),
+    }).pipe(Effect.provide(Layer.fresh(serviceLayer(() => Effect.succeedSome(runtime))))),
 );
 it.effect("rechecks the exact SQL owner when a runtime await overlaps terminalization", () =>
   Effect.scoped(
@@ -283,9 +283,7 @@ it.effect(
         (yield* service.capture(captured, native).pipe(Effect.flip)).reason,
         "stale_owner",
       );
-    }).pipe(
-      Effect.provide(Layer.fresh(serviceLayer(() => Effect.succeed(Option.some({ ...runtime }))))),
-    ),
+    }).pipe(Effect.provide(Layer.fresh(serviceLayer(() => Effect.succeedSome({ ...runtime }))))),
 );
 
 it.effect(
@@ -310,7 +308,7 @@ it.effect(
         },
       });
       assert.equal((yield* service.validate(owner).pipe(Effect.flip)).reason, "stale_owner");
-    }).pipe(Effect.provide(Layer.fresh(serviceLayer(() => Effect.succeed(Option.some(runtime)))))),
+    }).pipe(Effect.provide(Layer.fresh(serviceLayer(() => Effect.succeedSome(runtime))))),
 );
 
 it.effect(
@@ -343,7 +341,7 @@ it.effect(
       assert.isTrue(yield* Deferred.isDone(competing));
     }).pipe(
       Effect.scoped,
-      Effect.provide(Layer.fresh(serviceLayer(() => Effect.succeed(Option.some(runtime))))),
+      Effect.provide(Layer.fresh(serviceLayer(() => Effect.succeedSome(runtime)))),
     ),
 );
 
@@ -375,7 +373,7 @@ it.effect("checks runtime incarnation again inside the lock before invoking use"
           serviceLayer(() =>
             Effect.suspend(() =>
               ++reads === 1
-                ? Effect.succeed(Option.some(runtime))
+                ? Effect.succeedSome(runtime)
                 : Deferred.succeed(entered, undefined).pipe(
                     Effect.andThen(Deferred.await(release)),
                     Effect.as(Option.some({ ...runtime })),
@@ -435,7 +433,7 @@ it.effect(
     }).pipe(
       Effect.provide(
         Layer.mergeAll(
-          serviceLayer(() => Effect.succeed(Option.some(runtime))),
+          serviceLayer(() => Effect.succeedSome(runtime)),
           observatory,
           storage,
         ),

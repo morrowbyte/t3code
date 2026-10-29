@@ -8,6 +8,7 @@ import {
   ProviderInstanceId,
   resolveProviderInstanceEnabled,
   ServerSettings,
+  ThreadId,
   UsageLimitSourceId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -157,6 +158,9 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         const fs = yield* FileSystem.FileSystem;
         const provider = ProviderInstanceId.make("codex_work");
         const patch = {
+          agentIdentityTheme: "fox" as const,
+          agentPersonalityEnabled: true,
+          agentIdentityNames: { [ThreadId.make("crew-thread")]: "Custom companion" },
           favorites: [{ provider, model: "sol" }],
           providerModelPreferences: {
             [provider]: { hiddenModels: ["astra"], modelOrder: ["sol"] },
@@ -172,6 +176,10 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         );
         assert.deepEqual(saved.favorites, patch.favorites);
         assert.deepEqual(saved.providerModelPreferences, patch.providerModelPreferences);
+        assert.equal(saved.agentIdentityTheme, "fox");
+        assert.isTrue(saved.agentPersonalityEnabled);
+        assert.deepEqual(saved.agentIdentityNames, patch.agentIdentityNames);
+        assert.deepEqual(received.agentIdentityNames, patch.agentIdentityNames);
         const hidden = yield* service.updateSettings({
           setModelsHidden: [{ provider, model: "sol", hidden: true }],
         });
@@ -196,6 +204,15 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         const migrated = yield* service.updateSettings({ migrateModelPreferences: patch });
         assert.deepEqual(migrated.favorites, []);
         assert.deepEqual(migrated.providerModelPreferences, {});
+        const disabled = yield* service.updateSettings({ agentPersonalityEnabled: false });
+        assert.isFalse(disabled.agentPersonalityEnabled);
+        assert.deepEqual(disabled.agentIdentityNames, patch.agentIdentityNames);
+        const stored = yield* decodeServerSettingsJson(
+          yield* fs.readFileString(config.settingsPath),
+        );
+        assert.isFalse(stored.agentPersonalityEnabled);
+        assert.equal(stored.agentIdentityTheme, "fox");
+        assert.deepEqual(stored.agentIdentityNames, patch.agentIdentityNames);
       }),
     ).pipe(Effect.provide(layerServerSettings())),
   );
@@ -433,8 +450,9 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     Effect.gen(function* () {
       const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
       const instanceId = ProviderInstanceId.make("acpRegistry_shared");
-      const results = yield* Effect.all(
-        ["First", "Second"].map((displayName) =>
+      const results = yield* Effect.forEach(
+        ["First", "Second"],
+        (displayName) =>
           serverSettings
             .updateProviderInstance({
               operation: "create",
@@ -446,7 +464,6 @@ it.layer(NodeServices.layer)("server settings", (it) => {
               },
             })
             .pipe(Effect.result),
-        ),
         { concurrency: "unbounded" },
       );
 
@@ -718,7 +735,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }).pipe(Effect.provide(layerServerSettings())),
   );
 
-  // A backend behind a custom model may refuse the built-in default (#12651).
+  // A backend behind a custom model may refuse the built-in default.
   it.effect("falls back to the thread default when it is a custom model on that instance", () =>
     Effect.gen(function* () {
       const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
@@ -1347,7 +1364,6 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         assert.notInclude(yield* fs.readFileString(config.settingsPath), value);
         assert.notInclude(JSON.stringify(client), value);
       }
-      // Editing another field from the client's copy keeps the saved password.
       const clientConfig = client.providerInstances[opencode]?.config as Record<string, unknown>;
       const edited = yield* service.updateProviderInstance({
         operation: "upsert",
@@ -1761,10 +1777,14 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         runOnWorktreeCreate: false,
       };
       const model = createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.5");
-      const modelJson = yield* Schema.encodeEffect(Schema.fromJsonString(ModelSelection))(model);
-      const scriptsJson = yield* Schema.encodeEffect(
+      const encodeModelSelection = Schema.encodeEffect(Schema.fromJsonString(ModelSelection));
+
+      const modelJson = yield* encodeModelSelection(model);
+      const encodeProjectScripts = Schema.encodeEffect(
         Schema.fromJsonString(Schema.Array(ProjectScript)),
-      )([script]);
+      );
+
+      const scriptsJson = yield* encodeProjectScripts([script]);
       for (const [projectId, modelColumn, envMode, autoPull, scripts] of [
         [legacyProject, modelJson, "worktree", 1, scriptsJson],
         [scriptedProject, null, null, 0, scriptsJson],

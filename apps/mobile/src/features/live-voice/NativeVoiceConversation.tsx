@@ -7,6 +7,11 @@ import {
 } from "@t3tools/client-runtime/live-voice";
 import { AppText } from "../../components/ui/AppText";
 import { IconButton } from "../../components/ui/IconButton";
+import {
+  NativeVoiceBubbleViewToggle,
+  useNativeVoiceBubbleView,
+} from "./NativeVoiceBubbleViewToggle";
+import { NativeVoiceActivityBubbles } from "./NativeVoiceActivityBubbles";
 import { Button } from "../../components/ui/Button";
 
 type VoicePresentation = {
@@ -39,6 +44,7 @@ export function NativeVoiceConversationProvider({ children }: { readonly childre
 
 export function useNativeVoicePresentation(value: VoicePresentation) {
   const register = useContext(RegistrationContext);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Owns the mounted native controller registration used by conversation controls and retains its external call receipts.
   useEffect(() => {
     register?.(value);
     return () => register?.(null);
@@ -62,6 +68,7 @@ const labels: Record<LiveVoiceState["phase"], string> = {
 
 export function NativeVoiceConversationHeader() {
   const presentation = useContext(PresentationContext);
+  const { enabled: bubbles } = useNativeVoiceBubbleView();
   if (
     !presentation ||
     (!presentation.eligible && !presentation.state.lease && !presentation.state.transcript.length)
@@ -69,7 +76,7 @@ export function NativeVoiceConversationHeader() {
     return null;
   const { state, controller } = presentation;
   const busy = !["idle", "ended", "error"].includes(state.phase);
-  if (!busy && !state.error) return null;
+  if (!busy && !state.error && !(bubbles && state.activities?.length)) return null;
   const canMute = ["live", "reconnecting", "playback-blocked"].includes(state.phase);
   return (
     <View className="border-b border-border bg-thread-canvas px-3 py-2">
@@ -128,6 +135,17 @@ export function NativeVoiceConversationHeader() {
             </>
           ) : null}
         </View>
+      ) : null}
+      {state.lease && (busy || (state.activities?.length ?? 0) > 0) ? (
+        <>
+          <NativeVoiceBubbleViewToggle />
+          {bubbles ? (
+            <NativeVoiceActivityBubbles
+              threadRef={state.lease}
+              liveActivities={state.activities ?? []}
+            />
+          ) : null}
+        </>
       ) : null}
       {state.phase === "playback-blocked" ? (
         <Button

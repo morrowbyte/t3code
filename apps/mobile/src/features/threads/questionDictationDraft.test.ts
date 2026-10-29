@@ -36,7 +36,9 @@ function setup() {
     configureRecording: async () => {},
     releaseRecording: async () => {},
     deleteRecording: vi.fn(),
-    onStateChange: vi.fn(),
+    sampleRecording: () => null,
+    publishAudioLevels: vi.fn(),
+    keepAwake: () => vi.fn(),
   });
   const target = createVoiceInputTarget(
     ownerKey,

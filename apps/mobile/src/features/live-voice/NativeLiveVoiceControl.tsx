@@ -1,4 +1,4 @@
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomMount, useAtomSubscribe } from "@effect/atom-react";
 import { useFocusEffect } from "@react-navigation/native";
 import {
   LiveVoiceController,
@@ -7,7 +7,7 @@ import {
   type LiveVoiceState,
   type LiveVoiceTarget,
 } from "@t3tools/client-runtime/live-voice";
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId, LiveVoiceEvent, ThreadId } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { randomUUID } from "expo-crypto";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
@@ -40,15 +40,25 @@ function EventFeed(props: {
   const target = useMemo(
     () => ({
       environmentId: props.environmentId,
-      input: { leaseId: props.lease.leaseId, generation: props.lease.generation },
+      input: {
+        leaseId: props.lease.leaseId,
+        generation: props.lease.generation,
+        includeActivities: true,
+      },
     }),
     [props.environmentId, props.lease.leaseId, props.lease.generation],
   );
-  const result = useAtomValue(liveVoiceEnvironment.events(target));
-  useEffect(() => {
-    if (AsyncResult.isSuccess(result)) props.bridge.publish(target.input, result.value);
-    else if (AsyncResult.isFailure(result)) props.bridge.publishUnavailable(target.input);
-  }, [props.bridge, result, target]);
+  const atom = liveVoiceEnvironment.events(target);
+  const forward = useCallback(
+    (result: AsyncResult.AsyncResult<LiveVoiceEvent, unknown>) => {
+      if (AsyncResult.isSuccess(result)) props.bridge.publish(target.input, result.value);
+      else if (AsyncResult.isFailure(result)) props.bridge.publishUnavailable(target.input);
+    },
+    [props.bridge, target],
+  );
+  // Subscribe before mounting so a fast status barrier and completion cannot coalesce in React.
+  useAtomSubscribe(atom, forward, { immediate: true });
+  useAtomMount(atom);
   return null;
 }
 
@@ -137,6 +147,7 @@ function LiveVoiceSession(props: VoiceProps) {
   const keepAwakeId = useId();
   const { onBusyChange } = props;
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Owns the native media controller and ends its microphone session when the binding unmounts.
   useLayoutEffect(() => {
     activeController.current = controller;
     return () => {
@@ -144,10 +155,12 @@ function LiveVoiceSession(props: VoiceProps) {
       void controller.end();
     };
   }, [controller]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Holds the native dictation activity gate while the live controller owns microphone capture.
   useEffect(() => {
     onBusyChange(busy);
     return () => onBusyChange(false);
   }, [busy, onBusyChange]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Binds the external native voice transport to the committed environment and thread target.
   useEffect(() => {
     void controller.contextChanged(target);
   }, [controller, target]);
@@ -160,12 +173,14 @@ function LiveVoiceSession(props: VoiceProps) {
       };
     }, [controller]),
   );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Listens for native background transitions so unsupported background calls release media resources.
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (next) => {
       if (next === "background" && Platform.OS !== "android") void controller.end();
     });
     return () => subscription.remove();
   }, [controller]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Holds the platform keep-awake tag for an active voice call and releases it after activation settles.
   useEffect(() => {
     if (!busy || Platform.OS === "android") return;
     const tag = `live-voice:${keepAwakeId}`;
@@ -176,6 +191,7 @@ function LiveVoiceSession(props: VoiceProps) {
     };
   }, [busy, keepAwakeId]);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Subscribes the active controller to native call-stop notifications until unmount.
   useEffect(
     () =>
       subscribeNativeVoiceStopped(() => {

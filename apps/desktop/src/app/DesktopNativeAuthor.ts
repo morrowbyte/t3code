@@ -111,8 +111,9 @@ const make = Effect.gen(function* () {
     );
   });
   return DesktopNativeAuthor.of({
-    execute: (request) =>
+    execute: Effect.fn("DesktopNativeAuthor.execute")((request) =>
       execute(request).pipe(Effect.provideService(HttpClient.HttpClient, httpClient)),
+    ),
   });
 });
 

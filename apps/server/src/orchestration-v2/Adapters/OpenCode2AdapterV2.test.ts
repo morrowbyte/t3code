@@ -32,6 +32,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as Exit from "effect/Exit";
@@ -311,6 +312,7 @@ const resumed = (
     readonly supervised?: boolean;
     readonly replayGate?: ProviderReplayGate;
     readonly attachmentsDir?: string;
+    readonly resolveExtractedTextPath?: (path: string) => Effect.Effect<string | undefined>;
     readonly fileSystem?: FileSystem.FileSystem;
     readonly onPrompt?: (input: unknown) => void;
   },
@@ -340,6 +342,9 @@ const resumed = (
         ...(options?.attachmentsDir === undefined
           ? {}
           : { attachmentsDir: options.attachmentsDir }),
+        ...(options?.resolveExtractedTextPath === undefined
+          ? {}
+          : { resolveExtractedTextPath: options.resolveExtractedTextPath }),
       },
     );
     const thread = yield* runtime.resumeThread({
@@ -661,6 +666,65 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
       yield* runtime.startTurn(turnInput(thread));
       yield* Scope.close(scope, Exit.void);
     }),
+  );
+
+  it.effect("sends nothing for a turn stopped while extracting document text", () =>
+    Effect.gen(function* () {
+      const resolving = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const prompts: Array<unknown> = [];
+      const { runtime, thread } = yield* resumed(
+        [
+          out("session.instructions.entry.put", {
+            sessionID: SESSION,
+            key: "t3-code",
+            value: "<any>",
+          }),
+          reply("session.instructions.entry.put", null),
+          out("session.interrupt", { sessionID: SESSION }),
+          reply("session.interrupt", { interrupted: false }),
+        ],
+        {
+          attachmentsDir: "/attachments",
+          onPrompt: (input) => prompts.push(input),
+          resolveExtractedTextPath: () =>
+            Effect.gen(function* () {
+              yield* Deferred.succeed(resolving, undefined);
+              yield* Deferred.await(release);
+              return undefined;
+            }),
+        },
+      );
+      const terminal = yield* terminalOf(runtime).pipe(Effect.forkScoped);
+      const started = yield* runtime
+        .startTurn({
+          ...turnInput(thread),
+          message: {
+            ...turnInput(thread).message,
+            attachments: [
+              ChatFileAttachment.make({
+                type: "file",
+                id: ChatAttachmentId.make(
+                  "thread-opencode2-adapter-12345678-1234-1234-1234-123456789abc",
+                ),
+                name: "report.rtf",
+                mimeType: "application/rtf",
+                sizeBytes: 4,
+              }),
+            ],
+          },
+        })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(resolving);
+      yield* runtime.interruptTurn({
+        providerThread: thread,
+        providerTurnId: yield* providerTurnId,
+      });
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(started);
+      assert.equal((yield* Fiber.join(terminal))?.status, "interrupted");
+      assert.lengthOf(prompts, 0);
+    }).pipe(Effect.scoped),
   );
 
   const childCreated = (child: string) => ({
@@ -1946,8 +2010,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
 
   it.effect("reads the agents again while a fresh server still lists none", () =>
     Effect.gen(function* () {
-      // 2.0.18 answers `/api/agent` with `[]` for a moment after it starts;
-      // rules written from that would drop the agents' own paths.
+      // OpenCode 2.0.18 briefly returns no agents on startup; using that response drops agent paths.
       const runtime = yield* openCode2ReplayRuntime([
         ...opening,
         out("agent.list", "<any>"),
@@ -1984,7 +2047,6 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
     out("message.list", { sessionID: SESSION, order: "desc", limit: "50" }),
     reply("message.list", {
       data: [
-        // OpenCode appends an `idle` item after each execution it ends.
         ...(ended === undefined
           ? []
           : [{ id: "msg_idle_gap", time: { created: 3 }, type: "idle", outcome: ended }]),
@@ -2108,8 +2170,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
 
   it.effect("finishes a workspace command whose stream dropped before its inbox event", () =>
     Effect.gen(function* () {
-      // `session.command` answers 204 without the inbox item's id, and the
-      // stream drops before `session.inbox.enqueued` would have named it.
+      // session.command returns 204 without an inbox id; the stream drops before session.inbox.enqueued provides it.
       const { runtime, thread } = yield* resumed([
         out("command.list", "<any>"),
         reply("command.list", { location: { directory: WORK }, data: [{ name: "hello" }] }),
@@ -2451,6 +2512,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
   ])("$name", ({ external }) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
+      const hostPath = yield* Path.Path;
       const attachmentsDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3 oc2 #images-",
       });
@@ -2534,9 +2596,9 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
           text: [
             index === 0 ? "What is in this image?" : "And this one?",
             `[Attached image "${attachment.name}" is saved at: ${path}]`,
-            `[Attached image "missing.png" is saved at: ${attachmentsDir}/${missing.id}.png]`,
-            `[Attached image "diagram.svg" is saved at: ${attachmentsDir}/${unsupported.id}.svg]`,
-            `[Attached file "requirements.pdf" is saved at: ${attachmentsDir}/${document.id}.pdf]`,
+            `[Attached image "missing.png" is saved at: ${hostPath.join(attachmentsDir, `${missing.id}.png`)}]`,
+            `[Attached image "diagram.svg" is saved at: ${hostPath.join(attachmentsDir, `${unsupported.id}.svg`)}]`,
+            `[Attached file "requirements.pdf" is saved at: ${hostPath.join(attachmentsDir, `${document.id}.pdf`)}]`,
           ].join("\n\n"),
         });
         if (external) {
@@ -2555,9 +2617,16 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(IdAllocator.layer, NodeServices.layer))),
   );
 
-  it.effect.each([false, true])(
-    "rejects an image steer stopped during attachment resolution (held end: %s)",
-    (heldEnd) =>
+  it.effect.each([
+    [false, "image", false],
+    [true, "image", false],
+    [false, "text", false],
+    [true, "text", false],
+    [true, "image", true],
+    [true, "text", true],
+  ] as const)(
+    "rejects a steer stopped during attachment resolution (held end: %s, lookup: %s, cancel: %s)",
+    ([heldEnd, lookup, cancel]) =>
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
         const attachmentsDir = yield* fileSystem.makeTempDirectoryScoped({
@@ -2595,12 +2664,18 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
                   }),
                 ]
               : []),
-            out("session.interrupt", { sessionID: SESSION }),
-            ...(heldEnd
-              ? [event("session.usage.updated", { sessionID: SESSION }, "interrupt-reply")]
-              : []),
-            reply("session.interrupt", { interrupted: !heldEnd }),
-            ...(heldEnd ? [] : [event("session.execution.interrupted", { sessionID: SESSION })]),
+            ...(cancel
+              ? []
+              : [
+                  out("session.interrupt", { sessionID: SESSION }),
+                  ...(heldEnd
+                    ? [event("session.usage.updated", { sessionID: SESSION }, "interrupt-reply")]
+                    : []),
+                  reply("session.interrupt", { interrupted: !heldEnd }),
+                  ...(heldEnd
+                    ? []
+                    : [event("session.execution.interrupted", { sessionID: SESSION })]),
+                ]),
             out("session.prompt", { sessionID: SESSION, text: "<any>" }),
             promptAccepted,
             event("session.execution.started", { sessionID: SESSION }),
@@ -2610,10 +2685,20 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
             attachmentsDir,
             replayGate: gate,
             onPrompt: (input) => prompts.push(input),
+            ...(lookup === "text"
+              ? {
+                  resolveExtractedTextPath: () =>
+                    Effect.gen(function* () {
+                      yield* Deferred.succeed(resolving, undefined);
+                      yield* Deferred.await(release);
+                      return undefined;
+                    }),
+                }
+              : {}),
             fileSystem: {
               ...fileSystem,
               exists: (file) =>
-                file === path
+                lookup === "image" && file === path
                   ? Effect.gen(function* () {
                       yield* Deferred.succeed(resolving, undefined);
                       yield* Deferred.await(release);
@@ -2662,31 +2747,42 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
           gate.release("execution-end");
           yield* Deferred.await(executionEnded);
         }
-        const interrupt = yield* runtime
-          .interruptTurn({
-            providerThread: thread,
-            providerTurnId: yield* providerTurnId,
-          })
-          .pipe(Effect.forkScoped);
-        if (heldEnd) {
+        if (cancel) {
+          yield* Fiber.interrupt(steer);
+        }
+        const interrupt = cancel
+          ? undefined
+          : yield* runtime
+              .interruptTurn({
+                providerThread: thread,
+                providerTurnId: yield* providerTurnId,
+              })
+              .pipe(Effect.forkScoped);
+        if (!cancel && heldEnd) {
           assert.isTrue(yield* Effect.promise(() => gate.waitForReached("interrupt-reply")));
-        } else {
+        } else if (!cancel) {
           yield* Deferred.await(stopped);
         }
         yield* Deferred.succeed(release, undefined);
-        const result = yield* Fiber.join(steer);
         assert.lengthOf(prompts, 1);
-        assert.isTrue(Exit.isFailure(result));
-        if (Exit.isFailure(result)) {
-          assert.deepInclude(Cause.squash(result.cause), { _tag: "ProviderAdapterProtocolError" });
+        if (cancel) {
+          assert.isTrue(Exit.isFailure(yield* Fiber.await(steer)));
+        } else {
+          const result = yield* Fiber.join(steer);
+          assert.isTrue(Exit.isFailure(result));
+          if (Exit.isFailure(result)) {
+            assert.deepInclude(Cause.squash(result.cause), {
+              _tag: "ProviderAdapterProtocolError",
+            });
+          }
         }
         yield* Deferred.await(stopped);
         gate.release("interrupt-reply");
-        yield* Fiber.join(interrupt);
+        if (interrupt) yield* Fiber.join(interrupt);
         yield* runtime.startTurn(secondTurn(thread));
         yield* Deferred.await(completed);
         assert.lengthOf(prompts, 2);
-        assert.deepEqual(terminals, ["interrupted", "completed"]);
+        assert.deepEqual(terminals, [cancel ? "completed" : "interrupted", "completed"]);
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
@@ -3183,9 +3279,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
           status: 500,
           body: { _tag: "UnknownError", message: "disk I/O error" },
         }),
-        // Uncleared, OpenCode would commit the stage on the next prompt. The
-        // clear wakes the session into an empty execution of its own, with no
-        // turn of T3's running: it is no subagent's follow-up.
+        // Uncleared stages commit on the next prompt; clearing triggers an empty execution without a T3 turn.
         out("session.revert.clear", { sessionID: SESSION }),
         reply("session.revert.clear", null),
         event("session.revert.cleared", { sessionID: SESSION }),
@@ -3233,11 +3327,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
 
   it.effect("prompts under ids no other session on the server can hold", () =>
     Effect.gen(function* () {
-      // Two T3 databases on one external server repeat thread ids and run
-      // ordinals, so their turns can share an attempt id and their steers a
-      // message id. OpenCode refuses a prompt id another session already
-      // holds with 409 ConflictError; the replay refuses a client id it
-      // already gave another recorded message.
+      // Separate databases can repeat prompt ids on one server; OpenCode rejects cross-session duplicates with 409.
       const OTHER = "ses_f148ca2deffeOtherSession000";
       const steerInto = (session: string, recorded: string): ReadonlyArray<ProviderReplayEntry> => [
         out("session.prompt", {
@@ -3383,7 +3473,6 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
       );
       yield* runtime.startTurn(turnInput(thread));
       yield* runtime.startTurn(turnInput(other));
-      // The second turn starts and the first ends while the session stays running.
       assert.deepEqual(
         [...(yield* Fiber.join(collected))].flatMap((event) =>
           event.type === "provider_session.updated" ? [event.providerSession.status] : [],

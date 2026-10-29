@@ -1,4 +1,9 @@
 #!/bin/sh
+if [ -n "${T3_TEST_SSH_ERROR:-}" ]; then
+  printf "%s\n" "$T3_TEST_SSH_ERROR" >&2
+  exit 255
+fi
+
 printf "GCM_INTERACTIVE=%s\n" "${GCM_INTERACTIVE:-}" > "$T3_TEST_SSH_ASKPASS_LOG"
 printf "GIT_ASKPASS=%s\n" "${GIT_ASKPASS:-}" >> "$T3_TEST_SSH_ASKPASS_LOG"
 printf "GIT_TERMINAL_PROMPT=%s\n" "${GIT_TERMINAL_PROMPT:-}" >> "$T3_TEST_SSH_ASKPASS_LOG"

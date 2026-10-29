@@ -23,8 +23,8 @@ export function AgentIdentityLabel({
   const project = useProject(
     thread ? { environmentId: threadRef.environmentId, projectId: thread.projectId } : null,
   );
-  const [theme] = useAgentIdentityTheme();
-  const identity = deriveAgentIdentity(threadRef, thread?.lineage ?? lineage, theme);
+  const [theme, manualName] = useAgentIdentityTheme(threadRef);
+  const identity = deriveAgentIdentity(threadRef, thread?.lineage ?? lineage, theme, manualName);
   const provenance = [
     identity.label,
     featureTitle ?? thread?.title,

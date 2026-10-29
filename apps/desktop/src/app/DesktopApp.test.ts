@@ -6,6 +6,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
 import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
@@ -44,6 +45,9 @@ const makeFixture = (input: {
     const state = {
       quitting: yield* Ref.make(input.quitting ?? false),
       backendReady: yield* Ref.make(false),
+      primaryBackendStartup: yield* SubscriptionRef.make<DesktopState.PrimaryBackendStartup>({
+        _tag: "Starting",
+      }),
     };
     const settings = {
       ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
@@ -187,42 +191,40 @@ describe("desktop bootstrap control listener", () => {
     }),
   );
 
-  for (const localEnvironmentEnabled of [false, true]) {
-    it.effect(
-      `does not start control, backend or window while quitting (local=${localEnvironmentEnabled})`,
-      () =>
-        Effect.gen(function* () {
-          const fixture = yield* makeFixture({ localEnvironmentEnabled, quitting: true });
-          yield* Effect.scoped(fixture.run);
-          const forbiddenEvents: ReadonlyArray<Event> = [
-            "control-start",
-            "control-release",
-            "backend-start",
-            "window",
-          ];
-          for (const event of forbiddenEvents) {
-            assert.equal(fixture.events.includes(event), false);
-          }
-        }),
-    );
+  it.effect.each([false, true])(
+    "does not start control, backend or window while quitting (local=%s)",
+    (localEnvironmentEnabled) =>
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture({ localEnvironmentEnabled, quitting: true });
+        yield* Effect.scoped(fixture.run);
+        const forbiddenEvents: ReadonlyArray<Event> = [
+          "control-start",
+          "control-release",
+          "backend-start",
+          "window",
+        ];
+        for (const event of forbiddenEvents) {
+          assert.equal(fixture.events.includes(event), false);
+        }
+      }),
+  );
 
-    it.effect(
-      `keeps normal startup behavior after a bounded control failure (local=${localEnvironmentEnabled})`,
-      () =>
-        Effect.gen(function* () {
-          const fixture = yield* makeFixture({ localEnvironmentEnabled, controlFailure: true });
-          yield* Effect.scoped(fixture.run);
-          assert.equal(fixture.events.filter((event) => event === "control-start").length, 1);
-          assert.equal(fixture.events.filter((event) => event === "control-release").length, 0);
-          assert.equal(
-            fixture.events.filter((event) => event === "backend-start").length,
-            localEnvironmentEnabled ? 1 : 0,
-          );
-          assert.equal(
-            fixture.events.filter((event) => event === "window").length,
-            localEnvironmentEnabled ? 0 : 1,
-          );
-        }),
-    );
-  }
+  it.effect.each([false, true])(
+    "keeps normal startup behavior after a bounded control failure (local=%s)",
+    (localEnvironmentEnabled) =>
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture({ localEnvironmentEnabled, controlFailure: true });
+        yield* Effect.scoped(fixture.run);
+        assert.equal(fixture.events.filter((event) => event === "control-start").length, 1);
+        assert.equal(fixture.events.filter((event) => event === "control-release").length, 0);
+        assert.equal(
+          fixture.events.filter((event) => event === "backend-start").length,
+          localEnvironmentEnabled ? 1 : 0,
+        );
+        assert.equal(
+          fixture.events.filter((event) => event === "window").length,
+          localEnvironmentEnabled ? 0 : 1,
+        );
+      }),
+  );
 });

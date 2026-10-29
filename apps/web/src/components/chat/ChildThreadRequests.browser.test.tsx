@@ -1,11 +1,13 @@
 import { EnvironmentId, RuntimeRequestId, ThreadId } from "@t3tools/contracts";
 import type { DescendantThreadRequests } from "@t3tools/client-runtime/state/descendant-thread-requests";
 import type { ThreadPendingUserInput } from "@t3tools/client-runtime/state/thread-requests";
-import { act, type ReactNode } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { type ReactNode } from "react";
+import { describe, expect, it, vi } from "vite-plus/test";
+import { act, render as renderUi } from "../../../test/render";
 
-vi.mock("@tanstack/react-router", () => ({
+vi.mock("@tanstack/react-router", async (original) => ({
+  ...(await original<typeof import("@tanstack/react-router")>()),
+  useParams: () => ({}),
   Link: ({
     params,
     children,
@@ -30,18 +32,22 @@ vi.mock("../../state/threads", async () => {
     threadEnvironment: {},
   };
 });
-vi.mock("../../state/session", () => ({
+vi.mock("../../state/session", async (original) => ({
+  ...(await original<typeof import("../../state/session")>()),
   readEnvironmentScope: () => true,
   readPreparedConnection: () => null,
   useEnvironmentScope: () => false,
 }));
-vi.mock("../../connection/catalog", () => ({ environmentCatalog: { stateAtom: vi.fn() } }));
 vi.mock("../../state/assets", () => ({ assetEnvironment: { createUrl: vi.fn() } }));
 vi.mock("../../state/attachments", () => ({
   attachmentEnvironment: { createUploadUrl: vi.fn(), remove: vi.fn() },
 }));
-vi.mock("../../state/environments", () => ({ useEnvironment: () => null }));
-vi.mock("../../state/entities", () => ({
+vi.mock("../../state/environments", async (original) => ({
+  ...(await original<typeof import("../../state/environments")>()),
+  useEnvironment: () => null,
+}));
+vi.mock("../../state/entities", async (original) => ({
+  ...(await original<typeof import("../../state/entities")>()),
   useThreadShell: () => ({ projectId: "original-child-project" }),
   useProject: (ref: { projectId: string } | null) =>
     ref?.projectId === "original-child-project"
@@ -87,7 +93,6 @@ vi.mock("../../lib/attachmentUploadQueue", async (importOriginal) => {
 vi.mock("../../state/use-orchestration-command", () => ({
   useOrchestrationCommand: () => vi.fn(),
 }));
-vi.mock("../../rpc/atomRegistry", () => ({ appAtomRegistry: { get: vi.fn() } }));
 
 import { ChildThreadRequestsView } from "./ChildThreadRequests";
 import { useComposerDraftStore } from "../../composerDraftStore";
@@ -148,58 +153,45 @@ const approval: DescendantThreadRequests = {
   },
 };
 
-let root: Root;
-let container: HTMLDivElement;
-const onReply = vi.fn(async () => null as string | null);
-
-beforeEach(() => {
+async function setup() {
   useComposerDraftStore.setState({ draftsByThreadKey: {}, draftThreadsByThreadKey: {} });
   useQuestionAttachmentPreparation.setState({ counts: {} });
   useAttachmentUploadStore.setState({ uploadsByImageId: {} });
   vi.mocked(startAttachmentUpload).mockClear();
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-  onReply.mockReset();
-  onReply.mockResolvedValue(null);
-});
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
-
-async function render(
-  groups: ReadonlyArray<DescendantThreadRequests> = [group],
-  canOperate = true,
-) {
-  await act(async () =>
-    root.render(
+  const onReply = vi.fn(async () => null as string | null);
+  const screen = await renderUi(<></>);
+  const { container } = screen;
+  const render = (groups: ReadonlyArray<DescendantThreadRequests> = [group], canOperate = true) =>
+    screen.rerender(
       <ChildThreadRequestsView groups={groups} canOperate={canOperate} onReply={onReply} />,
-    ),
-  );
-}
-function button(label: string, scope: ParentNode = container) {
-  const result = [...scope.querySelectorAll("button")].find(
-    (node) => node.textContent?.trim() === label || node.getAttribute("aria-label") === label,
-  );
-  if (!result) throw new Error(`Missing button: ${label}`);
-  return result;
-}
-async function click(label: string, scope: ParentNode = container) {
-  await act(async () => button(label, scope).click());
-}
-async function type(text: string) {
-  const input = container.querySelector("textarea")!;
-  await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, text);
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-  });
+    );
+  function button(label: string, scope: ParentNode = container) {
+    const result = [...scope.querySelectorAll("button")].find(
+      (node) => node.textContent?.trim() === label || node.getAttribute("aria-label") === label,
+    );
+    if (!result) throw new Error(`Missing button: ${label}`);
+    return result;
+  }
+  async function click(label: string, scope: ParentNode = container) {
+    await act(async () => button(label, scope).click());
+  }
+  async function type(text: string) {
+    const input = container.querySelector("textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
+        input,
+        text,
+      );
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+  return Object.assign(screen, { onReply, render, button, click, type });
 }
 
 describe("requests answered from an ancestor", () => {
   it("sends an attachment-only answer from the original child's question draft after its own environment upload is ready", async () => {
+    await using screen = await setup();
+    const { container, onReply, button, click, render } = screen;
     const parent = { environmentId, threadId: ThreadId.make("visible-parent") };
     const parentFile = {
       type: "file" as const,
@@ -225,20 +217,18 @@ describe("requests answered from an ancestor", () => {
       worktreePath: null,
       requests: { approvals: [], userInputs: [attachmentQuestion] },
     };
-    await act(async () =>
-      root.render(
-        <ChildThreadRequestsView
-          groups={[childGroup]}
-          canOperate
-          onReply={onReply}
-          attachmentCapabilities={{
-            attachmentUploadsCapabilityKnown: true,
-            supportsAttachmentUploads: true,
-            supportsQuestionAttachments: true,
-            maxFileAttachmentBytes: 1024,
-          }}
-        />,
-      ),
+    await screen.rerender(
+      <ChildThreadRequestsView
+        groups={[childGroup]}
+        canOperate
+        onReply={onReply}
+        attachmentCapabilities={{
+          attachmentUploadsCapabilityKnown: true,
+          supportsAttachmentUploads: true,
+          supportsQuestionAttachments: true,
+          maxFileAttachmentBytes: 1024,
+        }}
+      />,
     );
     expect(container.querySelector("[data-question-cwd]")?.getAttribute("data-question-cwd")).toBe(
       "/original-child-project",
@@ -309,6 +299,8 @@ describe("requests answered from an ancestor", () => {
   });
 
   it("keeps number shortcuts inside child controls from answering the parent question", async () => {
+    await using screen = await setup();
+    const { onReply, render, button } = screen;
     await render();
     const parentShortcut = vi.fn();
     document.addEventListener("keydown", parentShortcut);
@@ -326,6 +318,8 @@ describe("requests answered from an ancestor", () => {
   });
 
   it("shows actual origin and asks for an explicit send before forwarding an unchanged option", async () => {
+    await using screen = await setup();
+    const { container, onReply, render, click } = screen;
     await render();
     expect(container.textContent).toContain(group.title);
     expect(container.textContent).toContain(question.questions[0]!.question);
@@ -346,6 +340,8 @@ describe("requests answered from an ancestor", () => {
   });
 
   it("keeps custom drafts through a manual fold and authoritative reconnect", async () => {
+    await using screen = await setup();
+    const { container, onReply, render, type, click } = screen;
     await render();
     await type("Nur die harmlosen Testdaten.");
     await click(`Collapse: Question from ${group.title}`);
@@ -360,6 +356,8 @@ describe("requests answered from an ancestor", () => {
   });
 
   it("makes a grant only after its real provider choice is clicked and keeps the child destination", async () => {
+    await using screen = await setup();
+    const { onReply, render, click } = screen;
     await render([approval]);
     expect(onReply).not.toHaveBeenCalled();
     await click("Einmal erlauben");
@@ -372,6 +370,8 @@ describe("requests answered from an ancestor", () => {
   });
 
   it("disables every response when permission is absent, including a permission change while open", async () => {
+    await using screen = await setup();
+    const { container, onReply, render, click, button } = screen;
     await render([approval], true);
     await render([approval], false);
     expect(button("Einmal erlauben").disabled).toBe(true);
@@ -384,6 +384,8 @@ describe("requests answered from an ancestor", () => {
   });
 
   it("prevents rapid duplicate submissions while the original reply is in flight", async () => {
+    await using screen = await setup();
+    const { onReply, render, click, button } = screen;
     let release!: (error: string | null) => void;
     onReply.mockImplementation(
       () =>
@@ -402,6 +404,8 @@ describe("requests answered from an ancestor", () => {
   });
 
   it("retains an actionable failed request, then removes it when another view resolves it", async () => {
+    await using screen = await setup();
+    const { container, onReply, render, click } = screen;
     onReply.mockResolvedValue("Die Anfrage ist nicht mehr offen.");
     await render();
     await click("Nur lokal");
@@ -413,6 +417,8 @@ describe("requests answered from an ancestor", () => {
   });
 
   it("keeps requests with the same requestId distinct across original children", async () => {
+    await using screen = await setup();
+    const { container, onReply, render, click } = screen;
     const other = {
       ...group,
       title: "Research",
@@ -435,6 +441,8 @@ describe("requests answered from an ancestor", () => {
   });
 
   it("does not resurrect old content while reconnecting or offer a response for an expired runtime", async () => {
+    await using screen = await setup();
+    const { container, onReply, render, button } = screen;
     await render([{ ...group, status: "synchronizing", requests: null }]);
     expect(container.textContent).not.toContain(question.questions[0]!.question);
     expect(container.querySelector("textarea")).toBeNull();
@@ -455,6 +463,8 @@ describe("requests answered from an ancestor", () => {
   });
 
   it("keeps multi-question answers together and preserves custom initial text exactly", async () => {
+    await using screen = await setup();
+    const { container, onReply, render, click } = screen;
     const questions = [
       { ...question.questions[0]!, allowCustomAnswer: false },
       {
@@ -482,6 +492,8 @@ describe("requests answered from an ancestor", () => {
   });
 
   it("dismisses only the original asynchronous question without creating a new message", async () => {
+    await using screen = await setup();
+    const { onReply, render, click } = screen;
     await render([
       {
         ...group,

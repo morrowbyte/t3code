@@ -1,13 +1,20 @@
-import * as Schema from "effect/Schema";
-import { useLocalStorage } from "~/hooks/useLocalStorage";
+import {
+  AgentIdentityTheme as AgentIdentityThemeSchema,
+  type ScopedThreadRef,
+} from "@t3tools/contracts";
 import type { AgentIdentityTheme } from "@t3tools/client-runtime/state/agent-identity";
+import { useLocalStorage } from "~/hooks/useLocalStorage";
+import { useEnvironmentSettings } from "~/hooks/useSettings";
 
-const AgentIdentityThemeSchema = Schema.Literals(["neutral", "weasel"]);
-
-export function useAgentIdentityTheme() {
-  return useLocalStorage<AgentIdentityTheme, AgentIdentityTheme>(
+export function useAgentIdentityTheme(threadRef: ScopedThreadRef) {
+  const [legacyTheme] = useLocalStorage<AgentIdentityTheme, AgentIdentityTheme>(
     "t3code:agent-identity-theme",
     "neutral",
     AgentIdentityThemeSchema,
   );
+  const settings = useEnvironmentSettings(threadRef.environmentId);
+  return [
+    settings.agentIdentityTheme ?? legacyTheme,
+    settings.agentIdentityNames[threadRef.threadId],
+  ] as const;
 }

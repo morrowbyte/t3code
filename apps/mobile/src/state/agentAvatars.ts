@@ -88,11 +88,12 @@ export function useAgentAvatarActions(threadRef: ScopedThreadRef, theme: AgentAv
   const run = async (name: string | null, regenerate = false) => {
     if (operation.key === key && operation.pending) return;
     setOperation({ key, pending: true, error: null });
+    const submit =
+      name === null
+        ? () => cancel(target)
+        : () => generate({ ...target, input: { ...target.input, name, regenerate } });
     try {
-      const result =
-        name === null
-          ? await cancel(target)
-          : await generate({ ...target, input: { ...target.input, name, regenerate } });
+      const result = await submit();
       if (result._tag === "Failure") {
         const cause = squashAtomCommandFailure(result);
         setOperation((current) =>
@@ -110,12 +111,13 @@ export function useAgentAvatarActions(threadRef: ScopedThreadRef, theme: AgentAv
         );
       }
     } catch (cause) {
+      const error = cause instanceof Error ? cause.message : "Avatar-Anfrage fehlgeschlagen.";
       setOperation((current) =>
         current.key === key
           ? {
               key,
               pending: false,
-              error: cause instanceof Error ? cause.message : "Avatar-Anfrage fehlgeschlagen.",
+              error,
             }
           : current,
       );

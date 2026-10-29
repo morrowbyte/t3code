@@ -34,6 +34,7 @@ export function VoiceTranscriptionSettingsPanel() {
     setError("");
     setBusy(false);
   }
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Loads voice credentials metadata from the selected environment and fences pending requests when its scope ends.
   useEffect(() => {
     const generation = ++generationRef.current;
     if (environmentId)
@@ -173,14 +174,14 @@ export function VoiceTranscriptionSettingsPanel() {
           title="OpenAI API key"
           description={
             !settings
-              ? "Checking whether this environment can save encrypted API keys."
+              ? "Checking encrypted storage…"
               : settings.supportsEncryptedApiKeyStorage !== true
                 ? "Update this environment before entering an API key. Encrypted storage is not confirmed; existing saved keys can still be removed."
                 : settings.apiKeySource === "environment"
-                  ? "Provided by this host's private launch environment. Leave empty to keep it."
+                  ? "From this host’s private environment. Leave blank to keep."
                   : settings?.apiKeyConfigured
-                    ? "A key is encrypted in this environment's private secret store and is never returned to the app. Leave empty to keep it. API billing applies."
-                    : "Encrypted in this environment's private secret store. API billing applies separately from ChatGPT."
+                    ? "Encrypted here; never returned to the app. Leave blank to keep. Separate API billing."
+                    : "Encrypted here. API billing is separate from ChatGPT."
           }
           control={
             <div className="w-full min-w-0 @min-[32rem]/settings-row:w-60">

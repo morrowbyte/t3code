@@ -65,6 +65,8 @@ const decryptKey = (value: Uint8Array, key: Uint8Array) =>
   });
 
 /** Non-secret preferences are independent of provider coding credentials. */
+const encodeConfigJson = Schema.encodeEffect(Schema.fromJsonString(Config));
+
 export const makeVoiceSettings = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -94,7 +96,7 @@ export const makeVoiceSettings = Effect.gen(function* () {
     let apiKey = process.env.T3CODE_TRANSCRIPTION_API_KEY;
     if (Option.isSome(stored)) {
       const key = yield* secrets.get(WRAPPING_KEY);
-      if (Option.isNone(key)) return yield* Effect.fail(new VoiceSecretEncryptionError());
+      if (Option.isNone(key)) return yield* new VoiceSecretEncryptionError();
       // Reads never migrate plaintext or recreate a missing wrapping key.
       apiKey = yield* decryptKey(stored.value, key.value);
     }
@@ -137,7 +139,7 @@ export const makeVoiceSettings = Effect.gen(function* () {
           instanceId: input.instanceId || null,
           model: input.model.trim() || "gpt-transcribe",
         };
-        const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(Config))(config);
+        const encoded = yield* encodeConfigJson(config);
         yield* fs.writeFileString(`${filename}.tmp`, encoded, { mode: 0o600 });
         yield* fs.rename(`${filename}.tmp`, filename);
       }).pipe(Effect.withTracerEnabled(false)),

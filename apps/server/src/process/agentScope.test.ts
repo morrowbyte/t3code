@@ -111,7 +111,10 @@ const withFakeSystemd = <A, E>(
       Effect.provideService(FileSystem.FileSystem, {
         ...fileSystem,
         readFileString: (path, encoding) =>
-          fileSystem.readFileString(path.replace("/sys/fs/cgroup", cgroupRoot), encoding),
+          fileSystem.readFileString(
+            path.replace(NodePath.join("/sys/fs/cgroup"), cgroupRoot),
+            encoding,
+          ),
       }),
     );
     const { stateDir } = yield* ServerConfig.ServerConfig;
@@ -225,6 +228,24 @@ describe("AgentScope service", () => {
         }
         units.set(unitOf(live), { activeState: "failed", result: "oom-kill" });
         expect(yield* scope.oomKilled("live")).toBe(true);
+      }),
+    ),
+  );
+
+  it.effect("delegates every agent scope so rootless containers can manage their cgroups", () =>
+    withFakeSystemd(({ scope }) =>
+      Effect.gen(function* () {
+        const agent = yield* scope.wrap({ command: "agent", args: [], name: "t", threadId: "a" });
+        const codex = yield* launchCodex(scope, "a");
+        const terminal = yield* scope.wrap({
+          command: "agent",
+          args: [],
+          name: "terminal",
+          survivesRestart: true,
+        });
+        for (const launch of [agent, codex, terminal]) {
+          expect(launch.args).toContain("--property=Delegate=yes");
+        }
       }),
     ),
   );

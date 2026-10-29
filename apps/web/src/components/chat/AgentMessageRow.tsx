@@ -64,6 +64,7 @@ export function AgentMessageRow({
   error,
   onRequestText,
   originLabel,
+  technicalDetails,
   children,
 }: {
   messageId: string;
@@ -83,6 +84,7 @@ export function AgentMessageRow({
   error?: string | null;
   onRequestText?: () => void;
   originLabel?: string;
+  technicalDetails?: ReactNode;
   children: (bodyText: string) => ReactNode;
 } & (
   | { attribution: "agent" | "unknown"; principalLabel?: never }
@@ -90,6 +92,7 @@ export function AgentMessageRow({
 )) {
   const [expanded, setExpanded] = useState(false);
   const [originalOpen, setOriginalOpen] = useState(false);
+  const [technicalOpen, setTechnicalOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
   const originalPanelId = useId();
   const human = attribution === "human";
@@ -246,18 +249,6 @@ export function AgentMessageRow({
                         {children(section.text)}
                       </section>
                     ))}
-                    {technical.length > 0 ? (
-                      <details className="text-sm">
-                        <summary className="w-fit cursor-pointer rounded-sm text-xs text-muted-foreground focus-visible:outline-2 focus-visible:outline-ring">
-                          Technik
-                        </summary>
-                        <div className="mt-2 space-y-3">
-                          {technical.map((section) => (
-                            <div key={section.key}>{children(section.text)}</div>
-                          ))}
-                        </div>
-                      </details>
-                    ) : null}
                   </div>
                 ) : text !== null ? (
                   <div className="space-y-3">
@@ -268,6 +259,24 @@ export function AgentMessageRow({
                       <div key={paragraph.key}>{children(paragraph.text)}</div>
                     ))}
                   </div>
+                ) : null}
+                {technical.length > 0 || technicalDetails ? (
+                  <details
+                    className="mt-3 text-sm"
+                    onToggle={(event) => setTechnicalOpen(event.currentTarget.open)}
+                  >
+                    <summary className="w-fit cursor-pointer rounded-sm text-xs text-muted-foreground focus-visible:outline-2 focus-visible:outline-ring">
+                      Technik
+                    </summary>
+                    {technicalOpen ? (
+                      <div className="mt-2 space-y-3">
+                        {technical.map((section) => (
+                          <div key={section.key}>{children(section.text)}</div>
+                        ))}
+                        {technicalDetails}
+                      </div>
+                    ) : null}
+                  </details>
                 ) : null}
                 <div className="mt-3 flex flex-wrap items-center gap-1 border-t border-border/60 pt-2">
                   <Button

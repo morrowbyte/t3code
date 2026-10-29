@@ -30,6 +30,36 @@ const capabilities = (input?: {
   }) as never;
 
 describe("thread workflows", () => {
+  it("allows reordering multiple user messages only in an open thread", () => {
+    const projection = {
+      thread: { id: "thread", activeProviderThreadId: null, archivedAt: null, deletedAt: null },
+      runs: [
+        { id: "first", status: "queued", userMessageId: "first-message", ordinal: 1 },
+        { id: "second", status: "queued", userMessageId: "second-message", ordinal: 2 },
+      ],
+      messages: [{ id: "first-message" }, { id: "second-message" }],
+      providerThreads: [],
+      providerTurns: [],
+      providerSessions: [],
+    };
+
+    expect(deriveThreadQueueWorkflowState(projection as never).canReorder).toBe(true);
+    for (const field of ["archivedAt", "deletedAt"]) {
+      expect(
+        deriveThreadQueueWorkflowState({
+          ...projection,
+          thread: { ...projection.thread, [field]: "2026-10-28T00:00:00Z" },
+        } as never).canReorder,
+      ).toBe(false);
+    }
+    expect(
+      deriveThreadQueueWorkflowState({
+        ...projection,
+        messages: [{ id: "first-message" }, { id: "second-message", notification: {} }],
+      } as never).canReorder,
+    ).toBe(false);
+  });
+
   it("allows a completed thread to switch providers after its session detaches", () => {
     const projection = {
       thread: {
@@ -65,7 +95,7 @@ describe("thread workflows", () => {
     ).toBe(false);
   });
 
-  it("sorts queued messages and gates reorder and promotion from capabilities", () => {
+  it("sorts queued messages and gates promotion from capabilities", () => {
     const state = deriveThreadQueueWorkflowState({
       thread: { id: "thread", activeProviderThreadId: "provider-thread" },
       runs: [
@@ -133,7 +163,6 @@ describe("thread workflows", () => {
       [],
     ]);
     expect(state.activeRun?.id).toBe("active");
-    expect(state.canReorder).toBe(true);
     expect(state.canPromoteToSteer).toBe(true);
     expect(state.canSendNow).toBe(false);
   });
@@ -174,6 +203,26 @@ describe("thread workflows", () => {
       expect(state.canSendNow).toBe(false);
     },
   );
+
+  it("offers to skip a running compaction even when the provider cannot steer", () => {
+    const state = deriveThreadQueueWorkflowState({
+      thread: { id: "thread", activeProviderThreadId: null },
+      runs: [
+        { id: "compact", status: "running", userMessageId: "message-compact", ordinal: 1 },
+        { id: "queued", status: "queued", userMessageId: "message-queued", ordinal: 2 },
+      ],
+      messages: [
+        { id: "message-compact", role: "user", text: "/compact", attachments: [] },
+        { id: "message-queued", role: "user", text: "Next", attachments: [] },
+      ],
+      providerThreads: [],
+      providerTurns: [],
+      providerSessions: [],
+    } as never);
+
+    expect(state.canPromoteToSteer).toBe(true);
+    expect(state.promoteSkipsCompaction).toBe(true);
+  });
 
   it("keeps held messages visible and clears the hold when they leave the queue", () => {
     for (const status of ["queued", "cancelled", "starting"] as const) {

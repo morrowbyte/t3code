@@ -41,15 +41,15 @@ it.effect("serializes concurrent admissions instead of exceeding the screenshot 
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
-    const outcomes = yield* Effect.all(
-      [newName, freshName].map((fileName) =>
+    const outcomes = yield* Effect.forEach(
+      [newName, freshName],
+      (fileName) =>
         writeBrowserScreenshot({
           directory: root,
           fileName,
           data: new Uint8Array(4),
           budgetBytes: 6,
         }).pipe(Effect.result),
-      ),
       { concurrency: "unbounded" },
     );
     expect(outcomes.filter((result) => result._tag === "Success")).toHaveLength(1);

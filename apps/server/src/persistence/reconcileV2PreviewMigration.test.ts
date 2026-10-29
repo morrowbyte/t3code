@@ -51,6 +51,11 @@ describe("V2 preview upgrade", () => {
         [69, "ApprovalReviewReadyIndex"],
         [70, "ApprovalReviewHostOrders"],
         [71, "ShellStopRequestIndex"],
+        [72, "LiveVoiceHistoryEvents"],
+        [73, "ThreadMessageSearch"],
+        [74, "PeerLinks"],
+        [75, "PeerLinkFence"],
+        [76, "WaitingLinkRequestIndex"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -145,6 +150,11 @@ describe("V2 preview upgrade", () => {
         [69, "ApprovalReviewReadyIndex"],
         [70, "ApprovalReviewHostOrders"],
         [71, "ShellStopRequestIndex"],
+        [72, "LiveVoiceHistoryEvents"],
+        [73, "ThreadMessageSearch"],
+        [74, "PeerLinks"],
+        [75, "PeerLinkFence"],
+        [76, "WaitingLinkRequestIndex"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

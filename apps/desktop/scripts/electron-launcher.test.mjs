@@ -5,7 +5,8 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeVM from "node:vm";
 
-import { assert, describe, it } from "vite-plus/test";
+import { assert, describe, it, vi } from "vite-plus/test";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import {
   makeDevelopmentEnvironmentScript,
@@ -14,6 +15,11 @@ import {
   resolveMacLauncherPaths,
   writeDevelopmentLauncherScript,
 } from "./electron-launcher.mjs";
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, chmodSync: vi.fn(actual.chmodSync) };
+});
 
 describe("electron development launcher", () => {
   it("uses captured values only as fallbacks for a live runner environment", () => {
@@ -110,8 +116,13 @@ describe("electron development launcher", () => {
       writeDevelopmentLauncherScript(launcherPath, "/runtime/Electron");
       NodeFS.chmodSync(launcherPath, 0o644);
 
+      const chmod = vi.mocked(NodeFS.chmodSync).mockClear();
       assert.isFalse(writeDevelopmentLauncherScript(launcherPath, "/runtime/Electron"));
-      assert.equal(NodeFS.statSync(launcherPath).mode & 0o777, 0o755);
+      assert.deepEqual(chmod.mock.calls, [[launcherPath, 0o755]]);
+      // Windows accepts chmod but cannot represent POSIX execute bits.
+      if (HostProcess.Platform.defaultValue() !== "win32") {
+        assert.equal(NodeFS.statSync(launcherPath).mode & 0o777, 0o755);
+      }
     } finally {
       NodeFS.rmSync(directory, { recursive: true, force: true });
     }

@@ -1,5 +1,9 @@
 import { useState } from "react";
-import type { ScopedThreadRef, AgentAvatarKey } from "@t3tools/contracts";
+import {
+  AGENT_IDENTITY_THEMES,
+  type ScopedThreadRef,
+  type AgentAvatarKey,
+} from "@t3tools/contracts";
 import { useAgentAvatar } from "~/state/agentAvatars";
 import { useAssetUrlState } from "~/assets/assetUrls";
 import type { deriveAgentIdentity } from "@t3tools/client-runtime/state/agent-identity";
@@ -30,7 +34,9 @@ export function AgentAvatar({
   projectColor: string;
   size?: 20 | 24;
 }) {
-  const portraits = PORTRAITS[identity.icon];
+  const portraits =
+    identity.icon === "agent" || identity.icon === "weasel" ? PORTRAITS[identity.icon] : null;
+  const glyph = AGENT_IDENTITY_THEMES[theme].glyph;
   const avatar = useAgentAvatar(threadRef, theme);
   const asset = useAssetUrlState(
     threadRef.environmentId,
@@ -39,7 +45,7 @@ export function AgentAvatar({
       : null,
   );
   const savedSrc = asset._tag === "Success" ? asset.url : null;
-  const fallbackSrc = portraits[identity.avatarVariant] ?? portraits[0];
+  const fallbackSrc = portraits?.[identity.avatarVariant] ?? portraits?.[0] ?? null;
   const [failedSources, setFailedSources] = useState<ReadonlySet<string>>(() => new Set());
   const src = savedSrc && !failedSources.has(savedSrc) ? savedSrc : fallbackSrc;
   return (
@@ -48,11 +54,14 @@ export function AgentAvatar({
       style={{ borderColor: projectColor, flex: "0 0 auto" }}
       aria-hidden="true"
     >
-      {failedSources.has(src) ? (
-        identity.name
-          .split(" ")
-          .map((word) => word[0])
-          .join("")
+      {!src || failedSources.has(src) ? (
+        <span style={glyph ? { fontSize: size - 6, lineHeight: 1 } : undefined}>
+          {glyph ??
+            identity.name
+              .split(" ")
+              .map((word) => word[0])
+              .join("")}
+        </span>
       ) : (
         <img
           src={src}

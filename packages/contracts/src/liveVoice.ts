@@ -46,6 +46,8 @@ export type LiveVoiceStopInput = typeof LiveVoiceStopInput.Type;
 export const LiveVoiceSubscribeInput = Schema.Struct({
   leaseId: LiveVoiceLeaseId,
   generation: LiveVoiceGeneration,
+  // Older clients cannot decode activity events; only explicit subscribers receive them.
+  includeActivities: Schema.optional(Schema.Boolean),
 });
 export type LiveVoiceSubscribeInput = typeof LiveVoiceSubscribeInput.Type;
 
@@ -124,8 +126,26 @@ export const LiveVoiceTranscriptSegment = Schema.Struct({
 );
 export type LiveVoiceTranscriptSegment = typeof LiveVoiceTranscriptSegment.Type;
 
+export const LiveVoiceActivity = Schema.Struct({
+  id: TrimmedNonEmptyString.check(Schema.isMaxLength(2_048)),
+  revision: LiveVoiceGeneration,
+  action: Schema.Literals(["submit-work", "read-work", "steer-work", "tool-request"]),
+  status: Schema.Literals(["started", "running", "waiting", "completed", "failed", "interrupted"]),
+  occurredAt: Schema.String,
+  updatedAt: Schema.String,
+});
+export type LiveVoiceActivity = typeof LiveVoiceActivity.Type;
+
 export const LiveVoiceEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("status"), session: LiveVoiceSession }),
+  Schema.Struct({
+    type: Schema.Literal("activity"),
+    leaseId: LiveVoiceLeaseId,
+    generation: LiveVoiceGeneration,
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    activity: LiveVoiceActivity,
+  }),
   Schema.Struct({
     type: Schema.Literal("answer"),
     leaseId: LiveVoiceLeaseId,

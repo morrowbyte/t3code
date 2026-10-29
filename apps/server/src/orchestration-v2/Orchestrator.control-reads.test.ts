@@ -24,11 +24,16 @@ import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Metric from "effect/Metric";
 import * as Result from "effect/Result";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
+import {
+  orchestrationCommandDuration,
+  orchestrationCommandsTotal,
+} from "../observability/Metrics.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as DelegatedTaskQuestionReactor from "./DelegatedTaskQuestionReactor.ts";
@@ -1637,6 +1642,13 @@ it.effect("records delegation communication once while retaining the complete ch
     const parentRun = (yield* projections.getThreadProjection(parentThreadId)).runs[0]!;
     const firstParagraph = `Kurz: Prüfe diese Aufgabe vollständig. ${"Kein Wort abschneiden. ".repeat(40)}\nAuch diese Zeile gehört dazu.`;
     const task = `${firstParagraph}\n\nTechnik:\nVollständiger ausführlicher Auftrag.\n\nWeitere Details.`;
+    const delegatedModelSelection = {
+      ...modelSelection,
+      options: [
+        { id: "reasoningEffort", value: "max" },
+        { id: "serviceTier", value: "priority" },
+      ],
+    };
     const now = yield* DateTime.now;
     for (const roleWrapped of [false, true]) {
       const command = {
@@ -1647,7 +1659,7 @@ it.effect("records delegation communication once while retaining the complete ch
         parentNodeId: parentRun.rootNodeId!,
         task: roleWrapped ? `Act as the implementation sub-agent for this task.\n\n${task}` : task,
         ...(roleWrapped ? { taskFirstParagraph: firstParagraph } : {}),
-        modelSelection,
+        modelSelection: delegatedModelSelection,
         runtimeMode: "full-access" as const,
         interactionMode: "default" as const,
         createdBy: "agent" as const,
@@ -1662,6 +1674,10 @@ it.effect("records delegation communication once while retaining the complete ch
       assert.ok(item?.type === "subagent" && item.delegationMessage !== undefined);
       assert.equal(item.delegationMessage.firstParagraph, firstParagraph);
       assert.deepEqual(item.startedAt, now);
+      assert.deepEqual(
+        updatedParent.subagents.find((task) => task.id === item.subagentId)?.modelSelection,
+        delegatedModelSelection,
+      );
       const child = yield* projections.getThreadProjection(item.childThreadId!);
       assert.lengthOf(child.messages, 1);
       assert.equal(child.messages[0]!.id, item.delegationMessage.messageId);
@@ -2517,5 +2533,40 @@ it.effect("fences current-thread voice admission and steering at the dispatch co
       ),
     );
     assert.equal((yield* projections.getThreadProjection(threadId)).messages.length, 2);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("dispatch records the command outcome and its duration", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const successes = Metric.value(
+      Metric.withAttributes(orchestrationCommandsTotal, {
+        commandType: "thread.create",
+        outcome: "success",
+      }),
+    );
+    const durations = Metric.value(
+      Metric.withAttributes(orchestrationCommandDuration, { commandType: "thread.create" }),
+    );
+    const successesBefore = (yield* successes).count;
+    const durationsBefore = (yield* durations).count;
+
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-dispatch-metrics"),
+      threadId: ThreadId.make("thread:dispatch-metrics"),
+      projectId: ProjectId.make("project:dispatch-metrics"),
+      title: "Dispatch metrics",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+
+    assert.strictEqual((yield* successes).count - successesBefore, 1);
+    assert.strictEqual((yield* durations).count - durationsBefore, 1);
   }).pipe(Effect.provide(layerTest)),
 );

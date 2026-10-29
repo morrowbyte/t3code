@@ -8,7 +8,6 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
 import * as EventSink from "../orchestration-v2/EventSink.ts";
@@ -19,6 +18,7 @@ import * as AgentSessionImporter from "./AgentSessionImporter.ts";
 import * as AgentSessionScanner from "./AgentSessionScanner.ts";
 import * as ProjectService from "./ProjectService.ts";
 
+const timestamp = "2026-09-01T10:00:00.000Z";
 const projectId = ProjectId.make("agent-session-import-project");
 const providerInstanceId = ProviderInstanceId.make("codex");
 const providerSessionId = "native-codex-thread";
@@ -55,9 +55,16 @@ it.effect(
           Layer.succeed(AgentSessionScanner.AgentSessionScanner, scanner),
           Layer.mock(ProjectService.ProjectService)({
             getById: () =>
-              Effect.succeed(
-                Option.some({ id: projectId, workspaceRoot: "/workspace/project" } as never),
-              ),
+              Effect.succeedSome({
+                id: projectId,
+                title: "Project",
+                workspaceRoot: "/workspace/project",
+                defaultModelSelection: null,
+                scripts: [],
+                createdAt: timestamp,
+                updatedAt: timestamp,
+                deletedAt: null,
+              }),
           }),
           Layer.mock(Orchestrator.OrchestratorV2)({
             getThreadRecords: () =>
@@ -136,9 +143,7 @@ it.effect("imports messages once and preserves the provider native resume bindin
         Layer.succeed(AgentSessionScanner.AgentSessionScanner, scanner),
         Layer.mock(ProjectService.ProjectService)({
           getById: () =>
-            Effect.succeed(
-              Option.some({ id: projectId, workspaceRoot: "/workspace/project" } as never),
-            ),
+            Effect.succeedSome({ id: projectId, workspaceRoot: "/workspace/project" } as never),
         }),
         Layer.mock(Orchestrator.OrchestratorV2)({
           getThreadRecords: () =>

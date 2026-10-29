@@ -1,10 +1,11 @@
 import { AuthOrchestrationOperateScope, EnvironmentId, type EditorId } from "@t3tools/contracts";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
+import { Cause } from "effect";
 import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
-import { act, render as renderUi } from "../../../test/render";
+import { act, fakeTimers, render as renderUi } from "../../../test/render";
 import type { RemoteOpenState } from "../../remoteOpen";
 import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
 import { resolveMarkdownFileLinkMeta } from "../../markdown-links";
@@ -69,11 +70,30 @@ vi.mock(import("../../remoteOpen"), async (importOriginal) => ({
 }));
 
 import { OpenInPicker } from "./OpenInPicker";
-import { useOpenFavoriteEditorShortcut } from "./OpenInPickerShortcut";
+import {
+  registerOpenFavoriteEditorCommand,
+  useOpenFavoriteEditorShortcut,
+} from "./OpenInPickerShortcut";
 
 const primary = EnvironmentId.make("primary");
 const selected = EnvironmentId.make("selected");
 const editors: readonly EditorId[] = ["vscode"];
+
+function announcementTimers(): AsyncDisposable {
+  const timers = fakeTimers();
+  return {
+    async [Symbol.asyncDispose]() {
+      try {
+        await act(() => vi.runOnlyPendingTimers());
+        for (const region of document.querySelectorAll('body > [aria-live="polite"]')) {
+          region.textContent = "";
+        }
+      } finally {
+        timers[Symbol.dispose]();
+      }
+    },
+  };
+}
 
 async function setup(platform = "Linux") {
   state.allowed.clear();
@@ -91,6 +111,9 @@ async function setup(platform = "Linux") {
   stack.use(_platform);
   const _storage = { [Symbol.dispose]: () => window.localStorage.clear() };
   stack.use(_storage);
+  // The app registers this command at startup (appInit).
+  const _openFavorite = { [Symbol.dispose]: registerOpenFavoriteEditorCommand() };
+  stack.use(_openFavorite);
   const screen = stack.use(await renderUi(null));
   async function renderPicker(
     availableEditors: readonly EditorId[] = editors,
@@ -198,6 +221,7 @@ describe("host editor access", () => {
     expect(state.run).toHaveBeenCalledExactlyOnceWith(revealRequest);
     expect(state.openUrl).not.toHaveBeenCalled();
 
+    await using _announcements = announcementTimers();
     expect((await fixture.pressOpenFavorite()).defaultPrevented).toBe(true);
     expect(state.run).toHaveBeenCalledTimes(2);
     expect(state.run).toHaveBeenLastCalledWith(revealRequest);
@@ -212,6 +236,7 @@ describe("host editor access", () => {
     await userEvent.click(fixture.screen.getByRole("button", { name: "Choose editor" }));
     await userEvent.click(page.getByRole("menuitem", { name: "File Explorer" }));
     expect(state.run).not.toHaveBeenCalled();
+    await using _announcements = announcementTimers();
     await userEvent.click(
       fixture.screen.getByRole("button", { name: "Open file in preferred editor" }),
     );
@@ -288,18 +313,51 @@ describe("host editor access", () => {
     const { renderPicker, byLabel, primaryButton, click, pressOpenFavorite } = fixture;
     state.allowed.add(selected);
     await renderPicker();
-    // Revoke without rerendering: the mounted button and shortcut must re-check the grant.
+    // Revoke without rerendering to exercise execution-time grant checks.
     state.allowed.delete(selected);
     state.allowed.add(primary);
     await click(primaryButton());
-    const event = await pressOpenFavorite();
+    // The shortcut is consumed and opens nothing once the grant is gone.
+    expect((await pressOpenFavorite()).defaultPrevented).toBe(true);
     expect(state.run).not.toHaveBeenCalled();
     expect(state.setPreferred).not.toHaveBeenCalled();
-    expect(event.defaultPrevented).toBe(false);
 
     await renderPicker();
     expect(primaryButton().disabled).toBe(true);
     expect(byLabel("Choose editor").disabled).toBe(true);
     expect((await pressOpenFavorite()).defaultPrevented).toBe(false);
+  });
+});
+
+describe("open in editor announcement", () => {
+  it("speaks only after the shortcut opened the editor, from the picker or the fallback", async () => {
+    await using fixture = await setup();
+    const { screen, renderPicker, pressOpenFavorite, FavoriteEditorFallback } = fixture;
+    state.allowed.add(selected);
+    await renderPicker();
+    await using _announcements = announcementTimers();
+    const regions = () => [...document.querySelectorAll('body > [aria-live="polite"]')];
+    const spoken = async () => {
+      await act(async () => vi.runAllTimers());
+      return regions()
+        .map((region) => region.textContent)
+        .join("");
+    };
+    const refuse = () =>
+      state.run.mockResolvedValueOnce(AsyncResult.failure(Cause.fail(new Error("No editor"))));
+
+    refuse();
+    await pressOpenFavorite();
+    expect(await spoken()).toBe("");
+    await pressOpenFavorite();
+    expect(await spoken()).toBe("Opened in VS Code");
+
+    for (const region of regions()) region.textContent = "";
+    await act(async () => screen.rerender(<FavoriteEditorFallback />));
+    refuse();
+    await pressOpenFavorite();
+    expect(await spoken()).toBe("");
+    await pressOpenFavorite();
+    expect(await spoken()).toBe("Opened in VS Code");
   });
 });

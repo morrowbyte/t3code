@@ -216,10 +216,12 @@ export function ExecutionCodeView(props: {
         <dt>Exit code</dt>
         <dd>{code?.exitCode ?? "Not supplied"}</dd>
       </dl>
-      <p className="mb-3 text-xs text-muted-foreground">
-        Recorded provider input. A script filename does not include its historical file contents.
-        Opening this view does not run code.
-      </p>
+      <p className="mb-3 text-xs text-muted-foreground">Recorded input · Read-only</p>
+      <details className="mb-3 text-xs text-muted-foreground">
+        <summary>Input details</summary>
+        A script filename does not include its historical file contents.
+      </details>
+      <p className="sr-only">Opening this view does not run code.</p>
       {code?.inputField ? (
         <p className="mb-2 text-xs text-muted-foreground">
           Original input field: {code.inputField}
@@ -227,11 +229,6 @@ export function ExecutionCodeView(props: {
       ) : null}
       {code?.text !== null && code?.text !== undefined ? (
         <>
-          {code.text.length > 65_536 ? (
-            <p className="mb-2 text-xs text-muted-foreground">
-              Large input shown as complete plain text.
-            </p>
-          ) : null}
           <div className="mb-2 flex flex-wrap items-center gap-2">
             <label className="min-w-0 flex-1 text-xs">
               Find in recorded input

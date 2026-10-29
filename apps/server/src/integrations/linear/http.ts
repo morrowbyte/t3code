@@ -49,12 +49,10 @@ const ingressLayer = HttpApiBuilder.group(
               "Linear connected. Return to T3 Code and reload Linear settings.",
             ),
           ),
-          Effect.catch(() =>
-            Effect.succeed(
-              HttpServerResponse.text("Linear connection failed. Start Connect again in T3 Code.", {
-                status: 400,
-              }),
-            ),
+          Effect.orElseSucceed(() =>
+            HttpServerResponse.text("Linear connection failed. Start Connect again in T3 Code.", {
+              status: 400,
+            }),
           ),
           Effect.withTracerEnabled(false),
         ),
@@ -93,7 +91,7 @@ const ingressLayer = HttpApiBuilder.group(
             },
           );
         }).pipe(
-          Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 503 }))),
+          Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 503 })),
           Effect.withTracerEnabled(false),
         ),
       );

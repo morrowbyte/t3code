@@ -3,7 +3,7 @@ import { AgentObservatoryOwner } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as DateTime from "effect/DateTime";
 import { createObservatoryAuthoredProjector } from "./authored.ts";
-const owner = Schema.decodeUnknownSync(AgentObservatoryOwner)({
+const owner = Schema.decodeSync(AgentObservatoryOwner)({
   environmentId: "one",
   threadId: "thread",
   runId: "run",

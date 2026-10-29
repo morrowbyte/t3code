@@ -40,7 +40,6 @@ vi.mock(import("../state/preview"), async (original) => {
     previewEnvironment: { ...actual.previewEnvironment, open: state.openPreview as never },
   };
 });
-// The remote environment is catalogued and its shell is live.
 vi.mock(import("../connection/catalog"), async (original) => {
   const actual = await original();
   const { Atom } = await import("effect/reactivity");
@@ -48,7 +47,10 @@ vi.mock(import("../connection/catalog"), async (original) => {
     ...actual,
     environmentCatalog: {
       ...actual.environmentCatalog,
-      catalogValueAtom: Atom.make({ isReady: true, entries: new Map([["remote", {}]]) }) as never,
+      catalogValueAtom: Atom.make({
+        isReady: true,
+        entries: new Map([["remote", { target: { _tag: "DirectConnectionTarget" } }]]),
+      }) as never,
     },
   };
 });
@@ -285,6 +287,10 @@ describe("root reopen shortcut", () => {
     await using _view = await renderShortcut();
     expect(state.setShortcuts).toHaveBeenLastCalledWith([
       expect.objectContaining({ command: "navigation.activate" }),
+      expect.objectContaining({ command: "workspace.focusNext" }),
+      expect.objectContaining({ command: "workspace.focusNext" }),
+      expect.objectContaining({ command: "workspace.focusPrevious" }),
+      expect.objectContaining({ command: "workspace.focusPrevious" }),
       expect.objectContaining({ command: "sidebar.toggle" }),
       expect.objectContaining({ command: "rightPanel.toggle" }),
       expect.objectContaining({ command: "preview.back" }),

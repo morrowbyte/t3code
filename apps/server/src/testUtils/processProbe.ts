@@ -11,14 +11,22 @@ export const makeProcessProbe = Effect.gen(function* () {
   const server = NodeNet.createServer((socket) => {
     sockets.add(socket);
     let output = "";
+    let reportedPid = false;
     socket.on("data", (chunk) => {
       output += chunk.toString();
       if (output.includes("\n")) {
         const pid = Number(output.trim());
         if (Number.isSafeInteger(pid) && pid > 0) {
+          reportedPid = true;
           Deferred.doneUnsafe(started, Effect.succeed(pid));
         }
       }
+    });
+    socket.on("error", (error) => {
+      // Windows resets the observation socket when the reported fixture process is killed.
+      if (reportedPid && (error as NodeJS.ErrnoException).code === "ECONNRESET") return;
+      Deferred.doneUnsafe(started, Effect.die(error));
+      Deferred.doneUnsafe(exited, Effect.die(error));
     });
     socket.on("close", () => {
       sockets.delete(socket);

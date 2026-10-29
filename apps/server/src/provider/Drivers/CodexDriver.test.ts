@@ -287,7 +287,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const directory = yield* fs.makeTempDirectoryScoped({ prefix: "native-instance-path-" });
-        const binary = NodePath.join(directory, "codex");
+        const binary = NodePath.join(directory, windowsHost ? "codex.EXE" : "codex");
         yield* fs.writeFileString(binary, "synthetic-codex", { mode: 0o755 });
         const home = NodePath.join(directory, "account-home");
         const installation = yield* CodexInstallation.CodexInstallation;
@@ -533,15 +533,11 @@ it.layer(layerTest)("CodexDriver", (it) => {
         expect(catalogTokens).toEqual(["Bearer dummy-owned-access"]);
         expect(restored.auth.email).toBe("account@example.test");
         expect(restored.runtimePaths?.homePath).toBe(sharedHome);
-        expect(restored.runtimePaths?.shadowHomePath).toContain(
-          `providers/codex/${instanceId}/shadow`,
+        expect(restored.runtimePaths?.shadowHomePath).toBe(
+          NodePath.join(serverConfig.stateDir, "providers", "codex", instanceId, "shadow"),
         );
-        // The fixture app-server cannot start, so the workspace scan fails
-        // instead of passing the machine snapshot off as the workspace's skills.
         const scan = yield* instance.snapshotForCwd!(serverConfig.stateDir).pipe(Effect.exit);
         expect(Exit.isFailure(scan)).toBe(true);
-        // The account is still signed in, so a runtime that cannot start is a
-        // failed scan too, not the machine snapshot's inventory.
         failAcquire = true;
         const runtimeScan = yield* instance.snapshotForCwd!(serverConfig.stateDir).pipe(
           Effect.exit,
@@ -581,8 +577,6 @@ it.layer(layerTest)("CodexDriver", (it) => {
         expect(after.installed).toBe(true);
         expect(after.models).toEqual([]);
         expect(Option.isNone(yield* store.get)).toBe(true);
-        // Signed out, there is no runtime to scan with, so the machine
-        // snapshot's empty inventory stands instead of a failed scan.
         const signedOutScan = yield* instance.snapshotForCwd!(serverConfig.stateDir);
         expect(signedOutScan.skills).toEqual([]);
       }).pipe(

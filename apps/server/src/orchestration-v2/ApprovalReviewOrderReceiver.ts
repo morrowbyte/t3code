@@ -33,6 +33,11 @@ export class ApprovalReviewOrderReceiver extends Context.Service<
     ) => Effect.Effect<ApprovalReviewForwardAck, ApprovalReviewError>;
   }
 >()("t3/orchestration-v2/ApprovalReviewOrderReceiver") {}
+const decodeApprovalReviewOrderReceive = Schema.decodeEffect(ApprovalReviewOrderReceive);
+const decodeApprovalReviewForwardAckJson = Schema.decodeEffect(
+  Schema.fromJsonString(ApprovalReviewForwardAck),
+);
+
 const make = Effect.gen(function* () {
   const policy = yield* Policy.ApprovalReviewOrderPolicy;
   const sql = yield* SqlClient.SqlClient;
@@ -87,7 +92,7 @@ const make = Effect.gen(function* () {
       !actor.scopes.has("orchestration:operate")
     )
       return yield* new ApprovalReviewError({ reason: "forbidden" });
-    const input = yield* Schema.decodeUnknownEffect(ApprovalReviewOrderReceive)(raw, {
+    const input = yield* decodeApprovalReviewOrderReceive(raw, {
       onExcessProperty: "error",
     }).pipe(Effect.mapError(() => new ApprovalReviewError({ reason: "invalid-action" })));
     if (
@@ -134,9 +139,9 @@ const make = Effect.gen(function* () {
         if (!reservation.fresh) {
           if (reservation.row.state !== "received" || reservation.row.ack_json === null)
             return yield* new ApprovalReviewError({ reason: "forward-unknown" });
-          return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(ApprovalReviewForwardAck))(
-            reservation.row.ack_json,
-          ).pipe(Effect.mapError(() => new ApprovalReviewError({ reason: "storage" })));
+          return yield* decodeApprovalReviewForwardAckJson(reservation.row.ack_json).pipe(
+            Effect.mapError(() => new ApprovalReviewError({ reason: "storage" })),
+          );
         }
         return yield* restore(
           Effect.gen(function* () {

@@ -38,6 +38,7 @@ function fixture(
 ) {
   const paths: string[] = [];
   const github = GitHubRest.GitHubRest.of({
+    appCredential: () => Effect.succeedNone,
     credential: () =>
       Effect.succeed({ token: Redacted.make("fixture-host-secret"), fingerprint: "fixture" }),
     rest: (input) =>

@@ -36,8 +36,7 @@ import {
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 
 const driver = (value: string) => ProviderDriverKind.make(value);
-// These write `#!/bin/sh` stubs and evaluate them with darwin/linux path
-// semantics; a Windows temp path cannot be split on `:`.
+// Shell stubs use POSIX paths; Windows temp paths cannot split on colon.
 const windowsHost = HostProcess.Platform.defaultValue() === "win32";
 const makeTempDir = (name: string) =>
   Crypto.Crypto.pipe(
@@ -89,7 +88,7 @@ function writeExecutable(path: string) {
 function linkIntoPackage(tempDir: string, name: string, packageSegments: ReadonlyArray<string>) {
   const target = NodePath.join(tempDir, ...packageSegments, "bin", `${name}.js`);
   writeExecutable(target);
-  const link = NodePath.join(tempDir, "bin", name);
+  const link = NodePath.join(tempDir, "bin", windowsHost ? `${name}.cmd` : name);
   NodeFS.mkdirSync(NodePath.dirname(link), { recursive: true });
   NodeFS.symlinkSync(target, link);
   return link;
@@ -277,6 +276,7 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
           "@example",
           "package-tool",
         ]);
+        const prefix = tempDir.replaceAll("\\", "/");
 
         const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(
           packageToolUpdate,
@@ -290,13 +290,13 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
           provider: driver("packageTool"),
           packageName: "@example/package-tool",
           update: {
-            command: `npm install -g --prefix ${tempDir} --allow-scripts=@example/package-tool @example/package-tool@latest`,
+            command: `npm install -g --prefix ${prefix} --allow-scripts=@example/package-tool @example/package-tool@latest`,
             executable: "npm",
             args: [
               "install",
               "-g",
               "--prefix",
-              tempDir,
+              prefix,
               "--allow-scripts=@example/package-tool",
               "@example/package-tool@latest",
             ],
@@ -333,10 +333,7 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
     ).toBeNull();
   });
 
-  // The Codex Windows installer exposes `%LOCALAPPDATA%\\Programs\\OpenAI\\Codex\\bin`
-  // as a junction into `%CODEX_HOME%\\packages\\standalone\\current\\bin`. Node's
-  // realpath follows junctions, so the real path carries the standalone marker
-  // even though the visible path does not.
+  // The Windows Codex bin junction resolves into CODEX_HOME/packages/standalone/current/bin.
   it.effect("recognizes a Windows standalone install through its junctioned bin dir", () =>
     Effect.gen(function* () {
       const visiblePath =
@@ -629,7 +626,6 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
           command: "pnpm add -g --allow-build=@example/package-tool @example/package-tool@latest",
           lockKey: "pnpm-global",
         });
-        // Older pnpm rejects the unknown flag, and runs install scripts before 10.
         expect((yield* updateCommand(pnpmVersion("10.3.0")))?.command).toBe(
           "pnpm add -g @example/package-tool@latest",
         );
@@ -810,7 +806,6 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
     "prefers npm ownership over the Node keg the package lives under",
     () =>
       Effect.gen(function* () {
-        // `brew install node` keeps npm globals inside the node keg.
         const tempDir = yield* makeTempDir("t3-homebrew-node-capabilities");
         const keg = NodePath.join(tempDir, "Cellar", "node", "22.1.0");
         const target = NodePath.join(
@@ -823,7 +818,11 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
           "package-tool.js",
         );
         writeExecutable(target);
-        const link = NodePath.join(tempDir, "bin", "package-tool");
+        const link = NodePath.join(
+          tempDir,
+          "bin",
+          windowsHost ? "package-tool.cmd" : "package-tool",
+        );
         NodeFS.mkdirSync(NodePath.dirname(link), { recursive: true });
         NodeFS.symlinkSync(target, link);
 
@@ -837,7 +836,7 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
 
         expect(capabilities.update).toMatchObject({
           executable: "npm",
-          args: expect.arrayContaining(["--prefix", keg]),
+          args: expect.arrayContaining(["--prefix", keg.replaceAll("\\", "/")]),
           lockKey: `npm-global:${normalizeCommandPath(keg)}`,
         });
       }),
@@ -905,7 +904,6 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
       name: "codex",
       prefix: "/usr/local",
     });
-    // A plain /usr/local/bin binary is not evidence of Homebrew (#8832).
     expect(homebrewOwnershipFromCommandPath("/usr/local/bin/codex")).toBeNull();
     expect(homebrewOwnershipFromCommandPath("/srv/Cellar/claude/1.0.0/bin/claude")).toMatchObject({
       prefix: "/srv",
@@ -1203,7 +1201,11 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
         const voltaHome = NodePath.join(yield* makeTempDir("t3-volta-capabilities"), ".volta");
         const shim = NodePath.join(voltaHome, "bin", "volta-shim");
         writeExecutable(shim);
-        const link = NodePath.join(voltaHome, "bin", "package-tool");
+        const link = NodePath.join(
+          voltaHome,
+          "bin",
+          windowsHost ? "package-tool.cmd" : "package-tool",
+        );
         NodeFS.symlinkSync(shim, link);
         const resolve = resolveProviderMaintenanceCapabilitiesEffect(packageToolUpdate, {
           binaryPath: link,

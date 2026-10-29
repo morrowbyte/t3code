@@ -117,15 +117,17 @@ const make = Effect.gen(function* () {
         );
       }).pipe(Effect.withTracerEnabled(false)),
     ),
-    identity: (token) =>
+    identity: Effect.fn("LinearApi.identity")((token) =>
       graphql(token, "query { viewer { id } organization { id name } }", {}, Identity),
-    issue: (token, issueId) =>
+    ),
+    issue: Effect.fn("LinearApi.issue")((token, issueId) =>
       graphql(
         token,
         "query($id: String!) { issue(id: $id) { id identifier title description url updatedAt team { id } project { id } } }",
         { id: issueId },
         Schema.Struct({ issue: Issue }),
       ).pipe(Effect.map((data) => data.issue)),
+    ),
   });
 });
 export const layer = Layer.effect(LinearApi, make);

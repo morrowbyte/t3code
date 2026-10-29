@@ -11,11 +11,12 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/http";
+import * as TestClock from "effect/testing/TestClock";
 import * as NodeZlib from "node:zlib";
 
 import * as PreviewBrowser from "./PreviewBrowser.ts";
 
-// POSIX modes cannot be checked on NTFS, so follow the host like the Antigravity suite.
+// NTFS cannot enforce POSIX modes; choose the host platform.
 const hostPlatform: NodeJS.Platform =
   HostProcess.Platform.defaultValue() === "win32" ? "win32" : "linux";
 const executableName =
@@ -124,12 +125,16 @@ it.layer(NodeServices.layer)("PreviewBrowser", (it) => {
   it.effect("installs a verified download with its file modes and then reuses it", () =>
     Effect.gen(function* () {
       const { browser, fs, path, installRoot, requests } = yield* makeHarness();
+      // Node on Windows wraps pre-epoch mtimes, so keep fixture timestamps positive.
+      yield* TestClock.setTime(3 * 60 * 60_000);
       yield* fs.makeDirectory(path.join(installRoot, "1.0.0"), { recursive: true });
       const active = path.join(installRoot, ".install-other");
       const abandoned = path.join(installRoot, ".install-abandoned");
       yield* fs.makeDirectory(active);
       yield* fs.makeDirectory(abandoned);
-      const twoHoursAgo = DateTime.toDate(DateTime.subtract(yield* DateTime.now, { hours: 2 }));
+      const now = yield* DateTime.now;
+      const twoHoursAgo = DateTime.toDate(DateTime.subtract(now, { hours: 2 }));
+      yield* fs.utimes(active, DateTime.toDate(now), DateTime.toDate(now));
       yield* fs.utimes(abandoned, twoHoursAgo, twoHoursAgo);
       expect(yield* browser.installed).toEqual(Option.none());
 

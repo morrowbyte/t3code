@@ -1,3 +1,4 @@
+import { EMPTY_SHELL_STATE } from "../state/shell.ts";
 import { describe, expect, it } from "vite-plus/test";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { Atom, AtomRegistry } from "effect/reactivity";
@@ -16,6 +17,8 @@ function environment(environmentId: EnvironmentId, count: number): ObservatoryEn
     generation: 1,
     status: "live",
     shell: {
+      ...EMPTY_SHELL_STATE,
+      generation: 1,
       status: "live",
       error: Option.none(),
       snapshot: Option.some({

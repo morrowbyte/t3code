@@ -230,6 +230,7 @@ export function ChildThreadRequestsView({
   const previousQuestions = useRef(
     new Map<string, { origin: ScopedThreadRef; request: ThreadPendingUserInput }>(),
   );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Clears attachment drafts from the external upload store when canonical requests resolve.
   useEffect(() => {
     const waiting = new Map<string, { origin: ScopedThreadRef; request: ThreadPendingUserInput }>();
     for (const group of groups) {
@@ -300,7 +301,6 @@ export function ChildThreadRequestsView({
       }}
     >
       <ComposerBanner.Root
-        placement="floating"
         variant={entries.some((entry) => entry.type === "approval") ? "warning" : "info"}
       >
         {groups
@@ -457,6 +457,7 @@ function ChildRequestCard({
                 <ComposerPendingApprovalActions
                   approval={entry.request}
                   environmentId={group.origin.environmentId}
+                  threadId={group.origin.threadId}
                   requestId={request.requestId}
                   canRespond={
                     canOperate &&
@@ -851,12 +852,14 @@ function QuestionAttachmentPicker({
   const input = useRef<HTMLInputElement>(null);
   const mounted = useRef(true);
   const [error, setError] = useState<string | null>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Prevents asynchronous file preprocessing from updating an unmounted attachment control.
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
     };
   }, []);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Starts and resumes external attachment uploads for the mounted request's environment.
   useEffect(() => {
     if (disabled || !supportsAttachments) return;
     for (const image of attachments) {

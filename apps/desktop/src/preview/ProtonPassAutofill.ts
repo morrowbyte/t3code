@@ -86,12 +86,12 @@ export function makeBindingStore(file: string): BindingStore {
             .pipe(
               Effect.catch((error) =>
                 error.reason._tag === "NotFound"
-                  ? Effect.succeed(undefined)
+                  ? Effect.void
                   : Effect.fail(new AutofillUnavailable()),
               ),
             );
           if (raw === undefined) return [];
-          const parsed = yield* Schema.decodeUnknownEffect(bindingJsonCodec)(raw);
+          const parsed = yield* Schema.decodeEffect(bindingJsonCodec)(raw);
           return Array.isArray(parsed) ? parsed.filter(validBinding) : [];
         }).pipe(Effect.mapError(() => new AutofillUnavailable())),
       ),

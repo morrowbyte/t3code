@@ -37,6 +37,13 @@ const owner = {
 };
 const decode = Schema.decodeUnknownSync(AgentObservatoryVisualState);
 
+const decodeUnknownAgentObservatoryUpdate = Schema.decodeUnknownSync(AgentObservatoryUpdate);
+const decodeAgentObservatoryUpdate = Schema.decodeSync(AgentObservatoryUpdate);
+const decodeUnknownAgentObservatorySnapshot = Schema.decodeUnknownSync(AgentObservatorySnapshot);
+const decodeUnknownAgentObservatorySubscribeNativeRosterInput = Schema.decodeUnknownSync(
+  AgentObservatorySubscribeNativeRosterInput,
+);
+
 describe("agent observatory declarative contract", () => {
   it("accepts bounded plan/todos/layout without treating a request as reached or paused", () => {
     const decoded = decode(state);
@@ -64,17 +71,15 @@ describe("agent observatory declarative contract", () => {
     expect(() => decode({ ...state, ...invalid })).toThrow();
   });
   it("separates update intent from host-authored owner, provenance and event frontier", () => {
-    const input = Schema.decodeUnknownSync(AgentObservatoryUpdate)({
+    const input = decodeUnknownAgentObservatoryUpdate({
       requestId: "command:one",
       expectedRevision: 0,
       state,
     });
     expect(Object.keys(input).sort()).toEqual(["expectedRevision", "requestId", "state"]);
+    expect(() => decodeAgentObservatoryUpdate({ ...input, expectedRevision: -1 })).toThrow();
     expect(() =>
-      Schema.decodeUnknownSync(AgentObservatoryUpdate)({ ...input, expectedRevision: -1 }),
-    ).toThrow();
-    expect(() =>
-      Schema.decodeUnknownSync(AgentObservatorySnapshot)({
+      decodeUnknownAgentObservatorySnapshot({
         owner,
         revision: 1,
         provenance: "observed-native",
@@ -111,7 +116,7 @@ describe("agent observatory bounded roster read inputs", () => {
       { threadIds: ["thread:a"], limit: 1, cursor: { throughSequence: 3, afterId: "node:a" } },
     ])
       expect(() => decode(input)).toThrow();
-    const subscribe = Schema.decodeUnknownSync(AgentObservatorySubscribeNativeRosterInput)({
+    const subscribe = decodeUnknownAgentObservatorySubscribeNativeRosterInput({
       threadIds: ["thread:a"],
       limit: 20,
       cursor: { afterId: "model-cursor" },

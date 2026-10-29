@@ -12,6 +12,11 @@ import {
   AgentObservatoryReadError,
 } from "./rpc.ts";
 
+const decodeWsSubscribeServerConfigRpcpayloadSchema = Schema.decodeSync(
+  WsSubscribeServerConfigRpc.payloadSchema,
+);
+const decodeAgentObservatoryNativeRosterPage = Schema.decodeSync(AgentObservatoryNativeRosterPage);
+
 describe("subscribeServerConfig payload compatibility", () => {
   it("is accepted by a server whose schema predates the field", () => {
     const oldServerPayload = Schema.Struct({});
@@ -20,14 +25,14 @@ describe("subscribeServerConfig payload compatibility", () => {
   });
 
   it("is carried by a server that declares it", () => {
-    const decoded = Schema.decodeSync(WsSubscribeServerConfigRpc.payloadSchema)({
+    const decoded = decodeWsSubscribeServerConfigRpcpayloadSchema({
       environmentThemes: true,
     });
     expect(decoded).toEqual({ environmentThemes: true });
   });
 
   it("stays optional, so a client that never sends it still subscribes", () => {
-    const decoded = Schema.decodeSync(WsSubscribeServerConfigRpc.payloadSchema)({});
+    const decoded = decodeWsSubscribeServerConfigRpcpayloadSchema({});
     expect(decoded).toEqual({});
   });
 });
@@ -92,8 +97,8 @@ describe("registered trace diagnostics serialization boundary", () => {
     },
   } as const;
   it("preserves default trace and the typed explicit selector through the actual JSON codec", () => {
-    expect(Schema.decodeUnknownSync(codec)({})).toEqual({});
-    const decoded = Schema.decodeUnknownSync(codec)(input);
+    expect(Schema.decodeSync(codec)({})).toEqual({});
+    const decoded = Schema.decodeSync(codec)(input);
     expect(decoded).toEqual(input);
     expect(Schema.encodeSync(codec)(decoded)).toEqual(input);
   });
@@ -118,9 +123,9 @@ describe("registered trace diagnostics serialization boundary", () => {
   });
   it("leaves another registered RPC's legacy decoding unchanged", () => {
     const legacy = Schema.toCodecJson(WsSubscribeServerConfigRpc.payloadSchema);
-    expect(
-      Schema.decodeUnknownSync(legacy)({ environmentThemes: true, legacyExtra: "ignored" }),
-    ).toEqual({ environmentThemes: true });
+    expect(Schema.decodeSync(legacy)({ environmentThemes: true, legacyExtra: "ignored" })).toEqual({
+      environmentThemes: true,
+    });
   });
 });
 
@@ -152,7 +157,7 @@ describe("registered observatory read JSON codecs", () => {
           : method === WS_METHODS.agentObservatoryReadNativeRoster
             ? { ...roster, cursor }
             : roster;
-      expect(Schema.encodeSync(codec)(Schema.decodeUnknownSync(codec)(input))).toEqual(input);
+      expect(Schema.encodeSync(codec)(Schema.decodeSync(codec)(input))).toEqual(input);
     }
     expect(
       [...WsRpcGroup.requests.keys()].filter((tag) => tag.startsWith("agentObservatory.")),
@@ -239,8 +244,8 @@ describe("registered observatory read JSON codecs", () => {
       Schema.toCodecJson(unary.successSchema),
       Schema.toCodecJson(rosterStream.successSchema.success),
     ]) {
-      const decoded = Schema.decodeUnknownSync(codec)(encoded);
-      const typed = Schema.decodeUnknownSync(AgentObservatoryNativeRosterPage)(decoded);
+      const decoded = Schema.decodeSync(codec)(encoded);
+      const typed = decodeAgentObservatoryNativeRosterPage(decoded);
       expect(DateTime.formatIso(typed.agents[0]!.updatedAt)).toBe(encoded.agents[0]!.updatedAt);
       expect(Schema.encodeSync(codec)(decoded)).toEqual(encoded);
       const withPrivateExtras = {
@@ -254,7 +259,7 @@ describe("registered observatory read JSON codecs", () => {
           },
         ],
       };
-      expect(Schema.encodeSync(codec)(Schema.decodeUnknownSync(codec)(withPrivateExtras))).toEqual(
+      expect(Schema.encodeSync(codec)(Schema.decodeSync(codec)(withPrivateExtras))).toEqual(
         encoded,
       );
     }
@@ -272,7 +277,7 @@ describe("registered observatory read JSON codecs", () => {
       });
       expect(
         Exit.isFailure(
-          Schema.decodeUnknownExit(errorCodec)({
+          Schema.decodeExit(errorCodec)({
             _tag: "AgentObservatoryReadError",
             message: "private cause",
           }),
@@ -287,6 +292,6 @@ describe("registered observatory read JSON codecs", () => {
       throughSequence: 0,
       snapshot: null,
     };
-    expect(Schema.encodeSync(codec)(Schema.decodeUnknownSync(codec)(offline))).toEqual(offline);
+    expect(Schema.encodeSync(codec)(Schema.decodeSync(codec)(offline))).toEqual(offline);
   });
 });

@@ -83,6 +83,8 @@ export class TrustedAppControlInvocation extends Context.Service<
   }
 >()("t3/mcp/TrustedAppControlInvocation") {}
 
+const isTrustedAppControlInvocationError = Schema.is(TrustedAppControlInvocationError);
+
 const make = Effect.gen(function* () {
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
@@ -98,7 +100,7 @@ const make = Effect.gen(function* () {
   >();
   const incarnations = new WeakMap<object, string>();
   const normalize = (error: unknown) =>
-    Schema.is(TrustedAppControlInvocationError)(error)
+    isTrustedAppControlInvocationError(error)
       ? error
       : new TrustedAppControlInvocationError({ reason: "unavailable" });
   const checkUnderLock = Effect.fn("TrustedAppControlInvocation.checkUnderLock")(
@@ -213,7 +215,7 @@ const make = Effect.gen(function* () {
         return owner;
       }).pipe(Effect.mapError(normalize)),
     ),
-    withValidatedOwner: (owner, use) =>
+    withValidatedOwner: Effect.fn("TrustedAppControlInvocation.withValidatedOwner")((owner, use) =>
       Effect.suspend(() => {
         const binding = owners.get(owner);
         if (!binding)
@@ -225,13 +227,15 @@ const make = Effect.gen(function* () {
           ),
         );
       }),
-    validate: (owner) =>
+    ),
+    validate: Effect.fn("TrustedAppControlInvocation.validate")((owner) =>
       Effect.suspend(() => {
         const binding = owners.get(owner);
         return binding === undefined
           ? Effect.fail(new TrustedAppControlInvocationError({ reason: "invalid_owner" }))
           : check(binding.execution, binding.native);
       }),
+    ),
   });
 });
 /** Capturing identity does not authorize an actor send or change provider policy. */

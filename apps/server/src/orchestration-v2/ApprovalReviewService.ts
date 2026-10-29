@@ -54,7 +54,7 @@ export const layerTargets = Layer.effect(
     const json = yield* Config.String("T3CODE_APPROVAL_REVIEW_TARGETS").pipe(
       Config.withDefault("[]"),
     );
-    return yield* Schema.decodeUnknownEffect(
+    return yield* Schema.decodeEffect(
       Schema.fromJsonString(Schema.Array(Target).check(Schema.isMaxLength(16))),
     )(json);
   }),

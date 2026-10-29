@@ -39,6 +39,7 @@ export function ProjectFeatureTiming({ member }: { member: SidebarProjectGroupMe
     revision: number;
     feed: TimingFeed | null;
   } | null>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Reads remote feature timing for the active authorized session and rejects completions after that session changes.
   useEffect(() => {
     if (!allowed || !connected) return;
     let active = true;
@@ -125,7 +126,8 @@ export function ProjectFeatureTiming({ member }: { member: SidebarProjectGroupMe
             Waits and phases cover recorded intervals only; unrecorded history and active
             development effort are unavailable. Reason totals can overlap; total waiting counts each
             interval once. Feature-to-release mapping is unavailable. Published or installed
-            releases do not establish acceptance.
+            releases do not establish acceptance. Run duration includes waits; it does not measure
+            effort, human work hours, feature completion, or a future ETA.
           </p>
         </details>
       ) : null}
@@ -170,11 +172,7 @@ export function ProjectFeatureTiming({ member }: { member: SidebarProjectGroupMe
               </div>
             ))}
           </dl>
-          <p className="pb-2 text-xs text-muted-foreground">
-            Completed run duration is observed start-to-completion time, including waits within a
-            run. It is not active development effort, human work hours, feature completion or a
-            future ETA.
-          </p>
+          <p className="pb-2 text-xs text-muted-foreground">Includes waits · Not effort or ETA</p>
           {feature.waitReasons.length ? (
             <p className="pb-2 text-xs text-muted-foreground">
               Observed waits:{" "}

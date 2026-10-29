@@ -77,6 +77,14 @@ it("revises a live segment in its original chronological position around an ordi
       voice,
     ).map((row) => row.id),
   ).toEqual(["voice:call:1:start", "voice:call:1:speech:asr", "assistant-result"]);
+  const retracted = observeVoiceConversation(
+    revised,
+    state([{ ...partial, text: "", final: true, revision: 3 }]),
+    at(6),
+  );
+  expect(
+    voiceConversationItems([], new Map(), retracted).filter((item) => item.kind === "speech"),
+  ).toEqual([]);
 });
 
 it("merges persisted and live receipts by call and segment, retaining identical separate utterances", () => {

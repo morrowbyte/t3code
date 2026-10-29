@@ -72,11 +72,13 @@ export function VoiceDictationControl(props: {
   const onDraftActiveChange = useStableCallback((active: boolean) =>
     props.onDraftActiveChange?.(active),
   );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Holds the composer's typing-guard lease while microphone capture or retained audio owns this draft.
   useEffect(() => {
     if (state.phase === "error" && !state.audioUrl) onDraftActiveChange(false);
     else if (state.phase !== "idle") onDraftActiveChange(true);
     // An inserted transcript still belongs to this draft until it is sent or discarded.
   }, [state, onDraftActiveChange]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Releases the dictation activity lease when this recorder unmounts.
   useEffect(() => () => onDraftActiveChange(false), [onDraftActiveChange]);
   const startRecording = () => {
     recordedTargetKey.current = props.targetKey;
@@ -124,6 +126,7 @@ export function VoiceDictationControl(props: {
       <Settings2Icon />
     </Button>
   ) : null;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Fences asynchronous microphone and transcription callbacks to the committed draft target.
   useEffect(() => {
     if (recordedTargetKey.current !== props.targetKey) {
       recordingTranscriber.current = props.transcribe;
@@ -166,7 +169,7 @@ export function VoiceDictationControl(props: {
               <PopoverTitle>Could not record</PopoverTitle>
               <VoiceRecordingError message={state.message} />
               <p className="text-xs leading-relaxed text-muted-foreground">
-                Use the microphone button to try recording again.
+                Record again with the microphone.
               </p>
             </div>
           </PopoverPopup>
@@ -261,8 +264,8 @@ export function VoiceDictationControl(props: {
             </span>
           ) : null}
           <p className="text-xs leading-relaxed text-muted-foreground">
-            Insert text and Send use this environment’s current voice settings. Your recording stays
-            in its original draft until inserted or sent.
+            Saved in its original draft until inserted or sent. Uses this environment’s voice
+            settings.
           </p>
           <div className="flex flex-wrap items-center gap-2 border-t border-border/60 pt-3">
             <Button
@@ -306,7 +309,7 @@ function VoiceRecordingError({ message }: { readonly message: string }) {
     <div className="min-w-0 space-y-1 text-xs leading-relaxed">
       <p role="status" className="flex items-start gap-2 text-muted-foreground">
         <AlertCircleIcon aria-hidden className="mt-0.5 size-3.5 shrink-0 text-destructive" />
-        Voice action failed. Review the details and try again.
+        Voice action failed.
       </p>
       <details className="min-w-0 text-muted-foreground">
         <summary className="cursor-pointer rounded-sm py-1 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">

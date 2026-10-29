@@ -28,7 +28,7 @@ import { connectionAtomRuntime } from "../../connection/runtime";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useProjects, useThreadShells } from "../../state/entities";
 import { environmentSession, readEnvironmentScope, useEnvironmentScope } from "../../state/session";
-import { SettingsActionRow } from "./components/SettingsActionRow";
+import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActionRow";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
 
@@ -99,6 +99,7 @@ export function EnvironmentLinearSettingsPanel(props: PanelProps) {
   const [issueId, setIssueId] = useState("");
   const generation = useRef(0);
   const inFlight = useRef(false);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Invalidates in-flight Linear requests when their mounted destination disappears.
   useEffect(
     () => () => {
       generation.current += 1;

@@ -46,8 +46,10 @@ const SERVER_CONFIG: ServerConfig = {
   settings: DEFAULT_SERVER_SETTINGS,
 };
 
+const decodeServerConfigStreamEvent = Schema.decodeSync(ServerConfigStreamEvent);
+
 describe("MT environment label projection", () => {
-  const event = Schema.decodeUnknownSync(ServerConfigStreamEvent)({
+  const event = decodeServerConfigStreamEvent({
     version: 1,
     type: "environmentLabelUpdated",
     payload: { label: "After" },

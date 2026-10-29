@@ -71,33 +71,23 @@ export function connectionStatusText(connection: EnvironmentConnectionPresentati
     case "offline":
       return "Offline";
     case "connecting":
-      return "Connecting...";
+      return "Connecting…";
     case "reconnecting":
-      return connection.error
-        ? `Failed to connect. Reconnecting... Reason: ${connection.error}`
-        : "Reconnecting...";
+      return connection.error ? `Reconnecting… ${connection.error}` : "Reconnecting…";
     case "connected":
       return "Connected";
     case "unsupported":
       return "Client not supported";
     case "error":
-      return connection.error
-        ? `Connection failed. Reason: ${connection.error}`
-        : "Connection failed";
+      return connection.error ? `Connection failed: ${connection.error}` : "Connection failed";
   }
 }
 
 export function connectionStatusTitle(connection: EnvironmentConnectionPresentation): string {
   if (connection.phase === "reconnecting" && connection.error) {
-    return "Failed to connect. Reconnecting...";
+    return "Reconnecting…";
   }
   return connectionStatusText({ ...connection, error: null });
-}
-
-export function presentEnvironmentConnection(
-  state: SupervisorConnectionState,
-): EnvironmentConnectionPresentation {
-  return presentConnectionState(state);
 }
 
 /**

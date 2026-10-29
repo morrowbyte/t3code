@@ -23,6 +23,7 @@ export function VoiceConversationProvider({ children }: { readonly children: Rea
 
 export function useVoiceConversationPresentation(state: LiveVoiceState) {
   const register = useContext(RegistrationContext);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Retains committed voice-controller receipts in the route's call history after the external session ends.
   useEffect(() => {
     register?.(state);
   }, [register, state]);

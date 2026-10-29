@@ -8,12 +8,11 @@ import {
 } from "@t3tools/contracts";
 import { projectFeatureTiming } from "@t3tools/shared/featureTiming";
 import * as Schema from "effect/Schema";
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
-import { page, userEvent } from "vite-plus/test/browser";
+import { AtomRegistry } from "effect/reactivity";
+import { expect, it, vi } from "vite-plus/test";
+import { userEvent } from "vite-plus/test/browser";
+import { render } from "../../../test/render";
 import type { SidebarProjectGroupMember } from "../../sidebarProjectGrouping";
-import { appAtomRegistry } from "../../rpc/atomRegistry";
 import "../../index.css";
 
 const state = vi.hoisted(() => ({
@@ -111,53 +110,47 @@ const member: SidebarProjectGroupMember = {
   createdAt: at(0),
   updatedAt: at(0),
 };
-let root: Root;
-let container: HTMLDivElement;
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+function setup() {
   state.read.mockReset();
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
+  const registry = AtomRegistry.make();
+  return { registry, [Symbol.dispose]: () => registry.dispose() };
+}
 
 it("shows the summary sample and refreshes to unavailable when run history is missing", async () => {
+  using fixture = setup();
   state.read.mockResolvedValue({ _tag: "Success", value: summary() });
-  await act(async () =>
-    root.render(
-      <RegistryContext.Provider value={appAtomRegistry}>
-        <ProjectFeatureTiming member={member} />
-      </RegistryContext.Provider>,
-    ),
+  await using screen = await render(
+    <RegistryContext.Provider value={fixture.registry}>
+      <ProjectFeatureTiming member={member} />
+    </RegistryContext.Provider>,
   );
   await expect
     .element(
-      page.getByText("n = 3 · median 4m · range 2m–8m · Small sample, uncertain", { exact: true }),
+      screen.getByText("n = 3 · median 4m · range 2m–8m · Small sample, uncertain", {
+        exact: true,
+      }),
     )
     .toBeVisible();
   await expect
-    .element(page.getByText("1m–2m · low confidence, uncalibrated", { exact: true }))
+    .element(screen.getByText("1m–2m · low confidence, uncalibrated", { exact: true }))
     .toBeVisible();
   await expect
-    .element(page.getByText(/not active development effort, human work hours/))
+    .element(screen.getByText("Includes waits · Not effort or ETA", { exact: true }))
     .toBeVisible();
 
   state.read.mockResolvedValue({
     _tag: "Success",
     value: summary({ ...history, observations: [] }),
   });
-  await userEvent.click(page.getByRole("button", { name: "Refresh", exact: true }));
+  await userEvent.click(screen.getByRole("button", { name: "Refresh", exact: true }));
   await expect
     .element(
-      page.getByText("n = 3 · median 4m · range 2m–8m · Small sample, uncertain", { exact: true }),
+      screen.getByText("n = 3 · median 4m · range 2m–8m · Small sample, uncertain", {
+        exact: true,
+      }),
     )
     .not.toBeInTheDocument();
-  const row = page
+  const row = screen
     .getByText("Observed completed run duration", { exact: true })
     .element().parentElement!;
   expect(row.textContent).toBe("Observed completed run durationUnavailable");
@@ -166,11 +159,11 @@ it("shows the summary sample and refreshes to unavailable when run history is mi
     _tag: "Success",
     value: summary({ ...history, coverage: "incomplete" }),
   });
-  await userEvent.click(page.getByRole("button", { name: "Refresh", exact: true }));
+  await userEvent.click(screen.getByRole("button", { name: "Refresh", exact: true }));
   await expect
-    .element(page.getByRole("status"))
+    .element(screen.getByRole("status"))
     .toHaveTextContent("Feature history is incomplete. Timing unavailable.");
   await expect
-    .element(page.getByText("Observed completed run duration", { exact: true }))
+    .element(screen.getByText("Observed completed run duration", { exact: true }))
     .not.toBeInTheDocument();
 });

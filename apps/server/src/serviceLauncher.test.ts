@@ -4,6 +4,7 @@ import type * as NodeChildProcess from "node:child_process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { SERVER_EXIT_CODE_STATE_DIR_OWNED } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -32,8 +33,13 @@ const spawnedChildren = vi.hoisted((): Array<NodeChildProcess.ChildProcess> => [
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof NodeChildProcess>();
+  const host = await import("@t3tools/shared/HostProcess");
   const spawn = (...args: Parameters<typeof actual.spawn>) => {
-    const child = actual.spawn(...args);
+    const child =
+      host.Platform.defaultValue() === "win32" &&
+      /[/\\]runtime[/\\]versions[/\\][^/\\]+[/\\]t3\.exe$/u.test(args[0])
+        ? actual.spawn(process.execPath, [`${args[0]}.mjs`, ...(args[1] ?? [])], args[2])
+        : actual.spawn(...args);
     spawnedChildren.push(child);
     return child;
   };
@@ -116,9 +122,11 @@ const writeFakeRuntime = (
   childSource: string,
 ) =>
   Effect.gen(function* () {
-    const entryPath = path.join(versionDir, "t3");
+    const windows = HostProcess.Platform.defaultValue() === "win32";
+    const entryPath = path.join(versionDir, windows ? "t3.exe" : "t3");
     yield* fs.makeDirectory(versionDir, { recursive: true });
     yield* fs.writeFileString(entryPath, `#!${process.execPath}\n${childSource}`);
+    if (windows) yield* fs.writeFileString(`${entryPath}.mjs`, childSource);
     yield* fs.chmod(entryPath, 0o755);
     yield* fs.writeFileString(
       path.join(versionDir, ".install-complete"),
@@ -510,7 +518,8 @@ if (context.update?.status === "pending") {
         const databasePath = path.join(root, "userdata", "state.sqlite");
         const databaseFile =
           kind === "file" ? databasePath : path.join(root, "data", "original.sqlite");
-        const linkTarget = kind === "dangling symlink" ? "../original.sqlite" : databaseFile;
+        const linkTarget =
+          kind === "dangling symlink" ? path.join("..", "original.sqlite") : databaseFile;
         const original = "database before migration";
         yield* fs.makeDirectory(path.dirname(databaseFile), { recursive: true });
         if (kind === "dangling symlink") {

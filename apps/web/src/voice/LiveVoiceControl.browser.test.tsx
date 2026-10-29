@@ -80,11 +80,7 @@ import type {
   MainRendererDiagnosticsInvalidation,
 } from "@t3tools/contracts";
 import { resolveComposerProviderSelection } from "../components/ChatView.logic";
-import {
-  applyProviderInstanceSettings,
-  deriveProviderInstanceEntries,
-  sortProviderInstanceEntries,
-} from "../providerInstances";
+import { providerInstanceEntriesFor } from "../providerInstances";
 
 const environmentA = EnvironmentId.make("voice-environment-a");
 const environmentB = EnvironmentId.make("voice-environment-b");
@@ -218,16 +214,21 @@ describe("explicit main renderer diagnostic requests", () => {
     producer.update(gateFor(localInput));
     producer.start();
     const valid = fixture.request("valid");
-    fixture.send({
+    const foreignRequest = {
       ...valid,
       mainSession: "foreign",
       requestSequence: 100,
-      ...{ rawSettings: "forbidden" },
-    });
+      rawSettings: "forbidden",
+    };
+    fixture.send(foreignRequest);
+    const extraTarget = {
+      ...valid.target,
+      rawSettings: "forbidden",
+    };
     fixture.send({
       ...valid,
       requestSequence: 100,
-      target: { ...valid.target, ...{ rawSettings: "forbidden" } },
+      target: extraTarget,
     });
     expect(fixture.bridge.respondMainRendererDiagnostics).not.toHaveBeenCalled();
     expect(fixture.bridge.invalidateMainRendererDiagnostics).not.toHaveBeenCalled();
@@ -433,7 +434,7 @@ describe("explicit main renderer diagnostic requests", () => {
     expect(fixture.bridge.respondMainRendererDiagnostics).toHaveBeenCalledOnce();
     expect(scheduleExpiry).toHaveBeenCalledOnce();
     now = 5_001;
-    for (const expire of [...expiries]) expire();
+    for (const expire of expiries) expire();
     fixture.send(request);
     now = 1_001;
     fixture.send(fixture.request("rollback", 4_000));
@@ -1036,7 +1037,7 @@ describe("LiveVoice instance defaults", () => {
       };
       const before = structuredClone(settings);
       const resolved = resolveLiveVoiceInstanceSettings(provider, settings);
-      expect(resolved?.config).toEqual({ ...(config ?? {}), setupMode: "existing" });
+      expect(resolved?.config).toEqual({ ...config, setupMode: "existing" });
       expect(settings).toEqual(before);
       expect(gateFor(availabilityFor(provider, settings)).canStart).toBe(true);
       expectPassive();
@@ -1347,9 +1348,7 @@ describe("LiveVoiceControl passive availability", () => {
     };
     const canonical = resolveComposerProviderSelection({
       ...selectionInput,
-      entries: sortProviderInstanceEntries(
-        applyProviderInstanceSettings(deriveProviderInstanceEntries(providers), settings, null),
-      ),
+      entries: providerInstanceEntriesFor(providers, settings, null),
     });
     const voiceEntries = deriveLiveVoiceProviderEntries(providers, settings, null);
     const voice = resolveComposerProviderSelection({ ...selectionInput, entries: voiceEntries });

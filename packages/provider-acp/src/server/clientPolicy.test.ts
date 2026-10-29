@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -163,13 +164,20 @@ describe("acpPermissionDisposition", () => {
         "deny",
         "a missing leaf below an escaping directory symlink must not be auto-approved",
       );
+      // Windows removes parent segments before following directory links.
+      const windows = (yield* HostProcess.Platform) === "win32";
+      const actualParent = yield* fileSystem.realPath(`${workspace}/linked-directory/..`);
+      assert.equal(
+        actualParent,
+        yield* fileSystem.realPath(windows ? workspace : path.dirname(outside)),
+      );
       assert.equal(
         acpPermissionDisposition(
           realPolicy,
           permissionRequest("edit", [{ path: "linked-directory/../escaped-file.ts" }]),
         ),
-        "deny",
-        "physical symlink traversal must be resolved before parent segments",
+        windows ? "allow" : "deny",
+        "permission must follow the host's physical target resolution",
       );
     }).pipe(Effect.provide(NodeServices.layer)),
   );

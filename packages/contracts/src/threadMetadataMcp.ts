@@ -11,7 +11,7 @@ import {
 import { ThreadLinkedPullRequest } from "./threadPullRequest.ts";
 import { ThreadTitleRegeneration } from "./threadTitle.ts";
 
-function hasOnlyPairedSurrogates(value: string): boolean {
+export function hasOnlyPairedSurrogates(value: string): boolean {
   for (let index = 0; index < value.length; index += 1) {
     const codeUnit = value.charCodeAt(index);
     if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
@@ -72,23 +72,17 @@ export const ThreadMetadataMcpAction = Schema.Literals([
 export type ThreadMetadataMcpAction = typeof ThreadMetadataMcpAction.Type;
 
 export const ThreadMetadataMcpPullRequest = Schema.Struct({
-  repository: TrimmedNonEmptyString.annotate({
-    description: "Repository name as owner/name.",
-  }),
-  number: PositiveInt.annotate({ description: "Pull request number." }),
+  repository: TrimmedNonEmptyString.annotate({ description: "Repository as owner/name." }),
+  number: PositiveInt,
   url: ThreadMetadataMcpPullRequestUrl,
 });
 export type ThreadMetadataMcpPullRequest = typeof ThreadMetadataMcpPullRequest.Type;
 
 export const ThreadMetadataMcpUpdateInput = Schema.Struct({
-  threadId: Schema.optional(ThreadId).annotate({
-    description: "Thread to update. Omit to update the calling thread.",
-  }),
+  threadId: Schema.optional(ThreadId),
   action: ThreadMetadataMcpAction,
   title: Schema.optional(ThreadMetadataTitle),
-  pullRequest: Schema.optional(ThreadMetadataMcpPullRequest).annotate({
-    description: "Pull request to link. Required only when action is link_pull_request.",
-  }),
+  pullRequest: Schema.optional(ThreadMetadataMcpPullRequest),
   clientRequestId: Schema.optional(ThreadMetadataClientRequestId),
 }).check(
   Schema.makeFilter((input) => {

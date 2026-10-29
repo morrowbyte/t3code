@@ -24,7 +24,7 @@ import {
   Volume2Icon,
   VolumeXIcon,
 } from "lucide-react";
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomMount, useAtomSubscribe } from "@effect/atom-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type {
   EnvironmentId,
@@ -60,21 +60,27 @@ import {
 } from "~/lib/composerContextRecords";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import { formatInlineContextReference } from "~/lib/composerContextReferences";
+import { VoiceBubbleViewToggle, useVoiceBubbleView } from "./VoiceBubbleViewToggle";
+import { VoiceActivityBubbles } from "./VoiceActivityBubbles";
 import { useVoiceConversationPresentation } from "./VoiceConversation";
 import { unwrapLiveVoiceCommand } from "./LiveVoiceCommands";
 import { useKeyboardCommands } from "~/components/keyboard/keyboardCommands";
-import {
-  applyProviderInstanceSettings,
-  deriveProviderInstanceEntries,
-  sortProviderInstanceEntries,
-  type ProviderInstanceEntry,
-} from "../providerInstances";
+import { providerInstanceEntriesFor, type ProviderInstanceEntry } from "../providerInstances";
+
+const isLiveVoiceError = Schema.is(LiveVoiceError);
+const isMainRendererDiagnosticsGate = Schema.is(MainRendererDiagnosticsGate);
+const decodeMainRendererDiagnosticsRequest = Schema.decodeUnknownSync(
+  MainRendererDiagnosticsRequest,
+  {
+    onExcessProperty: "error",
+  },
+);
 
 /** Classify only an observed typed prepare failure, never account entitlement. */
 export function classifyLiveVoicePrepareFailure(
   error: unknown,
 ): LiveVoiceErrorCode | "unclassified" {
-  return Schema.is(LiveVoiceError)(error) ? error.code : "unclassified";
+  return isLiveVoiceError(error) ? error.code : "unclassified";
 }
 
 export function deriveLiveVoiceProviderEntries(
@@ -82,9 +88,7 @@ export function deriveLiveVoiceProviderEntries(
   settings: Pick<ServerSettings, "providerInstances" | "projectSettingsOverrides">,
   projectId: ProjectId | null,
 ) {
-  return sortProviderInstanceEntries(
-    applyProviderInstanceSettings(deriveProviderInstanceEntries(providers), settings, projectId),
-  );
+  return providerInstanceEntriesFor(providers, settings, projectId);
 }
 
 /** Persisted settings omit built-in defaults and may predate the optional Codex setup mode. */
@@ -437,9 +441,7 @@ export function createLiveVoiceDiagnosticProducer(
     if (disposed || model === null) return;
     let decoded: MainRendererDiagnosticsRequest;
     try {
-      decoded = Schema.decodeUnknownSync(MainRendererDiagnosticsRequest, {
-        onExcessProperty: "error",
-      })(raw);
+      decoded = decodeMainRendererDiagnosticsRequest(raw);
     } catch {
       return;
     }
@@ -465,7 +467,7 @@ export function createLiveVoiceDiagnosticProducer(
       binding.target.providerInstanceId === captured.gate.providerInstanceId;
     const result: MainRendererDiagnosticsResponse["result"] = !targetMatches
       ? { status: "unavailable", reason: "target-mismatch" }
-      : Schema.is(MainRendererDiagnosticsGate)(captured.gate)
+      : isMainRendererDiagnosticsGate(captured.gate)
         ? { status: "ready", gate: captured.gate }
         : { status: "unavailable", reason: "context-changed" };
     const current: ActiveBinding = {
@@ -601,13 +603,22 @@ function LiveVoiceEventFeed(props: {
   readonly lease: LiveVoiceLease;
   readonly bridge: VoiceEventBridge;
 }) {
-  const leaseKeyValue = { leaseId: props.lease.leaseId, generation: props.lease.generation };
-  const target = { environmentId: props.environmentId, input: leaseKeyValue };
-  const result = useAtomValue(liveVoiceEnvironment.events(target));
-  useEffect(() => {
-    if (AsyncResult.isSuccess(result)) props.bridge.publish(leaseKeyValue, result.value);
-    else if (AsyncResult.isFailure(result)) props.bridge.publishUnavailable(leaseKeyValue);
-  }, [leaseKeyValue, props.bridge, result]);
+  const target = {
+    environmentId: props.environmentId,
+    input: {
+      leaseId: props.lease.leaseId,
+      generation: props.lease.generation,
+      includeActivities: true,
+    },
+  };
+  const atom = liveVoiceEnvironment.events(target);
+  const forward = (result: AsyncResult.AsyncResult<LiveVoiceEvent, unknown>) => {
+    if (AsyncResult.isSuccess(result)) props.bridge.publish(target.input, result.value);
+    else if (AsyncResult.isFailure(result)) props.bridge.publishUnavailable(target.input);
+  };
+  // Subscribe before mounting so a fast status barrier and completion cannot coalesce in React.
+  useAtomSubscribe(atom, forward, { immediate: true });
+  useAtomMount(atom);
   return null;
 }
 
@@ -770,10 +781,12 @@ export function LiveVoiceControl(props: {
   const diagnosticProducer = useRef<ReturnType<typeof createLiveVoiceDiagnosticProducer>>(null);
   const committedGate = useRef(gate);
   const diagnosticBridge = typeof window === "undefined" ? undefined : window.desktopBridge;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Updates the native diagnostics producer with the committed renderer gate.
   useLayoutEffect(() => {
     committedGate.current = gate;
     diagnosticProducer.current?.update(gate);
   }, [gate]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Owns native diagnostic subscriptions and their expiry timers until unmount.
   useLayoutEffect(() => {
     const producer = createLiveVoiceDiagnosticProducer(diagnosticBridge, {
       nowMs: () => DateTime.toEpochMillis(DateTime.nowUnsafe()),
@@ -853,6 +866,7 @@ export function LiveVoiceControl(props: {
     });
   }
   const { controller, stateObserver, recording } = binding;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Applies external recording opt-out events to the active voice recording.
   useEffect(
     () => observeRecordingOptOut(props.environmentId, recording),
     [props.environmentId, recording],
@@ -864,7 +878,9 @@ export function LiveVoiceControl(props: {
   }
 
   useVoiceConversationPresentation(state);
+  const [bubbles] = useVoiceBubbleView();
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Owns the live audio controller and stops media resources on unmount.
   useLayoutEffect(() => {
     stateObserver.setActive(true);
     onPhaseChange?.(controller.currentState.phase);
@@ -884,10 +900,12 @@ export function LiveVoiceControl(props: {
     setPrepareContext(prepareContextKey);
     setPrepareFailure(null);
   }
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Rebinds the external voice session when its environment or thread target changes.
   useEffect(() => {
     void controller.contextChanged(target);
   }, [controller, target]);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps the active voice transport in step with preview selection and lease identity
   useEffect(() => {
     const lease = state.lease;
     // WebRTC can be ready before the active status reaches the renderer. The
@@ -1105,6 +1123,14 @@ export function LiveVoiceControl(props: {
           </Button>
         </>
       )}
+      {state.lease && (busy || (state.activities?.length ?? 0) > 0) ? (
+        <>
+          <VoiceBubbleViewToggle />
+          {bubbles ? (
+            <VoiceActivityBubbles threadRef={state.lease} liveActivities={state.activities ?? []} />
+          ) : null}
+        </>
+      ) : null}
       {!active && !busy && gate.prepareFailure === "managed_account_required" ? (
         <Button
           variant="outline"

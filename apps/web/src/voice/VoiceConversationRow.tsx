@@ -2,6 +2,7 @@ import type { VoiceConversationItem } from "@t3tools/client-runtime/live-voice";
 import { MicIcon, PhoneIcon } from "lucide-react";
 import { MessageCopyButton } from "~/components/chat/MessageCopyButton";
 import { cn } from "~/lib/utils";
+import { AgentIdentityLabel } from "~/components/agent-identity/AgentIdentityLabel";
 
 export function VoiceConversationRow({ item }: { readonly item: VoiceConversationItem }) {
   if (item.kind === "notice")
@@ -47,16 +48,25 @@ export function VoiceConversationRow({ item }: { readonly item: VoiceConversatio
   }
   const entry = item.entry;
   const user = entry.speaker === "user";
+  const bubble = item.bubble;
   return (
     <article
       aria-label={user ? "You · Voice" : "Live · Voice"}
       className={cn("group/voice relative flex min-w-0 flex-col gap-1", user && "items-end")}
     >
       <div className="flex min-h-6 flex-wrap items-center gap-2 pr-8 text-xs text-muted-foreground">
-        <span className="font-medium">{user ? "You" : "Live"}</span>
+        <span className="font-medium">
+          {!user && bubble ? (
+            <AgentIdentityLabel threadRef={bubble} avatarSize={24} />
+          ) : user ? (
+            "You"
+          ) : (
+            "Live"
+          )}
+        </span>
         <span className="inline-flex items-center gap-1">
           <MicIcon className="size-3" />
-          Voice
+          {!user && bubble ? "GPT Live" : "Voice"}
         </span>
         <time dateTime={entry.occurredAt} className="tabular-nums">
           {new Date(entry.occurredAt).toLocaleTimeString(undefined, {
@@ -64,12 +74,19 @@ export function VoiceConversationRow({ item }: { readonly item: VoiceConversatio
             minute: "2-digit",
           })}
         </time>
-        {!entry.final && <span aria-label="Transcribing">…</span>}
+        {!entry.final && (
+          <span aria-label={bubble?.settled ? "Partial transcript" : "Transcribing"}>
+            {bubble?.settled ? "Partial" : "…"}
+          </span>
+        )}
       </div>
       <div
         className={cn(
           "min-w-0 max-w-full",
           user && "rounded-2xl rounded-br-sm bg-muted px-4 py-2 sm:max-w-[85%]",
+          !user &&
+            bubble &&
+            "rounded-2xl rounded-bl-sm border border-border bg-muted/40 px-4 py-2 sm:max-w-[85%]",
         )}
       >
         <p className="select-text whitespace-pre-wrap text-sm leading-relaxed wrap-anywhere">

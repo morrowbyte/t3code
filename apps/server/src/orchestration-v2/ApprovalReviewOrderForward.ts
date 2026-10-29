@@ -68,6 +68,20 @@ export class ApprovalReviewOrderForward extends Context.Service<
   }
 >()("t3/orchestration-v2/ApprovalReviewOrderForward") {}
 
+const encodeUnknownJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeApprovalReviewReceiverReadinessJson = Schema.decodeEffect(
+  Schema.fromJsonString(ApprovalReviewReceiverReadiness),
+);
+const decodeApprovalReviewForwardAckJson = Schema.decodeEffect(
+  Schema.fromJsonString(ApprovalReviewForwardAck),
+);
+const decodeApprovalReviewHostOrderJson = Schema.decodeEffect(
+  Schema.fromJsonString(ApprovalReviewHostOrder),
+);
+const decodeApprovalReviewResultJson = Schema.decodeEffect(
+  Schema.fromJsonString(ApprovalReviewResult),
+);
+
 const make = Effect.gen(function* () {
   const policy = yield* Policy.ApprovalReviewOrderPolicy;
   const store = yield* ServerSecretStore.ServerSecretStore;
@@ -189,7 +203,7 @@ const make = Effect.gen(function* () {
       },
       catch: () => new ApprovalReviewError({ reason: "channel-unconfigured" }),
     });
-    const bodyJson = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(body).pipe(
+    const bodyJson = yield* encodeUnknownJson(body).pipe(
       Effect.mapError(() => new ApprovalReviewError({ reason: "forward-unknown" })),
     );
     const response = yield* Effect.tryPromise({
@@ -229,9 +243,7 @@ const make = Effect.gen(function* () {
         "/api/approval-review/orders/receiver-readiness",
         { targetThreadId: channel.threadId, testOnly },
       );
-      const identity = yield* Schema.decodeUnknownEffect(
-        Schema.fromJsonString(ApprovalReviewReceiverReadiness),
-      )(text);
+      const identity = yield* decodeApprovalReviewReceiverReadinessJson(text);
       return (
         identity.ready &&
         identity.sessionId === channel.forward.sessionId &&
@@ -242,7 +254,7 @@ const make = Effect.gen(function* () {
         identity.threadId === channel.threadId &&
         identity.testOnly === testOnly
       );
-    }).pipe(Effect.catch(() => Effect.succeed(false)));
+    }).pipe(Effect.orElseSucceed(() => false));
   });
   const send = Effect.fn("ApprovalReviewOrderForward.send")(function* (
     channel: PairedVm,
@@ -255,10 +267,9 @@ const make = Effect.gen(function* () {
       "/api/approval-review/orders/receive",
       input,
     );
-    return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(ApprovalReviewForwardAck))(
-      text,
-      { onExcessProperty: "error" },
-    ).pipe(Effect.mapError(() => new ApprovalReviewError({ reason: "forward-unknown" })));
+    return yield* decodeApprovalReviewForwardAckJson(text, { onExcessProperty: "error" }).pipe(
+      Effect.mapError(() => new ApprovalReviewError({ reason: "forward-unknown" })),
+    );
   });
   const readOrder = Effect.fn("ApprovalReviewOrderForward.readOrder")(function* (
     destination: ForwardDestination,
@@ -268,9 +279,9 @@ const make = Effect.gen(function* () {
     const text = yield* request(destination, testOnly, "/api/approval-review/orders/read", {
       orderId,
     });
-    return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(ApprovalReviewHostOrder))(
-      text,
-    ).pipe(Effect.mapError(() => new ApprovalReviewError({ reason: "forward-unknown" })));
+    return yield* decodeApprovalReviewHostOrderJson(text).pipe(
+      Effect.mapError(() => new ApprovalReviewError({ reason: "forward-unknown" })),
+    );
   });
   const propose = Effect.fn("ApprovalReviewOrderForward.propose")(function* (
     destination: ForwardDestination,
@@ -279,9 +290,9 @@ const make = Effect.gen(function* () {
   ) {
     if (!policy.enabled) return yield* new ApprovalReviewError({ reason: "disabled" });
     const text = yield* request(destination, testOnly, "/api/approval-review/submit", input);
-    return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(ApprovalReviewResult))(
-      text,
-    ).pipe(Effect.mapError(() => new ApprovalReviewError({ reason: "forward-unknown" })));
+    return yield* decodeApprovalReviewResultJson(text).pipe(
+      Effect.mapError(() => new ApprovalReviewError({ reason: "forward-unknown" })),
+    );
   });
   return ApprovalReviewOrderForward.of({ ready, send, readOrder, propose });
 });

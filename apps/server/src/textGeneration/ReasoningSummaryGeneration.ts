@@ -110,7 +110,7 @@ export const make = Effect.gen(function* () {
       if (retained.size > 512) retained.delete(retained.keys().next().value!);
       yield* input.commitTitle(title);
     }).pipe(
-      Effect.catchCause(() => Effect.void),
+      Effect.ignoreCause,
       Effect.ensuring(
         Effect.sync(() => {
           pending -= 1;

@@ -4,7 +4,7 @@ import {
   AuthOrchestrationReadScope,
   type AuthEnvironmentScope,
   ScheduledTaskError,
-  ScheduledTaskId,
+  ServerSettingsError,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
@@ -38,7 +38,6 @@ const groupOf = <const Tags extends ReadonlyArray<WsRpcMethod>>(...tags: Tags) =
 const connectionMiddleware = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
   Layer.merge(RpcAuthorization.layer(scopes), rpcInstrumentationLayer);
 const readOnlyConnection = connectionMiddleware([AuthOrchestrationReadScope]);
-const taskId = ScheduledTaskId.make("scheduled-task:instrumented");
 const rpcSpanDefaults = { "rpc.transport": "websocket", "rpc.system": "effect-rpc" };
 
 const withTelemetry = <A, E, R>(
@@ -104,11 +103,11 @@ describe("WS RPC instrumentation middleware", () => {
       Effect.gen(function* () {
         const group = groupOf(
           WS_METHODS.serverProbe,
-          WS_METHODS.scheduledTasksList,
+          WS_METHODS.serverGetConfig,
           WS_METHODS.serverRetryResourceTelemetry,
           WS_METHODS.pullRequestsSubscribeRefreshes,
           WS_METHODS.scheduledTasksSubscribe,
-          WS_METHODS.serverGetSettings,
+          WS_METHODS.serverGetUpdateHistory,
         );
         const client = yield* RpcTest.makeClient(group).pipe(
           Effect.provide(
@@ -116,9 +115,14 @@ describe("WS RPC instrumentation middleware", () => {
               group.toLayerHandler(WS_METHODS.serverProbe, () =>
                 Effect.succeed({}).pipe(Effect.withSpan("serverProbe.child")),
               ),
-              group.toLayerHandler(WS_METHODS.scheduledTasksList, () =>
-                Effect.annotateCurrentSpan({ "scheduled_task.id": taskId }).pipe(
-                  Effect.andThen(new ScheduledTaskError({ message: "List failed." })),
+              group.toLayerHandler(WS_METHODS.serverGetConfig, () =>
+                Effect.annotateCurrentSpan({ "settings.operation": "read-file" }).pipe(
+                  Effect.andThen(
+                    new ServerSettingsError({
+                      settingsPath: "/workspace/settings.json",
+                      operation: "read-file",
+                    }),
+                  ),
                 ),
               ),
               group.toLayerHandler(WS_METHODS.serverRetryResourceTelemetry, () =>
@@ -133,15 +137,15 @@ describe("WS RPC instrumentation middleware", () => {
                   Stream.fail(new ScheduledTaskError({ message: "Subscription failed." })),
                 ),
               ),
-              group.toLayerHandler(WS_METHODS.serverGetSettings, () => Effect.die("broken")),
+              group.toLayerHandler(WS_METHODS.serverGetUpdateHistory, () => Effect.die("broken")),
               readOnlyConnection,
             ),
           ),
         );
 
         assert.deepStrictEqual(yield* client[WS_METHODS.serverProbe]({}), {});
-        const listError = yield* client[WS_METHODS.scheduledTasksList]({}).pipe(Effect.flip);
-        assert.equal(listError._tag, "ScheduledTaskError");
+        const configError = yield* client[WS_METHODS.serverGetConfig]({}).pipe(Effect.flip);
+        assert.equal(configError._tag, "ServerSettingsError");
         const rejection = yield* client[WS_METHODS.serverRetryResourceTelemetry]({}).pipe(
           Effect.flip,
         );
@@ -154,8 +158,8 @@ describe("WS RPC instrumentation middleware", () => {
           client[WS_METHODS.scheduledTasksSubscribe]({}),
         ).pipe(Effect.flip);
         assert.equal(subscribeError._tag, "ScheduledTaskError");
-        const settingsExit = yield* Effect.exit(client[WS_METHODS.serverGetSettings]({}));
-        assert.isTrue(Exit.hasDies(settingsExit));
+        const historyExit = yield* Effect.exit(client[WS_METHODS.serverGetUpdateHistory]({}));
+        assert.isTrue(Exit.hasDies(historyExit));
 
         assert.deepStrictEqual(
           rpcSpans(ended).map((span) => [span.name, Object.fromEntries(span.attributes)]),
@@ -169,12 +173,12 @@ describe("WS RPC instrumentation middleware", () => {
               },
             ],
             [
-              "ws.rpc.scheduledTasks.list",
+              "ws.rpc.server.getConfig",
               {
                 ...rpcSpanDefaults,
-                "rpc.method": WS_METHODS.scheduledTasksList,
-                "rpc.aggregate": "scheduledTasks",
-                "scheduled_task.id": taskId,
+                "rpc.method": WS_METHODS.serverGetConfig,
+                "rpc.aggregate": "server",
+                "settings.operation": "read-file",
               },
             ],
             [
@@ -202,10 +206,10 @@ describe("WS RPC instrumentation middleware", () => {
               },
             ],
             [
-              "ws.rpc.server.getSettings",
+              "ws.rpc.server.getUpdateHistory",
               {
                 ...rpcSpanDefaults,
-                "rpc.method": WS_METHODS.serverGetSettings,
+                "rpc.method": WS_METHODS.serverGetUpdateHistory,
                 "rpc.aggregate": "server",
               },
             ],
@@ -227,11 +231,11 @@ describe("WS RPC instrumentation middleware", () => {
         assert.deepStrictEqual(
           [
             requestCount(snapshots, WS_METHODS.serverProbe, "success"),
-            requestCount(snapshots, WS_METHODS.scheduledTasksList, "failure"),
+            requestCount(snapshots, WS_METHODS.serverGetConfig, "failure"),
             requestCount(snapshots, WS_METHODS.serverRetryResourceTelemetry, "failure"),
             requestCount(snapshots, WS_METHODS.pullRequestsSubscribeRefreshes, "success"),
             requestCount(snapshots, WS_METHODS.scheduledTasksSubscribe, "failure"),
-            requestCount(snapshots, WS_METHODS.serverGetSettings, "failure"),
+            requestCount(snapshots, WS_METHODS.serverGetUpdateHistory, "failure"),
           ].map((state) => state?.count),
           [1, 1, 1, 1, 1, 1],
         );

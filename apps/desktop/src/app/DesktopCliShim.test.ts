@@ -1,5 +1,4 @@
 // @effect-diagnostics nodeBuiltinImport:off - Runs the rendered launcher in a real shell.
-import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -7,6 +6,7 @@ import * as NodePath from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { type CliShimTarget, renderCliShim } from "./DesktopCliShim.ts";
+import { runShell, shellPath } from "../shell/PosixTestShell.ts";
 
 const directories: Array<string> = [];
 afterEach(() => {
@@ -28,18 +28,22 @@ const writeExecutable = (path: string, content: string) => {
 
 const writeShim = (root: string, target: CliShimTarget) => {
   const shim = NodePath.join(root, "bin", "t3");
-  writeExecutable(shim, renderCliShim({ target, shimPath: shim, t3Home: `${root}/home` }));
+  writeExecutable(
+    shim,
+    renderCliShim({ target, shimPath: shellPath(shim), t3Home: `${shellPath(root)}/home` }),
+  );
   return shim;
 };
 
 const run = (shim: string, args: ReadonlyArray<string>, env: NodeJS.ProcessEnv = {}) =>
-  NodeChildProcess.spawnSync(shim, args, {
-    encoding: "utf8",
+  runShell([shellPath(shim), ...args], {
     env: { PATH: process.env.PATH, ...env },
   });
 
 const REPORTER =
   '#!/bin/sh\necho "node=$ELECTRON_RUN_AS_NODE cli=$T3CODE_CLI_PATH home=$T3CODE_HOME"\nprintf "%s\\n" "$@"\nexit 3\n';
+
+const sh = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 const fakeAppImage = (canMount = true) => {
   const root = tempRoot();
@@ -50,16 +54,21 @@ const fakeAppImage = (canMount = true) => {
     appImage,
     [
       "#!/bin/sh",
-      `if [ "$1" = --appimage-extract ]; then cp -R '${image}' squashfs-root; exit 0; fi`,
+      `if [ "$1" = --appimage-extract ]; then cp -R ${sh(shellPath(image))} squashfs-root; exit 0; fi`,
       '[ "$1" = --appimage-mount ] || exit 9',
       '[ -n "$APPIMAGE_EXTRACT_AND_RUN" ] && exit 8',
-      canMount ? `echo '${image}'` : 'echo "Cannot mount AppImage"; exit 1',
-      `trap 'touch "${root}/unmounted"; exit 0' TERM`,
+      canMount ? `echo ${sh(shellPath(image))}` : 'echo "Cannot mount AppImage"; exit 1',
+      `unmounted=${sh(`${shellPath(root)}/unmounted`)}`,
+      "trap 'touch \"$unmounted\"; exit 0' TERM",
       "while :; do sleep 0.05; done",
       "",
     ].join("\n"),
   );
-  const shim = writeShim(root, { kind: "appimage", appImage, executableName: "t3code" });
+  const shim = writeShim(root, {
+    kind: "appimage",
+    appImage: shellPath(appImage),
+    executableName: "t3code",
+  });
   return { root, image, appImage, shim };
 };
 
@@ -78,14 +87,13 @@ describe("renderCliShim", () => {
     writeExecutable(NodePath.join(root, "app"), REPORTER);
     const shim = writeShim(root, {
       kind: "direct",
-      executable: NodePath.join(root, "app"),
+      executable: shellPath(NodePath.join(root, "app")),
       entry: "/bin.mjs",
     });
-    // sudo clears the environment, so the launcher supplies its own.
-    expect(run(shim, []).stdout).toContain(`home=${root}/home`);
+    expect(run(shim, []).stdout).toContain(`home=${shellPath(root)}/home`);
     expect(run(shim, [], { T3CODE_HOME: "/elsewhere" }).stdout).toContain("home=/elsewhere");
-    const relative = NodeChildProcess.spawnSync("./bin/t3", [], { cwd: root, encoding: "utf8" });
-    expect(relative.stdout).toContain(`cli=${shim}`);
+    const relative = runShell(["./bin/t3"], { cwd: root });
+    expect(relative.stdout).toContain(`cli=${shellPath(shim)}`);
   });
 
   it("runs an installed app's server directly", () => {
@@ -94,7 +102,7 @@ describe("renderCliShim", () => {
     writeExecutable(executable, REPORTER);
     const shim = writeShim(root, {
       kind: "direct",
-      executable,
+      executable: shellPath(executable),
       entry: "/opt/T3's/app.asar/bin.mjs",
     });
     expect(run(shim, ["browser", "setup"]).stdout.split("\n").slice(1)).toEqual([

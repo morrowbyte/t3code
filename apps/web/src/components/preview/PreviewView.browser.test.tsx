@@ -169,6 +169,7 @@ import { useComposerDraftStore } from "~/composerDraftStore";
 import { useBrowserPointerStore } from "~/browser/browserPointerStore";
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 import { usePreviewMiniPlayerStore } from "~/previewMiniPlayerStore";
+import { dispatchPreviewAction } from "./previewActionBus";
 import { PreviewView } from "./PreviewView";
 
 const TEST_THREAD_REF = {
@@ -248,7 +249,7 @@ describe("PreviewView", () => {
     expect(mocks.goBack).toHaveBeenCalledWith(TEST_RUNTIME_TAB_ID);
     expect(mocks.goForward).toHaveBeenCalledWith(TEST_RUNTIME_TAB_ID);
     expect(mocks.refresh).toHaveBeenCalledWith(TEST_RUNTIME_TAB_ID);
-    expect(document.activeElement?.getAttribute("aria-label")).toBe("Browser URL");
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("Search or enter URL");
     await screen.rerender(
       <PreviewView threadRef={TEST_THREAD_REF} tabId="tab-1" visible={false} />,
     );
@@ -263,7 +264,9 @@ describe("PreviewView", () => {
         {view()}
       </>,
     );
-    const inputs = [...document.querySelectorAll<HTMLInputElement>('[aria-label="Browser URL"]')];
+    const inputs = [
+      ...document.querySelectorAll<HTMLInputElement>('[aria-label="Search or enter URL"]'),
+    ];
     expect(inputs).toHaveLength(2);
     await act(async () => inputs[1]!.focus());
     await act(async () => {
@@ -275,10 +278,10 @@ describe("PreviewView", () => {
   it("preserves address editing during IME and restores the displayed URL on Escape", async () => {
     setup();
     await using _screen = await render(view());
-    const input = document.querySelector<HTMLInputElement>('[aria-label="Browser URL"]')!;
+    const input = document.querySelector<HTMLInputElement>('[aria-label="Search or enter URL"]')!;
     await act(async () => input.focus());
     await userEvent.fill(
-      page.getByRole("textbox", { name: "Browser URL" }),
+      page.getByRole("textbox", { name: "Search or enter URL" }),
       "https://new.example/",
     );
     await act(async () =>
@@ -427,5 +430,19 @@ describe("PreviewView", () => {
     await vi.waitFor(() => expect(onSendAnnotation).toHaveBeenCalledWith(sent, null));
     expect(mocks.addPreviewAnnotation).not.toHaveBeenCalled();
     expect(mocks.addImage).not.toHaveBeenCalled();
+  });
+
+  it("focuses the address bar each time the focus-url shortcut fires", async () => {
+    setup();
+    await using _screen = await render(view());
+    const address = page.getByRole("textbox");
+
+    act(() => dispatchPreviewAction("focus-url"));
+    await expect.element(address).toHaveFocus();
+
+    (address.element() as HTMLInputElement).blur();
+    await expect.element(address).not.toHaveFocus();
+    act(() => dispatchPreviewAction("focus-url"));
+    await expect.element(address).toHaveFocus();
   });
 });

@@ -21,6 +21,19 @@ Android uses **Material You Layout** by default unless you have turned it off in
 It changes shapes, spacing, and controls independently
 of the selected theme.
 
+## Agent identity
+
+On web, desktop, and mobile, open **Settings → Appearance → Agent identity**, select an
+environment, and choose Neutral or one of twelve animal themes. Automatically assigned names
+follow the theme; a saved custom name takes precedence. Changing the theme keeps the agent's
+identity and does not start paid image generation. Until you choose to generate an avatar in
+the agent's details, a bundled portrait or animal glyph represents it.
+
+**Personality in agent messages** is off by default. Enable it for a brief themed voice when
+agents write to each other; findings and status remain factual. The preference is saved on the
+selected environments and shared by web, desktop, and mobile. Start a new agent thread to apply
+a personality change to an agent already working.
+
 ## Composer context
 
 Git-backed projects show branch and worktree controls below the composer while you create a thread.

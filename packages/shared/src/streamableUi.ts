@@ -177,7 +177,7 @@ function sourcesFrom(value: unknown): VisualSource[] | undefined {
       !onlyKeys(source, ["label", "url"]) ||
       !isLabel(source.label) ||
       !isText(source.url) ||
-      // oxlint-disable-next-line eslint/no-control-regex -- URL parsing strips controls; reject them before normalization.
+      // URL parsing strips controls; reject them before normalization.
       /[\s\u0000-\u001f\u007f]/.test(source.url)
     ) {
       return undefined;

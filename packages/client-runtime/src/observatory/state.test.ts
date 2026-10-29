@@ -1,3 +1,4 @@
+import { EMPTY_SHELL_STATE } from "../state/shell.ts";
 import { it as effectIt } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -36,7 +37,13 @@ const source: ObservatoryEnvironment = {
   label: "One",
   generation: 1,
   status: "live",
-  shell: { status: "live", snapshot: Option.some(v2ShellSnapshot), error: Option.none() },
+  shell: {
+    ...EMPTY_SHELL_STATE,
+    generation: 1,
+    status: "live",
+    snapshot: Option.some(v2ShellSnapshot),
+    error: Option.none(),
+  },
 };
 const detail: EnvironmentThreadState = {
   status: "live",
@@ -72,6 +79,8 @@ function command(n: number): OrchestrationV2ProjectedTurnItem {
     },
   };
 }
+const decodeOrchestrationV2ThreadProjection = Schema.decodeSync(OrchestrationV2ThreadProjection);
+
 describe("observatory canonical projection view", () => {
   it("updates the shared graph/list nodes and drops selected detail on revoke, disconnect, and missing run", () => {
     const registry = AtomRegistry.make();
@@ -173,7 +182,7 @@ describe("observatory canonical projection view", () => {
       providerThreadId: "native-thread",
       providerTurnId: "turn",
     };
-    const projection = Schema.decodeUnknownSync(OrchestrationV2ThreadProjection)({
+    const projection = decodeOrchestrationV2ThreadProjection({
       ...v2Projection,
       runs: [
         {

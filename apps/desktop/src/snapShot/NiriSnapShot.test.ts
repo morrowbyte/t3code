@@ -3,6 +3,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 
 vi.mock("electron", () => ({
@@ -42,7 +43,10 @@ const send = (socket: NodeNet.Socket, value: unknown) => socket.write(`${JSON.st
 
 beforeEach(async () => {
   directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-niri-test-"));
-  socketPath = NodePath.join(directory, "ipc");
+  socketPath =
+    HostProcess.Platform.defaultValue() === "win32"
+      ? `\\\\.\\pipe\\${NodePath.basename(directory)}`
+      : NodePath.join(directory, "ipc");
   sockets = new Set();
   events = [];
   calls = [];
@@ -67,7 +71,6 @@ beforeEach(async () => {
         send(event, { ScreenshotCaptured: { path: "/another-app.png" } });
         send(event, { ScreenshotCaptured: { path: screenshot.path } });
       }
-      // The event may beat the command reply.
       send(socket, { Ok: "Handled" });
     } else send(socket, { Ok: "Handled" });
   };

@@ -2,10 +2,12 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSocketServer from "@effect/platform-node/NodeSocketServer";
 import { describe, expect, it } from "@effect/vitest";
 import { JarvisNativeRequest } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -36,6 +38,14 @@ const request: JarvisNativeRequest = {
   },
 };
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Json));
+const decodeJarvisNativeRequestJson = Schema.decodeEffect(
+  Schema.fromJsonString(JarvisNativeRequest),
+);
+const fixtureServices = Layer.mergeAll(
+  NodeServices.layer,
+  Layer.succeed(HostProcess.Platform, "linux"),
+);
+
 const makePeer = (
   respond: (
     request: JarvisNativeRequest,
@@ -50,9 +60,53 @@ const makePeer = (
     const directory = path.join(runtime, "jarvis-native");
     yield* fs.makeDirectory(directory);
     yield* fs.chmod(directory, 0o700);
-    const socketPath = path.join(directory, "jarvis-v1.sock");
+    const windows = HostProcess.Platform.defaultValue() === "win32";
+    const unixSocketPath = path.join(directory, "jarvis-v1.sock");
+    const socketPath = windows ? `\\\\.\\pipe\\${path.basename(runtime)}` : unixSocketPath;
+    const uid = process.getuid?.() ?? 1_000;
+    if (process.getuid === undefined) {
+      yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          Object.defineProperty(process, "getuid", { configurable: true, value: () => uid }),
+        ),
+        () =>
+          Effect.sync(() => {
+            Reflect.deleteProperty(process, "getuid");
+          }),
+      );
+    }
     const server = yield* NodeSocketServer.make({ path: socketPath });
-    yield* fs.chmod(socketPath, 0o600);
+    // Windows uses a real named pipe; Linux ownership and modes are modeled at the filesystem boundary.
+    const modes = new Map([
+      [runtime, 0o700],
+      [directory, 0o700],
+      [socketPath, 0o600],
+    ]);
+    const clientFs = windows
+      ? {
+          ...fs,
+          stat: (entry: string) =>
+            fs.stat(entry === socketPath ? directory : entry).pipe(
+              Effect.map((info) =>
+                modes.has(entry)
+                  ? {
+                      ...info,
+                      type: entry === socketPath ? ("Socket" as const) : info.type,
+                      uid: Option.some(uid),
+                      mode: modes.get(entry)!,
+                    }
+                  : info,
+              ),
+            ),
+          chmod: (entry: string, mode: number) =>
+            modes.has(entry)
+              ? Effect.sync(() => {
+                  modes.set(entry, mode);
+                })
+              : fs.chmod(entry, mode),
+        }
+      : fs;
+    yield* clientFs.chmod(socketPath, 0o600);
     const calls = yield* Ref.make(0);
     const received = yield* Ref.make<ReadonlyArray<JarvisNativeRequest>>([]);
     yield* server
@@ -67,15 +121,25 @@ const makePeer = (
             for (const chunk of chunks)
               text += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
           }
-          const actual = yield* Schema.decodeUnknownEffect(
-            Schema.fromJsonString(JarvisNativeRequest),
-          )(text.trim());
+          const actual = yield* decodeJarvisNativeRequestJson(text.trim());
           yield* Ref.update(received, (requests) => [...requests, actual]);
           yield* respond(actual, writer);
         }).pipe(Effect.scoped, Effect.orDie),
       )
       .pipe(Effect.forkScoped);
     const layer = JarvisClient.layer.pipe(
+      Layer.provideMerge(
+        Layer.mergeAll(
+          Layer.succeed(FileSystem.FileSystem, clientFs),
+          Layer.succeed(Path.Path, {
+            ...path,
+            join: (...parts) => {
+              const joined = path.join(...parts);
+              return joined === unixSocketPath ? socketPath : joined;
+            },
+          }),
+        ),
+      ),
       Layer.provide(
         Layer.succeed(
           ConfigProvider.ConfigProvider,
@@ -89,7 +153,7 @@ const makePeer = (
     return { layer, calls, received, directory, socketPath };
   });
 
-describe("Jarvis native Unix client", () => {
+describe("Jarvis native client protocol", () => {
   it.live(
     "uses the private configured socket and preserves the canonical task/root correlation",
     () =>
@@ -110,7 +174,7 @@ describe("Jarvis native Unix client", () => {
           expect(result).toMatchObject({ id: request.id, result: { engineSessionId: "engine-1" } });
           expect(yield* Ref.get(peer.received)).toEqual([request]);
           expect(yield* Ref.get(peer.calls)).toBe(1);
-        }).pipe(Effect.provide(NodeServices.layer)),
+        }).pipe(Effect.provide(fixtureServices)),
       ),
   );
 
@@ -133,7 +197,7 @@ describe("Jarvis native Unix client", () => {
           expect((yield* client.call(request).pipe(Effect.flip)).code).toBe("unavailable");
           expect(yield* Ref.get(peer.calls)).toBe(0);
         }).pipe(Effect.provide(peer.layer));
-      }).pipe(Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.provide(fixtureServices)),
     ),
   );
 
@@ -146,7 +210,7 @@ describe("Jarvis native Unix client", () => {
         }).pipe(Effect.provide(peer.layer));
         expect(failure.code).toBe("outcome_unknown");
         expect(yield* Ref.get(peer.calls)).toBe(1);
-      }).pipe(Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.provide(fixtureServices)),
     ),
   );
 
@@ -195,7 +259,7 @@ describe("Jarvis native Unix client", () => {
           { method: "jarvis.event", params: { event: { sequence: "7", payload: { text: "🦦" } } } },
         ]);
         expect(yield* Ref.get(peer.calls)).toBe(1);
-      }).pipe(Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.provide(fixtureServices)),
     ),
   );
 });

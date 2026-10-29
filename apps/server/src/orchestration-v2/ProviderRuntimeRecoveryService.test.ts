@@ -245,9 +245,7 @@ it.effect("keeps the thread blocked after process loss until cleanup is confirme
         request: { type: "privileged-command.execute", requestId, packageHash: "a".repeat(64) },
       },
     ]);
-    assert.isTrue(
-      Option.isSome(yield* outbox.claimNext({ workerId: "before-crash", leaseDurationMs: 30_000 })),
-    );
+    assert.isTrue(Option.isSome(yield* outbox.claimNext({ workerId: "before-crash" })));
     yield* outbox.enqueue([
       {
         id: "effect:cleanup-barrier",
@@ -314,18 +312,14 @@ it.effect("keeps the thread blocked after process loss until cleanup is confirme
         Option.getOrUndefined(yield* outbox.get("effect:cleanup-barrier"))?.status,
         "pending",
       );
-      assert.isTrue(
-        Option.isNone(yield* outbox.claimNext({ workerId: "blocked", leaseDurationMs: 30_000 })),
-      );
+      assert.isTrue(Option.isNone(yield* outbox.claimNext({ workerId: "blocked" })));
       yield* TestClock.adjust(100);
       confirmed = true;
       yield* worker.runOnce;
     }).pipe(Effect.provide(workerLayer));
     assert.equal(cleanupAttempts, 2);
     assert.equal(
-      Option.getOrUndefined(
-        yield* outbox.claimNext({ workerId: "after-cleanup", leaseDurationMs: 30_000 }),
-      )?.id,
+      Option.getOrUndefined(yield* outbox.claimNext({ workerId: "after-cleanup" }))?.id,
       "effect:cleanup-later",
     );
     const priorityThread = ThreadId.make("thread:cleanup-priority");
@@ -358,9 +352,7 @@ it.effect("keeps the thread blocked after process loss until cleanup is confirme
       },
     ]);
     assert.equal(
-      Option.getOrUndefined(
-        yield* outbox.claimNext({ workerId: "priority", leaseDurationMs: 30_000 }),
-      )?.id,
+      Option.getOrUndefined(yield* outbox.claimNext({ workerId: "priority" }))?.id,
       "effect:newer-cleanup",
     );
   }).pipe(Effect.provide(layerExternalRecovery)),
@@ -782,7 +774,6 @@ it.effect(
         );
         const cleanupClaim = yield* outbox.claimNext({
           workerId: "recovery-cleanup-test",
-          leaseDurationMs: 30_000,
         });
         assert.isTrue(Option.isSome(cleanupClaim));
         if (Option.isNone(cleanupClaim)) return assert.fail("cleanup barrier missing");
@@ -1596,6 +1587,89 @@ it.effect("cancels a stale waiting run when no checkpoint capture can finish it"
     assert.equal(summary.terminalizedRuns, 1);
     const runEvent = committedInput?.events.find((event) => event.type === "run.updated");
     assert.equal(runEvent?.type === "run.updated" ? runEvent.payload.status : null, "cancelled");
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect("recovery closes a secret card's form but leaves a link card open", () => {
+  const threadId = ThreadId.make("thread_secret_recovery");
+  const runId = RunId.make("run_secret_recovery");
+  let committedInput: Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0] | null =
+    null;
+  const projection = {
+    thread: { id: threadId },
+    runtimeRequests: [],
+    providerSessions: [],
+    providerThreads: [],
+    providerTurns: [],
+    runs: [{ id: runId, status: "running", providerInstanceId: ProviderInstanceId.make("codex") }],
+    attempts: [],
+    nodes: [],
+    subagents: [],
+    messages: [],
+    turnItems: [
+      {
+        id: "turn-item:secret-request:recovery",
+        threadId,
+        runId,
+        nodeId: null,
+        type: "secret_request",
+        status: "waiting",
+        secretStatus: "pending",
+        label: "GitHub token",
+        reason: "Used as GH_TOKEN.",
+      },
+      {
+        id: "turn-item:link-request:recovery",
+        threadId,
+        runId,
+        nodeId: null,
+        type: "link_request",
+        status: "waiting",
+        linkStatus: "pending",
+        url: "https://box.example.ts.net",
+        reason: "Run the suite there.",
+      },
+    ],
+  } as unknown as OrchestrationV2ThreadProjection;
+  const layer = ProviderRuntimeRecovery.layer.pipe(
+    Layer.provide(ServerSettings.layerTest()),
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getRecoveryThreadIds: () => Effect.succeed([threadId]),
+          getRuntimeRecoveryProjection: () => Effect.succeed(projection),
+        }),
+        Layer.mock(EventSink.EventSinkV2)({
+          commitCommand: (input) => {
+            committedInput = input;
+            return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
+          },
+        }),
+        IdAllocator.layer,
+        Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({
+          runRecoveryOnce: Effect.succeed(false),
+        }),
+        Layer.mock(EffectOutbox.EffectOutboxV2)({
+          listByCommandId: () => Effect.succeed([]),
+          reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
+        }),
+      ),
+    ),
+  );
+
+  return Effect.gen(function* () {
+    yield* (yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService).reconcile("startup");
+    const cards = (committedInput?.events ?? []).flatMap((event) =>
+      event.type === "turn-item.updated" ? [event.payload] : [],
+    );
+    const secret = cards.find((card) => card.type === "secret_request");
+    assert.equal(secret?.status, "cancelled");
+    assert.equal(secret?.type === "secret_request" ? secret.secretStatus : null, "cancelled");
+    // Nothing in memory waits on a link card; the user can still answer it.
+    assert.equal(
+      cards.some((card) => card.type === "link_request"),
+      false,
+    );
   }).pipe(Effect.provide(layer));
 });
 

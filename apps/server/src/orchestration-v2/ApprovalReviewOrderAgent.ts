@@ -27,6 +27,10 @@ export class ApprovalReviewOrderAgent extends Context.Service<
     ) => Effect.Effect<typeof ApprovalReviewResult.Type, ApprovalReviewError>;
   }
 >()("t3/orchestration-v2/ApprovalReviewOrderAgent") {}
+const decodeApprovalReviewForwardAckJson = Schema.decodeEffect(
+  Schema.fromJsonString(ApprovalReviewForwardAck),
+);
+
 const make = Effect.gen(function* () {
   const policy = yield* Policy.ApprovalReviewOrderPolicy;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -72,9 +76,9 @@ const make = Effect.gen(function* () {
         AND json_extract(ack_json, '$.threadId') = ${caller.threadId} AND json_extract(ack_json, '$.runId') = ${run.id}
       LIMIT 1`.pipe(Effect.mapError(() => new ApprovalReviewError({ reason: "storage" })));
     if (rows[0] === undefined) return yield* new ApprovalReviewError({ reason: "forbidden" });
-    const ack = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(ApprovalReviewForwardAck))(
-      rows[0].ack_json,
-    ).pipe(Effect.mapError(() => new ApprovalReviewError({ reason: "storage" })));
+    const ack = yield* decodeApprovalReviewForwardAckJson(rows[0].ack_json).pipe(
+      Effect.mapError(() => new ApprovalReviewError({ reason: "storage" })),
+    );
     return { ack, receiver, host: receiver.host };
   });
   const current = Effect.fn("ApprovalReviewOrderAgent.current")(function* (

@@ -7,6 +7,7 @@ import {
 import { AppText } from "../../components/ui/AppText";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { CopyTextButton } from "../threads/CopyTextButton";
+import { AgentIdentityLabel } from "../agent-identity/AgentIdentityLabel";
 
 export const NativeVoiceConversationRow = memo(
   function NativeVoiceConversationRow({ item }: { readonly item: VoiceConversationItem }) {
@@ -52,23 +53,38 @@ export const NativeVoiceConversationRow = memo(
     }
     const entry = item.entry;
     const user = entry.speaker === "user";
+    const bubble = item.bubble;
     return (
       <View className={`relative min-w-0 gap-1 pb-3 ${user ? "items-end" : ""}`} testID={item.id}>
         <View className="min-h-7 flex-row flex-wrap items-center gap-2 pr-9">
+          {!user && bubble ? <AgentIdentityLabel threadRef={bubble} avatarSize={24} /> : null}
+          {user && bubble ? (
+            <SymbolView name="mic" size={12} tintColorClassName="accent-foreground-muted" />
+          ) : null}
           <AppText className="text-xs font-t3-medium text-foreground-muted">
-            {user ? "Du" : "Live"} · Voice
+            {user
+              ? bubble
+                ? "Du · Mikrofon"
+                : "Du · Voice"
+              : bubble
+                ? "GPT Live"
+                : "Live · Voice"}
           </AppText>
           <AppText className="text-xs text-foreground-muted">
             {new Date(entry.occurredAt).toLocaleTimeString(undefined, {
               hour: "2-digit",
               minute: "2-digit",
             })}
-            {entry.final ? "" : " …"}
+            {entry.final ? "" : bubble?.settled ? " · Unvollständig" : " …"}
           </AppText>
         </View>
         <View
           className={
-            user ? "max-w-full rounded-2xl rounded-br-sm bg-subtle px-4 py-3" : "max-w-full"
+            user
+              ? "max-w-full rounded-2xl rounded-br-sm bg-subtle px-4 py-3"
+              : bubble
+                ? "max-w-full rounded-2xl rounded-bl-sm border border-border bg-subtle px-4 py-3"
+                : "max-w-full"
           }
         >
           <AppText selectable className="text-base leading-6 text-foreground">

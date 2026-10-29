@@ -11,7 +11,7 @@ import type { PendingApproval } from "../../session-logic";
 import { ApprovalReview } from "../approvalReview/ApprovalReview";
 import { memo, useLayoutEffect, useRef, useState } from "react";
 import { EllipsisIcon, TriangleAlertIcon } from "lucide-react";
-import { Button } from "../ui/button";
+import { Button, InlineButton } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { composerFloatingLayerProps } from "./composerEventScope";
@@ -22,6 +22,7 @@ interface ComposerPendingApprovalActionsProps {
   environmentId?: EnvironmentId | undefined;
   threadId?: ThreadId | null | undefined;
   targetLabel?: string | undefined;
+  presentation?: "composer" | "inline";
   requestId: RuntimeRequestId;
   isResponding: boolean;
   canRespond: boolean;
@@ -46,6 +47,7 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
   environmentId,
   threadId,
   targetLabel,
+  presentation = "composer",
   requestId,
   isResponding,
   canRespond,
@@ -132,6 +134,7 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
     options: scopedOptions,
     onRespondToApproval,
   });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- binds asynchronous decisions to the committed approval and responder
   useLayoutEffect(() => {
     latest.current = {
       detail: approval?.detail,
@@ -224,14 +227,24 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
     >
       {approval ? (
         <>
-          <Button
-            variant="outline"
-            size="xs"
-            data-keyboard-action="review"
-            onClick={() => setReviewOpen(true)}
-          >
-            Review action
-          </Button>
+          {presentation === "inline" ? (
+            <InlineButton
+              tone="muted"
+              data-keyboard-action="review"
+              onClick={() => setReviewOpen(true)}
+            >
+              Review action
+            </InlineButton>
+          ) : (
+            <Button
+              variant="outline"
+              size="xs"
+              data-keyboard-action="review"
+              onClick={() => setReviewOpen(true)}
+            >
+              Review action
+            </Button>
+          )}
           <ApprovalReview
             approval={approval}
             privilegedCommand={approval.privilegedCommand}
@@ -245,24 +258,49 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
         </>
       ) : null}
       {primaryOptions.map((option) => {
-        const button = (
-          <Button
-            key={option.decision}
-            size="xs"
-            variant={option.decision === "accept" ? "default" : "outline"}
-            disabled={responseDisabled || decisionBlocked(option.decision)}
-            aria-description={option.warning}
-            data-keyboard-action={option.decision === "accept" ? "approve" : "decline"}
-            data-keyboard-primary={option.decision === "accept" ? true : undefined}
-            aria-keyshortcuts={option.decision === "accept" ? "A" : "D"}
-            onClick={() => {
-              void respond(option.decision);
-            }}
-          >
+        const buttonProps = {
+          disabled: responseDisabled || decisionBlocked(option.decision),
+          "aria-description": option.warning,
+          "data-keyboard-action": option.decision === "accept" ? "approve" : "decline",
+          "data-keyboard-primary": option.decision === "accept" ? true : undefined,
+          "aria-keyshortcuts": option.decision === "accept" ? "A" : "D",
+          onClick: () => {
+            void respond(option.decision);
+          },
+        };
+        const content = (
+          <>
             {option.warning ? <TriangleAlertIcon className="size-3 shrink-0" /> : null}
-            <span className="max-w-40 whitespace-normal wrap-break-word">{option.label}</span>
-          </Button>
+            <span
+              className={
+                presentation === "inline"
+                  ? "whitespace-normal"
+                  : "max-w-40 whitespace-normal wrap-break-word"
+              }
+            >
+              {option.label}
+            </span>
+          </>
         );
+        const button =
+          presentation === "inline" ? (
+            <InlineButton
+              key={option.decision}
+              {...buttonProps}
+              tone={option.decision === "accept" ? "default" : "muted"}
+            >
+              {content}
+            </InlineButton>
+          ) : (
+            <Button
+              key={option.decision}
+              {...buttonProps}
+              size="xs"
+              variant={option.decision === "accept" ? "default" : "outline"}
+            >
+              {content}
+            </Button>
+          );
         return option.warning ? (
           <Tooltip key={option.decision}>
             <TooltipTrigger render={button} />
@@ -277,16 +315,25 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
           <MenuTrigger
             disabled={responseDisabled}
             render={
-              <Button
-                size="icon-xs"
-                variant="outline"
-                aria-label="More approval options"
-                data-keyboard-action="scope"
-                aria-keyshortcuts="M"
-              />
+              presentation === "inline" ? (
+                <InlineButton
+                  tone="muted"
+                  aria-label="More approval options"
+                  data-keyboard-action="scope"
+                  aria-keyshortcuts="M"
+                />
+              ) : (
+                <Button
+                  size="icon-xs"
+                  variant="outline"
+                  aria-label="More approval options"
+                  data-keyboard-action="scope"
+                  aria-keyshortcuts="M"
+                />
+              )
             }
           >
-            <EllipsisIcon />
+            {presentation === "inline" ? "More" : <EllipsisIcon />}
           </MenuTrigger>
           <MenuPopup {...composerFloatingLayerProps} side="top" align="end" width="content">
             {moreOptions.map((option) => {

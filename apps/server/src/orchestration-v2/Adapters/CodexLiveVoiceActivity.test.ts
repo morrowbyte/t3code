@@ -4,6 +4,7 @@ import { CodexSettings, ProviderSessionId, ThreadId } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import type * as CodexClient from "effect-codex-app-server/client";
+import type * as CodexSchema from "effect-codex-app-server/schema";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -13,7 +14,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
-import { makeReplayServerConfig } from "./CodexAdapterV2.testkit.ts";
+import { makeReplayServerConfig } from "../testkit/ProviderReplayHarness.ts";
 
 const decodeSettings = Schema.decodeEffect(CodexSettings);
 it.effect(
@@ -28,6 +29,41 @@ it.effect(
           | undefined;
         const request = (method: string) =>
           Effect.gen(function* () {
+            if (method === "account/read") return { account: { type: "chatgpt" } };
+            if (method === "thread/start")
+              return {
+                thread: {
+                  id: "voice-planner",
+                  sessionId: "voice-planner",
+                  projectId: null,
+                  forkedFromId: null,
+                  preview: "",
+                  ephemeral: false,
+                  modelProvider: "openai",
+                  createdAt: 1782622440,
+                  updatedAt: 1782622440,
+                  status: { type: "idle" },
+                  path: null,
+                  cwd: "/workspace",
+                  cliVersion: "0.144.0",
+                  source: "vscode",
+                  threadSource: null,
+                  agentNickname: null,
+                  agentRole: null,
+                  gitInfo: null,
+                  name: null,
+                  turns: [],
+                },
+                model: "selected-model",
+                modelProvider: "openai",
+                serviceTier: null,
+                cwd: "/workspace",
+                instructionSources: [],
+                approvalPolicy: "never",
+                approvalsReviewer: "user",
+                sandbox: { type: "readOnly", networkAccess: false },
+                reasoningEffort: null,
+              } satisfies CodexSchema.V2ThreadStartResponse;
             if (method === "thread/realtime/start" && gate) {
               const held = gate;
               gate = undefined;
@@ -38,6 +74,7 @@ it.effect(
           });
         const client = {
           raw: { request },
+          awaitTermination: Effect.never,
           request,
           notify: () => Effect.void,
           handleServerNotification: (method: string, handler: Handler) =>
@@ -72,10 +109,16 @@ it.effect(
         });
         const voice = runtime.liveVoice!;
         const start = () =>
-          voice.start({
-            plannerNativeThreadId: "voice-planner",
-            realtimeSessionId: "lease:1",
-            offerSdp: "offer",
+          Effect.gen(function* () {
+            const { plannerNativeThreadId } = yield* voice.preparePlanner({
+              modelSelection,
+              onSubmitWork: () => Effect.succeed('{"accepted":false}'),
+            });
+            yield* voice.start({
+              plannerNativeThreadId,
+              realtimeSessionId: "lease:1",
+              offerSdp: "offer",
+            });
           });
         assert.isFalse(yield* voice.hasActiveSession!);
         yield* start();

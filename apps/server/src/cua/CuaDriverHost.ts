@@ -103,7 +103,7 @@ const make = Effect.gen(function* () {
       );
     }),
     stop,
-    waitForExit: (generation) =>
+    waitForExit: Effect.fn("CuaDriverHost.waitForExit")((generation) =>
       host.pipe(
         Effect.flatMap((value) =>
           Effect.tryPromise({
@@ -113,6 +113,7 @@ const make = Effect.gen(function* () {
         ),
         Effect.asVoid,
       ),
+    ),
   });
 });
 

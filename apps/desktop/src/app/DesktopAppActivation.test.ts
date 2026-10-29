@@ -190,7 +190,10 @@ describe("finite passive local Main control", () => {
         { onExcessProperty: "error" },
       );
       const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "main-passive-"));
-      const target = makeTarget(NodePath.join(root, "userdata"), "linux", process.getuid?.());
+      const platform = HostProcess.Platform.defaultValue();
+      const userId = HostProcess.UserId.defaultValue();
+      const target = makeTarget(NodePath.join(root, "userdata"), platform, userId);
+      const supportsDiagnostics = target.directory !== null;
       let activation = 0;
       let reads = 0;
       const readTarget = {
@@ -204,7 +207,7 @@ describe("finite passive local Main control", () => {
         ) + 5_000;
       const server = await startDesktopAppControlServer({
         ...target,
-        userId: process.getuid?.(),
+        userId,
         handle: async (r) => {
           activation++;
           return {
@@ -231,11 +234,11 @@ describe("finite passive local Main control", () => {
         },
       });
       try {
+        let capSeen = false;
         await new Promise<void>((resolve, reject) => {
           const socket = NodeNet.createConnection(target.address);
           socket.setEncoding("utf8");
           let buffer = "";
-          let capSeen = false;
           socket.once("error", reject);
           socket.once("close", () => resolve());
           socket.once("connect", () =>
@@ -294,7 +297,11 @@ describe("finite passive local Main control", () => {
             }
           });
         });
-        expect(reads).toBe(variant === "valid" ? 1 : 0);
+        expect(capSeen).toBe(
+          supportsDiagnostics &&
+            (variant === "wrong-nonce" || variant === "changed-target" || variant === "valid"),
+        );
+        expect(reads).toBe(supportsDiagnostics && variant === "valid" ? 1 : 0);
         expect(activation).toBe(0);
       } finally {
         await server.close();

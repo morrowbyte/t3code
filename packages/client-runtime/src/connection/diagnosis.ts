@@ -93,7 +93,7 @@ function headline(host: string, located: Located, failure: ConnectionAttemptErro
     case "relay_error":
       return "T3 Connect returned an error";
     case "tunnel_pending":
-      return `${host}'s tunnel is still being set up`;
+      return `${host}’s tunnel is starting`;
     case "tunnel_not_enabled":
       return `T3 Connect is not turned on for ${host}`;
     case "released":
@@ -123,7 +123,7 @@ function headline(host: string, located: Located, failure: ConnectionAttemptErro
         ? "T3 Connect did not accept this device's sign-in"
         : "This device can't reach T3 Connect";
     case "tunnel":
-      // The relay already reached the host when this device fails on its own (#17629).
+      // The relay already reached the host when this device fails on its own.
       return failure?.reason === "network" ||
         failure?.reason === "transport" ||
         failure?.reason === "timeout"
@@ -137,7 +137,7 @@ function headline(host: string, located: Located, failure: ConnectionAttemptErro
 }
 
 function steps(host: string, located: Located, failure: ConnectionAttemptError | null): string[] {
-  const checkHost = `On ${host}, check Settings > Connections or run \`t3 connect status\`.`;
+  const checkHost = `On ${host}, check Settings > Sharing & access or run \`t3 connect status\`.`;
   switch (located.cause) {
     case "offline":
       return ["Connect this device to the internet. T3 Code reconnects on its own."];
@@ -148,17 +148,17 @@ function steps(host: string, located: Located, failure: ConnectionAttemptError |
     case "not_linked":
       return [
         "Check that this device is signed in to the same T3 Connect account as the host.",
-        `On ${host}, open Settings > Connections and turn T3 Connect on.`,
+        `On ${host}, open Settings > Sharing & access and turn T3 Connect on.`,
       ];
     case "tunnel_pending":
-      return ["Wait a minute. T3 Code retries on its own.", checkHost];
+      return ["Retrying automatically. Wait a minute.", checkHost];
     case "relay_error":
       return [
-        "Wait a few minutes. T3 Code retries on its own.",
-        "If it keeps failing, copy the diagnostics and report it.",
+        "Retrying automatically. Wait a few minutes.",
+        "Report repeated failures with diagnostics.",
       ];
     case "tunnel_not_enabled":
-      return [`On ${host}, open Settings > Connections and turn T3 Connect on.`];
+      return [`On ${host}, open Settings > Sharing & access and turn T3 Connect on.`];
     case "released":
     case "tunnel_down":
       return [

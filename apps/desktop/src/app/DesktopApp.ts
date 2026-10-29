@@ -29,6 +29,7 @@ import * as DesktopShutdown from "./DesktopShutdown.ts";
 import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
+import * as DesktopStartupRecovery from "./DesktopStartupRecovery.ts";
 import * as DesktopState from "./DesktopState.ts";
 import * as DesktopRemoteUpdates from "../updates/DesktopRemoteUpdates.ts";
 import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
@@ -259,11 +260,7 @@ export const bootstrap = Effect.fn("DesktopApp.bootstrap")(
       }
 
       if (!(yield* Ref.get(state.quitting))) {
-        // The main window waits for the primary backend. In wsl-only mode that is
-        // the WSL backend, which can be slow to cold-boot — show a "Connecting to
-        // WSL" splash immediately so the app feels responsive instead of presenting
-        // no window until WSL is ready. (Dual mode opens fast off the Windows
-        // primary, so no splash there.)
+        // WSL-only startup needs a splash while the primary backend cold-boots.
         if (settings.wslOnly === true && settings.wslBackendEnabled === true) {
           yield* desktopWindow.showConnectingSplash;
         }
@@ -351,6 +348,7 @@ const startup = Effect.gen(function* () {
   yield* applicationMenu.configure;
   yield* updates.configure;
   yield* DesktopRemoteUpdates.listen;
+  yield* DesktopStartupRecovery.listen;
   yield* linuxUrlHandler.register;
   yield* bootstrap(installDesktopIpcHandlers()).pipe(
     Effect.catchCause((cause) => fatalStartupCause("bootstrap", cause)),
@@ -367,11 +365,7 @@ const scopedProgram = Effect.scoped(
     const rendererHistory = yield* DesktopRendererHistory.DesktopRendererHistory;
 
     yield* Effect.addFinalizer(() =>
-      // Stop every backend in the pool, not just the primary. The
-      // electronApp.quit() path can race ahead of the layer-scope
-      // cascade, so leaving the WSL instance for its parent scope
-      // finalizer means it gets hard-killed by the OS instead of
-      // receiving SIGTERM + grace.
+      // Quit can outrun layer finalizers; stop pooled backends here so they receive SIGTERM before OS teardown.
       stopAllPoolInstances().pipe(
         Effect.ensuring(rendererHistory.shutdown),
         Effect.ensuring(shutdown.markComplete),

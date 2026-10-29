@@ -1,4 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { assert, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -329,6 +330,14 @@ it.layer(NodeServices.layer)("Discord release CLI and workflow", (it) => {
       const path = yield* Path.Path;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const temp = yield* fs.makeTempDirectoryScoped({ prefix: "discord release " });
+      const bash =
+        (yield* HostProcess.Platform) === "win32"
+          ? path.resolve(
+              (yield* spawner.string(ChildProcess.make("git", ["--exec-path"]))).trim(),
+              "../../../bin/bash.exe",
+            )
+          : "bash";
+      const shellTemp = temp.replaceAll("\\", "/");
       const workflow = yield* fs.readFileString(
         yield* path.fromFileUrl(new URL("../.github/workflows/release.yml", import.meta.url)),
       );
@@ -337,14 +346,14 @@ it.layer(NodeServices.layer)("Discord release CLI and workflow", (it) => {
         '\n* Literal $(touch "$RUNNER_TEMP/executed") and `touch "$RUNNER_TEMP/executed"`';
       const read = workflowRun(workflow, "Read published release notes");
       const shellEnv = {
-        RUNNER_TEMP: temp,
+        RUNNER_TEMP: shellTemp,
         RELEASE_TAG: nightlyAnnouncement.tag,
         RELEASE_CHANNEL: "nightly",
         FIXTURE_NOTES: publishedNotes,
       };
       const readStatus = yield* spawner.exitCode(
         ChildProcess.make(
-          "bash",
+          bash,
           [
             "-e",
             "-c",
@@ -370,9 +379,9 @@ it.layer(NodeServices.layer)("Discord release CLI and workflow", (it) => {
       );
       const announceStatus = yield* spawner.exitCode(
         ChildProcess.make(
-          "bash",
+          bash,
           ["-e", "-c", `node() { printf '%s\\0' "$@" > "$RUNNER_TEMP/args"; }\n${announce}`],
-          { env: { RUNNER_TEMP: temp, DISCORD_MENTION_ROLE_ID: latestAnnouncement.roleId } },
+          { env: { RUNNER_TEMP: shellTemp, DISCORD_MENTION_ROLE_ID: latestAnnouncement.roleId } },
         ),
       );
       assert.equal(announceStatus, 0);
@@ -393,7 +402,7 @@ it.layer(NodeServices.layer)("Discord release CLI and workflow", (it) => {
       assert.equal(yield* fs.exists(`${temp}/executed`), false);
       assert.equal(
         yield* spawner.exitCode(
-          ChildProcess.make("bash", ["-e", "-c", `gh() { return 99; }\n${read}`], {
+          ChildProcess.make(bash, ["-e", "-c", `gh() { return 99; }\n${read}`], {
             env: { ...shellEnv, RELEASE_CHANNEL: "stable" },
           }),
         ),
@@ -403,7 +412,7 @@ it.layer(NodeServices.layer)("Discord release CLI and workflow", (it) => {
       assert.equal(
         yield* spawner.exitCode(
           ChildProcess.make(
-            "bash",
+            bash,
             ["-e", "-c", `gh() { printf '%s' 'partial changelog'; return 42; }\n${read}`],
             { env: shellEnv },
           ),

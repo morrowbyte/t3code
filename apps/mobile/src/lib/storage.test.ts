@@ -1,5 +1,5 @@
-import { EnvironmentId } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { AGENT_IDENTITY_THEME_OPTIONS } from "@t3tools/contracts";
 
 const mocks = vi.hoisted(() => {
   const values = new Map<string, string>();
@@ -99,21 +99,7 @@ vi.mock("react-native", () => ({
   },
 }));
 
-import { loadPreferences, saveConnection, savePreferencesPatch } from "../persistence/imperative";
-import { toStableSavedRemoteConnection } from "./connection";
-
-const managedConnection = {
-  environmentId: EnvironmentId.make("environment-1"),
-  environmentLabel: "Desktop",
-  pairingUrl: "https://desktop.example/",
-  displayUrl: "https://desktop.example/",
-  httpBaseUrl: "https://desktop.example/",
-  wsBaseUrl: "wss://desktop.example/",
-  bearerToken: null,
-  authenticationMethod: "dpop",
-  dpopAccessToken: "short-lived-token",
-  relayManaged: true,
-} as const;
+import { loadPreferences, savePreferencesPatch } from "../persistence/imperative";
 
 describe("mobile connection storage", () => {
   beforeEach(() => {
@@ -121,13 +107,31 @@ describe("mobile connection storage", () => {
     vi.clearAllMocks();
   });
 
-  it("persists relay-managed connections without their ephemeral access token", async () => {
-    await saveConnection(managedConnection);
+  it("persists tab order locally and retains it when another preference changes", async () => {
+    const navigationTabOrder = ["usage", "threads", "pullRequests"];
+    const hiddenNavigationTabs = ["issues", "home"];
+    await savePreferencesPatch({ navigationTabOrder, hiddenNavigationTabs });
+    await savePreferencesPatch({ baseFontSize: 19 });
+    await expect(loadPreferences()).resolves.toEqual({
+      navigationTabOrder,
+      hiddenNavigationTabs,
+      baseFontSize: 19,
+    });
+  });
 
-    const savedValue = mocks.setItemAsync.mock.calls[0]?.[1];
-    expect(savedValue).toBeDefined();
-    expect(JSON.parse(savedValue ?? "")).toEqual({
-      connections: [toStableSavedRemoteConnection(managedConnection)],
+  it("ignores invalid tab-order entries without dropping other saved preferences", async () => {
+    mocks.setPreferencesJson(
+      JSON.stringify({
+        navigationTabOrder: ["usage", null, 4, "threads"],
+        hiddenNavigationTabs: ["home", null],
+        baseFontSize: 18,
+      }),
+      1,
+    );
+    await expect(loadPreferences()).resolves.toEqual({
+      navigationTabOrder: ["usage", "threads"],
+      hiddenNavigationTabs: ["home"],
+      baseFontSize: 18,
     });
   });
 
@@ -149,18 +153,18 @@ describe("mobile connection storage", () => {
     expect(fallback.updatedAt).toEqual(expect.any(Number));
   });
 
-  it("persists the local agent identity theme without replacing other preferences", async () => {
-    await savePreferencesPatch({ baseFontSize: 17, agentIdentityTheme: "weasel" });
-    await expect(loadPreferences()).resolves.toEqual({
-      baseFontSize: 17,
-      agentIdentityTheme: "weasel",
-    });
+  it("persists every local agent identity theme without replacing other preferences", async () => {
+    await savePreferencesPatch({ baseFontSize: 17 });
+    for (const { value: agentIdentityTheme } of AGENT_IDENTITY_THEME_OPTIONS) {
+      await savePreferencesPatch({ agentIdentityTheme });
+      await expect(loadPreferences()).resolves.toEqual({ baseFontSize: 17, agentIdentityTheme });
+      expect(JSON.parse(mocks.getPreferencesJson() ?? "")).toEqual({
+        baseFontSize: 17,
+        agentIdentityTheme,
+      });
+    }
     await savePreferencesPatch({ agentIdentityTheme: "neutral" });
     await expect(loadPreferences()).resolves.toEqual({
-      baseFontSize: 17,
-      agentIdentityTheme: "neutral",
-    });
-    expect(JSON.parse(mocks.getPreferencesJson() ?? "")).toEqual({
       baseFontSize: 17,
       agentIdentityTheme: "neutral",
     });

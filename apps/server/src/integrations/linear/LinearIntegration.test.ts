@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - Synthetic provider HMAC signatures use Node's cryptography.
 import * as NodeCrypto from "node:crypto";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { assert, it } from "@effect/vitest";
 import {
   EnvironmentId,
@@ -114,8 +115,26 @@ function fixture(configured = true) {
         return { run: { id: RunId.make("existing-run") }, delivery: "steered" };
       }),
   } as unknown as Threads.ThreadManagementService["Service"];
+  const permissions = new Map<string, number>();
+  const fileSystem = Layer.effect(
+    FileSystem.FileSystem,
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      return FileSystem.make({
+        ...fs,
+        chmod: (path, mode) =>
+          fs.chmod(path, mode).pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                permissions.set(path, mode);
+              }),
+            ),
+          ),
+      });
+    }),
+  ).pipe(Layer.provideMerge(NodeServices.layer));
   const infrastructure = ServerConfig.layerTest(process.cwd(), { prefix: "linear-settings-" }).pipe(
-    Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(fileSystem),
   );
   const dependencies = Layer.mergeAll(
     infrastructure,
@@ -133,7 +152,7 @@ function fixture(configured = true) {
     ),
   );
   const layer = LinearIntegration.layer.pipe(Layer.provideMerge(dependencies));
-  return { calls, sends, receipts, upstream, target, layer };
+  return { calls, sends, receipts, upstream, target, layer, permissions };
 }
 
 const connect = Effect.gen(function* () {
@@ -230,10 +249,12 @@ it.effect(
           "fixture-private-token",
         ),
       );
-      assert.equal(
-        (yield* fs.stat(path.join(config.secretsDir, "linear-oauth-token.bin"))).mode & 0o777,
-        0o600,
-      );
+      const tokenFile = path.join(config.secretsDir, "linear-oauth-token.bin");
+      assert.equal(f.permissions.get(tokenFile), 0o600);
+      // NTFS does not expose POSIX permission bits; the secure chmod request is checked above.
+      if ((yield* HostProcess.Platform) !== "win32") {
+        assert.equal((yield* fs.stat(tokenFile)).mode & 0o777, 0o600);
+      }
     }).pipe(Effect.provide(f.layer), Effect.scoped);
   },
 );

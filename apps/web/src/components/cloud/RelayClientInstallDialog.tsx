@@ -67,11 +67,11 @@ export function RelayClientInstallDialog() {
           <DialogTitle>
             {isInstalling ? "Installing relay client" : "Install relay client?"}
           </DialogTitle>
-          <DialogDescription>
-            {isInstalling
-              ? "Crew is preparing this environment for secure access through T3 Connect."
-              : "Crew needs the relay client to make this environment available through T3 Connect."}
-          </DialogDescription>
+          {!isInstalling ? (
+            <DialogDescription>
+              Required for T3 Connect access to this environment.
+            </DialogDescription>
+          ) : null}
         </DialogHeader>
         <DialogPanel scrollFade={false}>
           {isInstalling ? (

@@ -20,13 +20,7 @@ import * as ProcessRunner from "../processRunner.ts";
 
 const AGENT_SLICE = "app-t3code-agents.slice";
 
-/**
- * The child slice for one server's agents, named after its state directory.
- * Only one server uses a state directory at a time, so an agent in this slice
- * when the server starts was left by an earlier server on the same state,
- * for example one the launcher killed during an update. Other servers on the
- * machine, such as dev servers, have their own slice.
- */
+// Each state directory has one server, so surviving agents in its slice belong to its prior server.
 export function ownedAgentSlice(stateDir: string): string {
   const hash = NodeCrypto.createHash("sha256").update(stateDir).digest("hex").slice(0, 12);
   return `app-t3code-agents-${hash}.slice`;
@@ -55,11 +49,7 @@ export interface ScopeState {
   readonly populated: boolean | undefined;
 }
 
-/**
- * Our pipe can close before systemd handles the kill, so a scope that is
- * still stopping, is empty, or already counted an OOM kill is "stopping":
- * systemd records `Result=oom-kill` for it in a moment.
- */
+/** Pipes can close before systemd records oom-kill; stopping, empty or OOM-counted scopes remain pending. */
 export function classifyScope(state: ScopeState): "oom-killed" | "gone" | "running" | "stopping" {
   if (state.result === "oom-kill") return "oom-killed";
   if (
@@ -93,9 +83,9 @@ function parseCgroupCounter(text: string, key: string): number | undefined {
   return match === null ? undefined : Number(match[1]);
 }
 
-// A stop sends SIGTERM, then SIGKILL after this long. systemd's 90 s default
-// would outlast the wait for a previous server's agents below.
-const STOP_TIMEOUT_OPTION = "--property=TimeoutStopSec=10s";
+// systemd's default 90 s stop timeout would outlast our leftover-agent wait.
+// Delegation lets rootless containers (Podman, kind) manage their own cgroups.
+const SCOPE_OPTIONS = ["--property=TimeoutStopSec=10s", "--property=Delegate=yes"];
 const STOPPING_POLL_INTERVAL = "100 millis";
 const STOPPING_POLL_ATTEMPTS = 20;
 // A stopping scope can wait out its TimeoutStopSec for a stuck process.
@@ -190,8 +180,8 @@ export const make = Effect.gen(function* () {
           "true",
         ]).pipe(Effect.map((result) => result._tag === "Some" && result.value.code === 0));
       // Scopes take OOMPolicy from systemd 253; older managers still get scopes.
-      const supportsOomPolicy = yield* probe([STOP_TIMEOUT_OPTION, "--property=OOMPolicy=stop"]);
-      if (!supportsOomPolicy && !(yield* probe([STOP_TIMEOUT_OPTION]))) {
+      const supportsOomPolicy = yield* probe([...SCOPE_OPTIONS, "--property=OOMPolicy=stop"]);
+      if (!supportsOomPolicy && !(yield* probe(SCOPE_OPTIONS))) {
         yield* Effect.logInfo("Agent scopes are off: no systemd user manager");
         return undefined;
       }
@@ -382,7 +372,7 @@ export const make = Effect.gen(function* () {
         // Without an owning thread nothing reads the result, so let systemd
         // unload the unit even when it fails.
         options: [
-          STOP_TIMEOUT_OPTION,
+          ...SCOPE_OPTIONS,
           ...(scope.supportsOomPolicy
             ? [`--property=OOMPolicy=${continuing ? "continue" : "stop"}`]
             : []),
