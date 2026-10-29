@@ -590,7 +590,10 @@ describe("LeaderNavigation", () => {
       { id: "last", label: "Last context action" },
     ]);
     await flush();
+    expect(document.activeElement?.textContent).toBe("First context action");
     expect((await press("n", { ctrlKey: true })).defaultPrevented).toBe(true);
+    expect(document.activeElement?.textContent).toBe("Last context action");
+    expect((await press("p", { ctrlKey: true })).defaultPrevented).toBe(true);
     expect(document.activeElement?.textContent).toBe("First context action");
     await press("ArrowDown");
     expect(document.activeElement?.textContent).toBe("Last context action");
