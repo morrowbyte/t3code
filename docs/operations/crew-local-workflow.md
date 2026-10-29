@@ -119,8 +119,9 @@ The default remains `self-hosted`; this option is not an automatic fallback.
 
 ## Integration CI
 
-`morrowbyte-ci.yml` uses the short integration check on main pushes and
-same-repository pull requests. Fork PRs do not execute code on personal runners.
+`morrowbyte-ci.yml` uses the short integration check on every branch push and
+same-repository pull request. A newer run on the same branch replaces the older
+automatic run, including duplicate push/PR runs. Fork PRs do not execute code on personal runners.
 The broader qualification and platform-specific checks remain manual. A manual
 short check is also available:
 

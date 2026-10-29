@@ -39,12 +39,12 @@ on:
         default: false
         type: boolean
   push:
-    branches: [main, "morrowbyte/**"]
+    branches: ["**"]
   pull_request:
     branches: [main]
 
 concurrency:
-  group: morrowbyte-ci-${{ github.event.pull_request.number || github.ref }}
+  group: morrowbyte-ci-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'automatic' }}-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
 permissions:
