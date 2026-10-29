@@ -909,8 +909,10 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
-          sudo apt-get update
-          sudo apt-get install -y libsecret-1-dev pkg-config
+          if [[ '${{ inputs.runner_backend }}' == blacksmith ]]; then
+            sudo apt-get update
+            sudo apt-get install -y libsecret-1-dev pkg-config
+          fi
           vp run build:desktop
 
       - name: Download reviewed preflight route evidence
@@ -1027,8 +1029,10 @@ jobs:
         run: |
           set -euo pipefail
           vp install --frozen-lockfile --filter=@t3tools/desktop... --filter=t3... --filter=@t3tools/scripts...
-          sudo apt-get update
-          sudo apt-get install -y libsecret-1-dev pkg-config imagemagick
+          if [[ '${{ inputs.runner_backend }}' == blacksmith ]]; then
+            sudo apt-get update
+            sudo apt-get install -y libsecret-1-dev pkg-config imagemagick
+          fi
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -1145,6 +1149,7 @@ jobs:
       - uses: cachix/install-nix-action@3c6342b75005b9cc7c7d4069c3e9179247c89012 # v31
         if: inputs.runner_backend == 'blacksmith'
       - name: Install closure packaging tools
+        if: inputs.runner_backend == 'blacksmith'
         run: sudo apt-get update && sudo apt-get install -y zstd
       - name: Verify updater against a real Nix Store fixture
         run: python3 packaging/nixos/test-updater.py

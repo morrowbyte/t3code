@@ -119,6 +119,8 @@ cache paths, Android SDK, Java and private Nix store. It must leave tracked sour
 and `git status` clean, preserve the artifact paths expected by the workflow, and
 support repeated jobs. Blain37 keeps these build outputs on its D: volume; the
 workflow checks existing Nix there instead of reinstalling it for each release.
+System libraries are installed during runner setup. Normal self-hosted release
+jobs neither install OS packages nor request `sudo`.
 
 If the maintainer explicitly chooses a paid Blacksmith release for one run, add
 `-f runner_backend=blacksmith` to that dispatch. It selects the existing Linux
