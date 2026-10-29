@@ -112,6 +112,14 @@ The Linux runner label defaults to `morrowbyte-linux`; Windows defaults to
 cloud runner name does not create that runner or switch execution providers.
 An absent runner leaves a job queued. Do not call a dispatch a completed release.
 
+The Linux release runner sources
+`/var/lib/crew-runner/.config/crew-release/init.sh --github-env` after checkout.
+Provision this machine-local script once with the runner's writable build and
+cache paths, Android SDK, Java and private Nix store. It must leave tracked source
+and `git status` clean, preserve the artifact paths expected by the workflow, and
+support repeated jobs. Blain37 keeps these build outputs on its D: volume; the
+workflow checks existing Nix there instead of reinstalling it for each release.
+
 If the maintainer explicitly chooses a paid Blacksmith release for one run, add
 `-f runner_backend=blacksmith` to that dispatch. It selects the existing Linux
 and Windows Blacksmith platforms without editing the workflow or label variables.

@@ -118,6 +118,11 @@ jobs:
           ref: ${{ inputs.source_sha }}
           fetch-depth: 0
 
+      - name: Use local release build storage
+        if: inputs.runner_backend != 'blacksmith'
+        shell: bash
+        run: source /var/lib/crew-runner/.config/crew-release/init.sh --github-env
+
       - name: Validate platform selection
         env:
           DESKTOP_ONLY: ${{ inputs.desktop_only }}
@@ -880,6 +885,11 @@ jobs:
           ref: ${{ needs.preflight.outputs.source_sha }}
           fetch-depth: 1
 
+      - name: Use local release build storage
+        if: inputs.runner_backend != 'blacksmith'
+        shell: bash
+        run: source /var/lib/crew-runner/.config/crew-release/init.sh --github-env
+
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
@@ -981,6 +991,11 @@ jobs:
           ref: ${{ needs.preflight.outputs.source_sha }}
           fetch-depth: 1
 
+      - name: Use local release build storage
+        if: inputs.runner_backend != 'blacksmith'
+        shell: bash
+        run: source /var/lib/crew-runner/.config/crew-release/init.sh --github-env
+
       - name: Apply the reviewed .68 release-stage copy fix
         if: inputs.continue_release68_run_id != ''
         shell: bash
@@ -1044,7 +1059,7 @@ jobs:
           node scripts/build-desktop-artifact.ts --platform linux --target AppImage --arch x64 --build-version "${{ needs.preflight.outputs.version }}" --skip-build --keep-stage --output-dir release-linux
           test -s release-linux/nightly-linux.yml
           shopt -s nullglob
-          stage_roots=(/tmp/t3code-desktop-linux-stage-* "$RUNNER_TEMP"/t3code-desktop-linux-stage-*)
+          stage_roots=(/tmp/t3code-desktop-linux-stage-* "$RUNNER_TEMP"/t3code-desktop-linux-stage-* "${TMPDIR:-/tmp}"/t3code-desktop-linux-stage-*)
           test "${#stage_roots[@]}" -gt 0
           update_config="$(find "${stage_roots[@]}" -path '*/resources/app-update.yml' -print -quit)"
           test -n "$update_config"
@@ -1117,7 +1132,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.preflight.outputs.source_sha }}
+      - name: Use local release build storage
+        if: inputs.runner_backend != 'blacksmith'
+        shell: bash
+        run: source /var/lib/crew-runner/.config/crew-release/init.sh --github-env
+
       - uses: cachix/install-nix-action@3c6342b75005b9cc7c7d4069c3e9179247c89012 # v31
+        if: inputs.runner_backend == 'blacksmith'
       - name: Install closure packaging tools
         run: sudo apt-get update && sudo apt-get install -y zstd
       - name: Verify updater against a real Nix Store fixture
@@ -1232,6 +1253,8 @@ jobs:
 
       - name: Build Windows x64 installer and updater metadata
         env:
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
           T3CODE_DESKTOP_REUSE_PUBLISHED_WSL_RUNTIME: ${{ inputs.windows_only }}
           T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}
           T3CODE_DESKTOP_APP_ID: ${{ vars.MORROWBYTE_DESKTOP_APP_ID || 'com.morrowbyte.t3code' }}
@@ -1305,6 +1328,11 @@ jobs:
         with:
           ref: ${{ needs.preflight.outputs.android_source_sha || needs.preflight.outputs.source_sha }}
           fetch-depth: 1
+
+      - name: Use local release build storage
+        if: inputs.runner_backend != 'blacksmith'
+        shell: bash
+        run: source /var/lib/crew-runner/.config/crew-release/init.sh --github-env
 
       - name: Retain the reviewed control startup gate for the historical app source
         if: inputs.restore_android74
@@ -1572,7 +1600,7 @@ jobs:
         run: |
           set -euo pipefail
           evidence_dir="$RUNNER_TEMP/morrowbyte-android-startup"
-          export ANDROID_AVD_HOME="$RUNNER_TEMP/morrowbyte-android-avd"
+          export ANDROID_AVD_HOME="${TMPDIR:-$RUNNER_TEMP}/morrowbyte-android-avd"
           export ANDROID_SERIAL=emulator-5554
           mkdir -p "$evidence_dir" "$ANDROID_AVD_HOME"
           if adb -s "$ANDROID_SERIAL" get-state >/dev/null 2>&1; then
@@ -1686,6 +1714,11 @@ jobs:
         with:
           ref: ${{ needs.preflight.outputs.source_sha }}
           fetch-depth: 1
+
+      - name: Use local release build storage
+        if: inputs.runner_backend != 'blacksmith'
+        shell: bash
+        run: source /var/lib/crew-runner/.config/crew-release/init.sh --github-env
 
       - name: Download dedicated release assets
         uses: actions/download-artifact@v4
@@ -2038,6 +2071,11 @@ jobs:
           ref: ${{ needs.preflight.outputs.source_sha }}
           fetch-depth: 1
 
+      - name: Use local release build storage
+        if: inputs.runner_backend != 'blacksmith'
+        shell: bash
+        run: source /var/lib/crew-runner/.config/crew-release/init.sh --github-env
+
       - name: Download only the verified Android payload
         uses: actions/download-artifact@v4
         with:
@@ -2160,6 +2198,11 @@ jobs:
         with:
           ref: ${{ needs.preflight.outputs.source_sha }}
           fetch-depth: 0
+      - name: Use local release build storage
+        if: inputs.runner_backend != 'blacksmith'
+        shell: bash
+        run: source /var/lib/crew-runner/.config/crew-release/init.sh --github-env
+
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
         with:
