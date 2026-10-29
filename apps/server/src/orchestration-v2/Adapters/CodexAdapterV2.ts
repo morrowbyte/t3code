@@ -8043,7 +8043,18 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ),
           interruptTurn: Effect.fn("CodexAdapterV2.interruptTurn")(
             function* (requestedInput) {
-              if (cua) yield* cua.release;
+              if (cua)
+                yield* cua.release.pipe(
+                  Effect.catchTags({
+                    CuaDriverError: (cause) =>
+                      Effect.logWarning("orchestration-v2.codex-cua-release-failed", {
+                        providerSessionId: input.providerSessionId,
+                        providerThreadId: requestedInput.providerThread.id,
+                        providerTurnId: requestedInput.providerTurnId,
+                        cause,
+                      }),
+                  }),
+                );
               const nativeThreadId = requestedInput.providerThread.nativeThreadRef?.nativeId;
               const capacityRetry =
                 nativeThreadId == null
