@@ -1405,6 +1405,15 @@ jobs:
           text = gradle.read_text()
           assert text.count('android {\n') == 1 and 'splits {' not in text
           text = text.replace('android {\n', '''android {
+              defaultConfig {
+                  externalNativeBuild {
+                      cmake {
+                          arguments "-DCMAKE_JOB_POOLS=crew_compile=2;crew_link=1",
+                              "-DCMAKE_JOB_POOL_COMPILE=crew_compile",
+                              "-DCMAKE_JOB_POOL_LINK=crew_link"
+                      }
+                  }
+              }
               splits {
                   abi {
                       reset()
@@ -1438,6 +1447,7 @@ jobs:
         working-directory: apps/mobile/android
         env:
           NODE_ENV: production
+          CMAKE_BUILD_PARALLEL_LEVEL: "2"
           MORROWBYTE_ANDROID_STORE_PASSWORD: ${{ secrets.MORROWBYTE_ANDROID_STORE_PASSWORD }}
           MORROWBYTE_ANDROID_KEY_ALIAS: ${{ secrets.MORROWBYTE_ANDROID_KEY_ALIAS }}
           MORROWBYTE_ANDROID_KEY_PASSWORD: ${{ secrets.MORROWBYTE_ANDROID_KEY_PASSWORD }}
@@ -1447,9 +1457,9 @@ jobs:
           test -n "$MORROWBYTE_ANDROID_STORE_PASSWORD"
           test "$MORROWBYTE_ANDROID_KEY_ALIAS" = morrowbyte-release
           test -n "$MORROWBYTE_ANDROID_KEY_PASSWORD"
-          ./gradlew :app:dependencies --configuration releaseRuntimeClasspath --no-daemon --no-configuration-cache \
+          ./gradlew :app:dependencies --configuration releaseRuntimeClasspath --no-daemon --no-configuration-cache --max-workers=2 --no-parallel \
             -PreactNativeArchitectures=arm64-v8a,x86_64 > "$RUNNER_TEMP/morrowbyte-android-dependencies.txt"
-          ./gradlew :app:assembleRelease --no-daemon --no-configuration-cache -PreactNativeArchitectures=arm64-v8a,x86_64
+          ./gradlew :app:assembleRelease --no-daemon --no-configuration-cache --max-workers=2 --no-parallel -PreactNativeArchitectures=arm64-v8a,x86_64
 
       - id: apk
         name: Verify APK signature, embedded bundle, identity and 16KB native alignment
