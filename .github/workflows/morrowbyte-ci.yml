@@ -106,6 +106,7 @@ jobs:
           fi
           actual_url="$(git remote get-url origin)"
           test "${actual_url%.git}" = "${repository_url%.git}"
+          git config --local --unset-all http.https://github.com/.extraheader || true
           CHECKOUT_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$CHECKOUT_TOKEN" | base64 -w0)" \
             git --config-env=http.https://github.com/.extraheader=CHECKOUT_HEADER \
             -c protocol.version=2 fetch --no-tags --depth=2 --filter=blob:none origin "$GITHUB_SHA"
