@@ -22,8 +22,8 @@ const harness = vi.hoisted(() => ({
   copy: vi.fn(async (_text: string) => true),
   threadShell: vi.fn((_ref: unknown) => undefined),
 }));
-vi.mock("@react-navigation/native", () => ({
-  useNavigation: () => ({ navigate: harness.navigate }),
+vi.mock("./useOpenLinkedThread", () => ({
+  useOpenLinkedThread: () => harness.navigate,
 }));
 vi.mock("../../state/entities", () => ({ useThreadShell: harness.threadShell }));
 vi.mock("../agent-identity/AgentIdentityLabel", () => ({
