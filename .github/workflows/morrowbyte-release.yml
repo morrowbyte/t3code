@@ -1272,7 +1272,7 @@ jobs:
       - name: Setup Android build and verification tools
         uses: android-actions/setup-android@v4
         with:
-          packages: "platform-tools build-tools;36.0.0"
+          packages: "platform-tools build-tools;36.0.0 emulator system-images;android-36;google_apis;x86_64"
           log-accepted-android-sdk-licenses: false
 
       - name: Setup Gradle cache
@@ -1482,17 +1482,46 @@ jobs:
           sudo udevadm trigger --name-match=kvm
 
       - name: Start the minified release on Android 16 before publication
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 36
-          target: google_apis
-          arch: x86_64
-          profile: pixel_7_pro
-          avd-name: Crew_Release_API36
-          cores: 4
-          ram-size: 4096M
-          disable-animations: false
-          script: bash scripts/morrowbyte/android-startup-smoke.sh "release-android/Morrowbyte-${{ needs.preflight.outputs.version }}-android-arm64.apk" "${{ steps.apk.outputs.startup_apk }}" "$RUNNER_TEMP/morrowbyte-android-startup" "${{ needs.preflight.outputs.android_source_sha || needs.preflight.outputs.source_sha }}"
+        env:
+          SOURCE_SHA: ${{ needs.preflight.outputs.android_source_sha || needs.preflight.outputs.source_sha }}
+          STARTUP_APK: ${{ steps.apk.outputs.startup_apk }}
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/morrowbyte-android-startup"
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/morrowbyte-android-avd"
+          export ANDROID_SERIAL=emulator-5554
+          mkdir -p "$evidence_dir" "$ANDROID_AVD_HOME"
+          if adb -s "$ANDROID_SERIAL" get-state >/dev/null 2>&1; then
+            echo 'The CI emulator port is already in use.' >&2
+            exit 1
+          fi
+          avdmanager create avd --force --name Crew_Release_API36 \
+            --package 'system-images;android-36;google_apis;x86_64' \
+            --device pixel_7_pro <<< no > "$evidence_dir/avd-create.txt" 2>&1
+          "$ANDROID_HOME/emulator/emulator" -avd Crew_Release_API36 -port 5554 \
+            -no-window -no-boot-anim -no-snapshot -noaudio -gpu swiftshader_indirect \
+            -accel on -cores 4 -memory 4096 > "$evidence_dir/emulator.txt" 2>&1 &
+          emulator_pid=$!
+          cleanup_emulator() {
+            status=$?
+            trap - EXIT
+            kill "$emulator_pid" 2>/dev/null || true
+            wait "$emulator_pid" 2>/dev/null || true
+            exit "$status"
+          }
+          trap cleanup_emulator EXIT
+          boot_deadline=$((SECONDS + 180))
+          until [[ "$(adb -s "$ANDROID_SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" == 1 ]]; do
+            if ! kill -0 "$emulator_pid" 2>/dev/null || (( SECONDS >= boot_deadline )); then
+              echo 'The Android 16 CI emulator did not boot.' >&2
+              exit 1
+            fi
+            sleep 2
+          done
+          adb -s "$ANDROID_SERIAL" shell input keyevent 82
+          bash scripts/morrowbyte/android-startup-smoke.sh \
+            "release-android/Morrowbyte-$T3CODE_MOBILE_VERSION-android-arm64.apk" \
+            "$STARTUP_APK" "$evidence_dir" "$SOURCE_SHA"
 
       - id: startup_receipt
         name: Bind successful emulator startup to the ARM64 shipping receipt
