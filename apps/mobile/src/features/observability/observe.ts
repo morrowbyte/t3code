@@ -1,11 +1,44 @@
+import { requireOptionalNativeModule } from "expo";
 import Constants from "expo-constants";
-import { Observe } from "expo-observe";
 
-// Importing expo-observe installs its global JS error handler; reports leave only through the relay.
 const relayUrl: unknown = Constants.expoConfig?.extra?.relay?.url;
 const appVariant: unknown = Constants.expoConfig?.extra?.appVariant;
 
-export const crashReportingAvailable = typeof relayUrl === "string" && relayUrl.trim() !== "";
+// Observe reads the embedded manifest, even when Metro or an OTA update overrides expoConfig.
+const nativeManifest = requireOptionalNativeModule<{
+  manifest?: string | typeof Constants.expoConfig;
+}>("ExponentConstants")?.manifest;
+const nativeConfig: typeof Constants.expoConfig =
+  typeof nativeManifest === "string" ? JSON.parse(nativeManifest) : (nativeManifest ?? null);
+const projectId: unknown = nativeConfig?.extra?.eas?.projectId;
+const nativeEndpointUrl: unknown = nativeConfig?.extra?.eas?.observe?.endpointUrl;
+const nativeIntegrationAvailable = typeof projectId === "string" && projectId.trim() !== "";
+let relayEndpointUrl: string | undefined;
+if (typeof relayUrl === "string" && relayUrl.trim() !== "") {
+  try {
+    relayEndpointUrl = new URL("/v1/mobile/observe", relayUrl.trim()).toString();
+  } catch (error) {
+    console.warn("[observe] invalid relay URL; crash reporting is unavailable", error);
+  }
+}
+
+export const crashReportingAvailable =
+  relayEndpointUrl !== undefined &&
+  nativeEndpointUrl === relayEndpointUrl &&
+  nativeIntegrationAvailable;
+
+if (relayEndpointUrl && !crashReportingAvailable) {
+  console.warn("[observe] crash reporting requires an embedded EAS project ID and relay endpoint");
+}
+
+// Keep the import synchronous for startup errors, but never initialize an unconfigured SDK.
+const Observe = nativeIntegrationAvailable
+  ? (require("expo-observe") as typeof import("expo-observe")).Observe
+  : undefined;
+
+export function reportCrashError(error: unknown) {
+  Observe?.reportError(error);
+}
 
 interface PromiseRejectionTracker {
   readonly enablePromiseRejectionTracker?: (options: {
@@ -15,11 +48,11 @@ interface PromiseRejectionTracker {
 }
 
 // React Native tracks unhandled rejections only in development, for LogBox; Observe has no hook.
-if (!__DEV__) {
+if (Observe && !__DEV__) {
   const hermes: PromiseRejectionTracker | undefined = Reflect.get(globalThis, "HermesInternal");
   hermes?.enablePromiseRejectionTracker?.({
     allRejections: true,
-    onUnhandled: (_id, rejection) => Observe.reportError(rejection),
+    onUnhandled: (_id, rejection) => reportCrashError(rejection),
   });
 }
 
@@ -28,6 +61,7 @@ let latestConfiguration = 0;
 // While sending is off, a dispatch pass drops what it finds, so one runs before turning it back on.
 // Best effort: Observe skips the pass while it is backing off from a failed send.
 export async function setCrashReportsEnabled(enabled: boolean) {
+  if (!Observe) return;
   const configuration = ++latestConfiguration;
   const dispatchingEnabled = crashReportingAvailable && enabled;
   if (dispatchingEnabled) {
