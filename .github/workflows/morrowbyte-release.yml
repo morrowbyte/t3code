@@ -1125,6 +1125,7 @@ jobs:
         with:
           name: morrowbyte-release-linux
           path: release-linux/*
+          compression-level: 0
           if-no-files-found: error
           retention-days: 1
 
@@ -1133,6 +1134,7 @@ jobs:
         with:
           name: morrowbyte-release-cli-linux
           path: release-cli/*
+          compression-level: 0
           if-no-files-found: error
           retention-days: 1
 
@@ -1189,6 +1191,7 @@ jobs:
         with:
           name: morrowbyte-release-nixos
           path: release-nixos/*
+          compression-level: 0
           if-no-files-found: error
           retention-days: 1
 
@@ -1328,6 +1331,7 @@ jobs:
         with:
           name: morrowbyte-release-windows
           path: release-windows/*
+          compression-level: 0
           if-no-files-found: error
           retention-days: 1
 
@@ -1336,6 +1340,7 @@ jobs:
         with:
           name: morrowbyte-release-cli-windows
           path: release-cli/*
+          compression-level: 0
           if-no-files-found: error
           retention-days: 1
 
@@ -1737,6 +1742,7 @@ jobs:
         with:
           name: morrowbyte-release-android
           path: release-android/*
+          compression-level: 0
           if-no-files-found: error
           retention-days: 7
 
