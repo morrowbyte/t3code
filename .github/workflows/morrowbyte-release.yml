@@ -741,7 +741,12 @@ jobs:
 
       - name: Install pinned Chromium for focused renderer gates
         if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && !inputs.continue_release75_run_id && (inputs.android_only != true || inputs.publish != true)
-        run: node apps/server/node_modules/playwright-core/cli.js install --with-deps --only-shell chromium
+        run: |
+          args=(install --only-shell chromium)
+          if [[ '${{ inputs.runner_backend }}' == blacksmith ]]; then
+            args+=(--with-deps)
+          fi
+          node apps/server/node_modules/playwright-core/cli.js "${args[@]}"
 
       - name: Check source before release
         if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && !inputs.continue_release75_run_id && (inputs.android_only != true || inputs.publish != true)
