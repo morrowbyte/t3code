@@ -81,7 +81,7 @@ import {
   DraftId,
 } from "../../composerDraftStore";
 import { type TerminalContextDraft } from "../../lib/terminalContext";
-import { ensureInlineContextReferences } from "../../lib/composerContextReferences";
+import { upsertInlineContextReference } from "../../lib/composerContextReferences";
 import {
   buildMessageContext,
   previewAnnotationContextReference,
@@ -575,9 +575,10 @@ export function useComposerSend(input: ComposerSendInput) {
     const promptForSend = imageAnnotation
       ? imageAnnotation.text
       : directAnnotation
-        ? ensureInlineContextReferences(promptRef.current, [
+        ? upsertInlineContextReference(
+            promptRef.current,
             previewAnnotationContextReference(directAnnotation.annotation),
-          ])
+          )
         : promptRef.current;
     const strandedThread = threadContextsOutsideEnvironment({
       text: promptForSend,

@@ -10,8 +10,14 @@ import {
 import { recallCheckoutIsRepo, rememberCheckoutIsRepo } from "./ChatView.logic";
 import { ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
 import { deriveProviderInstanceEntries } from "../providerInstances";
-import { ensureInlineContextReferences } from "../lib/composerContextReferences";
-import { terminalContextReference } from "../lib/composerContextRecords";
+import {
+  ensureInlineContextReferences,
+  upsertInlineContextReference,
+} from "../lib/composerContextReferences";
+import {
+  previewAnnotationContextReference,
+  terminalContextReference,
+} from "../lib/composerContextRecords";
 import {
   CommandId,
   EnvironmentId,
@@ -974,6 +980,36 @@ describe("mergeDirectPreviewAnnotation", () => {
     });
     expect(result.images).toEqual([]);
     expect(result.previewAnnotations[0]?.screenshot).toBeNull();
+  });
+
+  it("uses edited feedback when retrying an annotation retained in the draft", () => {
+    const retained = annotation("picked");
+    const unrelated = annotation("other");
+    const crop = image("picked");
+    const edited = { ...retained, comment: "Make this blue" };
+    const result = mergeDirectPreviewAnnotation({
+      images: [crop],
+      fileCount: 0,
+      previewAnnotations: [retained, unrelated],
+      direct: { annotation: edited, image: crop },
+    });
+    expect(result.previewAnnotations).toEqual([
+      { ...edited, screenshot: { ...edited.screenshot, dataUrl: "" } },
+      unrelated,
+    ]);
+    expect(result.images).toEqual([crop]);
+    expect(retained.comment).toBe("tighten this");
+    const references = [retained, unrelated].map(previewAnnotationContextReference);
+    const prompt = `${ensureInlineContextReferences("Please update", references)}then check.`;
+    expect(upsertInlineContextReference(prompt, previewAnnotationContextReference(edited))).toBe(
+      `${ensureInlineContextReferences("Please update", [
+        previewAnnotationContextReference(edited),
+        references[1]!,
+      ])}then check.`,
+    );
+    expect(upsertInlineContextReference("Please update", references[0]!)).toBe(
+      ensureInlineContextReferences("Please update", [references[0]!]),
+    );
   });
 });
 
