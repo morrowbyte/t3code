@@ -1,5 +1,8 @@
 # Development
 
+For this fork's short integration checks and local packaging, see
+[Crew on your own machines](crew-local-workflow.md).
+
 ## First checkout
 
 Install `vp` using the [root README](../../README.md#install-vp). It provides the Node version

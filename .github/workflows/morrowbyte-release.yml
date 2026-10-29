@@ -724,7 +724,7 @@ jobs:
             vp install --frozen-lockfile
           fi
       - name: Prepare pinned Electron runtime before desktop imports
-        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && !inputs.continue_release75_run_id && (inputs.android_only != true || inputs.publish != true)
+        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && !inputs.continue_release75_run_id
         run: node apps/desktop/scripts/ensure-electron-runtime.mjs
 
       - name: Install pinned Chromium for focused renderer gates

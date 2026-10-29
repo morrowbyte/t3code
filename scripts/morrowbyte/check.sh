@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export EFFECTIVE_SOURCE_SHA="${EFFECTIVE_SOURCE_SHA:-$(git rev-parse HEAD)}"
+if [[ -z "${RUNNER_TEMP:-}" ]]; then
+  check_root="${XDG_CACHE_HOME:-$HOME/.cache}/agent-tasks"
+  mkdir -p "$check_root"
+  RUNNER_TEMP="$(mktemp -d "$check_root/crew-release-check.XXXXXX")"
+  export RUNNER_TEMP
+  printf 'Release check artifacts: %s\n' "$RUNNER_TEMP"
+fi
+
 node scripts/sync-third-party-license-notices.ts --check
 
 node --test scripts/morrowbyte/nightly-after-ci.test.cjs
@@ -23,7 +32,6 @@ vp_cmd() {
 
 # Route generation is hosted evidence, not a committed source edit.
 if [[ -f apps/web/src/routes/observatory.tsx ]]; then
-  test "${GITHUB_ACTIONS:-}" = true
   test -n "${RUNNER_TEMP:-}"
   timeout 90s node --input-type=module <<'OBSERVATORY_ROUTE_GENERATION'
 import { createRequire } from 'node:module';

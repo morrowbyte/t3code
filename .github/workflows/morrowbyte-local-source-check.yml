@@ -2,8 +2,6 @@ name: Morrowbyte local source check
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
 
 concurrency:
   group: morrowbyte-local-source-check-${{ github.ref }}
@@ -15,7 +13,11 @@ permissions:
 jobs:
   check:
     if: github.repository == 'morrowbyte/t3code' && github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, morrowbyte-local-source-check]
+    runs-on:
+      [
+        self-hosted,
+        "${{ vars.MORROWBYTE_INTEGRATION_RUNNER || vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux' }}",
+      ]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4

@@ -3,6 +3,16 @@ name: Morrowbyte CI
 on:
   workflow_dispatch:
     inputs:
+      integrationOnly:
+        description: Run only the short integration check
+        required: false
+        default: false
+        type: boolean
+      integrationBase:
+        description: Base ref or SHA for a manual integration check
+        required: false
+        default: main
+        type: string
       qualifyUpstream:
         description: Run the complete Linux upstream test suites for a merge candidate
         required: false
@@ -30,6 +40,8 @@ on:
         type: boolean
   push:
     branches: [main, "morrowbyte/**"]
+  pull_request:
+    branches: [main]
 
 concurrency:
   group: morrowbyte-ci-${{ github.event.pull_request.number || github.ref }}
@@ -40,11 +52,15 @@ permissions:
 
 jobs:
   cua_runtime:
-    if: github.repository == (vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code')
+    if: github.event_name == 'workflow_dispatch' && !inputs.integrationOnly && github.repository == (vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code')
     strategy:
       fail-fast: false
       matrix:
-        runner: ["${{ vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux' }}", "${{ vars.MORROWBYTE_WINDOWS_RUNNER || 'morrowbyte-windows' }}"]
+        runner:
+          [
+            "${{ vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux' }}",
+            "${{ vars.MORROWBYTE_WINDOWS_RUNNER || 'morrowbyte-windows' }}",
+          ]
     runs-on: [self-hosted, "${{ matrix.runner }}"]
     timeout-minutes: 20
     steps:
@@ -67,22 +83,37 @@ jobs:
         if: runner.os == 'Windows'
         run: node scripts/smoke-cua-runtime.mjs --expect-windows-session-zero
   check:
-    if: github.repository == (vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code')
-    runs-on: [self-hosted, "${{ vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux' }}"]
+    if: >-
+      github.repository == (vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code') &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on:
+      [
+        self-hosted,
+        "${{ vars.MORROWBYTE_INTEGRATION_RUNNER || vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux' }}",
+      ]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          clean: false
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+      - name: Remove stale untracked sources while retaining ignored tool caches
+        run: git clean -ffd
       - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version-file: package.json
-          cache: true
+          cache: false
           run-install: false
       - name: Install dependencies
         run: vp install --frozen-lockfile
       - name: Prepare pinned Electron runtime before desktop imports
         run: node apps/desktop/scripts/ensure-electron-runtime.mjs
       - name: Install pinned Chromium for focused renderer gates
-        run: node apps/server/node_modules/playwright-core/cli.js install --with-deps --only-shell chromium
+        run: node apps/server/node_modules/playwright-core/cli.js install --only-shell chromium
       - name: Capture emulated mobile composer before source gates
         if: (github.ref_name == 'feature/mobile-composer-hotfix-candidate-20261016' || github.ref_name == 'feature/mobile-compact-config-candidate-20261016')
         run: |
@@ -99,9 +130,21 @@ jobs:
           path: ${{ runner.temp }}/composer-mobile
           if-no-files-found: error
           retention-days: 7
-      - name: Run focused source gates
+      - name: Check the integration diff
+        if: github.event_name != 'workflow_dispatch' || inputs.integrationOnly
         env:
-          EFFECTIVE_SOURCE_SHA: ${{ inputs.qualificationSourceSha || github.sha }}
+          BASE_REF: ${{ inputs.integrationBase || github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          [[ "$BASE_REF" =~ ^[A-Za-z0-9_][A-Za-z0-9_./-]*$ ]]
+          if [[ "$BASE_REF" == 0000000000000000000000000000000000000000 ]]; then BASE_REF=main; fi
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          BASE_SHA="$(git rev-parse FETCH_HEAD)"
+          vp run check:integration --exact-base "$BASE_SHA"
+      - name: Run focused source gates
+        if: github.event_name == 'workflow_dispatch' && !inputs.integrationOnly
+        env:
+          EFFECTIVE_SOURCE_SHA: ${{ github.sha }}
         run: |
           [[ "$EFFECTIVE_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$EFFECTIVE_SOURCE_SHA"
@@ -118,6 +161,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - name: Lint conversational work-control slice
+        if: github.event_name == 'workflow_dispatch' && !inputs.integrationOnly
         run: >-
           vp lint --report-unused-disable-directives
           apps/web/src/components/ChatView.tsx
@@ -140,6 +184,7 @@ jobs:
           apps/server/src/voice/CodexLiveSessionService.ts
           packages/provider-core/src/server/ProviderAdapter.ts
       - name: Test computer-use browser and editor boundaries
+        if: github.event_name == 'workflow_dispatch' && !inputs.integrationOnly
         working-directory: apps/server
         run: >-
           vp test run
@@ -150,17 +195,20 @@ jobs:
           src/integrations/editorLink/EditorFollow.test.ts
           src/integrations/editorLink/EditorFollowAcp.test.ts
       - name: Test voice dictation request deferral
+        if: github.event_name == 'workflow_dispatch' && !inputs.integrationOnly
         working-directory: apps/web
         run: >-
           vp test run
           src/components/chat/composerTypingGuard.test.ts
           src/voice/VoiceDictationControl.question.browser.test.tsx
       - name: Test background process presentation
+        if: github.event_name == 'workflow_dispatch' && !inputs.integrationOnly
         run: >-
           vp test run
           packages/client-runtime/src/work-log/commandLabel.test.ts
           packages/client-runtime/src/state/backgroundWorkPresentation.test.ts
       - name: Test background process controls in Chromium
+        if: github.event_name == 'workflow_dispatch' && !inputs.integrationOnly
         working-directory: apps/web
         run: >-
           vp test run
@@ -314,7 +362,7 @@ jobs:
         run: python3 packaging/nixos/test-updater.py
 
   windows_installer_guard:
-    if: github.repository == (vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code')
+    if: github.event_name == 'workflow_dispatch' && !inputs.integrationOnly && github.repository == (vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code')
     runs-on: [self-hosted, "${{ vars.MORROWBYTE_WINDOWS_RUNNER || 'morrowbyte-windows' }}"]
     timeout-minutes: 5
     steps:
@@ -326,11 +374,7 @@ jobs:
   upstream_tests:
     if: >-
       github.repository == (vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code') &&
-      ((github.event_name == 'workflow_dispatch' && inputs.qualifyUpstream) ||
-      (github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      (startsWith(github.head_ref, 't3/upstream-main-') ||
-      github.head_ref == 'integration/night-settings-groups-release-20261021')))
+      github.event_name == 'workflow_dispatch' && inputs.qualifyUpstream
     runs-on: [self-hosted, "${{ vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux' }}"]
     timeout-minutes: 25
     strategy:

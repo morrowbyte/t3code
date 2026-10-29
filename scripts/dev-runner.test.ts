@@ -170,24 +170,27 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
         }),
     );
 
-    it.effect.each(["dev", "dev:web"] as const)("drops an inherited HOST in %s mode", (mode) =>
-      Effect.gen(function* () {
-        const env = yield* createDevRunnerEnv({
-          mode,
-          baseEnv: { HOST: "0.0.0.0" },
-          serverOffset: 0,
-          webOffset: 0,
-          t3Home: undefined,
-          browser: undefined,
-          autoBootstrapProjectFromCwd: undefined,
-          logWebSocketEvents: undefined,
-          host: undefined,
-          port: undefined,
-          devUrl: undefined,
-        });
+    it.effect.each(["dev", "dev:web", "dev:server"] as const)(
+      "drops inherited bind addresses in %s mode",
+      (mode) =>
+        Effect.gen(function* () {
+          const env = yield* createDevRunnerEnv({
+            mode,
+            baseEnv: { HOST: "0.0.0.0", T3CODE_HOST: "192.168.1.10" },
+            serverOffset: 0,
+            webOffset: 0,
+            t3Home: undefined,
+            browser: undefined,
+            autoBootstrapProjectFromCwd: undefined,
+            logWebSocketEvents: undefined,
+            host: undefined,
+            port: undefined,
+            devUrl: undefined,
+          });
 
-        assert.equal(env.HOST, undefined);
-      }),
+          assert.equal(env.HOST, undefined);
+          assert.equal(env.T3CODE_HOST, undefined);
+        }),
     );
   });
 
@@ -816,15 +819,14 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
           }).pipe(Effect.scoped),
       );
 
-      it.effect("falls back to an ambient T3CODE_HOME outside a worktree", () =>
+      it.effect("ignores the parent server home outside a worktree", () =>
         Effect.gen(function* () {
-          const path = yield* Path.Path;
           const home = yield* spawnedHome({
             t3Home: undefined,
             cwd: NodeOS.tmpdir(),
             ambientHome: "/home/user/.t3",
           });
-          assert.equal(home, path.resolve("/home/user/.t3"));
+          assert.equal(home, undefined);
         }),
       );
     });

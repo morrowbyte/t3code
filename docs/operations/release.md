@@ -1,5 +1,8 @@
 # Release Checklist
 
+**Morrowbyte/Crew:** use [Crew on your own machines](crew-local-workflow.md).
+The unified upstream workflow described below is not the fork's release entry point.
+
 > For maintainers. Using T3 Code? See [docs/user](../user/).
 
 This document covers the unified release workflow for stable and nightly desktop releases.

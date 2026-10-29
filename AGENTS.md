@@ -98,7 +98,7 @@ An empty database is a bad test. Seed your worktree's `.t3` with a copy of real 
 
 ## Verifying
 
-- Before you push, run `vp run check:changed`. It runs CI's fast checks for changed files: format, lint, knip, typecheck of affected packages and dependents, and tests beside changes. CI still runs the full test suites.
+- Before integrating a feature, run `vp run check:integration`: changed-file format, lint and adjacent regressions. Keep the dev server running while iterating. Reuse passing checks until their inputs change. The wider `check:changed` (typecheck, knip, generated operations and dependency patches) and `check:release` belong at release qualification, not after every edit or before every merge. Fix concrete failures; do not add another review/build cycle by default.
 - While you iterate, run `vp test run <files>`. For big files, add `-t "<name>"`.
 - Use `vp run typecheck`, not `npx tsc`; it caches per package. Both run tsc-rs (`typescript` is the `@tsc-rs/typescript` drop-in).
 - Run `node -e` snippets from `apps/server` or the owning package. `effect` does not resolve from the repo root.

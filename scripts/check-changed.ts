@@ -18,6 +18,7 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeModule from "node:module";
+import * as NodeUtil from "node:util";
 import * as Context from "effect/Context";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
@@ -41,11 +42,35 @@ const git = (...args: Array<string>) =>
     .split("\n")
     .filter(Boolean);
 
-const ref = process.argv[2] ?? "origin/main";
-const mergeBase = NodeChildProcess.spawnSync("git", ["merge-base", "HEAD", ref], {
-  cwd: root,
-  encoding: "utf8",
+const { values, positionals } = NodeUtil.parseArgs({
+  options: {
+    quick: { type: "boolean", default: false },
+    "exact-base": { type: "boolean", default: false },
+    help: { type: "boolean", default: false },
+  },
+  allowPositionals: true,
 });
+if (values.help) {
+  console.log("Usage: vp run check:changed [--quick] [--exact-base] [base-ref]");
+  console.log(
+    "--quick: changed-file format, lint and adjacent tests; broader checks run before release.",
+  );
+  console.log("--exact-base: compare directly with base-ref, including in a shallow CI checkout.");
+  process.exit(0);
+}
+if (positionals.length > 1) throw new Error("Expected at most one base ref.");
+const quick = values.quick;
+const ref = positionals[0] ?? "origin/main";
+const mergeBase = NodeChildProcess.spawnSync(
+  "git",
+  values["exact-base"]
+    ? ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`]
+    : ["merge-base", "HEAD", ref],
+  {
+    cwd: root,
+    encoding: "utf8",
+  },
+);
 if (mergeBase.status !== 0) {
   console.error(
     `check:changed: no merge base with ${ref}. Run \`git fetch origin\` or pass a ref.`,
@@ -71,7 +96,7 @@ console.log(`check:changed: ${files.length} files since ${base.slice(0, 12)}`);
 const inputKey = () => {
   const hash = NodeCrypto.createHash("sha256");
   // CI changes test behavior (vite.config.ts rejects .only under CI).
-  hash.update(`${process.version}\0${base}\0${process.env.CI ?? ""}\0`);
+  hash.update(`${process.version}\0${base}\0${process.env.CI ?? ""}\0${quick}\0`);
   hash.update(
     NodeChildProcess.execFileSync(
       "git",
@@ -110,7 +135,10 @@ const inputKey = () => {
   return hash.digest("hex");
 };
 const key = inputKey();
-const cachePath = NodePath.join(root, "node_modules/.cache/check-changed.json");
+const cachePath = NodePath.join(
+  root,
+  `node_modules/.cache/check-${quick ? "integration" : "changed"}.json`,
+);
 // A missing or unreadable cache is a miss, never a failure.
 const readCache = () => {
   try {
@@ -154,9 +182,12 @@ for (const file of code) {
 // knip:check cannot be scoped to a package. Any code change can leave a file,
 // export, or dependency unused (removing the last import of a helper does), so
 // it runs whenever code or a manifest changes.
-const runKnip = files.some(
-  (file) => CODE.test(file) || NodePath.basename(file) === "package.json" || file === "knip.jsonc",
-);
+const runKnip =
+  !quick &&
+  files.some(
+    (file) =>
+      CODE.test(file) || NodePath.basename(file) === "package.json" || file === "knip.jsonc",
+  );
 // CI runs knip:check as one script of `knip ... && knip ...` passes. Keep them
 // separate so Windows can avoid overlapping their TypeScript worker pools.
 const knipCheck: string = JSON.parse(
@@ -172,15 +203,17 @@ const knipPasses = knipCheck.split(" && ").map((command, index, all) => {
 
 // A version bump can leave a patch unused, causing pnpm to reject the install
 // with ERR_PNPM_UNUSED_PATCH. Check it here as Release Smoke does in CI.
-const runPatchCheck = files.some(
-  (file) =>
-    file === "pnpm-workspace.yaml" ||
-    file === "pnpm-lock.yaml" ||
-    file === ".pnpmfile.cjs" ||
-    file.startsWith("patches/") ||
-    file.startsWith("apps/mobile/deps/") ||
-    NodePath.basename(file) === "package.json",
-);
+const runPatchCheck =
+  !quick &&
+  files.some(
+    (file) =>
+      file === "pnpm-workspace.yaml" ||
+      file === "pnpm-lock.yaml" ||
+      file === ".pnpmfile.cjs" ||
+      file.startsWith("patches/") ||
+      file.startsWith("apps/mobile/deps/") ||
+      NodePath.basename(file) === "package.json",
+  );
 
 // Resolve without the lockfile in a temp copy to preserve the working tree and lockfile.
 // Copy mobile modules too: they are file: dependencies, not workspace packages.
@@ -230,7 +263,7 @@ const checkPatches = (): boolean => {
 };
 
 // CI's Lint job checks that generated GraphQL operations match their sources.
-const graphql = ["apps/server", "packages/source-control-github"].filter((dir) =>
+const graphql = (quick ? [] : ["apps/server", "packages/source-control-github"]).filter((dir) =>
   files.some((file) => file.startsWith(`${dir}/`)),
 );
 
@@ -250,20 +283,21 @@ const steps = [
     name: `graphql (${dir})`,
     args: ["run", "--filter", `./${dir}`, "generate", "--check"],
   })),
-  affected.length > 0 && {
-    name: `typecheck (${affected.length} packages)`,
-    // `tsc --noEmit` writes nothing another package reads, so dependency order
-    // only made dependents wait: --parallel cut a contracts change from 13 s to 9 s.
-    args: [
-      "run",
-      "--cache",
-      "--parallel",
-      "--concurrency-limit",
-      windows ? "2" : "4",
-      ...filters(affected),
-      "typecheck",
-    ],
-  },
+  !quick &&
+    affected.length > 0 && {
+      name: `typecheck (${affected.length} packages)`,
+      // `tsc --noEmit` writes nothing another package reads, so dependency order
+      // only made dependents wait: --parallel cut a contracts change from 13 s to 9 s.
+      args: [
+        "run",
+        "--cache",
+        "--parallel",
+        "--concurrency-limit",
+        windows ? "2" : "4",
+        ...filters(affected),
+        "typecheck",
+      ],
+    },
   // From the repo root, the root vite.config.ts hands each file to its package's config.
   tests.size > 0 && {
     name: `test (${tests.size} files)`,
@@ -333,7 +367,7 @@ await Promise.all(
   }),
 );
 
-const summary = ["check:changed summary"];
+const summary = [quick ? "check:integration summary" : "check:changed summary"];
 for (const result of results) {
   summary.push(`  ${result.ok ? "pass" : "FAIL"}  ${result.name}  ${result.seconds}s`);
 }
@@ -344,9 +378,15 @@ const ciOnly = Object.entries({
   "mobile native lint": outputs.mobile_native,
   "release smoke": outputs.release_smoke,
 }).flatMap(([job, runs]) => (runs ? [job] : []));
-if (ciOnly.length > 0) summary.push(`  CI also runs: ${ciOnly.join(", ")}`);
-if (!runPatchCheck) summary.push("  unused patch check skipped: no dependency files changed");
-if (!runKnip) summary.push("  knip skipped: no code or manifest changed");
+if (quick) {
+  summary.push(
+    "  Before release: typecheck, knip, generated operations, dependency patches and broader regressions.",
+  );
+} else {
+  if (ciOnly.length > 0) summary.push(`  CI also runs: ${ciOnly.join(", ")}`);
+  if (!runPatchCheck) summary.push("  unused patch check skipped: no dependency files changed");
+  if (!runKnip) summary.push("  knip skipped: no code or manifest changed");
+}
 console.log(`\n${summary.join("\n")}`);
 // exitCode, not exit(): piped stdout is asynchronous on macOS, and exit()
 // would cut off a failing step's output.

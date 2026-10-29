@@ -2765,6 +2765,16 @@ export function resolveDesktopProductName(version: string): string {
     : (desktopPackageJson.productName ?? "Crew");
 }
 
+export function resolveDesktopBuildEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return {
+    ...env,
+    T3CODE_DESKTOP_PROFILE: env.T3CODE_DESKTOP_PROFILE ?? "morrowbyte",
+    T3CODE_DESKTOP_APP_ID: env.T3CODE_DESKTOP_APP_ID ?? "com.morrowbyte.t3code",
+    T3CODE_DESKTOP_PRODUCT_NAME: env.T3CODE_DESKTOP_PRODUCT_NAME ?? "Crew",
+    T3CODE_DESKTOP_UPDATE_REPOSITORY: env.T3CODE_DESKTOP_UPDATE_REPOSITORY ?? "morrowbyte/t3code",
+  };
+}
+
 export function resolveWindowsExecutableName(version: string): string {
   // Product branding must not rename the installed executable used by shortcuts and updates.
   return (
@@ -4292,6 +4302,7 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
 const cliRuntimeLayer = Layer.mergeAll(Logger.layer([Logger.consolePretty()]), NodeServices.layer);
 
 if (import.meta.main) {
+  Object.assign(process.env, resolveDesktopBuildEnvironment(process.env));
   Command.run(buildDesktopArtifactCli, { version: "0.0.0" }).pipe(
     Effect.scoped,
     Effect.provide(cliRuntimeLayer),

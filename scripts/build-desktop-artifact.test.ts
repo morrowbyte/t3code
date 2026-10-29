@@ -48,6 +48,7 @@ import {
   resolveBuildOptions,
   resolveDesktopBuildIconAssets,
   resolveDesktopProductName,
+  resolveDesktopBuildEnvironment,
   resolveWindowsExecutableName,
   resolveDesktopUpdateChannel,
   resolveDesktopWebAssetBrand,
@@ -358,6 +359,17 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   });
 
   it("uses Crew artwork without requiring a release profile", () => {
+    const defaults = resolveDesktopBuildEnvironment({});
+    assert.equal(defaults.T3CODE_DESKTOP_PROFILE, "morrowbyte");
+    assert.equal(defaults.T3CODE_DESKTOP_APP_ID, "com.morrowbyte.t3code");
+    assert.equal(defaults.T3CODE_DESKTOP_PRODUCT_NAME, "Crew");
+    assert.equal(defaults.T3CODE_DESKTOP_UPDATE_REPOSITORY, "morrowbyte/t3code");
+    const explicit = resolveDesktopBuildEnvironment({
+      T3CODE_DESKTOP_PROFILE: "",
+      T3CODE_DESKTOP_APP_ID: "custom.app",
+    });
+    assert.equal(explicit.T3CODE_DESKTOP_PROFILE, "");
+    assert.equal(explicit.T3CODE_DESKTOP_APP_ID, "custom.app");
     assert.deepStrictEqual(resolveDesktopBuildIconAssets(), {
       macIconPng: "assets/crew/desktop-1024.png",
       linuxIconPng: "assets/crew/desktop-1024.png",
