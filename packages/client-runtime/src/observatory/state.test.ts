@@ -47,6 +47,7 @@ const source: ObservatoryEnvironment = {
 };
 const detail: EnvironmentThreadState = {
   status: "live",
+  sequence: 0,
   data: Option.some(v2Projection),
   error: Option.none(),
   history: EMPTY_THREAD_HISTORY_META,

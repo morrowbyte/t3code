@@ -51,6 +51,7 @@ describe("shell-only observatory pages", () => {
           detailMounts.push(observatoryKey({ environmentId, threadId }));
           return {
             status: "live" as const,
+            sequence: 0,
             data: Option.some({
               ...v2Projection,
               thread: { ...v2Projection.thread, id: threadId },

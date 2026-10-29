@@ -111,6 +111,7 @@ describe("observatory live access boundary", () => {
       registry.set(view.selectedAtom, { environmentId, threadId: v2ThreadId });
       registry.set(first.detail, {
         status: "live",
+        sequence: 0,
         data: Option.some(v2Projection),
         error: Option.none(),
         history: EMPTY_THREAD_HISTORY_META,
@@ -292,6 +293,7 @@ const makeStreamScope = (
       }),
       detail: yield* SubscriptionRef.make<EnvironmentThreadState>({
         status: "live",
+        sequence: 0,
         data: Option.some({ ...v2Projection, thread: { ...v2Projection.thread, title } }),
         error: Option.none(),
         history: EMPTY_THREAD_HISTORY_META,
