@@ -1230,20 +1230,20 @@ export function mergeDirectPreviewAnnotation(input: {
     !imageAlreadyAttached &&
     input.images.length + input.fileCount < PROVIDER_SEND_TURN_MAX_ATTACHMENTS;
   const images = direct.image && imageAppended ? [...input.images, direct.image] : input.images;
+  const previewAnnotation = {
+    ...direct.annotation,
+    screenshot:
+      direct.annotation.screenshot && (imageAppended || imageAlreadyAttached)
+        ? { ...direct.annotation.screenshot, dataUrl: "" }
+        : null,
+  };
   const previewAnnotations = input.previewAnnotations.some(
     (annotation) => annotation.id === direct.annotation.id,
   )
-    ? input.previewAnnotations
-    : [
-        ...input.previewAnnotations,
-        {
-          ...direct.annotation,
-          screenshot:
-            direct.annotation.screenshot && (imageAppended || imageAlreadyAttached)
-              ? { ...direct.annotation.screenshot, dataUrl: "" }
-              : null,
-        },
-      ];
+    ? input.previewAnnotations.map((annotation) =>
+        annotation.id === direct.annotation.id ? previewAnnotation : annotation,
+      )
+    : [...input.previewAnnotations, previewAnnotation];
   return { images, previewAnnotations };
 }
 

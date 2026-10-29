@@ -114,3 +114,17 @@ export function ensureInlineContextReferences(
   }
   return result;
 }
+
+export function upsertInlineContextReference(
+  prompt: string,
+  reference: ComposerContextReference,
+): string {
+  let present = false;
+  const result = replaceComposerContextReferences(prompt, (occurrence) => {
+    if (occurrence.contextId !== reference.contextId)
+      return prompt.slice(occurrence.start, occurrence.end);
+    present = true;
+    return formatInlineContextReference(reference);
+  });
+  return present ? result : appendInlineContextReference(result, reference);
+}
