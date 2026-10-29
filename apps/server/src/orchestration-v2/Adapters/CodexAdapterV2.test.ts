@@ -6086,16 +6086,32 @@ describe("CodexAdapterV2 post-settle continuation", () => {
   );
 
   it.effect.each([
-    { registered: true, callback: true, rebind: undefined },
-    { registered: false, callback: true, rebind: undefined },
-    { registered: true, callback: false, rebind: undefined },
-    { registered: true, callback: true, rebind: "unsubscribed" as const },
-    { registered: true, callback: true, rebind: "notLoaded" as const },
+    { registered: true, callback: true, rebind: undefined, cuaError: "disabled" as const },
+    { registered: false, callback: true, rebind: undefined, cuaError: "disabled" as const },
+    { registered: true, callback: false, rebind: undefined, cuaError: "disabled" as const },
+    {
+      registered: true,
+      callback: true,
+      rebind: "unsubscribed" as const,
+      cuaError: "disabled" as const,
+    },
+    {
+      registered: true,
+      callback: true,
+      rebind: "notLoaded" as const,
+      cuaError: "disabled" as const,
+    },
+    {
+      registered: true,
+      callback: true,
+      rebind: "unsubscribed" as const,
+      cuaError: "stopped" as const,
+    },
   ])(
-    "normal native observatory registration/instruction/read-publish protocol $registered/$callback/$rebind",
-    ({ registered, callback, rebind }) =>
+    "normal native observatory registration/instruction/read-publish protocol $registered/$callback/$rebind/$cuaError",
+    ({ registered, callback, rebind, cuaError }) =>
       Effect.gen(function* () {
-        const scenario = `observatory-protocol-${registered}-${callback}-${rebind}`;
+        const scenario = `observatory-protocol-${registered}-${callback}-${rebind}-${cuaError}`;
         let revoked = false;
         let closedDelivered = false;
         const unsubscribed = yield* Deferred.make<void>();
@@ -6123,7 +6139,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                     mcpProtocolVersion: "2025-06-18",
                     mcp: { command: "unused-fixture", args: [], environment: [] },
                   })
-                : Effect.fail(new CuaControl.CuaUnavailableError({ reason: "disabled" })),
+                : Effect.fail(new CuaControl.CuaUnavailableError({ reason: cuaError })),
             ),
           release: () => Effect.void,
           stop: () => Effect.void,

@@ -25,10 +25,15 @@ export const make = Effect.fn("CodexCuaSession.make")(function* (input: {
     // Busy computer control must not prevent another ordinary coding session.
     connection: control.attach(caller).pipe(
       Effect.catchTags({
-        CuaUnavailableError: (error) =>
-          ["disabled", "unsupportedPlatform", "busy"].includes(error.reason)
-            ? Effect.void
-            : Effect.fail(error),
+        CuaUnavailableError: (error) => {
+          if (["disabled", "unsupportedPlatform", "busy"].includes(error.reason))
+            return Effect.void;
+          if (["stopped", "unreachableTarget", "incompatibleDriver"].includes(error.reason))
+            return Effect.logWarning("Computer-use attachment unavailable", {
+              reason: error.reason,
+            });
+          return Effect.fail(error);
+        },
       }),
     ),
     release,
