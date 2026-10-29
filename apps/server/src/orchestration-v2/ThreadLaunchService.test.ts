@@ -15,6 +15,7 @@ import {
   ComposerContextId,
   type ChatAttachment,
   CommandId,
+  EventId,
   DEFAULT_SERVER_SETTINGS,
   GitCommandError,
   MessageId,
@@ -1832,6 +1833,161 @@ it.effect("schedules an accepted preparing message exactly once across concurren
       yield* Deferred.succeed(allowSetup, undefined);
     }).pipe(Effect.provide(harness.layer));
   }),
+);
+
+it.effect.each(["release", "disabled", "setup-failure"] as const)(
+  "recovers one destination child preparation and handles %s after setup",
+  (outcome) =>
+    Effect.gen(function* () {
+      const setupEntered = yield* Deferred.make<void>();
+      const allowSetup = yield* Deferred.make<void>();
+      const harness = makeHarness({
+        createWorktree: (input) =>
+          Effect.succeed({
+            worktree: {
+              path: "/other-repo-worktrees/task",
+              refName: input.newRefName,
+              headSha: "abc",
+            },
+          } as never),
+        runSetup: () =>
+          Deferred.succeed(setupEntered, undefined).pipe(
+            Effect.andThen(Deferred.await(allowSetup)),
+            Effect.flatMap(() =>
+              outcome === "setup-failure"
+                ? Effect.fail(
+                    new ProjectSetupScriptRunner.ProjectSetupScriptOperationError({
+                      projectId: otherProjectId,
+                      threadId: ThreadId.make("unused"),
+                      worktreePath: "/other-repo-worktrees/task",
+                      operation: "openTerminal",
+                      cause: "Setup failed",
+                    }),
+                  )
+                : Effect.succeed({ status: "no-script" as const }),
+            ),
+          ),
+      });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const settings = yield* ServerSettings.ServerSettingsService;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const projects = yield* ProjectStore.ProjectStoreV2;
+        yield* projects.apply({
+          sequence: 1,
+          eventId: EventId.make("create-prepared-destination"),
+          aggregateKind: "project",
+          aggregateId: otherProjectId,
+          occurredAt: "2026-10-23T18:00:00Z",
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "project.created",
+          payload: {
+            projectId: otherProjectId,
+            title: "Destination",
+            workspaceRoot: "/other-repo",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: "2026-10-23T18:00:00Z",
+            updatedAt: "2026-10-23T18:00:00Z",
+          },
+        });
+
+        const parentId = ThreadId.make("thread:destination-preparation:parent");
+        yield* threads.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("command:destination-preparation:parent"),
+          threadId: parentId,
+          projectId,
+          title: "Research",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: "/research",
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const commandId = CommandId.make("command:destination-preparation:admit");
+        const strategy = {
+          type: "worktree",
+          baseRef: "destination-base",
+          branch: "feature/task",
+          startFromOrigin: false,
+        } as const;
+        const admitted = yield* threads.dispatch({
+          type: "message.dispatch",
+          commandId,
+          threadId: parentId,
+          messageId: MessageId.make("message:destination-preparation"),
+          text: "Implement the finding",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "agent",
+          creationSource: "mcp",
+          delegation: { projectId: otherProjectId, modelSelection, workspaceStrategy: strategy },
+        });
+        const taskEvent = admitted.storedEvents.find(
+          ({ event }) => event.type === "subagent.updated",
+        );
+        assert.equal(taskEvent?.event.type, "subagent.updated");
+        if (
+          taskEvent?.event.type !== "subagent.updated" ||
+          taskEvent.event.payload.childThreadId === null
+        )
+          return;
+        const childId = taskEvent.event.payload.childThreadId;
+        const child = yield* threads.getThreadProjection(childId);
+        const run = child.runs[0]!;
+        assert.equal(run.status, "preparing");
+        assert.deepEqual(run.workspacePreparation, strategy);
+        const preparation = { commandId, threadId: childId, runId: run.id };
+        yield* Effect.all([launches.prepareRun(preparation), launches.prepareRun(preparation)], {
+          concurrency: "unbounded",
+        });
+        yield* Deferred.await(setupEntered);
+        assert.equal(harness.createWorktree.mock.calls.length, 1);
+        assert.equal(harness.runSetup.mock.calls.length, 1);
+        assert.deepInclude(harness.createWorktree.mock.calls[0]![0], { cwd: "/other-repo" });
+        assert.deepInclude(harness.runSetup.mock.calls[0]![0], {
+          projectId: otherProjectId,
+          projectCwd: "/other-repo",
+          worktreePath: "/other-repo-worktrees/task",
+        });
+        assert.isEmpty(yield* outbox.listByCommandId(CommandId.make(`${commandId}:release`)));
+        if (outcome === "disabled")
+          yield* settings.updateSettings({
+            projectSettingsOverrides: {
+              [otherProjectId]: {
+                providerInstances: { [modelSelection.instanceId]: { enabled: false } },
+              },
+            },
+          });
+        yield* Deferred.succeed(allowSetup, undefined);
+        const settled = yield* preparationSettled(childId);
+        assert.equal(settled.runs[0]!.id, run.id);
+        assert.equal(settled.runs[0]!.status, outcome === "release" ? "starting" : "failed");
+        assert.equal(settled.thread.projectId, otherProjectId);
+        assert.equal(settled.thread.worktreePath, "/other-repo-worktrees/task");
+        if (outcome !== "release")
+          assert.isEmpty(yield* outbox.listByCommandId(CommandId.make(`${commandId}:release`)));
+        const parent = yield* threads.getThreadProjection(parentId);
+        assert.equal(parent.thread.projectId, projectId);
+        assert.equal(parent.thread.worktreePath, "/research");
+        yield* launches.prepareRun(preparation);
+        assert.equal(harness.runSetup.mock.calls.length, 1);
+      }).pipe(
+        Effect.provide(
+          Layer.merge(
+            harness.layer,
+            ProjectStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+          ),
+        ),
+      );
+    }),
 );
 
 it.effect("creates a strong provider-thread mapping for an imported native session", () => {

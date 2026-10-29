@@ -35,6 +35,7 @@ import {
 import { hasOnlyPairedSurrogates } from "./threadMetadataMcp.ts";
 import { ThreadTitleRegeneration } from "./threadTitle.ts";
 import {
+  OrchestrationV2NewWorktreeStrategy,
   OrchestrationV2Actor,
   OrchestrationV2CreationSource,
   OrchestrationV2RemoteSender,
@@ -561,6 +562,7 @@ export const OrchestratorMcpThreadReadResult = Schema.Struct({
 export type OrchestratorMcpThreadReadResult = typeof OrchestratorMcpThreadReadResult.Type;
 
 export const OrchestratorMcpConversationDelegation = Schema.Struct({
+  workspaceStrategy: Schema.optional(OrchestrationV2NewWorktreeStrategy),
   target: Schema.optional(OrchestratorMcpTarget),
   projectId: Schema.optional(ProjectId),
   title: Schema.optional(OrchestratorMcpTitle),
@@ -568,7 +570,7 @@ export const OrchestratorMcpConversationDelegation = Schema.Struct({
   interactionMode: Schema.optional(OrchestratorMcpInteractionMode),
 }).annotate({
   description:
-    "Explicit independent work: admit a fresh real child immediately, even while this conversation has an active provider run. Use a stable clientRequestId. Follow-ups should target the existing task/child instead.",
+    "Explicit independent work: admit a fresh real child immediately, even while this conversation has an active provider run. For a new destination worktree, set workspaceStrategy and explicitly select target.providerInstanceId and target.model; projectId selects the local destination. Use a stable clientRequestId. Follow-ups should target the existing task/child instead.",
 });
 
 export const OrchestratorMcpThreadSendInput = Schema.Struct({

@@ -2447,6 +2447,25 @@ const make = Effect.gen(function* () {
       }),
   );
 
+  const prepareConversationChild = Effect.fn("OrchestratorMcpService.prepareConversationChild")(
+    function* (input: { commandId: CommandId; threadId: ThreadId; runId: RunId }) {
+      const child = yield* threadManagement
+        .getThreadProjection(input.threadId)
+        .pipe(Effect.mapError(threadManagementFailure));
+      const run = child.runs.find((candidate) => candidate.id === input.runId);
+      if (run?.status === "preparing" && run.workspacePreparation !== undefined) {
+        yield* threadLaunch.prepareRun(input);
+        const prepared = yield* threadManagement
+          .getThreadProjection(input.threadId)
+          .pipe(Effect.mapError(threadManagementFailure));
+        return (
+          prepared.runs.find((candidate) => candidate.id === input.runId)?.status ?? run.status
+        );
+      }
+      return run?.status;
+    },
+  );
+
   const replayThreadDelegation = Effect.fn("OrchestratorMcpService.replayThreadDelegation")(
     function* (scope: McpInvocationScope, input: OrchestratorMcpThreadSendInput) {
       yield* requireCapability(scope);
@@ -2520,6 +2539,14 @@ const make = Effect.gen(function* () {
         childRun === undefined
       )
         return yield* failure("task_not_found", "The admitted child binding is unavailable.");
+      const status =
+        childRun.status === "preparing"
+          ? yield* prepareConversationChild({
+              commandId,
+              threadId: child.thread.id,
+              runId: childRun.id,
+            })
+          : childRun.status;
       return Option.some({
         threadId: input.threadId,
         messageId,
@@ -2528,7 +2555,7 @@ const make = Effect.gen(function* () {
         childThreadId: child.thread.id,
         childRunId: childRun.id,
         admissionStatus: "completed" as const,
-        status: childRun.status,
+        status: status ?? childRun.status,
         delivery: "delegated" as const,
       });
     },
@@ -3476,6 +3503,33 @@ const make = Effect.gen(function* () {
         const delegation =
           accepted ??
           (yield* Effect.gen(function* () {
+            const workspaceStrategy = input.delegation!.workspaceStrategy;
+            if (workspaceStrategy !== undefined) {
+              if (scope.remoteSender !== undefined)
+                return yield* failure(
+                  "invalid_request",
+                  "Prepared conversation work requires a local caller.",
+                );
+              const requestedTarget = input.delegation!.target;
+              if (
+                requestedTarget?.projectId !== undefined ||
+                requestedTarget?.environmentId !== undefined
+              )
+                return yield* failure(
+                  "invalid_request",
+                  "Prepared conversation work uses delegation.projectId for its local destination.",
+                );
+              if (
+                (projectId !== target.thread.projectId ||
+                  (parent !== undefined && projectId !== parent.thread.projectId)) &&
+                (requestedTarget?.providerInstanceId === undefined ||
+                  requestedTarget.model === undefined)
+              )
+                return yield* failure(
+                  "invalid_request",
+                  "Cross-project prepared work requires explicit target.providerInstanceId and target.model.",
+                );
+            }
             const selected = yield* resolveTargetRechecking({
               parent: destination,
               target: input.delegation!.target,
@@ -3493,7 +3547,14 @@ const make = Effect.gen(function* () {
               input.delegation!.interactionMode,
             );
             yield* resolveInteractionMode(limits.interactionMode, interactionMode);
+            if (workspaceStrategy !== undefined)
+              yield* threadLaunch.checkWorktreeBase({ projectId, workspaceStrategy }).pipe(
+                Effect.catchTags({
+                  ThreadLaunchBaseRefError: (error) => failure("invalid_request", error.message),
+                }),
+              );
             return {
+              ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
               requestJson,
               ...(parent === undefined || callerRun === undefined
                 ? {}
@@ -3524,6 +3585,14 @@ const make = Effect.gen(function* () {
             delegation,
           })
           .pipe(Effect.mapError(threadManagementFailure));
+        const status =
+          admitted.status === "preparing"
+            ? yield* prepareConversationChild({
+                commandId,
+                threadId: admitted.childThreadId,
+                runId: admitted.childRunId,
+              })
+            : admitted.status;
         return {
           threadId: input.threadId,
           messageId,
@@ -3532,7 +3601,7 @@ const make = Effect.gen(function* () {
           childThreadId: admitted.childThreadId,
           childRunId: admitted.childRunId,
           admissionStatus: "completed",
-          status: admitted.status,
+          status: status ?? admitted.status,
           delivery: "delegated",
         } satisfies OrchestratorMcpThreadSendResult;
       }
