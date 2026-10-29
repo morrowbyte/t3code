@@ -34,7 +34,7 @@ import { useAcknowledgeThreadWoke, useThreadActions } from "../../hooks/useThrea
 import { settleAndAdvance } from "../../settleAndAdvance";
 import type { ChatShortcutCommands } from "./useChatShortcuts";
 import { resolveThreadLastVisitedAt } from "../Sidebar.logic";
-import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { type SetStateAction, useRef, useState } from "react";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import {
@@ -47,7 +47,7 @@ import { type ChatMessage } from "../../types";
 import { AlarmClockIcon, CheckCircle2Icon } from "lucide-react";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { newMessageId } from "~/lib/utils";
-import { buildThreadRouteParams } from "../../threadRoutes";
+import { buildThreadRouteParams, resolveRelatedThreadRef } from "../../threadRoutes";
 import { composerDraftHasUserContent, useComposerDraftStore } from "../../composerDraftStore";
 import { useEnvironmentScope } from "~/state/session";
 import { threadEnvironment } from "../../state/threads";
@@ -419,16 +419,18 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
   };
   const handleStopBackgroundWorkStable = useStableCallback(handleStopBackgroundWork);
   const openRelatedThreadGenerationRef = useRef(0);
-  const onOpenRelatedThread = async (threadId: ThreadId) => {
+  const onOpenRelatedThread = async (target: ThreadId | ScopedThreadRef) => {
     const generation = ++openRelatedThreadGenerationRef.current;
-    const threadRef = scopeThreadRef(environmentId, threadId);
+    const threadRef = resolveRelatedThreadRef(environmentId, target);
     const isEnvironmentLive = () =>
-      appAtomRegistry.get(environmentShell.stateValueAtom(environmentId)).status === "live";
-    // The shell can leave idle subagent children out, so absence is not deletion there: the
-    // route decides from the thread's own detail.
-    const shellOmitsChildren = serverConfig?.shellThreadFamilies === true;
+      appAtomRegistry.get(environmentShell.stateValueAtom(threadRef.environmentId)).status ===
+      "live";
+    // Scoped links and shells that omit children load the target's own detail;
+    // absence from the shell is not deletion.
+    const canLoadUnlistedThread =
+      typeof target !== "string" || serverConfig?.shellThreadFamilies === true;
     // A just-launched child can reach this timeline before its shell syncs.
-    if (!shellOmitsChildren && isEnvironmentLive() && readThreadShell(threadRef) === null) {
+    if (!canLoadUnlistedThread && isEnvironmentLive() && readThreadShell(threadRef) === null) {
       const location = router.latestLocation;
       await waitForThreadShell(threadRef, RELATED_THREAD_SHELL_WAIT_MS);
       if (
@@ -440,7 +442,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
       }
     }
     const shell = readThreadShell(threadRef);
-    if (shell === null ? !shellOmitsChildren && isEnvironmentLive() : shell.deletedAt != null) {
+    if (shell === null ? !canLoadUnlistedThread && isEnvironmentLive() : shell.deletedAt != null) {
       toastManager.add({ type: "info", title: "This thread is no longer available" });
       return;
     }

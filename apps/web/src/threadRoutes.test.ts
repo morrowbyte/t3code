@@ -1,20 +1,42 @@
 import { describe, expect, it } from "vite-plus/test";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { EMPTY_ENVIRONMENT_THREAD_STATE } from "@t3tools/client-runtime/state/threads";
-import { ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import { makeThreadProjectionFixture } from "./test-fixtures";
 
 import {
+  buildThreadRouteParams,
   isThreadRoutePathname,
   isThreadRouteSnapshotAuthoritative,
   resolveActiveThreadRouteRef,
+  resolveRelatedThreadRef,
   resolveThreadRouteRenderState,
   resolveThreadRouteTarget,
 } from "./threadRoutes";
 
 describe("threadRoutes", () => {
+  it("keeps a related approval's remote environment and opaque thread ID", () => {
+    const local = EnvironmentId.make("24efa85c-862c-4de4-9b5e-aaaa041e28a4");
+    const remote = scopeThreadRef(
+      EnvironmentId.make("10b31082-7ae0-42be-8a86-dafd678b4b84"),
+      ThreadId.make("mcp:launch:92071435ad03e17bf5867377cc7f8795fc094e446706ed980b84477352bc5faf"),
+    );
+    const target = resolveThreadRouteTarget(
+      buildThreadRouteParams(resolveRelatedThreadRef(local, remote)),
+    );
+    expect(target).toEqual({ kind: "server", threadRef: remote });
+    expect(resolveRelatedThreadRef(local, remote.threadId)).toEqual({
+      environmentId: local,
+      threadId: remote.threadId,
+    });
+    expect(resolveRelatedThreadRef(local, scopeThreadRef(local, remote.threadId))).toEqual({
+      environmentId: local,
+      threadId: remote.threadId,
+    });
+  });
+
   it("matches only the thread's own route pathname", () => {
     const ref = scopeThreadRef("env-1" as never, ThreadId.make("thread-1"));
 
@@ -94,6 +116,14 @@ describe("threadRoutes", () => {
   });
 
   it("opens an unlisted server thread once its detail arrives, without waiting for the shell", () => {
+    const threadRef = scopeThreadRef(
+      EnvironmentId.make("10b31082-7ae0-42be-8a86-dafd678b4b84"),
+      ThreadId.make("mcp:launch:opaque%3Achild"),
+    );
+    expect(resolveThreadRouteTarget(buildThreadRouteParams(threadRef))).toEqual({
+      kind: "server",
+      threadRef,
+    });
     const route = {
       bootstrapComplete: isThreadRouteSnapshotAuthoritative("live"),
       serverThreadExists: false,

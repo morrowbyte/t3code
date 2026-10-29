@@ -65,6 +65,13 @@ export function buildThreadRouteParams(ref: ScopedThreadRef): {
   };
 }
 
+export function resolveRelatedThreadRef(
+  environmentId: EnvironmentId,
+  target: ThreadId | ScopedThreadRef,
+): ScopedThreadRef {
+  return typeof target === "string" ? scopeThreadRef(environmentId, target) : target;
+}
+
 /** Whether a (decoded) location pathname is `ref`'s own thread route, `/$environmentId/$threadId`. */
 export function isThreadRoutePathname(pathname: string, ref: ScopedThreadRef): boolean {
   const { environmentId, threadId } = buildThreadRouteParams(ref);
