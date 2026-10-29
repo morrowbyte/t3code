@@ -27,7 +27,9 @@ nix build --extra-experimental-features 'nix-command flakes' \
   --no-write-lock-file --impure --out-link "$work_dir/package" --print-out-paths \
   path:./packaging/nixos#t3code-morrowbyte > "$work_dir/store-path"
 store_path="$(cat "$work_dir/store-path")"
-[[ "$store_path" == /nix/store/* && "$store_path" != *$'\n'* && -x "$work_dir/package/bin/t3code-morrowbyte" ]]
+[[ "$store_path" == /nix/store/* && "$store_path" != *$'\n'* ]]
+nix store ls --json "$store_path/bin/t3code-morrowbyte" |
+  jq -e '.type == "regular" and .executable == true' >/dev/null
 mapfile -t closure_paths < <(nix-store --query --requisites "$store_path")
 [[ ${#closure_paths[@]} -gt 0 ]]
 nix-store --export "${closure_paths[@]}" | zstd -T0 -3 > "$output_dir/$asset"
