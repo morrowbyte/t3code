@@ -1,4 +1,5 @@
 import * as CuaControl from "../../cua/CuaControl.ts";
+import * as CuaDriverHost from "../../cua/CuaDriverHost.ts";
 import { AgentObservatoryInvocationResult } from "@t3tools/contracts";
 import * as NodeOS from "node:os";
 
@@ -7868,10 +7869,40 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ],
   });
 
-  it.effect("contains commands that start before and after the interrupt response", () =>
+  it.effect("contains commands before and after interrupt when CUA cleanup fails", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const harness = yield* makeCodexReplayHarness(interruptMidCommandTranscript);
+        const requests: Array<string> = [];
+        let releases = 0;
+        const releaseError = new CuaDriverHost.CuaDriverError({
+          operation: "stop",
+          cause: new Error("fixture SDK stop failure"),
+        });
+        const harness = yield* makeCodexReplayHarness(
+          interruptMidCommandTranscript,
+          () => Effect.void,
+          (method) =>
+            Effect.sync(() => {
+              requests.push(method);
+            }),
+        ).pipe(
+          Effect.provide(
+            Layer.mock(CuaControl.CuaControl)({
+              status: Effect.succeed({
+                environmentId: EnvironmentId.make("cua-cancel-target"),
+                supported: true,
+                enabled: false,
+                phase: "disabled",
+                owner: null,
+              }),
+              attach: () => Effect.fail(new CuaControl.CuaUnavailableError({ reason: "disabled" })),
+              release: () =>
+                Effect.sync(() => {
+                  releases++;
+                }).pipe(Effect.andThen(Effect.fail(releaseError))),
+            }),
+          ),
+        );
         const now = yield* DateTime.now;
 
         yield* harness.runtime.startTurn(
@@ -7987,6 +8018,17 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           > => event.type === "turn_item.updated" && event.turnItem.type === "command_execution",
         );
         assert.isAtLeast(commandUpdates.length, 2, "start + interrupt terminalization");
+        assert.equal(releases, 1, "Stop must attempt cleanup once before scope finalization");
+        assert.lengthOf(
+          requests.filter((method) => method === "turn/interrupt"),
+          1,
+        );
+        assert.lengthOf(
+          requests.filter((method) => method === "turn/start"),
+          1,
+        );
+        assert.notInclude(requests, "thread/resume");
+
         assert.equal(commandUpdates[commandUpdates.length - 1]?.turnItem.status, "interrupted");
       }).pipe(
         Effect.provide(

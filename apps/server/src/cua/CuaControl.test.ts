@@ -201,6 +201,25 @@ it.effect("does not claim control was released when SDK stop fails", () =>
     const h = yield* harness({ stop: Effect.fail(error) });
     yield* h.control.setEnabled({ environmentId, enabled: true });
     yield* h.control.attach(caller);
+    expect(yield* Effect.flip(h.control.release(caller))).toBe(error);
+    expect(yield* h.control.status).toMatchObject({
+      enabled: true,
+      phase: "failed",
+      owner: caller,
+    });
+    expect(yield* Effect.flip(h.control.attach(caller))).toMatchObject({
+      reason: "stopped",
+    });
+    expect(
+      yield* Effect.flip(h.control.attach({ ...caller, providerSessionId: "session-two" })),
+    ).toMatchObject({
+      reason: "stopped",
+    });
+    const stops = h.stops();
+    yield* h.control.release({ ...caller, providerSessionId: "session-two" });
+    expect(h.stops()).toBe(stops);
+    expect(h.starts()).toBe(1);
+
     expect(yield* Effect.flip(h.control.stop(environmentId))).toBe(error);
     expect(yield* h.control.status).toMatchObject({
       enabled: false,
