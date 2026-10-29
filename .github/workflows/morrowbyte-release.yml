@@ -1399,19 +1399,35 @@ jobs:
         run: vp install --frozen-lockfile --filter=@t3tools/mobile... --filter=@t3tools/scripts...
 
       - name: Setup Java
+        if: inputs.runner_backend == 'blacksmith'
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
 
       - name: Setup Android build and verification tools
+        if: inputs.runner_backend == 'blacksmith'
         uses: android-actions/setup-android@v4
         with:
           packages: "platform-tools build-tools;36.0.0 emulator system-images;android-36;google_apis;x86_64"
           log-accepted-android-sdk-licenses: false
 
       - name: Setup Gradle cache
+        if: inputs.runner_backend == 'blacksmith'
         uses: gradle/actions/setup-gradle@v5
+
+      - name: Verify prepared Android toolchain
+        if: inputs.runner_backend != 'blacksmith'
+        run: |
+          set -euo pipefail
+          "$JAVA_HOME/bin/javac" -version | grep -E '^javac 21([.]|$)'
+          test -f "$ANDROID_HOME/platforms/android-36/android.jar"
+          test -x "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/apksigner"
+          test -x "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/zipalign"
+          test -x "$ANDROID_HOME/emulator/emulator"
+          test -f "$ANDROID_HOME/system-images/android-36/google_apis/x86_64/package.xml"
+          command -v adb
+          command -v avdmanager
 
       - name: Bind source and verify standalone fork configuration
         working-directory: apps/mobile
@@ -1781,14 +1797,14 @@ jobs:
         if: needs.preflight.outputs.observatory_route_sha256 != ''
         uses: actions/download-artifact@v4
         with:
-          name: morrowbyte-observatory-preflight-${{ needs.preflight.outputs.source_sha }}-${{ needs.preflight.outputs.recovery_artifact_attempt || github.run_attempt }}
+          name: morrowbyte-observatory-preflight-${{ needs.preflight.outputs.source_sha }}-${{ needs.preflight.outputs.recovery_artifact_attempt || needs.preflight.outputs.desktop_run_attempt }}
           path: ${{ runner.temp }}/observatory-publish-preflight
 
       - name: Download Observatory build proof for publication
         if: needs.preflight.outputs.observatory_route_sha256 != ''
         uses: actions/download-artifact@v4
         with:
-          name: morrowbyte-observatory-build-${{ needs.preflight.outputs.source_sha }}-${{ needs.preflight.outputs.recovery_artifact_attempt || github.run_attempt }}
+          name: morrowbyte-observatory-build-${{ needs.preflight.outputs.source_sha }}-${{ needs.preflight.outputs.recovery_artifact_attempt || needs.preflight.outputs.desktop_run_attempt }}
           path: ${{ runner.temp }}/observatory-publish-build
 
       - name: Require matching Observatory route proofs before publication
