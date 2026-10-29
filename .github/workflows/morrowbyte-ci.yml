@@ -384,7 +384,11 @@ jobs:
         run: python3 packaging/nixos/test-updater.py
 
   windows_installer_guard:
-    if: github.event_name == 'workflow_dispatch' && !inputs.integrationOnly && github.repository == (vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code')
+    if: >-
+      github.repository == (vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code') &&
+      ((github.event_name == 'workflow_dispatch' && !inputs.integrationOnly) ||
+       (github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+        vars.MORROWBYTE_AUTOMATIC_NIGHTLY == 'true'))
     runs-on: [self-hosted, "${{ vars.MORROWBYTE_WINDOWS_RUNNER || 'morrowbyte-windows' }}"]
     timeout-minutes: 5
     steps:
