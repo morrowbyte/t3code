@@ -13239,6 +13239,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           planned.some(
             (event) =>
               event.type === "runtime-request.updated" &&
+              "privilegedCommand" in event.payload &&
               event.payload.privilegedCommand?.claimId === command.claimId,
           )
         )
