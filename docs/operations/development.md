@@ -282,8 +282,9 @@ rustup target add aarch64-apple-darwin x86_64-apple-darwin
 ### Windows installer prerequisites
 
 Install Rust, Python 3, and Visual Studio Build Tools with **Desktop development with C++**.
-Include the Windows SDK and the MSVC build tools and Spectre-mitigated libraries for the target
-architecture. Add its Rust target:
+Include the Windows SDK and the MSVC build tools for the target architecture. Packaged Windows
+native modules use their supplied prebuilds; compiling node-pty from source additionally requires
+the matching Spectre-mitigated libraries. Add the Rust target:
 
 ```powershell
 rustup target add x86_64-pc-windows-msvc
