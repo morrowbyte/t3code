@@ -1320,7 +1320,15 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             getThreadRecords: () => Effect.succeed(parentProjection([])),
           }),
-          ServerSettings.layerTest({ agentPersonalityEnabled: false }),
+          ServerSettings.layerTest({
+            agentPersonalityEnabled: false,
+            providerInstances: Object.fromEntries(
+              providers.map((provider) => [
+                provider.instanceId,
+                { driver: provider.driver, enabled: provider.enabled },
+              ]),
+            ),
+          }),
           Layer.mock(ProviderRegistry.ProviderRegistry)({
             getProviders: Effect.sync(() => providers),
           }),
@@ -1429,6 +1437,45 @@ describe("OrchestratorMcpService provider resolution", () => {
             "Driver 'forkOnly' is not registered in this build.",
             "Provider instance is disabled.",
           ]);
+
+          yield* settingsService.updateSettings({
+            projectSettingsOverrides: {
+              [projectId]: { providerInstances: { [codexInstanceId]: { enabled: false } } },
+            },
+          });
+          const projectDisabled = yield* service.capabilities(scope);
+          const disabledHere = projectDisabled.providers.find(
+            (provider) => provider.providerInstanceId === codexInstanceId,
+          )!;
+          assert.isFalse(disabledHere.canRunChildTask);
+          assert.isFalse(disabledHere.canRunCrossProviderChildTask);
+          assert.deepEqual(disabledHere.constraints, [
+            "Provider instance is disabled for this project.",
+          ]);
+          assert.isTrue(
+            projectDisabled.providers.find(
+              (provider) => provider.providerInstanceId === antigravityInstanceId,
+            )!.canRunChildTask,
+          );
+          assert.deepEqual(disabledHere.models, refreshed.providers[0]!.models);
+          const globalCapabilities = yield* service.capabilities({ ...scope, thread: undefined });
+          assert.isTrue(
+            globalCapabilities.providers.find(
+              (provider) => provider.providerInstanceId === codexInstanceId,
+            )!.canRunChildTask,
+          );
+
+          yield* settingsService.updateSettings({
+            projectSettingsOverrides: {
+              [projectId]: { providerInstances: { [codexInstanceId]: { enabled: true } } },
+            },
+          });
+          const projectEnabled = (yield* service.capabilities(scope)).providers.find(
+            (provider) => provider.providerInstanceId === codexInstanceId,
+          )!;
+          assert.isTrue(projectEnabled.canRunChildTask);
+          assert.isTrue(projectEnabled.canRunCrossProviderChildTask);
+          assert.deepEqual(projectEnabled.constraints, []);
         }).pipe(
           Effect.provide(layerOrchestratorService.pipe(Layer.provideMerge(layerDependencies))),
         );
