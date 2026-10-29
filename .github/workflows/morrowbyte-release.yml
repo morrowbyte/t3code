@@ -1234,7 +1234,7 @@ jobs:
     timeout-minutes: 60
     outputs:
       apk_sha256: ${{ steps.apk.outputs.apk_sha256 }}
-      receipt_sha256: ${{ steps.apk.outputs.receipt_sha256 }}
+      receipt_sha256: ${{ steps.startup_receipt.outputs.receipt_sha256 }}
       build_attempt: ${{ steps.apk.outputs.build_attempt }}
     env:
       DESKTOP_SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
@@ -1316,6 +1316,27 @@ jobs:
           NODE_ENV: production
         run: node node_modules/expo/bin/cli prebuild --platform android --no-install --clean
 
+      - name: Split shipping ARM64 and emulator x86_64 from one release build
+        run: |
+          set -euo pipefail
+          python3 - <<'PYSPLITS'
+          from pathlib import Path
+          gradle = Path('apps/mobile/android/app/build.gradle')
+          text = gradle.read_text()
+          assert text.count('android {\n') == 1 and 'splits {' not in text
+          text = text.replace('android {\n', '''android {
+              splits {
+                  abi {
+                      reset()
+                      enable true
+                      universalApk false
+                      include "arm64-v8a", "x86_64"
+                  }
+              }
+          ''', 1)
+          gradle.write_text(text)
+          PYSPLITS
+
       - name: Materialize own release keystore
         env:
           MORROWBYTE_ANDROID_KEYSTORE_BASE64: ${{ secrets.MORROWBYTE_ANDROID_KEYSTORE_BASE64 }}
@@ -1333,7 +1354,7 @@ jobs:
           target.chmod(0o600)
           PYKEY
 
-      - name: Build signed standalone arm64 APK once
+      - name: Build signed ARM64 shipping and x86_64 startup splits once
         working-directory: apps/mobile/android
         env:
           NODE_ENV: production
@@ -1347,8 +1368,8 @@ jobs:
           test "$MORROWBYTE_ANDROID_KEY_ALIAS" = morrowbyte-release
           test -n "$MORROWBYTE_ANDROID_KEY_PASSWORD"
           ./gradlew :app:dependencies --configuration releaseRuntimeClasspath --no-daemon --no-configuration-cache \
-            -PreactNativeArchitectures=arm64-v8a > "$RUNNER_TEMP/morrowbyte-android-dependencies.txt"
-          ./gradlew :app:assembleRelease --no-daemon --no-configuration-cache -PreactNativeArchitectures=arm64-v8a
+            -PreactNativeArchitectures=arm64-v8a,x86_64 > "$RUNNER_TEMP/morrowbyte-android-dependencies.txt"
+          ./gradlew :app:assembleRelease --no-daemon --no-configuration-cache -PreactNativeArchitectures=arm64-v8a,x86_64
 
       - id: apk
         name: Verify APK signature, embedded bundle, identity and 16KB native alignment
@@ -1370,8 +1391,23 @@ jobs:
           sdk = Path(os.environ['ANDROID_HOME']) / 'build-tools' / os.environ['ANDROID_BUILD_TOOLS']
           built = Path('apps/mobile/android/app/build/outputs/apk/release')
           candidates = list(built.glob('*.apk'))
-          assert len(candidates) == 1, 'Expected one standalone release APK.'
-          apk = candidates[0]
+          assert len(candidates) == 2, 'Expected one shipping ARM64 and one CI-only x86_64 split.'
+          by_abi = {}
+          for candidate in candidates:
+              with zipfile.ZipFile(candidate) as archive:
+                  abis = {name.split('/')[1] for name in archive.namelist() if name.startswith('lib/') and name.endswith('.so')}
+                  assert len(abis) == 1 and next(iter(abis)) not in by_abi
+                  by_abi[next(iter(abis))] = candidate
+          assert set(by_abi) == {'arm64-v8a', 'x86_64'}
+          apk = by_abi['arm64-v8a']
+          startup_apk = by_abi['x86_64']
+          startup_signature = subprocess.check_output([str(sdk / 'apksigner'), 'verify', '-Werr', '--print-certs', str(startup_apk)], text=True)
+          startup_certificates = re.findall(r'^Signer #\d+ certificate SHA-256 digest: ([0-9a-fA-F:]+)$', startup_signature, re.M)
+          assert len(startup_certificates) == 1 and startup_certificates[0].replace(':', '').lower() == expected_cert
+          startup_badging = subprocess.check_output([str(sdk / 'aapt'), 'dump', 'badging', str(startup_apk)], text=True)
+          startup_identity = re.search(r"^package: name='([^']+)' versionCode='([^']+)' versionName='([^']+)'", startup_badging, re.M)
+          assert startup_identity and startup_identity.groups() == ('com.morrowbyte.t3code', str(code), version)
+          assert 'application-debuggable' not in startup_badging
           signature = subprocess.check_output([str(sdk / 'apksigner'), 'verify', '-Werr', '--verbose', '--print-certs', str(apk)], text=True)
           certificates = re.findall(r'^Signer #\d+ certificate SHA-256 digest: ([0-9a-fA-F:]+)$', signature, re.M)
           assert len(certificates) == 1 and certificates[0].replace(':', '').lower() == expected_cert
@@ -1407,6 +1443,8 @@ jobs:
                       assert alignment >= 16384 and file_offset % 16384 == address % 16384, name
                   assert loads > 0, name
               bundle_sha = hashlib.sha256(archive.read(bundle)).hexdigest()
+          with zipfile.ZipFile(startup_apk) as archive:
+              assert hashlib.sha256(archive.read(bundle)).hexdigest() == bundle_sha, 'Both ABI splits must embed the identical shipping Hermes bundle.'
           generated_bundle = Path('apps/mobile/android/app/build/generated/assets/react/release/index.android.bundle')
           assert generated_bundle.is_file() and digest(generated_bundle) == bundle_sha, 'APK must embed the bundle generated from the pinned source.'
           output = Path('release-android')
@@ -1433,8 +1471,58 @@ jobs:
           receipt_file = output / (name + '.json')
           receipt_file.write_text(json.dumps(receipt, indent=2) + '\n')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as outputs:
-              outputs.write(f'apk_sha256={apk_sha}\nreceipt_sha256={digest(receipt_file)}\nbuild_attempt={os.environ["GITHUB_RUN_ATTEMPT"]}\n')
+              outputs.write(f'apk_sha256={apk_sha}\nstartup_apk={startup_apk}\nbuild_attempt={os.environ["GITHUB_RUN_ATTEMPT"]}\n')
           PYAPK
+
+      - name: Enable existing Blacksmith KVM path
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Start the minified release on Android 16 before publication
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7_pro
+          avd-name: Crew_Release_API36
+          cores: 4
+          ram-size: 4096M
+          disable-animations: false
+          script: bash scripts/morrowbyte/android-startup-smoke.sh "release-android/Morrowbyte-${{ needs.preflight.outputs.version }}-android-arm64.apk" "${{ steps.apk.outputs.startup_apk }}" "$RUNNER_TEMP/morrowbyte-android-startup" "${{ needs.preflight.outputs.android_source_sha || needs.preflight.outputs.source_sha }}"
+
+      - id: startup_receipt
+        name: Bind successful emulator startup to the ARM64 shipping receipt
+        run: |
+          set -euo pipefail
+          python3 - <<'PYSTARTUP'
+          import hashlib, json, os
+          from pathlib import Path
+          receipt = Path('release-android') / f'Morrowbyte-{os.environ["T3CODE_MOBILE_VERSION"]}-android-arm64.apk.json'
+          proof = json.loads((Path(os.environ['RUNNER_TEMP']) / 'morrowbyte-android-startup/startup.json').read_text())
+          data = json.loads(receipt.read_text())
+          assert proof['status'] == 'passed' and proof['uiBeyondSplash'] is True and proof['startupErrors'] is False
+          assert proof['source'] == data['source'] and proof['productionApkSha256'] == data['apkSha256']
+          assert proof['embeddedBundleSha256'] == data['embeddedBundleSha256']
+          assert proof['run'] == data['run'] and proof['attempt'] == data['attempt']
+          assert proof['startupAbi'] == 'x86_64' and proof['physicalDeviceAcceptance'] is False
+          data['ciEmulatorStartup'] = proof
+          receipt.write_text(json.dumps(data, indent=2) + '\n')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as outputs:
+              outputs.write(f'receipt_sha256={hashlib.sha256(receipt.read_bytes()).hexdigest()}\n')
+          PYSTARTUP
+
+      - name: Preserve bounded Android startup evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: morrowbyte-android-startup-${{ needs.preflight.outputs.android_source_sha || needs.preflight.outputs.source_sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/morrowbyte-android-startup/*
+          if-no-files-found: ignore
+          retention-days: 3
 
       - name: Upload verified Android release payload
         uses: actions/upload-artifact@v4
