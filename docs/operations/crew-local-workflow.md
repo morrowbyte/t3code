@@ -16,7 +16,7 @@ vp run dev
 ```
 
 Keep WSL checkouts in the Linux filesystem, such as `~/src/t3code`, rather than
-under `/mnt/c`. On NixOS, enter `nix-shell` before compiling desktop packages;
+under `/mnt/c`. On NixOS, enter `nix-shell` before running the Vite commands;
 the repository shell supplies the C/Rust toolchains, native library headers
 and a managed browser for focused browser tests.
 It also loads an installed Vite+ shell environment.
