@@ -15,7 +15,7 @@ import {
   type ThreadSearchShell,
 } from "@t3tools/client-runtime/state/thread-search";
 import { foldSearchQuery, rankSearchItems, scoreThreadSearch } from "@t3tools/shared/paletteSearch";
-import type { ContextMenuItem, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { ContextMenuItem, EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import type { AsyncResult } from "effect/reactivity";
 import {
@@ -549,27 +549,26 @@ export function isSidebarSubagentThread(thread: Pick<SidebarThreadSummary, "line
 
 // Keep the containing family visible when its shelf is collapsed. Selection
 // uses the exact routed thread instead of this ancestor used for disclosure.
-export function resolveSidebarRowThreadId(
+export function resolveSidebarRowThreadRef(
   threadId: ThreadId,
   environmentId: EnvironmentId,
-  threads: readonly (Pick<SidebarThreadSummary, "id" | "environmentId" | "lineage"> & {
-    readonly presentation?: SidebarThreadSummary["presentation"];
-  })[],
-): ThreadId {
-  const findThread = (id: ThreadId) =>
-    threads.find((thread) => thread.id === id && thread.environmentId === environmentId);
-  const visited = new Set<ThreadId>();
-  let thread = findThread(threadId);
-  while (
-    thread !== undefined &&
-    thread.presentation !== "top_level" &&
-    isSidebarSubagentThread(thread)
-  ) {
-    if (thread.lineage.parentThreadId === null || visited.has(thread.id)) return threadId;
-    visited.add(thread.id);
-    thread = findThread(thread.lineage.parentThreadId);
+  threads: readonly SidebarHierarchyThread[],
+): ScopedThreadRef {
+  const byKey = new Map(threads.map((thread) => [sidebarHierarchyKey(thread), thread]));
+  const routeKey = `${environmentId}:${threadId}`;
+  const visited = new Set<string>();
+  let thread = byKey.get(routeKey);
+  while (thread !== undefined) {
+    const key = sidebarHierarchyKey(thread);
+    if (visited.has(key)) return { environmentId, threadId };
+    visited.add(key);
+    const parent = sidebarHierarchyParent(thread, byKey);
+    if (parent === undefined) break;
+    thread = parent;
   }
-  return thread?.id ?? threadId;
+  return thread === undefined
+    ? { environmentId, threadId }
+    : { environmentId: thread.environmentId, threadId: thread.id };
 }
 
 /**
@@ -616,7 +615,63 @@ export interface SidebarHierarchyRow {
 type SidebarHierarchyThread = Pick<
   SidebarThreadSummary,
   "id" | "environmentId" | "projectId" | "lineage"
-> & { readonly presentation?: "default" | "top_level" | undefined };
+> & {
+  readonly presentation?: "default" | "top_level" | undefined;
+  readonly delegatedFrom?: SidebarThreadSummary["delegatedFrom"];
+};
+
+const sidebarHierarchyKey = (thread: Pick<SidebarHierarchyThread, "environmentId" | "id">) =>
+  `${thread.environmentId}:${thread.id}`;
+
+function sidebarHierarchyParent<T extends SidebarHierarchyThread>(
+  thread: T,
+  byKey: ReadonlyMap<string, T>,
+): T | undefined {
+  if (
+    thread.presentation !== "top_level" &&
+    thread.lineage.relationshipToParent === "subagent" &&
+    thread.lineage.parentThreadId !== null
+  ) {
+    const parent = byKey.get(`${thread.environmentId}:${thread.lineage.parentThreadId}`);
+    return parent?.projectId === thread.projectId ? parent : undefined;
+  }
+  const from = thread.delegatedFrom;
+  return from == null ? undefined : byKey.get(`${from.environmentId}:${from.threadId}`);
+}
+
+export function filterSidebarFamilyThreads<
+  T extends SidebarHierarchyThread & Pick<SidebarThreadSummary, "archivedAt">,
+>(
+  threads: readonly T[],
+  scopedProjectKeys: ReadonlySet<string> | null,
+  delegatedUnderParent: ReadonlySet<string>,
+): T[] {
+  const available = threads.filter((thread) => thread.archivedAt === null);
+  const byKey = new Map(available.map((thread) => [sidebarHierarchyKey(thread), thread]));
+  return available.filter((thread) => {
+    if (
+      !isShownUnderParent(
+        { environmentId: thread.environmentId, threadId: thread.id },
+        thread.lineage,
+        delegatedUnderParent,
+        thread.presentation,
+      )
+    )
+      return false;
+    let ancestor = thread;
+    const seen = new Set<string>();
+    while (!seen.has(sidebarHierarchyKey(ancestor))) {
+      seen.add(sidebarHierarchyKey(ancestor));
+      const parent = sidebarHierarchyParent(ancestor, byKey);
+      if (parent === undefined) break;
+      ancestor = parent;
+    }
+    return (
+      scopedProjectKeys === null ||
+      scopedProjectKeys.has(`${ancestor.environmentId}:${ancestor.projectId}`)
+    );
+  });
+}
 
 export interface SidebarFamilyDisclosure {
   readonly routeKey: string | null;
@@ -637,15 +692,11 @@ export function revealSidebarRouteAncestors(
   const seen = new Set<string>();
   let thread = routeKey === null ? undefined : byKey.get(routeKey);
   let familyRoot: string | null = null;
-  while (
-    thread !== undefined &&
-    thread.presentation !== "top_level" &&
-    thread.lineage.relationshipToParent === "subagent" &&
-    thread.lineage.parentThreadId !== null
-  ) {
-    const key = `${thread.environmentId}:${thread.lineage.parentThreadId}`;
-    const parent = byKey.get(key);
-    if (parent === undefined || parent.projectId !== thread.projectId || seen.has(key)) break;
+  while (thread !== undefined) {
+    const parent = sidebarHierarchyParent(thread, byKey);
+    if (parent === undefined) break;
+    const key = sidebarHierarchyKey(parent);
+    if (seen.has(key)) break;
     seen.add(key);
     familyRoot = key;
     thread = parent;
@@ -681,17 +732,9 @@ export function buildSidebarHierarchy(input: {
   const inputKeys = new Set(input.threads.filter(isThreadAwaitingInput).map(keyOf));
   const parents = new Map<string, string>();
   for (const thread of input.threads) {
-    if (
-      thread.presentation === "top_level" ||
-      thread.lineage.relationshipToParent !== "subagent" ||
-      !thread.lineage.parentThreadId
-    )
-      continue;
-    const key = keyOf(thread);
-    const parentKey = `${thread.environmentId}:${thread.lineage.parentThreadId}`;
-    const parent = byKey.get(parentKey);
-    if (parent && parent.projectId === thread.projectId && parentKey !== key)
-      parents.set(key, parentKey);
+    const parent = sidebarHierarchyParent(thread, byKey);
+    if (parent !== undefined && keyOf(parent) !== keyOf(thread))
+      parents.set(keyOf(thread), keyOf(parent));
   }
   // Malformed lineage must not make an entire family unreachable.
   const roots = new Map<string, string>();
@@ -1201,6 +1244,9 @@ export function groupSidebarThreadsByProject<
   groups: readonly TGroup[],
   threads: readonly TThread[],
   keepEmpty: boolean,
+  projectForThread: (
+    thread: TThread,
+  ) => Pick<SidebarThreadSummary, "environmentId" | "projectId"> = (thread) => thread,
 ): Array<{ group: TGroup; threads: TThread[] }> {
   const folders = groups.map((group) => ({ group, threads: [] as TThread[] }));
   const folderByProject = new Map<string, (typeof folders)[number]>();
@@ -1210,7 +1256,8 @@ export function groupSidebarThreadsByProject<
     }
   }
   for (const thread of threads) {
-    folderByProject.get(`${thread.environmentId}:${thread.projectId}`)?.threads.push(thread);
+    const project = projectForThread(thread);
+    folderByProject.get(`${project.environmentId}:${project.projectId}`)?.threads.push(thread);
   }
   return keepEmpty ? folders : folders.filter((folder) => folder.threads.length > 0);
 }

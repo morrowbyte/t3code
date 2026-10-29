@@ -1,3 +1,4 @@
+import { threadKey } from "@t3tools/client-runtime/state/entities";
 import { presentThreadShell } from "@t3tools/client-runtime/state/models";
 import { isThreadWorking as isSidebarThreadWorking } from "@t3tools/client-runtime/state/thread-inbox";
 import * as DateTime from "effect/DateTime";
@@ -18,9 +19,10 @@ import {
   deleteSelectedThreadEntries,
   filterSidebarProjectScopeItems,
   filterSidebarV2VisibleThreads,
+  filterSidebarFamilyThreads,
   getFallbackThreadIdAfterDelete,
   getProjectSortTimestamp,
-  resolveSidebarRowThreadId,
+  resolveSidebarRowThreadRef,
   getSidebarThreadIdsToPrewarm,
   hasUnseenCompletion,
   isContextMenuPointerDown,
@@ -544,133 +546,208 @@ describe("sidebar thread lineage helpers", () => {
     },
   );
 
-  it("keeps explicit collapse through selected routes and activity, with descendant counts on the parent", () => {
-    const parent = makeThreadFixture({ id: ThreadId.make("parent") });
-    const child = (id: string, parentId: string) =>
-      makeThreadFixture({
-        id: ThreadId.make(id),
+  it.each([false, true])(
+    "keeps explicit collapse through selected routes and activity, with descendant counts on the parent (remote: %s)",
+    (remote) => {
+      const parent = makeThreadFixture({ id: ThreadId.make("parent") });
+      const child = (id: string, parentId: string) =>
+        makeThreadFixture({
+          id: ThreadId.make(id),
+          lineage: {
+            rootThreadId: parent.id,
+            parentThreadId: ThreadId.make(parentId),
+            relationshipToParent: "subagent",
+          },
+        });
+      const running = {
+        ...child("running", "parent"),
+        runtime: runningRuntime,
+        ...(remote
+          ? {
+              environmentId: EnvironmentId.make("remote"),
+              projectId: ProjectId.make("remote-project"),
+              lineage: parent.lineage,
+              delegatedFrom: {
+                environmentId: parent.environmentId,
+                threadId: parent.id,
+                title: parent.title,
+              },
+            }
+          : {}),
+      };
+      const selected = {
+        ...child("selected", "running"),
+        environmentId: running.environmentId,
+        projectId: running.projectId,
+        runtime: runningRuntime,
+      };
+      const completed = child("completed", "parent");
+      const unrelated = {
+        ...child("other-project", "parent"),
+        projectId: ProjectId.make("other-project"),
+      };
+      const threads = [running, unrelated, parent, completed, selected];
+      const key = (thread: typeof parent) => `${thread.environmentId}:${thread.id}`;
+      const delegated = new Set(
+        remote ? [threadKey({ environmentId: running.environmentId, threadId: running.id })] : [],
+      );
+      const scoped = new Set([`${parent.environmentId}:${parent.projectId}`]);
+      const visible = filterSidebarV2VisibleThreads(threads, scoped, delegated);
+      const family = filterSidebarFamilyThreads(threads, scoped, delegated);
+      expect(visible.map(key)).toEqual([key(parent)]);
+      expect(family.map(key)).toEqual([key(running), key(completed), key(selected)]);
+      expect(new Set([...visible, ...family].map(key)).size).toBe(4);
+      expect(filterSidebarFamilyThreads(threads, new Set(), delegated)).toEqual([]);
+      expect(
+        filterSidebarFamilyThreads(
+          [parent, { ...running, archivedAt: parent.updatedAt }],
+          scoped,
+          delegated,
+        ),
+      ).toEqual([]);
+      expect(resolveSidebarRowThreadRef(selected.id, selected.environmentId, threads)).toEqual({
+        environmentId: parent.environmentId,
+        threadId: parent.id,
+      });
+      if (remote) {
+        expect(filterSidebarV2VisibleThreads([running], null, new Set()).map(key)).toEqual([
+          key(running),
+        ]);
+        expect(resolveSidebarRowThreadRef(running.id, running.environmentId, [running])).toEqual({
+          environmentId: running.environmentId,
+          threadId: running.id,
+        });
+      }
+      const sectionByKey = new Map<string, SidebarSection>([
+        [key(parent), "snoozed"],
+        [key(running), "working"],
+        [key(selected), "settled"],
+        [key(completed), "settled"],
+        [key(unrelated), "active"],
+      ]);
+      const input = {
+        threads,
+        sectionByKey,
+        visibleKeys: new Set([key(unrelated)]),
+        workingKeys: new Set([key(running)]),
+        activeKey: key(selected),
+        expandedKeys: new Set<string>(),
+        workingShelfEnabled: true,
+      };
+      const collapsed = buildSidebarHierarchy(input);
+      expect(
+        collapsed.map(({ key: rowKey, depth, displaySection }) => [rowKey, depth, displaySection]),
+      ).toEqual([[key(parent), 0, "working"]]);
+      expect(collapsed[0]?.contextOnly).toBe(true);
+      expect(collapsed.map((row) => row.section)).toEqual(["snoozed"]);
+      expect(collapsed[0]).toMatchObject({ descendantCount: 2, activeDescendantCount: 1 });
+      expect(
+        buildSidebarHierarchy({
+          ...input,
+          expandedKeys: new Set([key(parent), key(running)]),
+          closedKeys: new Set([key(parent)]),
+        }),
+      ).toEqual(collapsed);
+      expect(
+        buildSidebarHierarchy({ ...input, workingKeys: new Set([key(selected)]) }).map(
+          (row) => row.key,
+        ),
+      ).toEqual(collapsed.map((row) => row.key));
+      expect(
+        buildSidebarHierarchy({ ...input, expandedKeys: new Set([key(parent)]) }).map(
+          (row) => row.key,
+        ),
+      ).toEqual([key(parent), key(running), key(selected)]);
+      const open = buildSidebarHierarchy({
+        ...input,
+        expandedKeys: new Set([key(parent)]),
+        closedKeys: new Set([key(running)]),
+      });
+      expect(open.filter((row) => row.hasChildren).map((row) => row.key)).toEqual([key(parent)]);
+      expect(open.map((row) => row.key)).toEqual([key(parent), key(running), key(selected)]);
+      const arriving = {
+        ...child("new-grandchild", "selected"),
+        environmentId: running.environmentId,
+        projectId: running.projectId,
+        runtime: runningRuntime,
+      };
+      expect(
+        buildSidebarHierarchy({
+          ...input,
+          threads: [...threads, arriving],
+          expandedKeys: new Set([key(parent)]),
+          closedKeys: new Set([key(parent)]),
+          workingKeys: new Set([key(arriving)]),
+        }).map((row) => row.key),
+      ).toEqual(collapsed.map((row) => row.key));
+      expect(parent.lineage.relationshipToParent).toBeNull();
+      expect(selected.lineage.parentThreadId).toBe(running.id);
+    },
+  );
+
+  it.each([false, true])(
+    "reveals route ancestors only on navigation, preserving manual collapse through status updates (remote: %s)",
+    (remote) => {
+      const parent = makeThreadFixture({ id: ThreadId.make("parent") });
+      const child = makeThreadFixture({
+        id: ThreadId.make("child"),
         lineage: {
           rootThreadId: parent.id,
-          parentThreadId: ThreadId.make(parentId),
+          parentThreadId: parent.id,
           relationshipToParent: "subagent",
         },
       });
-    const running = { ...child("running", "parent"), runtime: runningRuntime };
-    const selected = { ...child("selected", "running"), runtime: runningRuntime };
-    const completed = child("completed", "parent");
-    const unrelated = {
-      ...child("other-project", "parent"),
-      projectId: ProjectId.make("other-project"),
-    };
-    const threads = [running, unrelated, parent, completed, selected];
-    const key = (thread: typeof parent) => `${thread.environmentId}:${thread.id}`;
-    const sectionByKey = new Map<string, SidebarSection>([
-      [key(parent), "snoozed"],
-      [key(running), "working"],
-      [key(selected), "settled"],
-      [key(completed), "settled"],
-      [key(unrelated), "active"],
-    ]);
-    const input = {
-      threads,
-      sectionByKey,
-      visibleKeys: new Set([key(unrelated)]),
-      workingKeys: new Set([key(running)]),
-      activeKey: key(selected),
-      expandedKeys: new Set<string>(),
-      workingShelfEnabled: true,
-    };
-    const collapsed = buildSidebarHierarchy(input);
-    expect(
-      collapsed.map(({ key: rowKey, depth, displaySection }) => [rowKey, depth, displaySection]),
-    ).toEqual([[key(parent), 0, "working"]]);
-    expect(collapsed[0]?.contextOnly).toBe(true);
-    expect(collapsed.map((row) => row.section)).toEqual(["snoozed"]);
-    expect(collapsed[0]).toMatchObject({ descendantCount: 2, activeDescendantCount: 1 });
-    expect(
-      buildSidebarHierarchy({
-        ...input,
-        expandedKeys: new Set([key(parent), key(running)]),
-        closedKeys: new Set([key(parent)]),
-      }),
-    ).toEqual(collapsed);
-    expect(
-      buildSidebarHierarchy({ ...input, workingKeys: new Set([key(selected)]) }).map(
-        (row) => row.key,
-      ),
-    ).toEqual(collapsed.map((row) => row.key));
-    expect(
-      buildSidebarHierarchy({ ...input, expandedKeys: new Set([key(parent)]) }).map(
-        (row) => row.key,
-      ),
-    ).toEqual([key(parent), key(running), key(selected)]);
-    const open = buildSidebarHierarchy({
-      ...input,
-      expandedKeys: new Set([key(parent)]),
-      closedKeys: new Set([key(running)]),
-    });
-    expect(open.filter((row) => row.hasChildren).map((row) => row.key)).toEqual([key(parent)]);
-    expect(open.map((row) => row.key)).toEqual([key(parent), key(running), key(selected)]);
-    const arriving = { ...child("new-grandchild", "selected"), runtime: runningRuntime };
-    expect(
-      buildSidebarHierarchy({
-        ...input,
-        threads: [...threads, arriving],
-        expandedKeys: new Set([key(parent)]),
-        closedKeys: new Set([key(parent)]),
-        workingKeys: new Set([key(arriving)]),
-      }).map((row) => row.key),
-    ).toEqual(collapsed.map((row) => row.key));
-    expect(parent.lineage.relationshipToParent).toBeNull();
-    expect(selected.lineage.parentThreadId).toBe(running.id);
-  });
-
-  it("reveals route ancestors only on navigation, preserving manual collapse through status updates", () => {
-    const parent = makeThreadFixture({ id: ThreadId.make("parent") });
-    const child = makeThreadFixture({
-      id: ThreadId.make("child"),
-      lineage: {
-        rootThreadId: parent.id,
-        parentThreadId: parent.id,
-        relationshipToParent: "subagent",
-      },
-    });
-    const grandchild = {
-      ...child,
-      id: ThreadId.make("grandchild"),
-      lineage: { ...child.lineage, parentThreadId: child.id },
-    };
-    const key = (thread: typeof parent) => `${thread.environmentId}:${thread.id}`;
-    const threads = [parent, child, grandchild];
-    const initial = {
-      routeKey: null,
-      expandedKeys: new Set<string>(),
-      closedKeys: new Set([key(parent), key(child)]),
-    };
-    const revealed = revealSidebarRouteAncestors(initial, threads, key(grandchild));
-    expect([...revealed.expandedKeys]).toEqual([key(parent)]);
-    expect([...revealed.closedKeys]).toEqual([key(child)]);
-    const closed = { ...revealed, closedKeys: new Set([key(parent)]) };
-    expect(
-      revealSidebarRouteAncestors(
-        closed,
-        threads.map((thread) => ({ ...thread, runtime: null })),
+      const routedChild = remote
+        ? {
+            ...child,
+            environmentId: EnvironmentId.make("remote"),
+            projectId: ProjectId.make("remote-project"),
+            lineage: parent.lineage,
+            delegatedFrom: {
+              environmentId: parent.environmentId,
+              threadId: parent.id,
+              title: parent.title,
+            },
+          }
+        : child;
+      const grandchild = {
+        ...routedChild,
+        id: ThreadId.make("grandchild"),
+        lineage: { ...child.lineage, parentThreadId: child.id },
+      };
+      const key = (thread: typeof parent) => `${thread.environmentId}:${thread.id}`;
+      const threads = [parent, routedChild, grandchild];
+      const initial = {
+        routeKey: null,
+        expandedKeys: new Set<string>(),
+        closedKeys: new Set([key(parent), key(routedChild)]),
+      };
+      const revealed = revealSidebarRouteAncestors(initial, threads, key(grandchild));
+      expect([...revealed.expandedKeys]).toEqual([key(parent)]);
+      expect([...revealed.closedKeys]).toEqual([key(routedChild)]);
+      const closed = { ...revealed, closedKeys: new Set([key(parent)]) };
+      expect(
+        revealSidebarRouteAncestors(
+          closed,
+          threads.map((thread) => ({ ...thread, runtime: null })),
+          key(grandchild),
+        ),
+      ).toBe(closed);
+      const away = revealSidebarRouteAncestors(closed, threads, key(parent));
+      expect(away.closedKeys.has(key(parent))).toBe(true);
+      expect(
+        revealSidebarRouteAncestors(away, threads, key(grandchild)).closedKeys.has(key(parent)),
+      ).toBe(false);
+      if (remote) return;
+      const promoted = revealSidebarRouteAncestors(
+        initial,
+        [parent, { ...child, presentation: "top_level" }, grandchild],
         key(grandchild),
-      ),
-    ).toBe(closed);
-    const away = revealSidebarRouteAncestors(closed, threads, key(parent));
-    expect(away.closedKeys.has(key(parent))).toBe(true);
-    expect(
-      revealSidebarRouteAncestors(away, threads, key(grandchild)).closedKeys.has(key(parent)),
-    ).toBe(false);
-    const promoted = revealSidebarRouteAncestors(
-      initial,
-      [parent, { ...child, presentation: "top_level" }, grandchild],
-      key(grandchild),
-    );
-    expect([...promoted.expandedKeys]).toEqual([key(child)]);
-    expect(promoted.closedKeys.has(key(parent))).toBe(true);
-  });
+      );
+      expect([...promoted.expandedKeys]).toEqual([key(child)]);
+      expect(promoted.closedKeys.has(key(parent))).toBe(true);
+    },
+  );
 
   it("keeps promoted children independent of collapsed execution ancestors", () => {
     const parent = makeThreadFixture({ id: ThreadId.make("parent") });
@@ -2868,14 +2945,18 @@ it("maps an open subagent to its nearest visible ancestor's sidebar row", () => 
   const elsewhere = subagentOf("thread-elsewhere", root.id, otherEnvironmentId);
   const threads = [root, fork, child, grandchild, forkChild, orphan, elsewhere];
 
-  expect(resolveSidebarRowThreadId(child.id, environmentId, threads)).toBe(root.id);
-  expect(resolveSidebarRowThreadId(grandchild.id, environmentId, threads)).toBe(root.id);
-  expect(resolveSidebarRowThreadId(forkChild.id, environmentId, threads)).toBe(fork.id);
-  expect(resolveSidebarRowThreadId(elsewhere.id, otherEnvironmentId, threads)).toBe(elsewhere.id);
-  expect(resolveSidebarRowThreadId(orphan.id, environmentId, threads)).toBe(orphan.id);
+  expect(resolveSidebarRowThreadRef(child.id, environmentId, threads).threadId).toBe(root.id);
+  expect(resolveSidebarRowThreadRef(grandchild.id, environmentId, threads).threadId).toBe(root.id);
+  expect(resolveSidebarRowThreadRef(forkChild.id, environmentId, threads).threadId).toBe(fork.id);
+  expect(resolveSidebarRowThreadRef(elsewhere.id, otherEnvironmentId, threads).threadId).toBe(
+    elsewhere.id,
+  );
+  expect(resolveSidebarRowThreadRef(orphan.id, environmentId, threads).threadId).toBe(orphan.id);
   const loopA = subagentOf("thread-loop-a", ThreadId.make("thread-loop-b"));
   const loopB = subagentOf("thread-loop-b", loopA.id);
-  expect(resolveSidebarRowThreadId(loopA.id, environmentId, [loopA, loopB])).toBe(loopA.id);
+  expect(resolveSidebarRowThreadRef(loopA.id, environmentId, [loopA, loopB]).threadId).toBe(
+    loopA.id,
+  );
 });
 
 describe("pendingSidebarRouteReveal", () => {
@@ -3018,6 +3099,15 @@ describe("groupSidebarThreadsByProject", () => {
       { projectKey: "fleet", threads: [] },
     ]);
     expect(summarize(false)).toEqual([{ projectKey: "t3code", threads: ["a", "b"] }]);
+    const delegated = thread("delegated", remoteEnvironmentId, fleet);
+    expect(
+      groupSidebarThreadsByProject(groups, [...threads, delegated], false, (entry) =>
+        entry === delegated ? threads[0]! : entry,
+      ).map((folder) => ({
+        projectKey: folder.group.projectKey,
+        threads: folder.threads.map((entry) => entry.id),
+      })),
+    ).toEqual([{ projectKey: "t3code", threads: ["a", "b", "delegated"] }]);
   });
 });
 

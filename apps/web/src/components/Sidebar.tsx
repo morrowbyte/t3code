@@ -170,6 +170,7 @@ import {
 import {
   applySidebarThreadDrop,
   filterSidebarV2VisibleThreads,
+  filterSidebarFamilyThreads,
   buildSidebarHierarchy,
   revealSidebarRouteAncestors,
   groupSidebarThreadsByProject,
@@ -203,7 +204,7 @@ import {
   useThreadJumpHintsVisible,
   type SidebarListItem,
   type SidebarSection,
-  resolveSidebarRowThreadId,
+  resolveSidebarRowThreadRef,
 } from "./Sidebar.logic";
 import {
   createSidebarCollisionDetection,
@@ -527,14 +528,10 @@ function useSidebarThreads(input: {
   ] as const) {
     for (const thread of list) sectionByThreadKey.set(threadShellKey(thread), section);
   }
-  const familyThreads = threads.filter(
-    (thread) =>
-      thread.archivedAt === null &&
-      thread.lineage.relationshipToParent === "subagent" &&
-      thread.presentation !== "top_level" &&
-      !delegatedUnderParent.has(threadShellKey(thread)) &&
-      (scopedProjectKeys === null ||
-        scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
+  const familyThreads = filterSidebarFamilyThreads(
+    threads,
+    scopedProjectKeys,
+    delegatedUnderParent,
   );
   const allThreads = [
     ...pinnedThreads,
@@ -568,8 +565,11 @@ function useSidebarThreads(input: {
     workingShelfEnabled,
   });
   const hierarchyRows = [];
+  const familyRootByKey = new Map<string, EnvironmentThreadShell>();
   for (const row of familyRows) {
     if (row.depth === 0) familyRootKey = row.key;
+    const root = familyRootKey === null ? undefined : allThreadByKey.get(familyRootKey);
+    if (root !== undefined) familyRootByKey.set(row.key, root);
     if (
       row.displaySection !== "working" ||
       workingShelfExpanded ||
@@ -587,6 +587,7 @@ function useSidebarThreads(input: {
             .filter((row) => row.displaySection === "active")
             .map((row) => allThreadByKey.get(row.key)!),
           keepEmpty,
+          (thread) => familyRootByKey.get(threadShellKey(thread)) ?? thread,
         ).map((folder) => {
           const collapsed = !resolveProjectExpanded(
             projectExpandedById,
@@ -604,8 +605,8 @@ function useSidebarThreads(input: {
                   return (
                     row !== undefined &&
                     row.depth > 0 &&
-                    thread.lineage.rootThreadId !== null &&
-                    `${thread.environmentId}:${thread.lineage.rootThreadId}` === routeRowThreadKey
+                    familyRootByKey.get(key) !== undefined &&
+                    threadShellKey(familyRootByKey.get(key)!) === routeRowThreadKey
                   );
                 })
               : folder.threads,
@@ -1156,13 +1157,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     routeThreadRef === null
       ? null
       : scopedThreadKey(
-          scopeThreadRef(
+          resolveSidebarRowThreadRef(
+            routeThreadRef.threadId,
             routeThreadRef.environmentId,
-            resolveSidebarRowThreadId(
-              routeThreadRef.threadId,
-              routeThreadRef.environmentId,
-              threads,
-            ),
+            threads,
           ),
         );
   const isSearchingThreads = threadSearchQuery.trim().length > 0;
