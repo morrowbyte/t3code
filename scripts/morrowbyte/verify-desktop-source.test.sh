@@ -18,6 +18,7 @@ cd -- "$fixture/work"
 git config user.name 'CI source guard fixture'
 git config user.email 'ci-source-guard@example.invalid'
 git config commit.gpgsign false
+git config tag.gpgsign false
 git config core.autocrlf false
 git remote add origin "$fixture/origin.git"
 printf 'main\n' > fixture.txt
