@@ -32,10 +32,7 @@ mapfile -t closure_paths < <(nix-store --query --requisites "$store_path")
 [[ ${#closure_paths[@]} -gt 0 ]]
 nix-store --export "${closure_paths[@]}" | zstd -T0 -3 > "$output_dir/$asset"
 zstd --test "$output_dir/$asset"
-# Exercise the exact consumer transport on the builder as well. Importing
-# existing store paths is harmless and catches malformed export streams.
-zstd --decompress --stdout "$output_dir/$asset" | nix-store --import > "$work_dir/imported"
-grep -Fxq "$store_path" "$work_dir/imported"
+# Import validation belongs to the consumer; the builder need not be a trusted Nix user.
 sha256="$(sha256sum "$output_dir/$asset" | cut -d ' ' -f 1)"
 jq -n --arg version "$version" --arg storePath "$store_path" \
   --arg asset "$asset" --arg sha256 "$sha256" \

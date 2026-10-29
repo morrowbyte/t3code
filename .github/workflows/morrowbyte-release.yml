@@ -1126,7 +1126,7 @@ jobs:
         with:
           name: morrowbyte-release-linux
           path: release-linux
-      - name: Build immutable NixOS closure on Blacksmith
+      - name: Build immutable NixOS closure
         env:
           T3_MORROWBYTE_REPOSITORY: ${{ vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}
         run: bash scripts/morrowbyte/build-nixos-closure.sh "${{ needs.preflight.outputs.version }}" "release-linux/T3-Code-${{ needs.preflight.outputs.version }}-x86_64.AppImage" release-nixos
