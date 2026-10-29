@@ -3,6 +3,7 @@ import { CheckpointScopeId, CommandId, GitCommandError, RunId, ThreadId } from "
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
@@ -23,13 +24,15 @@ import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as ThreadTitles from "./ThreadTitleRegenerationService.ts";
 
 it.effect.each([
-  ["starts the next turn after a post-capture Git status failure", false],
-  ["keeps the next turn queued when checkpoint capture fails", true],
-] as const)("%s", ([, captureFails]) => {
+  ["starts the next turn after a post-capture Git status failure", 0],
+  ["keeps the next turn queued when checkpoint capture fails", 1],
+  ["retries checkpoint capture beyond the attempt limit without losing queued turns", 5],
+] as const)("%s", ([, captureFailures]) => {
   const threadId = ThreadId.make("thread:finalization-queue");
   const runId = RunId.make("run:finalization-queue");
   const scopeId = CheckpointScopeId.make("scope:finalization-queue");
   const calls: string[] = [];
+  let captureAttempts = 0;
   const checkpointFailure = new CheckpointCapture.CheckpointCaptureExecutionError({
     threadId,
     runId,
@@ -74,7 +77,7 @@ it.effect.each([
           execute: () =>
             Effect.gen(function* () {
               calls.push("capture");
-              if (captureFails) return yield* checkpointFailure;
+              if (captureAttempts++ < captureFailures) return yield* checkpointFailure;
             }),
         }),
       ),
@@ -92,7 +95,7 @@ it.effect.each([
         Layer.mock(ThreadManagement.ThreadManagementService)({}),
         ServerSettings.layerTest(),
         Layer.mock(ProviderTurnStart.ProviderTurnStartServiceV2)({
-          start: () => Effect.sync(() => calls.push("start")).pipe(Effect.asVoid),
+          start: ({ runId }) => Effect.sync(() => calls.push(runId)).pipe(Effect.asVoid),
         }),
       ),
     ),
@@ -110,23 +113,53 @@ it.effect.each([
         threadId,
         request: { type: "checkpoint.capture", runId, scopeId },
       },
-      {
-        id: "effect:finalization-queue:start",
-        commandId: CommandId.make("command:finalization-queue:start"),
+      ...[2, 3, 4].map((ordinal) => ({
+        id: `effect:finalization-queue:start:${ordinal}`,
+        commandId: CommandId.make(`command:finalization-queue:start:${ordinal}`),
         threadId,
-        request: { type: "provider-turn.start", runId: RunId.make("run:next") },
-      },
+        request: { type: "provider-turn.start" as const, runId: RunId.make(`run:next:${ordinal}`) },
+      })),
     ]);
 
-    assert.equal(yield* effectWorker.drain(2), captureFails ? 1 : 2);
+    for (let attempt = 0; attempt < Math.max(1, captureFailures); attempt++) {
+      if (attempt > 0) yield* TestClock.adjust("30 seconds");
+      assert.equal(
+        yield* effectWorker.drain(captureFailures > 0 ? 1 : 4),
+        captureFailures > 0 ? 1 : 4,
+      );
+    }
     const captured = Option.getOrThrow(yield* queue.get("effect:finalization-queue:capture"));
-    const started = Option.getOrThrow(yield* queue.get("effect:finalization-queue:start"));
-    assert.equal(captured.status, captureFails ? "pending" : "succeeded");
-    assert.equal(captured.attemptCount, 1);
-    assert.equal(started.status, captureFails ? "pending" : "succeeded");
-    assert.equal(started.attemptCount, captureFails ? 0 : 1);
-    assert.deepEqual(calls, captureFails ? ["capture"] : ["capture", "refresh", "start"]);
-    if (captureFails) assert.include(captured.lastError ?? "", "checkpoint storage unavailable");
+    assert.equal(captured.status, captureFailures > 0 ? "pending" : "succeeded");
+    assert.equal(captured.attemptCount, Math.max(1, captureFailures));
+    assert.equal(yield* effectWorker.drain(), 0);
+    for (const ordinal of [2, 3, 4]) {
+      const started = Option.getOrThrow(
+        yield* queue.get(`effect:finalization-queue:start:${ordinal}`),
+      );
+      assert.equal(started.status, captureFailures > 0 ? "pending" : "succeeded");
+      assert.equal(started.attemptCount, captureFailures > 0 ? 0 : 1);
+    }
+    const successfulCalls = ["capture", "refresh", "run:next:2", "run:next:3", "run:next:4"];
+    assert.deepEqual(
+      calls,
+      captureFailures > 0
+        ? Array.from({ length: captureFailures }, () => "capture")
+        : successfulCalls,
+    );
+    if (captureFailures > 0)
+      assert.include(captured.lastError ?? "", "checkpoint storage unavailable");
     else assert.equal(captured.lastError, null);
+
+    if (captureFailures === 5) {
+      yield* TestClock.adjust("30 seconds");
+      assert.equal(yield* effectWorker.drain(4), 4);
+      assert.equal(yield* effectWorker.drain(), 0);
+      assert.deepEqual(calls, [...Array.from({ length: 5 }, () => "capture"), ...successfulCalls]);
+      for (const suffix of ["capture", "start:2", "start:3", "start:4"]) {
+        const settled = Option.getOrThrow(yield* queue.get(`effect:finalization-queue:${suffix}`));
+        assert.equal(settled.status, "succeeded");
+        assert.equal(settled.attemptCount, suffix === "capture" ? 6 : 1);
+      }
+    }
   }).pipe(Effect.provide(Layer.fresh(worker)));
 });
