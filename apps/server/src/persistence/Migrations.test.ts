@@ -269,15 +269,23 @@ describe("runMigrations", () => {
   );
 });
 
-// The npm launcher reads the highest migration id from these file names.
+// The fork retains upstream filenames while its manifest preserves already shipped migration IDs.
 it.effect("registers every migration file", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const dir = path.join(import.meta.dirname, "Migrations");
+    const shippedForkIds: Record<string, number> = {
+      CodexUsageNativeTurnIndex: 66,
+      RepairClientSettlementTimestamps: 67,
+      WebhookDedupe: 68,
+      ApprovalReviewReadyIndex: 69,
+      ApprovalReviewHostOrders: 70,
+      ShellStopRequestIndex: 71,
+    };
     const files = (yield* fs.readDirectory(dir)).flatMap((name) => {
       const match = /^(\d+)_(\w+)\.ts$/.exec(name);
-      return match ? [[Number(match[1]), match[2]] as const] : [];
+      return match ? [[shippedForkIds[match[2]!] ?? Number(match[1]), match[2]] as const] : [];
     });
     assert.deepStrictEqual(
       files.toSorted(([a], [b]) => a - b),
