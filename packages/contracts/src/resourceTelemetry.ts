@@ -6,6 +6,7 @@ import { HostPowerSnapshot } from "./background.ts";
 import {
   MainRendererDiagnosticsReadInput,
   MainRendererDiagnosticsReadResult,
+  DesktopUpdateChannelSchema,
   DesktopUpdateStateSchema,
 } from "./ipc.ts";
 
@@ -362,6 +363,9 @@ export const DesktopTelemetryRequestDesktopUpdate = Schema.Struct({
   version: Schema.Literal(1),
   type: Schema.Literal("requestDesktopUpdate"),
   requestId: TrimmedNonEmptyString,
+  /** A track switch: move to this channel first, and install only `targetVersion`. */
+  channel: Schema.optionalKey(DesktopUpdateChannelSchema),
+  targetVersion: Schema.optionalKey(TrimmedNonEmptyString),
 });
 export type DesktopTelemetryRequestDesktopUpdate = typeof DesktopTelemetryRequestDesktopUpdate.Type;
 

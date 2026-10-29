@@ -67,11 +67,13 @@ import {
 } from "./composerAttachmentFiles";
 import {
   buildPendingUserInputAnswers,
-  derivePendingUserInputProgress,
-  projectPendingUserInputAnswer,
   setPendingUserInputCustomAnswer,
   togglePendingUserInputOptionSelection,
   type PendingUserInputDraftAnswer,
+} from "@t3tools/client-runtime/state/pending-user-input";
+import {
+  derivePendingUserInputProgress,
+  projectPendingUserInputAnswer,
 } from "../../pendingUserInput";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
@@ -741,9 +743,9 @@ function ChildQuestionForm({
                 answers: {
                   ...previous.answers,
                   [question.id]: setPendingUserInputCustomAnswer(
+                    question,
                     previous.answers[question.id],
                     value,
-                    question,
                   ),
                 },
               }));

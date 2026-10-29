@@ -265,6 +265,7 @@ it.each(["direct", "workspace picker"])(
             />
           ) : null}
           <ThreadDetailsPanel
+            usage={{ providerInstanceId: null, providers: [], sources: [], contextWindow: null }}
             anchor={anchor}
             handle={handle}
             environmentId={EnvironmentId.make("environment")}

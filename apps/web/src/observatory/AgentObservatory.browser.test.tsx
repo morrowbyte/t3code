@@ -208,6 +208,7 @@ const source: ObservatoryEnvironment = {
 };
 const details = {
   status: "live" as const,
+  sequence: 0,
   data: Option.some(projection),
   error: Option.none<string>(),
   history: {
