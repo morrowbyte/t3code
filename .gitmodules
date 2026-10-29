@@ -1,0 +1,10 @@
+[submodule "references-distilled"]
+	path = .repos/alchemy-effect/submodules/distilled
+	url = https://github.com/alchemy-run/distilled.git
+	update = none
+	ignore = all
+[submodule "references-floci"]
+	path = .repos/alchemy-effect/submodules/floci
+	url = https://github.com/alchemy-run/floci.git
+	update = none
+	ignore = all
