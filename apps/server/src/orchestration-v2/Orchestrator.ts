@@ -13233,7 +13233,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           Effect.provideService(ProjectionStoreV2, projectionStore),
         );
         for (const event of planned) yield* emit(events, command)(event);
-        if (command.type === "privileged-command.result" && command.cleanupConfirmed === true)
+        if (
+          command.type === "privileged-command.result" &&
+          command.cleanupConfirmed === true &&
+          planned.some(
+            (event) =>
+              event.type === "runtime-request.updated" &&
+              event.payload.privilegedCommand?.claimId === command.claimId,
+          )
+        )
           confirmedCleanupEffectId = `effect:privileged-command-claim:${command.claimId}:privileged-command.cleanup:${command.requestId}`;
         if (command.type === "privileged-command.claim") {
           const updated = planned.find((event) => event.type === "runtime-request.updated");

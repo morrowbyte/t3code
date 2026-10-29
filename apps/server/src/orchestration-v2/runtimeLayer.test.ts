@@ -1,5 +1,6 @@
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import { EnvironmentId, SourceControlProviderKind } from "@t3tools/contracts";
+import { privilegedCommandHash } from "./PrivilegedCommandPackage.ts";
 import { limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
@@ -1003,6 +1004,94 @@ it.effect.each([
 );
 
 it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
+  it.effect(
+    "persists a privileged non-start without claiming cleanup and replays its receipt",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const threadId = ThreadId.make("privileged-preflight-failure");
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("privileged-preflight-create"),
+          createdBy: "user",
+          creationSource: "web",
+          threadId,
+          projectId: ProjectId.make("privileged-preflight-project"),
+          title: "Privileged preflight",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: process.cwd(),
+        });
+        const requestId = RuntimeRequestId.make("privileged-command:preflight-failure");
+        const now = yield* DateTime.now;
+        const bundle = {
+          environmentId: fixtureEnvironmentId,
+          threadId,
+          runId: RunId.make("preflight-run"),
+          providerSessionId: "preflight-session",
+          purpose: "Inspect",
+          script: "Write-Output ok",
+          shell: "powershell" as const,
+          cwd: "C:\\Windows",
+          timeoutMs: 1000,
+        };
+        const packageHash = privilegedCommandHash(requestId, bundle);
+        yield* eventSink.write({
+          events: [
+            {
+              id: EventId.make("privileged-preflight-approved"),
+              type: "runtime-request.updated",
+              threadId,
+              occurredAt: now,
+              payload: {
+                id: requestId,
+                nodeId: NodeId.make("preflight-node"),
+                providerTurnId: null,
+                nativeRequestRef: null,
+                kind: "command",
+                status: "resolved",
+                decision: "accept",
+                responseCapability: { type: "external" },
+                createdAt: now,
+                resolvedAt: now,
+                privilegedCommand: { bundle, packageHash, state: "approved" },
+              },
+            },
+          ],
+        });
+        const command = {
+          type: "privileged-command.result" as const,
+          commandId: CommandId.make("privileged-preflight-result"),
+          threadId,
+          requestId,
+          packageHash,
+          claimId: "uncommitted-claim",
+          cleanupConfirmed: true,
+          result: {
+            status: "failed" as const,
+            exitCode: null,
+            stdout: "",
+            stderr: "Identity unavailable; not started.",
+          },
+        };
+        const first = yield* orchestrator.dispatch(command);
+        const repeated = yield* orchestrator.dispatch(command);
+        assert.equal(repeated.sequence, first.sequence);
+        assert.isTrue(repeated.replayed);
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(projection.runtimeRequests[0]?.privilegedCommand?.state, "completed");
+        assert.equal(projection.runtimeRequests[0]?.privilegedCommand?.result?.status, "failed");
+        assert.isUndefined(projection.runtimeRequests[0]?.privilegedCommand?.claimId);
+        assert.deepEqual(
+          yield* (yield* EffectOutbox.EffectOutboxV2).listByCommandId(command.commandId),
+          [],
+        );
+      }),
+  );
+
   const seedFailingRollbackThread = (name: string) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;

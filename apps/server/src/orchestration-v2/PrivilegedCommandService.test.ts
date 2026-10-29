@@ -10,6 +10,7 @@ import {
   RuntimeRequestId,
   ThreadId,
   type OrchestrationV2RuntimeRequest,
+  type PrivilegedCommandAuthority,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -35,21 +36,28 @@ describe("privileged command service", () => {
           runId = RunId.make("run");
         let request: OrchestrationV2RuntimeRequest | undefined;
         let resultWrites = 0;
+        let preflightResultAttempts = 0;
         let failValidation = true;
         let cleanupConfirmed = false;
         let failClaim = false;
         let failAfterClaimCommit = false;
         let failBeforeRunner = false;
+        let failRecoveryIdentity = false;
         let lastResultCleanupConfirmed: boolean | undefined;
         let markerFailures = 0;
         let claimAttempts = 0;
+        let activeRunId = runId;
+        let activeCredential = "session";
+        let streamResult: PrivilegedCommandAuthority | undefined;
+        let foreignClaim = false;
+        let stoppedClaim = false;
         const calls: Executor.PrivilegedCommandInput[] = [];
         const store = {
           getRuntimeResponseContext: () => Effect.succeed({ request, item: undefined }),
           getRuntimeRequest: () => Effect.succeed(request),
           getRunningTurnContext: () =>
             Effect.succeed({
-              run: { id: runId, rootNodeId: NodeId.make("root") },
+              run: { id: activeRunId, rootNodeId: NodeId.make("root") },
               providerThread: { providerSessionId: "provider-session" },
               providerTurn: {},
             }),
@@ -64,6 +72,11 @@ describe("privileged command service", () => {
               if (failClaim) return Effect.fail(new ApprovalReviewError({ reason: "storage" }));
             }
             if (command.type === "privileged-command.result") {
+              if (
+                command.commandId.startsWith("privileged-command-preflight-failed:") &&
+                preflightResultAttempts++ === 0
+              )
+                return Effect.fail(new ApprovalReviewError({ reason: "storage" }));
               lastResultCleanupConfirmed = command.cleanupConfirmed;
               if (++resultWrites === 1)
                 return Effect.fail(new ApprovalReviewError({ reason: "storage" }));
@@ -82,17 +95,36 @@ describe("privileged command service", () => {
               ? applied.pipe(
                   Effect.andThen(Effect.fail(new ApprovalReviewError({ reason: "storage" }))),
                 )
-              : applied;
+              : command.type === "privileged-command.claim" && (foreignClaim || stoppedClaim)
+                ? applied.pipe(
+                    Effect.tap(() =>
+                      Effect.sync(() => {
+                        if (request?.privilegedCommand)
+                          request = {
+                            ...request,
+                            privilegedCommand: stoppedClaim
+                              ? { ...request.privilegedCommand, state: "unknown" }
+                              : { ...request.privilegedCommand, claimId: "other-claim" },
+                          };
+                      }),
+                    ),
+                    Effect.andThen(Effect.fail(new ApprovalReviewError({ reason: "storage" }))),
+                  )
+                : applied;
           },
         } as unknown as Orchestrator.OrchestratorV2["Service"];
         const executor = {
           captureRecoveryIdentity: () =>
-            Effect.succeed({
-              platform: "linux" as const,
-              bootId: "test-boot",
-              processId: 123,
-              processStart: "start-fixture",
-            }),
+            failRecoveryIdentity
+              ? Effect.fail(
+                  new Executor.PrivilegedCommandExecutionError({ reason: "control-unavailable" }),
+                )
+              : Effect.succeed({
+                  platform: "linux" as const,
+                  bootId: "test-boot",
+                  processId: 123,
+                  processStart: "start-fixture",
+                }),
           cleanup: () =>
             Effect.succeed({
               status: cleanupConfirmed ? ("confirmed" as const) : ("unknown" as const),
@@ -121,9 +153,19 @@ describe("privileged command service", () => {
           Layer.succeed(EventSink.EventSinkV2, {
             latestSequence: () => Effect.succeed(0),
             stream: () =>
-              Stream.succeed({
-                event: { type: "run.updated", payload: { id: runId, status: "cancelled" } },
-              }),
+              Stream.fromIterable([
+                { event: { type: "run.updated", payload: { id: runId, status: "completed" } } },
+                ...(streamResult === undefined
+                  ? []
+                  : [
+                      {
+                        event: {
+                          type: "runtime-request.updated",
+                          payload: { ...request, privilegedCommand: streamResult },
+                        },
+                      },
+                    ]),
+              ]),
           } as unknown as EventSink.EventSinkV2["Service"]),
           Layer.succeed(ProjectionStore.ProjectionStoreV2, store),
           Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
@@ -131,7 +173,7 @@ describe("privileged command service", () => {
               Effect.succeed(
                 providerSessionId === "provider-session" &&
                   ownerThreadId === threadId &&
-                  credentialId === "session",
+                  credentialId === activeCredential,
               ),
           }),
           Layer.succeed(Orchestrator.OrchestratorV2, orchestrator),
@@ -243,6 +285,20 @@ describe("privileged command service", () => {
           const service = yield* Service.PrivilegedCommandService;
           return yield* service.executeApproved({ threadId, ...proposal });
         });
+        streamResult = {
+          ...resolved,
+          state: "completed",
+          result: {
+            status: "succeeded",
+            exitCode: 0,
+            stdout: "event result",
+            stderr: "",
+          },
+        };
+        expect((yield* interruptedWait.pipe(Effect.provide(layer))).result?.stdout).toBe(
+          "event result",
+        );
+        streamResult = undefined;
         yield* invoke.pipe(Effect.provide(layer));
         expect(calls).toHaveLength(1);
         expect(resultWrites).toBe(2);
@@ -259,6 +315,12 @@ describe("privileged command service", () => {
             });
           }).pipe(Effect.provide(layer));
         expect((yield* read("session")).state).toBe("completed");
+        activeRunId = RunId.make("next-run");
+        activeCredential = "next-session";
+        expect((yield* read("next-session")).state).toBe("completed");
+        expect(Exit.isFailure(yield* Effect.exit(read("session")))).toBe(true);
+        activeRunId = runId;
+        activeCredential = "session";
         expect(Exit.isFailure(yield* Effect.exit(read("other")))).toBe(true);
         const second = yield* Effect.exit(invoke.pipe(Effect.provide(layer)));
         expect(Exit.isFailure(second)).toBe(true);
@@ -278,15 +340,52 @@ describe("privileged command service", () => {
         failClaim = false;
         failAfterClaimCommit = true;
         yield* invoke.pipe(Effect.provide(layer));
-        expect(request.privilegedCommand?.state).toBe("unknown");
-        expect(calls).toHaveLength(1);
+        expect(request.privilegedCommand?.state).toBe("completed");
+        expect(calls).toHaveLength(2);
+        expect(Exit.isFailure(yield* Effect.exit(invoke.pipe(Effect.provide(layer))))).toBe(true);
+        expect(calls).toHaveLength(2);
         request = { ...request, privilegedCommand: { ...saved, state: "approved" } };
         failAfterClaimCommit = false;
         failBeforeRunner = true;
         yield* invoke.pipe(Effect.provide(layer));
-        expect(calls).toHaveLength(2);
+        expect(calls).toHaveLength(3);
         expect(request.privilegedCommand?.result?.status).toBe("failed");
         expect(lastResultCleanupConfirmed).toBe(true);
+        request = { ...request, privilegedCommand: { ...saved, state: "approved" } };
+        failBeforeRunner = false;
+        failRecoveryIdentity = true;
+        const beforeIdentityClaims = claimAttempts;
+        yield* invoke.pipe(Effect.provide(layer));
+        expect(claimAttempts).toBe(beforeIdentityClaims);
+        expect(preflightResultAttempts).toBe(2);
+        expect(calls).toHaveLength(3);
+        expect(request.privilegedCommand).toMatchObject({
+          state: "completed",
+          result: {
+            status: "failed",
+            exitCode: null,
+            stderr: "Could not establish the privileged execution stop channel.",
+          },
+        });
+        expect(request.privilegedCommand?.claimId).toBeUndefined();
+        expect((yield* read("session")).result?.status).toBe("failed");
+        expect(Exit.isFailure(yield* Effect.exit(invoke.pipe(Effect.provide(layer))))).toBe(true);
+        expect(calls).toHaveLength(3);
+        request = { ...request, privilegedCommand: { ...saved, state: "approved" } };
+        failRecoveryIdentity = false;
+        foreignClaim = true;
+        expect(Exit.isFailure(yield* Effect.exit(invoke.pipe(Effect.provide(layer))))).toBe(true);
+        expect(request.privilegedCommand).toMatchObject({
+          state: "claimed",
+          claimId: "other-claim",
+        });
+        expect(calls).toHaveLength(3);
+        request = { ...request, privilegedCommand: { ...saved, state: "approved" } };
+        foreignClaim = false;
+        stoppedClaim = true;
+        yield* invoke.pipe(Effect.provide(layer));
+        expect(request.privilegedCommand?.state).toBe("unknown");
+        expect(calls).toHaveLength(3);
       }),
   );
 });

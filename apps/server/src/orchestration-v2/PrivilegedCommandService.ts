@@ -172,6 +172,12 @@ const make = Effect.gen(function* () {
               privilegedCommandHash(input.requestId, authority.bundle) !== input.packageHash
             )
               return yield* new ApprovalReviewError({ reason: "hash-mismatch" });
+            if (
+              request?.status !== "resolved" ||
+              request.decision !== "accept" ||
+              authority.state !== "approved"
+            )
+              return yield* new ApprovalReviewError({ reason: "not-approved" });
             const recoveryIdentity = yield* executor.captureRecoveryIdentity();
             yield* orchestrator.dispatch({
               type: "privileged-command.claim",
@@ -181,8 +187,58 @@ const make = Effect.gen(function* () {
               ...input,
             });
             return authority;
-          }),
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.gen(function* () {
+                if (Option.exists(Cause.findErrorOption(cause), isExecutionError))
+                  return yield* Effect.failCause(cause);
+                const current = yield* store.getRuntimeRequest(input.threadId, input.requestId);
+                const authority = current?.privilegedCommand;
+                if (
+                  authority?.state === "claimed" &&
+                  authority.claimId === claimId &&
+                  authority.bundle.environmentId === environmentId &&
+                  authority.packageHash === input.packageHash &&
+                  privilegedCommandHash(input.requestId, authority.bundle) === input.packageHash
+                )
+                  return authority;
+                return yield* Effect.failCause(cause);
+              }),
+            ),
+          ),
         );
+        const preflightFailure = Exit.isFailure(claimed)
+          ? Cause.findErrorOption(claimed.cause).pipe(Option.filter(isExecutionError))
+          : Option.none();
+        if (Option.isSome(preflightFailure)) {
+          const result = {
+            status: "failed" as const,
+            exitCode: null,
+            stdout: "",
+            stderr: preflightFailure.value.message,
+          };
+          const resultId = CommandId.make(`privileged-command-preflight-failed:${claimId}`);
+          yield* restore(
+            Effect.suspend(() =>
+              orchestrator.dispatch({
+                type: "privileged-command.result",
+                commandId: resultId,
+                claimId,
+                cleanupConfirmed: true,
+                ...input,
+                result,
+              }),
+            ).pipe(
+              Effect.retry({
+                schedule: Schedule.spaced("1 second"),
+                while: (error) =>
+                  error._tag !== "OrchestratorCommandPreviouslyRejectedError" &&
+                  error._tag !== "OrchestratorCommandIdConflictError",
+              }),
+            ),
+          );
+          return;
+        }
         if (Exit.isFailure(claimed)) {
           const markerId = CommandId.make(`privileged-command-unconfirmed:${claimId}`);
           const marked = yield* restore(
@@ -302,9 +358,7 @@ const make = Effect.gen(function* () {
       environmentId !== input.environmentId ||
       authority.bundle.environmentId !== environmentId ||
       authority.bundle.threadId !== input.threadId ||
-      authority.bundle.providerSessionId !== input.providerSessionId ||
       running.providerThread?.providerSessionId == null ||
-      running.run?.id !== authority.bundle.runId ||
       privilegedCommandHash(input.requestId, authority.bundle) !== authority.packageHash
     )
       return yield* new ApprovalReviewError({ reason: "forbidden" });
@@ -322,19 +376,14 @@ const make = Effect.gen(function* () {
     const event = yield* events.stream({ threadId: input.threadId, afterSequence: sequence }).pipe(
       Stream.filter(
         (entry) =>
-          (entry.event.type === "runtime-request.updated" &&
-            entry.event.payload.id === input.requestId &&
-            entry.event.payload.privilegedCommand !== undefined &&
-            terminal(entry.event.payload.privilegedCommand)) ||
-          (entry.event.type === "run.updated" &&
-            entry.event.payload.id === authority.bundle.runId &&
-            !["preparing", "starting", "running", "waiting"].includes(entry.event.payload.status)),
+          entry.event.type === "runtime-request.updated" &&
+          entry.event.payload.id === input.requestId &&
+          entry.event.payload.privilegedCommand !== undefined &&
+          terminal(entry.event.payload.privilegedCommand),
       ),
       Stream.runHead,
       Effect.mapError(() => new ApprovalReviewError({ reason: "storage" })),
     );
-    if (Option.isSome(event) && event.value.event.type === "run.updated")
-      return yield* new ApprovalReviewError({ reason: "conflict" });
     if (
       Option.isNone(event) ||
       event.value.event.type !== "runtime-request.updated" ||

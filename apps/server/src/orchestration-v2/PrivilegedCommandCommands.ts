@@ -154,8 +154,15 @@ export const plan = Effect.fn("PrivilegedCommandCommands.plan")(function* (comma
     if (running.run?.id !== authority.bundle.runId)
       return yield* new ApprovalReviewError({ reason: "conflict" });
   }
+  const failedBeforeClaim =
+    command.type === "privileged-command.result" &&
+    authority.state === "approved" &&
+    authority.claimId === undefined &&
+    command.result.status === "failed" &&
+    command.cleanupConfirmed === true;
   if (
     command.type === "privileged-command.result" &&
+    !failedBeforeClaim &&
     authority.state !== "claimed" &&
     !(
       authority.state === "unknown" &&
@@ -164,7 +171,11 @@ export const plan = Effect.fn("PrivilegedCommandCommands.plan")(function* (comma
     )
   )
     return yield* new ApprovalReviewError({ reason: "replayed" });
-  if (command.type === "privileged-command.result" && authority.claimId !== command.claimId)
+  if (
+    command.type === "privileged-command.result" &&
+    !failedBeforeClaim &&
+    authority.claimId !== command.claimId
+  )
     return yield* new ApprovalReviewError({ reason: "forbidden" });
   if (
     command.type === "privileged-command.unconfirmed" &&
