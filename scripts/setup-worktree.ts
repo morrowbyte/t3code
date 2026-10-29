@@ -134,7 +134,7 @@ if (
 // Worktrees link main-checkout env files; replace only symlinks so real files always survive.
 for (const file of ENV_FILES) {
   const source = NodePath.join(projectRoot, file);
-  const sourceStat = NodeFS.lstatSync(source, { throwIfNoEntry: false });
+  const sourceStat = NodeFS.statSync(source, { throwIfNoEntry: false });
   if (!sourceStat) continue;
   if (!sourceStat.isFile()) {
     process.stderr.write(`Skipping ${file}: ${source} is not a regular file.\n`);

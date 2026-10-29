@@ -14,11 +14,18 @@ async function fixture(message: string | null, platform: NodeJS.Platform) {
   const scripts = NodePath.join(worktree, "scripts");
   const shared = NodePath.join(worktree, "packages/shared/src/node");
   const bin = NodePath.join(directory, "bin");
+  const projectRoot = NodePath.join(directory, "main");
   await Promise.all([
     NodeFSP.mkdir(scripts, { recursive: true }),
     NodeFSP.mkdir(shared, { recursive: true }),
     NodeFSP.mkdir(bin),
+    NodeFSP.mkdir(projectRoot),
   ]);
+  if (platform !== "win32") {
+    const privateEnv = NodePath.join(directory, "private.env");
+    await NodeFSP.writeFile(privateEnv, "SETUP_FIXTURE=1\n");
+    await NodeFSP.symlink(privateEnv, NodePath.join(projectRoot, ".env"));
+  }
   await NodeFSP.copyFile(
     NodeURL.fileURLToPath(new URL("./setup-worktree.ts", import.meta.url)),
     NodePath.join(scripts, "setup-worktree.ts"),
@@ -52,7 +59,7 @@ async function fixture(message: string | null, platform: NodeJS.Platform) {
             env: {
               ...process.env,
               PATH: `${bin}${NodePath.delimiter}${process.env.PATH ?? ""}`,
-              T3CODE_PROJECT_ROOT: worktree,
+              T3CODE_PROJECT_ROOT: projectRoot,
             },
             stdio: ["ignore", "pipe", "pipe"],
           },
@@ -97,6 +104,11 @@ describe("worktree installer storage admission", () => {
         await using test = await fixture(null, platform);
         const result = await test.run();
         expect(result).toEqual({ code: 0, stderr: "" });
+        if (platform !== "win32") {
+          expect(await NodeFSP.readFile(NodePath.join(test.worktree, ".env"), "utf8")).toBe(
+            "SETUP_FIXTURE=1\n",
+          );
+        }
         expect(
           JSON.parse(
             await NodeFSP.readFile(NodePath.join(test.worktree, "installer-started"), "utf8"),
