@@ -2749,8 +2749,26 @@ const make = Effect.gen(function* () {
         ),
       });
     });
-    broadcastViewport(tab);
-    yield* Effect.promise(() => startScreencast(1));
+    const started = startScreencast(1);
+    if (tab.desktop) {
+      // A page reached over CDP has no emulated viewport; input lands in its zoomed CSS pixels.
+      // Measuring after the screencast starts keeps the desktop from marking the tab agentUsed.
+      let measurement = 0;
+      const pushPageSize = async () => {
+        const current = ++measurement;
+        const metrics = await ServerBrowserPage.readPageMetrics(session).catch(() => null);
+        if (metrics && current === measurement)
+          viewer.push({ _tag: "viewport", width: metrics.width, height: metrics.height });
+      };
+      void started.then(() => {
+        session.on("Page.frameResized", () => void pushPageSize());
+        session.on("Page.frameNavigated", ({ frame }) => {
+          if (frame.parentId === undefined) void pushPageSize();
+        });
+        return pushPageSize();
+      });
+    } else broadcastViewport(tab);
+    yield* Effect.promise(() => started);
     // An idle page does not repaint for a new screencast, so the viewer
     // starts from a still unless a live frame beat it.
     if (!screencastStarted) yield* Effect.promise(pushStill);

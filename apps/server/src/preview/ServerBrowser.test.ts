@@ -57,8 +57,9 @@ vi.mock("./ServerBrowserContexts.ts", () => ({
       return makeEncoderPage() as unknown as Page;
     }
     async connectDesktopPage(endpoint: string) {
-      const context = makeContext();
-      desktopConnections.push({ endpoint, context });
+      const layout = { ...DESKTOP_LAYOUT };
+      const context = makeContext(undefined, layout);
+      desktopConnections.push({ endpoint, context, layout });
       desktopDetaches.emit("connected");
       return { browser: { close: async () => {} }, page: context.page as unknown as Page };
     }
@@ -87,15 +88,25 @@ const PNG_HEADER = (() => {
   return header.toString("base64");
 })();
 
-function makeSession(frame?: ReturnType<typeof makeFrame>) {
+// The desktop's webview, sized by its panel rather than by viewport emulation.
+const DESKTOP_LAYOUT = { width: 1024, height: 640 };
+
+function makeSession(frame?: ReturnType<typeof makeFrame>, layout?: typeof DESKTOP_LAYOUT) {
   const events = new NodeEvents.EventEmitter();
   return {
     on: vi.fn((name: string, listener: () => void) => events.on(name, listener)),
-    emit: (name: string) => events.emit(name),
+    emit: (name: string, ...args: unknown[]) => events.emit(name, ...args),
     detach: vi.fn(async () => {}),
     send: vi.fn(async (method: string, input?: unknown): Promise<Record<string, unknown>> => {
       if (method === "Page.getNavigationHistory") return { currentIndex: 0, entries: [{}] };
-      if (method === "Page.getLayoutMetrics") return { cssVisualViewport: { pageX: 0, pageY: 0 } };
+      if (method === "Page.getLayoutMetrics") {
+        if (!layout) return { cssVisualViewport: { pageX: 0, pageY: 0 } };
+        const client = { clientWidth: layout.width, clientHeight: layout.height };
+        return {
+          cssLayoutViewport: { pageX: 0, pageY: 0, ...client },
+          cssVisualViewport: { pageX: 0, pageY: 0, zoom: 1, ...client },
+        };
+      }
       if (method === "Page.captureScreenshot") {
         // A snapshot sizes its screenshot from the PNG header; viewers get JPEG frames as-is.
         return { data: (input as { format: string }).format === "png" ? PNG_HEADER : "ZnJhbWU=" };
@@ -104,12 +115,22 @@ function makeSession(frame?: ReturnType<typeof makeFrame>) {
       if (method === "Runtime.callFunctionOn") return { result: { value: PNG_HEADER } };
       if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
       if (method === "Page.createIsolatedWorld") {
+        const { worldName } = input as { worldName?: string };
         return {
-          executionContextId: (input as { worldName?: string }).worldName === "t3-preview" ? 1 : 7,
+          executionContextId:
+            worldName === "t3-preview" ? 1 : layout && worldName === "t3-preview-metrics" ? 9 : 7,
         };
       }
       if (method === "Runtime.evaluate" && (input as { contextId?: number }).contextId === 1) {
         return { result: { value: [] } };
+      }
+      // `innerWidth` and `innerHeight`; without scrollbars they equal the client size.
+      if (
+        layout &&
+        method === "Runtime.evaluate" &&
+        (input as { contextId?: number }).contextId === 9
+      ) {
+        return { result: { value: { ratio: 1, ...layout } } };
       }
       if (method === "Page.addScriptToEvaluateOnNewDocument") frame?.recording.resolve();
       if (method === "Input.dispatchKeyEvent" && (input as { commands?: unknown }).commands) {
@@ -127,7 +148,10 @@ function makeSession(frame?: ReturnType<typeof makeFrame>) {
   };
 }
 
-function makeContext(onClose?: (context: BrowserContext) => void) {
+function makeContext(
+  onClose?: (context: BrowserContext) => void,
+  desktopLayout?: typeof DESKTOP_LAYOUT,
+) {
   const events = new NodeEvents.EventEmitter();
   const registered = Promise.withResolvers<void>();
   const nativeFileChooser = vi.fn();
@@ -168,7 +192,8 @@ function makeContext(onClose?: (context: BrowserContext) => void) {
     },
     url: () => url,
     title: vi.fn(async () => "test page"),
-    viewportSize: () => viewport,
+    // A page reached through `connectOverCDP` has no emulated viewport.
+    viewportSize: () => (desktopLayout ? null : viewport),
     setViewportSize: vi.fn(async (size: typeof viewport) => {
       viewport = size;
     }),
@@ -212,6 +237,7 @@ function makeContext(onClose?: (context: BrowserContext) => void) {
     newCDPSession: async (target: unknown) => {
       const session = makeSession(
         target === page ? undefined : (target as ReturnType<typeof makeFrame>),
+        target === page ? desktopLayout : undefined,
       );
       sessions.push(session);
       return session;
@@ -292,7 +318,11 @@ const desktopRenders = (tabId: string) => {
 };
 const releasedDesktopTabs: Array<string> = [];
 const desktopTurns = new NodeEvents.EventEmitter();
-const desktopConnections: Array<{ endpoint: string; context: ReturnType<typeof makeContext> }> = [];
+const desktopConnections: Array<{
+  endpoint: string;
+  context: ReturnType<typeof makeContext>;
+  layout: typeof DESKTOP_LAYOUT;
+}> = [];
 let nativeHandler: DesktopChannel.DesktopPrivateEntryHandler | undefined;
 let nativeReplyWaiter: ((response: DesktopBrowserPrivateEntryResponse) => void) | undefined;
 const testThread = {
@@ -680,6 +710,109 @@ it.effect("a tab the desktop does not draw is marked headless, so the desktop st
 
       expect(headlessOf(tabId)).toBe(true);
       expect(headlessOf(desktopTab.tabId)).toBeUndefined();
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("a viewer of a tab the desktop draws learns the page's CSS size", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      desktopRendersNext = true;
+      const { browser, tabId } = yield* ready;
+      expect(desktopConnections).toHaveLength(1);
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+      let viewport = yield* Queue.take(viewer.output);
+      while (viewport._tag !== "viewport") viewport = yield* Queue.take(viewer.output);
+      // Without it the client cannot map a pointer onto the page, so it drops all input.
+      expect(viewport).toEqual({ _tag: "viewport", ...DESKTOP_LAYOUT });
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("a viewer of a tab the desktop draws learns its new size when the host resizes it", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      desktopRendersNext = true;
+      const { browser, tabId } = yield* ready;
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+      let viewport = yield* Queue.take(viewer.output);
+      while (viewport._tag !== "viewport") viewport = yield* Queue.take(viewer.output);
+      const { context, layout } = desktopConnections[0]!;
+      Object.assign(layout, { width: 800, height: 600 });
+      context.sessions.at(-1)!.emit("Page.frameResized");
+      viewport = yield* Queue.take(viewer.output);
+      while (viewport._tag !== "viewport") viewport = yield* Queue.take(viewer.output);
+      expect(viewport).toEqual({ _tag: "viewport", width: 800, height: 600 });
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("a viewer of a tab the desktop draws is measured again once a navigation commits", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      desktopRendersNext = true;
+      const { browser, tabId } = yield* ready;
+      const { context } = desktopConnections[0]!;
+      const newCDPSession = context.newCDPSession;
+      const lost = Promise.withResolvers<ReturnType<typeof makeSession>>();
+      context.newCDPSession = async (target) => {
+        const session = await newCDPSession(target);
+        const send = session.send.getMockImplementation()!;
+        session.send.mockImplementation(async (method, input) => {
+          if (method !== "Runtime.evaluate" || (input as { contextId?: number }).contextId !== 9)
+            return send(method, input);
+          session.send.mockImplementation(send);
+          lost.resolve(session);
+          throw new Error("Cannot find context with specified id");
+        });
+        return session;
+      };
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+      const session = yield* Effect.promise(() => lost.promise);
+      session.emit("Page.frameNavigated", { frame: { id: "main" } });
+      let viewport = yield* Queue.take(viewer.output);
+      while (viewport._tag !== "viewport") viewport = yield* Queue.take(viewer.output);
+      expect(viewport).toEqual({ _tag: "viewport", ...DESKTOP_LAYOUT });
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("a viewer of a tab the desktop draws can act before the page is measured", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      desktopRendersNext = true;
+      const { browser, tabId } = yield* ready;
+      const { context } = desktopConnections[0]!;
+      const newCDPSession = context.newCDPSession;
+      const measuring = Promise.withResolvers<void>();
+      const measured = Promise.withResolvers<void>();
+      yield* Effect.addFinalizer(() => Effect.sync(() => measured.resolve()));
+      context.newCDPSession = async (target) => {
+        const session = await newCDPSession(target);
+        const send = session.send.getMockImplementation()!;
+        session.send.mockImplementation(async (method, input) => {
+          if (method === "Runtime.evaluate" && (input as { contextId?: number }).contextId === 9) {
+            measuring.resolve();
+            await measured.promise;
+          }
+          return send(method, input);
+        });
+        return session;
+      };
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+      yield* Effect.promise(() => measuring.promise);
+      yield* viewer.input({ type: "takeControl" });
+      const early = [];
+      let control = yield* Queue.take(viewer.output);
+      while (control._tag !== "control" || control.controller !== "you") {
+        early.push(control);
+        control = yield* Queue.take(viewer.output);
+      }
+      expect(early).not.toContainEqual(expect.objectContaining({ _tag: "viewport" }));
+      measured.resolve();
+      let viewport = yield* Queue.take(viewer.output);
+      while (viewport._tag !== "viewport") viewport = yield* Queue.take(viewer.output);
+      expect(viewport).toEqual({ _tag: "viewport", ...DESKTOP_LAYOUT });
     }),
   ).pipe(Effect.provide(layer)),
 );
