@@ -58,7 +58,7 @@ describe("environment access management", () => {
     Effect.gen(function* () {
       const first = harness("https://laptop.example.test", "laptop-test-token", pairingResponse);
       const second = harness("https://other.example.test", "other-test-token", pairingResponse);
-      const input = { label: "Blain37", scopes: [AuthAccessWriteScope] };
+      const input = { label: "Build host", scopes: [AuthAccessWriteScope] };
       const result = yield* createEnvironmentPairingCredential(first.input, input).pipe(
         Effect.provide(first.layer),
       );

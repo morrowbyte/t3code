@@ -123,9 +123,11 @@ jobs:
           fetch-depth: 0
 
       - name: Use local release build storage
-        if: inputs.runner_backend != 'blacksmith'
+        if: inputs.runner_backend != 'blacksmith' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
+        env:
+          RUNNER_INIT_SCRIPT: ${{ vars.MORROWBYTE_LINUX_INIT_SCRIPT }}
         shell: bash
-        run: source /var/lib/crew-runner/.config/crew-release/init.sh --github-env
+        run: source "$RUNNER_INIT_SCRIPT" --github-env
 
       - name: Validate platform selection
         env:
@@ -899,9 +901,11 @@ jobs:
           fetch-depth: 1
 
       - name: Use local release build storage
-        if: inputs.runner_backend != 'blacksmith'
+        if: inputs.runner_backend != 'blacksmith' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
+        env:
+          RUNNER_INIT_SCRIPT: ${{ vars.MORROWBYTE_LINUX_INIT_SCRIPT }}
         shell: bash
-        run: source /var/lib/crew-runner/.config/crew-release/init.sh --github-env
+        run: source "$RUNNER_INIT_SCRIPT" --github-env
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
@@ -1011,9 +1015,11 @@ jobs:
           fetch-depth: 1
 
       - name: Use local release build storage
-        if: inputs.runner_backend != 'blacksmith'
+        if: inputs.runner_backend != 'blacksmith' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
+        env:
+          RUNNER_INIT_SCRIPT: ${{ vars.MORROWBYTE_LINUX_INIT_SCRIPT }}
         shell: bash
-        run: source /var/lib/crew-runner/.config/crew-release/init.sh --github-env
+        run: source "$RUNNER_INIT_SCRIPT" --github-env
 
       - name: Apply the reviewed .68 release-stage copy fix
         if: inputs.continue_release68_run_id != ''
@@ -1158,9 +1164,11 @@ jobs:
           sparse-checkout-cone-mode: false
           ref: ${{ needs.preflight.outputs.source_sha }}
       - name: Use local release build storage
-        if: inputs.runner_backend != 'blacksmith'
+        if: inputs.runner_backend != 'blacksmith' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
+        env:
+          RUNNER_INIT_SCRIPT: ${{ vars.MORROWBYTE_LINUX_INIT_SCRIPT }}
         shell: bash
-        run: source /var/lib/crew-runner/.config/crew-release/init.sh --github-env
+        run: source "$RUNNER_INIT_SCRIPT" --github-env
 
       - uses: cachix/install-nix-action@3c6342b75005b9cc7c7d4069c3e9179247c89012 # v31
         if: inputs.runner_backend == 'blacksmith'
@@ -1364,9 +1372,11 @@ jobs:
           fetch-depth: 1
 
       - name: Use local release build storage
-        if: inputs.runner_backend != 'blacksmith'
+        if: inputs.runner_backend != 'blacksmith' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
+        env:
+          RUNNER_INIT_SCRIPT: ${{ vars.MORROWBYTE_LINUX_INIT_SCRIPT }}
         shell: bash
-        run: source /var/lib/crew-runner/.config/crew-release/init.sh --github-env
+        run: source "$RUNNER_INIT_SCRIPT" --github-env
 
       - name: Retain the reviewed control startup gate for the historical app source
         if: inputs.restore_android74
@@ -1754,9 +1764,11 @@ jobs:
           fetch-depth: 1
 
       - name: Use local release build storage
-        if: inputs.runner_backend != 'blacksmith'
+        if: inputs.runner_backend != 'blacksmith' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
+        env:
+          RUNNER_INIT_SCRIPT: ${{ vars.MORROWBYTE_LINUX_INIT_SCRIPT }}
         shell: bash
-        run: source /var/lib/crew-runner/.config/crew-release/init.sh --github-env
+        run: source "$RUNNER_INIT_SCRIPT" --github-env
 
       - name: Download dedicated release assets
         uses: actions/download-artifact@v4
@@ -2114,9 +2126,11 @@ jobs:
           fetch-depth: 1
 
       - name: Use local release build storage
-        if: inputs.runner_backend != 'blacksmith'
+        if: inputs.runner_backend != 'blacksmith' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
+        env:
+          RUNNER_INIT_SCRIPT: ${{ vars.MORROWBYTE_LINUX_INIT_SCRIPT }}
         shell: bash
-        run: source /var/lib/crew-runner/.config/crew-release/init.sh --github-env
+        run: source "$RUNNER_INIT_SCRIPT" --github-env
 
       - name: Download only the verified Android payload
         uses: actions/download-artifact@v4
@@ -2245,9 +2259,11 @@ jobs:
           ref: ${{ needs.preflight.outputs.source_sha }}
           fetch-depth: 0
       - name: Use local release build storage
-        if: inputs.runner_backend != 'blacksmith'
+        if: inputs.runner_backend != 'blacksmith' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
+        env:
+          RUNNER_INIT_SCRIPT: ${{ vars.MORROWBYTE_LINUX_INIT_SCRIPT }}
         shell: bash
-        run: source /var/lib/crew-runner/.config/crew-release/init.sh --github-env
+        run: source "$RUNNER_INIT_SCRIPT" --github-env
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb

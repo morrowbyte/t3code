@@ -112,13 +112,12 @@ The Linux runner label defaults to `morrowbyte-linux`; Windows defaults to
 cloud runner name does not create that runner or switch execution providers.
 An absent runner leaves a job queued. Do not call a dispatch a completed release.
 
-The Linux release runner sources
-`/var/lib/crew-runner/.config/crew-release/init.sh --github-env` after checkout.
-Provision this machine-local script once with the runner's writable build and
-cache paths, Android SDK, Java and private Nix store. It must leave tracked source
-and `git status` clean, preserve the artifact paths expected by the workflow, and
-support repeated jobs. Blain37 keeps these build outputs on its D: volume; the
-workflow checks existing Nix there instead of reinstalling it for each release.
+For custom Linux build storage, set the repository variable
+`MORROWBYTE_LINUX_INIT_SCRIPT` to a machine-local script. The workflow sources it
+with `--github-env` after checkout. Configure writable build/cache paths and
+installed toolchains there, outside the repository. The script must leave
+`git status` clean, preserve the artifact paths expected by the workflow, and
+support repeated jobs. With no variable, the runner uses its normal environment.
 System libraries are installed during runner setup. Normal self-hosted release
 jobs neither install OS packages nor request `sudo`.
 
@@ -149,8 +148,7 @@ claiming it can package every release platform.
 `morrowbyte-local-source-check.yml` is a manual broader check, not a second
 automatic full suite after each main push.
 
-Before large installs/builds check all affected volumes. On Nixy use the
-installed `agent-storage-admit --target /home`, including Btrfs metadata and
-device reserve. Keep build outputs outside Git, bound their retention, and
+Before large installs/builds check all affected volumes, including Btrfs
+metadata and device reserve where applicable. Keep build outputs outside Git, bound their retention, and
 remove only completed owned disposable output. Keep active source, user data,
 credentials and rollback versions.
