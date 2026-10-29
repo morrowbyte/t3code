@@ -60,8 +60,14 @@ PYBUNDLE
 [[ "$("${adb_command[@]}" shell getprop ro.build.version.sdk | tr -d '\r')" == 36 ]] || { echo 'Expected the Android 16 / API 36 emulator.' >&2; exit 1; }
 "${adb_command[@]}" install -r "$startup_apk" > "$evidence_dir/install.txt" 2>&1
 "${adb_command[@]}" logcat -c
-"${adb_command[@]}" shell am start -W -n "$package_name/.MainActivity" > "$evidence_dir/launch.txt" 2>&1
-grep -q '^Status: ok' "$evidence_dir/launch.txt" || { echo 'Android rejected the launcher activity.' >&2; exit 1; }
+launch_status=0
+"${adb_command[@]}" shell am start -W -n "$package_name/.MainActivity" > "$evidence_dir/launch.txt" 2>&1 || launch_status=$?
+if grep -Eq '^Status: timeout[[:space:]]*$' "$evidence_dir/launch.txt"; then
+  echo 'The Android launcher wait timed out; checking actual process and application readiness.'
+elif [[ "$launch_status" -ne 0 ]] || ! grep -Eq '^Status: ok[[:space:]]*$' "$evidence_dir/launch.txt"; then
+  echo 'Android rejected the launcher activity.' >&2
+  exit 1
+fi
 
 started_pid=""
 ready_observations=0

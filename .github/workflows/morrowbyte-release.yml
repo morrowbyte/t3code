@@ -28,6 +28,10 @@ on:
         description: Build and publish only the signed Android ARM64 APK, leaving desktop feeds unchanged
         type: boolean
         default: false
+      restore_android74:
+        description: Emergency Android-only restore of the published .74 source with a higher version code
+        type: boolean
+        default: false
       recover_desktop_run_id:
         description: One-off .48 recovery only (39093205395); reuse desktop bytes and build only Android
         type: string
@@ -82,8 +86,9 @@ jobs:
       recovery_receipt_sha256: ${{ steps.recovery.outputs.recovery_receipt_sha256 }}
       recovery75_receipt_sha256: ${{ steps.continuation75.outputs.recovery75_receipt_sha256 }}
       recovery_workflow_sha256: ${{ steps.continuation75.outputs.recovery_workflow_sha256 || steps.continuation.outputs.recovery_workflow_sha256 || steps.windows_recovery.outputs.recovery_workflow_sha256 || steps.recovery.outputs.recovery_workflow_sha256 }}
-      android_source_sha: ${{ steps.continuation75.outputs.android_source_sha || steps.continuation.outputs.android_source_sha || steps.windows_recovery.outputs.android_source_sha || steps.recovery.outputs.android_source_sha }}
-      android_lock_sha256: ${{ steps.continuation75.outputs.android_lock_sha256 || steps.continuation.outputs.android_lock_sha256 || steps.windows_recovery.outputs.android_lock_sha256 || steps.recovery.outputs.android_lock_sha256 }}
+      android_source_sha: ${{ steps.restore74.outputs.android_source_sha || steps.continuation75.outputs.android_source_sha || steps.continuation.outputs.android_source_sha || steps.windows_recovery.outputs.android_source_sha || steps.recovery.outputs.android_source_sha }}
+      android_lock_sha256: ${{ steps.restore74.outputs.android_lock_sha256 || steps.continuation75.outputs.android_lock_sha256 || steps.continuation.outputs.android_lock_sha256 || steps.windows_recovery.outputs.android_lock_sha256 || steps.recovery.outputs.android_lock_sha256 }}
+      restored_source_ci_run_id: ${{ steps.restore74.outputs.source_ci_run_id }}
       continuation_packaging_sha256: ${{ steps.continuation.outputs.packaging_sha256 }}
       continuation_android_run_id: ${{ steps.continuation.outputs.android_run_id }}
       continuation_android_run_attempt: ${{ steps.continuation.outputs.android_run_attempt }}
@@ -116,8 +121,20 @@ jobs:
           ANDROID_SOURCE_SHA: ${{ inputs.android_source_sha }}
           CONTINUATION_RUN_ID: ${{ inputs.continue_release68_run_id }}
           CONTINUATION75_RUN_ID: ${{ inputs.continue_release75_run_id }}
+          RESTORE_ANDROID74: ${{ inputs.restore_android74 }}
         run: |
           set -euo pipefail
+          if [[ "${RESTORE_ANDROID74:-false}" == true ]]; then
+            test "$ANDROID_ONLY" == true
+            test "$DESKTOP_ONLY" != true
+            test "$WINDOWS_ONLY" != true
+            test '${{ inputs.windows_candidate_only }}' != true
+            test -z "$RECOVERY_RUN_ID"
+            test -z "$WINDOWS_RECOVERY_RUN_ID"
+            test -z "$ANDROID_SOURCE_SHA"
+            test -z "$CONTINUATION_RUN_ID"
+            test -z "$CONTINUATION75_RUN_ID"
+          fi
           if [[ -n "${CONTINUATION75_RUN_ID:-}" ]]; then
             [[ "$CONTINUATION75_RUN_ID" == 40821076738 ]]
             test '${{ inputs.publish }}' == true
@@ -653,6 +670,44 @@ jobs:
           test -z "$ANDROID_SOURCE_SHA"
           bash scripts/morrowbyte/verify-desktop-source.sh "$SOURCE_SHA" "$PUBLISH_RELEASE" "$DISPATCHED_REF" "$DISPATCHED_SHA"
 
+      - id: restore74
+        name: Verify the fixed published .74 Android restore baseline
+        if: inputs.restore_android74
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONTROL_SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          gh api repos/morrowbyte/t3code/releases/tags/v0.1.4-nightly.20261027.74 > "$RUNNER_TEMP/android-restore74-release.json"
+          gh api repos/morrowbyte/t3code/actions/runs/40582582053 > "$RUNNER_TEMP/android-restore74-ci.json"
+          python3 - <<'PYRESTORE'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          source = '135802e2d15a46d796c7fa736e6da4c82c5b1d20'
+          lock = 'db45b4aacebe846fca988d07543edcf1751fdd17aeeb22d8a23d77c83662f66f'
+          release = json.loads((Path(os.environ['RUNNER_TEMP']) / 'android-restore74-release.json').read_text())
+          ci = json.loads((Path(os.environ['RUNNER_TEMP']) / 'android-restore74-ci.json').read_text())
+          assert os.environ['GITHUB_REPOSITORY'] == 'morrowbyte/t3code'
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == os.environ['CONTROL_SOURCE_SHA'] == os.environ['GITHUB_SHA']
+          subprocess.run(['git', 'merge-base', '--is-ancestor', source, os.environ['CONTROL_SOURCE_SHA']], check=True)
+          assert release['tag_name'] == 'v0.1.4-nightly.20261027.74' and release['target_commitish'] == source
+          assert release['draft'] is False and release['prerelease'] is True and release['published_at']
+          name = 'Morrowbyte-0.1.4-nightly.20261027.74-android-arm64.apk'
+          assets = {asset['name']: asset for asset in release['assets']}
+          expected = {name: 'ca8c6150e750f53f23b0cc88cdf22506325373a280777daa718b38a7da15e6d2',
+                      name + '.json': '1ac7b937eadf7f452b664a8aeb75c79c4b41d2a9f3c74669affa5a7270cb5b65',
+                      name + '.sha256': '7b409958c973223ef7e9d161f8a64872d847e3eca09c49a4a04f76ae4ee59169'}
+          assert set(expected) <= set(assets)
+          assert all(assets[key]['digest'] == 'sha256:' + digest for key, digest in expected.items())
+          assert ci['id'] == 40582582053 and ci['head_sha'] == source
+          assert ci['head_branch'] == 'main' and ci['event'] == 'push' and ci['path'] == '.github/workflows/morrowbyte-ci.yml'
+          assert ci['repository']['full_name'] == ci['head_repository']['full_name'] == 'morrowbyte/t3code'
+          assert ci['status'] == 'completed' and ci['conclusion'] == 'success'
+          assert hashlib.sha256(subprocess.check_output(['git', 'show', source + ':pnpm-lock.yaml'])).hexdigest() == lock
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'android_source_sha={source}\nandroid_lock_sha256={lock}\nsource_ci_run_id=40582582053\n')
+          PYRESTORE
+
       - name: Setup Vite+
         if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && !inputs.continue_release75_run_id
         uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
@@ -765,6 +820,7 @@ jobs:
           RELEASE_RUN: ${{ github.run_number }}
           RELEASE_SEQUENCE_OFFSET: ${{ vars.MORROWBYTE_RELEASE_SEQUENCE_OFFSET || '0' }}
           ANDROID_ONLY: ${{ inputs.android_only }}
+          RESTORE_ANDROID74: ${{ inputs.restore_android74 }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}
         run: |
@@ -776,6 +832,10 @@ jobs:
           upstream_metadata="$RUNNER_TEMP/upstream-nightly.txt"
           run_created_at="$(gh api "repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID" --jq .created_at)"
           release_date="$(bash scripts/morrowbyte/resolve-run-date.sh "$run_created_at")"
+          if [[ "${RESTORE_ANDROID74:-false}" == true ]]; then
+            test "$release_date" == 20261029
+            (( RELEASE_RUN > 75 ))
+          fi
           node scripts/resolve-nightly-release.ts \
             --date "$release_date" \
             --run-number "$RELEASE_RUN" \
@@ -1238,6 +1298,7 @@ jobs:
       build_attempt: ${{ steps.apk.outputs.build_attempt }}
     env:
       DESKTOP_SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+      RESTORE_ANDROID74: ${{ inputs.restore_android74 }}
       APP_VARIANT: production
       T3CODE_MOBILE_VERSION: ${{ needs.preflight.outputs.version }}
       MORROWBYTE_ANDROID_VERSION_CODE: ${{ needs.preflight.outputs.android_version_code }}
@@ -1252,6 +1313,16 @@ jobs:
         with:
           ref: ${{ needs.preflight.outputs.android_source_sha || needs.preflight.outputs.source_sha }}
           fetch-depth: 1
+
+      - name: Retain the reviewed control startup gate for the historical app source
+        if: inputs.restore_android74
+        run: |
+          set -euo pipefail
+          test "$DESKTOP_SOURCE_SHA" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = 135802e2d15a46d796c7fa736e6da4c82c5b1d20
+          git fetch --no-tags --depth=1 origin "$DESKTOP_SOURCE_SHA"
+          git show "$DESKTOP_SOURCE_SHA:scripts/morrowbyte/android-startup-smoke.sh" > "$RUNNER_TEMP/morrowbyte-android-startup-smoke.sh"
+          test -s "$RUNNER_TEMP/morrowbyte-android-startup-smoke.sh"
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
@@ -1387,6 +1458,10 @@ jobs:
           assert re.fullmatch(r'[0-9A-Za-z][0-9A-Za-z.+-]*', version)
           code = int(os.environ['MORROWBYTE_ANDROID_VERSION_CODE'])
           assert 0 < code <= 2100000000
+          restoring = os.environ.get('RESTORE_ANDROID74') == 'true'
+          if restoring:
+              assert code > 75 and source == '135802e2d15a46d796c7fa736e6da4c82c5b1d20'
+              assert digest(Path('pnpm-lock.yaml')) == 'db45b4aacebe846fca988d07543edcf1751fdd17aeeb22d8a23d77c83662f66f'
           expected_cert = '34a33c2541544bc4a96e359a33e9f71aaa449ee9a0cd725c2469b65b057aa2b2'
           sdk = Path(os.environ['ANDROID_HOME']) / 'build-tools' / os.environ['ANDROID_BUILD_TOOLS']
           built = Path('apps/mobile/android/app/build/outputs/apk/release')
@@ -1468,6 +1543,13 @@ jobs:
               'dependencyReportSha256': digest(Path(os.environ['RUNNER_TEMP']) / 'morrowbyte-android-dependencies.txt'),
               'deviceAcceptance': 'not-run',
           }
+          if restoring:
+              receipt['restoration'] = {
+                  'purpose': 'restore-published-android74', 'source': source,
+                  'previousRelease': 'v0.1.4-nightly.20261027.74', 'sourceCiRun': '40582582053',
+                  'controlSource': os.environ['DESKTOP_SOURCE_SHA'], 'replacesBrokenVersionCode': 75,
+                  'appDataReset': False, 'physicalUpgradeAcceptance': 'not-run',
+              }
           receipt_file = output / (name + '.json')
           receipt_file.write_text(json.dumps(receipt, indent=2) + '\n')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as outputs:
@@ -1519,7 +1601,12 @@ jobs:
             sleep 2
           done
           adb -s "$ANDROID_SERIAL" shell input keyevent 82
-          bash scripts/morrowbyte/android-startup-smoke.sh \
+          startup_script=scripts/morrowbyte/android-startup-smoke.sh
+          if [[ "${RESTORE_ANDROID74:-false}" == true ]]; then
+            startup_script="$RUNNER_TEMP/morrowbyte-android-startup-smoke.sh"
+          fi
+          sha256sum "$startup_script" > "$evidence_dir/startup-script.sha256"
+          bash "$startup_script" \
             "release-android/Morrowbyte-$T3CODE_MOBILE_VERSION-android-arm64.apk" \
             "$STARTUP_APK" "$evidence_dir" "$SOURCE_SHA"
 
@@ -1538,6 +1625,8 @@ jobs:
           assert proof['embeddedBundleSha256'] == data['embeddedBundleSha256']
           assert proof['run'] == data['run'] and proof['attempt'] == data['attempt']
           assert proof['startupAbi'] == 'x86_64' and proof['physicalDeviceAcceptance'] is False
+          startup_script = Path(os.environ['RUNNER_TEMP']) / 'morrowbyte-android-startup-smoke.sh' if os.environ.get('RESTORE_ANDROID74') == 'true' else Path('scripts/morrowbyte/android-startup-smoke.sh')
+          proof['startupScriptSha256'] = hashlib.sha256(startup_script.read_bytes()).hexdigest()
           data['ciEmulatorStartup'] = proof
           receipt.write_text(json.dumps(data, indent=2) + '\n')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as outputs:
@@ -1930,10 +2019,13 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+      SOURCE_SHA: ${{ needs.preflight.outputs.android_source_sha || needs.preflight.outputs.source_sha }}
+      CONTROL_SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+      RESTORE_ANDROID74: ${{ inputs.restore_android74 }}
       VERSION: ${{ needs.preflight.outputs.version }}
       RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
-      SOURCE_CI_RUN: ${{ needs.preflight.outputs.source_ci_run_id }}
+      SOURCE_CI_RUN: ${{ needs.preflight.outputs.restored_source_ci_run_id || needs.preflight.outputs.source_ci_run_id }}
+      CONTROL_SOURCE_CI_RUN: ${{ needs.preflight.outputs.source_ci_run_id }}
       APK_SHA256: ${{ needs.build_android_apk.outputs.apk_sha256 }}
       APK_RECEIPT_SHA256: ${{ needs.build_android_apk.outputs.receipt_sha256 }}
     steps:
@@ -1952,7 +2044,7 @@ jobs:
       - name: Bind APK to this source, build and signing proof
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$CONTROL_SOURCE_SHA"
           test "$RELEASE_TAG" = "android/v$VERSION"
           test -n "$SOURCE_CI_RUN"
           python3 - <<'PYANDROID'
@@ -1969,6 +2061,12 @@ jobs:
           assert proof['trustedContextSha'] == os.environ['GITHUB_SHA']
           assert proof['trustedWorkflowSha'] == os.environ['GITHUB_WORKFLOW_SHA']
           assert proof['trustedWorkflowRef'] == os.environ['GITHUB_WORKFLOW_REF']
+          if os.environ.get('RESTORE_ANDROID74') == 'true':
+              assert proof['source'] == '135802e2d15a46d796c7fa736e6da4c82c5b1d20' and proof['versionCode'] > 75
+              assert proof['certificateSha256'] == '34a33c2541544bc4a96e359a33e9f71aaa449ee9a0cd725c2469b65b057aa2b2'
+              assert proof['restoration']['purpose'] == 'restore-published-android74'
+              assert proof['restoration']['controlSource'] == os.environ['CONTROL_SOURCE_SHA']
+              assert proof['ciEmulatorStartup']['status'] == 'passed'
           PYANDROID
           bash scripts/morrowbyte/verify-published-release.sh --android-only --write-checksums "$VERSION" release-assets
 
@@ -1982,7 +2080,17 @@ jobs:
             fi
             test "$(jq -r .targetCommitish "$RUNNER_TEMP/android-release-state.json")" = "$SOURCE_SHA"
           else
-            cat > "$RUNNER_TEMP/android-release-notes.md" <<'NOTES'
+            if [[ "${RESTORE_ANDROID74:-false}" == true ]]; then
+              cat > "$RUNNER_TEMP/android-release-notes.md" <<'RESTORENOTES'
+          Android-Notfallwiederherstellung für Crew:
+          - Enthält den zuvor veröffentlichten Android-Anwendungsstand .74 mit höherem Versionscode. Neuere .75-Funktionen sind darin nicht enthalten.
+          - Über die bestehende App installieren, ohne Deinstallation oder Löschen der Appdaten. Paket und Produktionssignatur bleiben gleich.
+          - Der Start wird auf Android 16/API 36 mit identischem Hermesbundle im x86_64-Emulator geprüft. Eine physische S24- oder bestehende Pairingdaten-Abnahme wird nicht behauptet.
+
+          Anwendungsquelle und aktueller Steuerungscommit stehen getrennt im APK-Beleg. Dieses Release ersetzt ausschließlich die Android-App; Desktop-Feeds bleiben unverändert.
+          RESTORENOTES
+            else
+              cat > "$RUNNER_TEMP/android-release-notes.md" <<'NOTES'
           Android-Update für Morrowbyte:
           - Ein bewusst gestartetes Voicegespräch bleibt beim Wechsel in den Hintergrund und beim Sperren des Bildschirms aktiv. Ende gibt Mikrofon, Audio und Sitzung wieder frei.
           - Das Transkript öffnet am neuesten Ende und folgt neuen Inhalten. Beim manuellen Zurückscrollen bleibt die Position erhalten; einzelne Beiträge lassen sich vollständig kopieren.
@@ -1992,8 +2100,13 @@ jobs:
 
           Die Entwicklungsabnahme erfolgt im vorhandenen Emulator. Eine physische S24-, Mikrofon- oder ASR-Abnahme wird damit nicht behauptet. APK-Quellstand, Signatur, ARM64, eingebettetes Bundle und Ausrichtung sind in den beigefügten Belegen ausgewiesen.
           NOTES
+            fi
             # A namespaced, non-latest release also stays out of private electron-updater's unfiltered prerelease list.
-            gh release create "$RELEASE_TAG" --target "$SOURCE_SHA" --title "Morrowbyte Android Nightly $VERSION" --notes-file "$RUNNER_TEMP/android-release-notes.md" --draft --latest=false
+            release_title="Morrowbyte Android Nightly $VERSION"
+            if [[ "${RESTORE_ANDROID74:-false}" == true ]]; then
+              release_title="Crew Android Restore $VERSION (.74)"
+            fi
+            gh release create "$RELEASE_TAG" --target "$SOURCE_SHA" --title "$release_title" --notes-file "$RUNNER_TEMP/android-release-notes.md" --draft --latest=false
           fi
           assert_draft() {
             gh release view "$RELEASE_TAG" --json isDraft,targetCommitish |
@@ -2015,6 +2128,9 @@ jobs:
           {
             printf 'fork_release=%s\nsource_sha=%s\nrelease_platforms=android-arm64\n' "$RELEASE_TAG" "$SOURCE_SHA"
             printf 'version=%s\nsource_ci_run_id=%s\npublication_run_id=%s\npublication_run_attempt=%s\n' "$VERSION" "$SOURCE_CI_RUN" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+            if [[ "${RESTORE_ANDROID74:-false}" == true ]]; then
+              printf 'restoration=published-android74\ncontrol_source_sha=%s\ncontrol_source_ci_run_id=%s\n' "$CONTROL_SOURCE_SHA" "$CONTROL_SOURCE_CI_RUN"
+            fi
             printf 'publication_context_sha=%s\npublication_workflow_sha=%s\npublication_workflow_ref=%s\n' "$GITHUB_SHA" "$GITHUB_WORKFLOW_SHA" "$GITHUB_WORKFLOW_REF"
             printf 'github_asset_digests=%s\nartifact_sha256:\n' "$(jq -c '[.[] | {name, digest}]' <<< "$assets")"
             cat release-assets/SHA256SUMS
