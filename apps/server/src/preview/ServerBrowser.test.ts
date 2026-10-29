@@ -503,6 +503,18 @@ it.live(
             .pipe(Effect.flip);
           expect(refused).toMatchObject({ reason: "humanControl" });
         }
+        const laterClose = () =>
+          broker
+            .invoke<void>({ scope: asSession("agent-b"), tabId, operation: "close", input: {} })
+            .pipe(Effect.flip);
+        expect(yield* laterClose()).toMatchObject({ reason: "humanControl" });
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const disconnected = yield* browser.attachViewer(viewerInput(tabId, true));
+            yield* disconnected.input({ type: "takeControl" });
+          }),
+        );
+        expect(yield* laterClose()).toMatchObject({ reason: "humanControl" });
         const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
         yield* viewer.input({ type: "takeControl" });
         yield* viewer.input({ type: "releaseControl" });
@@ -836,6 +848,47 @@ it.live("enforces provider ownership and explicit targets when a session has mul
       expect(contexts).toHaveLength(2);
     }),
   ).pipe(Effect.provide(layer)),
+);
+
+it.live.each([false, true])(
+  "a later session of the same thread can close old agent tabs unless a human controls them (desktop: %s)",
+  (desktop) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        desktopRendersNext = desktop;
+        const { browser, broker, tabId } = yield* ready;
+        const manager = yield* Manager.PreviewManager;
+        const later = asSession("agent-b");
+        const before = yield* broker.invoke<PreviewAutomationStatus>({
+          scope: later,
+          tabId,
+          operation: "status",
+          input: {},
+        });
+        expect(before.control).toMatchObject({ owner: "agent", ownedByCaller: false });
+        const otherThread = {
+          ...later,
+          thread: { ...later.thread, threadId: ThreadId.make("other-thread") },
+        };
+        const foreign = yield* broker
+          .invoke<void>({ scope: otherThread, tabId, operation: "close", input: {} })
+          .pipe(Effect.flip);
+        expect(foreign).toMatchObject({ _tag: "PreviewAutomationTabNotFoundError" });
+        const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+        yield* viewer.input({ type: "takeControl" });
+        const controlled = yield* broker
+          .invoke<void>({ scope: later, tabId, operation: "close", input: {} })
+          .pipe(Effect.flip);
+        expect(controlled).toMatchObject({
+          _tag: "PreviewAutomationControlInterruptedError",
+          reason: "humanControl",
+        });
+        yield* viewer.input({ type: "releaseControl" });
+        yield* broker.invoke({ scope: later, tabId, operation: "close", input: {} });
+        const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
+        expect(sessions.some((session) => session.tabId === tabId)).toBe(false);
+      }),
+    ).pipe(Effect.provide(layer)),
 );
 
 it.live("inspects the existing controlled page without clicking and refuses other viewers", () =>
@@ -1456,6 +1509,15 @@ it.live("agents read a human's tab with no arguments and act on it only while no
         input: {},
       });
       expect(released.control).toMatchObject({ owner: "unclaimed", ownedByCaller: false });
+      for (const caller of [scope, asSession("agent-b")]) {
+        const refusedClose = yield* broker
+          .invoke<void>({ scope: caller, tabId, operation: "close", input: {} })
+          .pipe(Effect.flip);
+        expect(refusedClose).toMatchObject({
+          _tag: "PreviewAutomationControlInterruptedError",
+          reason: "agentMismatch",
+        });
+      }
       yield* broker.invoke({
         scope,
         tabId,
