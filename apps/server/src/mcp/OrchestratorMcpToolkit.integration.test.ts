@@ -603,7 +603,6 @@ describe("orchestrator MCP toolkit", () => {
               runtimePolicyOverride: { cwd, approvalPolicy: "never" },
             },
             registry,
-            { runEffectWorker: false },
           );
           const domain = Layer.merge(
             runtime,
@@ -661,7 +660,6 @@ describe("orchestrator MCP toolkit", () => {
           yield* Effect.gen(function* () {
             const orchestrator = yield* Orchestrator.OrchestratorV2;
             const threads = yield* ThreadManagementService.ThreadManagementService;
-            const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
             const server = yield* McpServer.McpServer;
             yield* orchestrator.dispatch({
               type: "thread.create",
@@ -690,18 +688,21 @@ describe("orchestrator MCP toolkit", () => {
             });
             const waitRunning = (threadId: ThreadId, runId: RunId) =>
               threads
-                .streamStoredEventsFrom({ threadId, afterSequence: 0, eventType: "run.updated" })
+                .streamStoredEventsFrom({
+                  threadId,
+                  afterSequence: 0,
+                  eventType: "provider-turn.updated",
+                })
                 .pipe(
                   Stream.filter(
                     ({ event }) =>
-                      event.type === "run.updated" &&
-                      event.payload.id === runId &&
+                      event.type === "provider-turn.updated" &&
+                      event.runId === runId &&
                       event.payload.status === "running",
                   ),
                   Stream.runHead,
                 );
             const original = (yield* orchestrator.getThreadProjection(parentThreadId)).runs[0]!;
-            yield* worker.drain();
             yield* waitRunning(parentThreadId, original.id);
             const scope: McpInvocationContext.McpInvocationScope = {
               environmentId: EnvironmentId.make("conversation-work-test"),
@@ -768,19 +769,22 @@ describe("orchestrator MCP toolkit", () => {
               const result = yield* decodeThreadSendResult(response.structuredContent);
               expect(result.delivery).toBe("delegated");
               expect(result.admissionStatus).toBe("completed");
-              expect(result.status).toBe("starting");
               expect(result.childThreadId).toBeDefined();
               expect(result.childRunId).toBeDefined();
-              expect((yield* invoke(request)).structuredContent).toEqual(
-                response.structuredContent,
+              const replay = yield* decodeThreadSendResult(
+                (yield* invoke(request)).structuredContent,
               );
+              const { status: initialStatus, ...admission } = result;
+              const { status: replayStatus, ...replayedAdmission } = replay;
+              expect(["starting", "running"]).toContain(initialStatus);
+              expect(["starting", "running"]).toContain(replayStatus);
+              expect(replayedAdmission).toEqual(admission);
               expect(
                 (yield* invoke({ ...request, message: "Changed request under the same identity" }))
                   .isError,
               ).toBe(true);
               admitted.push(result);
             }
-            yield* worker.drain();
             for (const task of admitted) {
               yield* waitRunning(task.childThreadId!, task.childRunId!);
               const child = yield* orchestrator.getThreadProjection(task.childThreadId!);
@@ -847,7 +851,7 @@ describe("orchestrator MCP toolkit", () => {
               stopDelegatedTasks: false,
             });
             // The replay harness supplies a minimal worker-side thread service.
-            // Exercise the real tree-stop service before draining its provider effects.
+            // Exercise the real tree-stop service explicitly.
             yield* threads.stopDelegatedTasks({
               threadId: parentThreadId,
               commandId: CommandId.make("stop-conversation-before-late-tool"),
@@ -857,7 +861,6 @@ describe("orchestrator MCP toolkit", () => {
               ...admitted.map((task) => task.childRunId!),
               inheritedReceipt.childRunId!,
             ];
-            yield* worker.drain();
             for (const [index, runId] of stoppedRunIds.entries()) {
               const stoppedThread =
                 index === 0
