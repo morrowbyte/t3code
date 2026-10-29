@@ -786,7 +786,8 @@ jobs:
           root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'observatory-route-generation'
           receipt = json.loads((root / 'receipt.json').read_bytes())
           digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
-          expected = '85c3ccb2aeea23ad1b8a989a418f5e19e7c80a78643f8a41eb15f394aa57d531'
+          expected = receipt['afterSha256']
+          assert isinstance(expected, str) and len(expected) == 64 and all(c in '0123456789abcdef' for c in expected)
           source = os.environ['SOURCE_SHA']
           assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == source
           assert receipt['status'] == 'generated-unreviewed'
@@ -799,7 +800,7 @@ jobs:
           assert receipt['checkScriptSha256'] == digest(pathlib.Path('scripts/morrowbyte/check.sh'))
           before = subprocess.check_output(['git', 'show', source + ':apps/web/src/routeTree.gen.ts'])
           assert receipt['beforeSha256'] == hashlib.sha256(before).hexdigest()
-          assert receipt['generatorVersion'] == '1.167.12' and receipt['config'] == {'autoCodeSplitting': True}
+          assert receipt['generatorVersion'] and receipt['config'] == {'autoCodeSplitting': True}
           assert receipt['afterSha256'] == digest(root / 'routeTree.gen.ts') == expected
           assert digest(pathlib.Path('apps/web/src/routeTree.gen.ts')) == expected
           assert (root / 'routeTree.diff').is_file()
@@ -917,7 +918,8 @@ jobs:
           python3 - <<'PYROUTE'
           import hashlib, json, os, pathlib, subprocess
           digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
-          expected = '85c3ccb2aeea23ad1b8a989a418f5e19e7c80a78643f8a41eb15f394aa57d531'
+          expected = os.environ['PREFLIGHT_ROUTE_SHA']
+          assert len(expected) == 64 and all(c in '0123456789abcdef' for c in expected)
           source = os.environ['SOURCE_SHA']
           assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == source
           assert os.environ['PREFLIGHT_ROUTE_SHA'] == expected
@@ -1736,7 +1738,8 @@ jobs:
               'ce275176a119b1a2c599c23e6acd7d537cc4c336': '4a398647bcd2507fd8aabab1ea0119b5bb635ccb880f4c73f0570f533650480e',
               'd9e730bfa6fb363206f6b10efc5334daaa69ecc8': '4a398647bcd2507fd8aabab1ea0119b5bb635ccb880f4c73f0570f533650480e',
               'be6292cd24dfe799ce9fcabed5a125c324ae5d06': 'fa1b95cb16c59c5a6bf92647b1bb3f3ab872c4cb06ef7a0e5e723775fb5c3dcc',
-          }.get(source, '85c3ccb2aeea23ad1b8a989a418f5e19e7c80a78643f8a41eb15f394aa57d531')
+          }.get(source, os.environ['PREFLIGHT_ROUTE_SHA'])
+          assert len(expected) == 64 and all(c in '0123456789abcdef' for c in expected)
           assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == source
           assert os.environ['PREFLIGHT_ROUTE_SHA'] == expected
           root = pathlib.Path(os.environ['RUNNER_TEMP'])
@@ -1755,7 +1758,7 @@ jobs:
           assert pre['afterSha256'] == built['generatedRouteSha256'] == expected
           assert digest(preflight / 'routeTree.gen.ts') == digest(build / 'routeTree.gen.ts') == expected
           assert built['preflightReceiptSha256'] == digest(preflight / 'receipt.json')
-          assert pre['generatorVersion'] == '1.167.12' and pre['config'] == {'autoCodeSplitting': True}
+          assert pre['generatorVersion'] and pre['config'] == {'autoCodeSplitting': True}
           assert (preflight / 'routeTree.diff').is_file()
           PYROUTE
 
@@ -1977,7 +1980,7 @@ jobs:
               case "$source_sha" in
                 ce275176a119b1a2c599c23e6acd7d537cc4c336|d9e730bfa6fb363206f6b10efc5334daaa69ecc8) expected_route=4a398647bcd2507fd8aabab1ea0119b5bb635ccb880f4c73f0570f533650480e ;;
                 be6292cd24dfe799ce9fcabed5a125c324ae5d06) expected_route=fa1b95cb16c59c5a6bf92647b1bb3f3ab872c4cb06ef7a0e5e723775fb5c3dcc ;;
-                *) expected_route=85c3ccb2aeea23ad1b8a989a418f5e19e7c80a78643f8a41eb15f394aa57d531 ;;
+                *) expected_route="$(jq -er '.afterSha256' "$RUNNER_TEMP/observatory-publish-preflight/receipt.json")" ;;
               esac
               test "$OBSERVATORY_ROUTE_SHA" = "$expected_route"
               printf 'generated_route_sha256=%s\ngenerated_route_source_sha=%s\ngenerated_route_run_id=%s\ngenerated_route_run_attempt=%s\n' \

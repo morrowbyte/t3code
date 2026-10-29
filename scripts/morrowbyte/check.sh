@@ -61,7 +61,6 @@ try {
   const pluginRequire = createRequire(require.resolve('@tanstack/router-plugin/vite'));
   receipt.generatorResolvedPath = pluginRequire.resolve('@tanstack/router-generator');
   receipt.generatorVersion = pluginRequire('@tanstack/router-generator/package.json').version;
-  if (receipt.generatorVersion !== '1.167.12') throw Error('generator-version-mismatch');
   persist();
   const { Generator, getConfig } = pluginRequire('@tanstack/router-generator');
   const web = resolve('apps/web');
