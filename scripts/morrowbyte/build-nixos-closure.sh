@@ -24,10 +24,10 @@ export T3_MORROWBYTE_ARTIFACT_SHA256="$(sha256sum "$appimage" | cut -d ' ' -f 1)
 # fetchurl uses this fixed-output path. Seed it before the draft release exists.
 nix-store --add-fixed sha256 "$appimage" >/dev/null
 nix build --extra-experimental-features 'nix-command flakes' \
-  --no-write-lock-file --impure --out-link "$work_dir/package" \
-  path:./packaging/nixos#t3code-morrowbyte
-store_path="$(readlink -f "$work_dir/package")"
-[[ "$store_path" == /nix/store/* && -x "$store_path/bin/t3code-morrowbyte" ]]
+  --no-write-lock-file --impure --out-link "$work_dir/package" --print-out-paths \
+  path:./packaging/nixos#t3code-morrowbyte > "$work_dir/store-path"
+store_path="$(cat "$work_dir/store-path")"
+[[ "$store_path" == /nix/store/* && "$store_path" != *$'\n'* && -x "$work_dir/package/bin/t3code-morrowbyte" ]]
 mapfile -t closure_paths < <(nix-store --query --requisites "$store_path")
 [[ ${#closure_paths[@]} -gt 0 ]]
 nix-store --export "${closure_paths[@]}" | zstd -T0 -3 > "$output_dir/$asset"
