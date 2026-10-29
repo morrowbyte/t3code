@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Bounded offline fixtures; never dispatch, download, compile or publish."""
+import base64
 import contextlib
 import datetime
 import importlib.util
@@ -13,6 +14,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
+import zlib
 
 sys.dont_write_bytecode = True
 
@@ -20,6 +22,59 @@ spec = importlib.util.spec_from_file_location("release62_recovery", Path(__file_
 r = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(r)
 ROOT = Path(__file__).resolve().parents[2]
+
+# Exact route from 01102e1d064e371033bbd9782bc8f2ac20c7b3ad; CI checkouts need no Git history.
+HISTORICAL_ROUTE = zlib.decompress(base64.b64decode(
+    b"eNrtXN1v48YRf9dfwYcDfA5o6V2og1xyTeA2yB1iX4M+GbS4ttiTSZWk7DNS/+9dfi1ndj7I06ZoC+jlztqdGf1mRc7O/LjD"
+    b"1TeRqXZZXl+kWZXc7Uz0zWqxWK2i7+rqIi82W7P53H7Oiyyv9mZTZ0Ue/eX6U36oTPrTrrhLdtcvj3fFrmrFbrZZFd1n1s5z"
+    b"UkXJoS4ekzrbJLvdS/RgclMmtUmju5foJsmv62TzOfq1ONSmXDbKfy8OUbUtDrs0+uXDTfSYfDZRkr9Em22SP5gqyvKodvat"
+    b"+ayOnrPdLrozUfFkyucyq2uTt6bepWnWQG2+OI5eRsPJrioi82WzO6QGWLsvi8dGrIyaxTCl/d50VZTRfVFaB5qBuoj2pXky"
+    b"ed18byt/Z7L8IWrXyDplpR+LNLvPTLpcLLLHfVHW0e+dfw3asijq9sNVN/XaGTlbrspmtFrd3jYiZ4zqb2a3KR6Nqv3cyXDq"
+    b"n6rkQVc+NBKc6rWpa+tkpWpXvRBn4GOSlary3gpwih/uKlM+JXVRvqj6xSjHmfmhyHN71b6zF5+++ptO8CJpJBVLc4yw6ttk"
+    b"4ue3l7moeZWn5su0+jJr5LQf8m9FtjGzfs3lUyOq2fq0T+3tPO/aWB46Yc3ezbY0STrTXt0Ja/au7UUxdeU7e1UnrNqz8WFj"
+    b"7HVQl8VuptVW5WLT6ajG82R/vZ0IEaNdK31hQ1qtmrShKT3sTHqTVJ9nLms16FzUjZJm/mNZPGWpKWda3g/iEzb/YW+g+SZb"
+    b"ac3ih73Jux/uZ3s559Xc67Wwehf9z7frNbXv+at5ubN33+xgufw8Kmh2r+x29GC3TbuZzTScAQ3N8k/tfjzzQu42b/UKfp8l"
+    b"D3lR2e1+JtB0VFDtmie7/nNtdsKavT6Qz1/Qzaig2p2K8KNBIdIPlr4vi2e7q80zdtcJq/ZsovVg9fJ0pkknr1l9V2622ZOZ"
+    b"aTPppVWL+71JyiSfu0MlTl612uzo7819ctjNDSxtEnCR9jpsXtOHnv5/e/frWU4vvnyzdwrSXv/xsNv9av55MNUE3G7L31vx"
+    b"i7KXl2z+Yp5nmMrNs2TgfZncd/9cpTMspY3k8k3aKUhG/5w/ZWWRP9rFvkq73X+W9TcGKi7f1L3q2WJh79WqRglzdMnkz306"
+    b"8vb3RRRl6To6c/lzbEf2Sb31xx5M/TEphyxyHb09jy6/9ZP6ePHa+GaLlvMeyZh7Wxx+Ik5RdIk4xDCOHIkApfAWBJPSUxwu"
+    b"pYdQ0OCRaFw9YJF4tQFF0dYGEIEbOPLb/aLCguDrDIoF1hkQkj9+JDJSp1hoQu1CseHaBaKjM2H4PGhzUHF4gpAM22wDA2+5"
+    b"FENXVAV+21h89V/pV2P0e5HTyvc7B+T7dqzYwM3rl3EUQVe9QRjjCI8FBQYZD6z6ACJaDDLRra8BUXwDY0G4YPUIcNGikuIa"
+    b"akmIC44F4YJVKMBFi1MmCvc1KQrCYCwMF6lmITqh1GUw4goXQaVTYYhhiQzB0tKZwekqZgQRjYaho9U2xCjV4gxSrwRHeJm5"
+    b"INS4iAeAueqe2aFdUY+2aTQaim8kBDA8nyhg0XX8gAduHAzCJlAL0aU1PIt+gIhdnsHxDnEr4FIOWWSWP1EkeeSTGGDBeX6D"
+    b"rjmkNeCy++NBK09IEQBUIEwoUsSTQKhkIggrpFkATMq+UIQD6QLBwbEgXD5dA7DxTA7FBwkciNEfD8MJ6B+IkbBCDL6eDELY"
+    b"wFgQLp9GAth4hknMkMkF6I+H4QT5skBVMciGtNlB0vPomVggsQXgUL6LIhpoLggKjoXhwgQZhMZRZwy6kTFDAPFwEEZEtwGE"
+    b"DA1H8Tn2DaJDg2HYMHEH0XGUHoNvZPIQQjwchpHQgBCmwBEySDE1iNDSqaMQC9xiw5horKOc/6wg68jlQkQgoFom9GVfNAu0"
+    b"JoMaEZoILpn56qoakqE9MMyNUjwNKwpRDJ+P+m7Co/YgBH6V2dMamZVjVtHWRqeOwijTsm1qO4e55TJbzNquRtYWZ7cTYpMe"
+    b"wex2Yb60PHJ7puM+2Zjox2zXRaLq+5cf7eX00X5r1KA8W52to/plb4p7j+NpJwfiapQBDBiU6Kk2X24k8VphyBo6UZ+KbCVb"
+    b"ytOJOMq0nXOErJtHkeW3rN7+sM12qV2uVr7jkp3wSEe3swPb7eYhbd5KNFc+WqTh1umQorsTyZF7v1Pgos/oKh/rkON+yCXr"
+    b"QOO6pz9uMFQXb12e4rB3UjW4H2MlkA4QNS/R8BT7RIdqgcwJq7QJG5F394knDBJOquNls1h1yKeJGkzQPRVQHlA1r/bAqkP1"
+    b"Q9RgOYVVUDVH9Ei1iJVh1Up0/ZIYq7JVOrEh8APYlKMsiDqiQYhST8JwWoDbwWo+w0SUGSbLs+A4NaoLmTpPC5OFVJUwkp5+"
+    b"z4tSRUC0YpWB4iUqkDPGKgNbTVQg/Y1VOtqdKIwMfisu7noojsrbbmvESwCQKkkwFq/67nhT9Pviaes7bX2nre+09Z22vtPW"
+    b"95/Y+tS6639vX7xK232xO61/e+uMeeRI+8W3OBS5EES2p9MeO6zWxE7byZz229N+e9pvT/vtab89Yr/tQqi663Yif8je25n6"
+    b"43bgG6tYtTvwPUPlrlmCtxHu/6zWLYv8rybvcH+5ti1vYGgGG4ZRr9kw2DWwDZ/GXrhhpO+tGz66Pr1hoD107Yzhw9xumNu+"
+    b"yHf6WxQjAA7M00l3Qp9MwYYAOjk0IJCZrs+BDsN+CjLrOjjoDOwXIbOuQ4XM4IYYMo0accgs3wdExMZWJG5qaHwic6TdikqM"
+    b"nV50zusuowJDUxuZce1zZMY16pGZviFwGBfDg5Pw7nrvnr0p1h7hZAXqYn26LU+35em2PPq2DLtBs9Tdf0OFO4rf4ivnv3p/"
+    b"jsWiN3S6V0/36v/Lvdqn4t7n6fuWTaq97fUqXXu8FZdX/zqwVgOT06bWrnafpK4gTyWRV4SjUtkrn6bS+CvHV7EMFmKrZnFY"
+    b"I2XFs1iQspJ4LIFMmiSbXheL1Gx2SWma94jYCzo6+65O8qp5S8rKXgA2rrZNkOVZ+xPx5KQ7zoIZt27Eb3XsB/1ux3743pVU"
+    b"VKM0PxdJakp5IRwJ2n1DSX56SpdG0WsPfCASMWywI/jtkQxkLM0D9vsxj4QLeFKMGO9qTCMlg5vo8NCZLs4j0fcMMEY+7s5e"
+    b"8yWDGMnyaL1OzyORYlYbAyY5Bt+hycDnNHkv+FbRI53x+XzsDpNJSU2djEu8Nu+U0GQa5pXkj+CJ4sM89OHAhyc1GDZIeB1o"
+    b"DuwUSnzcPgTiise48lf2SJR+Z6sCFfL7NBY6LpKPiDAR8jtUlaDoqemh0e+RVXxB0ZT3Z6RjBY9Q0kf7WzWvfFXdL9ppG+bZ"
+    b"yE0LnqFEl3bIap75qrpntFc3zLORqBc8Q8k97bHVPPNVdc9ot2+gZ/4jDMlBprwRG3RVd3lDE14LXcSBvoOHPpLbuOLj+n1V"
+    b"Z4n6hJ+0ATnQRfJkTHKUK37ldmHVacHUhOtSX3PYAsAnioLrHifAdR9r7lJ13VGuHzrYx+FRq+wiYESYFuYJB7HypH9+Q3WY"
+    b"e8JDacFVmSOa6HvWlkA1qi+H2rcdtjD4Qb+wHoRR4zupNe85E7rTfI93mLfemQjBXcovCu3YmsOsEd1joVk8zOXx5IjgLeJZ"
+    b"aWu35qOvqrtHm8zDPMPHaQTvCMfMN4ZrXnImdE/5lvVAb915I8lTyLPTFnPVQ091wjvS7B7mGT6EJXhHnjHwDeqal5wJ3VO+"
+    b"dT7QW660Z56weN3uqmNQacKj2cX/DFfG03mCN+hJEu2U13zyVXW3aM9+oGfwwKLknPcMjW20V12kBia85Nr/wxwFxzkFN/FT"
+    b"RKZfX3ORKOsOMm8PCHQPHnOVHPSeobIN/6qT1MCEm9xrCAId9c8DS84yT5TFdwaoTvOGJhwXXmxwlO/CKWrv0YH4oH3ivQPc"
+    b"owXNlvCoQXtFQhDz6h8652hY5vCB9PoCzl1WW2ZrhVcqfDVpCw/ec165Uxb4JQiMB1BSxo3fuHAkXHKklENOH5GjRI2dhf4I"
+    b"+rJrwnscjvRROYHLeasfHJjxigVmBSZtymsx9ZKIr1qU1+YB+fjQ2wmQcwvDxSX1kLA3zmQLCX44Ip+d1v2ef3CavZYmj037"
+    b"r0gdFmfNrNcls2LwUyyvFTscM6uEP8cz1kefj+WVYYdjZk3gkQ/4CtnlbZKmzVmKYfItWbNzeAWibRJdhfLeO69pSEhaZnQN"
+    b"sVndZNuQkOzO6BviioGpxiFSF6mdQ1JdOKd1iKuep3qHJD5hTvMQx7pMdQ+JRNSs9iGJuJvTPzTBdH5F+xBLIU/2D/HE+nQD"
+    b"kfLkYWYDEfvYZrKBSH6oNa+BiHsUONVBxD0YnWoh4h4TT/UQ0UfmWhORi6lsCFwLkfFyMjbKc7EWFYWJWI6H7HCsRUJhIhZj"
+    b"IDca89GPDMVq3JNmYjHicaOxGuukmViMctxorMc3cSpWI5s0E8+JaRMCsRzN2OFYiWP8eDwVwZTJWI5d7HA8EbXkuViMV9xo"
+    b"LEYqbjQWYxQ3GgvRiY7FQlzy8j00R3M+/9jwMBEvzgfrpX9kes2cor70z1Gz+WdMTlDDTzF/dpoMxeypaX8kxuel3Z8xPSkt"
+    b"rl/snZEe/47J6Wj4KdbORQsT8XhcfVj3pv2zNM0rEylbQ39K8judQ7G2j/RPuK3027fni38D+92dPQ=="
+))
 
 
 def origin_fixture():
@@ -41,7 +96,7 @@ def proof_fixture(root):
     (root / "observatory-route-generation/receipt.json").write_text(json.dumps(pre))
     (root / "observatory-route-generation/routeTree.diff").write_text("fixture diff")
     for directory in ["observatory-route-generation", "observatory-release-build"]:
-        (root / directory / "routeTree.gen.ts").write_bytes((ROOT / "apps/web/src/routeTree.gen.ts").read_bytes())
+        (root / directory / "routeTree.gen.ts").write_bytes(HISTORICAL_ROUTE)
     built = {**common, "generatedRouteSha256": r.ROUTE_SHA256, "preflightReceiptSha256": r.digest(root / "observatory-route-generation/receipt.json")}
     (root / "observatory-release-build/receipt.json").write_text(json.dumps(built))
     name = f"Morrowbyte-{r.VERSION}-android-arm64.apk"

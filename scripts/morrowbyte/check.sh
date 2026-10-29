@@ -149,7 +149,6 @@ focused_tests=(
   apps/web/src/voice/voiceSettingsClient.test.ts
 )
 observatory_tests=(
-  apps/web/src/observatory/AgentObservatory.test.tsx
   packages/client-runtime/src/observatory/authored.test.ts
   packages/client-runtime/src/observatory/bridge.test.ts
   packages/client-runtime/src/observatory/state.test.ts
@@ -252,7 +251,6 @@ execution_tests=(
   apps/web/src/rightPanelStore.test.ts
   apps/web/src/components/RightPanelTabs.test.tsx
   apps/web/src/lib/executionCode.test.ts
-  apps/web/src/components/chat/ExecutionCodePanel.test.tsx
 )
 for execution_test in "${execution_tests[@]}"; do
   if [[ ! -f "$execution_test" ]]; then
@@ -406,6 +404,8 @@ focused_tests+=(
   apps/web/src/components/settings/UpdateHistoryPanel.test.tsx
 )
 renderer_tests=(
+  apps/web/src/observatory/AgentObservatory.browser.test.tsx
+  apps/web/src/components/chat/ExecutionCodePanel.browser.test.tsx
   apps/web/src/components/approvalReview/HostOrderSettings.browser.test.tsx
   apps/web/src/components/approvalReview/HostOrderComposer.browser.test.tsx
   apps/web/src/components/approvalReview/HostOrderChatMode.browser.test.tsx
