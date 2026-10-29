@@ -346,7 +346,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             : sql`candidate.available_at <= ${availableBefore}`
         }
         AND candidate.status = 'pending'
-        AND (candidate.effect_type IN ('privileged-command.cleanup', 'thread-title.generate') OR NOT EXISTS (
+        AND (candidate.effect_type IN ('privileged-command.cleanup', 'thread-title.generate', 'checkpoint.capture') OR NOT EXISTS (
           SELECT 1 FROM orchestration_v2_effect_outbox AS cleanup
           WHERE cleanup.thread_id = candidate.thread_id
             AND cleanup.effect_type = 'privileged-command.cleanup'
@@ -356,6 +356,8 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           SELECT 1
           FROM orchestration_v2_effect_outbox AS active
           WHERE active.thread_id = candidate.thread_id
+            -- A terminal turn can checkpoint while cleanup still fences new work.
+            AND (candidate.effect_type != 'checkpoint.capture' OR active.effect_type != 'privileged-command.cleanup')
             AND (
               active.status = 'running'
               OR (

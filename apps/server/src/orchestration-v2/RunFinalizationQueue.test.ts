@@ -1,6 +1,15 @@
 import { assert, it } from "@effect/vitest";
-import { CheckpointScopeId, CommandId, GitCommandError, RunId, ThreadId } from "@t3tools/contracts";
+import {
+  ApprovalReviewError,
+  CheckpointScopeId,
+  CommandId,
+  GitCommandError,
+  RunId,
+  RuntimeRequestId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as TestClock from "effect/testing/TestClock";
@@ -15,6 +24,7 @@ import * as CheckpointRollback from "./CheckpointRollbackService.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as PrivilegedCommands from "./PrivilegedCommandService.ts";
 import * as ProviderSessions from "./ProviderSessionManager.ts";
 import * as ProviderTurnControl from "./ProviderTurnControlService.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
@@ -24,10 +34,17 @@ import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as ThreadTitles from "./ThreadTitleRegenerationService.ts";
 
 it.effect.each([
-  ["starts the next turn after a post-capture Git status failure", 0],
-  ["keeps the next turn queued when checkpoint capture fails", 1],
-  ["retries checkpoint capture beyond the attempt limit without losing queued turns", 5],
-] as const)("%s", ([, captureFailures]) => {
+  ["starts the next turn after a post-capture Git status failure", 0, "none"],
+  ["keeps the next turn queued when checkpoint capture fails", 1, "none"],
+  ["retries checkpoint capture beyond the attempt limit without losing queued turns", 5, "none"],
+  ["finalizes during cleanup backoff but holds new turns until cleanup is confirmed", 0, "pending"],
+  ["finalizes beside running cleanup but holds new turns until cleanup is confirmed", 0, "running"],
+  [
+    "finalizes after cleanup process loss but holds new turns until cleanup is confirmed",
+    0,
+    "restart",
+  ],
+] as const)("%s", ([, captureFailures, cleanupState]) => {
   const threadId = ThreadId.make("thread:finalization-queue");
   const runId = RunId.make("run:finalization-queue");
   const scopeId = CheckpointScopeId.make("scope:finalization-queue");
@@ -94,6 +111,9 @@ it.effect.each([
         Layer.mock(ThreadTitles.ThreadTitleRegenerationService)({}),
         Layer.mock(ThreadManagement.ThreadManagementService)({}),
         ServerSettings.layerTest(),
+        Layer.mock(PrivilegedCommands.PrivilegedCommandService)({
+          cleanup: () => Effect.fail(new ApprovalReviewError({ reason: "storage" })),
+        }),
         Layer.mock(ProviderTurnStart.ProviderTurnStartServiceV2)({
           start: ({ runId }) => Effect.sync(() => calls.push(runId)).pipe(Effect.asVoid),
         }),
@@ -106,6 +126,33 @@ it.effect.each([
   return Effect.gen(function* () {
     const queue = yield* EffectOutbox.EffectOutboxV2;
     const effectWorker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+    const cleanupId = "effect:finalization-queue:cleanup";
+    if (cleanupState !== "none") {
+      yield* queue.enqueue([
+        {
+          id: cleanupId,
+          commandId: CommandId.make("command:finalization-queue:cleanup"),
+          threadId,
+          request: {
+            type: "privileged-command.cleanup",
+            requestId: RuntimeRequestId.make("request:finalization-queue:cleanup"),
+            shell: "powershell",
+            identity: { platform: "win32", bootId: "1" },
+          },
+        },
+      ]);
+      if (cleanupState === "running" || cleanupState === "restart") {
+        assert.equal(
+          Option.getOrThrow(yield* queue.claimNext({ workerId: "cleanup-worker" })).id,
+          cleanupId,
+        );
+      }
+      if (cleanupState === "restart") yield* queue.reconcileAfterProcessLoss;
+      if (cleanupState !== "running") assert.equal(yield* effectWorker.drain(1), 1);
+      const cleanup = Option.getOrThrow(yield* queue.get(cleanupId));
+      assert.equal(cleanup.status, cleanupState === "running" ? "running" : "pending");
+      assert.equal(cleanup.attemptCount, cleanupState === "restart" ? 2 : 1);
+    }
     yield* queue.enqueue([
       {
         id: "effect:finalization-queue:capture",
@@ -121,12 +168,17 @@ it.effect.each([
       })),
     ]);
 
+    if (cleanupState !== "none") {
+      const pending = Option.getOrThrow(yield* queue.get("effect:finalization-queue:capture"));
+      assert.equal(
+        DateTime.formatIso(Option.getOrThrow(yield* queue.nextClaimableAt)),
+        pending.availableAt,
+      );
+    }
+    const startsBlocked = captureFailures > 0 || cleanupState !== "none";
     for (let attempt = 0; attempt < Math.max(1, captureFailures); attempt++) {
       if (attempt > 0) yield* TestClock.adjust("30 seconds");
-      assert.equal(
-        yield* effectWorker.drain(captureFailures > 0 ? 1 : 4),
-        captureFailures > 0 ? 1 : 4,
-      );
+      assert.equal(yield* effectWorker.drain(startsBlocked ? 1 : 4), startsBlocked ? 1 : 4);
     }
     const captured = Option.getOrThrow(yield* queue.get("effect:finalization-queue:capture"));
     assert.equal(captured.status, captureFailures > 0 ? "pending" : "succeeded");
@@ -136,19 +188,42 @@ it.effect.each([
       const started = Option.getOrThrow(
         yield* queue.get(`effect:finalization-queue:start:${ordinal}`),
       );
-      assert.equal(started.status, captureFailures > 0 ? "pending" : "succeeded");
-      assert.equal(started.attemptCount, captureFailures > 0 ? 0 : 1);
+      assert.equal(started.status, startsBlocked ? "pending" : "succeeded");
+      assert.equal(started.attemptCount, startsBlocked ? 0 : 1);
     }
     const successfulCalls = ["capture", "refresh", "run:next:2", "run:next:3", "run:next:4"];
     assert.deepEqual(
       calls,
       captureFailures > 0
         ? Array.from({ length: captureFailures }, () => "capture")
-        : successfulCalls,
+        : cleanupState !== "none"
+          ? ["capture", "refresh"]
+          : successfulCalls,
     );
     if (captureFailures > 0)
       assert.include(captured.lastError ?? "", "checkpoint storage unavailable");
     else assert.equal(captured.lastError, null);
+
+    if (cleanupState !== "none") {
+      const cleanup = Option.getOrThrow(yield* queue.get(cleanupId));
+      assert.equal(cleanup.status, cleanupState === "running" ? "running" : "pending");
+      if (cleanupState !== "running") assert.include(cleanup.lastError ?? "", "storage");
+      assert.isTrue(
+        cleanupState === "running"
+          ? yield* queue.succeed({ effectId: cleanupId, workerId: "cleanup-worker" })
+          : yield* queue.confirmCleanup({ threadId, effectId: cleanupId }),
+      );
+      assert.equal(yield* effectWorker.drain(3), 3);
+      assert.equal(yield* effectWorker.drain(), 0);
+      assert.deepEqual(calls, successfulCalls);
+      for (const ordinal of [2, 3, 4]) {
+        const started = Option.getOrThrow(
+          yield* queue.get(`effect:finalization-queue:start:${ordinal}`),
+        );
+        assert.equal(started.status, "succeeded");
+        assert.equal(started.attemptCount, 1);
+      }
+    }
 
     if (captureFailures === 5) {
       yield* TestClock.adjust("30 seconds");

@@ -2578,6 +2578,16 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
 
       yield* outbox.enqueue([
         {
+          id: "effect:foundation-retry-order:checkpoint",
+          commandId: CommandId.make("command:foundation-retry-order:checkpoint"),
+          threadId,
+          request: {
+            type: "checkpoint.capture",
+            runId: RunId.make("run:foundation-retry-order"),
+            scopeId: CheckpointScopeId.make("scope:foundation-retry-order"),
+          },
+        },
+        {
           id: "effect:foundation-retry-order:a-start",
           commandId: CommandId.make("command:foundation-retry-order:start"),
           threadId,
@@ -2608,6 +2618,13 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         effectTypes: ["provider-thread.rollback"],
         reason: "Test cleanup.",
       });
+      const checkpoint = yield* outbox.claimNext({ workerId });
+      assert.equal(
+        Option.getOrUndefined(checkpoint)?.id,
+        "effect:foundation-retry-order:checkpoint",
+      );
+      assert.isTrue(Option.isNone(yield* outbox.claimNext({ workerId })));
+      yield* outbox.succeed({ effectId: "effect:foundation-retry-order:checkpoint", workerId });
       const unblocked = yield* outbox.claimNext({ workerId });
       assert.equal(Option.getOrUndefined(unblocked)?.id, "effect:foundation-retry-order:a-start");
       yield* outbox.succeed({ effectId: "effect:foundation-retry-order:a-start", workerId });
@@ -2693,8 +2710,9 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
             commandId,
             threadId: threadA,
             request: {
-              type: "provider-turn.start",
+              type: "checkpoint.capture",
               runId: RunId.make("run:foundation-concurrent-effects:a2"),
+              scopeId: CheckpointScopeId.make("scope:foundation-concurrent-effects:a2"),
             },
           },
           {

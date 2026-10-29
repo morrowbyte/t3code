@@ -52,9 +52,9 @@ const modelSelection = {
 } as const;
 
 it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
-  it.effect.each([false, true])(
-    "captures without decoding history or losing newer delegated completion, ref lookup fails=%s",
-    (refLookupFails) =>
+  it.effect.each(["ready", "ref-lookup-fails", "non-git"] as const)(
+    "captures with a reused root scope without decoding history or losing newer delegated completion: %s",
+    (captureSource) =>
       Effect.gen(function* () {
         const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
         const now = yield* DateTime.now;
@@ -112,8 +112,8 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
         const scope = {
           id: scopeId,
           threadId,
-          runId,
-          nodeId: rootNodeId,
+          runId: RunId.make("run:queued:4"),
+          nodeId: NodeId.make("node:queued:4"),
           parentScopeId: null,
           providerThreadId,
           kind: "root_run" as const,
@@ -269,7 +269,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
           Layer.provide(
             Layer.mergeAll(
               IdAllocator.layer,
-              refLookupFails
+              captureSource !== "ready"
                 ? CheckpointService.layer.pipe(
                     Layer.provide(
                       Layer.mergeAll(
@@ -277,7 +277,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
                         NodeCrypto.layer,
                         Layer.mock(CheckpointStore.CheckpointStore)({
                           listAuthoredPaths: () => Effect.succeed(null),
-                          isGitRepository: () => Effect.succeed(true),
+                          isGitRepository: () => Effect.succeed(captureSource !== "non-git"),
                           captureCheckpoint: () => Effect.void,
                           hasCheckpointRef: () =>
                             Effect.fail(
@@ -321,6 +321,25 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
             .execute({ threadId, runId, scopeId: CheckpointScopeId.make("missing-scope") })
             .pipe(Effect.flip);
           assert.instanceOf(incomplete, CheckpointCaptureService.CheckpointCaptureExecutionError);
+          yield* projectionStore.apply({
+            id: EventId.make("event:checkpoint-capture:still-running"),
+            type: "run.updated",
+            threadId,
+            runId,
+            occurredAt: now,
+            payload: { ...staleRun, status: "running" },
+          });
+          const active = yield* service.execute({ threadId, runId, scopeId }).pipe(Effect.flip);
+          assert.instanceOf(active, CheckpointCaptureService.CheckpointCaptureExecutionError);
+          assert.isEmpty(yield* Ref.get(committed));
+          yield* projectionStore.apply({
+            id: EventId.make("event:checkpoint-capture:provider-ended"),
+            type: "run.updated",
+            threadId,
+            runId,
+            occurredAt: now,
+            payload: staleRun,
+          });
           yield* service.execute({ threadId, runId, scopeId });
 
           const events = yield* Ref.get(committed);
@@ -333,10 +352,13 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
           const capturedEvent = events.find((event) => event.type === "checkpoint.captured");
           assert.equal(
             runUpdated.payload.checkpointId,
-            refLookupFails ? capturedEvent?.payload.id : captured.id,
+            captureSource !== "ready" ? capturedEvent?.payload.id : captured.id,
           );
-          if (refLookupFails && capturedEvent?.type === "checkpoint.captured") {
-            assert.equal(capturedEvent.payload.status, "ready");
+          if (captureSource !== "ready" && capturedEvent?.type === "checkpoint.captured") {
+            assert.equal(
+              capturedEvent.payload.status,
+              captureSource === "non-git" ? "missing" : "ready",
+            );
             assert.deepEqual(capturedEvent.payload.files, []);
           }
           assert.isUndefined(
