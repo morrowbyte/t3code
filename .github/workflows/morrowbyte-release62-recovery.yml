@@ -27,7 +27,7 @@ permissions:
 jobs:
   recover:
     if: github.repository == 'morrowbyte/t3code' && inputs.publish
-    runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    runs-on: [self-hosted, "${{ vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux' }}"]
     timeout-minutes: 15
     outputs:
       source_sha: ${{ steps.recover.outputs.source_sha }}
@@ -114,7 +114,7 @@ jobs:
     if: ${{ !cancelled() && inputs.publish && needs.recover.result == 'success' }}
     needs:
       - recover
-    runs-on: ${{ vars.MORROWBYTE_WINDOWS_RUNNER || 'blacksmith-8vcpu-windows-2025' }}
+    runs-on: [self-hosted, "${{ vars.MORROWBYTE_WINDOWS_RUNNER || 'morrowbyte-windows' }}"]
     timeout-minutes: 50
     steps:
       - name: Checkout source
@@ -257,7 +257,7 @@ jobs:
     needs:
       - recover
       - build_windows
-    runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    runs-on: [self-hosted, "${{ vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux' }}"]
     timeout-minutes: 15
     permissions:
       contents: write

@@ -10,7 +10,7 @@ concurrency:
 jobs:
   build_android_test:
     name: Build .55 x86_64 native test APK
-    runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    runs-on: [self-hosted, "${{ vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux' }}"]
     timeout-minutes: 60
     outputs:
       apk_sha256: ${{ steps.apk.outputs.apk_sha256 }}

@@ -17,7 +17,7 @@ permissions:
 jobs:
   sync:
     if: github.repository == 'morrowbyte/t3code' && vars.MORROWBYTE_UPSTREAM_SYNC == 'true'
-    runs-on: ${{ vars.MORROWBYTE_LINUX_RUNNER || 'blacksmith-8vcpu-ubuntu-2404' }}
+    runs-on: [self-hosted, "${{ vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux' }}"]
     timeout-minutes: 35
     steps:
       - name: Require workflow-capable upstream sync token

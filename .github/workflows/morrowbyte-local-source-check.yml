@@ -2,6 +2,12 @@ name: Morrowbyte local source check
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+
+concurrency:
+  group: morrowbyte-local-source-check-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
