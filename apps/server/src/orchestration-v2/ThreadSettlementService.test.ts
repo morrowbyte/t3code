@@ -164,12 +164,13 @@ describe("isAutoSettlementCandidate", () => {
       snoozedAt: at(-60 * 60 * 1_000),
     });
     expect(ThreadSettlementService.isAutoSettlementCandidate(snoozed, NOW_MS)).toBe(false);
-    expect(
-      ThreadSettlementService.isAutoSettlementCandidate(
-        shell({ ...snoozed, status: "failed", latestRunCompletedAt: at(-30 * 60 * 1_000) }),
-        NOW_MS,
-      ),
-    ).toBe(true);
+    const failed = shell({
+      ...snoozed,
+      status: "failed",
+      latestRunCompletedAt: at(-30 * 60 * 1_000),
+    });
+    expect(ThreadSettlementService.isSnoozed(failed, NOW_MS)).toBe(false);
+    expect(ThreadSettlementService.isAutoSettlementCandidate(failed, NOW_MS)).toBe(false);
     expect(
       ThreadSettlementService.isAutoSettlementCandidate(
         shell({ ...snoozed, status: "failed", latestRunCompletedAt: at(-2 * 60 * 60 * 1_000) }),
@@ -198,6 +199,33 @@ describe("isAutoSettlementCandidate", () => {
 });
 
 describe("resolveAutoSettlementAt", () => {
+  it.each(["merged", "closed", "inactivity"] as const)(
+    "keeps a failed run visible instead of settling on %s",
+    (reason) => {
+      const input = {
+        thread: shell({ status: "failed", latestRunCompletedAt: at(-4 * DAY_MS) }),
+        pullRequest:
+          reason === "inactivity"
+            ? null
+            : {
+                state: reason,
+                mergedAt: DateTime.formatIso(at(-1)),
+                closedAt: DateTime.formatIso(at(-1)),
+              },
+        nowMs: NOW_MS,
+        autoSettleAfterDays: reason === "inactivity" ? 3 : null,
+        autoSettleOnMerge: true,
+      };
+      expect(ThreadSettlementService.resolveAutoSettlementAt(input)).toBeNull();
+      expect(
+        ThreadSettlementService.resolveAutoSettlementAt({
+          ...input,
+          thread: { ...input.thread, status: "completed" },
+        }),
+      ).toEqual(at(-4 * DAY_MS));
+    },
+  );
+
   it("keeps threads with a PR from inactivity settlement only when asked", () => {
     const input = {
       thread: shell({
@@ -746,11 +774,13 @@ const startHarness = Effect.fn("startThreadSettlementHarness")(function* (
 });
 
 describe("ThreadSettlementServiceV2 worker", () => {
-  it.effect("settles a merged pull request stored only in the thread links", () =>
+  it.effect("only settles a merged pull request when the latest run has not failed", () =>
     Effect.scoped(
       Effect.gen(function* () {
         yield* TestClock.setTime(Date.parse(NOW));
         const thread = makeThread("merged-link", {
+          status: "completed",
+          latestRunCompletedAt: DateTime.makeUnsafe(NOW),
           pullRequests: [
             {
               host: "example.test",
@@ -773,8 +803,13 @@ describe("ThreadSettlementServiceV2 worker", () => {
             },
           ],
         });
+        const failedThread = shell({
+          ...thread,
+          id: ThreadId.make("failed-after-merge"),
+          status: "failed",
+        });
         const fixture = yield* makeHarness({
-          snapshot: makeSnapshot([thread]),
+          snapshot: makeSnapshot([thread, failedThread]),
           settings: { ...DEFAULT_SERVER_SETTINGS, sidebarAutoSettleAfterDays: null },
         });
 
