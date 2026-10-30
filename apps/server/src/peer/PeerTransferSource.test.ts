@@ -45,7 +45,7 @@ it.live(
     fixture((directory) =>
       Effect.gen(function* () {
         const source = yield* Source.PeerTransferSource;
-        const prepared = yield* source.prepare(key, authorize);
+        const prepared = yield* source.prepare(key, async () => false);
         expect(yield* source.prepare(key, authorize)).toEqual(prepared);
         expect(
           (yield* Effect.promise(() => NodeFSP.stat(NodePath.dirname(prepared.socketPath)))).mode &
@@ -70,6 +70,17 @@ it.live(
           ),
         );
         yield* Deferred.await(entered);
+        let remoteReleaseCalled = false;
+        expect(
+          (yield* Effect.flip(
+            source.withRelease(key, () =>
+              Effect.sync(() => {
+                remoteReleaseCalled = true;
+              }),
+            ),
+          )).reason,
+        ).toBe("busy");
+        expect(remoteReleaseCalled).toBe(false);
         expect((yield* Effect.flip(source.cleanup(key))).reason).toBe("busy");
         expect((yield* Effect.flip(source.abort(key))).reason).toBe("busy");
         yield* Deferred.succeed(release, undefined);
@@ -77,7 +88,29 @@ it.live(
         expect((yield* Effect.flip(source.resolve({ ...key, target: "other" }))).reason).toBe(
           "not_found",
         );
-        yield* source.cleanup(key);
+        expect(yield* Effect.flip(source.withRelease(key, () => Effect.fail("remote")))).toBe(
+          "remote",
+        );
+        expect(yield* Effect.promise(() => NodeFSP.readFile(resolved.path))).toEqual(bytes);
+        const releasing = yield* Deferred.make<void>();
+        const finishRelease = yield* Deferred.make<void>();
+        const releaseFiber = yield* Effect.forkChild(
+          source.withRelease(key, () =>
+            Deferred.succeed(releasing, undefined).pipe(
+              Effect.andThen(Deferred.await(finishRelease)),
+            ),
+          ),
+        );
+        yield* Deferred.await(releasing);
+        const unrelated = { ...key, clientRequestId: "another-request" };
+        yield* source.prepare(unrelated, authorize);
+        yield* source.abort(unrelated);
+        yield* Effect.gen(function* () {
+          const other = yield* Source.PeerTransferSource;
+          expect((yield* Effect.flip(other.cleanup(key))).reason).toBe("busy");
+        }).pipe(Effect.provide(Source.layer({ directory: NodePath.join(directory, "stage") })));
+        yield* Deferred.succeed(finishRelease, undefined);
+        yield* Fiber.join(releaseFiber);
         expect(
           yield* Effect.promise(() =>
             NodeFSP.stat(resolved.path).then(
@@ -88,6 +121,56 @@ it.live(
         ).toBe(false);
       }).pipe(Effect.provide(Source.layer({ directory: NodePath.join(directory, "stage") }))),
     ),
+);
+
+it.live("finishes an interrupted cleanup after the remote release was recorded", () =>
+  fixture((directory) =>
+    Effect.gen(function* () {
+      const stage = NodePath.join(directory, "stage");
+      const bytes = Buffer.from("recover");
+      const input = NodePath.join(directory, "input");
+      yield* Effect.promise(() => NodeFSP.writeFile(input, bytes));
+      const staged = yield* Effect.gen(function* () {
+        const source = yield* Source.PeerTransferSource;
+        const prepared = yield* source.prepare(key, authorize);
+        yield* Effect.promise(() => submitFile(prepared.socketPath, prepared.tokenPath, input));
+        const staged = yield* source.resolve(key);
+        yield* Effect.promise(() =>
+          NodeFSP.writeFile(NodePath.join(NodePath.dirname(staged.path), "released"), "", {
+            flag: "wx",
+          }),
+        );
+        expect((yield* source.status(key)).state).toBe("interrupted");
+        expect((yield* Effect.flip(source.resolve(key))).reason).toBe("interrupted");
+        return staged;
+      }).pipe(Effect.provide(Source.layer({ directory: stage })));
+      yield* Effect.promise(async () => {
+        const dir = NodePath.dirname(staged.path);
+        await NodeFSP.unlink(staged.path);
+        await NodeFSP.unlink(NodePath.join(dir, "lease.db"));
+      });
+      yield* Effect.gen(function* () {
+        const source = yield* Source.PeerTransferSource;
+        yield* source.withRelease(key, () => Effect.void);
+        expect((yield* Effect.flip(source.status(key))).reason).toBe("not_found");
+      }).pipe(Effect.provide(Source.layer({ directory: stage })));
+      const orphan = { ...key, clientRequestId: "orphan-release" };
+      const id = NodeCrypto.createHash("sha256")
+        .update(JSON.stringify([orphan.callerNamespace, orphan.clientRequestId, orphan.target]))
+        .digest("hex")
+        .slice(0, 32);
+      yield* Effect.promise(async () => {
+        const dir = NodePath.join(stage, id);
+        await NodeFSP.mkdir(dir, { mode: 0o700 });
+        new NodeSqlite.DatabaseSync(NodePath.join(dir, "lease.db")).close();
+      });
+      yield* Effect.gen(function* () {
+        const source = yield* Source.PeerTransferSource;
+        yield* source.withRelease(orphan, () => Effect.void);
+        expect((yield* Effect.flip(source.status(orphan))).reason).toBe("not_found");
+      }).pipe(Effect.provide(Source.layer({ directory: stage })));
+    }),
+  ),
 );
 
 it.live("rejects an over-limit stream and preserves isolated request slots", () =>

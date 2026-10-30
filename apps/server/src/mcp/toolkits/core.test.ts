@@ -892,9 +892,14 @@ it.effect("only the caller that prepared a pending upload can discard it", () =>
     const stolen = yield* call("t3_file_transfer", transferInput, {
       ...scope,
       requestNamespace: "another-agent-session",
+      thread: { ...scope.thread!, threadId: ThreadId.make("another-thread") },
     });
     expect(declaredFailure(stolen)).toMatchObject({ code: "invalid_request" });
-    const sourceAborted = yield* call("t3_file_transfer_abort", transferInput, scope);
+    const sourceAborted = yield* call("t3_file_transfer_abort", transferInput, {
+      ...scope,
+      requestNamespace: "restarted-provider-session",
+      thread: { ...scope.thread!, providerSessionId: "restarted-provider-session" },
+    });
     expect(sourceAborted.isError).toBe(false);
     yield* call("t3_file_transfer_status", transferInput, scope);
     yield* call("t3_file_transfer_status", transferInput, {

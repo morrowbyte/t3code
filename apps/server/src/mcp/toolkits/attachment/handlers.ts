@@ -211,7 +211,7 @@ export const layer = McpToolAccess.toLayer(
           const prepared = yield* source
             .prepare(
               {
-                callerNamespace: caller.scope.requestNamespace,
+                callerNamespace: caller.transferNamespace,
                 clientRequestId: input.clientRequestId,
                 target: input.environmentId,
               },
@@ -242,7 +242,7 @@ export const layer = McpToolAccess.toLayer(
           return yield* source
             .withTransfer(
               {
-                callerNamespace: caller.scope.requestNamespace,
+                callerNamespace: caller.transferNamespace,
                 clientRequestId: input.clientRequestId,
                 target: input.environmentId,
               },
@@ -290,7 +290,7 @@ export const layer = McpToolAccess.toLayer(
             yield* Effect.context<Effect.Services<ReturnType<typeof transferCaller>>>();
           const source = yield* PeerTransferSource.PeerTransferSource;
           const sourceKey = {
-            callerNamespace: caller.scope.requestNamespace,
+            callerNamespace: caller.transferNamespace,
             clientRequestId: input.clientRequestId,
             target: input.environmentId,
           };
@@ -317,20 +317,23 @@ export const layer = McpToolAccess.toLayer(
             ),
             clientRequestId: input.clientRequestId,
           };
-          const remote = yield* sender.status(request).pipe(Effect.mapError(senderError));
-          if (remote.state !== "not_found" && remote.state !== "released") {
-            yield* sender.abort(request).pipe(Effect.mapError(senderError));
-            yield* sender.release(request).pipe(Effect.mapError(senderError));
-          }
-          if (local?.state === "ready") {
-            yield* source.cleanup(sourceKey).pipe(Effect.mapError(sourceError));
-          } else if (local?.state === "interrupted") {
+          const abortRemote = Effect.gen(function* () {
+            const remote = yield* sender.status(request);
+            if (remote.state !== "not_found" && remote.state !== "released") {
+              yield* sender.abort(request);
+              yield* sender.release(request);
+            }
+          }).pipe(Effect.mapError(senderError));
+          if (local?.state === "interrupted") {
             const removed = yield* Effect.result(source.abort(sourceKey));
             if (Result.isFailure(removed)) {
-              if (removed.failure.reason !== "busy") return yield* sourceError(removed.failure);
-              yield* source.cleanup(sourceKey).pipe(Effect.mapError(sourceError));
+              if (removed.failure.reason !== "busy" && removed.failure.reason !== "interrupted")
+                return yield* sourceError(removed.failure);
             }
           }
+          yield* source
+            .withRelease(sourceKey, () => abortRemote)
+            .pipe(Effect.mapError((error) => (isSourceError(error) ? sourceError(error) : error)));
           return {};
         }),
       ),
@@ -340,25 +343,28 @@ export const layer = McpToolAccess.toLayer(
           const context =
             yield* Effect.context<Effect.Services<ReturnType<typeof transferCaller>>>();
           const sender = yield* PeerTransferSender.PeerTransferSender;
-          yield* sender
-            .release({
-              target: input.environmentId,
-              callerNamespace: caller.transferNamespace,
-              authorize: transferCaller(input.environmentId).pipe(
-                Effect.provide(context),
-                Effect.map((current) => current.limits),
-              ),
-              clientRequestId: input.clientRequestId,
-            })
-            .pipe(Effect.mapError(senderError));
           const source = yield* PeerTransferSource.PeerTransferSource;
           yield* source
-            .cleanup({
-              callerNamespace: caller.scope.requestNamespace,
-              clientRequestId: input.clientRequestId,
-              target: input.environmentId,
-            })
-            .pipe(Effect.mapError(sourceError));
+            .withRelease(
+              {
+                callerNamespace: caller.transferNamespace,
+                clientRequestId: input.clientRequestId,
+                target: input.environmentId,
+              },
+              () =>
+                sender
+                  .release({
+                    target: input.environmentId,
+                    callerNamespace: caller.transferNamespace,
+                    authorize: transferCaller(input.environmentId).pipe(
+                      Effect.provide(context),
+                      Effect.map((current) => current.limits),
+                    ),
+                    clientRequestId: input.clientRequestId,
+                  })
+                  .pipe(Effect.mapError(senderError)),
+            )
+            .pipe(Effect.mapError((error) => (isSourceError(error) ? sourceError(error) : error)));
           return {};
         }),
       ),

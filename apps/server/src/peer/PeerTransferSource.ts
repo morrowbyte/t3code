@@ -72,6 +72,10 @@ export class PeerTransferSource extends Context.Service<
         readonly sha256: string;
       }) => Effect.Effect<A, E, R>,
     ) => Effect.Effect<A, E | PeerTransferSourceError, R>;
+    readonly withRelease: <A, E, R>(
+      key: Key,
+      release: () => Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A, E | PeerTransferSourceError, R>;
     readonly abort: (key: Key) => Effect.Effect<void, PeerTransferSourceError>;
     readonly cleanup: (key: Key) => Effect.Effect<void, PeerTransferSourceError>;
   }
@@ -138,6 +142,7 @@ type Session = {
   readonly slot: string;
   readonly server: NodeNet.Server;
   readonly lease: NodeSqlite.DatabaseSync;
+  authorize: () => Promise<boolean>;
   worker?: Promise<void>;
   socket?: NodeNet.Socket;
   timer?: NodeJS.Timeout;
@@ -162,6 +167,7 @@ const make = Effect.fn("PeerTransferSource.make")(function* (configuration: {
         .slice(0, 32)}`,
     );
   const sessions = new Map<string, Session>();
+  const releasing = new Set<string>();
   const gate = Semaphore.makeUnsafe(1);
   const checkPlatform = () => {
     if (platform === "win32" || process.getuid === undefined) fail("platform_unsupported");
@@ -200,12 +206,7 @@ const make = Effect.fn("PeerTransferSource.make")(function* (configuration: {
     await Promise.all([removeIfPresent(session.socketPath), removeIfPresent(session.part)]);
     await NodeFSP.rmdir(session.socketDirectory).catch(() => undefined);
   };
-  const receive = async (
-    session: Session,
-    socket: NodeNet.Socket,
-    token: Buffer,
-    authorize: () => Promise<boolean>,
-  ) => {
+  const receive = async (session: Session, socket: NodeNet.Socket, token: Buffer) => {
     let handle: Awaited<ReturnType<typeof NodeFSP.open>> | undefined;
     let valid = false;
     let size = -1;
@@ -226,7 +227,7 @@ const make = Effect.fn("PeerTransferSource.make")(function* (configuration: {
       hash.update(chunk);
     };
     try {
-      if (!(await authorize().catch(() => false))) fail("denied");
+      if (!(await session.authorize().catch(() => false))) fail("denied");
       if (session.state !== "receiving") fail("interrupted");
       handle = await NodeFSP.open(session.part, "wx", 0o600);
       for await (const item of socket.iterator({ destroyOnReturn: false })) {
@@ -257,7 +258,7 @@ const make = Effect.fn("PeerTransferSource.make")(function* (configuration: {
       await handle.sync();
       await handle.close();
       handle = undefined;
-      if (!(await authorize().catch(() => false))) fail("denied");
+      if (!(await session.authorize().catch(() => false))) fail("denied");
       if (session.state !== "receiving") fail("interrupted");
       session.state = "publishing";
       await NodeFSP.link(session.part, session.final);
@@ -305,11 +306,13 @@ const make = Effect.fn("PeerTransferSource.make")(function* (configuration: {
           try: async () => {
             const id = idOf(key);
             await base();
+            if (releasing.has(id)) fail("busy");
             return withRootLock(async () => {
               const old = sessions.get(id);
               if (old) {
                 if (old.state !== "waiting" && old.state !== "receiving")
                   fail(old.state === "ready" ? "busy" : "interrupted");
+                old.authorize = authorize;
                 return { socketPath: old.socketPath, tokenPath: old.tokenPath };
               }
               const dir = NodePath.join(root, id);
@@ -356,6 +359,7 @@ const make = Effect.fn("PeerTransferSource.make")(function* (configuration: {
                   slot,
                   server,
                   lease,
+                  authorize,
                   state: "waiting",
                   users: 0,
                 };
@@ -367,7 +371,7 @@ const make = Effect.fn("PeerTransferSource.make")(function* (configuration: {
                   session.state = "receiving";
                   session.socket = socket;
                   server!.close();
-                  session.worker = receive(session, socket, token, authorize);
+                  session.worker = receive(session, socket, token);
                 });
                 await new Promise<void>((resolve, reject) => {
                   server!.once("error", reject);
@@ -414,11 +418,14 @@ const make = Effect.fn("PeerTransferSource.make")(function* (configuration: {
           try: async () => {
             const id = idOf(key);
             await base();
+            if (releasing.has(id)) fail("busy");
             const session = sessions.get(id);
             if (!session) {
               if (await exists(NodePath.join(root, id))) return { state: "interrupted" } as const;
               return fail("not_found");
             }
+            if (await exists(NodePath.join(session.dir, "released")))
+              return { state: "interrupted" } as const;
             if (session.state === "ready")
               return {
                 state: "ready",
@@ -440,9 +447,11 @@ const make = Effect.fn("PeerTransferSource.make")(function* (configuration: {
         try: async () => {
           const id = idOf(key);
           await base();
+          if (releasing.has(id)) fail("busy");
           const session = sessions.get(id);
           if (!session)
             return fail((await exists(NodePath.join(root, id))) ? "interrupted" : "not_found");
+          if (await exists(NodePath.join(session.dir, "released"))) return fail("interrupted");
           if (session.state !== "ready") return fail("busy");
           const stat = await NodeFSP.lstat(session.final);
           if (!stat.isFile() || stat.nlink !== 1 || stat.size !== session.sizeBytes)
@@ -475,7 +484,14 @@ const make = Effect.fn("PeerTransferSource.make")(function* (configuration: {
     )
       fail("storage");
     const leasePath = NodePath.join(dir, "lease.db");
-    const leaseStat = await exists(leasePath);
+    const released = await exists(NodePath.join(dir, "released"));
+    if (released && (!released.isFile() || released.nlink !== 1)) fail("storage");
+    let leaseStat = await exists(leasePath);
+    if (!leaseStat && released && releaseReady) {
+      const created = await NodeFSP.open(leasePath, "wx", 0o600);
+      await created.close();
+      leaseStat = await NodeFSP.lstat(leasePath);
+    }
     if (!leaseStat) {
       if (releaseReady || (await NodeFSP.readdir(dir)).length !== 0) fail("interrupted");
       const created = await NodeFSP.open(leasePath, "wx", 0o600);
@@ -507,7 +523,10 @@ const make = Effect.fn("PeerTransferSource.make")(function* (configuration: {
       const final = NodePath.join(dir, "file");
       const finalStat = await exists(final);
       if (finalStat && !releaseReady) fail("busy");
-      if (releaseReady && (!finalStat || !finalStat.isFile() || finalStat.nlink !== 1))
+      if (
+        releaseReady &&
+        ((!finalStat && !released) || (finalStat && (!finalStat.isFile() || finalStat.nlink !== 1)))
+      )
         fail("storage");
       const token = NodePath.join(dir, "token");
       const tokenStat = await exists(token);
@@ -542,6 +561,7 @@ const make = Effect.fn("PeerTransferSource.make")(function* (configuration: {
       lease.close();
     }
     await removeIfPresent(leasePath);
+    if (released) await removeIfPresent(NodePath.join(dir, "released"));
     await NodeFSP.rmdir(dir);
   };
 
@@ -552,6 +572,7 @@ const make = Effect.fn("PeerTransferSource.make")(function* (configuration: {
           try: async () => {
             const id = idOf(key);
             await base();
+            if (releasing.has(id)) fail("busy");
             return withRootLock(async () => {
               const session = sessions.get(id);
               if (!session) return recover(id, false);
@@ -576,6 +597,33 @@ const make = Effect.fn("PeerTransferSource.make")(function* (configuration: {
         }),
       ),
   );
+  const cleanupLocked = async (id: string) => {
+    const session = sessions.get(id);
+    if (!session) return recover(id, true);
+    if (session.state !== "ready" || session.users > 0) return fail("busy");
+    const released = await exists(NodePath.join(session.dir, "released"));
+    if (released && (!released.isFile() || released.nlink !== 1)) fail("storage");
+    const stat = await exists(session.final);
+    if ((!stat && !released) || (stat && (!stat.isFile() || stat.nlink !== 1))) fail("storage");
+    const tokenStat = await exists(session.tokenPath);
+    const slotStat = await exists(session.slot);
+    if (!released && (!tokenStat || !slotStat)) fail("storage");
+    if (
+      slotStat &&
+      (!tokenStat || tokenStat.dev !== slotStat.dev || tokenStat.ino !== slotStat.ino)
+    )
+      fail("storage");
+    await removeIfPresent(session.final);
+    await removeIfPresent(session.slot);
+    await removeIfPresent(session.tokenPath);
+    await session.worker?.catch(() => undefined);
+    session.lease.close();
+    sessions.delete(id);
+    await removeIfPresent(NodePath.join(session.dir, "lease.db"));
+    if (released) await removeIfPresent(NodePath.join(session.dir, "released"));
+    await NodeFSP.rmdir(session.dir);
+  };
+
   const cleanup: PeerTransferSource["Service"]["cleanup"] = Effect.fn("PeerTransferSource.cleanup")(
     (key) =>
       gate.withPermits(1)(
@@ -583,30 +631,169 @@ const make = Effect.fn("PeerTransferSource.make")(function* (configuration: {
           try: async () => {
             const id = idOf(key);
             await base();
-            return withRootLock(async () => {
-              const session = sessions.get(id);
-              if (!session) return recover(id, true);
-              if (session.state !== "ready" || session.users > 0) return fail("busy");
-              const stat = await NodeFSP.lstat(session.final);
-              if (!stat.isFile() || stat.nlink !== 1) fail("storage");
-              const tokenStat = await NodeFSP.lstat(session.tokenPath);
-              const slotStat = await NodeFSP.lstat(session.slot);
-              if (tokenStat.dev !== slotStat.dev || tokenStat.ino !== slotStat.ino) fail("storage");
-              await removeIfPresent(session.final);
-              await removeIfPresent(session.slot);
-              await removeIfPresent(session.tokenPath);
-              await session.worker?.catch(() => undefined);
-              session.lease.close();
-              await removeIfPresent(NodePath.join(session.dir, "lease.db"));
-              await NodeFSP.rmdir(session.dir);
-              sessions.delete(id);
-            });
+            if (releasing.has(id)) fail("busy");
+            return withRootLock(() => cleanupLocked(id));
           },
           catch: safeError,
         }),
       ),
   );
-  return PeerTransferSource.of({ prepare, status, resolve, withTransfer, abort, cleanup });
+  const withRelease: PeerTransferSource["Service"]["withRelease"] = (key, release) =>
+    Effect.acquireUseRelease(
+      gate.withPermits(1)(
+        Effect.tryPromise({
+          try: async () => {
+            const id = idOf(key);
+            await base();
+            if (releasing.has(id)) fail("busy");
+            return withRootLock(async () => {
+              const session = sessions.get(id);
+              const dir = NodePath.join(root, id);
+              let recoveryLease: NodeSqlite.DatabaseSync | undefined;
+              let created = false;
+              try {
+                if (session) {
+                  if (session.state !== "ready" || session.users > 0) fail("busy");
+                  const released = await exists(NodePath.join(dir, "released"));
+                  if (released && (!released.isFile() || released.nlink !== 1)) fail("storage");
+                  const stat = await exists(session.final);
+                  if ((!stat && !released) || (stat && (!stat.isFile() || stat.nlink !== 1)))
+                    fail("storage");
+                  const tokenStat = await exists(session.tokenPath);
+                  const slotStat = await exists(session.slot);
+                  if (
+                    (!released && (!tokenStat || !slotStat)) ||
+                    (slotStat &&
+                      (!tokenStat ||
+                        tokenStat.dev !== slotStat.dev ||
+                        tokenStat.ino !== slotStat.ino))
+                  )
+                    fail("storage");
+                } else {
+                  const dirStat = await exists(dir);
+                  if (!dirStat) {
+                    await NodeFSP.mkdir(dir, { mode: 0o700 });
+                    created = true;
+                  } else if (
+                    !dirStat.isDirectory() ||
+                    (dirStat.mode & 0o077) !== 0 ||
+                    dirStat.uid !== process.getuid?.()
+                  )
+                    fail("storage");
+                  const leasePath = NodePath.join(dir, "lease.db");
+                  const released = await exists(NodePath.join(dir, "released"));
+                  if (released && (!released.isFile() || released.nlink !== 1)) fail("storage");
+                  const final = await exists(NodePath.join(dir, "file"));
+                  const entries = !created && !released && !final ? await NodeFSP.readdir(dir) : [];
+                  if (!created && !released && !final && entries.length === 0) created = true;
+                  const orphanLease =
+                    !created &&
+                    !released &&
+                    !final &&
+                    entries.length === 1 &&
+                    entries[0] === "lease.db";
+                  if (
+                    !created &&
+                    !orphanLease &&
+                    ((!final && !released) || (final && (!final.isFile() || final.nlink !== 1)))
+                  )
+                    fail("storage");
+                  let stat = await exists(leasePath);
+                  if (!stat && (created || released)) {
+                    const file = await NodeFSP.open(leasePath, "wx", 0o600);
+                    await file.close();
+                    stat = await NodeFSP.lstat(leasePath);
+                  }
+                  if (!stat?.isFile() || stat.nlink !== 1) fail("storage");
+                  recoveryLease = new NodeSqlite.DatabaseSync(leasePath);
+                  try {
+                    recoveryLease.exec("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE");
+                  } catch {
+                    fail("busy");
+                  }
+                  if (orphanLease) created = true;
+                }
+                releasing.add(id);
+                return { id, dir, recoveryLease, created };
+              } catch (error) {
+                recoveryLease?.close();
+                if (created) {
+                  await removeIfPresent(NodePath.join(dir, "lease.db")).catch(() => undefined);
+                  await NodeFSP.rmdir(dir).catch(() => undefined);
+                }
+                throw error;
+              }
+            });
+          },
+          catch: safeError,
+        }),
+      ),
+      (reservation) =>
+        release().pipe(
+          Effect.tap(() =>
+            gate.withPermits(1)(
+              Effect.tryPromise({
+                try: async () =>
+                  withRootLock(async () => {
+                    const marker = NodePath.join(reservation.dir, "released");
+                    try {
+                      const file = await NodeFSP.open(marker, "wx", 0o600);
+                      await file.close();
+                    } catch (error) {
+                      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+                      const stat = await NodeFSP.lstat(marker);
+                      if (!stat.isFile() || stat.nlink !== 1) fail("storage");
+                    }
+                    const markerFile = await NodeFSP.open(marker, "r");
+                    try {
+                      await markerFile.sync();
+                    } finally {
+                      await markerFile.close();
+                    }
+                    const directory = await NodeFSP.open(reservation.dir, "r");
+                    try {
+                      await directory.sync();
+                    } finally {
+                      await directory.close();
+                    }
+                    reservation.recoveryLease?.close();
+                    reservation.recoveryLease = undefined;
+                    await cleanupLocked(reservation.id);
+                    reservation.created = false;
+                  }),
+                catch: safeError,
+              }),
+            ),
+          ),
+        ),
+      (reservation) =>
+        gate.withPermits(1)(
+          Effect.promise(async () => {
+            if (
+              reservation.created &&
+              !(await exists(NodePath.join(reservation.dir, "released")))
+            ) {
+              await withRootLock(async () => {
+                reservation.recoveryLease?.close();
+                reservation.recoveryLease = undefined;
+                await removeIfPresent(NodePath.join(reservation.dir, "lease.db"));
+                await NodeFSP.rmdir(reservation.dir);
+              }).catch(() => undefined);
+            }
+            reservation.recoveryLease?.close();
+            releasing.delete(reservation.id);
+          }),
+        ),
+    );
+  return PeerTransferSource.of({
+    prepare,
+    status,
+    resolve,
+    withTransfer,
+    withRelease,
+    abort,
+    cleanup,
+  });
 });
 
 export const layer = (configuration: { readonly directory: string }) =>
