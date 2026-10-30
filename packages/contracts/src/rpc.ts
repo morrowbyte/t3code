@@ -1,4 +1,13 @@
 import {
+  BoatReadInput,
+  BoatDefaults,
+  BoatConnectInput,
+  BoatProjectInput,
+  BoatAction,
+  BoatState,
+  BoatError,
+} from "./boat.ts";
+import {
   ApprovalReviewOrderCreate,
   ApprovalReviewOrderRead,
   ApprovalReviewHostOrder,
@@ -637,6 +646,12 @@ export const WS_METHODS = {
   serverPrepareTriage: "server.prepareTriage",
   serverSignalProcess: "server.signalProcess",
   serverReportClientActivity: "server.reportClientActivity",
+  boatRead: "boat.read",
+  boatDefaults: "boat.defaults",
+  boatConnect: "boat.connect",
+  boatDisconnect: "boat.disconnect",
+  boatConfigure: "boat.configure",
+  boatOperate: "boat.operate",
   serverGetUsageSummary: "server.getUsageSummary",
   serverRefreshUsageRates: "server.refreshUsageRates",
 
@@ -1075,6 +1090,37 @@ const WsServerPrepareTriageRpc = Rpc.make(WS_METHODS.serverPrepareTriage, {
   payload: ServerPrepareTriageInput,
   success: ServerPrepareTriageResult,
   error: Schema.Union([ServerPrepareTriageError, EnvironmentAuthorizationError]),
+});
+
+const BoatDefaultsRpc = Rpc.make(WS_METHODS.boatDefaults, {
+  payload: BoatDefaults,
+  success: BoatState,
+  error: Schema.Union([EnvironmentAuthorizationError, BoatError]),
+});
+const BoatReadRpc = Rpc.make(WS_METHODS.boatRead, {
+  payload: BoatReadInput,
+  success: BoatState,
+  error: Schema.Union([EnvironmentAuthorizationError, BoatError]),
+});
+const BoatConnectRpc = Rpc.make(WS_METHODS.boatConnect, {
+  payload: BoatConnectInput,
+  success: BoatState,
+  error: Schema.Union([EnvironmentAuthorizationError, BoatError]),
+});
+const BoatDisconnectRpc = Rpc.make(WS_METHODS.boatDisconnect, {
+  payload: Schema.Struct({}),
+  success: Schema.Void,
+  error: Schema.Union([EnvironmentAuthorizationError, BoatError]),
+});
+const BoatConfigureRpc = Rpc.make(WS_METHODS.boatConfigure, {
+  payload: BoatProjectInput,
+  success: BoatState,
+  error: Schema.Union([EnvironmentAuthorizationError, BoatError]),
+});
+const BoatOperateRpc = Rpc.make(WS_METHODS.boatOperate, {
+  payload: BoatAction,
+  success: BoatState,
+  error: Schema.Union([EnvironmentAuthorizationError, BoatError]),
 });
 
 const WsServerGetUsageSummaryRpc = Rpc.make(WS_METHODS.serverGetUsageSummary, {
@@ -2379,6 +2425,12 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRetryResourceTelemetryRpc,
   WsServerCheckOtlpEndpointRpc,
   WsServerPrepareTriageRpc,
+  BoatReadRpc,
+  BoatDefaultsRpc,
+  BoatConnectRpc,
+  BoatDisconnectRpc,
+  BoatConfigureRpc,
+  BoatOperateRpc,
   WsServerGetUsageSummaryRpc,
   WsServerRefreshUsageRatesRpc,
   WsServerSignalProcessRpc,

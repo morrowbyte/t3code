@@ -1,3 +1,5 @@
+import * as BoatService from "./boat/BoatService.ts";
+import * as BoatApi from "./boat/BoatApi.ts";
 import * as ApprovalReviewHttp from "./orchestration-v2/ApprovalReviewHttp.ts";
 import * as ApprovalReviewService from "./orchestration-v2/ApprovalReviewService.ts";
 import * as ApprovalReviewHostOrders from "./orchestration-v2/ApprovalReviewHostOrders.ts";
@@ -735,6 +737,13 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
 const layerRuntimeDependencies = AgentAvatarService.layer.pipe(
   Layer.provide(CodexAvatarGenerator.layer),
   Layer.provideMerge(layerRuntimeCoreDependencies),
+  Layer.provideMerge(
+    BoatService.layer.pipe(
+      Layer.provide(ProjectionStoreV2.layer),
+      Layer.provide(BoatApi.layer),
+      Layer.provide(layerRuntimeCoreDependencies),
+    ),
+  ),
   Layer.provideMerge(layerUsage),
   Layer.provideMerge(layerBackground),
   Layer.provideMerge(layerResourceDiagnostics),

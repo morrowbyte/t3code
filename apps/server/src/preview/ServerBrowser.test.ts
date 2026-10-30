@@ -26,6 +26,7 @@ import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import type { BrowserContext, Page } from "playwright-core";
 import { beforeEach, expect, vi } from "vite-plus/test";
 
@@ -58,6 +59,7 @@ vi.mock("./ServerBrowserContexts.ts", () => ({
     }
     async connectDesktopPage(endpoint: string) {
       const context = makeContext();
+      context.page.viewportSize.mockReturnValue(null);
       desktopConnections.push({ endpoint, context });
       desktopDetaches.emit("connected");
       return { browser: { close: async () => {} }, page: context.page as unknown as Page };
@@ -87,11 +89,16 @@ const PNG_HEADER = (() => {
   return header.toString("base64");
 })();
 
-function makeSession(frame?: ReturnType<typeof makeFrame>) {
+function makeSession(
+  frame: ReturnType<typeof makeFrame> | undefined,
+  viewport: { width: number; height: number },
+) {
   const events = new NodeEvents.EventEmitter();
   return {
-    on: vi.fn((name: string, listener: () => void) => events.on(name, listener)),
-    emit: (name: string) => events.emit(name),
+    on: vi.fn((name: string, callback: (...args: unknown[]) => void) => events.on(name, callback)),
+    emit: (name: string, ...args: unknown[]) => events.emit(name, ...args),
+    emitAsync: (name: string, ...args: unknown[]) =>
+      Promise.all(events.listeners(name).map((listener) => listener(...args))),
     detach: vi.fn(async () => {}),
     send: vi.fn(async (method: string, input?: unknown): Promise<Record<string, unknown>> => {
       if (method === "Page.getNavigationHistory") return { currentIndex: 0, entries: [{}] };
@@ -105,7 +112,12 @@ function makeSession(frame?: ReturnType<typeof makeFrame>) {
       if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
       if (method === "Page.createIsolatedWorld") {
         return {
-          executionContextId: (input as { worldName?: string }).worldName === "t3-preview" ? 1 : 7,
+          executionContextId:
+            (input as { worldName?: string }).worldName === "t3-preview-viewport"
+              ? 9
+              : (input as { worldName?: string }).worldName === "t3-preview"
+                ? 1
+                : 7,
         };
       }
       if (method === "Runtime.evaluate" && (input as { contextId?: number }).contextId === 1) {
@@ -122,6 +134,8 @@ function makeSession(frame?: ReturnType<typeof makeFrame>) {
         else pageCopy = "";
         return { result: { value } };
       }
+      if (method === "Runtime.evaluate" && (input as { contextId?: number }).contextId === 9)
+        return desktopSizeAnswer?.() ?? { result: { value: { ...viewport } } };
       return { result: { value: "evaluated" } };
     }),
   };
@@ -134,7 +148,8 @@ function makeContext(onClose?: (context: BrowserContext) => void) {
   const setChooserFiles = vi.fn(async (_files: unknown) => {});
   const sessions: ReturnType<typeof makeSession>[] = [];
   let url = "about:blank";
-  let viewport = { width: 1280, height: 800 };
+  let viewport: ReturnType<Page["viewportSize"]> = { width: 1280, height: 800 };
+  const cssViewport = { width: 1920, height: 1080 };
   let closed = false;
   let contextClosed = false;
   const page = {
@@ -168,7 +183,7 @@ function makeContext(onClose?: (context: BrowserContext) => void) {
     },
     url: () => url,
     title: vi.fn(async () => "test page"),
-    viewportSize: () => viewport,
+    viewportSize: vi.fn(() => viewport),
     setViewportSize: vi.fn(async (size: typeof viewport) => {
       viewport = size;
     }),
@@ -207,11 +222,13 @@ function makeContext(onClose?: (context: BrowserContext) => void) {
     page,
     sessions,
     registered: registered.promise,
+    cssViewport,
     newPage: async () => page as unknown as Page,
     grantPermissions: vi.fn(async () => {}),
     newCDPSession: async (target: unknown) => {
       const session = makeSession(
         target === page ? undefined : (target as ReturnType<typeof makeFrame>),
+        cssViewport,
       );
       sessions.push(session);
       return session;
@@ -278,10 +295,14 @@ let focusedFrame: ReturnType<typeof makeFrame> | null = null;
 let contextFailure: Error | null = null;
 let initialNavigation: (() => Promise<void>) | null = null;
 let desktopRendersNext = false;
+/** Replaces the answer to the desktop page's size reads. */
+let desktopSizeAnswer: (() => Promise<Record<string, unknown>>) | null = null;
 const desktopAttachWaits: string[] = [];
 const desktopDetaches = new NodeEvents.EventEmitter();
 const desktopEvent = (name: string) =>
   new Promise<void>((resolve) => desktopDetaches.once(name, () => resolve()));
+let desktopDetachReady = Promise.withResolvers<void>();
+let desktopReleased = Promise.withResolvers<void>();
 const desktopTabs = new Set<string>();
 const desktopRenders = (tabId: string) => {
   if (desktopRendersNext) {
@@ -361,6 +382,7 @@ const dependencies = Layer.mergeAll(
             Queue.offerUnsafe(queue, key);
           desktopDetaches.on("detach", onDetach);
           desktopDetaches.emit("detach-ready");
+          desktopDetachReady.resolve();
           return onDetach;
         }),
         (onDetach) => Effect.sync(() => desktopDetaches.off("detach", onDetach)),
@@ -383,6 +405,7 @@ const dependencies = Layer.mergeAll(
       Effect.acquireRelease(Effect.succeed(`ws://desktop/${key.tabId}`), () =>
         Effect.sync(() => {
           releasedDesktopTabs.push(key.tabId);
+          desktopReleased.resolve();
           desktopDetaches.emit("released");
         }),
       ),
@@ -415,6 +438,33 @@ const viewerInput = (tabId: string, canOperate: boolean) => ({
   maxHeight: 800,
   quality: 70,
 });
+/** Fills a viewer's output with frames; resolves once every one of them is acknowledged. */
+const stallViewer = (viewer: ServerBrowser.ServerBrowserViewer) => {
+  const output = viewer.output as unknown as Queue.Queue<ServerBrowser.ServerBrowserViewerOutput>;
+  const acked = Promise.withResolvers<void>();
+  let unacked = 0;
+  const ack = Effect.sync(() => {
+    if (--unacked === 0) acked.resolve();
+  });
+  while (Queue.offerUnsafe(output, { _tag: "frame", data: Buffer.alloc(0), ack })) unacked++;
+  return Effect.promise(() => acked.promise);
+};
+const viewportSizes = (items: ReadonlyArray<ServerBrowser.ServerBrowserViewerOutput>) =>
+  items.flatMap((item) => (item._tag === "viewport" ? [`${item.width}x${item.height}`] : []));
+const openDesktopViewer = Effect.gen(function* () {
+  const browser = yield* ServerBrowser.ServerBrowser;
+  const manager = yield* Manager.PreviewManager;
+  desktopRendersNext = true;
+  const { tabId } = yield* manager.open({ threadId: scope.thread.threadId, runtime: "server" });
+  const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+  const context = desktopConnections[0]!.context;
+  const cdp = context.sessions[0]!;
+  const resize = (width: number, height: number) => {
+    Object.assign(context.cssViewport, { width, height });
+    return Effect.promise(() => cdp.emitAsync("Page.frameResized"));
+  };
+  return { tabId, viewer, context, cdp, resize };
+});
 
 beforeEach(() => {
   nativeHandler = undefined;
@@ -431,6 +481,9 @@ beforeEach(() => {
   desktopTabs.clear();
   desktopRendersNext = false;
   desktopAttachWaits.length = 0;
+  desktopSizeAnswer = null;
+  desktopDetachReady = Promise.withResolvers<void>();
+  desktopReleased = Promise.withResolvers<void>();
   releasedDesktopTabs.length = 0;
   desktopConnections.length = 0;
 });
@@ -659,6 +712,76 @@ it.live.each(["desktop" as const, undefined])(
           input: { open: false },
         });
         expect(reused.tabId).toBe(tabId);
+      }),
+    ).pipe(Effect.provide(layer)),
+);
+
+it.live.each(["desktop" as const, undefined])(
+  "adopts an attached local tab ($0 runtime) without replacing its page or profile",
+  (runtime) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { broker } = yield* ready;
+        const manager = yield* Manager.PreviewManager;
+        const local = yield* manager.open({
+          threadId: scope.thread.threadId,
+          url: "https://example.com/logged-in",
+          profileId: "default",
+          ...(runtime === undefined ? {} : { runtime }),
+        });
+        desktopTabs.add(local.tabId);
+        const status = yield* broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "status",
+          input: {},
+          tabId: PreviewTabId.make(local.tabId),
+        });
+        expect(status.available).toBe(true);
+        expect(status.tabId).toBe(local.tabId);
+        expect(status.tabs).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              tabId: local.tabId,
+              profileId: "default",
+            }),
+          ]),
+        );
+        expect(desktopConnections).toHaveLength(1);
+        const page = desktopConnections[0]!.context.page;
+        expect(page.goto).not.toHaveBeenCalled();
+        expect(page.reload).not.toHaveBeenCalled();
+        expect(contextRequests).toHaveLength(1);
+        const selected = yield* broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: { open: true },
+          tabId: PreviewTabId.make(local.tabId),
+        });
+        expect(selected.tabId).toBe(local.tabId);
+        yield* broker.invoke({
+          scope,
+          operation: "navigate",
+          input: { url: "https://example.com/next" },
+          tabId: PreviewTabId.make(local.tabId),
+        });
+        expect(page.goto).toHaveBeenCalledWith("https://example.com/next", expect.anything());
+        const snapshot = yield* broker.invoke<PreviewAutomationSnapshot>({
+          scope,
+          operation: "snapshot",
+          input: {},
+          tabId: PreviewTabId.make(local.tabId),
+        });
+        expect(snapshot.url).toBe("https://example.com/next");
+
+        expect((yield* manager.list({ threadId: scope.thread.threadId })).sessions).toHaveLength(2);
+        const otherThread = yield* broker.invoke<PreviewAutomationStatus>({
+          scope: { ...scope, thread: { ...scope.thread, threadId: ThreadId.make("other-thread") } },
+          operation: "status",
+          input: {},
+          tabId: PreviewTabId.make(local.tabId),
+        });
+        expect(otherThread.available).toBe(false);
+        expect(contextRequests).toHaveLength(1);
       }),
     ).pipe(Effect.provide(layer)),
 );
@@ -1393,6 +1516,148 @@ it.live("only the current controller can answer a file picker", () =>
       });
       expect(answered).toBe(false);
       expect(setFiles).not.toHaveBeenCalled();
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "desktop viewers get the page's CSS size and keep the last one a read cannot measure",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // Each page size read waits here for its answer.
+        const reads = yield* Queue.unbounded<PromiseWithResolvers<Record<string, unknown>>>();
+        const deferReads = () => {
+          desktopSizeAnswer = () => {
+            const read = Promise.withResolvers<Record<string, unknown>>();
+            Queue.offerUnsafe(reads, read);
+            return read.promise;
+          };
+        };
+        deferReads();
+        const { viewer, cdp, context } = yield* openDesktopViewer;
+        const answer = (width: number, height: number) => ({
+          result: { value: { width, height } },
+        });
+        const resized = () => cdp.emitAsync("Page.frameResized");
+        // The read on attach never answers and gives up with no size to send.
+        const blocked = yield* Queue.take(reads);
+        yield* TestClock.adjust("1 second");
+        // The next page load measures again.
+        desktopSizeAnswer = null;
+        yield* Effect.promise(() => cdp.emitAsync("Page.loadEventFired"));
+        expect(viewportSizes(yield* Queue.takeAll(viewer.output))).toEqual(["1920x1080"]);
+        // While a dialog is open nothing reads. The host closing it clears it, and since
+        // closing resizes nothing, the close itself remeasures.
+        deferReads();
+        context.page.emit("dialog", {
+          type: () => "alert",
+          message: () => "",
+          defaultValue: () => "",
+        });
+        yield* Effect.promise(resized);
+        expect(yield* Queue.size(reads)).toBe(0);
+        desktopSizeAnswer = null;
+        yield* Effect.promise(() => cdp.emitAsync("Page.javascriptDialogClosed"));
+        expect(viewportSizes(yield* Queue.takeAll(viewer.output))).toEqual([
+          "1920x1080",
+          "1920x1080",
+        ]);
+        // The late answer, a read a navigation breaks and a hidden webview keep the last size.
+        blocked.resolve(answer(100, 100));
+        deferReads();
+        const navigated = resized();
+        (yield* Queue.take(reads)).reject(new Error("Cannot find context with specified id"));
+        yield* Effect.promise(() => navigated);
+        const hidden = resized();
+        (yield* Queue.take(reads)).resolve(answer(0, 0));
+        yield* Effect.promise(() => hidden);
+        expect(viewportSizes(yield* Queue.takeAll(viewer.output))).toEqual([
+          "1920x1080",
+          "1920x1080",
+        ]);
+        // Resizes during a read share one more read, so the newest size arrives last.
+        const first = resized();
+        const firstRead = yield* Queue.take(reads);
+        const burst = Promise.all([resized(), resized()]);
+        firstRead.resolve(answer(800, 500));
+        (yield* Queue.take(reads)).resolve(answer(1000, 600));
+        expect(yield* Queue.size(reads)).toBe(0);
+        yield* Effect.promise(() => Promise.all([first, burst]));
+        expect(viewportSizes(yield* Queue.takeAll(viewer.output))).toEqual([
+          "800x500",
+          "1000x600",
+          "1000x600",
+        ]);
+      }),
+    ).pipe(Effect.provide(layer)),
+);
+
+it.effect("a stalled desktop viewer still gets its size, control and reconnect", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { tabId, viewer, context, resize } = yield* openDesktopViewer;
+      const output =
+        viewer.output as unknown as Queue.Queue<ServerBrowser.ServerBrowserViewerOutput>;
+      // Ready once the sizes measured on attach and on a first resize both arrived.
+      yield* resize(1920, 1080);
+      expect(viewportSizes(yield* Queue.takeAll(viewer.output))).toEqual([
+        "1920x1080",
+        "1920x1080",
+      ]);
+      yield* Effect.promise(() => desktopDetachReady.promise);
+      yield* viewer.input({ type: "takeControl" });
+      context.page.emit("filechooser", {
+        isMultiple: () => false,
+        element: () => ({ getAttribute: async () => ".csv" }),
+        setFiles: vi.fn(async () => {}),
+      });
+      let chooser = yield* Queue.take(viewer.output);
+      while (chooser._tag !== "fileChooser") chooser = yield* Queue.take(viewer.output);
+      yield* Queue.clear(viewer.output);
+      // A resize compacts a full backlog but keeps control, the open picker and
+      // one-time notifications in order.
+      yield* viewer.input({ type: "takeControl" });
+      const notifications: Array<ServerBrowser.ServerBrowserViewerOutput> = [
+        { _tag: "fileChooserClosed", id: "chooser-0" },
+        { _tag: "popup", tabId: "popup-1" },
+        { _tag: "download", id: "download-1", fileName: "report.csv", sizeBytes: 3 },
+        { _tag: "clipboard", text: "copied" },
+      ];
+      for (const item of notifications) Queue.offerUnsafe(output, item);
+      let acked = stallViewer(viewer);
+      yield* resize(1000, 600);
+      expect(yield* Queue.takeAll(viewer.output)).toEqual([
+        chooser,
+        ...notifications,
+        expect.objectContaining({ _tag: "control", controller: "you" }),
+        { _tag: "viewport", width: 1000, height: 600 },
+      ]);
+      yield* acked;
+      // A control change keeps only the newest size.
+      yield* resize(900, 500);
+      yield* resize(1200, 700);
+      acked = stallViewer(viewer);
+      yield* viewer.input({ type: "releaseControl" });
+      expect(yield* Queue.takeAll(viewer.output)).toEqual([
+        expect.objectContaining({ _tag: "control", controller: "unclaimed" }),
+        { _tag: "viewport", width: 1200, height: 700 },
+      ]);
+      yield* acked;
+      // Notifications that no longer fit go oldest first, never the size.
+      let copies = 0;
+      while (Queue.offerUnsafe(output, { _tag: "clipboard", text: `copy ${copies}` })) copies++;
+      yield* resize(1000, 600);
+      const compacted = yield* Queue.takeAll(viewer.output);
+      expect(compacted.at(0)).toEqual({ _tag: "clipboard", text: "copy 1" });
+      expect(compacted.at(-1)).toEqual({ _tag: "viewport", width: 1000, height: 600 });
+      // The desktop takes the page back; a resize after it cannot bury the reconnect.
+      acked = stallViewer(viewer);
+      desktopDetaches.emit("detach", { threadId: scope.thread.threadId, tabId });
+      yield* Effect.promise(() => desktopReleased.promise);
+      yield* resize(1000, 600);
+      expect(yield* Queue.takeAll(viewer.output)).toEqual([{ _tag: "reconnect" }]);
+      yield* acked;
     }),
   ).pipe(Effect.provide(layer)),
 );

@@ -564,7 +564,7 @@ it.effect("prefers the live tab owner for new sessions without moving existing l
       const connections = new Map<string, string>();
       for (const clientId of ["owner", "other"]) {
         const requests = requestsFrom(
-          yield* broker.connect(makeHost({ clientId })),
+          yield* broker.connect(makeHost({ clientId }), { preferred: clientId === "other" }),
           (connectionId) => connections.set(clientId, connectionId),
         );
         yield* Stream.runForEach(requests, (request) =>
@@ -644,6 +644,83 @@ it.effect("prefers the live tab owner for new sessions without moving existing l
       ).toBe("other");
     }),
   ),
+);
+
+it.effect(
+  "routes an explicit same-thread tab to its owner after a background host was pinned",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const broker = yield* makeBroker;
+        const connections = new Map<string, string>();
+        const ready = yield* Deferred.make<void>();
+        const routed: Array<{ clientId: string; request: RoutedRequest }> = [];
+        for (const clientId of ["desktop", "server"]) {
+          const events = yield* broker.connect(makeHost({ clientId }), {
+            preferred: clientId === "server",
+          });
+          const requests = requestsFrom(
+            events.pipe(
+              Stream.tap((event) => {
+                if (event.type !== "connected") return Effect.void;
+                connections.set(clientId, event.connectionId);
+                return connections.size === 2 ? Deferred.succeed(ready, undefined) : Effect.void;
+              }),
+            ),
+          );
+          yield* Stream.runForEach(requests, (request) => {
+            routed.push({ clientId, request });
+            return broker.respond({
+              clientId,
+              connectionId: request.connectionId,
+              requestId: request.requestId,
+              ok: true,
+              result: { tabId: request.tabId ?? PreviewTabId.make("background"), host: clientId },
+            });
+          }).pipe(Effect.forkScoped);
+        }
+        yield* Deferred.await(ready);
+        yield* broker.invoke({ scope, operation: "status", input: {} });
+        const tabId = PreviewTabId.make("signed-in");
+        yield* broker.focusHost({
+          clientId: "desktop",
+          environmentId: scope.environmentId,
+          connectionId: connections.get("desktop")!,
+          focused: true,
+          liveTabs: [{ threadId: scope.thread.threadId, tabId, visible: true }],
+        });
+        // A foreign thread's tab cannot redirect this thread's pinned runtime.
+        yield* broker.focusHost({
+          clientId: "desktop",
+          environmentId: scope.environmentId,
+          connectionId: connections.get("desktop")!,
+          focused: true,
+          liveTabs: [
+            { threadId: scope.thread.threadId, tabId, visible: true },
+            {
+              threadId: ThreadId.make("foreign"),
+              tabId: PreviewTabId.make("foreign"),
+              visible: true,
+            },
+          ],
+        });
+        yield* broker.invoke({
+          scope,
+          operation: "snapshot",
+          input: {},
+          tabId: PreviewTabId.make("foreign"),
+        });
+        yield* broker.invoke({ scope, operation: "open", input: { open: true }, tabId });
+        yield* broker.invoke({ scope, operation: "snapshot", input: {} });
+        expect(routed.map(({ clientId }) => clientId)).toEqual([
+          "server",
+          "server",
+          "desktop",
+          "desktop",
+        ]);
+        expect(routed.at(-1)?.request.tabId).toBe(tabId);
+      }),
+    ),
 );
 
 it.effect("routes resize to a capable host instead of a newer legacy connection", () =>

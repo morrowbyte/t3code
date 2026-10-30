@@ -15,6 +15,7 @@ import {
   ForwardCompatibleOptional,
   OmittedWhenNull,
   ProjectId,
+  EnvironmentId,
   ThreadId,
   TrimmedNonEmptyString,
   TrimmedString,
@@ -348,7 +349,20 @@ export type ModelPreferences = {
   readonly providerModelPreferences: typeof ProviderModelPreferences.Type;
 };
 
+export const PinnedWorkTab = Schema.Struct({
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  title: TrimmedNonEmptyString,
+});
+export type PinnedWorkTab = typeof PinnedWorkTab.Type;
+export const PinnedWorkTabs = Schema.Array(PinnedWorkTab).check(Schema.isMaxLength(5));
+export const NumericNavigationMode = Schema.Literals(["sidebar", "pinned-tabs"]);
+
 export const ClientSettingsSchema = Schema.Struct({
+  pinnedWorkTabs: PinnedWorkTabs.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  numericNavigationMode: NumericNavigationMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed("sidebar" as const)),
+  ),
   hostOrderEntryEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   notificationMode: NotificationMode.pipe(
     Schema.withDecodingDefault(Effect.succeed("off" as const)),
@@ -1790,6 +1804,8 @@ export function requiredScopesForProjectMutation(
 }
 
 export const ClientSettingsPatch = Schema.Struct({
+  pinnedWorkTabs: Schema.optionalKey(PinnedWorkTabs),
+  numericNavigationMode: Schema.optionalKey(NumericNavigationMode),
   hostOrderEntryEnabled: Schema.optionalKey(Schema.Boolean),
   notificationMode: Schema.optionalKey(NotificationMode),
   inAppNotificationsEnabled: Schema.optionalKey(Schema.Boolean),

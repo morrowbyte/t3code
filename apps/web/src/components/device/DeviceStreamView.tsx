@@ -6,7 +6,10 @@ import { useId, useRef, useState, type ReactNode } from "react";
 import { cn } from "~/lib/utils";
 import { Button } from "~/components/ui/button";
 import { renewDeviceHubAccess, useDeviceHubAccess } from "~/state/device";
-import { resolveDeviceShape } from "@t3tools/client-runtime/device/shape-profile";
+import {
+  GALAXY_S24_ULTRA_SHAPE,
+  resolveDeviceShape,
+} from "@t3tools/client-runtime/device/shape-profile";
 import { deviceKeyboard, deviceModel } from "./deviceModels";
 import { fitDeviceFrame } from "./deviceFrameLayout";
 import { DeviceDuoViewport } from "./DeviceDuoViewport";
@@ -99,6 +102,9 @@ export function DeviceStreamView(props: {
   const model = deviceModel(props.platform, props.deviceName ?? "");
   const isDuo = model?.id === "iphone-duo";
   const [presentation, setPresentation] = useState<"phone" | "flat">("phone");
+  const frameDeviceKey = `${props.platform}:${props.hostId}:${props.deviceId}`;
+  const [frameOverride, setFrameOverride] = useState<string | null>(null);
+  const s24Frame = frameOverride === frameDeviceKey;
   const [keyboardAttached, setKeyboardAttached] = useState(false);
   const cancelPhoneInputRef = useRef<(() => void) | null>(null);
   const cancelPhoneInput = () => cancelPhoneInputRef.current?.();
@@ -228,11 +234,14 @@ export function DeviceStreamView(props: {
     }
     resetViewRef.current?.();
   };
-  const profile = resolveDeviceShape({
-    platform: props.platform,
-    name: props.deviceName ?? "",
-    portraitAspect: Math.min(aspect, 1 / aspect),
-  });
+  const profile =
+    s24Frame && props.platform === "android"
+      ? GALAXY_S24_ULTRA_SHAPE
+      : resolveDeviceShape({
+          platform: props.platform,
+          name: props.deviceName ?? "",
+          portraitAspect: Math.min(aspect, 1 / aspect),
+        });
 
   return (
     <div
@@ -250,17 +259,31 @@ export function DeviceStreamView(props: {
             phoneUnavailableReason,
             foldingControls:
               props.platform === "android" && access ? (
-                <DeviceAndroidFoldControls
-                  key={`${props.hostId}:${props.deviceId}`}
-                  access={access}
-                  deviceId={props.deviceId}
-                  visible={props.visible}
-                  enabled={status === "streaming"}
-                  screenWidth={screen?.width}
-                  screenHeight={screen?.height}
-                  deviceKey={deviceScreenKey(props.environmentId, props.hostId, props.deviceId)}
-                  renewAccess={() => renewDeviceHubAccess(props.environmentId, props.hostId)}
-                />
+                <div className="flex flex-col gap-2">
+                  <select
+                    aria-label="Device frame"
+                    className="pointer-events-auto w-10 rounded border border-border bg-background p-1 text-xs"
+                    value={s24Frame ? "s24" : "auto"}
+                    onChange={(event) => {
+                      cancelPhoneInput();
+                      setFrameOverride(event.target.value === "s24" ? frameDeviceKey : null);
+                    }}
+                  >
+                    <option value="auto">Automatic frame</option>
+                    <option value="s24">Galaxy S24 Ultra</option>
+                  </select>
+                  <DeviceAndroidFoldControls
+                    key={`${props.hostId}:${props.deviceId}`}
+                    access={access}
+                    deviceId={props.deviceId}
+                    visible={props.visible}
+                    enabled={status === "streaming"}
+                    screenWidth={screen?.width}
+                    screenHeight={screen?.height}
+                    deviceKey={deviceScreenKey(props.environmentId, props.hostId, props.deviceId)}
+                    renewAccess={() => renewDeviceHubAccess(props.environmentId, props.hostId)}
+                  />
+                </div>
               ) : showPhone && isDuo && screen?.supportsHingeAngle ? (
                 <DeviceDuoControls
                   screen={screen}

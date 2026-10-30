@@ -25,6 +25,8 @@ import { tickTextContent } from "~/lib/tickTextContent";
 import { cn } from "~/lib/utils";
 import { Button, InlineButton } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { BackgroundWorkActivity } from "./BackgroundWorkActivity";
+import { ComposerBanner } from "./ComposerBanner";
 import type { ComposerBannerStackItem } from "./ComposerBannerStack";
 import type { ThreadNowItem } from "./ThreadNow";
 
@@ -70,42 +72,58 @@ export function childInputNowItem(input: {
   };
 }
 
-/** The thread's goal, for the end of the timeline. */
-export function goalNowItem(input: {
+/** The thread's goal stays attached to the composer while the timeline scrolls. */
+export function goalBannerItem(input: {
   readonly threadId: ThreadId;
   readonly goal: OrchestrationV2ProviderGoal;
   readonly isWorking: boolean;
   readonly onSendCommand: (text: string, failureMessage: string) => Promise<void>;
-}): ThreadNowItem {
+}): ComposerBannerStackItem {
   const { isWorking, onSendCommand } = input;
   const presentation = presentProviderGoal(input.goal, isWorking);
+  const title =
+    presentation.usage === null
+      ? presentation.title
+      : `${presentation.title} · ${presentation.usage}`;
   return {
     id: `goal:${input.threadId}`,
+    variant: "default",
     icon: <TargetIcon />,
-    title:
-      presentation.usage === null
-        ? presentation.title
-        : `${presentation.title} · ${presentation.usage}`,
-    description: presentation.objective,
-    // Clear stops goal work; Resume would stop unrelated work, so it waits.
-    actions: (
+    title,
+    content: (
       <>
-        {presentation.canResume && !isWorking ? (
-          <>
-            <InlineButton
-              onClick={() => void onSendCommand("/goal resume", "Failed to resume goal.")}
+        <ComposerBanner.Row layout="wrap-actions">
+          <ComposerBanner.Icon>
+            <TargetIcon />
+          </ComposerBanner.Icon>
+          <ComposerBanner.Content>{title}</ComposerBanner.Content>
+          <ComposerBanner.Actions>
+            {presentation.canResume && !isWorking ? (
+              <Button
+                size="xs"
+                variant="ghost"
+                onClick={() => void onSendCommand("/goal resume", "Failed to resume goal.")}
+              >
+                Resume
+              </Button>
+            ) : null}
+            <Button
+              size="xs"
+              variant="ghost"
+              onClick={() => void onSendCommand("/goal clear", "Failed to clear goal.")}
             >
-              Resume
-            </InlineButton>
-            <span aria-hidden>·</span>
-          </>
-        ) : null}
-        <InlineButton
-          tone="muted"
-          onClick={() => void onSendCommand("/goal clear", "Failed to clear goal.")}
-        >
-          Clear
-        </InlineButton>
+              Clear
+            </Button>
+          </ComposerBanner.Actions>
+        </ComposerBanner.Row>
+        <details className="min-w-0 px-2 pb-1">
+          <summary className="cursor-pointer truncate text-muted-foreground">
+            {presentation.objective}
+          </summary>
+          <ComposerBanner.Scroll className="max-h-[min(24dvh,10rem)] whitespace-pre-wrap py-2 wrap-anywhere">
+            {presentation.objective}
+          </ComposerBanner.Scroll>
+        </details>
       </>
     ),
   };
@@ -138,6 +156,29 @@ export function backgroundWorkNowItem(input: {
       childThreadId: task.childThreadId ?? subagent?.childThreadId ?? undefined,
     };
   });
+  if (rows.some((row) => row.task.kind === "command")) {
+    return {
+      id: `background-work:${input.threadId}`,
+      icon: <TerminalIcon />,
+      title: presentation.title,
+      content: (
+        <BackgroundWorkActivity
+          presentation={{
+            ...presentation,
+            items: rows.map((row) =>
+              row.activity
+                ? { ...row.task, label: `${row.task.label}: ${row.activity}` }
+                : row.task,
+            ),
+          }}
+          canStop={!input.stopDisabled}
+          stopping={input.stopping}
+          onStopThread={() => void input.onStop()}
+          onOpenThread={onOpenThread}
+        />
+      ),
+    };
+  }
   const [only] = rows.length === 1 ? rows : [];
   const newest = rows
     .filter((row) => row.activity)
@@ -151,7 +192,10 @@ export function backgroundWorkNowItem(input: {
     icon: rows.every(isCommand) ? <TerminalIcon /> : <CircleDashedIcon />,
     title: only ? (
       <>
-        {verb} <span className={cn(isCommand(only) && "font-mono")}>{only.task.label}</span>
+        {verb}{" "}
+        <span className={cn(isCommand(only) && "font-mono")}>
+          {only.task.commandLabel ?? only.task.label}
+        </span>
       </>
     ) : (
       presentation.title
@@ -161,9 +205,11 @@ export function backgroundWorkNowItem(input: {
     ) : newest ? (
       `${newest.task.label}: ${newest.activity}`
     ) : rows.every(isCommand) ? (
-      <span className="font-mono">{rows.map((row) => row.task.label).join(", ")}</span>
+      <span className="font-mono">
+        {rows.map((row) => row.task.commandLabel ?? row.task.label).join(", ")}
+      </span>
     ) : (
-      rows.map((row) => row.task.label).join(", ")
+      rows.map((row) => row.task.commandLabel ?? row.task.label).join(", ")
     ),
     actions: (
       <>

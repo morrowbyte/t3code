@@ -1,3 +1,13 @@
+import { createCanvasFrameSink } from "@t3tools/client-runtime/device/frame";
+import { createPhoneViewer, type PhoneViewer } from "@t3tools/client-runtime/device/phone-viewer";
+import {
+  createPhoneInteraction,
+  phoneWheelNavigation,
+} from "@t3tools/client-runtime/device/phone-interaction";
+import {
+  GALAXY_S24_ULTRA_SHAPE,
+  resolveDeviceShape,
+} from "@t3tools/client-runtime/device/shape-profile";
 import {
   createDeviceStreamClient,
   type DeviceScreenSize,
@@ -13,7 +23,11 @@ declare global {
 
 let activeClient: ReturnType<typeof createDeviceStreamClient> | null = null;
 
+let disposePresentation: (() => void) | null = null;
+
 export function stop() {
+  disposePresentation?.();
+  disposePresentation = null;
   activeClient?.stop();
   activeClient = null;
 }
@@ -84,6 +98,209 @@ export function start(configuration: DeviceStreamConfiguration) {
   container.append(frame);
   document.body.replaceChildren(container, inputStatus);
 
+  const sceneCanvas = document.createElement("canvas");
+  sceneCanvas.setAttribute("aria-label", "Interactive 3D device");
+  Object.assign(sceneCanvas.style, {
+    position: "absolute",
+    inset: "0",
+    width: "100%",
+    height: "100%",
+    touchAction: "none",
+    display: "none",
+  });
+  container.append(sceneCanvas);
+  let viewer: PhoneViewer | null = null;
+  let interaction: ReturnType<typeof createPhoneInteraction> | null = null;
+  let currentScreen: DeviceScreenSize | null = null;
+  let flat = false;
+  let forcedS24 = false;
+  let mjpeg = false;
+  let unavailable = false;
+  const profile = () =>
+    forcedS24
+      ? GALAXY_S24_ULTRA_SHAPE
+      : resolveDeviceShape({
+          platform,
+          name: configuration.deviceName ?? configuration.deviceId,
+          portraitAspect:
+            Math.min(canvas.width, canvas.height) / Math.max(canvas.width, canvas.height),
+        });
+  const controls = document.createElement("div");
+  Object.assign(controls.style, {
+    position: "fixed",
+    bottom: "12px",
+    right: "12px",
+    display: "flex",
+    gap: "6px",
+    flexWrap: "wrap",
+    maxWidth: "calc(100% - 24px)",
+    zIndex: "1",
+  });
+  const mode = document.createElement("button");
+  mode.textContent = "Flat";
+  const reset = document.createElement("button");
+  reset.textContent = "Reset view";
+  const preset = document.createElement("select");
+  preset.setAttribute("aria-label", "Device frame");
+  for (const [value, label] of [
+    ["auto", "Automatic frame"],
+    ["s24", "Galaxy S24 Ultra"],
+  ]) {
+    const option = document.createElement("option");
+    option.value = value!;
+    option.textContent = label!;
+    preset.append(option);
+  }
+  for (const control of [preset, mode, reset]) {
+    Object.assign(control.style, {
+      background: colors.buttonBackground,
+      color: colors.buttonForeground,
+      border: `1px solid ${colors.buttonBorder}`,
+      borderRadius: "8px",
+      padding: "8px",
+      font: "inherit",
+      fontSize: "13px",
+    });
+  }
+  if (platform === "android") controls.append(preset);
+  controls.append(mode, reset);
+  if (platform === "android") document.body.append(controls);
+  const resize = () => {
+    const rect = container.getBoundingClientRect();
+    viewer?.resize(rect.width, rect.height, window.devicePixelRatio);
+  };
+  const updatePresentation = () => {
+    const three = platform === "android" && !flat && !mjpeg && !unavailable;
+    sceneCanvas.style.display = three ? "block" : "none";
+    frame.style.visibility = three ? "hidden" : "visible";
+    mode.textContent = unavailable
+      ? "3D unavailable"
+      : mjpeg
+        ? "3D requires H.264"
+        : three
+          ? "Flat"
+          : "3D";
+    mode.disabled = mjpeg || unavailable;
+    reset.disabled = !three;
+    if (!three || !canvas.width || !canvas.height) return;
+    if (!viewer) {
+      try {
+        viewer = createPhoneViewer({
+          canvas: sceneCanvas,
+          source: canvas,
+          profile: profile(),
+          onUnavailable: () => {
+            unavailable = true;
+            updatePresentation();
+          },
+        });
+        interaction = createPhoneInteraction({
+          screenPoint: (point, captured) => viewer?.screenPoint(point.x, point.y, captured) ?? null,
+          touch: (phase, point) => client.sendTouch(phase, point.x, point.y),
+          orbit: (x, y) => viewer?.orbit(x, y),
+          zoomBy: (delta) => viewer?.zoomBy(delta),
+          onInteractionActive: (active, kind) => viewer?.setInteractionActive(active, kind),
+        });
+        resize();
+      } catch {
+        unavailable = true;
+        updatePresentation();
+        return;
+      }
+    }
+    viewer.setScreen(currentScreen, profile());
+    viewer.frameUpdated();
+  };
+  mode.addEventListener("click", () => {
+    interaction?.end();
+    flat = !flat;
+    updatePresentation();
+  });
+  reset.addEventListener("click", () => {
+    interaction?.end();
+    viewer?.resetPose();
+  });
+  preset.addEventListener("change", () => {
+    interaction?.end();
+    forcedS24 = preset.value === "s24";
+    updatePresentation();
+  });
+  const observer = new ResizeObserver(resize);
+  observer.observe(container);
+  const pointers = new Map<number, { x: number; y: number }>();
+  let pinchDistance = 0;
+  const point = (event: PointerEvent) => {
+    const rect = sceneCanvas.getBoundingClientRect();
+    return {
+      x: (event.clientX - rect.left) / rect.width,
+      y: (event.clientY - rect.top) / rect.height,
+    };
+  };
+  sceneCanvas.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || !inputConnected) return;
+    event.preventDefault();
+    sceneCanvas.setPointerCapture(event.pointerId);
+    frame.focus();
+    pointers.set(event.pointerId, point(event));
+    if (pointers.size === 1) interaction?.begin(event.pointerId, point(event), event.altKey);
+    else {
+      interaction?.end();
+      pinchDistance = 0;
+    }
+  });
+  sceneCanvas.addEventListener("pointermove", (event) => {
+    if (!pointers.has(event.pointerId)) return;
+    const previous = pointers.get(event.pointerId)!;
+    const next = point(event);
+    pointers.set(event.pointerId, next);
+    if (pointers.size < 2) {
+      interaction?.move(event.pointerId, next);
+      return;
+    }
+    const [first, second] = [...pointers.values()];
+    const distance = Math.hypot(first!.x - second!.x, first!.y - second!.y);
+    if (pinchDistance > 0 && distance > 0) viewer?.zoomBy(Math.log(distance / pinchDistance));
+    pinchDistance = distance;
+    viewer?.orbit((next.x - previous.x) / 2, (next.y - previous.y) / 2);
+  });
+  const endPointer = (event: PointerEvent) => {
+    pointers.delete(event.pointerId);
+    interaction?.end(event.pointerId);
+    pinchDistance = 0;
+  };
+  sceneCanvas.addEventListener("pointerup", endPointer);
+  sceneCanvas.addEventListener("pointercancel", endPointer);
+  sceneCanvas.addEventListener("lostpointercapture", endPointer);
+  sceneCanvas.addEventListener(
+    "wheel",
+    (event) => {
+      event.preventDefault();
+      const rect = sceneCanvas.getBoundingClientRect();
+      const navigation = phoneWheelNavigation({
+        deltaX: event.deltaX,
+        deltaY: event.deltaY,
+        deltaMode: event.deltaMode,
+        ctrlKey: event.ctrlKey,
+        width: rect.width,
+        height: rect.height,
+      });
+      if (navigation) interaction?.navigate(navigation);
+    },
+    { passive: false },
+  );
+  const blur = () => {
+    pointers.clear();
+    interaction?.end();
+    client.releaseKeys();
+  };
+  window.addEventListener("blur", blur);
+  disposePresentation = () => {
+    blur();
+    observer.disconnect();
+    viewer?.dispose();
+    viewer = null;
+    window.removeEventListener("blur", blur);
+  };
   let pointerId: number | null = null;
   let inputConnected = false;
   let streaming = false;
@@ -94,6 +311,9 @@ export function start(configuration: DeviceStreamConfiguration) {
     post({ type: "status", status, detail });
   };
   const layout = (screen: DeviceScreenSize | null) => {
+    interaction?.end();
+    currentScreen = screen;
+    viewer?.setScreen(screen, profile());
     const landscape =
       screen?.orientation === "landscape_left" || screen?.orientation === "landscape_right";
     const aspect = screen
@@ -132,21 +352,26 @@ export function start(configuration: DeviceStreamConfiguration) {
   };
   const client = createDeviceStreamClient(
     { ...configuration, preferMjpeg: platform === "ios" },
-    canvas,
+    createCanvasFrameSink(canvas, updatePresentation),
     {
       onStatus: reportStatus,
       onScreen: layout,
       onMjpegFallback: () => {
+        mjpeg = true;
+        updatePresentation();
         canvas.style.display = "none";
         image.style.display = "block";
       },
       onCanvasVideo: () => {
+        mjpeg = false;
+        updatePresentation();
         image.style.display = "none";
         canvas.style.display = "";
       },
       onUnauthorized: unauthorized,
       onInputConnected: (connected) => {
         inputConnected = connected;
+        if (!connected) interaction?.end();
         inputStatus.style.display = streaming && !connected ? "block" : "none";
         post({ type: "input", connected });
       },

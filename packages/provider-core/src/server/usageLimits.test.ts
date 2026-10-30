@@ -68,8 +68,9 @@ describe("applyUsageLimitsUpdate", () => {
 
   it("preserves reset credits when a streamed window update changes usage", () => {
     const resetCredits = { availableCount: 2, nextExpiresAt: "2026-10-01T00:00:00.000Z" };
+    const creditBalance = { balance: "27.5", hasCredits: true, unlimited: false };
     const next = applyUsageLimitsUpdate({
-      previous: { ...published, resetCredits },
+      previous: { ...published, resetCredits, creditBalance },
       checkedAt: "2026-09-03T12:00:05.000Z",
       update: { windows: [{ ...session, usedPercent: 55 }] },
     });
@@ -78,11 +79,54 @@ describe("applyUsageLimitsUpdate", () => {
       checkedAt: "2026-09-03T12:00:05.000Z",
       windows: [{ ...session, usedPercent: 55 }, weekly],
       resetCredits,
+      creditBalance,
     });
   });
 });
 
 describe("resolveUsageLimitsAfterProbe", () => {
+  it.each([
+    undefined,
+    { balance: "0", hasCredits: false, unlimited: false },
+    { hasCredits: false, unlimited: false },
+  ])("retains omitted credit balances but accepts explicit reports: %j", (creditBalance) => {
+    const previousBalance = { balance: "50", hasCredits: true, unlimited: false };
+    const previous = {
+      ...published,
+      creditBalance: previousBalance,
+      credentialFingerprint: "account-a",
+    };
+    const probed = {
+      ...published,
+      checkedAt: "2026-09-03T12:30:00.000Z",
+      credentialFingerprint: "account-a",
+      ...(creditBalance ? { creditBalance } : {}),
+    };
+    expect(resolveUsageLimitsAfterProbe({ published: previous, probed })?.creditBalance).toEqual(
+      creditBalance ?? previousBalance,
+    );
+    expect(
+      resolveUsageLimitsAfterProbe({
+        published: previous,
+        probed: { ...probed, creditBalance: undefined, credentialFingerprint: "account-b" },
+      })?.creditBalance,
+    ).toBeUndefined();
+  });
+
+  it("accepts a depleted probe even after a newer token update", () => {
+    const creditBalance = { balance: "0", hasCredits: false, unlimited: false };
+    const result = resolveUsageLimitsAfterProbe({
+      published: {
+        ...published,
+        checkedAt: "2026-09-03T12:00:05.000Z",
+        creditBalance: { balance: "50", hasCredits: true, unlimited: false },
+      },
+      probed: { ...published, creditBalance },
+    });
+    expect(result?.creditBalance).toEqual(creditBalance);
+    expect(result?.checkedAt).toBe("2026-09-03T12:00:05.000Z");
+  });
+
   it("uses read order for windows while taking metadata from the successful probe", () => {
     const live = {
       checkedAt: "2026-09-03T12:00:05.000Z",

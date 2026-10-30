@@ -1,9 +1,14 @@
 import type { DevicePlatform } from "@t3tools/contracts";
 
-export type DeviceModelId = "iphone-18-pro" | "iphone-18-pro-max" | "ipad-pro-13-m5" | "iphone-duo";
+export type DeviceModelId =
+  | "galaxy-s24-ultra"
+  | "iphone-18-pro"
+  | "iphone-18-pro-max"
+  | "ipad-pro-13-m5"
+  | "iphone-duo";
 
 export interface DeviceModelSource {
-  readonly id: DeviceModelId;
+  readonly id: Exclude<DeviceModelId, "galaxy-s24-ultra">;
   readonly url: string;
 }
 
@@ -16,6 +21,12 @@ export interface DeviceAccessorySource {
 export type DeviceAssetSource = DeviceModelSource | DeviceAccessorySource;
 
 export function resolveDeviceModelId(platform: DevicePlatform, name: string): DeviceModelId | null {
+  if (platform === "android") {
+    return /^(?:Samsung[ _-]+)?Galaxy[ _-]+S24[ _-]+Ultra$/i.test(name.trim()) ||
+      /^(?:Samsung[ _-]+)?SM-S928[A-Z0-9]+(?:\/(?:DS|DSN))?$/i.test(name.trim())
+      ? "galaxy-s24-ultra"
+      : null;
+  }
   if (platform !== "ios") return null;
   if (/^iPhone Duo$/i.test(name)) return "iphone-duo";
   if (/^iPhone 18 Pro Max$/i.test(name)) return "iphone-18-pro-max";

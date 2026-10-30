@@ -283,6 +283,8 @@ import { VoiceConversationProvider } from "../voice/VoiceConversation";
 import { ProviderSubagentBar } from "./chat/ProviderSubagentBar";
 import { getTriggerDisplayModelName } from "./chat/providerIconUtils";
 import { resolveScrollToEndClearance } from "./composerFooterLayout";
+import { PinnedWorkTabs } from "./PinnedWorkTabs";
+import { useWorkTabsPreview } from "./work-tabs-preview/WorkTabsPreview";
 import { ChatHeader } from "./chat/ChatHeader";
 import { useRemoteOpenState } from "~/remoteOpen";
 import { shouldShowOpenInPicker } from "./chat/OpenInPicker.logic";
@@ -426,6 +428,7 @@ export default function ChatView(props: ChatViewProps) {
 }
 
 function ChatViewContent(props: ChatViewProps) {
+  const workTabsPreview = useWorkTabsPreview();
   const {
     environmentId,
     threadId,
@@ -2446,7 +2449,7 @@ function ChatViewContent(props: ChatViewProps) {
     activeBranchMismatchKey,
     backgroundWorkNow,
     childInputNow,
-    goalNow,
+    goalBanner,
     handleSwitchCheckoutToThread,
     handleSwitchCheckoutToThreadStable,
     isRestoringThreadBranch,
@@ -2656,11 +2659,13 @@ function ChatViewContent(props: ChatViewProps) {
             }),
           ]
         : [];
+    const goalItems = goalBanner === null ? [] : [goalBanner];
     const limitRecoveryItems = limitRecoveryBanner === null ? [] : [limitRecoveryBanner];
     const usageLimitsItems = usageLimitsBanner === null ? [] : [usageLimitsBanner];
     const projectCloneItems = projectCloneBannerItem === null ? [] : [projectCloneBannerItem];
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {
       return [
+        ...goalItems,
         ...feedbackBannerItems,
         ...fallbackItems,
         ...limitRecoveryItems,
@@ -2670,6 +2675,7 @@ function ChatViewContent(props: ChatViewProps) {
       ];
     }
     return [
+      ...goalItems,
       ...feedbackBannerItems,
       ...fallbackItems,
       ...limitRecoveryItems,
@@ -3196,10 +3202,7 @@ function ChatViewContent(props: ChatViewProps) {
   const onExpandTimelineImageStable = useStableCallback(onExpandTimelineImage);
   const shownThreadSyncPhase = activeEnvironmentUnavailable ? null : delayedThreadSyncPhase;
   const hasThreadNow =
-    childInputNow !== null ||
-    backgroundWorkNow !== null ||
-    goalNow !== null ||
-    shownThreadSyncPhase !== null;
+    childInputNow !== null || backgroundWorkNow !== null || shownThreadSyncPhase !== null;
   const queuedRunCount = serverProjection ? getUserQueuedThreadRuns(serverProjection).length : 0;
   // The queue control is mounted for every server thread but joins the footer only while it shows
   // something, by its own rule: an optimistic message stops counting once the server has it.
@@ -3241,7 +3244,6 @@ function ChatViewContent(props: ChatViewProps) {
           attention={childInputNow}
           work={backgroundWorkNow}
           syncPhase={shownThreadSyncPhase}
-          goal={goalNow}
         />
         {threadStatusLine}
         {pendingGuestMessageCount > 0 && isServerThread && activeThread ? (
@@ -3438,6 +3440,7 @@ function ChatViewContent(props: ChatViewProps) {
                 )
               : "flex h-[var(--workspace-topbar-height)] min-h-[var(--workspace-topbar-height)] shrink-0 items-center pl-(--workspace-gutter-start) pr-(--workspace-gutter-end)",
             COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
+            workTabsPreview === "c" && "h-auto",
           )}
         >
           {isElectron && rightPanelControlsAtRoot ? (
@@ -3465,6 +3468,11 @@ function ChatViewContent(props: ChatViewProps) {
             {...(threadFindEnabled ? { onFindInThread: openThreadFindStable } : {})}
           />
         </header>
+        {workTabsPreview === "b" ? (
+          <div className="shrink-0 border-b pl-(--workspace-gutter-start) pr-(--workspace-gutter-end)">
+            <PinnedWorkTabs />
+          </div>
+        ) : null}
 
         <div className="relative flex min-h-0 min-w-0 flex-1">
           <ThreadFindCanvas

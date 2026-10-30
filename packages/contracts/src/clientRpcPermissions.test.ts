@@ -4,6 +4,8 @@ import {
   AuthOrchestrationReadScope,
   AuthOrchestrationOperateScope,
   AuthSettingsWriteScope,
+  AuthPreviewOperateScope,
+  AuthFilesystemWriteScope,
   AuthTerminalOperateScope,
 } from "./auth.ts";
 import { CLIENT_GUARDED_RPC_SCOPES, clientRpcRequiredScopes } from "./clientRpcPermissions.ts";
@@ -120,5 +122,25 @@ it("guards host-order UI aliases without granting VM request sessions human cont
   ]);
   expect(clientRpcRequiredScopes(WS_METHODS.approvalReviewOrderReadiness, {})).toEqual([
     AuthOrchestrationReadScope,
+  ]);
+});
+
+it("keeps Boat credentials behind settings authority and CI file writes behind filesystem authority", () => {
+  expect(clientRpcRequiredScopes(WS_METHODS.boatRead, {})).toEqual([AuthOrchestrationReadScope]);
+  expect(clientRpcRequiredScopes(WS_METHODS.boatConnect, {})).toEqual([AuthSettingsWriteScope]);
+  expect(clientRpcRequiredScopes(WS_METHODS.boatDisconnect, {})).toEqual([AuthSettingsWriteScope]);
+  expect(clientRpcRequiredScopes(WS_METHODS.boatConfigure, {})).toEqual([
+    AuthSettingsWriteScope,
+    AuthFilesystemWriteScope,
+  ]);
+  expect(clientRpcRequiredScopes(WS_METHODS.boatOperate, {})).toEqual([
+    AuthOrchestrationOperateScope,
+  ]);
+});
+
+it("requires preview authority when a Boat action attaches to a thread", () => {
+  expect(clientRpcRequiredScopes(WS_METHODS.boatOperate, { threadId: "thread-cloud" })).toEqual([
+    AuthOrchestrationOperateScope,
+    AuthPreviewOperateScope,
   ]);
 });

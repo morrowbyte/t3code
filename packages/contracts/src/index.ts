@@ -92,3 +92,5 @@ export * from "./privilegedCommand.ts";
 
 export * from "./voiceRecording.ts";
 export * from "./connectedEnvironmentMcp.ts";
+
+export * from "./boat.ts";

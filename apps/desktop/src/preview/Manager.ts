@@ -1789,7 +1789,21 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     tabId: string,
     defaults?: DesktopPreviewTabDefaults,
   ) {
-    return yield* withTabLifecycleLock(tabId, createTabUnlocked(tabId, defaults));
+    return yield* withTabLifecycleLock(
+      tabId,
+      Effect.gen(function* () {
+        const tab = yield* createTabUnlocked(tabId, defaults);
+        if (!tab.serverTab && defaults?.serverTab) {
+          yield* update(tabId, { serverTab: defaults.serverTab });
+          if (tab.webContentsId !== null) {
+            const wc = webContents.fromId(tab.webContentsId);
+            if (wc && !wc.isDestroyed()) yield* restoreControlSession(tabId, wc);
+          }
+          return { ...tab, serverTab: defaults.serverTab };
+        }
+        return tab;
+      }),
+    );
   });
 
   const closeTabUnlocked = Effect.fn("PreviewManager.closeTabUnlocked")(function* (tabId: string) {

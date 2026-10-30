@@ -1,4 +1,9 @@
-import { DEFAULT_SERVER_SETTINGS, ProviderInstanceId } from "@t3tools/contracts";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  EnvironmentId,
+  ThreadId,
+  ProviderInstanceId,
+} from "@t3tools/contracts";
 import { DEFAULT_CLIENT_SETTINGS, type ClientSettings } from "@t3tools/contracts/settings";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -335,4 +340,23 @@ it("uses the environment's model preferences after migration, including empty li
   );
   expect(merged.favorites).toEqual([]);
   expect(merged.providerModelPreferences).toEqual({});
+});
+
+it("restores scoped work tabs and their shortcut mode after client settings reload", async () => {
+  const pinnedWorkTabs = [
+    { environmentId: EnvironmentId.make("first"), threadId: ThreadId.make("same"), title: "First" },
+    {
+      environmentId: EnvironmentId.make("second"),
+      threadId: ThreadId.make("same"),
+      title: "Second",
+    },
+  ];
+  await persistClientSettingsPatch({ pinnedWorkTabs, numericNavigationMode: "pinned-tabs" });
+  const saved = persistenceMocks.setClientSettings.mock.calls.at(-1)?.[0];
+  expect(saved?.pinnedWorkTabs).toEqual(pinnedWorkTabs);
+  __resetClientSettingsPersistenceForTests();
+  persistenceMocks.getClientSettings.mockResolvedValue(saved ?? null);
+  await ensureClientSettingsHydrated();
+  expect(getClientSettings().pinnedWorkTabs).toEqual(pinnedWorkTabs);
+  expect(getClientSettings().numericNavigationMode).toBe("pinned-tabs");
 });

@@ -46,6 +46,24 @@ Settings that are environment-wide stay read-only while a project is selected. W
 targets disagree, a control shows **Mixed** until you choose one value. Appearance, keyboard,
 and other phone-only settings ignore the filter.
 
+## Cloud development with Boat
+
+Connect your Boat account in **Settings → Integrations**, then enable Boat for a project
+or select it when creating a project. Review the detected setup and development commands
+before starting the environment. Starting or resuming runs those commands and opens the
+project preview when it is ready. Choose Android for an emulator-based preview.
+
+Environments stop after one hour by default. Set another default or override it per project.
+Crew renews the deadline while an agent is using the environment and stops it when its last
+agent finishes. You can also stop it yourself and resume later. Retention controls how long
+Crew keeps a stopped environment before deleting it; deleting removes its remote disk.
+Save a snapshot explicitly when you need a reusable environment beyond that period.
+
+The project's budget limits new compute reservations. **Usage** shows the account's
+remaining included compute, wallet balance and recorded machine costs. Enable project CI
+to write its GitHub workflow, then review and commit that workflow. GitHub must also be
+connected to Boat and allowed to run the repository's jobs.
+
 ## Worktree branch names
 
 In **Settings → Worktrees → Worktree branch naming**, choose a static prefix,

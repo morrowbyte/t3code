@@ -1,6 +1,7 @@
 import {
   CHATGPT_USAGE_URL,
   collectLimitAccounts,
+  creditBalanceLabel,
   collectExternalUsageLinks,
   collectLimitNotices,
   collectLimitPools,
@@ -612,7 +613,12 @@ export function UsageLimitsPooled({
 }) {
   const [segmentPopover] = useState(() => PopoverCreateHandle<SegmentPayload>());
   const segmentPopoverActions = useRef<PopoverPrimitive.Root.Actions | null>(null);
-  const pools = collectLimitPools(collectLimitAccounts(presentations), now);
+  const accounts = collectLimitAccounts(presentations);
+  const balances = accounts.flatMap((account) => {
+    const label = creditBalanceLabel(account.limits);
+    return label === null ? [] : [{ account, label }];
+  });
+  const pools = collectLimitPools(accounts, now);
   const notices = collectLimitNotices(presentations);
   const externalLinks = collectExternalUsageLinks(presentations);
   const cursorPromptAt =
@@ -622,10 +628,37 @@ export function UsageLimitsPooled({
     ) + 1;
   return (
     <div className="flex flex-col gap-8">
-      {pools.length === 0 && notices.length === 0 && !cursorPrompt && externalLinks.length === 0 ? (
+      {balances.length === 0 &&
+      pools.length === 0 &&
+      notices.length === 0 &&
+      !cursorPrompt &&
+      externalLinks.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           No provider on the selected environments reports subscription limits.
         </p>
+      ) : null}
+      {balances.length > 0 ? (
+        <section aria-label="Remaining credits" className="grid gap-3 sm:grid-cols-2">
+          {balances.map(({ account, label }) => (
+            <div key={account.key} className="flex min-w-0 flex-col gap-2 rounded-xl border p-4">
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <AccountAvatar account={account} />
+                <span>
+                  {account.displayName ??
+                    providerClients.get(account.driver)?.label ??
+                    account.driver}
+                </span>
+                {account.email ? <AccountChip email={account.email} /> : null}
+              </div>
+              <p className="text-lg font-semibold tabular-nums">{label}</p>
+              <span className="text-xs text-muted-foreground">
+                {account.environments.length > 0
+                  ? account.environments.map((environment) => environment.label).join(", ")
+                  : account.sourceLabel}
+              </span>
+            </div>
+          ))}
+        </section>
       ) : null}
       <SegmentPopoverContext value={segmentPopover}>
         {pools.map((pool, index) => (

@@ -34,6 +34,14 @@ export const ServerProviderUsageLimits = Schema.Struct({
   windows: ForwardCompatibleArray(ServerProviderUsageWindow),
   credentialFingerprint: Schema.optional(TrimmedNonEmptyString),
   resetCredits: Schema.optional(ServerProviderResetCredits),
+  creditBalance: Schema.optional(
+    Schema.Struct({
+      checkedAt: Schema.optional(IsoDateTime),
+      balance: Schema.optional(TrimmedNonEmptyString),
+      unlimited: Schema.Boolean,
+      hasCredits: Schema.Boolean,
+    }),
+  ),
   externalUsage: Schema.optional(
     Schema.Struct({
       label: TrimmedNonEmptyString,

@@ -254,6 +254,7 @@ export interface LimitAccount {
 export function collectLimitAccounts(presentations: LimitPresentations): readonly LimitAccount[] {
   const accounts = new Map<string, LimitAccount>();
   const creditSources = new Map<string, LimitAccount>();
+  const balanceSources = new Map<string, LimitAccount>();
   const hubRedeems = new Map<string, LimitAccount>();
   const merge = (key: string, next: LimitAccount) => {
     // Prefer hub redemption to clear its routing cooldown too; displayed balance still follows the freshest read.
@@ -272,6 +273,17 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
         Date.parse(next.limits.checkedAt) > Date.parse(previousCredit.limits.checkedAt))
     ) {
       creditSources.set(key, next);
+    }
+    const previousBalance = balanceSources.get(key);
+    if (
+      next.limits.creditBalance &&
+      (!previousBalance ||
+        Date.parse(next.limits.creditBalance.checkedAt ?? next.limits.checkedAt) >
+          Date.parse(
+            previousBalance.limits.creditBalance?.checkedAt ?? previousBalance.limits.checkedAt,
+          ))
+    ) {
+      balanceSources.set(key, next);
     }
     const previous = accounts.get(key);
     if (!previous) {
@@ -300,6 +312,9 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
         (creditSource ? creditSource.redeem : (winner.redeem ?? previous.redeem ?? next.redeem)),
       limits: {
         ...winner.limits,
+        ...(balanceSources.get(key)?.limits.creditBalance
+          ? { creditBalance: balanceSources.get(key)!.limits.creditBalance }
+          : {}),
         ...(creditSource?.limits.resetCredits
           ? { resetCredits: creditSource.limits.resetCredits }
           : { resetCredits: undefined }),
@@ -600,7 +615,22 @@ export function limitsNotice(limits: ServerProviderUsageLimits): string | null {
   if (limits.unavailable?.reason === "probeFailed") {
     return limits.unavailable.message ?? "Could not read limits.";
   }
-  return limits.windows.length === 0 ? "No limits reported." : null;
+  return limits.windows.length === 0 && !limits.creditBalance ? "No limits reported." : null;
+}
+
+export function creditBalanceLabel(limits: ServerProviderUsageLimits): string | null {
+  const credits = limits.creditBalance;
+  if (!credits) return null;
+  if (credits.unlimited) return "Unlimited credits";
+  if (!credits.hasCredits) return "No credits remaining";
+  if (credits.balance === undefined) return null;
+  const value = Number(credits.balance);
+  const balance = Number.isFinite(value)
+    ? value > 0 && value < 0.001
+      ? "<0.001"
+      : new Intl.NumberFormat("en-US", { maximumFractionDigits: 3 }).format(value)
+    : credits.balance;
+  return `${balance} credits remaining`;
 }
 
 export function remainingPercent(window: ServerProviderUsageWindow): number {

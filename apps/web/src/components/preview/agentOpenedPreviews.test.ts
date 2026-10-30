@@ -321,7 +321,9 @@ describe("startAgentOpenedPreviews", () => {
   it("treats the first list as a baseline and floats tabs opened later", () => {
     using _following = following();
     reconcilePreviewServerSessions(ref, {
-      sessions: [serverTab({ tabId: "tab_restored" })],
+      sessions: [
+        serverTab({ tabId: "tab_restored", revealRequest: { id: "restored", force: true } }),
+      ],
       serverEpoch,
       revision: 1,
     });
@@ -339,6 +341,30 @@ describe("startAgentOpenedPreviews", () => {
       revision: 2,
     });
     expect(floatingTabId()).toBe("tab_agent");
+  });
+
+  it("shows a live reveal before the first list without replaying it on reconciliation", () => {
+    using _following = following();
+    const hidden = serverTab({ reveal: false });
+    applyPreviewServerEvent(ref, {
+      type: "opened",
+      threadId: ref.threadId,
+      tabId: hidden.tabId,
+      createdAt: hidden.updatedAt,
+      snapshot: hidden,
+      serverEpoch,
+      revision: 1,
+    });
+    expect(floatingTabId()).toBeNull();
+
+    const revealed = { ...hidden, reveal: true, revealRequest: { id: "live", force: true } };
+    navigated(2, revealed);
+    expect(floatingTabId()).toBe(hidden.tabId);
+
+    usePreviewMiniPlayerStore.getState().close(ref);
+    reconcilePreviewServerSessions(ref, { sessions: [revealed], serverEpoch, revision: 2 });
+    expect(floatingTabId()).toBeNull();
+    expect(browserTabs()).toEqual(["browser:tab_a"]);
   });
 
   it("reveals an existing tab only for a new reveal request", () => {
@@ -369,6 +395,24 @@ describe("startAgentOpenedPreviews", () => {
     cancelPreviewSessionClose(ref, tab, tab.tabId);
     expect(floatingTabId()).toBeNull();
   });
+
+  it.each(["desktop" as const, undefined])(
+    "reveals an explicitly selected local tab (%s)",
+    (runtime) => {
+      using _following = following();
+      const tab = serverTab({ runtime, reveal: undefined });
+      reconcilePreviewServerSessions(ref, {
+        sessions: [tab, serverTab({ tabId: "other-tab", reveal: undefined })],
+        serverEpoch,
+        revision: 1,
+      });
+      useRightPanelStore.getState().openBrowser(ref, "other-tab");
+      navigated(2, { ...tab, reveal: true, revealRequest: { id: "native-select", force: true } });
+      expect(useRightPanelStore.getState().byThreadKey[threadKey]?.activeSurfaceId).toBe(
+        "browser:tab_a",
+      );
+    },
+  );
 
   it("follows background threads and closes the floating browser when its session ends", () => {
     using _following = following();

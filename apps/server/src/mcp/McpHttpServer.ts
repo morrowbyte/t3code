@@ -1,3 +1,5 @@
+import { BoatToolkit } from "./toolkits/boat/tools.ts";
+import * as BoatHandlers from "./toolkits/boat/handlers.ts";
 import * as ApprovalReviewOrderAgent from "../orchestration-v2/ApprovalReviewOrderAgent.ts";
 import * as ApprovalReviewOrderAgentToolkit from "../orchestration-v2/ApprovalReviewOrderAgentToolkit.ts";
 import * as ApprovalReviewOrderForward from "../orchestration-v2/ApprovalReviewOrderForward.ts";
@@ -1198,6 +1200,7 @@ export const layerMcpTransport = McpServer.layerHttp({
 
 /** Every tool the T3 MCP server advertises. AgentContextBudget.test.ts measures this set. */
 export const layerTools = Layer.mergeAll(
+  toolkitRegistration(BoatToolkit, BoatHandlers.layer),
   toolkitRegistration(ConnectedEnvironmentToolkit, ConnectedEnvironmentHandlers.layer),
   layerPreviewToolkit,
   layerOrchestratorToolkit,

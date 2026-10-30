@@ -439,8 +439,7 @@ export const layerProduction = Layer.mergeAll(
       ),
     ),
   ),
-  layer.pipe(Layer.provide(layerProjectService)),
-  layerProjectService,
+  layer,
   layerManagedProjectFoldersProvided,
   layerThreadLaunchProvided,
   layerScheduledTaskProvided,
@@ -465,4 +464,6 @@ export const layerProduction = Layer.mergeAll(
   Layer.provide(ResourceCleanupService.layer.pipe(Layer.provide(layerScheduledTaskProvided))),
   Layer.provide(Scheduler.layer),
   Layer.provideMerge(layerEventInfrastructure),
+  // Every sibling must see the same project service before the session manager is memoized.
+  Layer.provideMerge(layerProjectService),
 );

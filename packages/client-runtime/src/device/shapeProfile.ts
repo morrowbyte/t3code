@@ -1,7 +1,21 @@
+import { resolveDeviceModelId } from "./model.ts";
 import type { DevicePlatform } from "@t3tools/contracts";
 
 export interface DeviceShapeProfile {
-  readonly id: "ios-phone" | "ios-tablet" | "android-phone" | "android-tablet";
+  readonly id:
+    | "ios-phone"
+    | "ios-tablet"
+    | "android-phone"
+    | "android-tablet"
+    | "android-galaxy-s24-ultra";
+  readonly bodyDimensions?: {
+    readonly width: number;
+    readonly height: number;
+    readonly depth: number;
+    readonly displayHeight: number;
+    readonly displayAspect: number;
+  };
+  readonly punchHole?: { readonly radius: number; readonly inset: number };
   readonly bezel: number;
   readonly bodyRadius: number;
   readonly screenRadius: number;
@@ -13,6 +27,8 @@ export interface DeviceShapeProfile {
     readonly length: number;
   }>;
   readonly camera: {
+    readonly separateRings?: boolean;
+    readonly radii?: ReadonlyArray<number>;
     readonly width: number;
     readonly height: number;
     readonly insetX: number;
@@ -97,6 +113,46 @@ export const ANDROID_PHONE_SHAPE: DeviceShapeProfile = {
   },
 };
 
+// Original procedural geometry; no third-party mesh or texture. Dimensions in millimetres.
+// https://news.samsung.com/global/enter-the-new-era-of-mobile-ai-with-samsung-galaxy-s24-series
+export const GALAXY_S24_ULTRA_SHAPE: DeviceShapeProfile = {
+  id: "android-galaxy-s24-ultra",
+  bodyDimensions: {
+    width: 79,
+    height: 162.3,
+    depth: 8.6,
+    displayHeight: (172.5 * 3120) / Math.hypot(1440, 3120),
+    displayAspect: 1440 / 3120,
+  },
+  bezel: 0.024,
+  bodyRadius: 0.028,
+  screenRadius: 0.016,
+  depth: 0.122,
+  backColor: 0x9b9790,
+  punchHole: { radius: 0.014, inset: 0.046 },
+  buttons: [
+    { edge: "right", offset: 0.45, length: 0.25 },
+    { edge: "right", offset: 0.12, length: 0.15 },
+  ],
+  camera: {
+    separateRings: true,
+    width: 0.38,
+    height: 0.62,
+    insetX: 0.18,
+    insetY: 0.22,
+    lensRadius: 0.071,
+    lenses: [
+      [0, 0],
+      [0, -0.23],
+      [0, -0.46],
+      [-0.22, -0.015],
+      [-0.22, -0.245],
+    ],
+    radii: [0.071, 0.071, 0.071, 0.041, 0.041],
+    flash: [-0.22, -0.13],
+  },
+};
+
 const ANDROID_TABLET_SHAPE: DeviceShapeProfile = {
   ...IOS_TABLET_SHAPE,
   id: "android-tablet",
@@ -109,6 +165,8 @@ export function resolveDeviceShape(options: {
   portraitAspect: number;
 }): DeviceShapeProfile {
   const name = options.name ?? "";
+  if (resolveDeviceModelId(options.platform, name) === "galaxy-s24-ultra")
+    return GALAXY_S24_ULTRA_SHAPE;
   const namedTablet = /\b(ipad|tablet)\b/i.test(name);
   const namedPhone = /\b(iphone|phone)\b/i.test(name);
   const tablet = namedTablet || (!namedPhone && options.portraitAspect >= 0.6);

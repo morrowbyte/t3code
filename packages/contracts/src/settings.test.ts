@@ -477,3 +477,22 @@ describe("server model preferences", () => {
     expect(decodeServerSettingsPatch(input)).toEqual(input);
   });
 });
+
+it("persists up to five scoped work tabs and an opt-in numeric navigation mode", () => {
+  const defaults = decodeClientSettings({});
+  expect(defaults.pinnedWorkTabs).toEqual([]);
+  expect(defaults.numericNavigationMode).toBe("sidebar");
+  const pins = Array.from({ length: 5 }, (_, index) => ({
+    environmentId: `environment-${index}`,
+    threadId: "shared-thread-id",
+    title: "Work",
+  }));
+  const saved = decodeClientSettings({
+    pinnedWorkTabs: pins,
+    numericNavigationMode: "pinned-tabs",
+  });
+  const restored = decodeClientSettings(encodeClientSettings(saved));
+  expect(restored.pinnedWorkTabs).toEqual(pins);
+  expect(restored.numericNavigationMode).toBe("pinned-tabs");
+  expect(() => decodeClientSettingsPatch({ pinnedWorkTabs: [...pins, pins[0]] })).toThrow();
+});

@@ -78,6 +78,25 @@ describe("desktopTabLifetime", () => {
     await vi.advanceTimersByTimeAsync(0);
   });
 
+  it("binds an existing desktop lease once when its native environment becomes known", async () => {
+    vi.useFakeTimers();
+    createTab.mockResolvedValue(undefined);
+    const initial = acquireDesktopTab("late_native_binding");
+    await initial.ready;
+    const key = { threadId: "thread-native", tabId: "tab-native" };
+    const bound = acquireDesktopTab("late_native_binding", key);
+    await bound.ready;
+    expect(createTab).toHaveBeenLastCalledWith("late_native_binding", { serverTab: key });
+    expect(createTab).toHaveBeenCalledTimes(2);
+    const reused = acquireDesktopTab("late_native_binding", key);
+    await reused.ready;
+    expect(createTab).toHaveBeenCalledTimes(2);
+    initial.release();
+    bound.release();
+    reused.release();
+    await vi.advanceTimersByTimeAsync(0);
+  });
+
   it("stops recording before closing the final desktop tab lease", async () => {
     vi.useFakeTimers();
     let resolveStop: (() => void) | undefined;

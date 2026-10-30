@@ -5,7 +5,10 @@ import { userEvent } from "vite-plus/test/browser";
 import { render } from "../../../test/render";
 import { BackgroundWorkActivity } from "./BackgroundWorkActivity";
 import { ComposerBannerStack } from "./ComposerBannerStack";
-import { TurnItemId } from "@t3tools/contracts";
+import { backgroundWorkNowItem } from "./ThreadActivityBanners";
+import { ThreadNow } from "./ThreadNow";
+import * as DateTime from "effect/DateTime";
+import { ThreadId, TurnItemId } from "@t3tools/contracts";
 import { getSyntaxHighlighterPromise } from "../../lib/syntaxHighlighting";
 
 const command =
@@ -16,11 +19,22 @@ describe("background process activity", () => {
     const source = "import json\nprint(json.dumps({'status': True}))\n";
     const original = `/run/current-system/sw/bin/bash -lc "python3 - <<'PY'\n${source}PY"`;
     const title = "Inspect recording permission preferences";
-    const presentation = presentPendingBackgroundWork(
-      [{ taskId: "python", kind: "command", description: original }],
-      [
+    const work = backgroundWorkNowItem({
+      threadId: ThreadId.make("thread"),
+      tasks: [{ taskId: "python", kind: "command", description: original }],
+      turnItems: [
         {
           id: TurnItemId.make("python"),
+          threadId: ThreadId.make("thread"),
+          runId: null,
+          nodeId: null,
+          providerThreadId: null,
+          providerTurnId: null,
+          parentItemId: null,
+          ordinal: 0,
+          startedAt: null,
+          completedAt: null,
+          updatedAt: DateTime.makeUnsafe("2026-10-30T20:00:00Z"),
           type: "command_execution",
           nativeItemRef: null,
           input: original,
@@ -28,16 +42,12 @@ describe("background process activity", () => {
           status: "running",
         },
       ],
-    )!;
-    await using screen = await render(
-      <BackgroundWorkActivity
-        presentation={presentation}
-        canStop
-        stopping={false}
-        onStopThread={vi.fn()}
-        onOpenThread={vi.fn()}
-      />,
-    );
+      stopDisabled: false,
+      stopping: false,
+      onStop: vi.fn(),
+      onOpenThread: vi.fn(),
+    });
+    await using screen = await render(<ThreadNow attention={null} work={work} syncPhase={null} />);
     await screen.getByRole("button", { name: `Show details for ${title}` }).click();
     await getSyntaxHighlighterPromise("python");
     const script = screen.container.querySelector('[aria-label="Embedded script"]');

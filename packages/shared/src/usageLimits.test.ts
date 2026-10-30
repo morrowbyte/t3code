@@ -14,6 +14,7 @@ import {
   sameUsageLimitCommandCoverage,
   withUsageLimitsCommands,
   collectLimitAccounts,
+  creditBalanceLabel,
   collectExternalUsageLinks,
   collectLimitNotices,
   collectLimitPools,
@@ -180,6 +181,113 @@ describe("pools", () => {
     checkedAt,
   };
   const laptop = { entry: { target: { label: "Laptop" } } };
+
+  it.each([
+    undefined,
+    { balance: "0", hasCredits: false, unlimited: false },
+    { hasCredits: false, unlimited: false },
+  ])(
+    "keeps balance-only accounts and merges only actual reported balances: %j",
+    (creditBalance) => {
+      const priorBalance = { balance: "50.25", hasCredits: true, unlimited: false };
+      const native = provider({
+        auth: { status: "authenticated", email: "same@example.com" },
+        usageLimits: { checkedAt, windows: [], creditBalance: priorBalance },
+      });
+      const accounts = collectLimitAccounts(
+        new Map([
+          [
+            EnvironmentId.make("env-a"),
+            {
+              ...laptop,
+              serverConfig: {
+                providers: [native],
+                usageLimitSources: [
+                  {
+                    ...source,
+                    accounts: [
+                      {
+                        id: "same.json",
+                        driver: native.driver,
+                        email: "same@example.com",
+                        usageLimits: {
+                          checkedAt: "2026-09-03T11:30:00.000Z",
+                          windows: [{ ...window, usedPercent: 55 }],
+                          ...(creditBalance ? { creditBalance } : {}),
+                        },
+                      },
+                      {
+                        id: "other.json",
+                        driver: native.driver,
+                        email: "other@example.com",
+                        usageLimits: {
+                          checkedAt,
+                          windows: [],
+                          creditBalance: { ...priorBalance, balance: "90" },
+                        },
+                      },
+                    ],
+                  },
+                ],
+              },
+            },
+          ],
+        ]),
+      );
+      expect(accounts).toHaveLength(2);
+      expect(
+        accounts.find((account) => account.email === "same@example.com")?.limits,
+      ).toMatchObject({
+        creditBalance: creditBalance ?? priorBalance,
+        windows: [{ usedPercent: 55 }],
+      });
+      expect(
+        accounts.find((account) => account.email === "other@example.com")?.limits.creditBalance
+          ?.balance,
+      ).toBe("90");
+    },
+  );
+
+  it("does not mistake a newer token update for a newer credit balance", () => {
+    const makeProvider = (balance: string, readAt: string, updatedAt: string) =>
+      provider({
+        auth: { status: "authenticated", email: "same@example.com" },
+        usageLimits: {
+          checkedAt: updatedAt,
+          windows: [],
+          creditBalance: {
+            balance,
+            hasCredits: balance !== "0",
+            unlimited: false,
+            checkedAt: readAt,
+          },
+        },
+      });
+    const accounts = collectLimitAccounts(
+      new Map([
+        [
+          EnvironmentId.make("env-a"),
+          {
+            ...laptop,
+            serverConfig: {
+              providers: [makeProvider("50", "2026-09-03T10:00:00Z", "2026-09-03T12:00:00Z")],
+            },
+          },
+        ],
+        [
+          EnvironmentId.make("env-b"),
+          {
+            ...laptop,
+            serverConfig: {
+              providers: [makeProvider("0", "2026-09-03T11:00:00Z", "2026-09-03T11:00:00Z")],
+            },
+          },
+        ],
+      ]),
+    );
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]?.limits.creditBalance?.balance).toBe("0");
+  });
 
   it("merges one account reported natively on two environments and by a hub into one entry", () => {
     const native = provider({
@@ -1391,5 +1499,30 @@ describe("ChatGPT sharing presentation", () => {
         auth: { status: "unauthenticated", subscriptionSharing: true },
       }),
     ).toBe(false);
+  });
+});
+
+describe("credit balance labels", () => {
+  it.each([
+    [undefined, null],
+    [{ hasCredits: true, unlimited: false }, null],
+    [{ hasCredits: true, unlimited: false, balance: "0" }, "0 credits remaining"],
+    [{ hasCredits: true, unlimited: false, balance: "42.125" }, "42.125 credits remaining"],
+    [
+      { hasCredits: true, unlimited: false, balance: "73155.991256669" },
+      "73,155.991 credits remaining",
+    ],
+    [{ hasCredits: true, unlimited: false, balance: "0.00001" }, "<0.001 credits remaining"],
+    [{ hasCredits: false, unlimited: false }, "No credits remaining"],
+    [{ hasCredits: false, unlimited: false, balance: "42" }, "No credits remaining"],
+    [{ hasCredits: true, unlimited: true }, "Unlimited credits"],
+  ] as const)("labels only reported credit values: %j", (creditBalance, label) => {
+    expect(
+      creditBalanceLabel({
+        checkedAt: "2026-10-30T00:00:00Z",
+        windows: [],
+        ...(creditBalance ? { creditBalance } : {}),
+      }),
+    ).toBe(label);
   });
 });

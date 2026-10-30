@@ -1,5 +1,8 @@
 "use client";
 
+import { DEFAULT_BOAT_PROJECT } from "@t3tools/contracts";
+import { boatEnvironment } from "../state/boat";
+
 import { dispatchKeyboardCommand, useKeyboardCommands } from "./keyboard/keyboardCommands";
 
 import { threadPullRequestLinkMode } from "@t3tools/client-runtime/thread-pull-request-compatibility";
@@ -416,6 +419,8 @@ function OpenCommandPaletteDialog(props: {
     setHighlightedItemValue(null);
   }
   const clientSettings = useClientSettings(selectCommandPaletteClientSettings);
+  const [newProjectBoat, setNewProjectBoat] = useState(false);
+  const configureBoat = useAtomCommand(boatEnvironment.configure);
   const createProject = useAtomCommand(projectEnvironment.create, {
     reportFailure: false,
   });
@@ -1833,6 +1838,14 @@ function OpenCommandPaletteDialog(props: {
       return;
     }
 
+    if (newProjectBoat) {
+      const configured = await configureBoat({
+        environmentId: input.environmentId,
+        input: { projectId, config: { ...DEFAULT_BOAT_PROJECT, enabled: true } },
+      });
+      if (configured._tag === "Failure") return;
+      setNewProjectBoat(false);
+    }
     const navigationResult = await settlePromise(() =>
       handleNewThread(scopeProjectRef(input.environmentId, projectId)),
     );
@@ -2058,6 +2071,16 @@ function OpenCommandPaletteDialog(props: {
     );
     const projectRef = scopeProjectRef(addProjectCloneFlow.environmentId, projectId);
     await waitForProject(projectRef, 3_000).catch(() => null);
+    if (newProjectBoat) {
+      const configured = await configureBoat({
+        environmentId: addProjectCloneFlow.environmentId,
+        input: { projectId, config: { ...DEFAULT_BOAT_PROJECT, enabled: true } },
+      });
+      if (configured._tag === "Failure") {
+        toastManager.add({ type: "error", title: "Could not enable Boat for the cloned project" });
+      }
+      setNewProjectBoat(false);
+    }
     const navigationResult = await settlePromise(() => handleNewThread(projectRef));
     if (navigationResult._tag === "Failure") {
       const error = squashAtomCommandFailure(navigationResult);
@@ -2739,12 +2762,22 @@ function OpenCommandPaletteDialog(props: {
       value={query}
     >
       {newProjectPathPreview !== null ? (
-        <NewProjectSummary
-          name={newProjectName}
-          pathPreview={newProjectPathPreview}
-          projectsRoot={newProjectsRoot}
-          environmentLabel={newProjectEnvironmentLabel}
-        />
+        <div>
+          <NewProjectSummary
+            name={newProjectName}
+            pathPreview={newProjectPathPreview}
+            projectsRoot={newProjectsRoot}
+            environmentLabel={newProjectEnvironmentLabel}
+          />
+          <label className="flex items-center gap-2 px-4 py-2 text-sm">
+            <input
+              type="checkbox"
+              checked={newProjectBoat}
+              onChange={(event) => setNewProjectBoat(event.target.checked)}
+            />
+            Use Boat cloud environment
+          </label>
+        </div>
       ) : null}
       {addProjectCloneFlow?.step === "confirm" ? (
         <RemoteRepositorySummary

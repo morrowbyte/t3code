@@ -12,6 +12,7 @@ interface MountableViewer {
     y: number,
     captured?: boolean,
   ) => { x: number; y: number } | null;
+  readonly zoomBy?: (logDelta: number) => void;
   readonly orbit: (deltaX: number, deltaY: number) => void;
   readonly setInteractionActive: (active: boolean, mode: "touch" | "orbit") => void;
   readonly resetPose: () => void;
@@ -78,7 +79,7 @@ export function mountDeviceViewer<V extends MountableViewer>(
         screenPoint: (point, captured) => viewer.screenPoint(point.x, point.y, captured),
         touch: options.touch,
         orbit: viewer.orbit,
-        zoomBy: () => {},
+        zoomBy: (delta) => viewer.zoomBy?.(delta),
         onInteractionActive: viewer.setInteractionActive,
       });
       interactionRef.current = interaction;
@@ -86,7 +87,18 @@ export function mountDeviceViewer<V extends MountableViewer>(
       mounted = options.ready({ viewer, cancelTrackpad: () => trackpad?.cancel() });
       options.onFrameListener(mounted.frame);
       mounted.frame();
-      trackpad = bindPhoneTrackpad(canvas, interaction, mounted.pinch);
+      trackpad = bindPhoneTrackpad(
+        canvas,
+        interaction,
+        mounted.pinch ??
+          (viewer.zoomBy
+            ? {
+                begin: () => true,
+                move: (delta) => interaction.navigate({ type: "zoom", delta }),
+                end: () => {},
+              }
+            : undefined),
+      );
       stopTrackpadEnd = window.desktopBridge?.onTrackpadScrollEnd(() => trackpad?.endOrbit());
     })
     .catch(() => {

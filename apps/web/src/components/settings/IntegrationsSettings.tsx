@@ -1,3 +1,4 @@
+import { BoatSettingsPanel } from "./BoatSettings";
 import { useWindowsCuaStatus } from "~/state/windowsCua";
 import { DeviceHostUpdates } from "../device/DeviceHostUpdates";
 import { LinearSettingsPanel } from "./LinearSettings";
@@ -1596,6 +1597,7 @@ export function IntegrationsSettingsPanel() {
     <SettingsPageContainer>
       <HostOrderSettings />
       <LinearSettingsPanel />
+      <BoatSettingsPanel />
     </SettingsPageContainer>
   );
 }

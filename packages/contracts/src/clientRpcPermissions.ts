@@ -7,6 +7,7 @@ import {
   AuthOrchestrationReadScope,
   AuthPreviewOperateScope,
   AuthSettingsWriteScope,
+  AuthFilesystemWriteScope,
   AuthTerminalOperateScope,
   AuthSourceControlWriteScope,
   type AuthEnvironmentScope,
@@ -16,6 +17,12 @@ import { WS_METHODS } from "./rpc.ts";
 
 /** Incremental client enforcement; the server still authorizes every request. */
 export const CLIENT_GUARDED_RPC_SCOPES = {
+  [WS_METHODS.boatDefaults]: AuthSettingsWriteScope,
+  [WS_METHODS.boatRead]: AuthOrchestrationReadScope,
+  [WS_METHODS.boatConnect]: AuthSettingsWriteScope,
+  [WS_METHODS.boatDisconnect]: AuthSettingsWriteScope,
+  [WS_METHODS.boatConfigure]: AuthSettingsWriteScope,
+  [WS_METHODS.boatOperate]: AuthOrchestrationOperateScope,
   [WS_METHODS.connectedEnvironmentSubscribe]: AuthOrchestrationReadScope,
   [WS_METHODS.connectedEnvironmentRespond]: AuthOrchestrationReadScope,
   [WS_METHODS.connectedEnvironmentRead]: AuthOrchestrationReadScope,
@@ -109,6 +116,16 @@ export function clientRpcRequiredScopes(
   method: string,
   input: unknown,
 ): readonly AuthEnvironmentScope[] {
+  if (
+    method === WS_METHODS.boatOperate &&
+    typeof input === "object" &&
+    input !== null &&
+    "threadId" in input &&
+    input.threadId
+  )
+    return [AuthOrchestrationOperateScope, AuthPreviewOperateScope];
+  if (method === WS_METHODS.boatConfigure)
+    return [AuthSettingsWriteScope, AuthFilesystemWriteScope];
   if (method === WS_METHODS.gitPreparePullRequestThread && input !== undefined) {
     const payload = decodePrepareThread(input);
     if (payload.mode === "worktree" && payload.threadId !== undefined)

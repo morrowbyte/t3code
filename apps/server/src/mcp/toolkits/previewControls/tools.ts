@@ -25,7 +25,7 @@ const shared = {
 const PreviewListTool = Tool.make("t3_preview_list", {
   ...shared,
   description:
-    "List this thread's preview tabs. Only `runtime:'server'` entries can be automated here. Others are in the user's local desktop app. Never pass a non-server `tabId` to a `preview_*` tool. Tell the user that tab is on their local desktop and this environment cannot reach it.",
+    "List this thread's preview tabs. For an existing local desktop tab, check preview_status with its tabId: an attached native tab can be automated in place with its current login. A missing runtime field alone does not mean unavailable. If status is unavailable, its desktop host is not attached to this environment; do not replace the tab with a separate login.",
   parameters: Schema.Struct({
     cursor: Schema.optional(NonNegativeInt),
     limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 }))),

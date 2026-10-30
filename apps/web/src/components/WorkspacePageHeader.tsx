@@ -1,5 +1,7 @@
 import type { ComponentPropsWithoutRef } from "react";
 
+import { PinnedWorkTabs } from "./PinnedWorkTabs";
+
 import { cn } from "../lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../workspaceTitlebar";
 
@@ -7,6 +9,7 @@ export function WorkspacePageHeader({
   electron = false,
   reserveNativeControls = electron,
   className,
+  children,
   ...props
 }: ComponentPropsWithoutRef<"header"> & {
   readonly electron?: boolean;
@@ -22,6 +25,9 @@ export function WorkspacePageHeader({
         className,
       )}
       {...props}
-    />
+    >
+      {children}
+      <PinnedWorkTabs />
+    </header>
   );
 }

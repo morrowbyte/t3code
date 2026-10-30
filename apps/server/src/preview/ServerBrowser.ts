@@ -366,6 +366,8 @@ const RECORDING_SCREENCAST = { format: "jpeg", quality: 90, everyNthFrame: 1 } a
 const decodeViewportSetting = Schema.decodeUnknownSync(PreviewViewportSettingSchema);
 const AGENT_CURSOR_MOVE_MS = 160;
 const AGENT_CURSOR_CLICK_LEAD_MS = 40;
+/** A dialog blocks page script, so a desktop size read gives up after this. */
+const DESKTOP_VIEWPORT_READ_TIMEOUT = "1 second";
 
 const sleepUntil = (deadline: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, deadline - Date.now())));
@@ -579,6 +581,11 @@ interface ServerTab {
   setting: PreviewViewportSetting;
   colorScheme: PreviewAppearancePreference;
   zoomFactor: number;
+  /** Last usable CSS size measured on the desktop. */
+  desktopViewport: { readonly width: number; readonly height: number } | null;
+  desktopViewportRead: Promise<ServerTab["desktopViewport"]>;
+  /** A read queued behind `desktopViewportRead`, shared by every caller that waits for it. */
+  desktopViewportNext: Promise<ServerTab["desktopViewport"]> | null;
   loading: boolean;
   closing: boolean;
   recording: Recording | null;
@@ -887,9 +894,48 @@ const make = Effect.gen(function* () {
     );
   };
 
-  const layoutSize = (tab: ServerTab) => {
+  // Desktop pages have no Playwright viewport; an isolated world keeps page script
+  // from overriding the CSS size, and failed reads preserve the last usable size.
+  const readDesktopViewport = async (tab: ServerTab) => {
+    const readSize = async () => {
+      const { frameTree } = await tab.cdp.send("Page.getFrameTree");
+      const { executionContextId } = await tab.cdp.send("Page.createIsolatedWorld", {
+        frameId: frameTree.frame.id,
+        worldName: "t3-preview-viewport",
+      });
+      const { result } = await tab.cdp.send("Runtime.evaluate", {
+        expression: "({ width: innerWidth, height: innerHeight })",
+        contextId: executionContextId,
+        returnByValue: true,
+      });
+      return asRecord(result.value);
+    };
+    const size = await runPromise(
+      // A navigation can destroy the isolated world mid-read.
+      Effect.promise(() => readSize().catch(() => null)).pipe(
+        Effect.timeoutOption(DESKTOP_VIEWPORT_READ_TIMEOUT),
+        Effect.map(Option.getOrNull),
+      ),
+    );
+    const width = size?.width;
+    const height = size?.height;
+    if (typeof width === "number" && width > 0 && typeof height === "number" && height > 0)
+      tab.desktopViewport = { width, height };
+    return tab.desktopViewport;
+  };
+
+  // Reads run one at a time, and callers that arrive during a read share the next one.
+  const measureDesktopViewport = (tab: ServerTab) =>
+    (tab.desktopViewportNext ??= tab.desktopViewportRead.then(() => {
+      tab.desktopViewportNext = null;
+      return (tab.desktopViewportRead = readDesktopViewport(tab));
+    }));
+
+  const layoutSize = async (tab: ServerTab) => {
+    // A dialog blocks page script; its close measures again.
+    if (tab.desktop) return tab.dialog ? tab.desktopViewport : measureDesktopViewport(tab);
     const size = tab.page.viewportSize();
-    if (!size || tab.desktop) return size;
+    if (!size) return size;
     return {
       width: Math.max(1, Math.round(size.width / tab.zoomFactor)),
       height: Math.max(1, Math.round(size.height / tab.zoomFactor)),
@@ -904,7 +950,7 @@ const make = Effect.gen(function* () {
       await tab.page.setViewportSize(size);
       return;
     }
-    const layout = layoutSize(tab)!;
+    const layout = (await layoutSize(tab))!;
     await tab.cdp.send("Emulation.setDeviceMetricsOverride", {
       width: layout.width,
       height: layout.height,
@@ -913,9 +959,9 @@ const make = Effect.gen(function* () {
     });
   };
 
-  const broadcastViewport = (tab: ServerTab) => {
-    const size = layoutSize(tab);
-    if (!size) return;
+  const broadcastViewport = async (tab: ServerTab) => {
+    const size = await layoutSize(tab);
+    if (!size || tab.closing) return;
     for (const viewer of tab.viewers) viewer.push({ _tag: "viewport", ...size });
   };
 
@@ -932,7 +978,7 @@ const make = Effect.gen(function* () {
       UNATTACHED_FILL_VIEWPORT;
     await tab.page.setViewportSize({ width: size.width, height: size.height });
     await applyZoom(tab);
-    broadcastViewport(tab);
+    await broadcastViewport(tab);
   };
 
   const applyRendering = async (tab: ServerTab, snapshot: PreviewSessionSnapshot) => {
@@ -945,7 +991,7 @@ const make = Effect.gen(function* () {
     if (zoomFactor !== tab.zoomFactor && !tab.desktop) {
       tab.zoomFactor = zoomFactor;
       await applyZoom(tab);
-      broadcastViewport(tab);
+      await broadcastViewport(tab);
     }
   };
 
@@ -1012,6 +1058,12 @@ const make = Effect.gen(function* () {
       adopted === undefined && (await desktopRenders(snapshot))
         ? await connectDesktop(snapshot)
         : null;
+    if (!desktop && snapshot.runtime !== "server") {
+      throw new ServerBrowserTabNotFoundError({
+        threadId: snapshot.threadId,
+        tabId: snapshot.tabId,
+      });
+    }
     // Otherwise a desktop that attaches late shows its own page, and the agent drives another.
     if (!desktop && desktopChannel.available) {
       await runPromise(
@@ -1070,6 +1122,9 @@ const make = Effect.gen(function* () {
       setting: snapshot.viewport ?? FILL_PREVIEW_VIEWPORT,
       colorScheme: "system",
       zoomFactor: 1,
+      desktopViewport: null,
+      desktopViewportRead: Promise.resolve(null),
+      desktopViewportNext: null,
       loading: false,
       closing: false,
       recording: null,
@@ -1084,6 +1139,21 @@ const make = Effect.gen(function* () {
       await page.setViewportSize(fixedViewportSize(tab.setting) ?? UNATTACHED_FILL_VIEWPORT);
     }
     await applyRendering(tab, snapshot);
+    if (desktop) {
+      // The desktop resizes and zooms its webview itself; viewers map input with the new size.
+      const remeasure = () => {
+        if (tab.viewers.size > 0) return broadcastViewport(tab).catch(constVoid);
+      };
+      cdp.on("Page.frameResized", remeasure);
+      // A read a navigation broke has a fresh page to measure.
+      cdp.on("Page.loadEventFired", remeasure);
+      // Closing a dialog resizes nothing, and the host can close it without us.
+      cdp.on("Page.javascriptDialogClosed", () => {
+        tab.dialog = null;
+        return remeasure();
+      });
+      await cdp.send("Page.enable");
+    }
     const isMainNavigation = (request: { isNavigationRequest(): boolean; frame(): unknown }) =>
       request.isNavigationRequest() && request.frame() === page.mainFrame();
     const navigationGenerations = new WeakMap<object, number>();
@@ -1195,6 +1265,7 @@ const make = Effect.gen(function* () {
     reportLiveTabs();
     // Existing desktop and popup PDFs can start loading before interception attaches.
     if (
+      snapshot.runtime === "server" &&
       snapshot.navStatus._tag === "Loading" &&
       ((!adopted && !desktop) || isPdfAssetUrl(snapshot.navStatus.url))
     ) {
@@ -1549,10 +1620,12 @@ const make = Effect.gen(function* () {
     const existing = tabs.get(tabKey(threadId, tabId));
     if (existing) return existing;
     const { sessions } = yield* manager.list({ threadId: ThreadId.make(threadId) });
-    const snapshot = sessions.find(
-      (session) => session.tabId === tabId && session.runtime === "server",
-    );
-    if (!snapshot) return yield* new ServerBrowserTabNotFoundError({ threadId, tabId });
+    const snapshot = sessions.find((session) => session.tabId === tabId);
+    if (
+      !snapshot ||
+      (snapshot.runtime !== "server" && !(yield* desktopChannel.isAttached({ threadId, tabId })))
+    )
+      return yield* new ServerBrowserTabNotFoundError({ threadId, tabId });
     return yield* Effect.tryPromise({
       try: () => ensureTab(snapshot),
       catch: (cause) => (isTabNotFound(cause) ? cause : new ServerBrowserLaunchError({ cause })),
@@ -1671,10 +1744,23 @@ const make = Effect.gen(function* () {
       };
     }
     const url = tab.page.url();
-    const viewport = tab.page.viewportSize();
+    const viewport = tab.desktop ? await layoutSize(tab) : tab.page.viewportSize();
+    const nativeVisible =
+      tab.desktop && !tab.dialog
+        ? await runPromise(
+            Effect.promise(() =>
+              tab.page
+                .evaluate<boolean>("document.visibilityState === 'visible'")
+                .catch(() => false),
+            ).pipe(
+              Effect.timeoutOption(DESKTOP_VIEWPORT_READ_TIMEOUT),
+              Effect.map(Option.getOrElse(() => false)),
+            ),
+          )
+        : false;
     const status = {
       available: true,
-      visible: tab.viewers.size > 0,
+      visible: nativeVisible === true || tab.viewers.size > 0,
       tabId: tab.tabId,
       url: url === "about:blank" ? null : url,
       title: null,
@@ -1698,7 +1784,7 @@ const make = Effect.gen(function* () {
           ...(candidate.openerTabId === undefined ? {} : { openerTabId: candidate.openerTabId }),
           owner: tabOwner(candidate),
           ownedByCaller: candidate.control.agentId === agentSessionId,
-          visible: candidate.viewers.size > 0,
+          visible: (candidate === tab && nativeVisible === true) || candidate.viewers.size > 0,
           ...(candidate.profileId === undefined ? {} : { profileId: candidate.profileId }),
         })),
       ...profileStatus(),
@@ -2019,6 +2105,28 @@ const make = Effect.gen(function* () {
     deadlineMs: number,
   ): Promise<unknown> => {
     const input = request.input;
+    if (
+      request.operation === "status" ||
+      request.operation === "open" ||
+      (request.tabId !== undefined && !tabs.has(tabKey(request.threadId, request.tabId)))
+    ) {
+      const { sessions } = await runPromise(
+        manager.list({ threadId: ThreadId.make(request.threadId) }),
+      );
+      for (const snapshot of sessions) {
+        if (
+          snapshot.runtime !== "server" &&
+          !tabs.has(tabKey(snapshot.threadId, snapshot.tabId)) &&
+          (await runPromise(
+            desktopChannel.isAttached({
+              threadId: snapshot.threadId,
+              tabId: snapshot.tabId,
+            }),
+          ))
+        )
+          await ensureTab(snapshot);
+      }
+    }
     const humanHandoff = [...tabs.values()].find(
       (tab) =>
         tab.threadId === request.threadId &&
@@ -2079,7 +2187,7 @@ const make = Effect.gen(function* () {
           throw new ServerBrowserPage.ServerBrowserOperationError(
             desktop ? "PreviewAutomationExecutionError" : "PreviewAutomationTabNotFoundError",
             desktop
-              ? "This tab belongs to the desktop runtime. This environment's server browser cannot control desktop tabs. Omit tabId to open a server tab instead."
+              ? "This tab belongs to a desktop runtime that is not attached to this environment. This environment cannot control it. Reconnect its native desktop host; a separate server tab would use separate login state."
               : "The requested server preview tab does not exist.",
           );
         }
@@ -2517,7 +2625,7 @@ const make = Effect.gen(function* () {
         const current = tab.page.viewportSize();
         if (current?.width === width && current.height === height) return;
         await tab.page.setViewportSize({ width, height });
-        broadcastViewport(tab);
+        await broadcastViewport(tab);
         return;
       }
       case "viewport": {
@@ -2647,20 +2755,23 @@ const make = Effect.gen(function* () {
         // Dropped frames must still release Chromium.
         if (Queue.offerUnsafe(output, next)) return;
         if (next._tag === "frame") runFork(next.ack);
-        // State a stalled viewer cannot miss replaces its backlog. It runs
-        // synchronously so an older replacement can never land after a newer one.
+        // Preserve the latest control and size when frames fill a slow viewer's queue.
         else if (
-          next._tag === "gone" ||
-          next._tag === "control" ||
-          next._tag === "fileChooser" ||
-          next._tag === "selection"
+          ["gone", "reconnect", "control", "viewport", "fileChooser", "selection"].includes(
+            next._tag,
+          )
         ) {
           const dropped = Effect.runSyncExit(Queue.clear(output));
           if (dropped._tag === "Failure") return;
-          Queue.offerUnsafe(output, next);
-
-          const chooser = next._tag === "control" ? fileChooserMessage(tab) : null;
-          if (chooser && tab.control.controller === viewer.id) Queue.offerUnsafe(output, chooser);
+          const items = [...dropped.value, next];
+          const state = (["control", "viewport"] as const).flatMap(
+            (tag) => items.findLast((item) => item._tag === tag) ?? [],
+          );
+          const rest = items.filter(
+            (item) => item._tag !== "frame" && item._tag !== "control" && item._tag !== "viewport",
+          );
+          for (const item of [...rest.slice(state.length - VIEWER_OUTPUT_LIMIT), ...state])
+            Queue.offerUnsafe(output, item);
           for (const item of dropped.value) if (item._tag === "frame") runFork(item.ack);
         }
       },
@@ -2749,7 +2860,7 @@ const make = Effect.gen(function* () {
         ),
       });
     });
-    broadcastViewport(tab);
+    void broadcastViewport(tab).catch(constVoid);
     yield* Effect.promise(() => startScreencast(1));
     // An idle page does not repaint for a new screencast, so the viewer
     // starts from a still unless a live frame beat it.
@@ -2826,9 +2937,7 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         if (tabs.has(tabKey(key.threadId, key.tabId))) return;
         const { sessions } = yield* manager.list({ threadId: ThreadId.make(key.threadId) });
-        const snapshot = sessions.find(
-          (session) => session.tabId === key.tabId && session.runtime === "server",
-        );
+        const snapshot = sessions.find((session) => session.tabId === key.tabId);
         if (snapshot) yield* Effect.promise(() => ensureTab(snapshot).catch(constVoid));
       }).pipe(Effect.ignore),
     ),

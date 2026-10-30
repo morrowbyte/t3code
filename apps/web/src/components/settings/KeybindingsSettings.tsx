@@ -1,3 +1,4 @@
+import { WorkTabNavigationSetting } from "./WorkTabNavigationSetting";
 import { useEnvironmentScope } from "../../state/session";
 import { useEnvironmentsWithScope, readEnvironmentScope } from "../../state/session";
 import {
@@ -1491,6 +1492,7 @@ export function KeybindingsSettingsPanel() {
         }
       }}
     >
+      <WorkTabNavigationSetting />
       <SettingsSection
         {...searchableSetting("keybindings")}
         headerAction={!isElectron ? <BrowserKeybindingNotice /> : null}

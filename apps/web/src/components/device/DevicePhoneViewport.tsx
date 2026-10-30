@@ -25,6 +25,13 @@ export function DevicePhoneViewport(props: {
   readonly onUnavailable: () => void;
 }) {
   const viewerRef = useRef<PhoneViewer | null>(null);
+  const pointers = useRef(new Map<number, { x: number; y: number }>());
+  const pinchDistance = useRef(0);
+  const endPointer = (id: number) => {
+    pointers.current.delete(id);
+    pinchDistance.current = 0;
+    interactionRef.current?.end(id);
+  };
   const interactionRef = useRef<ReturnType<typeof createPhoneInteraction> | null>(null);
   const screenRef = useRef(props.screen);
   const foldAngleRef = useRef(props.foldAngle);
@@ -46,6 +53,8 @@ export function DevicePhoneViewport(props: {
     modelRef.current = props.model;
     accessoryRef.current = props.accessory;
     interactionRef.current?.end();
+    pointers.current.clear();
+    pinchDistance.current = 0;
     viewerRef.current?.setModel(props.model);
     viewerRef.current?.setAccessory(props.accessory);
     viewerRef.current?.setScreen(props.screen, props.profile);
@@ -74,7 +83,16 @@ export function DevicePhoneViewport(props: {
       touch: (phase, point) => client.sendTouch(phase, point.x, point.y),
       viewerRef,
       interactionRef,
-      onInputCancel,
+      onInputCancel: (cancel) =>
+        onInputCancel(
+          cancel
+            ? () => {
+                pointers.current.clear();
+                pinchDistance.current = 0;
+                cancel();
+              }
+            : null,
+        ),
       onResetReady,
       onFrameListener,
       onUnavailable,
@@ -105,18 +123,40 @@ export function DevicePhoneViewport(props: {
           className="size-full touch-none"
           onPointerDown={(event) => {
             if (event.button !== 0) return;
-            if (!interactionRef.current?.begin(event.pointerId, point(event), event.altKey)) return;
+            const next = point(event);
+            pointers.current.set(event.pointerId, next);
+            if (pointers.current.size === 1)
+              interactionRef.current?.begin(event.pointerId, next, event.altKey);
+            else {
+              interactionRef.current?.end();
+              pinchDistance.current = 0;
+            }
             event.preventDefault();
             event.currentTarget.setPointerCapture(event.pointerId);
             (event.currentTarget.closest('[role="application"]') as HTMLElement | null)?.focus();
           }}
-          onPointerMove={(event) => interactionRef.current?.move(event.pointerId, point(event))}
+          onPointerMove={(event) => {
+            const previous = pointers.current.get(event.pointerId);
+            if (!previous) return;
+            const next = point(event);
+            pointers.current.set(event.pointerId, next);
+            if (pointers.current.size < 2) {
+              interactionRef.current?.move(event.pointerId, next);
+              return;
+            }
+            const [first, second] = [...pointers.current.values()];
+            const distance = Math.hypot(first!.x - second!.x, first!.y - second!.y);
+            if (pinchDistance.current > 0 && distance > 0)
+              viewerRef.current?.zoomBy(Math.log(distance / pinchDistance.current));
+            pinchDistance.current = distance;
+            viewerRef.current?.orbit((next.x - previous.x) / 2, (next.y - previous.y) / 2);
+          }}
           onPointerUp={(event) => {
             interactionRef.current?.move(event.pointerId, point(event));
-            interactionRef.current?.end(event.pointerId);
+            endPointer(event.pointerId);
           }}
-          onPointerCancel={(event) => interactionRef.current?.end(event.pointerId)}
-          onLostPointerCapture={(event) => interactionRef.current?.end(event.pointerId)}
+          onPointerCancel={(event) => endPointer(event.pointerId)}
+          onLostPointerCapture={(event) => endPointer(event.pointerId)}
         />
       </div>
     </div>

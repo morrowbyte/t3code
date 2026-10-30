@@ -242,6 +242,12 @@ const RPC_AGGREGATES = {
   [WS_METHODS.agentObservatorySubscribe]: "observatory",
   [WS_METHODS.agentObservatoryReadNativeRoster]: "observatory",
   [WS_METHODS.agentObservatorySubscribeNativeRoster]: "observatory",
+  [WS_METHODS.boatDefaults]: "server",
+  [WS_METHODS.boatRead]: "server",
+  [WS_METHODS.boatConnect]: "server",
+  [WS_METHODS.boatDisconnect]: "server",
+  [WS_METHODS.boatConfigure]: "server",
+  [WS_METHODS.boatOperate]: "server",
   [WS_METHODS.yaziPickerOpen]: "attachments",
   [WS_METHODS.yaziPickerPoll]: "attachments",
   [WS_METHODS.yaziPickerWrite]: "attachments",
@@ -256,6 +262,7 @@ const DEFAULT_RPC_SPAN_ATTRIBUTES = {
   "rpc.system": "effect-rpc",
 } as const;
 const RPC_METHODS_WITH_TRACING_DISABLED: ReadonlySet<string> = new Set([
+  WS_METHODS.boatConnect,
   WS_METHODS.serverGetTraceDiagnostics,
   WS_METHODS.serverGetProcessDiagnostics,
   WS_METHODS.serverGetProcessResourceHistory,

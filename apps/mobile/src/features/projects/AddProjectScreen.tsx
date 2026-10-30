@@ -48,6 +48,7 @@ import {
 } from "@t3tools/client-runtime/state/projects";
 import {
   AuthOrchestrationOperateScope,
+  DEFAULT_BOAT_PROJECT,
   AuthSourceControlWriteScope,
   AuthFilesystemReadScope,
   CommandId,
@@ -74,6 +75,7 @@ import { AsyncResult } from "effect/reactivity";
 import { cn } from "../../lib/cn";
 import { useProjects, useServerConfigs, waitForProject } from "../../state/entities";
 import { filesystemEnvironment } from "../../state/filesystem";
+import { boatEnvironment } from "../../state/boat";
 import { projectEnvironment } from "../../state/projects";
 import { useEnvironmentQuery } from "../../state/query";
 import { environmentSession, useEnvironmentScope, readEnvironmentScope } from "../../state/session";
@@ -985,6 +987,8 @@ function FolderBrowser(props: {
 }
 
 export function AddProjectNewScreen(props: { readonly environmentId?: string | string[] }) {
+  const [useBoat, setUseBoat] = useState(false);
+  const configureBoat = useAtomCommand(boatEnvironment.configure, { reportFailure: false });
   const openNewTaskDraft = useOpenNewTaskDraft();
   const navigation = useNavigation();
   const environmentOptions = useEnvironmentOptions().filter(
@@ -1079,6 +1083,14 @@ export function AddProjectNewScreen(props: { readonly environmentId?: string | s
       return;
     }
     const { projectId, workspaceRoot, commitError } = result.value;
+    if (useBoat) {
+      const configured = await configureBoat({
+        environmentId: environment.environmentId,
+        input: { projectId, config: { ...DEFAULT_BOAT_PROJECT, enabled: true } },
+      });
+      if (configured._tag === "Failure")
+        Dialog.alert("Project created", "Could not enable Boat. You can retry in Settings.");
+    }
     if (commitError !== undefined) {
       Dialog.alert("Created without a first commit", commitError);
     }
@@ -1212,6 +1224,21 @@ export function AddProjectNewScreen(props: { readonly environmentId?: string | s
                 : null}
             </ListSection>
           ) : null}
+          <ListSection>
+            <ListRow
+              icon={<SymbolView name="cloud" size={22} tintColorClassName="accent-icon" />}
+              title="Use Boat cloud environment"
+              isFirst
+              right={
+                <ThemedSwitch
+                  accessibilityLabel="Use Boat cloud environment"
+                  value={useBoat}
+                  onValueChange={setUseBoat}
+                />
+              }
+              onPress={() => setUseBoat((value) => !value)}
+            />
+          </ListSection>
           <PrimaryActionButton
             label="Create project"
             disabled={isSubmitting || trimmedName.length === 0}

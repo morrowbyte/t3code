@@ -591,6 +591,10 @@
     "./provider-clients": {
       "types": "./src/providerClients.ts",
       "default": "./src/providerClients.ts"
+    },
+    "./state/boat": {
+      "types": "./src/state/boat.ts",
+      "default": "./src/state/boat.ts"
     }
   },
   "scripts": {

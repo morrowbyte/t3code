@@ -95,6 +95,7 @@ function fixture(
               }
             : {
                 plan_type: "pro",
+                credits: { has_credits: true, unlimited: false, balance: "250.75" },
                 rate_limit: {
                   secondary_window: {
                     used_percent: 78,
@@ -206,6 +207,12 @@ describe("CLIProxyAPI built-in management API", () => {
           { availableCount: 2, nextCreditId: "first", nextExpiresAt: "2099-01-01T00:00:00.000Z" },
           { availableCount: 2, nextCreditId: "first", nextExpiresAt: "2099-01-01T00:00:00.000Z" },
         ]);
+        expect(result[0]?.usageLimits.creditBalance).toEqual({
+          checkedAt: result[0]?.usageLimits.checkedAt,
+          hasCredits: true,
+          unlimited: false,
+          balance: "250.75",
+        });
         expect(result[0]?.usageLimits.windows).toMatchObject([
           { id: "secondary", usedPercent: 78, kind: "weekly" },
         ]);
@@ -261,6 +268,24 @@ describe("CLIProxyAPI built-in management API", () => {
           ["ChatGPT Free Subscription", "monthly"],
         ],
       );
+    }),
+  );
+
+  it.effect("keeps quotas when an optional credit payload is malformed", () =>
+    Effect.gen(function* () {
+      const test = fixture({
+        upstream: () => ({
+          status: 200,
+          body: {
+            rate_limit: { primary_window: { used_percent: 12 } },
+            credits: { balance: 999, has_credits: true, unlimited: false },
+          },
+        }),
+      });
+      const api = yield* test.api;
+      const result = yield* api.readAccounts(config);
+      expect(result[0]?.usageLimits.windows[0]?.usedPercent).toBe(12);
+      expect(result[0]?.usageLimits.creditBalance).toBeUndefined();
     }),
   );
 
