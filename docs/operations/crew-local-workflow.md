@@ -61,7 +61,10 @@ the release suite for every merge.
 
 ## Qualify and package a release
 
-From a committed source revision, run the broader qualification once:
+The complete release workflow below performs the broader qualification itself.
+Do not run the same suite manually before dispatching it. When investigating
+packaging locally instead of running that workflow, qualify the committed source
+revision once:
 
 ```sh
 vp run check:changed <previous-qualified-ref>
@@ -111,6 +114,9 @@ The Linux runner label defaults to `morrowbyte-linux`; Windows defaults to
 `morrowbyte-windows`. Both require `self-hosted`. Setting a label variable to a
 cloud runner name does not create that runner or switch execution providers.
 An absent runner leaves a job queued. Do not call a dispatch a completed release.
+`MORROWBYTE_ANDROID_RUNNER` can select a dedicated Android runner; otherwise
+Android uses the Linux label. A fixed runner keeps native cache paths stable and
+allows Linux packaging to proceed alongside Android.
 
 For custom Linux build storage, set the repository variable
 `MORROWBYTE_LINUX_INIT_SCRIPT` to a machine-local script. The workflow sources it
@@ -120,6 +126,16 @@ installed toolchains there, outside the repository. The script must leave
 support repeated jobs. With no variable, the runner uses its normal environment.
 System libraries are installed during runner setup. Normal self-hosted release
 jobs neither install OS packages nor request `sudo`.
+
+Keep dependency stores on the runner. Self-hosted jobs do not archive and upload
+those same stores to the Actions cache. A runner may enable CMake's standard
+compiler launchers with `ccache` and a bounded persistent `CCACHE_DIR`; Gradle's
+user-level `org.gradle.caching=true` also survives fresh checkouts.
+
+The Android release emulator uses console port 5580 and ADB port 5581, leaving
+the usual development pair 5554/5555 available. Set the repository variable
+`MORROWBYTE_ANDROID_EMULATOR_PORT` to another free even port between 5554 and 5682
+when needed. The release never stops an emulator that already owns its port.
 
 If the maintainer explicitly chooses a paid Blacksmith release for one run, add
 `-f runner_backend=blacksmith` to that dispatch. It selects the existing Linux

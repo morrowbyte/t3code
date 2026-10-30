@@ -3,14 +3,20 @@
 set -euo pipefail
 umask 077
 
-[[ $# -eq 4 ]] || { echo 'Usage: android-startup-smoke.sh <arm64-apk> <x86_64-apk> <evidence-dir> <source-sha>' >&2; exit 2; }
+execution=github-actions
+if [[ "${1:-}" == --local ]]; then
+  execution=local
+  shift
+fi
+[[ $# -eq 4 ]] || { echo 'Usage: android-startup-smoke.sh [--local] <arm64-apk> <x86_64-apk> <evidence-dir> <source-sha>' >&2; exit 2; }
 arm64_apk="$(realpath "$1")"
 startup_apk="$(realpath "$2")"
 evidence_dir="$(realpath -m "$3")"
 source_sha="$4"
 package_name=com.morrowbyte.t3code
 serial="${ANDROID_SERIAL:-emulator-5554}"
-[[ "${GITHUB_ACTIONS:-}" == true && "$serial" =~ ^emulator-[0-9]+$ ]] || { echo 'Only an isolated GitHub Actions emulator is allowed.' >&2; exit 1; }
+[[ "$serial" =~ ^emulator-[0-9]+$ && ( "$execution" == local || "${GITHUB_ACTIONS:-}" == true ) ]] || { echo 'An isolated CI emulator or explicit --local diagnosis is required.' >&2; exit 1; }
+export T3_ANDROID_SMOKE_EXECUTION="$execution"
 mkdir -p "$evidence_dir"
 adb_command=(adb -s "$serial")
 [[ "$("${adb_command[@]}" shell getprop ro.kernel.qemu | tr -d '\r')" == 1 ]] || { echo 'The selected target is not an emulator.' >&2; exit 1; }
@@ -107,8 +113,11 @@ from pathlib import Path
 import json, os, sys
 root = Path(sys.argv[1])
 proof = json.loads((root / 'input.json').read_text())
+local = os.environ['T3_ANDROID_SMOKE_EXECUTION'] == 'local'
 proof.update(schemaVersion=1, status='passed', apiLevel=36, pid=int(sys.argv[2]),
-             run=os.environ['GITHUB_RUN_ID'], attempt=os.environ['GITHUB_RUN_ATTEMPT'],
+             execution=os.environ['T3_ANDROID_SMOKE_EXECUTION'],
+             run='local' if local else os.environ['GITHUB_RUN_ID'],
+             attempt='0' if local else os.environ['GITHUB_RUN_ATTEMPT'],
              launcherStarted=True, resumedActivity=True, uiBeyondSplash=True,
              stableProcess=True, startupErrors=False)
 (root / 'startup.json').write_text(json.dumps(proof, indent=2) + '\n')

@@ -731,7 +731,7 @@ jobs:
         uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version-file: package.json
-          cache: true
+          cache: ${{ inputs.runner_backend == 'blacksmith' }}
           run-install: false
       - name: Install dependencies
         if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && !inputs.continue_release75_run_id
@@ -911,7 +911,7 @@ jobs:
         uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version-file: package.json
-          cache: true
+          cache: ${{ inputs.runner_backend == 'blacksmith' }}
           run-install: false
 
       - name: Install bundle dependencies
@@ -1040,7 +1040,7 @@ jobs:
         uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version-file: package.json
-          cache: true
+          cache: ${{ inputs.runner_backend == 'blacksmith' }}
           run-install: false
 
       - name: Install Linux build dependencies
@@ -1348,7 +1348,7 @@ jobs:
     name: Build Morrowbyte Android APK
     if: ${{ !inputs.windows_candidate_only && !inputs.windows_only && !inputs.desktop_only && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' }}
     needs: [preflight]
-    runs-on: ${{ inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
+    runs-on: ${{ inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_ANDROID_RUNNER || vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
     timeout-minutes: 60
     outputs:
       apk_sha256: ${{ steps.apk.outputs.apk_sha256 }}
@@ -1397,7 +1397,7 @@ jobs:
         uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version-file: package.json
-          cache: true
+          cache: ${{ inputs.runner_backend == 'blacksmith' }}
           run-install: false
 
       - name: Install frozen mobile dependency closure
@@ -1484,7 +1484,10 @@ jobs:
               defaultConfig {
                   externalNativeBuild {
                       cmake {
-                          arguments "-DCMAKE_JOB_POOLS=crew_compile=2;crew_link=1",
+                          // React Native already supplies the app's ccache prefix.
+                          arguments "-DCMAKE_C_COMPILER_LAUNCHER=",
+                              "-DCMAKE_CXX_COMPILER_LAUNCHER=",
+                              "-DCMAKE_JOB_POOLS=crew_compile=2;crew_link=1",
                               "-DCMAKE_JOB_POOL_COMPILE=crew_compile",
                               "-DCMAKE_JOB_POOL_LINK=crew_link"
                       }
@@ -1662,11 +1665,17 @@ jobs:
         env:
           SOURCE_SHA: ${{ needs.preflight.outputs.android_source_sha || needs.preflight.outputs.source_sha }}
           STARTUP_APK: ${{ steps.apk.outputs.startup_apk }}
+          ANDROID_EMULATOR_PORT: ${{ vars.MORROWBYTE_ANDROID_EMULATOR_PORT || '5580' }}
         run: |
           set -euo pipefail
+          if [[ ! "$ANDROID_EMULATOR_PORT" =~ ^[1-9][0-9]{3,4}$ ]] ||
+            (( ANDROID_EMULATOR_PORT < 5554 || ANDROID_EMULATOR_PORT > 5682 || ANDROID_EMULATOR_PORT % 2 != 0 )); then
+            echo 'Android emulator port must be even and between 5554 and 5682.' >&2
+            exit 1
+          fi
           evidence_dir="$RUNNER_TEMP/morrowbyte-android-startup"
           export ANDROID_AVD_HOME="${TMPDIR:-$RUNNER_TEMP}/morrowbyte-android-avd"
-          export ANDROID_SERIAL=emulator-5554
+          export ANDROID_SERIAL="emulator-$ANDROID_EMULATOR_PORT"
           mkdir -p "$evidence_dir" "$ANDROID_AVD_HOME"
           if adb -s "$ANDROID_SERIAL" get-state >/dev/null 2>&1; then
             echo 'The CI emulator port is already in use.' >&2
@@ -1675,7 +1684,20 @@ jobs:
           avdmanager create avd --force --name Crew_Release_API36 \
             --package 'system-images;android-36;google_apis;x86_64' \
             --device pixel_7_pro <<< no > "$evidence_dir/avd-create.txt" 2>&1
-          "$ANDROID_HOME/emulator/emulator" -avd Crew_Release_API36 -port 5554 \
+          python3 - "$ANDROID_AVD_HOME/Crew_Release_API36.avd/config.ini" <<'PYDISPLAY'
+          from pathlib import Path
+          import sys
+          path = Path(sys.argv[1])
+          values = dict(line.split('=', 1) for line in path.read_text().splitlines() if '=' in line)
+          values.update({
+              'hw.lcd.width': '720', 'hw.lcd.height': '1280', 'hw.lcd.density': '320',
+              'hw.ramSize': '4096', 'hw.cpu.ncore': '4',
+              'skin.name': '720x1280', 'skin.path': '720x1280', 'showDeviceFrame': 'no',
+              'hw.initialOrientation': 'Portrait', 'fastboot.forceColdBoot': 'yes',
+          })
+          path.write_text(''.join(f'{key}={value}\n' for key, value in values.items()))
+          PYDISPLAY
+          "$ANDROID_HOME/emulator/emulator" -avd Crew_Release_API36 -port "$ANDROID_EMULATOR_PORT" \
             -no-window -no-boot-anim -no-snapshot -noaudio -gpu swiftshader_indirect \
             -accel on -cores 4 -memory 4096 > "$evidence_dir/emulator.txt" 2>&1 &
           emulator_pid=$!
@@ -1695,7 +1717,9 @@ jobs:
             fi
             sleep 2
           done
-          adb -s "$ANDROID_SERIAL" shell input keyevent 82
+          for setting in window_animation_scale transition_animation_scale animator_duration_scale; do
+            adb -s "$ANDROID_SERIAL" shell settings put global "$setting" 0
+          done
           startup_script=scripts/morrowbyte/android-startup-smoke.sh
           if [[ "${RESTORE_ANDROID74:-false}" == true ]]; then
             startup_script="$RUNNER_TEMP/morrowbyte-android-startup-smoke.sh"
@@ -2291,7 +2315,7 @@ jobs:
         uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
         with:
           node-version-file: package.json
-          cache: true
+          cache: ${{ inputs.runner_backend == 'blacksmith' }}
           run-install: false
       - name: Install release metadata tools
         run: vp install --frozen-lockfile --filter=@t3tools/shared...
