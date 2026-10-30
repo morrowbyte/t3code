@@ -13,11 +13,11 @@ use windows_sys::Win32::{
     },
     Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateFileW, DELETE, FILE_ATTRIBUTE_DIRECTORY,
-        FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO,
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+        FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_BEGIN, FILE_DISPOSITION_INFO,
+        FILE_END, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
         FILE_RENAME_INFO, FILE_SHARE_READ, FileDispositionInfo, FileRenameInfo, GetDriveTypeW,
-        GetFileInformationByHandle, OPEN_EXISTING, READ_CONTROL, SetFileInformationByHandle,
-        WriteFile,
+        GetFileInformationByHandle, GetFileSizeEx, OPEN_EXISTING, READ_CONTROL, ReadFile,
+        SetFileInformationByHandle, SetFilePointerEx, WriteFile,
     },
     System::Threading::{GetCurrentProcess, OpenProcessToken},
 };
@@ -247,7 +247,9 @@ impl Root {
             verify_private_acl(h.0, false)
         })();
         if let Err(error) = checked {
-            let _ = delete(h.0);
+            if delete(h.0).is_err() {
+                return Err(io::Error::other("failed to clean up rejected staging file"));
+            }
             return Err(error);
         }
         Ok(StagedFile {
@@ -341,6 +343,96 @@ impl StagedFile<'_> {
     }
 }
 
+impl crate::protocol::Storage for StagedFile<'_> {
+    fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
+        StagedFile::write_all(self, data)
+    }
+    fn matches_at(&mut self, offset: usize, data: &[u8]) -> io::Result<bool> {
+        if unsafe { SetFilePointerEx(self.handle.0, offset as i64, ptr::null_mut(), FILE_BEGIN) }
+            == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let result = (|| {
+            let mut actual = vec![0u8; data.len()];
+            let mut read = 0usize;
+            while read < actual.len() {
+                let mut count = 0;
+                if unsafe {
+                    ReadFile(
+                        self.handle.0,
+                        actual[read..].as_mut_ptr(),
+                        (actual.len() - read) as u32,
+                        &mut count,
+                        ptr::null_mut(),
+                    )
+                } == 0
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                if count == 0 {
+                    return Err(io::ErrorKind::UnexpectedEof.into());
+                }
+                read += count as usize;
+            }
+            Ok(actual == data)
+        })();
+        if unsafe { SetFilePointerEx(self.handle.0, 0, ptr::null_mut(), FILE_END) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        result
+    }
+    fn publish(&mut self, name: &str) -> io::Result<()> {
+        StagedFile::publish(self, name)
+    }
+    fn release(&mut self) -> io::Result<()> {
+        StagedFile::release(self)
+    }
+    fn verify(&mut self, size: usize, hash: &str) -> io::Result<()> {
+        use sha2::{Digest, Sha256};
+        let mut actual_size = 0i64;
+        if unsafe { GetFileSizeEx(self.handle.0, &mut actual_size) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if actual_size != size as i64 {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        if unsafe { SetFilePointerEx(self.handle.0, 0, ptr::null_mut(), FILE_BEGIN) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut digest = Sha256::new();
+        let mut buffer = [0u8; 65536];
+        let mut total = 0usize;
+        loop {
+            let mut count = 0;
+            if unsafe {
+                ReadFile(
+                    self.handle.0,
+                    buffer.as_mut_ptr(),
+                    buffer.len() as u32,
+                    &mut count,
+                    ptr::null_mut(),
+                )
+            } == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            if count == 0 {
+                break;
+            }
+            total += count as usize;
+            if total > size {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+            digest.update(&buffer[..count as usize]);
+        }
+        if total != size || format!("{:x}", digest.finalize()) != hash {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,5 +523,28 @@ mod tests {
             .unwrap();
         assert!(status.success());
         assert!(Root::open(temp.0.to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn session_retries_and_verifies_held_file_before_cleanup() {
+        use crate::protocol::Session;
+        let temp = private_temp();
+        let root = Root::open(temp.0.to_str().unwrap()).unwrap();
+        let file = root.create("part").unwrap();
+        let mut session = Session::new(
+            file,
+            3,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        )
+        .unwrap();
+        session.write(0, b"ab").unwrap();
+        session.write(0, b"ab").unwrap();
+        assert!(session.write(0, b"xx").is_err());
+        session.write(2, b"c").unwrap();
+        session.publish("file").unwrap();
+        assert_eq!(fs::read(temp.0.join("file")).unwrap(), b"abc");
+        session.cleanup().unwrap();
+        drop(session);
+        assert!(!temp.0.join("file").exists());
     }
 }

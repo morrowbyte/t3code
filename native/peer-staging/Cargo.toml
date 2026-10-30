@@ -9,6 +9,7 @@ publish = false
 windows-check = []
 
 [dependencies]
+sha2 = "0.10"
 windows-sys = { version = "0.61.2", features = [
   "Win32_Foundation",
   "Win32_Security",

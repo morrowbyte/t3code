@@ -38,6 +38,8 @@ fn safe_name(name: &str) -> bool {
 #[cfg(any(windows, feature = "windows-check"))]
 pub mod windows;
 
+pub mod protocol;
+
 #[cfg(test)]
 mod tests {
     use super::safe_name;
