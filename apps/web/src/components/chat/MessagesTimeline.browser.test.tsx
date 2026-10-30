@@ -225,30 +225,38 @@ it("keeps revised Voice speech and a normal t3-ui result in one chronological ti
   expect(screen.container.querySelectorAll("[data-streamable-ui]")).toHaveLength(1);
 });
 
-it("shows the initiating agent identity and a link on the initial message", async () => {
-  using _state = setup();
-  const senderThreadId = ThreadId.make("thread:initial-message-sender");
-  await using screen = await renderTimeline([
-    message("Check the cloud interface", {
-      createdBy: "agent",
-      creationSource: "mcp",
-      senderThreadId,
-    }),
-  ]);
-  const link = await vi.waitFor(() => {
-    const element = screen.container.querySelector<HTMLAnchorElement>(
-      'a[aria-label^="Absenderthread öffnen:"]',
+it.each([false, true])(
+  "shows the initiating agent identity and link (remote: %s)",
+  async (remote) => {
+    using _state = setup();
+    const senderThreadId = ThreadId.make("thread:initial-message-sender");
+    const senderEnvironmentId = remote
+      ? EnvironmentId.make("environment-agent-origin")
+      : ENVIRONMENT_ID;
+    await using screen = await renderTimeline([
+      message("Check the cloud interface", {
+        createdBy: "agent",
+        creationSource: "mcp",
+        ...(remote
+          ? { remoteSender: { environmentId: senderEnvironmentId, threadId: senderThreadId } }
+          : { senderThreadId }),
+      }),
+    ]);
+    const link = await vi.waitFor(() => {
+      const element = screen.container.querySelector<HTMLAnchorElement>(
+        'a[aria-label^="Absenderthread öffnen:"]',
+      );
+      expect(element).not.toBeNull();
+      return element!;
+    });
+    expect(decodeURIComponent(link.getAttribute("href")!)).toContain(
+      `/${senderEnvironmentId}/${senderThreadId}`,
     );
-    expect(element).not.toBeNull();
-    return element!;
-  });
-  expect(decodeURIComponent(link.getAttribute("href")!)).toContain(
-    `/${ENVIRONMENT_ID}/${senderThreadId}`,
-  );
-  expect(link.querySelector("[data-agent-identity]")).not.toBeNull();
-  expect(link.textContent?.trim()).toMatch(/\S+\s+\S+/u);
-  expect(screen.container.textContent).not.toContain("nicht erfasst");
-});
+    expect(link.querySelector("[data-agent-identity]")).not.toBeNull();
+    expect(link.textContent?.trim()).toMatch(/\S+\s+\S+/u);
+    expect(screen.container.textContent).not.toContain("nicht erfasst");
+  },
+);
 
 it("keeps legacy MCP messages readable without a missing-sender notice or invented link", async () => {
   using _state = setup();

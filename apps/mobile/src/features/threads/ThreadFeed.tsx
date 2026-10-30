@@ -1742,7 +1742,8 @@ function renderFeedEntry(
             attribution={presentation.attribution === "agent" ? "agent" : "unknown"}
             text={message.text}
             environmentId={props.environmentId}
-            senderThreadId={message.senderThreadId}
+            senderThreadId={message.remoteSender?.threadId ?? message.senderThreadId}
+            senderEnvironmentId={message.remoteSender?.environmentId}
             attachments={attachmentContent}
             timestampLabel={timestampLabel}
             streaming={message.streaming}

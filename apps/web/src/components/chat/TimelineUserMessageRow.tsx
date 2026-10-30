@@ -438,10 +438,13 @@ function UserMessageProjectedStatus({ row }: { row: Extract<TimelineRow, { kind:
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const { onImageExpand, onFileOpen } = ctx;
-  const senderThreadId = row.message.senderThreadId;
-  const sender = useThreadShell(
-    senderThreadId ? scopeThreadRef(ctx.activeThreadEnvironmentId, senderThreadId) : null,
-  );
+  const senderRef =
+    row.message.remoteSender ??
+    (row.message.senderThreadId
+      ? scopeThreadRef(ctx.activeThreadEnvironmentId, row.message.senderThreadId)
+      : null);
+  const senderThreadId = senderRef?.threadId;
+  const sender = useThreadShell(senderRef);
   const resources = selectMessageImageResources(row.message.attachments);
   const previewUrls = useAssetUrls(ctx.activeThreadEnvironmentId, resources);
   const [projectPreviews] = useState(createMessageAttachmentPreviewProjector);
@@ -471,11 +474,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   const folded = userMessage.attribution === "agent";
   const [expanded, setExpanded] = useState(false);
   const revealFoldRef = findRevealRef(() => setExpanded(true));
-  const senderShell = useQuietThreadShell(
-    folded && senderThreadId
-      ? { environmentId: ctx.activeThreadEnvironmentId, threadId: senderThreadId }
-      : null,
-  );
+  const senderShell = useQuietThreadShell(folded ? senderRef : null);
   const senderLabel = senderShell?.title.trim() || "Agent";
   const resolvedContext = resolveUserMessageContext(
     userMessage.attribution === "guest" ? { ...row.message, text: userMessage.text } : row.message,
@@ -733,7 +732,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
           peerThreadId={senderThreadId}
           peerTitle={sender?.title ?? null}
           attribution={unknownMcpSender ? "unknown" : "agent"}
-          environmentId={ctx.activeThreadEnvironmentId}
+          environmentId={senderRef?.environmentId ?? ctx.activeThreadEnvironmentId}
           createdAt={row.message.createdAt}
           timestamp={formatDayAwareTimestamp(row.message.createdAt, ctx.timestampFormat)}
           timestampTitle={formatChatTimestampTooltip(row.message.createdAt, ctx.timestampFormat)}
