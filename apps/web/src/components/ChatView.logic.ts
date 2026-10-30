@@ -1229,7 +1229,11 @@ export function mergeDirectPreviewAnnotation(input: {
     direct.image !== null &&
     !imageAlreadyAttached &&
     input.images.length + input.fileCount < PROVIDER_SEND_TURN_MAX_ATTACHMENTS;
-  const images = direct.image && imageAppended ? [...input.images, direct.image] : input.images;
+  const images = !direct.annotation.screenshot
+    ? input.images.filter((image) => image.id !== direct.annotation.id)
+    : direct.image && imageAppended
+      ? [...input.images, direct.image]
+      : input.images;
   const previewAnnotation = {
     ...direct.annotation,
     screenshot:
