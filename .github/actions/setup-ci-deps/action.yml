@@ -1,5 +1,5 @@
 name: Setup CI dependencies
-description: Install pinned Vite+ and workspace dependencies with the built-in dependency cache.
+description: Install pinned Vite+ and cache dependency verification metadata.
 inputs:
   task-cache-read-token:
     description: Read-only credential for the private maintainer task cache
@@ -32,16 +32,19 @@ runs:
           mkdir -p "$(dirname "$cache_key")"
           {
             cat pnpm-lock.yaml
-            printf '\n# install-args: %s\n' "$INSTALL_ARGS"
+            printf '\n# cache: verification-v1\n# install-args: %s\n' "$INSTALL_ARGS"
             sha256sum package.json pnpm-workspace.yaml | sed 's/^/# /'
           } > "$cache_key"
           printf 'cache-key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
+          printf 'cache-store=%s/pnpm-verification-cache\n' "$RUNNER_TEMP" >> "$GITHUB_OUTPUT"
         fi
 
     - name: Setup pinned Vite+ and restore dependencies
       uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
       env:
         VP_DOWNLOAD_TIMEOUT: "120"
+        # Restoring the full 785 MiB store took 160s on Boat, longer than a fresh install.
+        pnpm_config_store_dir: ${{ steps.toolchain.outputs.cache-store }}
       with:
         version: ${{ steps.toolchain.outputs.version }}
         node-version-file: package.json
@@ -52,10 +55,13 @@ runs:
     - name: Configure lockfile verification cache
       if: inputs.install == 'true'
       shell: bash
+      env:
+        CACHE_STORE: ${{ steps.toolchain.outputs.cache-store }}
       run: |
         set -euo pipefail
-        store="$(vp pm cache dir)"
-        printf 'pnpm_config_cache_dir=%s\n' "${pnpm_config_cache_dir:-$store/ci-metadata}" >> "$GITHUB_ENV"
+        store="$(pnpm_config_store_dir="$CACHE_STORE" vp pm cache dir)"
+        mkdir -p "$store/metadata"
+        printf 'pnpm_config_cache_dir=%s\n' "${pnpm_config_cache_dir:-$store/metadata}" >> "$GITHUB_ENV"
 
     - name: Install dependencies
       if: inputs.install == 'true'

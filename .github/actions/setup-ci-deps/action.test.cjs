@@ -34,6 +34,7 @@ function run(root, install, args = "") {
       ...process.env,
       GITHUB_WORKSPACE: root,
       GITHUB_OUTPUT: output,
+      RUNNER_TEMP: root,
       INSTALL: install,
       INSTALL_ARGS: args,
     },
