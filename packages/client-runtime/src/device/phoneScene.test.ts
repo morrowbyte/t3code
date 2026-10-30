@@ -157,6 +157,19 @@ it.each(["landscape_left", "landscape_right"] as const)(
     const texture = new Texture();
     const layout = phoneDisplayLayout({ width: 3120, height: 1440, orientation }, 3120, 1440);
     const phone = createPhoneScene(texture, layout, GALAXY_S24_ULTRA_SHAPE);
+    const display = phone.root.getObjectByName("display") as Mesh;
+    const positions = display.geometry.getAttribute("position");
+    const uv = display.geometry.getAttribute("uv");
+    for (let index = 0; index < positions.count; index++) {
+      const pixel = new Vector3(positions.getX(index), positions.getY(index), 0).applyAxisAngle(
+        new Vector3(0, 0, 1),
+        layout.rotation,
+      );
+      expect(uv.getX(index)).toBeCloseTo((pixel.x + 1.1) / 2.2);
+      expect(1 - uv.getY(index)).toBeCloseTo(
+        (1.1 * layout.aspect - pixel.y) / (2.2 * layout.aspect),
+      );
+    }
     const camera = new PerspectiveCamera(32, 1, 0.1, 30);
     camera.position.z = 5;
     camera.updateMatrixWorld(true);
