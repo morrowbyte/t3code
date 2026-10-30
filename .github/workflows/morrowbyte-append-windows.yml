@@ -8,6 +8,10 @@ on:
         type: choice
         default: native
         options: [native, blacksmith]
+      append_built_windows:
+        description: Append only the verified Windows artifacts from run 41143572124
+        type: boolean
+        default: false
 concurrency:
   group: morrowbyte-desktop-nightly
   cancel-in-progress: false
@@ -29,6 +33,7 @@ jobs:
       - name: Verify original publication and successful source-bound jobs
         env:
           GH_TOKEN: ${{ github.token }}
+          APPEND_BUILT_WINDOWS: ${{ inputs.append_built_windows }}
         run: |
           python3 - <<'PYVERIFY'
           import hashlib, json, os, urllib.request
@@ -64,10 +69,21 @@ jobs:
           assert fields['publication_run_id'] == fields['desktop_origin_run_id'] == str(run['id'])
           assert fields['release_platforms'] == 'linux-x64,nixos-x64,android-arm64'
           assert fields['windows_status'] == 'pending'
+          if os.environ['APPEND_BUILT_WINDOWS'] == 'true':
+              built = api('actions/runs/41143572124')
+              assert built['head_sha'] == '221dfba5fe3b6bf69cf4cf680521f4f66d83a8c6'
+              assert built['path'] == '.github/workflows/morrowbyte-append-windows.yml'
+              assert built['event'] == 'workflow_dispatch' and built['status'] == 'completed'
+              assert built['run_attempt'] == 1 and built['repository']['full_name'] == repo
+              built_jobs = api('actions/runs/41143572124/jobs?per_page=100')['jobs']
+              for name in ['verify_original', 'build_windows']:
+                  matches = [job for job in built_jobs if job['name'] == name]
+                  assert len(matches) == 1 and matches[0]['conclusion'] == 'success', name
           print('Verified original .93 publication, source, workflow and successful platform gates.')
           PYVERIFY
 
   build_windows:
+    if: ${{ !inputs.append_built_windows }}
     needs: verify_original
     runs-on: ${{ inputs.windows_backend == 'blacksmith' && 'blacksmith-8vcpu-windows-2025' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_WINDOWS_RUNNER || 'morrowbyte-windows')) }}
     timeout-minutes: 50
@@ -227,7 +243,8 @@ jobs:
           retention-days: 1
 
   append_windows:
-    needs: build_windows
+    if: ${{ !cancelled() && needs.verify_original.result == 'success' && (needs.build_windows.result == 'success' || inputs.append_built_windows) }}
+    needs: [verify_original, build_windows]
     runs-on: ${{ vars.MORROWBYTE_BOAT_RUNNER || 'boat-large' }}
     timeout-minutes: 15
     permissions:
@@ -247,7 +264,15 @@ jobs:
           pattern: morrowbyte-release-{windows,cli-windows}
           merge-multiple: true
           path: windows-assets
+          run-id: ${{ inputs.append_built_windows && '41143572124' || github.run_id }}
+          github-token: ${{ github.token }}
       - name: Append Windows and reverify every original published byte
         env:
           GH_TOKEN: ${{ secrets.MORROWBYTE_RELEASE_TOKEN || github.token }}
-        run: node scripts/morrowbyte/append-windows-release.cjs publish windows-assets
+          WINDOWS_BUILD_RUN_ID: ${{ inputs.append_built_windows && '41143572124' || github.run_id }}
+          WINDOWS_BUILD_WORKFLOW_SHA: ${{ inputs.append_built_windows && '221dfba5fe3b6bf69cf4cf680521f4f66d83a8c6' || github.workflow_sha }}
+        run: |
+          if [[ -f windows-assets/builder-debug.yml ]]; then
+            mv windows-assets/builder-debug.yml "$RUNNER_TEMP/windows-builder-debug.yml"
+          fi
+          node scripts/morrowbyte/append-windows-release.cjs publish windows-assets

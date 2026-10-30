@@ -267,6 +267,9 @@ function publish(directory, env = process.env) {
           ? `publication_workflow_sha=${env.GITHUB_WORKFLOW_SHA}\npublication_workflow_ref=${env.GITHUB_WORKFLOW_REF}\n`
           : "") +
         (env.SOURCE_RUN_ID ? `retained_bundle_origin_run_id=${env.SOURCE_RUN_ID}\n` : "") +
+        (env.WINDOWS_BUILD_RUN_ID
+          ? `windows_build_run_id=${env.WINDOWS_BUILD_RUN_ID}\nwindows_build_workflow_sha=${env.WINDOWS_BUILD_WORKFLOW_SHA}\n`
+          : "") +
         `github_asset_digests=${JSON.stringify(digests)}\nartifact_sha256:\n${sums}`,
     );
     if (before.has("RELEASE-RECEIPT-windows.txt")) {

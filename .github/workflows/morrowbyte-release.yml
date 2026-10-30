@@ -2568,7 +2568,11 @@ jobs:
           RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
           RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
           SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
-        run: node scripts/morrowbyte/append-windows-release.cjs publish windows-assets
+        run: |
+          if [[ -f windows-assets/builder-debug.yml ]]; then
+            mv windows-assets/builder-debug.yml "$RUNNER_TEMP/windows-builder-debug.yml"
+          fi
+          node scripts/morrowbyte/append-windows-release.cjs publish windows-assets
 
   publish_android:
     if: inputs.android_only && inputs.publish
