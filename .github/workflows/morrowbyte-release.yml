@@ -1344,7 +1344,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  build_android_apk:
+  build_android_binaries:
     name: Build Morrowbyte Android APK
     if: ${{ !inputs.windows_candidate_only && !inputs.windows_only && !inputs.desktop_only && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' }}
     needs: [preflight]
@@ -1352,7 +1352,6 @@ jobs:
     timeout-minutes: 60
     outputs:
       apk_sha256: ${{ steps.apk.outputs.apk_sha256 }}
-      receipt_sha256: ${{ steps.startup_receipt.outputs.receipt_sha256 }}
       build_attempt: ${{ steps.apk.outputs.build_attempt }}
     env:
       DESKTOP_SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
@@ -1654,6 +1653,101 @@ jobs:
               outputs.write(f'apk_sha256={apk_sha}\nstartup_apk={startup_apk}\nbuild_attempt={os.environ["GITHUB_RUN_ATTEMPT"]}\n')
           PYAPK
 
+      - name: Preserve signed Android binaries before startup verification
+        run: |
+          set -euo pipefail
+          mkdir -p android-build-payload
+          cp release-android/* android-build-payload/
+          cp "${{ steps.apk.outputs.startup_apk }}" android-build-payload/startup-x86_64.apk
+          (cd android-build-payload && sha256sum startup-x86_64.apk > startup-x86_64.apk.sha256)
+
+      - name: Upload signed Android build payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: morrowbyte-built-android
+          path: android-build-payload/*
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Preserve resolved Android dependencies
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: morrowbyte-android-build-evidence-${{ needs.preflight.outputs.android_source_sha || needs.preflight.outputs.source_sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/morrowbyte-android-dependencies.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Remove ephemeral signing material
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/morrowbyte-signing"
+
+  # Compiler workers and other platform builds finish before the emulator starts.
+  build_android_apk:
+    name: Verify signed Android startup
+    if: ${{ !inputs.windows_candidate_only && !inputs.windows_only && !inputs.desktop_only && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && !cancelled() && needs.build_android_binaries.result == 'success' }}
+    needs: [preflight, build_android_binaries, build_linux, build_nixos, build_windows]
+    runs-on: ${{ inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_ANDROID_RUNNER || vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
+    timeout-minutes: 15
+    outputs:
+      apk_sha256: ${{ needs.build_android_binaries.outputs.apk_sha256 }}
+      receipt_sha256: ${{ steps.startup_receipt.outputs.receipt_sha256 }}
+      build_attempt: ${{ needs.build_android_binaries.outputs.build_attempt }}
+    env:
+      RESTORE_ANDROID74: ${{ inputs.restore_android74 }}
+      T3CODE_MOBILE_VERSION: ${{ needs.preflight.outputs.version }}
+      ANDROID_BUILD_TOOLS: "36.0.0"
+    steps:
+      - name: Checkout tested startup helper
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.source_sha }}
+          fetch-depth: 1
+          sparse-checkout: |
+            package.json
+            scripts/morrowbyte/android-startup-smoke.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Use local release build storage
+        if: inputs.runner_backend != 'blacksmith' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
+        env:
+          RUNNER_INIT_SCRIPT: ${{ vars.MORROWBYTE_LINUX_INIT_SCRIPT }}
+        shell: bash
+        run: source "$RUNNER_INIT_SCRIPT" --github-env
+
+      - name: Setup Java
+        if: inputs.runner_backend == 'blacksmith'
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Setup Android build and verification tools
+        if: inputs.runner_backend == 'blacksmith'
+        uses: android-actions/setup-android@v4
+        with:
+          packages: "platform-tools build-tools;36.0.0 emulator system-images;android-36;google_apis;x86_64"
+          log-accepted-android-sdk-licenses: false
+
+      - name: Download signed Android binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: morrowbyte-built-android
+          path: release-android
+
+      - id: payload
+        name: Verify and select the existing startup split
+        run: |
+          set -euo pipefail
+          (cd release-android && sha256sum -c startup-x86_64.apk.sha256)
+          mv release-android/startup-x86_64.apk "$RUNNER_TEMP/crew-startup-x86_64.apk"
+          rm -- release-android/startup-x86_64.apk.sha256
+          printf 'startup_apk=%s/crew-startup-x86_64.apk\n' "$RUNNER_TEMP" >> "$GITHUB_OUTPUT"
+          if [[ "${RESTORE_ANDROID74:-false}" == true ]]; then
+            cp scripts/morrowbyte/android-startup-smoke.sh "$RUNNER_TEMP/morrowbyte-android-startup-smoke.sh"
+          fi
+
       - name: Verify Android emulator KVM access
         run: |
           if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
@@ -1664,7 +1758,7 @@ jobs:
       - name: Start the minified release on Android 16 before publication
         env:
           SOURCE_SHA: ${{ needs.preflight.outputs.android_source_sha || needs.preflight.outputs.source_sha }}
-          STARTUP_APK: ${{ steps.apk.outputs.startup_apk }}
+          STARTUP_APK: ${{ steps.payload.outputs.startup_apk }}
           ANDROID_EMULATOR_PORT: ${{ vars.MORROWBYTE_ANDROID_EMULATOR_PORT || '5580' }}
         run: |
           set -euo pipefail
@@ -1674,9 +1768,10 @@ jobs:
             exit 1
           fi
           evidence_dir="$RUNNER_TEMP/morrowbyte-android-startup"
+          export ANDROID_USER_HOME="$RUNNER_TEMP/morrowbyte-android-user"
           export ANDROID_AVD_HOME="${TMPDIR:-$RUNNER_TEMP}/morrowbyte-android-avd"
           export ANDROID_SERIAL="emulator-$ANDROID_EMULATOR_PORT"
-          mkdir -p "$evidence_dir" "$ANDROID_AVD_HOME"
+          mkdir -p "$evidence_dir" "$ANDROID_USER_HOME" "$ANDROID_AVD_HOME"
           if adb -s "$ANDROID_SERIAL" get-state >/dev/null 2>&1; then
             echo 'The CI emulator port is already in use.' >&2
             exit 1
@@ -1742,7 +1837,9 @@ jobs:
           assert proof['status'] == 'passed' and proof['uiBeyondSplash'] is True and proof['startupErrors'] is False
           assert proof['source'] == data['source'] and proof['productionApkSha256'] == data['apkSha256']
           assert proof['embeddedBundleSha256'] == data['embeddedBundleSha256']
-          assert proof['run'] == data['run'] and proof['attempt'] == data['attempt']
+          assert proof['run'] == data['run'] == os.environ['GITHUB_RUN_ID']
+          assert proof['attempt'] == os.environ['GITHUB_RUN_ATTEMPT']
+          assert int(data['attempt']) <= int(proof['attempt'])
           assert proof['startupAbi'] == 'x86_64' and proof['physicalDeviceAcceptance'] is False
           startup_script = Path(os.environ['RUNNER_TEMP']) / 'morrowbyte-android-startup-smoke.sh' if os.environ.get('RESTORE_ANDROID74') == 'true' else Path('scripts/morrowbyte/android-startup-smoke.sh')
           proof['startupScriptSha256'] = hashlib.sha256(startup_script.read_bytes()).hexdigest()
@@ -1769,19 +1866,6 @@ jobs:
           compression-level: 0
           if-no-files-found: error
           retention-days: 7
-
-      - name: Preserve resolved Android dependencies
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: morrowbyte-android-build-evidence-${{ needs.preflight.outputs.android_source_sha || needs.preflight.outputs.source_sha }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/morrowbyte-android-dependencies.txt
-          if-no-files-found: ignore
-          retention-days: 7
-
-      - name: Remove ephemeral signing material
-        if: always()
-        run: rm -rf -- "$RUNNER_TEMP/morrowbyte-signing"
 
   publish:
     if: >-
@@ -2160,6 +2244,7 @@ jobs:
       CONTROL_SOURCE_CI_RUN: ${{ needs.preflight.outputs.source_ci_run_id }}
       APK_SHA256: ${{ needs.build_android_apk.outputs.apk_sha256 }}
       APK_RECEIPT_SHA256: ${{ needs.build_android_apk.outputs.receipt_sha256 }}
+      APK_BUILD_ATTEMPT: ${{ needs.build_android_apk.outputs.build_attempt }}
     steps:
       - name: Checkout exact Android release source
         uses: actions/checkout@v4
@@ -2200,7 +2285,7 @@ jobs:
           assert digest(receipt) == os.environ['APK_RECEIPT_SHA256']
           proof = json.loads(receipt.read_bytes())
           assert proof['source'] == os.environ['SOURCE_SHA']
-          assert proof['run'] == os.environ['GITHUB_RUN_ID'] and str(proof['attempt']) == os.environ['GITHUB_RUN_ATTEMPT']
+          assert proof['run'] == os.environ['GITHUB_RUN_ID'] and str(proof['attempt']) == os.environ['APK_BUILD_ATTEMPT']
           assert proof['trustedContextSha'] == os.environ['GITHUB_SHA']
           assert proof['trustedWorkflowSha'] == os.environ['GITHUB_WORKFLOW_SHA']
           assert proof['trustedWorkflowRef'] == os.environ['GITHUB_WORKFLOW_REF']

@@ -136,6 +136,12 @@ The Android release emulator uses console port 5580 and ADB port 5581, leaving
 the usual development pair 5554/5555 available. Set the repository variable
 `MORROWBYTE_ANDROID_EMULATOR_PORT` to another free even port between 5554 and 5682
 when needed. The release never stops an emulator that already owns its port.
+Each job uses fresh Android user preferences and virtual-device state; the SDK,
+Gradle and compiler caches remain shared. This prevents previous emulator state
+from affecting a release startup check.
+Android compilation and startup verification run as separate jobs. The startup
+job uses the signed build artifacts after the other platform builds finish;
+retrying it does not compile another APK.
 
 If the maintainer explicitly chooses a paid Blacksmith release for one run, add
 `-f runner_backend=blacksmith` to that dispatch. It selects the existing Linux

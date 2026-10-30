@@ -18,7 +18,7 @@ const run = {
 const state = () => ({ source, main: source, statuses: [], runs: [], runCount: 0, releases: [] });
 test("only successful normal main-push CI qualifies", () => {
   assert.equal(validateTrigger(run, "morrowbyte/t3code"), source);
-  const { repository: omitted, ...webhookRun } = run;
+  const { repository: _omitted, ...webhookRun } = run;
   assert.equal(validateTrigger(webhookRun, "morrowbyte/t3code"), source);
   for (const delta of [
     { event: "pull_request" },
@@ -82,7 +82,8 @@ test("truncated observations cannot clear intent or invent a unique run", () => 
   assert.throws(() => decideDispatch({ ...state(), releases: undefined }));
 });
 
-const { readFileSync } = require("node:fs");
+const { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } = require("node:fs");
+const { tmpdir } = require("node:os");
 const { createRequire } = require("node:module");
 const { resolve } = require("node:path");
 const { spawnSync } = require("node:child_process");
@@ -115,15 +116,16 @@ const releaseNeeds = (android) =>
   Object.fromEntries([
     ...desktopJobs.map((name) => [name, { result: "success" }]),
     ["build_android_apk", { result: android }],
+    ["build_android_binaries", { result: android }],
   ]);
 test("desktop-only release skips Android while the default still requires it", () => {
   assert.equal(releaseWorkflow.on.workflow_dispatch.inputs.desktop_only.default, false);
   assert.equal(
-    expression(releaseWorkflow.jobs.build_android_apk.if, platformInputs(true), {}),
+    expression(releaseWorkflow.jobs.build_android_binaries.if, platformInputs(true), {}),
     false,
   );
   assert.equal(
-    expression(releaseWorkflow.jobs.build_android_apk.if, platformInputs(false), {}),
+    expression(releaseWorkflow.jobs.build_android_binaries.if, platformInputs(false), {}),
     true,
   );
   const gate = releaseWorkflow.jobs.publish.if;
@@ -217,12 +219,115 @@ test("Android-only publication never schedules desktop packages", () => {
   const needs = releaseNeeds("success");
   for (const name of ["build_bundle", "build_linux", "build_nixos", "build_windows", "publish"])
     assert.equal(expression(releaseWorkflow.jobs[name].if, inputs, needs), false, name);
+  assert.deepEqual(releaseWorkflow.jobs.build_android_apk.needs, [
+    "preflight",
+    "build_android_binaries",
+    "build_linux",
+    "build_nixos",
+    "build_windows",
+  ]);
+  assert.equal(
+    releaseWorkflow.jobs.build_android_apk.steps.some((step) => /gradlew/.test(step.run ?? "")),
+    false,
+  );
+  assert.equal(expression(releaseWorkflow.jobs.build_android_binaries.if, inputs, needs), true);
   assert.equal(expression(releaseWorkflow.jobs.build_android_apk.if, inputs, needs), true);
+  assert.equal(
+    expression(releaseWorkflow.jobs.build_android_apk.if, inputs, {
+      ...needs,
+      build_android_binaries: { result: "failure" },
+    }),
+    false,
+  );
+  assert.equal(expression(releaseWorkflow.jobs.build_android_apk.if, inputs, needs, true), false);
+  assert.equal(
+    expression(releaseWorkflow.jobs.build_android_apk.if, inputs, {
+      ...needs,
+      build_linux: { result: "skipped" },
+      build_nixos: { result: "skipped" },
+      build_windows: { result: "skipped" },
+    }),
+    true,
+  );
   assert.equal(expression(releaseWorkflow.jobs.publish_android.if, inputs, needs), true);
   assert.equal(
     expression(releaseWorkflow.jobs.publish_android.if, { ...inputs, publish: false }, needs),
     false,
   );
+});
+test("Android startup attestation retains the original build attempt and rejects mismatched bytes", () => {
+  const step = releaseWorkflow.jobs.build_android_apk.steps.find(
+    (item) => item.id === "startup_receipt",
+  );
+  const program = step.run.match(/<<'PYSTARTUP'\n([\s\S]+)\nPYSTARTUP/)[1];
+  const root = mkdtempSync(resolve(tmpdir(), "crew-android-attestation-"));
+  try {
+    mkdirSync(resolve(root, "release-android"));
+    mkdirSync(resolve(root, "morrowbyte-android-startup"));
+    mkdirSync(resolve(root, "scripts/morrowbyte"), { recursive: true });
+    writeFileSync(resolve(root, "scripts/morrowbyte/android-startup-smoke.sh"), "fixture");
+    const data = {
+      source,
+      apkSha256: "b".repeat(64),
+      embeddedBundleSha256: "c".repeat(64),
+      run: "12",
+      attempt: "1",
+    };
+    const proof = {
+      status: "passed",
+      uiBeyondSplash: true,
+      startupErrors: false,
+      source,
+      productionApkSha256: data.apkSha256,
+      embeddedBundleSha256: data.embeddedBundleSha256,
+      run: "12",
+      attempt: "2",
+      startupAbi: "x86_64",
+      physicalDeviceAcceptance: false,
+    };
+    const run = (changedData = {}, changedProof = {}) => {
+      writeFileSync(
+        resolve(root, "release-android/Morrowbyte-test-android-arm64.apk.json"),
+        JSON.stringify({ ...data, ...changedData }),
+      );
+      writeFileSync(
+        resolve(root, "morrowbyte-android-startup/startup.json"),
+        JSON.stringify({ ...proof, ...changedProof }),
+      );
+      return spawnSync("python3", ["-c", program], {
+        cwd: root,
+        env: {
+          ...process.env,
+          RESTORE_ANDROID74: "false",
+          T3CODE_MOBILE_VERSION: "test",
+          RUNNER_TEMP: root,
+          GITHUB_RUN_ID: "12",
+          GITHUB_RUN_ATTEMPT: "2",
+          GITHUB_OUTPUT: resolve(root, "output"),
+        },
+      }).status;
+    };
+    assert.equal(run(), 0);
+    assert.equal(
+      JSON.parse(
+        readFileSync(
+          resolve(root, "release-android/Morrowbyte-test-android-arm64.apk.json"),
+          "utf8",
+        ),
+      ).attempt,
+      "1",
+    );
+    for (const delta of [
+      { source: other },
+      { productionApkSha256: "d".repeat(64) },
+      { run: "99" },
+      { attempt: "1" },
+    ])
+      assert.notEqual(run({}, delta), 0);
+    assert.notEqual(run({ attempt: "3" }), 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 test("pinned Windows recovery reuses successful platforms but still requires Windows and original preflight", () => {
   const inputs = { ...platformInputs(), recover_windows_run_id: "39182028263" };
@@ -474,42 +579,96 @@ test(".68 coherent-source continuation retains the bundle and signed Android pac
   assert.equal(expression(releaseWorkflow.jobs.build_android_apk.if, inputs, needs), false);
   for (const job of ["build_linux", "build_nixos", "build_windows", "publish"])
     assert.equal(expression(releaseWorkflow.jobs[job].if, inputs, needs), true, job);
-  for (const job of ["preflight", "build_linux", "build_nixos", "build_windows", "build_android_apk"])
-    assert.equal(expression(releaseWorkflow.jobs.publish.if, inputs, { ...needs, [job]: { result: "failure" } }), false, job);
+  for (const job of [
+    "preflight",
+    "build_linux",
+    "build_nixos",
+    "build_windows",
+    "build_android_apk",
+  ])
+    assert.equal(
+      expression(releaseWorkflow.jobs.publish.if, inputs, {
+        ...needs,
+        [job]: { result: "failure" },
+      }),
+      false,
+      job,
+    );
   assert.equal(expression(releaseWorkflow.jobs.publish.if, inputs, needs, true), false);
-  assert.equal(expression(releaseWorkflow.jobs.publish.if, { ...inputs, publish: false }, needs), false);
-  assert.equal(expression(releaseWorkflow.jobs.publish.if, { ...inputs, continue_release68_run_id: "foreign" }, needs), false);
+  assert.equal(
+    expression(releaseWorkflow.jobs.publish.if, { ...inputs, publish: false }, needs),
+    false,
+  );
+  assert.equal(
+    expression(
+      releaseWorkflow.jobs.publish.if,
+      { ...inputs, continue_release68_run_id: "foreign" },
+      needs,
+    ),
+    false,
+  );
 });
 
 test("both native CLI builds use the application's required Node version", () => {
-  const required = JSON.parse(readFileSync(resolve(__dirname, "../../package.json"), "utf8")).engines.node;
+  const required = JSON.parse(readFileSync(resolve(__dirname, "../../package.json"), "utf8"))
+    .engines.node;
   for (const name of ["build_linux", "build_windows"]) {
-    const step = releaseWorkflow.jobs[name].steps.find((item) => /Build (Linux|Windows) CLI executable/.test(item.name));
+    const step = releaseWorkflow.jobs[name].steps.find((item) =>
+      /Build (Linux|Windows) CLI executable/.test(item.name),
+    );
     assert.equal(step.env.VP_NODE_VERSION, required, name);
   }
 });
 
-
 test("NixOS follows a retained bundle without inheriting implicit success over skipped ancestors", () => {
   const condition = releaseWorkflow.jobs.build_nixos.if;
-  assert.match(condition, /\b(?:cancelled|always)\s*\(/, "GitHub otherwise applies implicit success() to the skipped bundle ancestor");
+  assert.match(
+    condition,
+    /\b(?:cancelled|always)\s*\(/,
+    "GitHub otherwise applies implicit success() to the skipped bundle ancestor",
+  );
   const inputs = { ...platformInputs(), continue_release68_run_id: "40291055865" };
   const needs = { ...releaseNeeds("skipped"), build_bundle: { result: "skipped" } };
   assert.equal(expression(condition, inputs, needs), true);
-  assert.equal(expression(condition, inputs, { ...needs, build_linux: { result: "failure" } }), false);
+  assert.equal(
+    expression(condition, inputs, { ...needs, build_linux: { result: "failure" } }),
+    false,
+  );
   assert.equal(expression(condition, inputs, needs, true), false);
 });
 
 test("the final .68 continuation builds only the missing NixOS closure and preserves every publish gate", () => {
   const inputs = { ...platformInputs(), continue_release68_run_id: "40297878651" };
-  const needs = { ...releaseNeeds("skipped"), build_bundle: { result: "skipped" }, build_linux: { result: "skipped" }, build_windows: { result: "skipped" } };
+  const needs = {
+    ...releaseNeeds("skipped"),
+    build_bundle: { result: "skipped" },
+    build_linux: { result: "skipped" },
+    build_windows: { result: "skipped" },
+  };
   for (const job of ["build_bundle", "build_linux", "build_windows", "build_android_apk"])
     assert.equal(expression(releaseWorkflow.jobs[job].if, inputs, needs), false, job);
   assert.equal(expression(releaseWorkflow.jobs.build_nixos.if, inputs, needs), true);
   assert.equal(expression(releaseWorkflow.jobs.publish.if, inputs, needs), true);
   for (const job of ["preflight", "build_nixos"])
-    assert.equal(expression(releaseWorkflow.jobs.publish.if, inputs, { ...needs, [job]: { result: "failure" } }), false, job);
+    assert.equal(
+      expression(releaseWorkflow.jobs.publish.if, inputs, {
+        ...needs,
+        [job]: { result: "failure" },
+      }),
+      false,
+      job,
+    );
   assert.equal(expression(releaseWorkflow.jobs.publish.if, inputs, needs, true), false);
-  assert.equal(expression(releaseWorkflow.jobs.publish.if, { ...inputs, publish: false }, needs), false);
-  assert.equal(expression(releaseWorkflow.jobs.publish.if, { ...inputs, continue_release68_run_id: "foreign" }, needs), false);
+  assert.equal(
+    expression(releaseWorkflow.jobs.publish.if, { ...inputs, publish: false }, needs),
+    false,
+  );
+  assert.equal(
+    expression(
+      releaseWorkflow.jobs.publish.if,
+      { ...inputs, continue_release68_run_id: "foreign" },
+      needs,
+    ),
+    false,
+  );
 });
