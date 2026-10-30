@@ -1815,6 +1815,11 @@ jobs:
           for setting in window_animation_scale transition_animation_scale animator_duration_scale; do
             adb -s "$ANDROID_SERIAL" shell settings put global "$setting" 0
           done
+          test "$(adb -s "$ANDROID_SERIAL" shell getprop ro.kernel.qemu | tr -d '\r')" = 1
+          # The headless image has no Bluetooth adapter; its guest service otherwise crash-loops.
+          adb -s "$ANDROID_SERIAL" shell settings put global bluetooth_on 0
+          adb -s "$ANDROID_SERIAL" shell pm disable-user --user 0 com.android.bluetooth \
+            > "$evidence_dir/bluetooth-device-setup.txt"
           startup_script=scripts/morrowbyte/android-startup-smoke.sh
           if [[ "${RESTORE_ANDROID74:-false}" == true ]]; then
             startup_script="$RUNNER_TEMP/morrowbyte-android-startup-smoke.sh"
