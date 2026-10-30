@@ -184,6 +184,12 @@ const receiptField = (text: string, name: string) => {
   return values[0].slice(name.length + 1);
 };
 
+const decodeReceiptDigests = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Array(Schema.Struct({ name: Schema.String, digest: Schema.String })),
+  ),
+);
+
 const verifyReleaseReceipt = Effect.fn("cloud.pinned_runtime.verify_release_receipt")(function* (
   text: string,
   sums: string,
@@ -210,8 +216,8 @@ const verifyReleaseReceipt = Effect.fn("cloud.pinned_runtime.verify_release_rece
       }
       const entries = parseReleaseChecksums(sums);
       entries.set(manifest, Hex.encode(new Uint8Array(manifestDigest)));
-      const digests: unknown = JSON.parse(receiptField(text, "github_asset_digests"));
-      if (!Array.isArray(digests) || digests.length !== entries.size) {
+      const digests = decodeReceiptDigests(receiptField(text, "github_asset_digests"));
+      if (digests.length !== entries.size) {
         throw new Error("Invalid receipt GitHub digests");
       }
       for (const entry of digests) {
