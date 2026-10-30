@@ -1,4 +1,4 @@
-import { Mesh, PerspectiveCamera, Texture, Vector3 } from "three";
+import { Box3, Mesh, PerspectiveCamera, Texture, Vector3 } from "three";
 import { describe, expect, it } from "vite-plus/test";
 import { resolveDeviceShape } from "./shapeProfile.ts";
 import { createPhoneScene, phoneDisplayLayout } from "./phoneScene.ts";
@@ -119,7 +119,20 @@ it("builds the S24 shell with physical proportions, separate rings and a centere
   expect(phone.width / phone.height).toBeCloseTo(79 / 162.3, 6);
   expect(phone.root.getObjectByName("camera-plate")).toBeUndefined();
   const camera = phone.root.getObjectByName("rear-camera")!;
-  expect(camera.children.filter((child) => child.name === "camera-ring")).toHaveLength(5);
+  const rings = camera.children.filter((child) => child.name === "camera-ring");
+  expect(rings).toHaveLength(5);
+  phone.root.updateMatrixWorld(true);
+  for (const part of camera.children) {
+    const bounds = new Box3().setFromObject(part);
+    expect(bounds.min.x).toBeGreaterThan(-phone.width / 2);
+    expect(bounds.max.x).toBeLessThan(phone.width / 2);
+    expect(bounds.min.y).toBeGreaterThan(-phone.height / 2);
+    expect(bounds.max.y).toBeLessThan(phone.height / 2);
+  }
+  const rearX = rings.map((ring) => -ring.getWorldPosition(new Vector3()).x);
+  for (const small of rearX.slice(3)) {
+    for (const large of rearX.slice(0, 3)) expect(small).toBeGreaterThan(large);
+  }
   expect(phone.root.getObjectByName("front-camera")?.position.x).toBe(0);
   expect(phone.orientation.children.filter((child) => child.name === "side-button")).toHaveLength(
     2,

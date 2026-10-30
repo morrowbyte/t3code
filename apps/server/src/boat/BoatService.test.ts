@@ -711,6 +711,13 @@ it.effect("treats an active resume retry as success without clearing the process
     });
     yield* boat.operate({ action: "start", projectId, requestId: "first" }, ownerThreadId);
     yield* boat.operate({ action: "stop", projectId, requestId: "first" });
+    test.setMachineState("archiving");
+    const archiving = yield* boat
+      .operate({ action: "resume", projectId, requestId: "first" }, ownerThreadId)
+      .pipe(Effect.exit);
+    assert.isTrue(Exit.isFailure(archiving));
+    assert.equal(test.calls.filter((call) => call.endsWith("/resume")).length, 0);
+    test.setMachineState("archived");
     yield* boat.operate({ action: "resume", projectId, requestId: "first" }, ownerThreadId);
     yield* boat.operate({ action: "prepare", projectId, requestId: "first" });
     const before = (yield* boat.read(projectId)).instances[0];

@@ -1081,7 +1081,8 @@ ${action.command}`,
               if (
                 current.state === "deleted" ||
                 current.state === "deleting" ||
-                current.state === "stopping"
+                current.state === "stopping" ||
+                current.state === "archiving"
               )
                 return yield* new BoatError({ category: "conflict" });
               if (resumeInFlight.has(current.requestId)) return null;
