@@ -222,13 +222,13 @@ export function EnvironmentBoatSettings({ environmentId }: { environmentId: Envi
                       );
                     else {
                       const failure = Cause.squash(result.cause);
-                      setError(
-                        failure instanceof Error ? failure.message : "Could not resume Boat setup.",
-                      );
+                      if (failure instanceof Error) setError(failure.message);
+                      else setError("Could not resume Boat setup.");
                     }
-                  } finally {
-                    setBusy(false);
+                  } catch {
+                    setError("Boat connection interrupted. Refresh and try again.");
                   }
+                  setBusy(false);
                 }}
               />
             )}

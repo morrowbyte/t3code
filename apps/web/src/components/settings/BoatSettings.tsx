@@ -676,9 +676,10 @@ function BoatPanel({
                             : "Could not resume Boat setup.",
                         );
                       }
-                    } finally {
-                      setBusy(false);
+                    } catch {
+                      setError("Boat connection interrupted. Refresh and try again.");
                     }
+                    setBusy(false);
                   }}
                 >
                   Open setup agent
