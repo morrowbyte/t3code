@@ -97,6 +97,58 @@ function Fetch([string] $uri, [string] $destination, [switch] $progress) {
     $client.Dispose()
   }
 }
+function Read-Checksums([string] $text) {
+  $entries = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
+  foreach ($line in ($text.TrimEnd() -split "`r?`n")) {
+    if ($line -cnotmatch '^([0-9a-fA-F]{64})[ \t]+\*?([A-Za-z0-9][A-Za-z0-9._+-]*)$') { throw "Invalid release checksum entry" }
+    $hash = $Matches[1].ToLowerInvariant()
+    $name = $Matches[2]
+    if ($entries.ContainsKey($name)) { throw "Duplicate release checksum entry" }
+    $entries.Add($name, $hash)
+  }
+  return ,$entries
+}
+function Read-ReceiptField([string] $text, [string] $name) {
+  $values = @($text -split "`r?`n" | Where-Object { $_.StartsWith("$name=", [StringComparison]::Ordinal) })
+  if ($values.Count -ne 1) { throw "Missing or duplicate receipt $name" }
+  return $values[0].Substring($name.Length + 1)
+}
+function Test-ReleaseReceipt([string] $text, [string] $sums, [string] $manifest, [string] $source) {
+  if ((Read-ReceiptField $text "fork_release") -cne "v$version") { throw "Release receipt fork_release mismatch" }
+  if ((Read-ReceiptField $text "source_sha") -cne $source) { throw "Release receipt source_sha mismatch" }
+  $blocks = [regex]::Split($text, "artifact_sha256:`n")
+  if ($blocks.Count -ne 2 -or $blocks[1] -cne $sums) { throw "Release receipt checksum block mismatch" }
+  $entries = Read-Checksums $sums
+  $hasher = [Security.Cryptography.SHA256]::Create()
+  try {
+    $hash = [BitConverter]::ToString($hasher.ComputeHash([Text.Encoding]::UTF8.GetBytes($sums))).Replace("-", "").ToLowerInvariant()
+  } finally { $hasher.Dispose() }
+  $entries[$manifest] = $hash
+  $digests = Read-ReceiptField $text "github_asset_digests" | ConvertFrom-Json
+  if ($digests -isnot [Array] -or $digests.Count -ne $entries.Count) { throw "Invalid receipt GitHub digests" }
+  foreach ($entry in $digests) {
+    if (-not $entry.name -or -not $entries.ContainsKey($entry.name) -or $entry.digest -cne "sha256:$($entries[$entry.name])") { throw "Release receipt GitHub digest mismatch" }
+    $entries.Remove($entry.name) | Out-Null
+  }
+}
+function Get-ArchiveChecksum([string] $releaseUrl, [string] $archive, [string] $staging) {
+  $sums = [IO.File]::ReadAllText((Join-Path $staging "SHA256SUMS"))
+  $entries = Read-Checksums $sums
+  if ($entries.ContainsKey($archive)) { return $entries[$archive] }
+  Fetch "$releaseUrl/RELEASE-RECEIPT.txt" (Join-Path $staging "RELEASE-RECEIPT.txt")
+  $original = [IO.File]::ReadAllText((Join-Path $staging "RELEASE-RECEIPT.txt"))
+  $source = Read-ReceiptField $original "source_sha"
+  if ($source -cnotmatch '^[a-f0-9]{40}$') { throw "Invalid receipt source_sha" }
+  Test-ReleaseReceipt $original $sums "SHA256SUMS" $source
+  Fetch "$releaseUrl/SHA256SUMS-windows" (Join-Path $staging "SHA256SUMS-windows")
+  Fetch "$releaseUrl/RELEASE-RECEIPT-windows.txt" (Join-Path $staging "RELEASE-RECEIPT-windows.txt")
+  $windowsSums = [IO.File]::ReadAllText((Join-Path $staging "SHA256SUMS-windows"))
+  $windowsReceipt = [IO.File]::ReadAllText((Join-Path $staging "RELEASE-RECEIPT-windows.txt"))
+  Test-ReleaseReceipt $windowsReceipt $windowsSums "SHA256SUMS-windows" $source
+  $windowsEntries = Read-Checksums $windowsSums
+  if (-not $windowsEntries.ContainsKey($archive)) { throw "$archive is not listed in SHA256SUMS-windows" }
+  return $windowsEntries[$archive]
+}
 if ($interactive) {
   # Block characters are constructed so this file also loads correctly in PowerShell 5.1.
   $mark = @(
@@ -181,13 +233,11 @@ if ((Test-Path $marker) -and ((Get-Content $marker -Raw).Trim() -eq $version)) {
       }
       throw
     }
+    $expected = Get-ArchiveChecksum "$baseUrl/v$version" $archive $staging
     Fetch "$baseUrl/v$version/$archive" (Join-Path $staging $archive) -progress
 
     Step "Verifying the download..."
 
-    $expected = (Get-Content (Join-Path $staging "SHA256SUMS") | Where-Object { $_ -match "\s\*?$([regex]::Escape($archive))$" } | Select-Object -First 1)
-    if (-not $expected) { Fail "$archive is not listed in SHA256SUMS" }
-    $expected = ($expected -split "\s+")[0].ToLowerInvariant()
     $actual = (Get-FileHash -Algorithm SHA256 (Join-Path $staging $archive)).Hash.ToLowerInvariant()
     if ($actual -ne $expected) { Fail "checksum mismatch for $archive" }
 
@@ -200,6 +250,11 @@ if ((Test-Path $marker) -and ((Get-Content $marker -Raw).Trim() -eq $version)) {
     } finally { $global:ProgressPreference = $savedProgress }
     Get-ChildItem (Join-Path $staging $stem) | Move-Item -Destination $staging
     Remove-Item (Join-Path $staging $stem), (Join-Path $staging $archive), (Join-Path $staging "SHA256SUMS") -Recurse -Force
+
+    foreach ($metadata in @("RELEASE-RECEIPT.txt", "SHA256SUMS-windows", "RELEASE-RECEIPT-windows.txt")) {
+      $metadataPath = Join-Path $staging $metadata
+      if (Test-Path $metadataPath) { Remove-Item $metadataPath -Force }
+    }
 
     & (Join-Path $staging "t3.exe") --version | Out-Null
     if ($LASTEXITCODE -ne 0) { Fail "the downloaded executable does not run" }

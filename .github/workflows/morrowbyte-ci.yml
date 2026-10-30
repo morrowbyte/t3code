@@ -103,6 +103,8 @@ jobs:
           sparse-checkout-cone-mode: false
       - name: Setup dependencies
         uses: ./.github/actions/setup-ci-deps
+        with:
+          install-args: --frozen-lockfile
       - name: Install Linux build and browser prerequisites
         if: inputs.runner_backend == 'boat' || vars.MORROWBYTE_CI_BACKEND == 'boat'
         run: |

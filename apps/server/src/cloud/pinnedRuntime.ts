@@ -17,7 +17,6 @@ import {
   cliArchivePlatformKey,
   cliArchiveTarCommand,
   cliReleaseDownloadBaseUrl,
-  parseChecksums,
 } from "@t3tools/shared/cliRelease";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -166,6 +165,146 @@ const fetchReleaseAsset = Effect.fn("cloud.pinned_runtime.fetch_release_asset")(
   );
 });
 
+const parseReleaseChecksums = (text: string) => {
+  const entries = new Map<string, string>();
+  for (const line of text.trimEnd().split(/\r?\n/)) {
+    const match = /^([0-9a-f]{64})[ \t]+\*?([A-Za-z0-9][A-Za-z0-9._+-]*)$/i.exec(line);
+    if (match?.[1] === undefined || match[2] === undefined || entries.has(match[2])) {
+      throw new Error("Invalid or duplicate release checksum entry");
+    }
+    entries.set(match[2], match[1].toLowerCase());
+  }
+  return entries;
+};
+
+const receiptField = (text: string, name: string) => {
+  const values = text.split(/\r?\n/).filter((line) => line.startsWith(`${name}=`));
+  if (values.length !== 1 || values[0] === undefined)
+    throw new Error("Missing or duplicate receipt field");
+  return values[0].slice(name.length + 1);
+};
+
+const verifyReleaseReceipt = Effect.fn("cloud.pinned_runtime.verify_release_receipt")(function* (
+  text: string,
+  sums: string,
+  manifest: string,
+  version: string,
+  source: string,
+) {
+  const manifestDigest = yield* Effect.tryPromise({
+    try: () => crypto.subtle.digest("SHA-256", new TextEncoder().encode(sums)),
+    catch: (cause) =>
+      new PinnedRuntimeInstallError({ step: "verifying the t3 release receipt", cause }),
+  });
+  yield* Effect.try({
+    try: () => {
+      if (
+        receiptField(text, "fork_release") !== `v${version}` ||
+        receiptField(text, "source_sha") !== source
+      ) {
+        throw new Error("Release receipt identity mismatch");
+      }
+      const blocks = text.split("artifact_sha256:\n");
+      if (blocks.length !== 2 || blocks[1] !== sums) {
+        throw new Error("Release receipt checksum block mismatch");
+      }
+      const entries = parseReleaseChecksums(sums);
+      entries.set(manifest, Hex.encode(new Uint8Array(manifestDigest)));
+      const digests: unknown = JSON.parse(receiptField(text, "github_asset_digests"));
+      if (!Array.isArray(digests) || digests.length !== entries.size) {
+        throw new Error("Invalid receipt GitHub digests");
+      }
+      for (const entry of digests) {
+        if (
+          !entry ||
+          !entries.has(entry.name) ||
+          entry.digest !== `sha256:${entries.get(entry.name)}`
+        ) {
+          throw new Error("Release receipt GitHub digest mismatch");
+        }
+        entries.delete(entry.name);
+      }
+    },
+    catch: (cause) =>
+      new PinnedRuntimeInstallError({ step: "verifying the t3 release receipt", cause }),
+  });
+});
+
+const checksumForArchive = Effect.fn("cloud.pinned_runtime.checksum_for_archive")(function* (
+  input: PinnedRuntimeInstallInput,
+  baseUrl: string,
+  fileName: string,
+) {
+  const sums = new TextDecoder().decode(
+    yield* fetchReleaseAsset(
+      input.httpClient,
+      `${baseUrl}/${CLI_RELEASE_CHECKSUMS_FILE}`,
+      "downloading the t3 release checksums",
+    ),
+  );
+  const checksums = yield* Effect.try({
+    try: () => parseReleaseChecksums(sums),
+    catch: (cause) =>
+      new PinnedRuntimeInstallError({ step: "parsing the t3 release checksums", cause }),
+  });
+  const expected = checksums.get(fileName);
+  if (expected !== undefined) return expected;
+  if (input.platform !== "win32") {
+    return yield* new PinnedRuntimeInstallError({
+      step: `finding ${fileName} in the t3 release checksums`,
+    });
+  }
+  const original = new TextDecoder().decode(
+    yield* fetchReleaseAsset(
+      input.httpClient,
+      `${baseUrl}/RELEASE-RECEIPT.txt`,
+      "downloading the t3 release receipt",
+    ),
+  );
+  const source = yield* Effect.try({
+    try: () => {
+      const value = receiptField(original, "source_sha");
+      if (!/^[a-f0-9]{40}$/.test(value)) throw new Error("Invalid receipt source_sha");
+      return value;
+    },
+    catch: (cause) =>
+      new PinnedRuntimeInstallError({ step: "verifying the t3 release receipt", cause }),
+  });
+  yield* verifyReleaseReceipt(original, sums, CLI_RELEASE_CHECKSUMS_FILE, input.version, source);
+  const windowsSums = new TextDecoder().decode(
+    yield* fetchReleaseAsset(
+      input.httpClient,
+      `${baseUrl}/SHA256SUMS-windows`,
+      "downloading the Windows t3 release checksums",
+    ),
+  );
+  const windowsReceipt = new TextDecoder().decode(
+    yield* fetchReleaseAsset(
+      input.httpClient,
+      `${baseUrl}/RELEASE-RECEIPT-windows.txt`,
+      "downloading the Windows t3 release receipt",
+    ),
+  );
+  yield* verifyReleaseReceipt(
+    windowsReceipt,
+    windowsSums,
+    "SHA256SUMS-windows",
+    input.version,
+    source,
+  );
+  const windowsExpected = yield* Effect.try({
+    try: () => parseReleaseChecksums(windowsSums).get(fileName),
+    catch: (cause) =>
+      new PinnedRuntimeInstallError({ step: "parsing the Windows t3 release checksums", cause }),
+  });
+  if (windowsExpected === undefined) {
+    return yield* new PinnedRuntimeInstallError({
+      step: `finding ${fileName} in the Windows t3 release checksums`,
+    });
+  }
+  return windowsExpected;
+});
+
 const installFromArchive = Effect.fn("cloud.pinned_runtime.install_archive")(function* (
   input: PinnedRuntimeInstallInput,
   stagingDir: string,
@@ -182,21 +321,7 @@ const installFromArchive = Effect.fn("cloud.pinned_runtime.install_archive")(fun
   const fileName = cliArchiveFileName(input.version, platformKey);
 
   input.onProgress?.({ stage: "download", received: 0, total: undefined });
-  const checksums = parseChecksums(
-    new TextDecoder().decode(
-      yield* fetchReleaseAsset(
-        httpClient,
-        `${baseUrl}/${CLI_RELEASE_CHECKSUMS_FILE}`,
-        "downloading the t3 release checksums",
-      ),
-    ),
-  );
-  const expected = checksums.get(fileName);
-  if (expected === undefined) {
-    return yield* new PinnedRuntimeInstallError({
-      step: `finding ${fileName} in the t3 release checksums`,
-    });
-  }
+  const expected = yield* checksumForArchive(input, baseUrl, fileName);
   const archive = yield* fetchReleaseAsset(
     httpClient,
     `${baseUrl}/${fileName}`,

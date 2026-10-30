@@ -20,6 +20,10 @@ on:
         description: Exact source commit (fork main for publishing, dispatched branch for artifacts only)
         required: true
         type: string
+      linux_first:
+        description: Publish Linux and Android before appending Windows from the same run
+        type: boolean
+        default: false
       desktop_only:
         description: Build and publish only Windows, Linux and NixOS desktop assets
         type: boolean
@@ -129,6 +133,12 @@ jobs:
           RUNNER_INIT_SCRIPT: ${{ vars.MORROWBYTE_LINUX_INIT_SCRIPT }}
         shell: bash
         run: source "$RUNNER_INIT_SCRIPT" --github-env
+
+      - name: Validate incremental full release selection
+        if: inputs.linux_first
+        env:
+          INCOMPATIBLE: ${{ inputs.desktop_only || inputs.android_only || inputs.windows_only || inputs.windows_candidate_only || inputs.restore_android74 || inputs.recover_desktop_run_id != '' || inputs.recover_windows_run_id != '' || inputs.continue_release68_run_id != '' || inputs.continue_release75_run_id != '' || inputs.android_source_sha != '' }}
+        run: test "$INCOMPATIBLE" = false
 
       - name: Validate platform selection
         env:
@@ -727,21 +737,11 @@ jobs:
               output.write(f'android_source_sha={source}\nandroid_lock_sha256={lock}\nsource_ci_run_id=40582582053\n')
           PYRESTORE
 
-      - name: Setup Vite+
+      - name: Setup cached preflight dependencies
         if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && !inputs.continue_release75_run_id
-        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        uses: ./.github/actions/setup-ci-deps
         with:
-          node-version-file: package.json
-          cache: ${{ inputs.runner_backend != 'self-hosted' }}
-          run-install: false
-      - name: Install dependencies
-        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && !inputs.continue_release75_run_id
-        run: |
-          if [[ '${{ inputs.android_only }}' == true && '${{ inputs.publish }}' == true ]]; then
-            vp install --frozen-lockfile --filter=@t3tools/mobile... --filter=@t3tools/scripts...
-          else
-            vp install --frozen-lockfile
-          fi
+          install-args: ${{ inputs.android_only && inputs.publish && '--frozen-lockfile --filter=@t3tools/mobile... --filter=@t3tools/scripts...' || '--frozen-lockfile' }}
       - name: Prepare pinned Electron runtime before desktop imports
         if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && !inputs.continue_release75_run_id
         run: node apps/desktop/scripts/ensure-electron-runtime.mjs
@@ -1032,17 +1032,14 @@ jobs:
           printf '%s  %s\n' "$PACKAGING_SHA256" scripts/build-desktop-artifact.ts | sha256sum --check --strict
           test "$(git diff --name-only)" = scripts/build-desktop-artifact.ts
 
-      - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+      - name: Setup cached Linux build dependencies
+        uses: ./.github/actions/setup-ci-deps
         with:
-          node-version-file: package.json
-          cache: ${{ inputs.runner_backend != 'self-hosted' }}
-          run-install: false
+          install-args: --frozen-lockfile --filter=@t3tools/desktop... --filter=t3... --filter=@t3tools/scripts...
 
       - name: Install Linux build dependencies
         run: |
           set -euo pipefail
-          vp install --frozen-lockfile --filter=@t3tools/desktop... --filter=t3... --filter=@t3tools/scripts...
           if [[ '${{ inputs.runner_backend }}' != self-hosted ]]; then
             sudo apt-get update
             sudo apt-get install -y libsecret-1-dev pkg-config imagemagick
@@ -1198,7 +1195,7 @@ jobs:
            (inputs.recover_windows_run_id == '39182028263' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'skipped') ||
            (inputs.continue_release68_run_id == '40291055865' && inputs.recover_windows_run_id == '' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'success')) }}
     needs: [preflight, build_bundle, build_linux]
-    runs-on: ${{ inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-windows-2025' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_WINDOWS_RUNNER || 'morrowbyte-windows')) }}
+    runs-on: ${{ (inputs.runner_backend == 'blacksmith' || vars.MORROWBYTE_WINDOWS_RELEASE_BACKEND == 'blacksmith') && 'blacksmith-8vcpu-windows-2025' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_WINDOWS_RUNNER || 'morrowbyte-windows')) }}
     timeout-minutes: 50
     steps:
       - name: Checkout source
@@ -1252,7 +1249,14 @@ jobs:
           run-install: false
 
       - name: Install Windows build dependencies
-        run: vp install --frozen-lockfile --filter=@t3tools/desktop... --filter=t3... --filter=@t3tools/scripts...
+        uses: ./.github/actions/windows-storage-guard
+        with:
+          command: vp install --frozen-lockfile --filter=@t3tools/desktop... --filter=t3... --filter=@t3tools/scripts...
+
+      - name: Verify Windows installer checksum fallback
+        uses: ./.github/actions/windows-storage-guard
+        with:
+          command: vp test run scripts/install.test.ts scripts/build-npm-launcher.test.ts
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
@@ -1285,8 +1289,9 @@ jobs:
       - name: Build Windows CLI executable
         env:
           VP_NODE_VERSION: "26.12.1"
-        shell: bash
-        run: node apps/server/scripts/cli.ts build-exe --verbose
+        uses: ./.github/actions/windows-storage-guard
+        with:
+          command: node apps/server/scripts/cli.ts build-exe --verbose
 
       - name: Build Windows x64 installer and updater metadata
         env:
@@ -1298,29 +1303,31 @@ jobs:
           T3CODE_DESKTOP_INSTALLER_GUID: ${{ vars.MORROWBYTE_DESKTOP_INSTALLER_GUID }}
           T3CODE_DESKTOP_PRODUCT_NAME: ${{ vars.MORROWBYTE_DESKTOP_PRODUCT_NAME || 'Crew' }}
           T3CODE_DESKTOP_PROFILE: morrowbyte
-        shell: bash
-        run: |
-          set -euo pipefail
-          node scripts/build-desktop-artifact.ts --platform win --target nsis --arch x64 --build-version "${{ needs.preflight.outputs.version }}" --skip-build --keep-stage --wsl-runtime "$GITHUB_WORKSPACE"/wsl-runtime/t3-*-linux-x64.tar.gz --output-dir release-windows
-          test -s release-windows/nightly.yml
-          tmp_roots=("$RUNNER_TEMP")
-          [[ -n "${TEMP:-}" ]] && tmp_roots+=("$TEMP")
-          [[ -n "${TMP:-}" ]] && tmp_roots+=("$TMP")
-          update_config="$(find "${tmp_roots[@]}" -path '*/resources/app-update.yml' -print -quit 2>/dev/null || true)"
-          test -n "$update_config"
-          IFS=/ read -r expected_owner expected_repo <<<"${T3CODE_DESKTOP_UPDATE_REPOSITORY}"
-          grep -Fq "owner: $expected_owner" "$update_config"
-          grep -Fq "repo: $expected_repo" "$update_config"
+        uses: ./.github/actions/windows-storage-guard
+        with:
+          command: |
+            set -euo pipefail
+            node scripts/build-desktop-artifact.ts --platform win --target nsis --arch x64 --build-version "${{ needs.preflight.outputs.version }}" --skip-build --keep-stage --wsl-runtime "$GITHUB_WORKSPACE"/wsl-runtime/t3-*-linux-x64.tar.gz --output-dir release-windows
+            test -s release-windows/nightly.yml
+            tmp_roots=("$RUNNER_TEMP")
+            [[ -n "${TEMP:-}" ]] && tmp_roots+=("$TEMP")
+            [[ -n "${TMP:-}" ]] && tmp_roots+=("$TMP")
+            update_config="$(find "${tmp_roots[@]}" -path '*/resources/app-update.yml' -print -quit 2>/dev/null || true)"
+            test -n "$update_config"
+            IFS=/ read -r expected_owner expected_repo <<<"${T3CODE_DESKTOP_UPDATE_REPOSITORY}"
+            grep -Fq "owner: $expected_owner" "$update_config"
+            grep -Fq "repo: $expected_repo" "$update_config"
 
       - name: Package and smoke-test Windows CLI archive
-        shell: bash
-        run: |
-          set -euo pipefail
-          monitor_dir="$RUNNER_TEMP/cli-resource-monitor/win32-x64"
-          mkdir -p "$monitor_dir"
-          cp native/resource-monitor/target/x86_64-pc-windows-msvc/release/t3-resource-monitor.exe "$monitor_dir/"
-          node scripts/build-cli-archive.ts --platform win --arch x64 --version "${{ needs.preflight.outputs.version }}" --resource-monitor-dir "$RUNNER_TEMP/cli-resource-monitor" --output-dir release-cli
-          node scripts/smoke-cli-archive.ts --archive release-cli/* --expect-version "${{ needs.preflight.outputs.version }}"
+        uses: ./.github/actions/windows-storage-guard
+        with:
+          command: |
+            set -euo pipefail
+            monitor_dir="$RUNNER_TEMP/cli-resource-monitor/win32-x64"
+            mkdir -p "$monitor_dir"
+            cp native/resource-monitor/target/x86_64-pc-windows-msvc/release/t3-resource-monitor.exe "$monitor_dir/"
+            node scripts/build-cli-archive.ts --platform win --arch x64 --version "${{ needs.preflight.outputs.version }}" --resource-monitor-dir "$RUNNER_TEMP/cli-resource-monitor" --output-dir release-cli
+            node scripts/smoke-cli-archive.ts --archive release-cli/* --expect-version "${{ needs.preflight.outputs.version }}"
 
       - name: Upload Windows release assets
         uses: actions/upload-artifact@v4
@@ -1674,11 +1681,11 @@ jobs:
         if: always()
         run: rm -rf -- "$RUNNER_TEMP/morrowbyte-signing"
 
-  # Compiler workers and other platform builds finish before the emulator starts.
+  # Release compiler workers finish before the Android emulator starts.
   build_android_apk:
     name: Verify signed Android startup
     if: ${{ !inputs.windows_candidate_only && !inputs.windows_only && !inputs.desktop_only && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && !cancelled() && needs.build_android_binaries.result == 'success' }}
-    needs: [preflight, build_android_binaries, build_linux, build_nixos, build_windows]
+    needs: [preflight, build_android_binaries, build_linux, build_nixos]
     runs-on: ${{ inputs.runner_backend == 'boat' && (vars.MORROWBYTE_BOAT_RUNNER || 'boat-large') || inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_ANDROID_RUNNER || vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
     timeout-minutes: 15
     outputs:
@@ -1865,7 +1872,7 @@ jobs:
 
   publish:
     if: >-
-      ${{ !cancelled() && inputs.publish && !inputs.windows_only && !inputs.android_only && needs.preflight.result == 'success' &&
+      ${{ !cancelled() && inputs.publish && !inputs.linux_first && !inputs.windows_only && !inputs.android_only && needs.preflight.result == 'success' &&
           ((inputs.desktop_only && needs.build_android_apk.result == 'skipped') || (!inputs.desktop_only && needs.build_android_apk.result == 'success') || (inputs.recover_windows_run_id == '39182028263' && !inputs.desktop_only && needs.build_android_apk.result == 'skipped') || ((inputs.continue_release68_run_id == '40291055865' || inputs.continue_release68_run_id == '40297878651') && !inputs.desktop_only && needs.build_android_apk.result == 'skipped')) &&
           ((inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && !inputs.continue_release75_run_id && needs.build_bundle.result == 'success' && needs.build_linux.result == 'success' && needs.build_nixos.result == 'success' && needs.build_windows.result == 'success') ||
            (inputs.continue_release75_run_id == '40821076738' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'skipped' && needs.build_nixos.result == 'skipped' && needs.build_windows.result == 'skipped') ||
@@ -2224,6 +2231,344 @@ jobs:
           assert_draft_release
           gh release upload "$tag" release-assets/RELEASE-RECEIPT.txt --clobber
           gh release edit "$tag" --draft=false
+
+  publish_linux_first:
+    if: >-
+      ${{ !cancelled() && inputs.linux_first && inputs.publish && needs.preflight.result == 'success' &&
+          needs.build_bundle.result == 'success' && needs.build_linux.result == 'success' &&
+          needs.build_nixos.result == 'success' && needs.build_android_apk.result == 'success' }}
+    needs: [preflight, build_bundle, build_linux, build_nixos, build_android_apk]
+    runs-on: ${{ inputs.runner_backend == 'boat' && (vars.MORROWBYTE_BOAT_RUNNER || 'boat-large') || inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout promoted source for receipt metadata
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+          ref: ${{ needs.preflight.outputs.source_sha }}
+          fetch-depth: 1
+
+      - name: Use local release build storage
+        if: inputs.runner_backend == 'self-hosted' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
+        env:
+          RUNNER_INIT_SCRIPT: ${{ vars.MORROWBYTE_LINUX_INIT_SCRIPT }}
+        shell: bash
+        run: source "$RUNNER_INIT_SCRIPT" --github-env
+
+      - name: Download dedicated release assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: morrowbyte-release-{linux,cli-linux,nixos,android}
+          merge-multiple: true
+          path: release-assets
+
+      - name: Download Observatory preflight proof for publication
+        if: needs.preflight.outputs.observatory_route_sha256 != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: morrowbyte-observatory-preflight-${{ needs.preflight.outputs.source_sha }}-${{ needs.preflight.outputs.recovery_artifact_attempt || needs.preflight.outputs.desktop_run_attempt }}
+          path: ${{ runner.temp }}/observatory-publish-preflight
+
+      - name: Download Observatory build proof for publication
+        if: needs.preflight.outputs.observatory_route_sha256 != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: morrowbyte-observatory-build-${{ needs.preflight.outputs.source_sha }}-${{ needs.preflight.outputs.recovery_artifact_attempt || needs.preflight.outputs.desktop_run_attempt }}
+          path: ${{ runner.temp }}/observatory-publish-build
+
+      - name: Require matching Observatory route proofs before publication
+        env:
+          SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+          PREFLIGHT_ROUTE_SHA: ${{ needs.preflight.outputs.observatory_route_sha256 }}
+          DESKTOP_RUN_ID: ${{ needs.preflight.outputs.desktop_run_id }}
+          DESKTOP_RUN_ATTEMPT: ${{ needs.preflight.outputs.desktop_run_attempt }}
+          DESKTOP_CONTEXT_SHA: ${{ needs.preflight.outputs.desktop_context_sha }}
+          DESKTOP_WORKFLOW_SHA: ${{ needs.preflight.outputs.desktop_workflow_sha }}
+          DESKTOP_WORKFLOW_REF: ${{ needs.preflight.outputs.desktop_workflow_ref }}
+        run: |
+          set -euo pipefail
+          if [[ ! -f apps/web/src/routes/observatory.tsx ]]; then
+            test -z "$PREFLIGHT_ROUTE_SHA"
+            exit 0
+          fi
+          python3 - <<'PYROUTE'
+          import hashlib, json, os, pathlib, subprocess
+          digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+          source = os.environ['SOURCE_SHA']
+          expected = {
+              'ce275176a119b1a2c599c23e6acd7d537cc4c336': '4a398647bcd2507fd8aabab1ea0119b5bb635ccb880f4c73f0570f533650480e',
+              'd9e730bfa6fb363206f6b10efc5334daaa69ecc8': '4a398647bcd2507fd8aabab1ea0119b5bb635ccb880f4c73f0570f533650480e',
+              'be6292cd24dfe799ce9fcabed5a125c324ae5d06': 'fa1b95cb16c59c5a6bf92647b1bb3f3ab872c4cb06ef7a0e5e723775fb5c3dcc',
+          }.get(source, os.environ['PREFLIGHT_ROUTE_SHA'])
+          assert len(expected) == 64 and all(c in '0123456789abcdef' for c in expected)
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == source
+          assert os.environ['PREFLIGHT_ROUTE_SHA'] == expected
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          preflight = root / 'observatory-publish-preflight'
+          build = root / 'observatory-publish-build'
+          pre = json.loads((preflight / 'receipt.json').read_bytes())
+          built = json.loads((build / 'receipt.json').read_bytes())
+          for receipt in [pre, built]:
+              assert receipt['source'] == source
+              assert receipt['run'] == os.environ['DESKTOP_RUN_ID'] and receipt['attempt'] == os.environ['DESKTOP_RUN_ATTEMPT']
+              assert receipt['lockSha256'] == digest(pathlib.Path('pnpm-lock.yaml'))
+              assert receipt['trustedContextSha'] == os.environ['DESKTOP_CONTEXT_SHA']
+              assert receipt['trustedWorkflowSha'] == os.environ['DESKTOP_WORKFLOW_SHA']
+              assert receipt['trustedWorkflowRef'] == os.environ['DESKTOP_WORKFLOW_REF']
+          assert pre['effectiveSourceSha'] == source and pre['status'] == 'generated-unreviewed'
+          assert pre['afterSha256'] == built['generatedRouteSha256'] == expected
+          assert digest(preflight / 'routeTree.gen.ts') == digest(build / 'routeTree.gen.ts') == expected
+          assert built['preflightReceiptSha256'] == digest(preflight / 'receipt.json')
+          assert pre['generatorVersion'] and pre['config'] == {'autoCodeSplitting': True}
+          assert (preflight / 'routeTree.diff').is_file()
+          PYROUTE
+
+      - name: Setup checksum consumer runtime
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: false
+          run-install: false
+
+      - name: Install checksum consumer dependencies
+        run: vp install --frozen-lockfile --ignore-scripts
+
+      - name: Verify Android bytes from this build before publication
+        if: ${{ !inputs.desktop_only }}
+        env:
+          SOURCE_SHA: ${{ needs.preflight.outputs.android_source_sha || needs.preflight.outputs.source_sha }}
+          DESKTOP_SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+          ANDROID_LOCK_SHA256: ${{ needs.preflight.outputs.android_lock_sha256 }}
+          ANDROID_VERSION: ${{ needs.preflight.outputs.version }}
+          ANDROID_VERSION_CODE: ${{ needs.preflight.outputs.android_version_code }}
+          APK_SHA256: ${{ needs.preflight.outputs.recovered_apk_sha256 || needs.build_android_apk.outputs.apk_sha256 }}
+          APK_RECEIPT_SHA256: ${{ needs.preflight.outputs.recovered_apk_receipt_sha256 || needs.build_android_apk.outputs.receipt_sha256 }}
+          APK_BUILD_ATTEMPT: ${{ needs.preflight.outputs.continuation_android_run_attempt || (inputs.recover_windows_run_id != '' && needs.preflight.outputs.desktop_run_attempt || needs.build_android_apk.outputs.build_attempt) }}
+          APK_BUILD_RUN: ${{ needs.preflight.outputs.continuation_android_run_id || (inputs.recover_windows_run_id != '' && needs.preflight.outputs.desktop_run_id || github.run_id) }}
+          APK_CONTEXT_SHA: ${{ needs.preflight.outputs.continuation_android_context_sha || (inputs.recover_windows_run_id != '' && needs.preflight.outputs.desktop_context_sha || github.sha) }}
+          APK_WORKFLOW_SHA: ${{ needs.preflight.outputs.continuation_android_workflow_sha || (inputs.recover_windows_run_id != '' && needs.preflight.outputs.desktop_workflow_sha || github.workflow_sha) }}
+          APK_WORKFLOW_REF: ${{ needs.preflight.outputs.continuation_android_workflow_ref || (inputs.recover_windows_run_id != '' && needs.preflight.outputs.desktop_workflow_ref || github.workflow_ref) }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PYPUBLISHAPK'
+          import hashlib, json, os, re
+          from pathlib import Path
+          digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+          assets = Path('release-assets')
+          version = os.environ['ANDROID_VERSION']
+          name = f'Morrowbyte-{version}-android-arm64.apk'
+          assert sorted(p.name for p in assets.iterdir() if p.suffix in {'.apk', '.aab', '.ipa'}) == [name]
+          expected_sha = os.environ['APK_SHA256']
+          assert re.fullmatch('[0-9a-f]{64}', expected_sha)
+          receipt_path = assets / (name + '.json')
+          assert digest(assets / name) == expected_sha
+          assert digest(receipt_path) == os.environ['APK_RECEIPT_SHA256']
+          assert (assets / (name + '.sha256')).read_text() == f'{expected_sha}  {name}\n'
+          receipt = json.loads(receipt_path.read_text())
+          assert receipt['name'] in {'Crew', 'Morrowbyte'}
+          expected = {
+              'schemaVersion': 1, 'source': os.environ['SOURCE_SHA'], 'version': version,
+              'desktopSource': os.environ['DESKTOP_SOURCE_SHA'],
+              'lockSha256': os.environ['ANDROID_LOCK_SHA256'] or digest(Path('pnpm-lock.yaml')),
+              'versionCode': int(os.environ['ANDROID_VERSION_CODE']),
+              'run': os.environ['APK_BUILD_RUN'], 'attempt': os.environ['APK_BUILD_ATTEMPT'],
+              'trustedContextSha': os.environ['APK_CONTEXT_SHA'], 'trustedWorkflowSha': os.environ['APK_WORKFLOW_SHA'],
+              'trustedWorkflowRef': os.environ['APK_WORKFLOW_REF'],
+              'apk': name, 'apkSha256': expected_sha, 'package': 'com.morrowbyte.t3code',
+              'name': 'Crew' if os.environ['APK_BUILD_RUN'] == os.environ['GITHUB_RUN_ID'] else receipt['name'],
+              'certificateSha256': '34a33c2541544bc4a96e359a33e9f71aaa449ee9a0cd725c2469b65b057aa2b2',
+              'abis': ['arm64-v8a'], 'signatureVerified': True, 'zip16KB': True, 'elf16KB': True,
+              'deviceAcceptance': 'not-run',
+          }
+          assert all(receipt.get(key) == value for key, value in expected.items())
+          PYPUBLISHAPK
+
+      - name: Verify isolated release payload
+        env:
+          DESKTOP_ONLY: ${{ inputs.desktop_only }}
+        run: |
+          set -euo pipefail
+          if [[ "$DESKTOP_ONLY" == true ]]; then
+            test -z "$(find release-assets -maxdepth 1 -type f \( -name '*.apk' -o -name '*.aab' -o -name '*.ipa' \) -print -quit)"
+          fi
+          test -s release-assets/nightly-linux.yml
+          test -s release-assets/morrowbyte-linux-x64.tar.gz
+          test -s "release-assets/T3-Code-${{ needs.preflight.outputs.version }}-x86_64.AppImage"
+          test -s release-assets/install-linux.sh
+          test -s "release-assets/T3-Code-${{ needs.preflight.outputs.version }}-x86_64-linux-nix-closure.nar.zst"
+          test -s "release-assets/T3-Code-${{ needs.preflight.outputs.version }}-x86_64-linux-nix-closure.json"
+          bash scripts/morrowbyte/verify-nixos-closure.sh "${{ needs.preflight.outputs.version }}" release-assets
+          test -n "$(find release-assets -maxdepth 1 -name 't3-*-linux-x64.tar.gz' -print -quit)"
+          bash scripts/morrowbyte/verify-published-release.sh --linux-only --write-checksums "${{ needs.preflight.outputs.version }}" release-assets
+
+      - name: Create fork-only prerelease
+        env:
+          GH_TOKEN: ${{ secrets.MORROWBYTE_RELEASE_TOKEN || github.token }}
+          GH_REPO: ${{ vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}
+          OBSERVATORY_ROUTE_SHA: ${{ needs.preflight.outputs.observatory_route_sha256 }}
+          DESKTOP_RUN_ID: ${{ needs.preflight.outputs.desktop_run_id }}
+          DESKTOP_RUN_ATTEMPT: ${{ needs.preflight.outputs.desktop_run_attempt }}
+          DESKTOP_CONTEXT_SHA: ${{ needs.preflight.outputs.desktop_context_sha }}
+          DESKTOP_WORKFLOW_SHA: ${{ needs.preflight.outputs.desktop_workflow_sha }}
+          DESKTOP_WORKFLOW_REF: ${{ needs.preflight.outputs.desktop_workflow_ref }}
+          RECOVERY_WORKFLOW_SHA256: ${{ needs.preflight.outputs.recovery_workflow_sha256 }}
+          ANDROID_SOURCE_SHA: ${{ needs.preflight.outputs.android_source_sha || needs.preflight.outputs.source_sha }}
+          ANDROID_LOCK_SHA256: ${{ needs.preflight.outputs.android_lock_sha256 }}
+          DESKTOP_ONLY: ${{ inputs.desktop_only }}
+          WINDOWS_RECOVERY_RUN_ID: ${{ inputs.recover_windows_run_id }}
+          CONTINUATION68_RUN_ID: ${{ inputs.continue_release68_run_id }}
+          CONTINUATION75_RUN_ID: ${{ inputs.continue_release75_run_id }}
+          RECOVERY75_RECEIPT_SHA256: ${{ needs.preflight.outputs.recovery75_receipt_sha256 }}
+          WINDOWS_PACKAGING_SHA256: ${{ needs.preflight.outputs.windows_packaging_sha256 }}
+        run: |
+          set -euo pipefail
+          tag="${{ needs.preflight.outputs.tag }}"
+          source_sha="${{ needs.preflight.outputs.source_sha }}"
+          version="${{ needs.preflight.outputs.version }}"
+          assert_draft_release() {
+            local release_state is_draft target_commitish
+            release_state="$(gh release view "$tag" --json isDraft,targetCommitish)"
+            is_draft="$(jq -r .isDraft <<<"$release_state")"
+            target_commitish="$(jq -r .targetCommitish <<<"$release_state")"
+            if [[ "$is_draft" != "true" ]]; then
+              echo "Release tag $tag is already published and immutable; refusing to overwrite its assets." >&2
+              return 1
+            fi
+            if [[ "$target_commitish" != "$source_sha" ]]; then
+              echo "Release tag $tag already points to $target_commitish, refusing to replace it." >&2
+              return 1
+            fi
+          }
+          if gh release view "$tag" >/dev/null 2>&1; then
+            release_state="$(gh release view "$tag" --json isDraft,targetCommitish)"
+            if [[ "$(jq -r .isDraft <<<"$release_state")" == "false" ]]; then
+              bash scripts/morrowbyte/verify-published-release.sh --linux-only \
+                "$tag" "$source_sha" "$version" release-assets
+              exit 0
+            fi
+            assert_draft_release
+          else
+            if [[ "$DESKTOP_ONLY" == true ]]; then
+              platform_notes="Desktop-only hotfix for Windows x64, Linux x64 and NixOS x64. No Android or macOS assets were built for this release."
+            else
+              platform_notes="Android source $ANDROID_SOURCE_SHA."
+            fi
+            if [[ -n "$WINDOWS_RECOVERY_RUN_ID" ]]; then
+              platform_notes+=" Retained Linux, NixOS, Android and shared runtime bytes from run $WINDOWS_RECOVERY_RUN_ID. Windows packaging uses validation-only script $WINDOWS_PACKAGING_SHA256 from control source $GITHUB_SHA; application source and version remain unchanged."
+            fi
+            if [[ -n "$CONTINUATION68_RUN_ID" ]]; then
+              platform_notes+=" Corrected desktop/server bundle retained unchanged from run 40291055865. The signed Android package is retained unchanged from run 40293470700 at the same application source. Linux and Windows packages use private dependency copies. The release version is unchanged."
+            fi
+            if [[ "$CONTINUATION68_RUN_ID" == 40297878651 ]]; then
+              platform_notes+=" Linux, Windows and CLI package bytes are retained unchanged from run 40297878651; only the missing NixOS closure is built in this publication run."
+            fi
+            if [[ "$CONTINUATION75_RUN_ID" == 40821076738 ]]; then
+              platform_notes+=" Desktop, NixOS and CLI bytes are retained unchanged from run 40821076738. Only the missing source-matching Android package is built in this continuation."
+            fi
+            gh release create "$tag" \
+              --target "$source_sha" \
+              --title "Morrowbyte Nightly ${{ needs.preflight.outputs.version }}" \
+              --prerelease \
+              --draft \
+              --notes "Fork channel desktop source $source_sha. $platform_notes Linux AppImage installs include a user-local installer. NixOS installs use the dedicated package and updater launcher when available at https://github.com/$GH_REPO/tree/main/packaging/nixos. Linux auto-updates stay disabled for Nix store installs. This build has no configured T3 Connect relay backend."
+          fi
+          # Asset replacement is permitted only while the release is still a
+          # draft. Recheck immediately before each clobber in case a maintainer
+          # published it while the job was preparing the payload.
+          assert_draft_release
+          gh release upload "$tag" release-assets/* --clobber
+
+          lock_sha="$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)"
+          assets_json="$(bash scripts/morrowbyte/read-draft-release-assets.sh "$tag" "$source_sha")"
+          jq -e 'length > 0 and all(.[]; (.digest | type == "string") and (.digest | startswith("sha256:")))' <<<"$assets_json"
+          expected_assets="$(find release-assets -maxdepth 1 -type f ! -name 'RELEASE-RECEIPT.txt' -printf '%f\n' | jq -Rsc 'split("\n") | map(select(length > 0)) | sort')"
+          jq -e --argjson expected "$expected_assets" '([.[].name] | sort) == $expected' <<<"$assets_json"
+          {
+            printf 'release_platforms=linux-x64,nixos-x64,android-arm64\nwindows_status=pending\n'
+            printf 'fork_release=%s\nsource_sha=%s\npnpm_lock_sha256=%s\n' "$tag" "$source_sha" "$lock_sha"
+            if [[ -f apps/web/src/routes/observatory.tsx ]]; then
+              case "$source_sha" in
+                ce275176a119b1a2c599c23e6acd7d537cc4c336|d9e730bfa6fb363206f6b10efc5334daaa69ecc8) expected_route=4a398647bcd2507fd8aabab1ea0119b5bb635ccb880f4c73f0570f533650480e ;;
+                be6292cd24dfe799ce9fcabed5a125c324ae5d06) expected_route=fa1b95cb16c59c5a6bf92647b1bb3f3ab872c4cb06ef7a0e5e723775fb5c3dcc ;;
+                *) expected_route="$(jq -er '.afterSha256' "$RUNNER_TEMP/observatory-publish-preflight/receipt.json")" ;;
+              esac
+              test "$OBSERVATORY_ROUTE_SHA" = "$expected_route"
+              printf 'generated_route_sha256=%s\ngenerated_route_source_sha=%s\ngenerated_route_run_id=%s\ngenerated_route_run_attempt=%s\n' \
+                "$OBSERVATORY_ROUTE_SHA" "$source_sha" "$DESKTOP_RUN_ID" "$DESKTOP_RUN_ATTEMPT"
+            fi
+            printf 'desktop_origin_run_id=%s\ndesktop_origin_run_attempt=%s\ndesktop_origin_context_sha=%s\ndesktop_origin_workflow_sha=%s\ndesktop_origin_workflow_ref=%s\n' \
+              "$DESKTOP_RUN_ID" "$DESKTOP_RUN_ATTEMPT" "$DESKTOP_CONTEXT_SHA" "$DESKTOP_WORKFLOW_SHA" "$DESKTOP_WORKFLOW_REF"
+            printf 'publication_run_id=%s\npublication_run_attempt=%s\npublication_context_sha=%s\npublication_workflow_sha=%s\npublication_workflow_ref=%s\npublication_workflow_sha256=%s\n' \
+              "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" "$GITHUB_WORKFLOW_SHA" "$GITHUB_WORKFLOW_REF" \
+              "${RECOVERY_WORKFLOW_SHA256:-$(sha256sum .github/workflows/morrowbyte-release.yml | cut -d ' ' -f 1)}"
+            if [[ -n "$WINDOWS_RECOVERY_RUN_ID" ]]; then
+              printf 'retained_platform_origin_run_id=%s\nretained_platform_origin_run_attempt=1\nwindows_build_run_id=%s\nwindows_build_run_attempt=%s\nwindows_application_source_sha=%s\nwindows_packaging_control_sha=%s\nwindows_packaging_script_sha256=%s\n' \
+                "$WINDOWS_RECOVERY_RUN_ID" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$source_sha" "$GITHUB_SHA" "$WINDOWS_PACKAGING_SHA256"
+            fi
+            if [[ "$DESKTOP_ONLY" == true ]]; then
+              printf 'release_platforms=windows-x64,linux-x64,nixos-x64\nandroid_status=not-built-desktop-only\n'
+            fi
+            if [[ "$DESKTOP_ONLY" != true ]]; then
+              printf 'android_source_sha=%s\nandroid_pnpm_lock_sha256=%s\n' \
+                "$ANDROID_SOURCE_SHA" "${ANDROID_LOCK_SHA256:-$lock_sha}"
+            fi
+            if [[ -n "$CONTINUATION68_RUN_ID" ]]; then
+              printf 'retained_bundle_origin_run_id=40291055865\nretained_bundle_origin_attempt=1\ndesktop_packaging_run_id=%s\ndesktop_packaging_context_sha=%s\nretained_android_origin_run_id=40293470700\ncli_build_node_version=26.12.1\n' "$GITHUB_RUN_ID" "$GITHUB_SHA"
+              if [[ "$CONTINUATION68_RUN_ID" == 40297878651 ]]; then
+                printf 'retained_desktop_packages_run_id=40297878651\nnixos_packaging_run_id=%s\n' "$GITHUB_RUN_ID"
+              fi
+            fi
+            if [[ "$CONTINUATION75_RUN_ID" == 40821076738 ]]; then
+              printf 'retained_platform_origin_run_id=40821076738\nretained_platform_origin_run_attempt=1\nretained_platform_recovery_receipt_sha256=%s\nandroid_build_run_id=%s\nandroid_build_run_attempt=%s\n' \
+                "$RECOVERY75_RECEIPT_SHA256" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+            fi
+            printf 'github_asset_digests=%s\n' "$(jq -c '[.[] | {name, digest}]' <<<"$assets_json")"
+            printf 'artifact_sha256:\n'
+            cat release-assets/SHA256SUMS
+          } > release-assets/RELEASE-RECEIPT.txt
+          assert_draft_release
+          gh release upload "$tag" release-assets/RELEASE-RECEIPT.txt --clobber
+          gh release edit "$tag" --draft=false
+
+      - name: Verify published Linux and Android bytes
+        env:
+          GH_TOKEN: ${{ secrets.MORROWBYTE_RELEASE_TOKEN || github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash scripts/morrowbyte/verify-published-release.sh --linux-only "${{ needs.preflight.outputs.tag }}" "${{ needs.preflight.outputs.source_sha }}" "${{ needs.preflight.outputs.version }}" release-assets
+
+  append_windows:
+    if: ${{ !cancelled() && inputs.linux_first && inputs.publish && needs.publish_linux_first.result == 'success' && needs.build_windows.result == 'success' }}
+    needs: [preflight, publish_linux_first, build_windows]
+    runs-on: ${{ inputs.runner_backend == 'boat' && (vars.MORROWBYTE_BOAT_RUNNER || 'boat-large') || inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.source_sha }}
+          fetch-depth: 1
+      - uses: ./.github/actions/setup-ci-deps
+        with:
+          install-args: --frozen-lockfile --filter=@t3tools/shared...
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: morrowbyte-release-{windows,cli-windows}
+          merge-multiple: true
+          path: windows-assets
+      - name: Append and verify Windows without replacing published bytes
+        env:
+          GH_TOKEN: ${{ secrets.MORROWBYTE_RELEASE_TOKEN || github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+          SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+        run: node scripts/morrowbyte/append-windows-release.cjs publish windows-assets
 
   publish_android:
     if: inputs.android_only && inputs.publish

@@ -61,25 +61,85 @@ async function download(url, file) {
   return hash.digest("hex");
 }
 
+function parseChecksums(text) {
+  const entries = new Map();
+  for (const line of text.trimEnd().split(/\r?\n/)) {
+    const match = /^([0-9a-f]{64})[ \t]+\*?([A-Za-z0-9][A-Za-z0-9._+-]*)$/i.exec(line);
+    if (!match) throw new Error("Invalid release checksum entry");
+    if (entries.has(match[2])) throw new Error("Duplicate release checksum entry");
+    entries.set(match[2], match[1].toLowerCase());
+  }
+  return entries;
+}
+
+function receiptField(text, name) {
+  const values = text.split(/\r?\n/).filter((line) => line.startsWith(`${name}=`));
+  if (values.length !== 1) throw new Error(`Missing or duplicate receipt ${name}`);
+  return values[0].slice(name.length + 1);
+}
+
+function verifyReceipt(text, sums, manifest, source) {
+  if (receiptField(text, "fork_release") !== `v${version}`) {
+    throw new Error("Release receipt fork_release mismatch");
+  }
+  if (receiptField(text, "source_sha") !== source) {
+    throw new Error("Release receipt source_sha mismatch");
+  }
+  const blocks = text.split("artifact_sha256:\n");
+  if (blocks.length !== 2 || blocks[1] !== sums) {
+    throw new Error("Release receipt checksum block mismatch");
+  }
+  const entries = parseChecksums(sums);
+  entries.set(manifest, crypto.createHash("sha256").update(sums).digest("hex"));
+  const digests = JSON.parse(receiptField(text, "github_asset_digests"));
+  if (!Array.isArray(digests) || digests.length !== entries.size) {
+    throw new Error("Invalid receipt GitHub digests");
+  }
+  for (const entry of digests) {
+    if (
+      !entry ||
+      !entries.has(entry.name) ||
+      entry.digest !== `sha256:${entries.get(entry.name)}`
+    ) {
+      throw new Error("Release receipt GitHub digest mismatch");
+    }
+    entries.delete(entry.name);
+  }
+}
+
+async function checksumForArchive(releaseUrl, archive, key) {
+  const sums = await (await get(`${releaseUrl}/SHA256SUMS`)).text();
+  const entries = parseChecksums(sums);
+  if (entries.has(archive)) return entries.get(archive);
+  if (!key.startsWith("win32-")) {
+    throw new Error(`${archive} is not listed in the release's SHA256SUMS`);
+  }
+  const original = await (await get(`${releaseUrl}/RELEASE-RECEIPT.txt`)).text();
+  const source = receiptField(original, "source_sha");
+  if (!/^[a-f0-9]{40}$/.test(source)) throw new Error("Invalid receipt source_sha");
+  verifyReceipt(original, sums, "SHA256SUMS", source);
+  const windowsSums = await (await get(`${releaseUrl}/SHA256SUMS-windows`)).text();
+  const windowsReceipt = await (await get(`${releaseUrl}/RELEASE-RECEIPT-windows.txt`)).text();
+  verifyReceipt(windowsReceipt, windowsSums, "SHA256SUMS-windows", source);
+  const expected = parseChecksums(windowsSums).get(archive);
+  if (!expected) throw new Error(`${archive} is not listed in SHA256SUMS-windows`);
+  return expected;
+}
+
 async function install(dir, key) {
   const archive = `t3-${version}-${key}.${process.platform === "win32" ? "zip" : "tar.gz"}`;
   const base = (
     process.env.T3CODE_RELEASE_BASE_URL || "https://github.com/pingdotgg/t3code/releases/download"
   ).replace(/\/+$/, "");
-  const sums = await (await get(`${base}/v${version}/SHA256SUMS`)).text();
-  const expected = /^([0-9a-f]{64})\s+\*?(.+)$/im;
-  const line = sums
-    .split(/\r?\n/)
-    .map((l) => expected.exec(l.trim()))
-    .find((m) => m && m[2] === archive);
-  if (!line) throw new Error(`${archive} is not listed in the release's SHA256SUMS`);
+  const releaseUrl = `${base}/v${version}`;
+  const expected = await checksumForArchive(releaseUrl, archive, key);
 
   // Stage beside the destination and rename atomically to avoid half-installed versions.
   fs.mkdirSync(path.dirname(dir), { recursive: true });
   const staging = fs.mkdtempSync(`${dir}.staging-`);
   try {
     const file = path.join(staging, archive);
-    if ((await download(`${base}/v${version}/${archive}`, file)) !== line[1].toLowerCase()) {
+    if ((await download(`${releaseUrl}/${archive}`, file)) !== expected) {
       throw new Error(`checksum mismatch for ${archive}`);
     }
     // Windows' own tar.exe reads zip; a Git-for-Windows tar on PATH cannot.

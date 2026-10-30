@@ -224,7 +224,6 @@ test("Android-only publication never schedules desktop packages", () => {
     "build_android_binaries",
     "build_linux",
     "build_nixos",
-    "build_windows",
   ]);
   assert.equal(
     releaseWorkflow.jobs.build_android_apk.steps.some((step) => /gradlew/.test(step.run ?? "")),
@@ -703,4 +702,37 @@ test("main-push CI can advance with the manual Windows guard skipped", async () 
       },
     },
   });
+});
+
+test("Linux-first publishes only verified Linux and Android without waiting for Windows", () => {
+  const inputs = { ...platformInputs(), linux_first: true };
+  const needs = { ...releaseNeeds("success"), build_windows: { result: "in_progress" } };
+  assert.equal(expression(releaseWorkflow.jobs.publish_linux_first.if, inputs, needs), true);
+  assert.equal(expression(releaseWorkflow.jobs.publish.if, inputs, needs), false);
+  assert.equal(releaseWorkflow.jobs.publish_linux_first.needs.includes("build_windows"), false);
+  assert.equal(releaseWorkflow.jobs.build_android_apk.needs.includes("build_windows"), false);
+  for (const job of ["build_linux", "build_nixos", "build_android_apk"]) {
+    assert.equal(
+      expression(releaseWorkflow.jobs.publish_linux_first.if, inputs, {
+        ...needs,
+        [job]: { result: "failure" },
+      }),
+      false,
+    );
+  }
+  assert.equal(
+    expression(releaseWorkflow.jobs.append_windows.if, inputs, {
+      ...needs,
+      publish_linux_first: { result: "success" },
+    }),
+    false,
+  );
+  assert.equal(
+    expression(releaseWorkflow.jobs.append_windows.if, inputs, {
+      ...needs,
+      build_windows: { result: "success" },
+      publish_linux_first: { result: "success" },
+    }),
+    true,
+  );
 });

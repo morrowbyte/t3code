@@ -140,13 +140,36 @@ Each job uses fresh Android user preferences and virtual-device state; the SDK,
 Gradle and compiler caches remain shared. This prevents previous emulator state
 from affecting a release startup check.
 Android compilation and startup verification run as separate jobs. The startup
-job uses the signed build artifacts after the other platform builds finish;
-retrying it does not compile another APK.
+job uses the signed build artifacts after Linux/NixOS finish, independently of
+Windows; retrying it does not compile another APK.
 
 If the maintainer explicitly chooses a paid Blacksmith release for one run, add
 `-f runner_backend=blacksmith` to that dispatch. It selects the existing Linux
 and Windows Blacksmith platforms without editing the workflow or label variables.
 The default remains `self-hosted`; this option is not an automatic fallback.
+
+Use `-f runner_backend=boat` for Boat Large Linux, NixOS and Android jobs;
+Windows still uses the native `morrowbyte-windows` runner. Set
+`MORROWBYTE_CI_BACKEND=boat` to use Boat for Linux CI as well.
+`MORROWBYTE_BOAT_RUNNER` optionally selects a prepared Boat snapshot label;
+the default is `boat-large`. Public repositories require the Boat GitHub App
+and an explicit allowed-user list in Boat's CI settings. Preserve
+`MORROWBYTE_AUTOMATIC_NIGHTLY=false` unless automatic publication is separately
+approved.
+
+With `-f linux_first=true`, the same run publishes verified Linux/NixOS/Android
+assets before Windows finishes. Windows is then appended to the same tag and
+source without replacing any published asset. Its checksums and provenance are
+`SHA256SUMS-windows` and `RELEASE-RECEIPT-windows.txt`; the original checksums and
+receipt stay unchanged. Older Windows CLI launchers that only read `SHA256SUMS`
+cannot install this appended payload; the new installer and npm launcher support
+the additional manifest. Desktop updates continue to use `nightly.yml`.
+
+After an actual local Windows failure, an explicitly approved fallback can set
+`MORROWBYTE_WINDOWS_RELEASE_BACKEND=blacksmith` and rerun the failed jobs of the
+same release. Stop the failed local attempt first, preserve the source/version,
+and reset the variable after the fallback so later releases again prefer the
+native runner. Never run both Windows builds concurrently.
 
 If releases can target a commit whose workflows differ from current `main`,
 configure the encrypted repository secret `MORROWBYTE_RELEASE_TOKEN` with

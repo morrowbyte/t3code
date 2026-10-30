@@ -3,8 +3,15 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 android_only=false
+linux_only=false
 if [[ "${1:-}" == --android-only ]]; then
   android_only=true
+  shift
+fi
+
+if [[ "${1:-}" == --linux-only ]]; then
+  [[ "$android_only" == false ]] || { echo "Choose only one release mode" >&2; exit 2; }
+  linux_only=true
   shift
 fi
 
@@ -32,13 +39,13 @@ PYANDROID
 
 verify_cli_checksums() {
   node --experimental-strip-types --input-type=module - \
-    "$script_dir/../../packages/shared/src/cliRelease.ts" "$1" "$2" <<'NODE'
+    "$script_dir/../../packages/shared/src/cliRelease.ts" "$1" "$2" "$linux_only" <<'NODE'
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-const [modulePath, version, checksumsPath] = process.argv.slice(2);
+const [modulePath, version, checksumsPath, linuxOnly] = process.argv.slice(2);
 const { parseChecksums, cliArchiveFileName } = await import(pathToFileURL(modulePath).href);
 const checksums = parseChecksums(readFileSync(checksumsPath, "utf8"));
-for (const platform of ["linux-x64", "win32-x64"]) {
+for (const platform of (linuxOnly === "true" ? ["linux-x64"] : ["linux-x64", "win32-x64"])) {
   const name = cliArchiveFileName(version, platform);
   if (!/^[0-9a-f]{64}$/.test(checksums.get(name) ?? "")) {
     throw new Error(`Legacy CLI consumer cannot find ${name} in SHA256SUMS`);
@@ -73,7 +80,7 @@ if [[ "${1:-}" == --write-checksums ]]; then
 fi
 
 if [[ $# -ne 4 ]]; then
-  echo "Usage: $0 [--android-only] <tag> <source-sha> <version> <expected-assets-dir>" >&2
+  echo "Usage: $0 [--android-only|--linux-only] <tag> <source-sha> <version> <expected-assets-dir>" >&2
   exit 2
 fi
 
@@ -132,6 +139,20 @@ else
   "t3-$version-win32-x64.zip" \
   SHA256SUMS \
   RELEASE-RECEIPT.txt)
+fi
+if [[ "$linux_only" == true ]]; then
+  filtered_assets=()
+  for required in "${required_assets[@]}"; do
+    [[ "$required" == nightly.yml || "$required" == "t3-$version-win32-x64.zip" ]] && continue
+    filtered_assets+=("$required")
+  done
+  required_assets=("${filtered_assets[@]}" "Morrowbyte-$version-android-arm64.apk" "Morrowbyte-$version-android-arm64.apk.json" "Morrowbyte-$version-android-arm64.apk.sha256")
+  android_check_dir="$(mktemp -d "$download_dir/android.XXXXXX")"
+  for required in "Morrowbyte-$version-android-arm64.apk"{,.json,.sha256}; do
+    cp "$download_dir/$required" "$android_check_dir/"
+  done
+  verify_android_payload "$version" "$android_check_dir" "$source_sha" || fail 'Android payload proof does not match'
+  rm -r "$android_check_dir"
 fi
 for required in "${required_assets[@]}"; do
   [[ -s "$download_dir/$required" ]] || fail "required asset is missing: $required"

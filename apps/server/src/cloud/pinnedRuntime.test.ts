@@ -42,17 +42,32 @@ const releaseHttpClient = (checksums: string, requests: string[] = []) =>
     const body = request.url.endsWith("/SHA256SUMS") ? checksums : archiveBytes;
     return Effect.succeed(HttpClientResponse.fromWeb(request, new Response(body)));
   });
-const extractingRunner = (fs: FileSystem.FileSystem, path: Path.Path, commands: string[] = []) =>
+const extractingRunner = (
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  commands: string[] = [],
+  platform: NodeJS.Platform = "linux",
+) =>
   ProcessRunner.ProcessRunner.of({
     run: (input) =>
       Effect.gen(function* () {
         commands.push(input.command);
         const targetIndex = input.args.indexOf("-C");
         const stagingDir = input.args[targetIndex + 1];
-        if (input.command !== "tar" || stagingDir === undefined) {
+        if (
+          (platform === "win32"
+            ? !input.command.endsWith("\\System32\\tar.exe")
+            : input.command !== "tar") ||
+          stagingDir === undefined
+        ) {
           return yield* Effect.die(`unexpected command ${input.command}`);
         }
-        yield* fs.writeFileString(path.join(stagingDir, "t3"), "#!/bin/sh\n").pipe(Effect.orDie);
+        yield* fs
+          .writeFileString(
+            path.join(stagingDir, platform === "win32" ? "t3.exe" : "t3"),
+            "#!/bin/sh\n",
+          )
+          .pipe(Effect.orDie);
         return {
           stdout: "",
           stderr: "",
@@ -99,6 +114,129 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
       assert.deepEqual(commands, ["tar"]);
       assert.equal(yield* fs.readFileString(paths.sentinelPath), `${version}\n`);
       assert.isFalse(yield* fs.exists(path.join(paths.versionDir, "t3-runtime-archive")));
+    }),
+  );
+
+  it.effect.each([
+    { name: "installs a Windows archive from matching release receipts", scenario: "valid" },
+    { name: "rejects a Windows receipt from another source", scenario: "source" },
+    { name: "rejects a Windows receipt with a different checksum block", scenario: "block" },
+    { name: "rejects a Windows receipt with incorrect GitHub digests", scenario: "digest" },
+    { name: "rejects a Windows receipt for another release", scenario: "version" },
+    { name: "rejects a malformed original manifest without fallback", scenario: "malformed" },
+    {
+      name: "rejects an existing Windows checksum mismatch without fallback",
+      scenario: "existing",
+    },
+    { name: "prefers an existing Windows checksum without fallback", scenario: "preferred" },
+  ])("$name", ({ scenario }) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pinned-windows-" });
+      const windowsArchive = `t3-${version}-win32-x64.zip`;
+      const hex = yield* archiveHex(archiveBytes);
+      const windowsSums = `${hex}  ${windowsArchive}\n`;
+      const originalSums =
+        scenario === "existing"
+          ? `${"0".repeat(64)}  ${windowsArchive}\n`
+          : scenario === "preferred"
+            ? windowsSums
+            : scenario === "malformed"
+              ? `${yield* validChecksums}invalid\n`
+              : yield* validChecksums;
+      const receipt = Effect.fn(function* (sums: string, manifest: string, source: string) {
+        const manifestHex = yield* archiveHex(new TextEncoder().encode(sums));
+        const archive = manifest === "SHA256SUMS" ? archiveName : windowsArchive;
+        return `fork_release=v${version}\nsource_sha=${source}\ngithub_asset_digests=${JSON.stringify(
+          [
+            { name: archive, digest: `sha256:${hex}` },
+            { name: manifest, digest: `sha256:${manifestHex}` },
+          ],
+        )}\nartifact_sha256:\n${sums}`;
+      });
+      const source = "a".repeat(40);
+      let windowsReceipt = yield* receipt(
+        windowsSums,
+        "SHA256SUMS-windows",
+        scenario === "source" ? "b".repeat(40) : source,
+      );
+      if (scenario === "block") windowsReceipt += "\n";
+      if (scenario === "digest")
+        windowsReceipt = windowsReceipt.replace(`sha256:${hex}`, `sha256:${"0".repeat(64)}`);
+      if (scenario === "version")
+        windowsReceipt = windowsReceipt.replace(`fork_release=v${version}`, "fork_release=v9.9.9");
+      const assets: Record<string, string | Uint8Array> = {
+        SHA256SUMS: originalSums,
+        "RELEASE-RECEIPT.txt": yield* receipt(originalSums, "SHA256SUMS", source),
+        "SHA256SUMS-windows": windowsSums,
+        "RELEASE-RECEIPT-windows.txt": windowsReceipt,
+        [windowsArchive]: archiveBytes,
+      };
+      const requests: string[] = [];
+      const commands: string[] = [];
+      const baseUrl = `https://releases.example/download/v${version}`;
+      const install = ensurePinnedRuntimeInstalled({
+        baseDir,
+        version,
+        fs,
+        path,
+        platform: "win32",
+        arch: "x64",
+        releaseBaseUrl: "https://releases.example/download",
+        httpClient: HttpClient.make((request) => {
+          requests.push(request.url);
+          const asset = assets[request.url.slice(baseUrl.length + 1)];
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              new Response(asset, { status: asset === undefined ? 404 : 200 }),
+            ),
+          );
+        }),
+        runner: extractingRunner(fs, path, commands, "win32"),
+        validate: (staging) =>
+          fs.exists(staging.entryPath).pipe(
+            Effect.flatMap((exists) =>
+              exists ? Effect.void : Effect.die("missing Windows runtime"),
+            ),
+            Effect.orDie,
+          ),
+      });
+      if (scenario === "valid" || scenario === "preferred") {
+        const installed = yield* install;
+        assert.equal(yield* fs.readFileString(installed.sentinelPath), `${version}\n`);
+        assert.lengthOf(commands, 1);
+      } else {
+        const error = yield* install.pipe(Effect.flip);
+        assert.instanceOf(error, PinnedRuntimeInstallError);
+        assert.equal(
+          error.step,
+          scenario === "existing"
+            ? "verifying the t3 release archive checksum"
+            : scenario === "malformed"
+              ? "parsing the t3 release checksums"
+              : "verifying the t3 release receipt",
+        );
+        assert.deepEqual(commands, []);
+        assert.deepEqual(yield* fs.readDirectory(path.join(baseDir, "runtime", "versions")), []);
+      }
+      const expectedAssets =
+        scenario === "existing" || scenario === "preferred"
+          ? ["SHA256SUMS", windowsArchive]
+          : scenario === "malformed"
+            ? ["SHA256SUMS"]
+            : [
+                "SHA256SUMS",
+                "RELEASE-RECEIPT.txt",
+                "SHA256SUMS-windows",
+                "RELEASE-RECEIPT-windows.txt",
+                ...(scenario === "valid" ? [windowsArchive] : []),
+              ];
+      assert.deepEqual(
+        requests,
+        expectedAssets.map((asset) => `${baseUrl}/${asset}`),
+      );
     }),
   );
 

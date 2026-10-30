@@ -1,0 +1,17 @@
+name: Guard Windows build storage
+description: Monitor only this command and stop its process tree before the build volume fills.
+inputs:
+  command:
+    description: Bash command to execute in the job workspace
+    required: true
+  reserve-gib:
+    description: Minimum free space on workspace and temporary volumes
+    default: "10"
+runs:
+  using: composite
+  steps:
+    - shell: powershell
+      env:
+        GUARDED_COMMAND: ${{ inputs.command }}
+        GUARDED_RESERVE_GIB: ${{ inputs.reserve-gib }}
+      run: '& "${{ github.action_path }}/guard.ps1"'

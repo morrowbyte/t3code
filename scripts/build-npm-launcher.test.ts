@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - Serves a fake GitHub Release over real HTTP to the published launcher.
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, it } from "@effect/vitest";
+import { assert, expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -12,6 +12,9 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeEvents from "node:events";
 import * as NodeHttp from "node:http";
+import * as NodePath from "node:path";
+import * as NodeFS from "node:fs";
+import * as NodeVM from "node:vm";
 
 import { npmReleaseDatabaseMigration } from "@t3tools/shared/cliRelease";
 
@@ -314,10 +317,130 @@ fs.readFileSync = (file, ...rest) => {
         });
         assert.equal(corrupt.exitCode, 1);
         assert.include(corrupt.stderr, "checksum mismatch");
+        assert.isFalse(release.requests.some((url) => /windows|RECEIPT/.test(url)));
         assert.deepStrictEqual(
           yield* fs.readDirectory(path.join(root, "other-home/runtime/versions")),
           [],
         );
       }),
   );
+});
+
+it("binds appended Windows checksums to the original release without bypassing existing entries", async () => {
+  const source = NodeFS.readFileSync(new URL("./npm-launcher/t3.mjs", import.meta.url), "utf8");
+  const archive = `t3-${VERSION}-win32-x64.zip`;
+  const sha = "a".repeat(64);
+  const original = `${"b".repeat(64)}  t3-${VERSION}-linux-x64.tar.gz\n`;
+  const windows = `${sha}  ${archive}\n`;
+  const receipt = (sums: string, name: string, sourceSha = "c".repeat(40), tag = `v${VERSION}`) => {
+    const entries = sums
+      .trimEnd()
+      .split("\n")
+      .map((line) => ({ name: line.slice(66), digest: `sha256:${line.slice(0, 64)}` }));
+    entries.push({
+      name,
+      digest: `sha256:${NodeCrypto.createHash("sha256").update(sums).digest("hex")}`,
+    });
+    return `fork_release=${tag}\nsource_sha=${sourceSha}\ngithub_asset_digests=${JSON.stringify(entries)}\nartifact_sha256:\n${sums}`;
+  };
+  const files: Record<string, string> = {
+    SHA256SUMS: original,
+    "SHA256SUMS-windows": windows,
+    "RELEASE-RECEIPT.txt": receipt(original, "SHA256SUMS"),
+    "RELEASE-RECEIPT-windows.txt": receipt(windows, "SHA256SUMS-windows"),
+  };
+  const requests: string[] = [];
+  const select = NodeVM.runInNewContext(
+    source.slice(
+      source.indexOf("function parseChecksums("),
+      source.indexOf("async function install("),
+    ) + "\nchecksumForArchive",
+    {
+      version: VERSION,
+      crypto: NodeCrypto,
+      get: async (url: string) => {
+        requests.push(url);
+        const name = url.slice(url.lastIndexOf("/") + 1);
+        if (!(name in files)) throw new Error("missing fixture");
+        return { text: async () => files[name] };
+      },
+    },
+  ) as (base: string, archive: string, key: string) => Promise<string>;
+  const base = `https://fixture.invalid/v${VERSION}`;
+  expect(await select(base, archive, "win32-x64")).toBe(sha);
+  expect(requests.every((url) => url.startsWith(`${base}/`))).toBe(true);
+  files.SHA256SUMS = windows;
+  requests.length = 0;
+  expect(await select(base, archive, "win32-x64")).toBe(sha);
+  expect(requests).toEqual([`${base}/SHA256SUMS`]);
+  files.SHA256SUMS = original;
+  for (const [file, invalid, error] of [
+    ["SHA256SUMS", "invalid\n", "Invalid"],
+    ["SHA256SUMS", original + original, "Duplicate"],
+    ["RELEASE-RECEIPT.txt", receipt(original, "SHA256SUMS", "bad"), "source_sha"],
+    [
+      "RELEASE-RECEIPT.txt",
+      receipt(original, "SHA256SUMS", "c".repeat(40), "v9.9.9"),
+      "fork_release",
+    ],
+    [
+      "RELEASE-RECEIPT-windows.txt",
+      receipt(windows, "SHA256SUMS-windows", "d".repeat(40)),
+      "source_sha",
+    ],
+    [
+      "RELEASE-RECEIPT-windows.txt",
+      receipt(windows, "SHA256SUMS-windows", "c".repeat(40), "v9.9.9"),
+      "fork_release",
+    ],
+    [
+      "RELEASE-RECEIPT-windows.txt",
+      receipt(windows, "SHA256SUMS-windows") + "extra",
+      "checksum block",
+    ],
+    [
+      "RELEASE-RECEIPT-windows.txt",
+      receipt(windows, "SHA256SUMS-windows").replace(`sha256:${sha}`, `sha256:${"0".repeat(64)}`),
+      "digest",
+    ],
+    ["SHA256SUMS-windows", windows + windows, "checksum block"],
+  ] as const) {
+    const saved = files[file];
+    files[file] = invalid;
+    await expect(select(base, archive, "win32-x64")).rejects.toThrow(error);
+    files[file] = saved;
+  }
+  requests.length = 0;
+  await expect(select(base, archive, "linux-x64")).rejects.toThrow("not listed");
+  expect(requests).toEqual([`${base}/SHA256SUMS`]);
+
+  const downloads: string[] = [];
+  const install = NodeVM.runInNewContext(
+    source.slice(source.indexOf("const SUPPORTED"), source.indexOf("const isComplete")) +
+      "\ninstall",
+    {
+      version: VERSION,
+      crypto: NodeCrypto,
+      path: NodePath,
+      process: {
+        platform: "win32",
+        env: { T3CODE_RELEASE_BASE_URL: "https://fixture.invalid" },
+        stderr: { isTTY: false },
+      },
+      fs: {
+        mkdirSync() {},
+        mkdtempSync: () => "/fixture/staging",
+        openSync: () => 1,
+        writeSync() {},
+        closeSync() {},
+        rmSync() {},
+      },
+      fetch: async (url: string) => {
+        downloads.push(url);
+        return new Response(url.endsWith("/SHA256SUMS") ? windows : "corrupt archive");
+      },
+    },
+  ) as (dir: string, key: string) => Promise<void>;
+  await expect(install("/fixture/runtime", "win32-x64")).rejects.toThrow("checksum mismatch");
+  expect(downloads).toEqual([`${base}/SHA256SUMS`, `${base}/${archive}`]);
 });
