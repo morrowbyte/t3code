@@ -406,6 +406,7 @@ it("binds appended Windows checksums to the original release without bypassing e
     ["SHA256SUMS-windows", windows + windows, "checksum block"],
   ] as const) {
     const saved = files[file];
+    if (saved === undefined) throw new Error(`Missing fixture ${file}`);
     files[file] = invalid;
     await expect(select(base, archive, "win32-x64")).rejects.toThrow(error);
     files[file] = saved;

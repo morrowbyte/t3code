@@ -113,7 +113,7 @@ it.skipIf(!hasPowerShell)(
       });
       return `fork_release=${tag}\nsource_sha=${source}\ngithub_asset_digests=${JSON.stringify(digests)}\nartifact_sha256:\n${sums}`;
     };
-    const valid: Record<string, string> = {
+    const valid = {
       SHA256SUMS: original,
       "SHA256SUMS-windows": windows,
       "RELEASE-RECEIPT.txt": receipt(original, "SHA256SUMS"),
@@ -141,7 +141,7 @@ try { Get-ArchiveChecksum "https://fixture.invalid/v${version}" "${archive}" (Jo
 `,
       );
       await NodeFSP.mkdir(NodePath.join(root, "stage"));
-      const run = async (files: Record<string, string>) => {
+      const run = async (files: Record<string, string> & { SHA256SUMS: string }) => {
         await NodeFSP.writeFile(NodePath.join(root, "requests"), "");
         for (const [name, content] of Object.entries(files)) {
           await NodeFSP.writeFile(NodePath.join(root, name), content);
