@@ -355,6 +355,18 @@ it.live("source sync removes deleted files and preserves ignored runtime data", 
     assert.equal(yield* fs.readFileString(`${root}/node_modules/cache`), "dependency");
     assert.equal(yield* fs.readFileString(`${root}/.t3/database`), "runtime");
     assert.equal(yield* fs.readFileString(`${root}/.env`), "PRIVATE_SETTING=retained");
+    assert.equal(
+      yield* spawner.exitCode(
+        ChildProcess.make("git", ["-C", root, "ls-files", "--error-unmatch", "new.ts"]),
+      ),
+      0,
+    );
+    assert.notEqual(
+      yield* spawner.exitCode(
+        ChildProcess.make("git", ["-C", root, "ls-files", "--error-unmatch", "node_modules/cache"]),
+      ),
+      0,
+    );
     yield* fs.remove(`${incoming}/new.ts`);
     assert.equal(yield* pack, 0);
     assert.equal(yield* sync, 0);

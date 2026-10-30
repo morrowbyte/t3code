@@ -113,6 +113,11 @@ for name in previous - current:
     if target.is_file() or target.is_symlink():
         target.unlink()
 subprocess.run(["tar", "-xzf", str(archive), "-C", str(root)], check=True)
+if not (root / ".git").exists():
+    subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True)
+    paths = (chr(0).join(sorted(current)) + chr(0)).encode()
+    subprocess.run(["git", "-C", str(root), "add", "--force", "--pathspec-from-file=-", "--pathspec-file-nul"], input=paths, check=True)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=Crew", "-c", "user.email=crew@localhost", "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "Initialize cloud workspace"], check=True)
 manifest.write_text(json.dumps(sorted(current)))
 archive.unlink()
 print("Crew source synchronized:", len(current), "files;", len(previous - current), "removed")
