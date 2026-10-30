@@ -77,7 +77,11 @@ export function useAttachmentPreviewHandoff(input: AttachmentPreviewHandoffInput
     ) {
       continue;
     }
-    pendingPreloads.push([row.item.messageId, serverPreviewUrls, handoffUrls]);
+    pendingPreloads.push([
+      row.item.messageId,
+      serverPreviewUrls,
+      handoffUrls.filter((url): url is string => url?.startsWith("blob:") === true),
+    ]);
   }
   const loadedHandoffMessageIds = useAtomValue(
     loadedHandoffMessageIdsAtom(JSON.stringify(pendingPreloads)),
@@ -104,7 +108,7 @@ export function useAttachmentPreviewHandoff(input: AttachmentPreviewHandoffInput
         if (attachment.type !== "image") continue;
         const handoffUrl = handoffUrls[imageIndex];
         imageIndex += 1;
-        if (handoffUrl !== undefined) urls.set(attachment.id, handoffUrl);
+        if (handoffUrl) urls.set(attachment.id, handoffUrl);
       }
     }
     return urls;

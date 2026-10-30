@@ -824,7 +824,7 @@ export function selectMessageImageResources(
 
 export function selectHandoffImageResources(
   messages: ReadonlyArray<Pick<ChatMessage, "id" | "role" | "attachments">> | undefined,
-  handoffs: Readonly<Record<string, ReadonlyArray<string>>>,
+  handoffs: Readonly<Record<string, ReadonlyArray<string | null>>>,
 ): ReadonlyArray<AttachmentResource> {
   if (Object.keys(handoffs).length === 0) return EMPTY_IMAGE_RESOURCES;
   const attachmentIds = new Set<string>();
