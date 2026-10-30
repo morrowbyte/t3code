@@ -15,16 +15,21 @@ const tab = (environment: string, thread = "same-thread") => ({
 });
 
 describe("pinned work tabs", () => {
-  it("keeps identities distinct across environments and caps pins at five", () => {
+  it("keeps identities distinct across environments and caps pins at eight", () => {
     const first = tab("one");
     const second = tab("two");
-    const pins = [first, second, tab("three"), tab("four"), tab("five")];
+    const pins = [
+      first,
+      second,
+      ...["three", "four", "five", "six", "seven", "eight"].map((id) => tab(id)),
+    ];
     expect(togglePinnedWorkTab([first], second)).toEqual([first, second]);
-    expect(togglePinnedWorkTab(pins, tab("six"))).toBe(pins);
+    expect(togglePinnedWorkTab([first], { ...first, title: "Renamed" })).toEqual([]);
+    expect(togglePinnedWorkTab(pins, tab("nine"))).toBe(pins);
     expect(togglePinnedWorkTab(pins, second)).toEqual([first, ...pins.slice(2)]);
   });
 
-  it("retains sidebar defaults and never falls through from empty pin slots or 6–9", () => {
+  it("retains sidebar defaults and never falls through from empty pin slots or 9", () => {
     const first = tab("one");
     const sidebar = tab("sidebar");
     expect(numericNavigationTarget(DEFAULT_CLIENT_SETTINGS, 0, sidebar)).toBe(sidebar);
@@ -34,6 +39,15 @@ describe("pinned work tabs", () => {
       pinnedWorkTabs: [first],
     };
     expect(numericNavigationTarget(settings, 0, sidebar)).toBe(first);
+    const full = {
+      ...settings,
+      pinnedWorkTabs: Array.from({ length: 8 }, (_, index) => tab(String(index))),
+    };
+    for (let index = 0; index < 8; index++) {
+      expect(numericNavigationTarget(full, index, sidebar)).toBe(full.pinnedWorkTabs[index]);
+      expect(numericNavigationTarget(DEFAULT_CLIENT_SETTINGS, index, sidebar)).toBe(sidebar);
+    }
+    expect(numericNavigationTarget(full, 8, sidebar)).toBeNull();
     for (let index = 1; index < 9; index++) {
       expect(numericNavigationTarget(settings, index, sidebar)).toBeNull();
     }
@@ -45,7 +59,21 @@ describe("pinned work tabs", () => {
     const web = { platform: "Linux", context: { isWeb: true, isDesktop: false } };
     expect(resolveShortcutCommand(event, bindings, web)).toBeNull();
     const pins = { ...web, context: { ...web.context, pinnedTabsNavigation: true } };
-    expect(threadJumpIndexFromCommand(resolveShortcutCommand(event, bindings, pins) ?? "")).toBe(0);
+    for (const platform of ["Linux", "MacIntel"]) {
+      for (let index = 0; index < 9; index++) {
+        const shortcut = {
+          ...event,
+          key: String(index + 1),
+          ctrlKey: platform === "Linux",
+          metaKey: platform === "MacIntel",
+        };
+        expect(
+          threadJumpIndexFromCommand(
+            resolveShortcutCommand(shortcut, bindings, { ...pins, platform }) ?? "",
+          ),
+        ).toBe(index);
+      }
+    }
     expect(
       resolveShortcutCommand(
         event,

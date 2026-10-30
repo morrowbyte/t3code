@@ -271,6 +271,9 @@ export function EnvironmentBoatSettings({ environmentId }: { environmentId: Envi
       {state?.instances.map((instance) => (
         <View key={instance.requestId}>
           <AppText>{`${instance.size} · ${instance.state} · $${instance.costUsd.toFixed(3)}`}</AppText>
+          {instance.savedSnapshot && (
+            <AppText>{`Snapshot ${instance.savedSnapshot.name} · ${{ saving: "Saving…", ready: "Ready", failed: "Save failed" }[instance.savedSnapshot.status]}`}</AppText>
+          )}
           {(
             [
               "prepare",
@@ -301,6 +304,12 @@ export function EnvironmentBoatSettings({ environmentId }: { environmentId: Envi
                 !canOperate ||
                 busy ||
                 !instance.sandboxId ||
+                (action === "snapshot" &&
+                  state.instances.some(
+                    (entry) =>
+                      entry.projectId === instance.projectId &&
+                      entry.savedSnapshot?.status === "saving",
+                  )) ||
                 ["deleted", "deleting"].includes(instance.state) ||
                 (action === "resume" && !["archived", "stopped"].includes(instance.state)) ||
                 (["prepare", "preview", "snapshot", "stop"].includes(action) &&

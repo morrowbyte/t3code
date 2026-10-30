@@ -41,7 +41,6 @@ import { observeResize } from "~/lib/observeResize";
 import { cn } from "~/lib/utils";
 import { textDirection } from "~/textDirection";
 import { useClientSettings } from "../../hooks/useSettings";
-import { useWorkTabsPreview } from "../work-tabs-preview/WorkTabsPreview";
 import { PinnedWorkTabs } from "../PinnedWorkTabs";
 import { ThreadLinkBackButton } from "./ThreadLinkBackButton";
 import { GuestShareIndicator } from "./GuestShareControls";
@@ -87,7 +86,6 @@ export const ChatHeader = memo(function ChatHeader({
   onOpenProjectSettings,
   onFindInThread,
 }: ChatHeaderProps) {
-  const workTabsPreview = useWorkTabsPreview();
   const activeProjectName = activeProject?.isScratch ? "No project" : activeProject?.title;
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const interfaceFont = useClientSettings((settings) => settings.fontFamilySans);
@@ -284,8 +282,7 @@ export const ChatHeader = memo(function ChatHeader({
     <div
       ref={breadcrumbContainerRef}
       className={cn(
-        "flex min-w-0 flex-1 items-center gap-2 sm:gap-3",
-        workTabsPreview === "c" && "min-h-[var(--workspace-topbar-height)] flex-wrap",
+        "flex min-h-[var(--workspace-topbar-height)] min-w-0 flex-1 flex-wrap items-center gap-2 sm:gap-3",
         rightPanelOpen ? "pr-10" : "pr-24",
       )}
       onContextMenu={handleHeaderContextMenu}
@@ -293,10 +290,7 @@ export const ChatHeader = memo(function ChatHeader({
       <ThreadLinkBackButton />
       <WorkspaceBreadcrumb
         ariaLabel="Thread breadcrumb"
-        className={cn(
-          "flex-1 overflow-clip [overflow-clip-margin:2px]",
-          workTabsPreview === "c" && "basis-64",
-        )}
+        className="flex-1 basis-64 overflow-clip [overflow-clip-margin:2px]"
       >
         {activeProject ? (
           <>
@@ -436,7 +430,7 @@ export const ChatHeader = memo(function ChatHeader({
           ) : null}
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
-      {workTabsPreview !== "b" ? <PinnedWorkTabs /> : null}
+      <PinnedWorkTabs maxRows={2} className="max-w-full basis-[42rem] flex-1" />
       {isServerThread ? <GuestShareIndicator threadRef={activeThreadRef} /> : null}
     </div>
   );

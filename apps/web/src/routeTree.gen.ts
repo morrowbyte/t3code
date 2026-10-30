@@ -18,7 +18,6 @@ import { Route as ConnectAgentRouteImport } from './routes/connect-agent'
 import { Route as ConnectRouteImport } from './routes/connect'
 import { Route as ChatRouteImport } from './routes/_chat'
 import { Route as ChatIndexRouteImport } from './routes/_chat.index'
-import { Route as WorkTabsPreviewVariantRouteImport } from './routes/work-tabs-preview.$variant'
 import { Route as ProjectsProjectKeyRouteImport } from './routes/projects.$projectKey'
 import { Route as ChatUsageRouteImport } from './routes/_chat.usage'
 import { Route as ChatSettingsRouteImport } from './routes/_chat.settings'
@@ -100,11 +99,6 @@ const ChatIndexRoute = ChatIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => ChatRoute,
-} as any)
-const WorkTabsPreviewVariantRoute = WorkTabsPreviewVariantRouteImport.update({
-  id: '/work-tabs-preview/$variant',
-  path: '/work-tabs-preview/$variant',
-  getParentRoute: () => rootRouteImport,
 } as any)
 const ProjectsProjectKeyRoute = ProjectsProjectKeyRouteImport.update({
   id: '/projects/$projectKey',
@@ -312,7 +306,6 @@ export interface FileRoutesByFullPath {
   '/settings': typeof ChatSettingsRouteWithChildren
   '/usage': typeof ChatUsageRoute
   '/projects/$projectKey': typeof ProjectsProjectKeyRoute
-  '/work-tabs-preview/$variant': typeof WorkTabsPreviewVariantRoute
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/draft/$draftId': typeof ChatDraftDraftIdRoute
   '/settings/about': typeof ChatSettingsAboutRoute
@@ -359,7 +352,6 @@ export interface FileRoutesByTo {
   '/settings': typeof ChatSettingsRouteWithChildren
   '/usage': typeof ChatUsageRoute
   '/projects/$projectKey': typeof ProjectsProjectKeyRoute
-  '/work-tabs-preview/$variant': typeof WorkTabsPreviewVariantRoute
   '/': typeof ChatIndexRoute
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/draft/$draftId': typeof ChatDraftDraftIdRoute
@@ -409,7 +401,6 @@ export interface FileRoutesById {
   '/_chat/settings': typeof ChatSettingsRouteWithChildren
   '/_chat/usage': typeof ChatUsageRoute
   '/projects/$projectKey': typeof ProjectsProjectKeyRoute
-  '/work-tabs-preview/$variant': typeof WorkTabsPreviewVariantRoute
   '/_chat/': typeof ChatIndexRoute
   '/_chat/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/_chat/draft/$draftId': typeof ChatDraftDraftIdRoute
@@ -460,7 +451,6 @@ export interface FileRouteTypes {
     | '/settings'
     | '/usage'
     | '/projects/$projectKey'
-    | '/work-tabs-preview/$variant'
     | '/$environmentId/$threadId'
     | '/draft/$draftId'
     | '/settings/about'
@@ -507,7 +497,6 @@ export interface FileRouteTypes {
     | '/settings'
     | '/usage'
     | '/projects/$projectKey'
-    | '/work-tabs-preview/$variant'
     | '/'
     | '/$environmentId/$threadId'
     | '/draft/$draftId'
@@ -556,7 +545,6 @@ export interface FileRouteTypes {
     | '/_chat/settings'
     | '/_chat/usage'
     | '/projects/$projectKey'
-    | '/work-tabs-preview/$variant'
     | '/_chat/'
     | '/_chat/$environmentId/$threadId'
     | '/_chat/draft/$draftId'
@@ -602,7 +590,6 @@ export interface RootRouteChildren {
   PairRoute: typeof PairRoute
   WelcomeRoute: typeof WelcomeRoute
   ProjectsProjectKeyRoute: typeof ProjectsProjectKeyRoute
-  WorkTabsPreviewVariantRoute: typeof WorkTabsPreviewVariantRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -669,13 +656,6 @@ declare module '@tanstack/react-router' {
       fullPath: '/'
       preLoaderRoute: typeof ChatIndexRouteImport
       parentRoute: typeof ChatRoute
-    }
-    '/work-tabs-preview/$variant': {
-      id: '/work-tabs-preview/$variant'
-      path: '/work-tabs-preview/$variant'
-      fullPath: '/work-tabs-preview/$variant'
-      preLoaderRoute: typeof WorkTabsPreviewVariantRouteImport
-      parentRoute: typeof rootRouteImport
     }
     '/projects/$projectKey': {
       id: '/projects/$projectKey'
@@ -1041,7 +1021,6 @@ const rootRouteChildren: RootRouteChildren = {
   PairRoute: PairRoute,
   WelcomeRoute: WelcomeRoute,
   ProjectsProjectKeyRoute: ProjectsProjectKeyRoute,
-  WorkTabsPreviewVariantRoute: WorkTabsPreviewVariantRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

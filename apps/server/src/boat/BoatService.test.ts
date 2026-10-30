@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import { DEFAULT_BOAT_PROJECT, ProjectId, ThreadId, RunId } from "@t3tools/contracts";
+import { DEFAULT_BOAT_PROJECT, BoatInstance, ProjectId, ThreadId, RunId } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
@@ -8,6 +8,7 @@ import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
+import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
 import * as ServerConfig from "../config.ts";
 import * as Secrets from "../auth/ServerSecretStore.ts";
@@ -18,6 +19,7 @@ import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
 import { BoatApi } from "./BoatApi.ts";
 import { make, sourceSyncScript } from "./BoatService.ts";
 
+const decodeInstance = Schema.decodeUnknownEffect(BoatInstance);
 const projectId = ProjectId.make("project-boat");
 const ownerThreadId = ThreadId.make("thread-boat");
 function setup(
@@ -26,6 +28,7 @@ function setup(
 ) {
   const calls: string[] = [];
   let machineState = "ready";
+  let snapshotStatus = "saving";
   let workspaceRoot = process.cwd();
   let ownerActive = true;
   let projectExists = true;
@@ -46,6 +49,8 @@ function setup(
             trialComputeUsedSeconds: null,
             machineTypes: [{ type: "default", available: true }],
           };
+        if (path === "/saved-snapshots" || path.startsWith("/saved-snapshots/"))
+          return { snapshot: { name: "crew-first", status: snapshotStatus } };
         if (path.endsWith("/commands")) {
           return { processId: 123, exitCode: 0 };
         }
@@ -115,6 +120,9 @@ function setup(
   return {
     calls,
     services,
+    setSnapshotStatus: (status: string) => {
+      snapshotStatus = status;
+    },
     setArchive: (bytes: Uint8Array) => {
       archiveBytes = new Uint8Array(bytes);
     },
@@ -147,6 +155,9 @@ it.effect(
       const state = yield* reopened.operate({ action: "start", projectId, requestId: "first" });
       assert.equal(test.calls.filter((call) => call === "POST /sandboxes").length, 1);
       assert.equal(state.instances[0]?.sandboxId, "bx_23456789");
+      const legacyInstance = { ...state.instances[0] };
+      delete legacyInstance.savedSnapshot;
+      assert.isNull((yield* decodeInstance(legacyInstance)).savedSnapshot);
       assert.isFalse(JSON.stringify(state).includes("boat_fixture_private"));
       const denied = yield* reopened
         .operate({ action: "start", projectId, requestId: "second" })
@@ -198,7 +209,12 @@ it.effect("reserves the full auto-stop cost before creating a billable machine",
 });
 
 it.effect("prepares project commands and uses an embedded desktop for Android previews", () => {
-  const test = setup();
+  let execBody: unknown;
+  const test = setup((path, method, body) =>
+    Effect.sync(() => {
+      if (path.endsWith("/commands") && method === "POST") execBody = body;
+    }),
+  );
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const root = yield* fs.makeTempDirectoryScoped({ prefix: "boat-project-" });
@@ -222,6 +238,16 @@ it.effect("prepares project commands and uses an embedded desktop for Android pr
     assert.include(configured.projects[projectId]!.setupCommand, "vite-plus@1.4.0");
     assert.equal(configured.projects[projectId]!.devCommand, "vp run dev");
     yield* boat.operate({ action: "start", projectId, requestId: "android" });
+    yield* boat.operate({
+      action: "exec",
+      projectId,
+      requestId: "android",
+      command: "cat restored.txt",
+    });
+    assert.deepEqual(execBody, {
+      command: "mkdir -p /home/user/crew && cd /home/user/crew || exit\ncat restored.txt",
+      timeoutSeconds: 20,
+    });
     const preview = yield* boat.operate({ action: "preview", projectId, requestId: "android" });
     assert.equal(preview.instances[0]?.previewUrl, "https://preview.example.test/android");
     assert.include(test.calls, "POST /sandboxes/bx_23456789/desktop?vnc=1");
@@ -373,4 +399,43 @@ it.live("source sync removes deleted files and preserves ignored runtime data", 
     assert.isFalse(yield* fs.exists(`${root}/new.ts`));
     assert.equal(yield* fs.readFileString(`${root}/node_modules/cache`), "dependency");
   }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+);
+
+it.effect.each(["ready", "failed"] as const)(
+  "keeps the old snapshot until a persisted save settles as %s",
+  (status) => {
+    const test = setup();
+    return Effect.gen(function* () {
+      const boat = yield* make;
+      yield* boat.connect(Redacted.make("boat_fixture_private"));
+      yield* boat.configure(projectId, {
+        ...DEFAULT_BOAT_PROJECT,
+        enabled: true,
+        snapshot: "old-template",
+      });
+      yield* boat.operate({ action: "start", projectId, requestId: "first" });
+      const pending = yield* boat.operate({ action: "snapshot", projectId, requestId: "first" });
+      assert.equal(pending.projects[projectId]?.snapshot, "old-template");
+      assert.deepEqual(pending.instances[0]?.savedSnapshot, {
+        name: "crew-first",
+        status: "saving",
+      });
+      const reopened = yield* make;
+      const denied = yield* reopened
+        .operate({ action: "snapshot", projectId, requestId: "first" })
+        .pipe(Effect.flip);
+      assert.equal(denied.category, "conflict");
+      assert.equal(test.calls.filter((call) => call === "POST /saved-snapshots").length, 1);
+      test.setSnapshotStatus(status);
+      yield* reopened.reconcile();
+      const settled = yield* reopened.read(projectId);
+      assert.deepEqual(settled.instances[0]?.savedSnapshot, { name: "crew-first", status });
+      assert.equal(
+        settled.projects[projectId]?.snapshot,
+        status === "ready" ? "crew-first" : "old-template",
+      );
+      const persisted = yield* (yield* make).read(projectId);
+      assert.deepEqual(persisted.instances[0]?.savedSnapshot, { name: "crew-first", status });
+    }).pipe(Effect.provide(test.services), Effect.scoped);
+  },
 );

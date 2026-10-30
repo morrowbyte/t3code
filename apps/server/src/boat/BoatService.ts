@@ -5,6 +5,7 @@ import {
   DEFAULT_BOAT_DEFAULTS,
   BoatError,
   BoatInstance,
+  SavedSnapshot,
   BoatProjectConfig,
   BoatState,
   DEFAULT_BOAT_PROJECT,
@@ -141,6 +142,7 @@ const decodeWorkspaceVersions = Schema.decodeUnknownEffect(
   Schema.Struct({ catalog: Schema.optional(Schema.Record(Schema.String, Schema.String)) }),
 );
 const decodeProjectManifest = Schema.decodeUnknownEffect(Schema.fromJsonString(ProjectManifest));
+const SnapshotResponse = Schema.Struct({ snapshot: SavedSnapshot });
 const RemoteSandbox = Schema.Struct({
   sandbox: Schema.Struct({ id: Schema.String, state: Schema.String }),
 });
@@ -243,7 +245,12 @@ export const make = Effect.gen(function* () {
             ...ledger,
             instances: ledger.instances.map((item) =>
               item.requestId === requestId
-                ? { ...item, ...(typeof update === "function" ? update(item) : update) }
+                ? {
+                    ...item,
+                    ...(typeof update === "function" ? update(item) : update),
+                    // Snapshot transitions commit with the project template under this lock.
+                    savedSnapshot: item.savedSnapshot,
+                  }
                 : item,
             ),
           }),
@@ -352,7 +359,7 @@ export const make = Effect.gen(function* () {
       };
     const token = Redacted.make(new TextDecoder().decode(stored.value));
     const limits = yield* api.request(token, "/limits").pipe(Effect.flatMap(decode(Limits)));
-    const instances = yield* Effect.forEach(
+    yield* Effect.forEach(
       ledger.instances.filter((item) => !projectId || item.projectId === projectId),
       (item) =>
         Effect.gen(function* () {
@@ -420,6 +427,38 @@ export const make = Effect.gen(function* () {
         }),
       { concurrency: 4 },
     );
+    for (const item of ledger.instances.filter(
+      (item) => !projectId || item.projectId === projectId,
+    )) {
+      if (item.savedSnapshot?.status !== "saving") continue;
+      yield* lock.withPermits(1)(
+        Effect.gen(function* () {
+          const current = ledger.instances.find((entry) => entry.requestId === item.requestId);
+          if (current?.savedSnapshot?.status !== "saving") return;
+          const { snapshot } = yield* api
+            .request(token, `/saved-snapshots/${encodeURIComponent(current.savedSnapshot.name)}`)
+            .pipe(Effect.flatMap(decode(SnapshotResponse)));
+          if (snapshot.name !== current.savedSnapshot.name)
+            return yield* new BoatError({ category: "provider" });
+          yield* save({
+            ...ledger,
+            instances: ledger.instances.map((entry) =>
+              entry.requestId === item.requestId ? { ...entry, savedSnapshot: snapshot } : entry,
+            ),
+            projects:
+              snapshot.status === "ready" && ledger.projects[item.projectId]
+                ? {
+                    ...ledger.projects,
+                    [item.projectId]: {
+                      ...ledger.projects[item.projectId]!,
+                      snapshot: snapshot.name,
+                    },
+                  }
+                : ledger.projects,
+          });
+        }),
+      );
+    }
     return {
       defaults: ledger.defaults,
       configured: true,
@@ -442,7 +481,7 @@ export const make = Effect.gen(function* () {
           .filter((item): item is typeof BoatProjectConfig.Type.size => item in rates),
       },
       projects: ledger.projects,
-      instances,
+      instances: ledger.instances.filter((item) => !projectId || item.projectId === projectId),
     };
   });
   const connect = Effect.fn("BoatService.connect")(function* (apiKey: Redacted.Redacted<string>) {
@@ -637,6 +676,7 @@ export const make = Effect.gen(function* () {
       instance ??= {
         requestId: action.requestId,
         projectId: action.projectId,
+        savedSnapshot: null,
         sandboxId: null,
         size: settings.size,
         state: "provisioning",
@@ -880,8 +920,8 @@ export const make = Effect.gen(function* () {
     } else if (action.action === "exec") {
       const output = yield* api
         .request(token, `${sandboxPath}/commands`, "POST", {
-          command: action.command,
-          cwd: "crew",
+          command: `mkdir -p /home/user/crew && cd /home/user/crew || exit
+${action.command}`,
           timeoutSeconds: 20,
         })
         .pipe(Effect.flatMap(decode(ProcessStatus)));
@@ -895,17 +935,39 @@ export const make = Effect.gen(function* () {
         .toLowerCase()
         .replace(/[^a-z0-9-]/g, "-")
         .slice(0, 63);
-      yield* api.request(token, "/saved-snapshots", "POST", {
-        sandboxId: instance.sandboxId,
-        name,
-      });
       yield* lock.withPermits(1)(
-        Effect.suspend(() =>
-          save({
+        Effect.gen(function* () {
+          if (
+            ledger.instances.some(
+              (item) =>
+                item.projectId === action.projectId && item.savedSnapshot?.status === "saving",
+            )
+          )
+            return yield* new BoatError({ category: "conflict" });
+          const { snapshot } = yield* api
+            .request(token, "/saved-snapshots", "POST", {
+              sandboxId: instance.sandboxId,
+              name,
+            })
+            .pipe(Effect.flatMap(decode(SnapshotResponse)));
+          if (snapshot.name !== name) return yield* new BoatError({ category: "provider" });
+          yield* save({
             ...ledger,
-            projects: { ...ledger.projects, [action.projectId]: { ...settings, snapshot: name } },
-          }),
-        ),
+            instances: ledger.instances.map((item) =>
+              item.requestId === action.requestId ? { ...item, savedSnapshot: snapshot } : item,
+            ),
+            projects:
+              snapshot.status === "ready"
+                ? {
+                    ...ledger.projects,
+                    [action.projectId]: {
+                      ...projectSettings(action.projectId),
+                      snapshot: snapshot.name,
+                    },
+                  }
+                : ledger.projects,
+          });
+        }),
       );
     } else if (action.action === "logs") {
       if (instance.processId === null) return yield* new BoatError({ category: "not_found" });
@@ -983,7 +1045,11 @@ export const make = Effect.gen(function* () {
     const owned = ledger.instances.filter(
       (item) => item.sandboxId && item.state !== "deleted" && item.state !== "error",
     );
-    if (owned.length === 0) return;
+    if (
+      owned.length === 0 &&
+      !ledger.instances.some((item) => item.savedSnapshot?.status === "saving")
+    )
+      return;
     yield* read();
     const now = yield* Clock.currentTimeMillis;
     for (const item of ledger.instances) {

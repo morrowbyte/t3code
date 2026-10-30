@@ -1,7 +1,7 @@
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import type { ClientSettings, PinnedWorkTab } from "@t3tools/contracts/settings";
 
-export const MAX_PINNED_WORK_TABS = 5;
+export const MAX_PINNED_WORK_TABS = 8;
 
 export function sameWorkTab(left: ScopedThreadRef, right: ScopedThreadRef): boolean {
   return left.environmentId === right.environmentId && left.threadId === right.threadId;

@@ -351,7 +351,11 @@ it("restores scoped work tabs and their shortcut mode after client settings relo
       title: "Second",
     },
   ];
-  await persistClientSettingsPatch({ pinnedWorkTabs, numericNavigationMode: "pinned-tabs" });
+  await persistClientSettingsPatch({
+    pinnedWorkTabs,
+    numericNavigationMode: "pinned-tabs",
+    workTabLabelMode: "thread-title",
+  });
   const saved = persistenceMocks.setClientSettings.mock.calls.at(-1)?.[0];
   expect(saved?.pinnedWorkTabs).toEqual(pinnedWorkTabs);
   __resetClientSettingsPersistenceForTests();
@@ -359,4 +363,5 @@ it("restores scoped work tabs and their shortcut mode after client settings relo
   await ensureClientSettingsHydrated();
   expect(getClientSettings().pinnedWorkTabs).toEqual(pinnedWorkTabs);
   expect(getClientSettings().numericNavigationMode).toBe("pinned-tabs");
+  expect(getClientSettings().workTabLabelMode).toBe("thread-title");
 });

@@ -50,7 +50,15 @@ export const DEFAULT_BOAT_PROJECT: BoatProjectConfig = {
   releaseCommand: "",
 };
 
+export const SavedSnapshot = Schema.Struct({
+  name: Schema.String,
+  status: Schema.Literals(["saving", "ready", "failed"]),
+});
+
 export const BoatInstance = Schema.Struct({
+  savedSnapshot: Schema.NullOr(SavedSnapshot).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
   leases: Schema.Array(ThreadId).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
   stoppedAt: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   requestId: Schema.String,

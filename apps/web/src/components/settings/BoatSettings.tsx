@@ -673,6 +673,16 @@ function BoatPanel({
               <div>
                 {item.size} · {item.state} · {dollars(item.costUsd)}
               </div>
+              {item.savedSnapshot && (
+                <div role="status">
+                  Snapshot {item.savedSnapshot.name} ·{" "}
+                  {
+                    { saving: "Saving…", ready: "Ready", failed: "Save failed" }[
+                      item.savedSnapshot.status
+                    ]
+                  }
+                </div>
+              )}
               {canOperate && (
                 <div className="flex flex-wrap gap-2">
                   {(
@@ -694,6 +704,12 @@ function BoatPanel({
                       disabled={
                         busy ||
                         !item.sandboxId ||
+                        (action === "snapshot" &&
+                          instances.some(
+                            (entry) =>
+                              entry.projectId === item.projectId &&
+                              entry.savedSnapshot?.status === "saving",
+                          )) ||
                         ["deleted", "deleting"].includes(item.state) ||
                         (action === "resume" && !["archived", "stopped"].includes(item.state)) ||
                         (action === "stop" && ["archived", "stopped"].includes(item.state)) ||

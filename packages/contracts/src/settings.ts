@@ -355,10 +355,21 @@ export const PinnedWorkTab = Schema.Struct({
   title: TrimmedNonEmptyString,
 });
 export type PinnedWorkTab = typeof PinnedWorkTab.Type;
-export const PinnedWorkTabs = Schema.Array(PinnedWorkTab).check(Schema.isMaxLength(5));
+export const PinnedWorkTabs = Schema.Array(PinnedWorkTab).check(
+  Schema.isMaxLength(8),
+  Schema.makeFilter(
+    (tabs) =>
+      new Set(tabs.map((tab) => JSON.stringify([tab.environmentId, tab.threadId]))).size ===
+        tabs.length || "Work tabs must be unique within each environment.",
+  ),
+);
+export const WorkTabLabelMode = Schema.Literals(["agent-name", "thread-title"]);
 export const NumericNavigationMode = Schema.Literals(["sidebar", "pinned-tabs"]);
 
 export const ClientSettingsSchema = Schema.Struct({
+  workTabLabelMode: WorkTabLabelMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed("agent-name" as const)),
+  ),
   pinnedWorkTabs: PinnedWorkTabs.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   numericNavigationMode: NumericNavigationMode.pipe(
     Schema.withDecodingDefault(Effect.succeed("sidebar" as const)),
@@ -1804,6 +1815,7 @@ export function requiredScopesForProjectMutation(
 }
 
 export const ClientSettingsPatch = Schema.Struct({
+  workTabLabelMode: Schema.optionalKey(WorkTabLabelMode),
   pinnedWorkTabs: Schema.optionalKey(PinnedWorkTabs),
   numericNavigationMode: Schema.optionalKey(NumericNavigationMode),
   hostOrderEntryEnabled: Schema.optionalKey(Schema.Boolean),

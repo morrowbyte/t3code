@@ -2,7 +2,6 @@ import {
   getPromptControlledTraits,
   getTraitSelectChange,
 } from "@t3tools/client-runtime/model-traits";
-import { AgentAvatarSettings } from "../agent-identity/AgentAvatarSettings";
 import { SheetHeader } from "../../components/ui/SheetHeader";
 import { Toolbar } from "../../components/ui/Toolbar";
 import * as Dialog from "../../components/ui/Dialog";
@@ -1024,7 +1023,6 @@ function ThreadSettingsMainContent(props: {
       maintainVisibleContentPosition={THREAD_SETTINGS_MAINTAIN_VISIBLE_CONTENT_POSITION}
       ListHeaderComponent={
         <>
-          {session.threadRef ? <AgentAvatarSettings threadRef={session.threadRef} /> : null}
           {Platform.OS === "android" ? (
             <View className="px-4 pb-2 pt-3">
               <View
