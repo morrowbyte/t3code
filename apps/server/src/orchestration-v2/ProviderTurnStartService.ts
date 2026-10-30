@@ -687,8 +687,11 @@ export const layer: Layer.Layer<
           itemProviderThreadId: providerThread.id,
           item: {
             type: "error",
-            title: "Not enough disk space to start work",
-            failure: makeProviderFailure({ class: "validation_error", message: storageError }),
+            title:
+              storageError.code === "storage_measurement_failed"
+                ? "Cannot measure storage capacity to start work"
+                : "Not enough disk space to start work",
+            failure: makeProviderFailure({ class: "validation_error", ...storageError }),
           },
         });
         return;

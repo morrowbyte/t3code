@@ -27,6 +27,18 @@ export interface StorageSample {
   readonly btrfs?: BtrfsStorageSample;
 }
 
+export interface StorageFailure {
+  readonly code: "storage_pressure" | "storage_measurement_failed";
+  readonly message: string;
+}
+
+export function storageMeasurementFailure(cause: unknown): StorageFailure {
+  return {
+    code: "storage_measurement_failed",
+    message: `Cannot check storage capacity. Capacity is unknown; work is blocked for safety. Check that the working directory, T3 data directory and filesystem measurements are accessible, then try again. (${cause instanceof Error ? cause.message : String(cause)})`,
+  };
+}
+
 interface StorageProbe {
   readonly platform: string;
   readonly statfs: (path: string) => Promise<{ type: bigint; bavail: bigint; bsize: bigint }>;
@@ -207,12 +219,12 @@ export function storagePressureMessage(
 }
 
 /** Failed Btrfs measurements never fall back to statfs-only admission. */
-export async function checkStorageAdmission(
+export async function checkStorageAdmissionFailure(
   paths: readonly string[],
   activeWork = 0,
   previouslyBlocked = false,
   sample: typeof sampleStorage = sampleStorage,
-): Promise<string | null> {
+): Promise<StorageFailure | null> {
   const required = Math.max(
     previouslyBlocked ? 10 * GiB : 8 * GiB,
     STOP_RESERVE_BYTES + (Math.max(0, activeWork) + 1) * 2 * GiB,
@@ -220,10 +232,22 @@ export async function checkStorageAdmission(
   try {
     for (const entry of await sample(paths)) {
       const message = storagePressureMessage(entry, required, previouslyBlocked);
-      if (message) return message;
+      if (message) return { code: "storage_pressure", message };
     }
     return null;
   } catch (cause) {
-    return `Cannot check storage capacity. Check that the working directory, T3 data directory and filesystem measurements are accessible, then try again. (${cause instanceof Error ? cause.message : String(cause)})`;
+    return storageMeasurementFailure(cause);
   }
+}
+
+export async function checkStorageAdmission(
+  paths: readonly string[],
+  activeWork = 0,
+  previouslyBlocked = false,
+  sample: typeof sampleStorage = sampleStorage,
+): Promise<string | null> {
+  return (
+    (await checkStorageAdmissionFailure(paths, activeWork, previouslyBlocked, sample))?.message ??
+    null
+  );
 }

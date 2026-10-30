@@ -799,15 +799,26 @@ function makeLocalCommandHarness(input: {
   };
 }
 
-effectIt.effect("refuses provider startup with a storage error for the work and data paths", () =>
+effectIt.effect.each([
+  {
+    code: "storage_pressure" as const,
+    message: "Not enough free disk space at work: 3 GiB available.",
+    title: "Not enough disk space to start work",
+  },
+  {
+    code: "storage_measurement_failed" as const,
+    message: "Cannot check storage capacity. Capacity is unknown. (spawn findmnt EAGAIN)",
+    title: "Cannot measure storage capacity to start work",
+  },
+])("refuses provider startup with $code for the work and data paths", (failure) =>
   Effect.gen(function* () {
-    const check = vi.fn(async () => "Free disk space and try again.");
+    const check = vi.fn(async () => ({ code: failure.code, message: failure.message }));
     const harness = makeLocalCommandHarness({
       text: "Continue",
       storageGuard: {
         check,
         checkRunning: async () => null,
-        acquire: async () => ({ message: null, release: () => {} }),
+        acquire: async () => ({ failure: null, release: () => {} }),
       },
     });
     yield* harness.start;
@@ -816,8 +827,10 @@ effectIt.effect("refuses provider startup with a storage error for the work and 
     const item = harness.events.find((event) => event.type === "turn-item.updated")?.payload;
     expect(item?.type).toBe("error");
     if (item?.type === "error") {
+      expect(item.title).toBe(failure.title);
       expect(item.failure.class).toBe("validation_error");
-      expect(item.failure.message).toContain("Free disk space");
+      expect(item.failure.code).toBe(failure.code);
+      expect(item.failure.message).toBe(failure.message);
     }
   }),
 );

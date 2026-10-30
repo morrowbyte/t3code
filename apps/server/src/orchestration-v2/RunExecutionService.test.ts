@@ -3006,86 +3006,99 @@ it.effect("keeps completed runs completed when pull request refresh fails", () =
   }),
 );
 
-it.effect(
-  "interrupts an accepted turn on storage pressure and stops monitoring after termination",
-  () =>
-    Effect.gen(function* () {
-      const stopped = yield* Deferred.make<void>();
-      const now = yield* DateTime.now;
-      let samples = 0;
-      let released = 0;
-      let cleanupRequested = false;
-      let storageInterruptCommitted = false;
-      const result = yield* captureRootRunTermination({
-        key: "storage-pressure-monitor",
-        shouldFinalizeRun: () => Effect.succeed(true),
-        storagePressure: {
-          paths: ["work", "data"],
-          interrupt: ({ reason }) =>
-            Effect.sync(() => {
-              assert.equal(reason, "Free disk space and try again.");
-              storageInterruptCommitted = true;
-            }),
-          guard: {
-            check: async () => null,
-            acquire: async () => ({
-              message: null,
-              release: () => {
-                released += 1;
-              },
-            }),
-            checkRunning: async () => {
-              samples += 1;
-              return "Free disk space and try again.";
+it.effect.each([
+  {
+    code: "storage_pressure" as const,
+    message: "Not enough free disk space at work: 3 GiB available.",
+    title: "Stopping work: low disk space",
+  },
+  {
+    code: "storage_measurement_failed" as const,
+    message: "Cannot check storage capacity. Capacity is unknown. (spawn findmnt EAGAIN)",
+    title: "Stopping work: storage capacity could not be measured",
+  },
+])("interrupts an accepted turn on $code and stops monitoring after termination", (failure) =>
+  Effect.gen(function* () {
+    const stopped = yield* Deferred.make<void>();
+    const now = yield* DateTime.now;
+    let samples = 0;
+    let released = 0;
+    let cleanupRequested = false;
+    let storageInterruptCommitted = false;
+    const result = yield* captureRootRunTermination({
+      key: "storage-pressure-monitor",
+      shouldFinalizeRun: () => Effect.succeed(true),
+      storagePressure: {
+        paths: ["work", "data"],
+        interrupt: ({ reason }) =>
+          Effect.sync(() => {
+            assert.equal(reason, failure.message);
+            storageInterruptCommitted = true;
+          }),
+        guard: {
+          check: async () => null,
+          acquire: async () => ({
+            failure: null,
+            release: () => {
+              released += 1;
             },
+          }),
+          checkRunning: async () => {
+            samples += 1;
+            return { code: failure.code, message: failure.message };
           },
         },
-        events: (ids) =>
-          Stream.concat(
-            Stream.make({
-              type: "provider_turn.updated" as const,
-              driver,
-              providerTurn: {
-                id: ids.rootProviderTurnId,
-                providerThreadId: ids.providerThreadId,
-                nodeId: ids.rootNodeId,
-                runAttemptId: ids.attemptId,
-                nativeTurnRef: null,
-                ordinal: 1,
-                status: "running" as const,
-                startedAt: now,
-                completedAt: null,
-              },
-            }),
-            Stream.unwrap(
-              Deferred.await(stopped).pipe(
-                Effect.as(Stream.make(rootTerminalEvent(ids, "interrupted"))),
-              ),
+      },
+      events: (ids) =>
+        Stream.concat(
+          Stream.make({
+            type: "provider_turn.updated" as const,
+            driver,
+            providerTurn: {
+              id: ids.rootProviderTurnId,
+              providerThreadId: ids.providerThreadId,
+              nodeId: ids.rootNodeId,
+              runAttemptId: ids.attemptId,
+              nativeTurnRef: null,
+              ordinal: 1,
+              status: "running" as const,
+              startedAt: now,
+              completedAt: null,
+            },
+          }),
+          Stream.unwrap(
+            Deferred.await(stopped).pipe(
+              Effect.as(Stream.make(rootTerminalEvent(ids, "interrupted"))),
             ),
           ),
-        interruptTurn: (request) =>
-          Effect.sync(() => {
-            assert.isTrue(storageInterruptCommitted);
-            cleanupRequested = request.requestRuntimeRestart === true;
-          }).pipe(Effect.andThen(Deferred.succeed(stopped, undefined)), Effect.asVoid),
-        afterStart: (closed) =>
-          Effect.gen(function* () {
-            yield* TestClock.adjust("5 seconds");
-            yield* Deferred.await(stopped);
-            yield* Deferred.await(closed);
-            yield* Effect.yieldNow;
-            yield* TestClock.adjust("15 seconds");
-          }),
-      });
-      assert.isTrue(cleanupRequested);
-      assert.equal(samples, 1);
-      assert.equal(released, 1);
-      assert.isTrue(
-        result.written.some(
-          (item) => item.type === "error" && item.failure.code === "storage_pressure",
         ),
-      );
-    }),
+      interruptTurn: (request) =>
+        Effect.sync(() => {
+          assert.isTrue(storageInterruptCommitted);
+          cleanupRequested = request.requestRuntimeRestart === true;
+        }).pipe(Effect.andThen(Deferred.succeed(stopped, undefined)), Effect.asVoid),
+      afterStart: (closed) =>
+        Effect.gen(function* () {
+          yield* TestClock.adjust("5 seconds");
+          yield* Deferred.await(stopped);
+          yield* Deferred.await(closed);
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("15 seconds");
+        }),
+    });
+    assert.isTrue(cleanupRequested);
+    assert.equal(samples, 1);
+    assert.equal(released, 1);
+    assert.isTrue(
+      result.written.some(
+        (item) =>
+          item.type === "error" &&
+          item.failure.code === failure.code &&
+          item.failure.message === failure.message &&
+          item.title === failure.title,
+      ),
+    );
+  }),
 );
 
 it.effect("directly interrupts the provider if the storage callback is blocked", () =>
@@ -3105,8 +3118,8 @@ it.effect("directly interrupts the provider if the storage callback is blocked",
           ),
         guard: {
           check: async () => null,
-          acquire: async () => ({ message: null, release: () => {} }),
-          checkRunning: async () => "Low disk space.",
+          acquire: async () => ({ failure: null, release: () => {} }),
+          checkRunning: async () => ({ code: "storage_pressure", message: "Low disk space." }),
         },
       },
       events: (ids) =>
@@ -3283,7 +3296,18 @@ it.effect("stops a real bounded child for Btrfs metadata pressure despite free d
   ),
 );
 
-it.effect("reports a late storage admission refusal without starting the provider", () =>
+it.effect.each([
+  {
+    code: "storage_pressure" as const,
+    message: "Not enough free disk space at work: 3 GiB available.",
+    title: "Not enough disk space to start work",
+  },
+  {
+    code: "storage_measurement_failed" as const,
+    message: "Cannot check storage capacity. Capacity is unknown. (spawn findmnt EAGAIN)",
+    title: "Cannot measure storage capacity to start work",
+  },
+])("reports a late $code refusal without starting the provider", (failure) =>
   Effect.gen(function* () {
     let starts = 0;
     let streamReady!: () => void;
@@ -3300,7 +3324,10 @@ it.effect("reports a late storage admission refusal without starting the provide
           checkRunning: async () => null,
           acquire: async () => {
             await ready;
-            return { message: "Free disk space and try again.", release: () => {} };
+            return {
+              failure: { code: failure.code, message: failure.message },
+              release: () => {},
+            };
           },
         },
       },
@@ -3315,8 +3342,9 @@ it.effect("reports a late storage admission refusal without starting the provide
       result.written.some(
         (item) =>
           item.type === "error" &&
-          item.failure.code === "storage_pressure" &&
-          item.title === "Not enough disk space to start work",
+          item.failure.code === failure.code &&
+          item.failure.message === failure.message &&
+          item.title === failure.title,
       ),
     );
   }),

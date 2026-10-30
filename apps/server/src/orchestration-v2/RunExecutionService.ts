@@ -50,7 +50,7 @@ import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
 import * as PreviewAgentActivity from "../preview/PreviewAgentActivity.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import type { StoragePressureGuard } from "../storagePressure.ts";
+import type { StorageFailure, StoragePressureGuard } from "../storagePressure.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -923,9 +923,11 @@ export const layer: Layer.Layer<
                         failure: input.terminal.failure,
                         occurredAt: completedAt,
                       }),
-                      ...(input.terminal.failure.code === "storage_pressure"
-                        ? { title: "Not enough disk space to start work" }
-                        : {}),
+                      ...(input.terminal.failure.code === "storage_measurement_failed"
+                        ? { title: "Cannot measure storage capacity to start work" }
+                        : input.terminal.failure.code === "storage_pressure"
+                          ? { title: "Not enough disk space to start work" }
+                          : {}),
                     },
                   },
                 ]
@@ -1796,7 +1798,7 @@ export const layer: Layer.Layer<
           input.message.text.trim().toLowerCase() === "/compact";
         const storageLease =
           input.storagePressure === undefined
-            ? { message: null, release: () => {} }
+            ? { failure: null, release: () => {} }
             : yield* Effect.promise(() =>
                 input.storagePressure!.guard.acquire(input.storagePressure!.paths),
               );
@@ -1815,7 +1817,7 @@ export const layer: Layer.Layer<
             : input.session.startTurn(turnInput),
         );
         const guardedStart =
-          storageLease.message === null
+          storageLease.failure === null
             ? startTurn
             : Effect.fail(
                 new ProviderAdapter.ProviderAdapterTurnStartError({
@@ -1823,7 +1825,7 @@ export const layer: Layer.Layer<
                   threadId: input.run.threadId,
                   providerThreadId: input.providerThread.id,
                   runId: input.run.id,
-                  cause: storageLease.message,
+                  cause: storageLease.failure.message,
                 }),
               );
         yield* Effect.andThen(shouldStart, guardedStart).pipe(
@@ -1842,21 +1844,21 @@ export const layer: Layer.Layer<
             const monitor = Effect.gen(function* () {
               let reported = false;
               let interruptRequested = false;
-              let pressureMessage: string | null = null;
+              let storageFailure: StorageFailure | null = null;
               while (true) {
                 yield* Effect.sleep("5 seconds");
-                const message: string | null =
-                  pressureMessage ??
+                const failure: StorageFailure | null =
+                  storageFailure ??
                   (yield* Effect.promise(() => pressure.guard.checkRunning(pressure.paths)));
-                if (message === null) continue;
-                pressureMessage = message;
+                if (failure === null) continue;
+                storageFailure = failure;
                 if (!interruptRequested && pressure.interrupt !== undefined) {
                   interruptRequested = true;
                   const interrupt = pressure
                     .interrupt({
                       threadId: input.run.threadId,
                       runId: input.run.id,
-                      reason: message,
+                      reason: failure.message,
                     })
                     .pipe(
                       Effect.catchCause((cause) =>
@@ -1902,8 +1904,7 @@ export const layer: Layer.Layer<
                               itemOrdinal: ordinal,
                               failure: makeProviderFailure({
                                 class: "validation_error",
-                                code: "storage_pressure",
-                                message,
+                                ...failure,
                               }),
                               occurredAt: now,
                             }),
@@ -1911,7 +1912,10 @@ export const layer: Layer.Layer<
                               runId: input.run.id,
                               signal: "storage-pressure",
                             }),
-                            title: "Stopping work: low disk space",
+                            title:
+                              failure.code === "storage_measurement_failed"
+                                ? "Stopping work: storage capacity could not be measured"
+                                : "Stopping work: low disk space",
                           },
                         },
                       ],
@@ -1973,11 +1977,9 @@ export const layer: Layer.Layer<
                           terminal: makeFailedTerminalEvent(
                             makeProviderFailure({
                               cause: Cause.squash(cause),
-                              ...(storageLease.message === null
-                                ? {}
-                                : { message: storageLease.message, code: "storage_pressure" }),
+                              ...(storageLease.failure === null ? {} : storageLease.failure),
                               class:
-                                storageLease.message !== null
+                                storageLease.failure !== null
                                   ? "validation_error"
                                   : Exit.isFailure(shouldStart)
                                     ? "unknown"
