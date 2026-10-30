@@ -1,9 +1,12 @@
 import type { OlderSettledScope } from "@t3tools/client-runtime/state/threads";
+import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
+import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useMemo, useSyncExternalStore } from "react";
 
 import { scopedProjectKey } from "../../lib/scopedEntities";
 import { useOlderSettledShelf, useOlderSettledShelfGrowth } from "../../state/olderSettledShelf";
+import { environmentThreadShells } from "../../state/threads";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import {
   buildThreadListV2Items,
@@ -56,7 +59,19 @@ export function useThreadListV2(input: {
   readonly settledShelfExpanded: boolean;
   readonly selectedThreadKey: string | null;
 }) {
-  const { threads, workingShelfEnabled } = input;
+  const delegatedUnderParent = useAtomValue(environmentThreadShells.delegatedUnderParentAtom);
+  const threads = input.includeSubagents
+    ? input.threads
+    : input.threads.filter(
+        (thread) =>
+          !isShownUnderParent(
+            { environmentId: thread.environmentId, threadId: thread.id },
+            thread.lineage,
+            delegatedUnderParent,
+            thread.presentation,
+          ),
+      );
+  const { workingShelfEnabled } = input;
   // A thread can stop working when the threads change, or when its exit grace expires.
   const inboxVersion = useSyncExternalStore(
     threadListInboxReturns.subscribe,

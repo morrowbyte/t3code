@@ -111,6 +111,44 @@ describe("native thread families", () => {
     },
   });
 
+  it("groups a remote delegated task under its available parent and keeps an orphan reachable", () => {
+    const remote = makeThread({
+      id: ThreadId.make("remote-task"),
+      title: "Remote task",
+      environmentId: EnvironmentId.make("environment-2"),
+      delegatedFrom: {
+        environmentId: parent.environmentId,
+        threadId: parent.id,
+        title: parent.title,
+      },
+    });
+    const rows = (threads: EnvironmentThreadShell[]) =>
+      buildThreadListV2FamilyRows({
+        items: itemsFor(threads),
+        visibleKeys: new Set(threads.map(keyOf)),
+        disclosure: { routeKey: null, expandedKeys: new Set(), closedKeys: new Set() },
+      });
+    expect(rows([parent, remote]).map((row) => row.key)).toEqual([parentKey]);
+    expect(rows([remote]).map((row) => row.key)).toEqual([keyOf(remote)]);
+    const opened = revealThreadListV2RouteAncestors(
+      { routeKey: null, expandedKeys: new Set(), closedKeys: new Set([parentKey]) },
+      [parent, remote],
+      keyOf(remote),
+    );
+    expect(opened.expandedKeys.has(parentKey)).toBe(true);
+    expect(opened.closedKeys.has(parentKey)).toBe(false);
+    expect(
+      buildThreadListV2FamilyRows({
+        items: itemsFor([parent, remote]),
+        visibleKeys: new Set([parentKey, keyOf(remote)]),
+        disclosure: opened,
+      }).map((row) => [row.key, row.depth]),
+    ).toEqual([
+      [parentKey, 0],
+      [keyOf(remote), 1],
+    ]);
+  });
+
   it("opts ordinary subagents into scoped search and ordering without changing the old list", () => {
     const threads = [parent, child, grandchild];
     expect(
