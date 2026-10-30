@@ -716,6 +716,21 @@ const make = Effect.gen(function* () {
                 ),
           ),
         );
+      case "prepared-run.release":
+        return orchestrator
+          .getThreadRecords(command.threadId, ["runs"], { runIds: [command.runId] })
+          .pipe(
+            Effect.flatMap((projection) => {
+              const run = projection.runs.find((candidate) => candidate.id === command.runId);
+              return run === undefined
+                ? Effect.void
+                : assertProviderInstanceEnabled({
+                    projectId: projection.thread.projectId,
+                    commandId: command.commandId,
+                    instanceId: run.providerInstanceId,
+                  });
+            }),
+          );
       case "delegated_task.request":
         return orchestrator.getThreadRecords(command.parentThreadId, []).pipe(
           Effect.flatMap((parent) =>

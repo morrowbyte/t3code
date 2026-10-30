@@ -97,6 +97,13 @@ const layerDispatchChokepointTest =
                   model: "test",
                 },
               },
+              runs: [
+                {
+                  id: RunId.make("run:prepared-destination"),
+                  providerInstanceId: ProviderInstanceId.make("codex_prepared"),
+                  status: "preparing",
+                },
+              ],
             } as unknown as OrchestrationV2ThreadProjection),
           dispatch: (command) =>
             Effect.sync(() => {
@@ -261,7 +268,11 @@ it.effect("refuses a delegated child on a destination-project-disabled provider"
         dispatchMode: { type: "start_immediately" },
         createdBy: "agent",
         creationSource: "mcp",
-        delegation: { projectId: destinationId, modelSelection: { instanceId, model: "test" } },
+        delegation: {
+          projectId: destinationId,
+          modelSelection: { instanceId, model: "test" },
+          workspaceStrategy: { type: "worktree", baseRef: "main" },
+        },
       }),
     );
     expect(error).toBeInstanceOf(
@@ -271,6 +282,58 @@ it.effect("refuses a delegated child on a destination-project-disabled provider"
     expect(dispatched).toEqual([]);
   }).pipe(Effect.provide(layerTest));
 });
+
+it.effect.each([false, true])(
+  "checks a prepared run's destination instance at release (replay=%s)",
+  (replay) => {
+    const projectId = ProjectId.make("project:thread-management:chokepoint");
+    const threadId = ThreadId.make("thread:thread-management:chokepoint");
+    const instanceId = ProviderInstanceId.make("codex_prepared");
+    const commandId = CommandId.make("command:prepared-destination:release");
+    const dispatched: Array<string> = [];
+    const layerTest = layerDispatchChokepointTest(
+      ServerSettings.layerTest({
+        providerInstances: {
+          codex_work: { driver: "codex", enabled: true },
+          [instanceId]: { driver: "codex", enabled: true },
+        },
+        projectSettingsOverrides: {
+          [projectId]: { providerInstances: { [instanceId]: { enabled: false } } },
+        },
+      }),
+    )(dispatched);
+    return Effect.gen(function* () {
+      const threads = yield* ThreadManagementService.ThreadManagementService;
+      const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+      yield* receipts.insertIfAbsent({
+        commandId: replay ? commandId : CommandId.make("command:prepared-destination:admission"),
+        threadId,
+        commandType: replay ? "prepared-run.release" : "message.dispatch",
+        acceptedAt: yield* DateTime.now,
+        resultSequence: 1,
+        status: "accepted",
+        error: null,
+      });
+      const released = yield* threads
+        .dispatch({
+          type: "prepared-run.release",
+          commandId,
+          threadId,
+          runId: RunId.make("run:prepared-destination"),
+        })
+        .pipe(Effect.result);
+      if (replay) {
+        expect(released._tag).toBe("Success");
+        expect(dispatched).toEqual(["prepared-run.release"]);
+      } else {
+        expect(released._tag).toBe("Failure");
+        if (released._tag === "Failure")
+          expect(released.failure).toMatchObject({ projectId, instanceId });
+        expect(dispatched).toEqual([]);
+      }
+    }).pipe(Effect.provide(layerTest));
+  },
+);
 
 it.effect(
   "a replay of an already-accepted command id dispatches despite the instance now being disabled",

@@ -43,6 +43,7 @@ import { McpSchema, McpServer } from "effect/ai";
 
 import { CodexOrchestratorReplayHarness } from "../orchestration-v2/Adapters/CodexAdapterV2.testkit.ts";
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import * as EffectWorker from "../orchestration-v2/EffectWorker.ts";
@@ -586,6 +587,14 @@ describe("orchestrator MCP toolkit", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const cwd = yield* checkpointWorkspace("conversation-work-admission");
+          const destinationId = ProjectId.make("project:conversation-work-destination");
+          const baseChecks: Array<ProjectId> = [];
+          const preparationCalls: Array<{
+            commandId: CommandId;
+            threadId: ThreadId;
+            runId: RunId;
+          }> = [];
+          let losePreparationResponse = true;
           const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
           const registry = ProviderAdapterRegistry.layerFromAdapters([
             makeDeterministicAdapter({
@@ -604,8 +613,9 @@ describe("orchestrator MCP toolkit", () => {
             },
             registry,
           );
-          const domain = Layer.merge(
+          const domain = Layer.mergeAll(
             runtime,
+            ProjectStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
             ThreadManagementService.layer.pipe(
               Layer.provide(runtime),
               Layer.provide(ServerSettings.layerTest()),
@@ -615,7 +625,34 @@ describe("orchestrator MCP toolkit", () => {
             ),
           );
           const layer = layerLocalToolkit.pipe(
-            Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
+            Layer.provide(
+              Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+                checkWorktreeBase: ({ projectId: checkedProjectId, workspaceStrategy }) =>
+                  Effect.suspend(() => {
+                    baseChecks.push(checkedProjectId);
+                    return workspaceStrategy.type === "worktree" &&
+                      workspaceStrategy.baseRef === "missing-base"
+                      ? Effect.fail(
+                          new ThreadLaunchService.ThreadLaunchBaseRefError({
+                            projectId: checkedProjectId,
+                            projectTitle: "Destination",
+                            workspaceRoot: `${cwd}/destination`,
+                            baseRef: workspaceStrategy.baseRef,
+                          }),
+                        )
+                      : Effect.void;
+                  }),
+                prepareRun: (input) =>
+                  Effect.suspend(() => {
+                    preparationCalls.push(input);
+                    if (losePreparationResponse) {
+                      losePreparationResponse = false;
+                      return Effect.die("Lost response after durable child admission");
+                    }
+                    return Effect.void;
+                  }),
+              }),
+            ),
             Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
             Layer.provideMerge(McpServer.McpServer.layer),
             Layer.provideMerge(domain),
@@ -639,10 +676,10 @@ describe("orchestrator MCP toolkit", () => {
               Layer.mock(ProjectService.ProjectService)({
                 getById: (id) =>
                   Effect.succeed(
-                    id === projectId
+                    id === projectId || id === destinationId
                       ? Option.some({
                           id,
-                          workspaceRoot: cwd,
+                          workspaceRoot: id === destinationId ? `${cwd}/destination` : cwd,
                           defaultModelSelection: null,
                         } as never)
                       : Option.none(),
@@ -808,6 +845,168 @@ describe("orchestrator MCP toolkit", () => {
             expect(parent.runs.find((run) => run.id === original.id)!.status).toBe("running");
             expect(parent.runs.filter((run) => run.status === "queued")).toHaveLength(0);
             expect(yield* Ref.get(capturedTurns)).toHaveLength(4);
+            const projects = yield* ProjectStore.ProjectStoreV2;
+            yield* projects.apply({
+              sequence: 1,
+              eventId: EventId.make("create-prepared-destination"),
+              aggregateKind: "project",
+              aggregateId: destinationId,
+              occurredAt: "2026-10-23T18:00:00Z",
+              commandId: null,
+              causationEventId: null,
+              correlationId: null,
+              metadata: {},
+              type: "project.created",
+              payload: {
+                projectId: destinationId,
+                title: "Destination",
+                workspaceRoot: `${cwd}/destination`,
+                defaultModelSelection: null,
+                scripts: [],
+                createdAt: "2026-10-23T18:00:00Z",
+                updatedAt: "2026-10-23T18:00:00Z",
+              },
+            });
+
+            const preparedRequest = {
+              threadId: parentThreadId,
+              message: "Implement in the destination worktree",
+              clientRequestId: "prepared-destination",
+              delegation: {
+                projectId: destinationId,
+                target: { providerInstanceId: codexInstanceId, model: codexModel, options: {} },
+                workspaceStrategy: {
+                  type: "worktree",
+                  baseRef: "main",
+                  branch: "feature/task",
+                  startFromOrigin: false,
+                },
+              },
+            };
+            for (const [index, delegation] of [
+              { ...preparedRequest.delegation, target: {} },
+              { ...preparedRequest.delegation, target: { providerInstanceId: codexInstanceId } },
+              {
+                ...preparedRequest.delegation,
+                target: { ...preparedRequest.delegation.target, projectId: destinationId },
+              },
+              {
+                ...preparedRequest.delegation,
+                target: {
+                  ...preparedRequest.delegation.target,
+                  environmentId: scope.environmentId,
+                },
+              },
+              { ...preparedRequest.delegation, workspaceStrategy: { type: "root" } },
+              {
+                ...preparedRequest.delegation,
+                workspaceStrategy: { type: "existing_worktree", worktreePath: cwd },
+              },
+            ].entries()) {
+              const denied = yield* invoke({
+                ...preparedRequest,
+                delegation,
+                clientRequestId: `invalid-prepared-${index}`,
+              }).pipe(Effect.exit);
+              expect(Exit.isFailure(denied) || denied.value.isError === true).toBe(true);
+            }
+            expect(
+              (yield* invoke({
+                ...preparedRequest,
+                clientRequestId: "missing-destination-base",
+                delegation: {
+                  ...preparedRequest.delegation,
+                  workspaceStrategy: {
+                    ...preparedRequest.delegation.workspaceStrategy,
+                    baseRef: "missing-base",
+                  },
+                },
+              })).isError,
+            ).toBe(true);
+            expect(
+              (yield* orchestrator.getThreadProjection(parentThreadId)).subagents,
+            ).toHaveLength(3);
+            expect(
+              (yield* invoke(
+                { ...preparedRequest, clientRequestId: "remote-prepared" },
+                {
+                  ...scope,
+                  remoteSender: {
+                    environmentId: EnvironmentId.make("another-environment"),
+                    threadId: parentThreadId,
+                  },
+                },
+              )).isError,
+            ).toBe(true);
+            const lost = yield* invoke(preparedRequest);
+            expect(lost.isError).toBe(true);
+            const accepted = yield* orchestrator.getThreadProjection(parentThreadId);
+            const preparedTask = accepted.subagents.find(
+              (task) => !admitted.some((prior) => prior.taskId === task.id),
+            )!;
+            const child = yield* orchestrator.getThreadProjection(preparedTask.childThreadId!);
+            expect(child.thread).toMatchObject({
+              projectId: destinationId,
+              lineage: { parentThreadId, relationshipToParent: "subagent" },
+            });
+            expect(child.runs[0]).toMatchObject({
+              status: "preparing",
+              workspacePreparation: preparedRequest.delegation.workspaceStrategy,
+            });
+            expect(child.thread.modelSelection).toEqual({ ...codexSelection, options: [] });
+            const recovered = yield* invoke({
+              ...preparedRequest,
+              environmentId: scope.environmentId,
+            });
+            expect(recovered.isError).not.toBe(true);
+            expect(recovered.structuredContent).toMatchObject({
+              childThreadId: child.thread.id,
+              childRunId: child.runs[0]!.id,
+              taskId: preparedTask.id,
+              admissionStatus: "completed",
+              status: "preparing",
+            });
+            expect(baseChecks).toEqual([destinationId, destinationId]);
+            expect(preparationCalls).toHaveLength(2);
+            expect(preparationCalls[1]).toEqual(preparationCalls[0]);
+            for (const delegation of [
+              { ...preparedRequest.delegation, projectId },
+              {
+                ...preparedRequest.delegation,
+                workspaceStrategy: {
+                  ...preparedRequest.delegation.workspaceStrategy,
+                  baseRef: "other",
+                },
+              },
+              {
+                ...preparedRequest.delegation,
+                workspaceStrategy: {
+                  ...preparedRequest.delegation.workspaceStrategy,
+                  branch: "feature/other",
+                },
+              },
+              {
+                ...preparedRequest.delegation,
+                target: { ...preparedRequest.delegation.target, model: "other" },
+              },
+              {
+                ...preparedRequest.delegation,
+                target: {
+                  ...preparedRequest.delegation.target,
+                  options: { reasoningEffort: "high" },
+                },
+              },
+            ]) {
+              expect((yield* invoke({ ...preparedRequest, delegation })).isError).toBe(true);
+            }
+            expect(
+              (yield* Ref.get(capturedTurns)).some((turn) => turn.threadId === child.thread.id),
+            ).toBe(false);
+            const unchangedParent = yield* orchestrator.getThreadProjection(parentThreadId);
+            expect(unchangedParent.thread).toMatchObject({ projectId, worktreePath: cwd });
+            expect(unchangedParent.runs.find((run) => run.id === original.id)!.status).toBe(
+              "running",
+            );
             yield* orchestrator.dispatch({
               type: "thread.interaction-mode.set",
               commandId: CommandId.make("change-conversation-default"),
@@ -918,7 +1117,7 @@ describe("orchestrator MCP toolkit", () => {
             ).toBe(true);
             expect(
               (yield* orchestrator.getThreadProjection(parentThreadId)).subagents,
-            ).toHaveLength(4);
+            ).toHaveLength(5);
             expect(
               (yield* invoke({
                 threadId: parentThreadId,
