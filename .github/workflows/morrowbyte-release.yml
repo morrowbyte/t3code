@@ -2103,7 +2103,7 @@ jobs:
 
       - name: Create fork-only prerelease
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.MORROWBYTE_RELEASE_TOKEN || github.token }}
           GH_REPO: ${{ vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}
           OBSERVATORY_ROUTE_SHA: ${{ needs.preflight.outputs.observatory_route_sha256 }}
           DESKTOP_RUN_ID: ${{ needs.preflight.outputs.desktop_run_id }}
@@ -2236,7 +2236,7 @@ jobs:
     permissions:
       contents: write
     env:
-      GH_TOKEN: ${{ github.token }}
+      GH_TOKEN: ${{ secrets.MORROWBYTE_RELEASE_TOKEN || github.token }}
       GH_REPO: ${{ github.repository }}
       SOURCE_SHA: ${{ needs.preflight.outputs.android_source_sha || needs.preflight.outputs.source_sha }}
       CONTROL_SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
@@ -2419,7 +2419,7 @@ jobs:
           path: release-assets
       - name: Publish Windows-only payload with preserved Linux feed
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.MORROWBYTE_RELEASE_TOKEN || github.token }}
           SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
           RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
         run: node scripts/morrowbyte/windows-only-release.cjs publish release-assets

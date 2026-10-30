@@ -148,6 +148,12 @@ If the maintainer explicitly chooses a paid Blacksmith release for one run, add
 and Windows Blacksmith platforms without editing the workflow or label variables.
 The default remains `self-hosted`; this option is not an automatic fallback.
 
+If releases can target a commit whose workflows differ from current `main`,
+configure the encrypted repository secret `MORROWBYTE_RELEASE_TOKEN` with
+repository content and workflow write access. GitHub's built-in job token cannot
+publish that case. Only the publishing steps use this optional credential;
+builds and checks keep their normal job token.
+
 ## Integration CI
 
 `morrowbyte-ci.yml` uses the short integration check on every branch push and
