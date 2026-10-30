@@ -58,6 +58,8 @@ import * as AttachmentHandlers from "./attachment/handlers.ts";
 import * as PeerForwarding from "../../peer/PeerForwarding.ts";
 import * as PeerLinkRequests from "../../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../../peer/PeerLinks.ts";
+import * as PeerMcpClient from "../../peer/PeerMcpClient.ts";
+import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 
 const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
@@ -859,8 +861,10 @@ it.effect("discovers workflow stop targets and requires orchestration capability
   );
 });
 
-it.effect("only the caller that prepared a pending upload can discard it", () =>
-  Effect.gen(function* () {
+it.effect("only the caller that prepared a pending upload can discard it", () => {
+  const peerRequestIds: string[] = [];
+  return Effect.gen(function* () {
+    yield* TestClock.setTime(1_800_000_000_000);
     const server = yield* McpServer.McpServer;
     const call = (
       name: string,
@@ -879,6 +883,70 @@ it.effect("only the caller that prepared a pending upload can discard it", () =>
       scope,
     );
     const { attachmentId } = prepared.structuredContent as { readonly attachmentId: string };
+    const transferInput = {
+      environmentId: "other-environment",
+      clientRequestId: "1800000000000-request-one",
+    };
+    const sourcePrepared = yield* call("t3_file_transfer_prepare", transferInput, scope);
+    expect(sourcePrepared.isError).toBe(false);
+    const stolen = yield* call("t3_file_transfer", transferInput, {
+      ...scope,
+      requestNamespace: "another-agent-session",
+    });
+    expect(declaredFailure(stolen)).toMatchObject({ code: "invalid_request" });
+    const sourceAborted = yield* call("t3_file_transfer_abort", transferInput, scope);
+    expect(sourceAborted.isError).toBe(false);
+    yield* call("t3_file_transfer_status", transferInput, scope);
+    yield* call("t3_file_transfer_status", transferInput, {
+      ...scope,
+      requestNamespace: "restarted-provider-session",
+      thread: { ...scope.thread!, providerSessionId: "restarted-provider-session" },
+    });
+    expect(peerRequestIds).toHaveLength(2);
+    expect(peerRequestIds[0]).toBe(peerRequestIds[1]);
+    yield* call("t3_file_transfer_status", transferInput, {
+      ...scope,
+      thread: { ...scope.thread!, threadId: ThreadId.make("another-thread") },
+    });
+    expect(peerRequestIds[2]).not.toBe(peerRequestIds[0]);
+    const linkedScope: McpInvocationContext.McpInvocationScope = {
+      ...scope,
+      requestNamespace: "client:linked-transfer",
+      thread: undefined,
+      linkedEnvironments: true,
+      client: { sessionId: "linked-transfer", label: "peer", access: "full-access", linked: true },
+    };
+    const peerBegin = {
+      target: scope.environmentId,
+      requestId: `1800000000000-${"0".repeat(64)}`,
+      sizeBytes: 4,
+      sha256: "0".repeat(64),
+    };
+    const noRights = yield* call("t3_peer_transfer_begin", peerBegin, {
+      ...linkedScope,
+      client: { ...linkedScope.client!, access: "read-only" },
+    });
+    expect(declaredFailure(noRights)).toMatchObject({ code: "capability_denied" });
+    const wrongTarget = yield* call(
+      "t3_peer_transfer_begin",
+      { ...peerBegin, target: "wrong-environment" },
+      linkedScope,
+    );
+    expect(declaredFailure(wrongTarget)).toMatchObject({ code: "capability_denied" });
+    const begun = yield* call("t3_peer_transfer_begin", peerBegin, linkedScope);
+    expect(begun.structuredContent).toMatchObject({ state: "receiving", offset: 0 });
+    const otherLink = yield* call("t3_peer_transfer_status", peerBegin, {
+      ...linkedScope,
+      requestNamespace: "client:another-link",
+      client: { ...linkedScope.client!, sessionId: "another-link" },
+    });
+    expect(otherLink.structuredContent).toMatchObject({ state: "not_found" });
+    const aborted = yield* call(
+      "t3_peer_transfer_abort",
+      { target: scope.environmentId, requestId: peerBegin.requestId },
+      linkedScope,
+    );
+    expect(aborted.structuredContent).toMatchObject({ state: "aborted" });
     const otherThread = {
       ...scope,
       requestNamespace: "other-session",
@@ -906,10 +974,24 @@ it.effect("only the caller that prepared a pending upload can discard it", () =>
       McpHttpServer.layerAttachmentToolkit.pipe(
         Layer.provideMerge(McpServer.McpServer.layer),
         Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
+        Layer.provide(Layer.mock(PeerLinks.PeerLinks)({ enabled: Effect.succeed(true) })),
+        Layer.provide(
+          Layer.mock(PeerMcpClient.PeerMcpClient)({
+            call: ((input) => {
+              peerRequestIds.push(String(input.arguments.requestId));
+              return Effect.succeed({ state: "not_found" });
+            }) as PeerMcpClient.PeerMcpClient["Service"]["call"],
+          }),
+        ),
+        Layer.provide(
+          Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
+            getEnvironmentId: Effect.succeed(scope.environmentId),
+          }),
+        ),
         Layer.provide(ServerSecretStore.layer),
         Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-attachment-" })),
         Layer.provide(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
       ),
     ),
-  ),
-);
+  );
+});
