@@ -1,5 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - Injects a real file replacement during the native SQLite transaction.
-import * as NodeFS from "node:fs";
+// oxlint-disable-next-line t3code/namespace-node-imports -- The stat spy needs the mutable default export; namespace properties cannot be redefined.
+import NodeFS from "node:fs";
+import * as NodeModule from "node:module";
 import * as NodeSqlite from "node:sqlite";
 
 import { assert, describe, it } from "@effect/vitest";
@@ -203,8 +205,7 @@ describe("server ownership", () => {
       "replace",
       "during acquisition",
       "first acquisition",
-      // Root bypasses directory permissions, so chmod cannot force EACCES.
-      ...(process.getuid?.() === 0 ? [] : (["stat error"] as const)),
+      "stat error",
     ] as const)("monitors ownership after %s", (operation) => {
       const messages: unknown[] = [];
       const warnings: unknown[] = [];
@@ -243,9 +244,21 @@ describe("server ownership", () => {
           yield* fs.rename(replacement, lockPath);
         }
         if (operation === "stat error") {
-          yield* fs.chmod(root, 0);
+          const stat = NodeFS.statSync;
+          const denied = vi.spyOn(NodeFS, "statSync").mockImplementation((...args) => {
+            if (args[0] === lockPath) {
+              throw Object.assign(new Error("Fixture lock stat is denied."), { code: "EACCES" });
+            }
+            return Reflect.apply(stat, NodeFS, args);
+          });
+          NodeModule.syncBuiltinESMExports();
           yield* TestClock.adjust("15 seconds").pipe(
-            Effect.ensuring(fs.chmod(root, 0o700).pipe(Effect.orDie)),
+            Effect.ensuring(
+              Effect.sync(() => {
+                denied.mockRestore();
+                NodeModule.syncBuiltinESMExports();
+              }),
+            ),
           );
           assert.deepEqual(warnings, [
             [`Cannot check server ownership lock at ${lockPath} (EACCES).`],
