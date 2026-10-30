@@ -1,7 +1,17 @@
-import type { KeybindingCommand, ResolvedKeybindingsConfig } from "@t3tools/contracts";
+import { createElement } from "react";
+import { render } from "../../test/render";
+import {
+  EnvironmentId,
+  ThreadId,
+  type KeybindingCommand,
+  type ResolvedKeybindingsConfig,
+} from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { dispatchMenuAction, registerCommands, registerMenuAction } from "./dispatcher";
+import { registerPinnedWorkTabNavigation } from "./pinnedWorkTabNavigation";
+import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
+import { mergeWithDefaultKeybindings } from "@t3tools/shared/keybindings";
 
 function bindings(entries: ReadonlyArray<[string, KeybindingCommand]>): ResolvedKeybindingsConfig {
   return entries.map(([key, command]) => ({
@@ -125,4 +135,68 @@ describe("command dispatcher", () => {
     expect(newer).toHaveBeenCalledOnce();
     expect(older).toHaveBeenCalledOnce();
   });
+});
+
+it("keeps all eight pin shortcuts active without a mounted sidebar and respects guards and mode", async () => {
+  using _platform = vi.spyOn(navigator, "platform", "get").mockReturnValue("Linux");
+  const navigate = vi.fn();
+  let settings = {
+    ...DEFAULT_CLIENT_SETTINGS,
+    numericNavigationMode: "pinned-tabs" as "pinned-tabs" | "sidebar",
+    pinnedWorkTabs: Array.from({ length: 8 }, (_, index) => ({
+      environmentId: EnvironmentId.make(`environment-${index}`),
+      threadId: ThreadId.make("shared-thread-id"),
+      title: `Pin ${index + 1}`,
+    })),
+  };
+  await using screen = await render(
+    createElement(
+      "div",
+      null,
+      createElement("input", { "data-terminal-owner": "drawer" }),
+      createElement("input", { "data-keybinding-capture": "" }),
+      createElement("input", { role: "dialog" }),
+      createElement("input", { "data-slot": "menu-popup" }),
+      createElement("input", { "data-composer": "" }),
+    ),
+  );
+  using _registration = {
+    [Symbol.dispose]: registerPinnedWorkTabNavigation({
+      settings: () => settings,
+      keybindings: () => mergeWithDefaultKeybindings([]),
+      terminalOpen: () => false,
+      navigate,
+    }),
+  };
+  const pressNumber = (number: number, target: EventTarget = window) => {
+    const event = new KeyboardEvent("keydown", {
+      key: String(number),
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    target.dispatchEvent(event);
+    return event;
+  };
+  for (let index = 0; index < 8; index++) {
+    expect(pressNumber(index + 1).defaultPrevented).toBe(true);
+    expect(navigate).toHaveBeenLastCalledWith(settings.pinnedWorkTabs[index]);
+  }
+  expect(navigate).toHaveBeenCalledTimes(8);
+  pressNumber(9);
+  expect(navigate).toHaveBeenCalledTimes(8);
+  for (const target of screen.container.querySelectorAll<HTMLInputElement>(
+    "input:not([data-composer])",
+  )) {
+    target.focus();
+    expect(pressNumber(1, target).defaultPrevented).toBe(false);
+  }
+  expect(navigate).toHaveBeenCalledTimes(8);
+  const composer = screen.container.querySelector<HTMLInputElement>("[data-composer]")!;
+  composer.focus();
+  expect(pressNumber(1, composer).defaultPrevented).toBe(true);
+  expect(navigate).toHaveBeenCalledTimes(9);
+  settings = { ...settings, numericNavigationMode: "sidebar" };
+  expect(pressNumber(1).defaultPrevented).toBe(false);
+  expect(navigate).toHaveBeenCalledTimes(9);
 });
