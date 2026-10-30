@@ -47,11 +47,33 @@ describe("optimistic user messages", () => {
   it("an acknowledged message stays gone after the server drops its row", () => {
     let state = applyOptimisticUserMessagesAction(emptyOptimisticUserMessages(threadA), threadA, [
       message("m1"),
-      message("m2", "blob:two"),
+      {
+        ...message("m2"),
+        attachments: [
+          {
+            type: "image",
+            id: "crop",
+            name: "preview-annotation-1.png",
+            mimeType: "image/png",
+            sizeBytes: 1,
+            previewUrl: "data:image/png;base64,AA==",
+          },
+          ...message("m2", "blob:two").attachments!,
+          {
+            type: "image",
+            id: "no-preview",
+            name: "no-preview.png",
+            mimeType: "image/png",
+            sizeBytes: 1,
+          },
+        ],
+      },
     ]);
     state = reconcileOptimisticUserMessages(state, threadA, ids("m1", "m2"));
     expect(state.messages).toEqual([]);
-    expect(state.handoff).toEqual({ m2: ["blob:two"] });
+    expect(state.handoff).toEqual({
+      m2: ["data:image/png;base64,AA==", "blob:two", null],
+    });
 
     // A cancelled queued run or a rewind removes the server's copy again.
     state = reconcileOptimisticUserMessages(state, threadA, ids());
