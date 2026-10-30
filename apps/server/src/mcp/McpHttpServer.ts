@@ -33,6 +33,10 @@ import {
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as PeerTransferReceiver from "../peer/PeerTransferReceiver.ts";
+import * as PeerTransferSender from "../peer/PeerTransferSender.ts";
+import * as PeerTransferSource from "../peer/PeerTransferSource.ts";
 import { BrowserArtifactBudgetError, writeBrowserScreenshot } from "../browserArtifactBudget.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as DeviceService from "../device/DeviceService.ts";
@@ -1166,6 +1170,32 @@ export const layerProjectRegistration = toolkitRegistration(ProjectToolkit, Proj
 export const layerAttachmentToolkit = toolkitRegistration(
   AttachmentToolkit,
   AttachmentHandlers.layer,
+).pipe(
+  Layer.provide(PeerTransferSender.layer),
+  Layer.provide(
+    Layer.unwrap(
+      Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        const path = yield* Path.Path;
+        return PeerTransferSource.layer({
+          directory: path.join(config.stateDir, "peer-transfer-input"),
+        });
+      }),
+    ),
+  ),
+  Layer.provide(
+    Layer.unwrap(
+      Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        const identity = yield* ServerEnvironment.ServerEnvironmentIdentity;
+        const path = yield* Path.Path;
+        return PeerTransferReceiver.layer({
+          directory: path.join(config.stateDir, "peer-transfers"),
+          environmentId: yield* identity.getEnvironmentId,
+        });
+      }),
+    ),
+  ),
 );
 
 export const layerPullRequestsToolkit = toolkitRegistration(

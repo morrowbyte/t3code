@@ -571,7 +571,7 @@ const make = Effect.gen(function* () {
       if (Option.isNone(url)) {
         return yield* new PeerLinkError({
           reason: "unreachable",
-          message: `${link.label} did not answer at ${link.urls.join(", ")}.`,
+          message: `${link.label} did not answer at any verified address.`,
         });
       }
       // A link made before the peer had to fence linked work, or a peer moved

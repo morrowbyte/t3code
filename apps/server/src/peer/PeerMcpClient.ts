@@ -240,7 +240,11 @@ const make = Effect.gen(function* () {
     (effect, input) =>
       effect.pipe(
         Effect.tapError((error) =>
-          links.recordOutcome(input.environmentId, { error: error.message }),
+          links.recordOutcome(input.environmentId, {
+            error: input.tool.startsWith("t3_peer_transfer_")
+              ? "The file transfer failed."
+              : error.message,
+          }),
         ),
         Effect.tap(() => links.recordOutcome(input.environmentId, { error: null })),
         // Recorded above with the transport's own message; the agent hears it plainly.

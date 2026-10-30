@@ -1,6 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
-import { ProviderInstanceId } from "@t3tools/contracts";
+import { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
 import { McpProviderSessions } from "@t3tools/provider-core/server/McpProviderSessions";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -12,7 +12,7 @@ import { AgentAvatarService } from "../agent-avatar/AgentAvatarService.ts";
 import { ConnectedEnvironmentBroker } from "../mcp/connectedEnvironment/Broker.ts";
 import { ServerConfig } from "../config.ts";
 import { DeviceService } from "../device/DeviceService.ts";
-import { ServerEnvironment } from "../environment/ServerEnvironment.ts";
+import { ServerEnvironment, ServerEnvironmentIdentity } from "../environment/ServerEnvironment.ts";
 import { GitWorkflowService } from "../git/GitWorkflowService.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import { PreviewAutomationBroker } from "../mcp/PreviewAutomationBroker.ts";
@@ -28,6 +28,7 @@ import { ThreadSearch } from "../orchestration-v2/ThreadSearch.ts";
 import { PeerForwarding } from "../peer/PeerForwarding.ts";
 import { PeerLinkRequests } from "../peer/PeerLinkRequests.ts";
 import { PeerLinks } from "../peer/PeerLinks.ts";
+import { PeerMcpClient } from "../peer/PeerMcpClient.ts";
 import { RemoteDelegation } from "../peer/RemoteDelegation.ts";
 import { PreviewManager } from "../preview/Manager.ts";
 import { PreviewBrowser } from "../preview/PreviewBrowser.ts";
@@ -61,6 +62,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(PeerForwarding)({}),
   Layer.mock(PeerLinkRequests)({}),
   Layer.mock(PeerLinks)({}),
+  Layer.mock(PeerMcpClient)({}),
   Layer.mock(PreviewAutomationBroker)({}),
   Layer.mock(PreviewBrowser)({}),
   Layer.mock(PreviewManager)({}),
@@ -74,6 +76,9 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(SecretRequests)({}),
   ServerConfig.layerTest(process.cwd(), { prefix: "t3-agent-context-budget-" }),
   Layer.mock(ServerEnvironment)({}),
+  Layer.succeed(ServerEnvironmentIdentity, {
+    getEnvironmentId: Effect.succeed(EnvironmentId.make("budget-test")),
+  }),
   Layer.mock(ServerSecretStore)({}),
   Layer.mock(ServerSettingsService)({}),
   Layer.mock(SourceControlRepositoryService)({}),

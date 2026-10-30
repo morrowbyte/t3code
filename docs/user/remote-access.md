@@ -321,6 +321,16 @@ ends, as for any delegated task. It keeps following the task across restarts.
 If the other machine revokes the link, or the link is removed here, the task
 fails with that reason.
 
+To move a particular local file, ask your agent to transfer it to a named linked
+environment. The agent needs full access here and through the link, and both
+environments need this feature. Transfers accept files up to 50 MiB and return
+a staged destination path, size and SHA-256. The agent can check an uncertain
+result with the same request ID. Once the destination has finished using the
+file, ask the agent to release it. Windows staging is not yet supported. A
+transfer request expires after 24 hours; an expired request cannot start again.
+The destination limits the number of transfer records it retains during that
+period and may temporarily refuse new transfers when the limit is full.
+
 ## Manage or revoke access
 
 On the host, **Settings → Sharing & access** lets authorized administrators create
