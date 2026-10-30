@@ -55,10 +55,20 @@ import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.t
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as McpSessionRegistryTestkit from "../mcp/McpSessionRegistry.testkit.ts";
+import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
+import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
+import * as SourceControlRepositoryService from "../sourceControl/SourceControlRepositoryService.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as ManagedEndpointRuntime from "../cloud/ManagedEndpointRuntime.ts";
+import * as AnalyticsService from "../telemetry/AnalyticsService.ts";
+import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import * as Orchestrator from "./Orchestrator.ts";
@@ -646,6 +656,140 @@ const layerSharedApplicationDataPlaneTest = Layer.mergeAll(
   Layer.provide(layerTestProviderInstanceRegistry),
   Layer.provide(layerGitWorkflowTest),
   Layer.provide(layerPlatformTest),
+);
+
+it.effect.each(["enabled", "opt-out", "missing", "deleted", "foreign"] as const)(
+  "production sibling services preserve project device access (%s)",
+  (scenario) =>
+    Effect.gen(function* () {
+      const projectId = ProjectId.make("project:production-device-access");
+      const threadId = ThreadId.make("thread:production-device-access");
+      let deviceAccess: boolean | undefined;
+      yield* Effect.gen(function* () {
+        if (scenario !== "missing")
+          yield* seedProject({
+            projectId,
+            title: "Device access",
+            workspaceRoot: process.cwd(),
+            defaultModelSelection: modelSelection,
+            createdAt: "2026-01-01T00:00:00.000Z",
+          });
+        const threads = yield* ThreadManagementService.ThreadManagementService;
+        yield* threads.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("create:production-device-access"),
+          threadId,
+          projectId:
+            scenario === "foreign" ? ProjectId.make("project:foreign-device-access") : projectId,
+          title: "Device access",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        if (scenario === "deleted") {
+          const projects = yield* ProjectStore.ProjectStoreV2;
+          yield* projects.apply({
+            sequence: 1,
+            eventId: EventId.make("delete:production-device-access"),
+            aggregateKind: "project",
+            aggregateId: projectId,
+            occurredAt: "2026-01-01T00:00:01.000Z",
+            commandId: null,
+            causationEventId: null,
+            correlationId: null,
+            metadata: {},
+            type: "project.deleted",
+            payload: { projectId, deletedAt: "2026-01-01T00:00:01.000Z" },
+          });
+        }
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        yield* manager
+          .open({
+            threadId,
+            providerSessionId: ProviderSessionId.make("session:production-device-access"),
+            modelSelection,
+            runtimePolicy: {
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              cwd: process.cwd(),
+            },
+          })
+          .pipe(Effect.exit);
+        assert.strictEqual(deviceAccess, scenario === "enabled");
+      }).pipe(
+        Effect.provide(
+          RuntimeLayer.layerProduction.pipe(
+            Layer.provideMerge(ProjectStore.layer),
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.mock(WorkspacePaths.WorkspacePaths)({
+                  normalizeWorkspaceRoot: (root) => Effect.succeed(root),
+                }),
+                Layer.mock(ProjectEnrichmentService.ProjectEnrichmentService)({
+                  getAvailable: () =>
+                    Effect.succeed({
+                      repositoryIdentity: null,
+                      faviconPath: null,
+                      repositoryIdentityResolved: false,
+                    }),
+                }),
+                Layer.mock(PreviewManager.PreviewManager)({ close: () => Effect.void }),
+                Layer.mock(TerminalManager.TerminalManager)({ close: () => Effect.void }),
+                Layer.effect(
+                  McpSessionRegistry.McpSessionRegistry,
+                  Effect.gen(function* () {
+                    const registry = yield* McpSessionRegistry.McpSessionRegistry;
+                    return {
+                      ...registry,
+                      issue: (input: Parameters<typeof registry.issue>[0]) => {
+                        deviceAccess = input.capabilities?.has("device");
+                        return registry.issue(input);
+                      },
+                    };
+                  }),
+                ).pipe(Layer.provide(McpSessionRegistryTestkit.layer)),
+                McpProviderSessions.layer,
+                layerCheckpointStoreTest,
+                WorktreeSetupTracker.layer,
+                ProjectCloneTracker.layer,
+              ),
+            ),
+            Layer.provide(
+              Layer.mergeAll(
+                SqlitePersistence.layerMemory,
+                layerServerConfig,
+                ServerSettings.layerTest({
+                  enableAgentDeviceAccess: true,
+                  projectSettingsOverrides: {
+                    [projectId]: { enableAgentDeviceAccess: scenario !== "opt-out" },
+                  },
+                }),
+                layerTestProviderInstanceRegistry,
+                Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+                Layer.succeed(ServerSecretStore.ServerSecretStore, {
+                  get: () => Effect.succeedNone,
+                  set: () => Effect.void,
+                  create: () => Effect.void,
+                  remove: () => Effect.void,
+                  getOrCreateRandom: () => Effect.succeed(new Uint8Array(32)),
+                }),
+                Layer.mock(TextGeneration.TextGeneration)({}),
+                Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+                Layer.mock(ManagedEndpointRuntime.CloudManagedEndpointRuntime)({}),
+                Layer.mock(AnalyticsService.AnalyticsService)({}),
+                Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({}),
+                layerGitWorkflowTest,
+              ),
+            ),
+            Layer.provide(layerPlatformTest),
+          ),
+        ),
+      );
+    }),
 );
 
 it.effect.each(["send", "delegate"] as const)(

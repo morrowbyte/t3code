@@ -78,7 +78,7 @@ function AttentionInboxContent({ onClose }: { onClose: () => void }) {
       <DialogHeader>
         <DialogTitle>Attention inbox</DialogTitle>
         <DialogDescription className="sr-only">
-          Questions, approvals, completed work and warnings.
+          Pending questions, approvals and active warnings.
         </DialogDescription>
       </DialogHeader>
       <DialogPanel>

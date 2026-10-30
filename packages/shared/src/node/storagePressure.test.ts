@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
 import { expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
-import { checkStorageAdmission, sampleStorage } from "./storagePressure.ts";
+import { checkStorageAdmissionFailure, sampleStorage } from "./storagePressure.ts";
 
 const GiB = 1024 ** 3;
 function setup(nativePath: Path.Path) {
@@ -56,15 +56,24 @@ it.layer(NodePath.layer)("native storage samples", (it) => {
     }),
   );
 
-  it.effect("does not admit a known Btrfs volume when required counters are unavailable", () =>
+  it.effect("does not admit a known Btrfs volume when required measurements fail", () =>
     Effect.gen(function* () {
-      const { probe, counters, workspace } = setup(yield* Path.Path);
-      delete counters.bytes_may_use;
-      const result = yield* Effect.promise(() =>
-        checkStorageAdmission([workspace], 0, false, (paths) => sampleStorage(paths, probe)),
-      );
-      expect(result).toContain("Cannot check storage capacity");
-      expect(result).toContain("missing counter");
+      for (const cause of ["missing counter", "spawn findmnt EAGAIN"]) {
+        const { probe, counters, workspace } = setup(yield* Path.Path);
+        if (cause === "missing counter") delete counters.bytes_may_use;
+        else probe.run.mockRejectedValueOnce(new Error(cause));
+        const result = yield* Effect.promise(() =>
+          checkStorageAdmissionFailure([workspace], 0, false, (paths) =>
+            sampleStorage(paths, probe),
+          ),
+        );
+        expect(result?.code).toBe("storage_measurement_failed");
+        expect(result?.message).toContain("Cannot check storage capacity");
+        expect(result?.message).toContain("Capacity is unknown");
+        expect(result?.message).toContain(cause);
+        expect(result?.message).not.toContain("Not enough");
+        expect(probe.run.mock.calls.filter(([command]) => command === "findmnt")).toHaveLength(1);
+      }
     }),
   );
 

@@ -47,7 +47,11 @@ import {
   isWindowsPlatform,
 } from "@t3tools/client-runtime/state/projects";
 import {
+  AuthSettingsWriteScope,
+  AuthFilesystemWriteScope,
+  AuthPreviewOperateScope,
   AuthOrchestrationOperateScope,
+  DEFAULT_BOAT_PROJECT,
   AuthSourceControlWriteScope,
   AuthFilesystemReadScope,
   CommandId,
@@ -74,6 +78,7 @@ import { AsyncResult } from "effect/reactivity";
 import { cn } from "../../lib/cn";
 import { useProjects, useServerConfigs, waitForProject } from "../../state/entities";
 import { filesystemEnvironment } from "../../state/filesystem";
+import { boatEnvironment } from "../../state/boat";
 import { projectEnvironment } from "../../state/projects";
 import { useEnvironmentQuery } from "../../state/query";
 import { environmentSession, useEnvironmentScope, readEnvironmentScope } from "../../state/session";
@@ -709,7 +714,94 @@ async function draftWithPrompt(
   return draftId;
 }
 
-function useCreateProject(environment: EnvironmentOption | null) {
+function useBoatCreation(environment: EnvironmentOption | null) {
+  const [enabled, setEnabled] = useState(false);
+  const [automatic, setAutomatic] = useState(true);
+  const configure = useAtomCommand(boatEnvironment.configure, { reportFailure: false });
+  const setup = useAtomCommand(boatEnvironment.setup, { reportFailure: false });
+  const navigation = useNavigation();
+  const canConfigure = useEnvironmentScope(
+    environment?.environmentId ?? null,
+    AuthSettingsWriteScope,
+  );
+  const canWrite = useEnvironmentScope(
+    environment?.environmentId ?? null,
+    AuthFilesystemWriteScope,
+  );
+  const canPreview = useEnvironmentScope(
+    environment?.environmentId ?? null,
+    AuthPreviewOperateScope,
+  );
+
+  const finish = async (projectId: ProjectId) => {
+    if (!enabled || !environment) return false;
+    const configured = await configure({
+      environmentId: environment.environmentId,
+      input: {
+        projectId,
+        config: { ...DEFAULT_BOAT_PROJECT, enabled: true, autoSetup: automatic && canPreview },
+      },
+    });
+    if (configured._tag === "Failure") {
+      Dialog.alert("Could not enable Boat", errorMessage(Cause.squash(configured.cause)));
+      return false;
+    }
+    if (!automatic || !canPreview) return false;
+    const started = await setup({ environmentId: environment.environmentId, input: { projectId } });
+    if (started._tag === "Failure") {
+      Dialog.alert("Could not start Boat setup", errorMessage(Cause.squash(started.cause)));
+      return false;
+    }
+    navigation.dispatch(
+      StackActions.replace("Thread", {
+        environmentId: environment.environmentId,
+        threadId: started.value.threadId,
+      }),
+    );
+    return true;
+  };
+  const controls = (
+    <ListSection>
+      <ListRow
+        title="Use Boat cloud environment"
+        icon={null}
+        isFirst
+        disabled={!canConfigure || !canWrite}
+        right={
+          <ThemedSwitch
+            accessibilityLabel="Use Boat cloud environment"
+            value={enabled}
+            onValueChange={setEnabled}
+            disabled={!canConfigure || !canWrite}
+          />
+        }
+        onPress={() => setEnabled((value) => !value)}
+      />
+      {enabled ? (
+        <ListRow
+          disabled={!canPreview}
+          title="Set up automatically with an agent"
+          icon={null}
+          right={
+            <ThemedSwitch
+              accessibilityLabel="Set up automatically with an agent"
+              value={automatic && canPreview}
+              onValueChange={setAutomatic}
+              disabled={!canPreview}
+            />
+          }
+          onPress={() => setAutomatic((value) => !value)}
+        />
+      ) : null}
+    </ListSection>
+  );
+  return { finish, controls };
+}
+
+function useCreateProject(
+  environment: EnvironmentOption | null,
+  finishBoat?: (projectId: ProjectId) => Promise<boolean>,
+) {
   const openNewTaskDraft = useOpenNewTaskDraft();
   const navigation = useNavigation();
   const createProject = useAtomCommand(projectEnvironment.create, { reportFailure: false });
@@ -769,6 +861,7 @@ function useCreateProject(environment: EnvironmentOption | null) {
       Dialog.alert("Project added", "Project created · Waiting to sync to this device.");
       return result;
     }
+    if (await finishBoat?.(projectId)) return result;
     openNewTaskDraft(
       {
         environmentId: environment.environmentId,
@@ -994,6 +1087,7 @@ export function AddProjectNewScreen(props: { readonly environmentId?: string | s
     () => stringParam(props.environmentId) as EnvironmentId | null,
   );
   const environment = resolveAddProjectEnvironment(environmentOptions, selectedEnvironmentId);
+  const boatCreation = useBoatCreation(environment);
   const createNew = useAtomCommand(projectEnvironment.createNew, { reportFailure: false });
   const checkPublishedAppAccess = useAtomCommand(sourceControlEnvironment.checkAppAccess, {
     reportFailure: false,
@@ -1112,13 +1206,17 @@ export function AddProjectNewScreen(props: { readonly environmentId?: string | s
       { environmentId: environment.environmentId, projectId },
       15_000,
     );
-    submittingRef.current = false;
-    setIsSubmitting(false);
     if (project === null) {
+      submittingRef.current = false;
+      setIsSubmitting(false);
       setName("");
       setError("Project created · Waiting to sync to this device.");
       return;
     }
+    const openedSetup = await boatCreation.finish(projectId);
+    submittingRef.current = false;
+    setIsSubmitting(false);
+    if (openedSetup) return;
     openNewTaskDraft(
       {
         environmentId: environment.environmentId,
@@ -1212,6 +1310,7 @@ export function AddProjectNewScreen(props: { readonly environmentId?: string | s
                 : null}
             </ListSection>
           ) : null}
+          {boatCreation.controls}
           <PrimaryActionButton
             label="Create project"
             disabled={isSubmitting || trimmedName.length === 0}
@@ -1254,7 +1353,8 @@ export function AddProjectLocalFolderScreen(props: { readonly environmentId?: st
     environment?.environmentId ?? null,
     AuthOrchestrationOperateScope,
   );
-  const createProject = useCreateProject(environment);
+  const boatCreation = useBoatCreation(environment);
+  const createProject = useCreateProject(environment, boatCreation.finish);
   const { isBrowseNavigating, navigateToBrowsePath, pathInput, setPathInput } =
     useBrowsePathInput(environment);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -1290,6 +1390,7 @@ export function AddProjectLocalFolderScreen(props: { readonly environmentId?: st
             <ErrorBanner message="This connection cannot add projects." />
           ) : null}
           <ProjectPathInput value={pathInput} onChangeText={setPathInput} onSubmit={submitPath} />
+          {boatCreation.controls}
           <PrimaryActionButton
             label="Add project"
             disabled={!canCreateProject || isBrowseNavigating || isSubmitting}
@@ -1327,6 +1428,7 @@ export function AddProjectDestinationScreen(props: {
   });
   const navigation = useNavigation();
   const environment = useEnvironmentFromParam(props.environmentId);
+  const boatCreation = useBoatCreation(environment);
   const canWriteSourceControl = useEnvironmentScope(
     environment?.environmentId ?? null,
     AuthSourceControlWriteScope,
@@ -1394,7 +1496,7 @@ export function AddProjectDestinationScreen(props: {
       );
       if (project === null) {
         setError("Project created · Waiting to sync to this device.");
-      } else {
+      } else if (!(await boatCreation.finish(projectId))) {
         openNewTaskDraft(
           {
             environmentId: environment.environmentId,
@@ -1429,6 +1531,7 @@ export function AddProjectDestinationScreen(props: {
       {environment ? (
         <>
           <ProjectPathInput value={pathInput} onChangeText={setPathInput} onSubmit={submitPath} />
+          {boatCreation.controls}
           <PrimaryActionButton
             label="Clone project"
             disabled={!canCloneProject || isBrowseNavigating || isSubmitting || !remoteUrl}

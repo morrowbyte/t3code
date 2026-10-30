@@ -7,6 +7,7 @@ interface DesktopTabLease {
   references: number;
   closeTimer: number | null;
   ready: Promise<void>;
+  serverTab?: { readonly threadId: string; readonly tabId: string };
 }
 
 const leases = new Map<string, DesktopTabLease>();
@@ -48,6 +49,7 @@ export function acquireDesktopTab(
   const current =
     leases.get(tabId) ??
     ({
+      ...(serverTab === undefined ? {} : { serverTab }),
       references: 0,
       closeTimer: null,
       // Include defaults at creation to avoid painting a frame at 100%/system.
@@ -58,6 +60,12 @@ export function acquireDesktopTab(
         }),
       ),
     } satisfies DesktopTabLease);
+  if (!current.serverTab && serverTab) {
+    current.serverTab = serverTab;
+    current.ready = enqueueDesktopTabOperation(tabId, () =>
+      previewBridge?.createTab(tabId, { serverTab }),
+    );
+  }
   if (current.closeTimer !== null) window.clearTimeout(current.closeTimer);
   current.references += 1;
   current.closeTimer = null;

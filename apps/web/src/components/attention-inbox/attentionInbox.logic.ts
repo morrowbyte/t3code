@@ -6,12 +6,10 @@ import type {
   ScopedThreadRef,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
-import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 
 export const ATTENTION_CATEGORIES = {
   questions: "Questions",
   approvals: "Approvals",
-  completed: "Completed work",
   warnings: "Warnings",
 } as const;
 
@@ -34,7 +32,6 @@ export function deriveAttentionInbox(
 ) {
   const entries: AttentionEntry[] = [];
   let loadedThreads = 0;
-  let completionTimeUnavailable = 0;
   for (const thread of threads) {
     if (thread.deletedAt !== null || thread.archivedAt !== null) continue;
     loadedThreads++;
@@ -79,35 +76,11 @@ export function deriveAttentionInbox(
         occurredAt: DateTime.formatIso(thread.latestRunCompletedAt ?? thread.updatedAt),
       });
     }
-    const completed =
-      thread.latestRunId !== null &&
-      thread.activeRunId === null &&
-      thread.activityRunStatus == null &&
-      !backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []) &&
-      (thread.status === "completed" || thread.status === "idle") &&
-      request === null;
-    if (!completed) continue;
-    // Older shells omit this field. updatedAt can describe a title or visit,
-    // so it cannot establish that work actually completed.
-    if (thread.latestRunCompletedAt === undefined) {
-      completionTimeUnavailable++;
-      continue;
-    }
-    if (thread.latestRunCompletedAt === null) continue;
-    entries.push({
-      ...base,
-      id: `${key}:completed:${thread.latestRunId}`,
-      category: "completed",
-      title: "Work completed",
-      description: "Review the result in its conversation. Settle it there when finished.",
-      occurredAt: DateTime.formatIso(thread.latestRunCompletedAt),
-    });
   }
   const priority: Record<AttentionCategory, number> = {
     questions: 0,
     approvals: 1,
     warnings: 2,
-    completed: 3,
   };
   entries.sort(
     (left, right) =>
@@ -115,9 +88,9 @@ export function deriveAttentionInbox(
       right.occurredAt.localeCompare(left.occurredAt) ||
       left.id.localeCompare(right.id),
   );
-  const counts = { questions: 0, approvals: 0, completed: 0, warnings: 0 };
+  const counts = { questions: 0, approvals: 0, warnings: 0 };
   for (const entry of entries) counts[entry.category]++;
-  return { entries, counts, loadedThreads, completionTimeUnavailable };
+  return { entries, counts, loadedThreads };
 }
 
 export type AttentionInboxModel = ReturnType<typeof deriveAttentionInbox>;

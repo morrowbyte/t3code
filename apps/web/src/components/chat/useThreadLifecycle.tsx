@@ -60,7 +60,7 @@ import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { readEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
-import { backgroundWorkNowItem, childInputNowItem, goalNowItem } from "./ThreadActivityBanners";
+import { backgroundWorkNowItem, childInputNowItem, goalBannerItem } from "./ThreadActivityBanners";
 import type { useLocalDispatchState } from "./useLocalDispatchState";
 const RELATED_THREAD_SHELL_WAIT_MS = 1_000;
 
@@ -523,9 +523,9 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
   };
   const sendStandaloneCommandStable = useStableCallback(sendStandaloneCommand);
   const activeGoal = activeThreadShell?.goal ?? null;
-  const goalNow =
+  const goalBanner =
     activeThread && activeGoal !== null
-      ? goalNowItem({
+      ? goalBannerItem({
           threadId: activeThread.id,
           goal: activeGoal,
           isWorking,
@@ -618,7 +618,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     activeBranchMismatchKey,
     backgroundWorkNow,
     childInputNow,
-    goalNow,
+    goalBanner,
     handleSwitchCheckoutToThread,
     handleSwitchCheckoutToThreadStable,
     isRestoringThreadBranch,

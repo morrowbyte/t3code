@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vite-plus/test";
-import { createDeviceModelSlot, type DeviceModelSource } from "./model.ts";
+import { createDeviceModelSlot, resolveDeviceModelId, type DeviceModelSource } from "./model.ts";
 
 const pro: DeviceModelSource = { id: "iphone-18-pro", url: "/pro.glb" };
 const max: DeviceModelSource = { id: "iphone-18-pro-max", url: "/max.glb" };
@@ -95,4 +95,29 @@ it("releases an invalid model and restores the fallback if scene preparation rej
   await Promise.resolve();
   expect(install).toHaveBeenLastCalledWith(recovered);
   slot.dispose();
+});
+
+it.each([
+  "Galaxy S24 Ultra",
+  "Samsung Galaxy S24 Ultra",
+  "SM-S928B",
+  "SM-S928B/DS",
+  "SM-S928U1",
+  "SM-S928N",
+  "SM-S9280",
+  "Samsung SM-S928W",
+])("recognizes the Galaxy S24 Ultra identity %s", (name) => {
+  expect(resolveDeviceModelId("android", name)).toBe("galaxy-s24-ultra");
+  expect(resolveDeviceModelId("ios", name)).toBeNull();
+});
+it.each([
+  "Galaxy S24",
+  "Galaxy S24+",
+  "Galaxy S23 Ultra",
+  "SM-S926B",
+  "SM-S928",
+  "Pixel 9",
+  "Android",
+])("does not label another Android device as an S24 Ultra: %s", (name) => {
+  expect(resolveDeviceModelId("android", name)).toBeNull();
 });

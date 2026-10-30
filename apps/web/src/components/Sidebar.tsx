@@ -1,3 +1,6 @@
+import { isEditableFocused } from "../lib/editableFocus";
+import { isNavigationKeyEvent } from "../keybindings";
+import { numericNavigationTarget } from "../pinnedWorkTabs";
 import { ChevronRightIcon } from "lucide-react";
 import { SidebarThreadFamily } from "./sidebar/SidebarThreadRow";
 import { attachSidebarTree, SIDEBAR_TREE_PROPS } from "../lib/sidebarTree";
@@ -976,6 +979,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const router = useRouter();
   const { isMobile, setOpenMobile } = useSidebar();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+  const numericNavigation = useClientSettings((settings) => ({
+    numericNavigationMode: settings.numericNavigationMode,
+    pinnedWorkTabs: settings.pinnedWorkTabs,
+  }));
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
   const confirmThreadArchive = useClientSettings((s) => s.confirmThreadArchive);
   const timestampFormat = useClientSettings((s) => s.timestampFormat);
@@ -2878,7 +2885,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes to window keydown for thread navigation shortcuts using the current thread list
   useEffect(() => {
     const onWindowKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.repeat || isCommandPaletteOpen() || isModelPickerOpen()) {
+      if (
+        !isNavigationKeyEvent(event) ||
+        event.repeat ||
+        isCommandPaletteOpen() ||
+        isModelPickerOpen()
+      ) {
         return;
       }
       const command = resolveShortcutCommand(event, keybindings, {
@@ -2889,6 +2901,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           modelPickerOpen: isModelPickerOpen(),
           isWeb: !isElectron,
           isDesktop: isElectron,
+          pinnedTabsNavigation: numericNavigation.numericNavigationMode === "pinned-tabs",
+          editableFocus: isEditableFocused(event.target),
         },
       });
       const navigateToThreadKey = (targetThreadKey: string | null) => {
@@ -2913,12 +2927,36 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       }
       const jumpIndex = threadJumpIndexFromCommand(command ?? "");
       if (jumpIndex === null) return;
-      navigateToThreadKey(orderedThreadKeys[jumpIndex] ?? null);
+      if (
+        numericNavigation.numericNavigationMode === "pinned-tabs" &&
+        (isTerminalFocused() ||
+          (event.target instanceof Element &&
+            event.target.closest(
+              '[data-keybinding-capture], [role="dialog"], [data-slot$="popup"]',
+            )))
+      )
+        return;
+      const sidebarThread = threadByKey.get(orderedThreadKeys[jumpIndex] ?? "");
+      const target = numericNavigationTarget(
+        numericNavigation,
+        jumpIndex,
+        sidebarThread ? scopeThreadRef(sidebarThread.environmentId, sidebarThread.id) : null,
+      );
+      if (numericNavigation.numericNavigationMode === "pinned-tabs") {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      if (target) {
+        event.preventDefault();
+        event.stopPropagation();
+        navigateToThread(target);
+      }
     };
     window.addEventListener("keydown", onWindowKeyDown);
     return () => window.removeEventListener("keydown", onWindowKeyDown);
   }, [
     keybindings,
+    numericNavigation,
     navigateToThread,
     orderedThreadKeys,
     routeRowThreadKey,
@@ -2940,7 +2978,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       },
     },
   );
-  const showJumpHints = useThreadJumpHintsVisible(shouldShowJumpHintsNow);
+  const showJumpHints = useThreadJumpHintsVisible(
+    numericNavigation.numericNavigationMode === "sidebar" && shouldShowJumpHintsNow,
+  );
 
   const handleNewThreadClick = (event?: ReactMouseEvent) => {
     if (

@@ -11,6 +11,44 @@ import {
 const checkedAt = "2026-07-18T10:00:00.000Z";
 
 describe("codexRateLimitsToLimits", () => {
+  it.each([
+    { hasCredits: true, unlimited: false, balance: "1250.50" },
+    { hasCredits: false, unlimited: false, balance: "0" },
+    { hasCredits: false, unlimited: false, balance: null },
+    { hasCredits: true, unlimited: true, balance: null },
+  ])("preserves reported credit balance independently of quota: %j", (credits) => {
+    const result = codexRateLimitsToLimits({ checkedAt, snapshot: { credits } });
+    expect(result.creditBalance).toEqual({
+      checkedAt,
+      hasCredits: credits.hasCredits,
+      unlimited: credits.unlimited,
+      ...(credits.balance === null ? {} : { balance: credits.balance }),
+    });
+    expect(result.windows).toEqual([]);
+  });
+
+  it("takes credits from the main Codex bucket, not a model-specific bucket", () => {
+    const credits = { hasCredits: true, unlimited: false, balance: "42.125" };
+    expect(
+      codexRateLimitsToLimits({
+        checkedAt,
+        snapshot: { limitId: "spark", credits: { ...credits, balance: "999" } },
+        rateLimitsByLimitId: { codex: { credits } },
+      }).creditBalance,
+    ).toEqual({ ...credits, checkedAt });
+  });
+
+  it.each([undefined, null, { hasCredits: true, unlimited: false, balance: "invalid" }])(
+    "does not fabricate a numeric balance for %j",
+    (credits) => {
+      const result = codexRateLimitsToLimits({
+        checkedAt,
+        snapshot: credits === undefined ? {} : { credits },
+      });
+      expect(result.creditBalance?.balance).toBeUndefined();
+    },
+  );
+
   it("shows an Enterprise monthly credit allowance in reads and notifications without a duration", () => {
     const snapshot = {
       limitId: "codex",
@@ -211,6 +249,17 @@ describe("codexRateLimitsFailureMessage", () => {
 });
 
 describe("mergeCodexRateLimits", () => {
+  it("retains omitted credits and accepts an explicitly depleted balance", () => {
+    const credits = { hasCredits: true, unlimited: false, balance: "51.75" };
+    const previous = { limitId: "codex", credits };
+    expect(mergeCodexRateLimits(previous, { primary: { usedPercent: 50 } })?.credits).toEqual(
+      credits,
+    );
+    expect(mergeCodexRateLimits(previous, { credits: null })?.credits).toEqual(credits);
+    const depleted = { hasCredits: false, unlimited: false, balance: "0" };
+    expect(mergeCodexRateLimits(previous, { credits: depleted })?.credits).toEqual(depleted);
+  });
+
   it("updates monthly credit usage, retains it when omitted, and clears an explicit null", () => {
     const snapshot = {
       limitId: "codex",

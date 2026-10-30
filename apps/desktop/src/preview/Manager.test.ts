@@ -1740,10 +1740,12 @@ describe("PreviewManager", () => {
             capturePage,
           });
           fromId.mockReturnValue(wc);
-          yield* manager.createTab("private_tab", {
+          yield* manager.createTab("private_tab");
+          yield* manager.registerWebview("private_tab", 42);
+          const bound = yield* manager.createTab("private_tab", {
             serverTab: { threadId: "unit-thread", tabId: "unit-tab" },
           });
-          yield* manager.registerWebview("private_tab", 42);
+          expect(bound.webContentsId).toBe(42);
           yield* Deferred.await(authorityReady);
           const target = yield* manager.getAutofillTarget(wc, frame);
           expect(target).toBeDefined();

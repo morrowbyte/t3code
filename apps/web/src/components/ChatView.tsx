@@ -2446,7 +2446,7 @@ function ChatViewContent(props: ChatViewProps) {
     activeBranchMismatchKey,
     backgroundWorkNow,
     childInputNow,
-    goalNow,
+    goalBanner,
     handleSwitchCheckoutToThread,
     handleSwitchCheckoutToThreadStable,
     isRestoringThreadBranch,
@@ -2656,11 +2656,13 @@ function ChatViewContent(props: ChatViewProps) {
             }),
           ]
         : [];
+    const goalItems = goalBanner === null ? [] : [goalBanner];
     const limitRecoveryItems = limitRecoveryBanner === null ? [] : [limitRecoveryBanner];
     const usageLimitsItems = usageLimitsBanner === null ? [] : [usageLimitsBanner];
     const projectCloneItems = projectCloneBannerItem === null ? [] : [projectCloneBannerItem];
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {
       return [
+        ...goalItems,
         ...feedbackBannerItems,
         ...fallbackItems,
         ...limitRecoveryItems,
@@ -2670,6 +2672,7 @@ function ChatViewContent(props: ChatViewProps) {
       ];
     }
     return [
+      ...goalItems,
       ...feedbackBannerItems,
       ...fallbackItems,
       ...limitRecoveryItems,
@@ -3196,10 +3199,7 @@ function ChatViewContent(props: ChatViewProps) {
   const onExpandTimelineImageStable = useStableCallback(onExpandTimelineImage);
   const shownThreadSyncPhase = activeEnvironmentUnavailable ? null : delayedThreadSyncPhase;
   const hasThreadNow =
-    childInputNow !== null ||
-    backgroundWorkNow !== null ||
-    goalNow !== null ||
-    shownThreadSyncPhase !== null;
+    childInputNow !== null || backgroundWorkNow !== null || shownThreadSyncPhase !== null;
   const queuedRunCount = serverProjection ? getUserQueuedThreadRuns(serverProjection).length : 0;
   // The queue control is mounted for every server thread but joins the footer only while it shows
   // something, by its own rule: an optimistic message stops counting once the server has it.
@@ -3241,7 +3241,6 @@ function ChatViewContent(props: ChatViewProps) {
           attention={childInputNow}
           work={backgroundWorkNow}
           syncPhase={shownThreadSyncPhase}
-          goal={goalNow}
         />
         {threadStatusLine}
         {pendingGuestMessageCount > 0 && isServerThread && activeThread ? (
@@ -3438,6 +3437,7 @@ function ChatViewContent(props: ChatViewProps) {
                 )
               : "flex h-[var(--workspace-topbar-height)] min-h-[var(--workspace-topbar-height)] shrink-0 items-center pl-(--workspace-gutter-start) pr-(--workspace-gutter-end)",
             COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
+            "h-auto",
           )}
         >
           {isElectron && rightPanelControlsAtRoot ? (

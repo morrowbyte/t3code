@@ -23,6 +23,20 @@ On an ordinary app control, Escape returns to Normal mode. Escape in a
 terminal or webpage remains available to that program; use `Ctrl+Shift+Space`
 to return to T3.
 
+## Pinned work tabs
+
+On web and desktop, pin the current thread from its header to keep up to eight work
+tabs across projects and environments. These tabs are separate from pinned sidebar
+threads and stay available after reloading the client.
+
+In **Settings → Keybindings → Work tabs**, set **Number shortcuts** to **Pinned work
+tabs (1–8)** to switch with `mod+1` through `mod+8`. In that mode, `mod+9` does not
+switch to a sidebar thread. Choose **Sidebar threads (1–9)** to retain sidebar
+navigation instead. `mod` means Command on macOS and Ctrl on Windows and Linux.
+
+Tabs show the agent's name by default. Change **Tab labels** to **Thread title** if
+you prefer the conversation title; the full thread title is also available on hover.
+
 ## Composer controls
 
 In **Settings → Chat → Send shortcut**, choose whether Enter sends, requires

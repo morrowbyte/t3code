@@ -8,6 +8,8 @@ import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import type * as CodexErrors from "effect-codex-app-server/errors";
 
+import { codexCreditBalance } from "../usage/usageCreditBalance.ts";
+
 import { clampPercent, makeUsageLimits } from "@t3tools/provider-core/server/usageLimits";
 
 interface CodexRateLimitWindow {
@@ -17,6 +19,11 @@ interface CodexRateLimitWindow {
 }
 
 export interface CodexRateLimitSnapshot {
+  readonly credits?: {
+    readonly balance?: string | null;
+    readonly unlimited: boolean;
+    readonly hasCredits: boolean;
+  } | null;
   readonly limitId?: string | null;
   readonly planType?: string | null;
   readonly rateLimitReachedType?: string | null;
@@ -123,13 +130,16 @@ export function codexRateLimitsToLimits(input: {
   readonly checkedAt: string;
 }): ServerProviderUsageLimits {
   const resetCredits = codexResetCreditsToContract(input.resetCredits);
-  const windows = codexRateLimitsToWindows(input.rateLimitsByLimitId?.codex ?? input.snapshot);
+  const snapshot = input.rateLimitsByLimitId?.codex ?? input.snapshot;
+  const windows = codexRateLimitsToWindows(snapshot);
+  const creditBalance = codexCreditBalance(snapshot.credits, input.checkedAt);
   return {
     ...makeUsageLimits({
       checkedAt: input.checkedAt,
       windows,
     }),
     ...(resetCredits ? { resetCredits } : {}),
+    ...(creditBalance ? { creditBalance } : {}),
   };
 }
 
@@ -180,6 +190,7 @@ export function mergeCodexRateLimits(
     ...(update.rateLimitReachedType !== undefined
       ? { rateLimitReachedType: update.rateLimitReachedType }
       : {}),
+    ...(update.credits != null ? { credits: update.credits } : {}),
     ...(update.primary !== undefined ? { primary: update.primary } : {}),
     ...(update.secondary !== undefined ? { secondary: update.secondary } : {}),
     ...(update.individualLimit !== undefined ? { individualLimit: update.individualLimit } : {}),

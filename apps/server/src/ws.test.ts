@@ -1,3 +1,5 @@
+import * as BoatSetupService from "./boat/BoatSetupService.ts";
+import * as BoatService from "./boat/BoatService.ts";
 import * as ApprovalReviewHostOrders from "./orchestration-v2/ApprovalReviewHostOrders.ts";
 import * as AgentObservatory from "./observatory/AgentObservatoryService.ts";
 import * as CodexLiveSessionService from "./voice/CodexLiveSessionService.ts";
@@ -673,6 +675,8 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
 
 // Build the production RPC layer; unrelated capabilities fail if this test calls them.
 const layerUnusedConfigRpcServices = Layer.mergeAll(
+  Layer.mock(BoatService.BoatService)({}),
+  Layer.mock(BoatSetupService.BoatSetupService)({}),
   Layer.mock(ApprovalReviewHostOrders.ApprovalReviewHostOrders)({}),
   Layer.mock(AgentObservatory.AgentObservatoryService)({}),
   Layer.mock(CodexLiveSessionService.CodexLiveSessionService)({}),

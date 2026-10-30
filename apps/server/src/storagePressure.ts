@@ -1,24 +1,26 @@
 import * as Context from "effect/Context";
 import * as Layer from "effect/Layer";
 import {
-  checkStorageAdmission,
+  checkStorageAdmissionFailure,
   sampleStorage,
   storagePressureMessage,
+  storageMeasurementFailure,
+  type StorageFailure,
 } from "@t3tools/shared/node/storagePressure";
 
 export { checkStorageAdmission, sampleStorage } from "@t3tools/shared/node/storagePressure";
-export type { StorageSample } from "@t3tools/shared/node/storagePressure";
+export type { StorageSample, StorageFailure } from "@t3tools/shared/node/storagePressure";
 
 const GiB = 1024 ** 3;
 /** Keep room for the app database and for work already in progress. */
 const STOP_RESERVE_BYTES = 4 * GiB;
 
 export interface StoragePressureGuard {
-  readonly check: (paths: readonly string[]) => Promise<string | null>;
-  readonly checkRunning: (paths: readonly string[]) => Promise<string | null>;
+  readonly check: (paths: readonly string[]) => Promise<StorageFailure | null>;
+  readonly checkRunning: (paths: readonly string[]) => Promise<StorageFailure | null>;
   readonly acquire: (
     paths: readonly string[],
-  ) => Promise<{ message: string | null; release: () => void }>;
+  ) => Promise<{ failure: StorageFailure | null; release: () => void }>;
 }
 
 export class StoragePressure extends Context.Service<StoragePressure, StoragePressureGuard>()(
@@ -33,17 +35,17 @@ export function makeStoragePressure(
   let active = 0;
   let tail = Promise.resolve();
   const check = async (paths: readonly string[]) => {
-    const message = await checkStorageAdmission(
+    const failure = await checkStorageAdmissionFailure(
       paths,
       active,
       paths.some((path) => blockedPaths.has(path)),
       sample,
     );
     for (const path of paths) {
-      if (message === null) blockedPaths.delete(path);
+      if (failure === null) blockedPaths.delete(path);
       else blockedPaths.add(path);
     }
-    return message;
+    return failure;
   };
   return {
     check,
@@ -55,12 +57,12 @@ export function makeStoragePressure(
       });
       await previous;
       try {
-        const message = await check(paths);
-        if (message !== null) return { message, release: () => {} };
+        const failure = await check(paths);
+        if (failure !== null) return { failure, release: () => {} };
         active += 1;
         let released = false;
         return {
-          message: null,
+          failure: null,
           release: () => {
             if (!released) {
               released = true;
@@ -78,13 +80,13 @@ export function makeStoragePressure(
           const message = storagePressureMessage(entry, STOP_RESERVE_BYTES);
           if (message) {
             blockedPaths.add(entry.path);
-            return message;
+            return { code: "storage_pressure", message };
           }
         }
         return null;
       } catch (cause) {
         for (const path of paths) blockedPaths.add(path);
-        return `Cannot check free disk space; stopping work. ${cause instanceof Error ? cause.message : String(cause)}`;
+        return storageMeasurementFailure(cause);
       }
     },
   };
@@ -94,5 +96,5 @@ export const layer = Layer.succeed(StoragePressure, makeStoragePressure());
 export const layerTest = Layer.succeed(StoragePressure, {
   check: async () => null,
   checkRunning: async () => null,
-  acquire: async () => ({ message: null, release: () => {} }),
+  acquire: async () => ({ failure: null, release: () => {} }),
 });

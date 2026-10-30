@@ -73,10 +73,17 @@ export function createPhoneScene(
   const root = new Group();
   const orientation = new Group();
   root.add(orientation);
-  const screenWidth = SCREEN_HEIGHT * aspect;
-  const width = screenWidth + profile.bezel * 2;
-  const height = SCREEN_HEIGHT + profile.bezel * 2;
-  const backZ = 0.01 - profile.depth;
+  const screenWidth = SCREEN_HEIGHT * (profile.bodyDimensions?.displayAspect ?? aspect);
+  // Keep the live display at 2.2 units; scale the physical shell around it.
+  const scale = profile.bodyDimensions ? SCREEN_HEIGHT / profile.bodyDimensions.displayHeight : 1;
+  const width = profile.bodyDimensions
+    ? profile.bodyDimensions.width * scale
+    : screenWidth + profile.bezel * 2;
+  const height = profile.bodyDimensions
+    ? profile.bodyDimensions.height * scale
+    : SCREEN_HEIGHT + profile.bezel * 2;
+  const depth = profile.bodyDimensions ? profile.bodyDimensions.depth * scale : profile.depth;
+  const backZ = 0.01 - depth;
   const metal = new MeshStandardMaterial({ color: 0xb5bcc7, metalness: 0.88, roughness: 0.27 });
   const glass = new MeshPhysicalMaterial({
     color: 0x141820,
@@ -99,7 +106,7 @@ export function createPhoneScene(
 
   const body = new Mesh(
     new ExtrudeGeometry(roundedPath(width, height, profile.bodyRadius), {
-      depth: profile.depth,
+      depth,
       bevelEnabled: true,
       bevelSize: 0.012,
       bevelThickness: 0.012,
@@ -109,7 +116,7 @@ export function createPhoneScene(
     }),
     metal,
   );
-  body.position.z = 0.025 - profile.depth;
+  body.position.z = 0.025 - depth;
   orientation.add(body);
   const face = new Mesh(
     new ShapeGeometry(roundedPath(width - 0.014, height - 0.014, profile.bodyRadius - 0.01), 16),
@@ -133,18 +140,27 @@ export function createPhoneScene(
   updateDisplayUv(screenGeometry, screenWidth, SCREEN_HEIGHT, layout);
   const screenMaterial = new MeshBasicMaterial({ map: texture, toneMapped: false });
   const display = new Mesh(screenGeometry, screenMaterial);
+  display.name = "display";
   display.position.z = 0.043;
   orientation.add(display);
+
+  if (profile.punchHole) {
+    const hole = new Mesh(new CircleGeometry(profile.punchHole.radius, 24), glass);
+    hole.name = "front-camera";
+    hole.position.set(0, SCREEN_HEIGHT / 2 - profile.punchHole.inset, 0.045);
+    orientation.add(hole);
+  }
 
   for (const { edge, offset, length } of profile.buttons) {
     const button = new Mesh(
       new BoxGeometry(
         edge === "top" ? length : 0.026,
         edge === "top" ? 0.026 : length,
-        profile.depth * 0.65,
+        depth * 0.65,
       ),
       metal,
     );
+    button.name = "side-button";
     button.position.set(
       edge === "top" ? offset : (edge === "left" ? -1 : 1) * (width / 2 + 0.015),
       edge === "top" ? height / 2 + 0.015 : offset,
@@ -161,7 +177,7 @@ export function createPhoneScene(
   );
   rearCamera.rotation.y = Math.PI;
   orientation.add(rearCamera);
-  const plateFront = 0.025 + 0.007;
+  const plateFront = profile.camera.separateRings ? 0 : 0.025 + 0.007;
   const ringDepth = 0.025;
   const cameraPlate = new Mesh(
     new ExtrudeGeometry(
@@ -181,9 +197,10 @@ export function createPhoneScene(
     backMaterial,
   );
   cameraPlate.name = "camera-plate";
-  rearCamera.add(cameraPlate);
-  for (const [x, y] of profile.camera.lenses) {
-    const radius = profile.camera.lensRadius;
+  if (!profile.camera.separateRings) rearCamera.add(cameraPlate);
+  else cameraPlate.geometry.dispose();
+  for (const [index, [x, y]] of profile.camera.lenses.entries()) {
+    const radius = profile.camera.radii?.[index] ?? profile.camera.lensRadius;
     const ring = new Mesh(new CylinderGeometry(radius + 0.014, radius + 0.014, 0.025, 32), metal);
     ring.rotation.x = Math.PI / 2;
     ring.name = "camera-ring";

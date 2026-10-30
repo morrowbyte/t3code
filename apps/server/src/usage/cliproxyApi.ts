@@ -11,7 +11,10 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
 import * as Schema from "effect/Schema";
+import * as Option from "effect/Option";
 import { HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http";
+
+import { codexCreditBalance } from "./usageCreditBalance.ts";
 
 import { codexPlanLabel } from "../provider/CodexProvider.ts";
 import { codexRateLimitsToLimits } from "../provider/codexUsageLimits.ts";
@@ -41,6 +44,7 @@ const CodexWindow = Schema.Struct({
 });
 const CodexUsage = Schema.Struct({
   plan_type: Schema.optional(Schema.String),
+  credits: Schema.optional(Schema.Unknown),
   rate_limit: Schema.NullOr(
     Schema.Struct({
       primary_window: Schema.optional(Schema.NullOr(CodexWindow)),
@@ -82,6 +86,14 @@ const CreditList = Schema.Struct({
     }),
   ),
 });
+
+const decodeCodexCredits = Schema.decodeUnknownOption(
+  Schema.Struct({
+    balance: Schema.optional(Schema.NullOr(Schema.String)),
+    unlimited: Schema.Boolean,
+    has_credits: Schema.Boolean,
+  }),
+);
 
 const decodeAuthFiles = Schema.decodeUnknownEffect(AuthFiles);
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
@@ -297,6 +309,13 @@ export const makeCliproxyApi = Effect.gen(function* () {
       }
       const body = yield* apiCall(config, account, `${CODEX_BASE}/usage`);
       const usage = yield* decodeCodexUsage(body);
+      const reportedCredits = Option.getOrUndefined(decodeCodexCredits(usage.credits));
+      const creditBalance = reportedCredits
+        ? codexCreditBalance(
+            { ...reportedCredits, hasCredits: reportedCredits.has_credits },
+            checkedAt,
+          )
+        : undefined;
       const toWindow = (window: typeof CodexWindow.Type | null | undefined) =>
         window
           ? {
@@ -323,6 +342,7 @@ export const makeCliproxyApi = Effect.gen(function* () {
               secondary: toWindow(usage.rate_limit?.secondary_window),
             },
           }),
+          ...(creditBalance ? { creditBalance } : {}),
           ...(available
             ? {
                 resetCredits: {

@@ -13,6 +13,7 @@ import { Route as WelcomeRouteImport } from './routes/welcome'
 import { Route as PairRouteImport } from './routes/pair'
 import { Route as ObservatoryRouteImport } from './routes/observatory'
 import { Route as GuestRouteImport } from './routes/guest'
+import { Route as DeviceModelPreviewRouteImport } from './routes/device-model-preview'
 import { Route as ConnectAgentRouteImport } from './routes/connect-agent'
 import { Route as ConnectRouteImport } from './routes/connect'
 import { Route as ChatRouteImport } from './routes/_chat'
@@ -73,6 +74,11 @@ const ObservatoryRoute = ObservatoryRouteImport.update({
 const GuestRoute = GuestRouteImport.update({
   id: '/guest',
   path: '/guest',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DeviceModelPreviewRoute = DeviceModelPreviewRouteImport.update({
+  id: '/device-model-preview',
+  path: '/device-model-preview',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ConnectAgentRoute = ConnectAgentRouteImport.update({
@@ -290,6 +296,7 @@ export interface FileRoutesByFullPath {
   '/': typeof ChatIndexRoute
   '/connect': typeof ConnectRoute
   '/connect-agent': typeof ConnectAgentRoute
+  '/device-model-preview': typeof DeviceModelPreviewRoute
   '/guest': typeof GuestRoute
   '/observatory': typeof ObservatoryRoute
   '/pair': typeof PairRoute
@@ -335,6 +342,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/connect': typeof ConnectRoute
   '/connect-agent': typeof ConnectAgentRoute
+  '/device-model-preview': typeof DeviceModelPreviewRoute
   '/guest': typeof GuestRoute
   '/observatory': typeof ObservatoryRoute
   '/pair': typeof PairRoute
@@ -383,6 +391,7 @@ export interface FileRoutesById {
   '/_chat': typeof ChatRouteWithChildren
   '/connect': typeof ConnectRoute
   '/connect-agent': typeof ConnectAgentRoute
+  '/device-model-preview': typeof DeviceModelPreviewRoute
   '/guest': typeof GuestRoute
   '/observatory': typeof ObservatoryRoute
   '/pair': typeof PairRoute
@@ -432,6 +441,7 @@ export interface FileRouteTypes {
     | '/'
     | '/connect'
     | '/connect-agent'
+    | '/device-model-preview'
     | '/guest'
     | '/observatory'
     | '/pair'
@@ -477,6 +487,7 @@ export interface FileRouteTypes {
   to:
     | '/connect'
     | '/connect-agent'
+    | '/device-model-preview'
     | '/guest'
     | '/observatory'
     | '/pair'
@@ -524,6 +535,7 @@ export interface FileRouteTypes {
     | '/_chat'
     | '/connect'
     | '/connect-agent'
+    | '/device-model-preview'
     | '/guest'
     | '/observatory'
     | '/pair'
@@ -572,6 +584,7 @@ export interface RootRouteChildren {
   ChatRoute: typeof ChatRouteWithChildren
   ConnectRoute: typeof ConnectRoute
   ConnectAgentRoute: typeof ConnectAgentRoute
+  DeviceModelPreviewRoute: typeof DeviceModelPreviewRoute
   GuestRoute: typeof GuestRoute
   ObservatoryRoute: typeof ObservatoryRoute
   PairRoute: typeof PairRoute
@@ -607,6 +620,13 @@ declare module '@tanstack/react-router' {
       path: '/guest'
       fullPath: '/guest'
       preLoaderRoute: typeof GuestRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/device-model-preview': {
+      id: '/device-model-preview'
+      path: '/device-model-preview'
+      fullPath: '/device-model-preview'
+      preLoaderRoute: typeof DeviceModelPreviewRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/connect-agent': {
@@ -995,6 +1015,7 @@ const rootRouteChildren: RootRouteChildren = {
   ChatRoute: ChatRouteWithChildren,
   ConnectRoute: ConnectRoute,
   ConnectAgentRoute: ConnectAgentRoute,
+  DeviceModelPreviewRoute: DeviceModelPreviewRoute,
   GuestRoute: GuestRoute,
   ObservatoryRoute: ObservatoryRoute,
   PairRoute: PairRoute,

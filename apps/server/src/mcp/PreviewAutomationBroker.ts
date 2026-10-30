@@ -527,27 +527,32 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
             (!visibleOnly || tab.visible === true) &&
             (input.tabId === undefined || tab.tabId === input.tabId),
         );
+      const candidates = Array.from(current.clients.values())
+        .filter(
+          (host) =>
+            host.environmentId === input.scope.environmentId &&
+            supportsOperation(host, input.operation),
+        )
+        .sort(
+          (left, right) =>
+            Number(input.tabId !== undefined && ownsTargetTab(right)) -
+              Number(input.tabId !== undefined && ownsTargetTab(left)) ||
+            Number(ownsTargetTab(right, true)) - Number(ownsTargetTab(left, true)) ||
+            Number(ownsTargetTab(right)) - Number(ownsTargetTab(left)) ||
+            Number(right.preferred) - Number(left.preferred) ||
+            Number(right.focused) - Number(left.focused) ||
+            right.focusOrder - left.focusOrder,
+        );
+      // An explicit tab selects its owning runtime; implicit actions retain their session lease.
+      const explicitOwner =
+        input.tabId === undefined ? undefined : candidates.find((host) => ownsTargetTab(host));
       const connection =
-        hasLiveAssignment && supportsOperation(assignedConnection, input.operation)
-          ? assignedConnection
-          : hasLiveAssignment
-            ? undefined
-            : Array.from(current.clients.values())
-                .filter(
-                  (host) =>
-                    host.environmentId === input.scope.environmentId &&
-                    supportsOperation(host, input.operation),
-                )
-                .sort(
-                  (left, right) =>
-                    Number(input.tabId !== undefined && ownsTargetTab(right)) -
-                      Number(input.tabId !== undefined && ownsTargetTab(left)) ||
-                    Number(right.preferred) - Number(left.preferred) ||
-                    Number(ownsTargetTab(right, true)) - Number(ownsTargetTab(left, true)) ||
-                    Number(ownsTargetTab(right)) - Number(ownsTargetTab(left)) ||
-                    Number(right.focused) - Number(left.focused) ||
-                    right.focusOrder - left.focusOrder,
-                )[0];
+        explicitOwner ??
+        (hasLiveAssignment
+          ? supportsOperation(assignedConnection, input.operation)
+            ? assignedConnection
+            : undefined
+          : candidates[0]);
       if (!connection) {
         if (!hasLiveAssignment) assignments.delete(assignmentKey);
         return [undefined, { ...current, assignments }] as const;

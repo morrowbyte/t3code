@@ -15,6 +15,7 @@ import {
   ForwardCompatibleOptional,
   OmittedWhenNull,
   ProjectId,
+  EnvironmentId,
   ThreadId,
   TrimmedNonEmptyString,
   TrimmedString,
@@ -348,7 +349,31 @@ export type ModelPreferences = {
   readonly providerModelPreferences: typeof ProviderModelPreferences.Type;
 };
 
+export const PinnedWorkTab = Schema.Struct({
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  title: TrimmedNonEmptyString,
+});
+export type PinnedWorkTab = typeof PinnedWorkTab.Type;
+export const PinnedWorkTabs = Schema.Array(PinnedWorkTab).check(
+  Schema.isMaxLength(8),
+  Schema.makeFilter(
+    (tabs) =>
+      new Set(tabs.map((tab) => JSON.stringify([tab.environmentId, tab.threadId]))).size ===
+        tabs.length || "Work tabs must be unique within each environment.",
+  ),
+);
+export const WorkTabLabelMode = Schema.Literals(["agent-name", "thread-title"]);
+export const NumericNavigationMode = Schema.Literals(["sidebar", "pinned-tabs"]);
+
 export const ClientSettingsSchema = Schema.Struct({
+  workTabLabelMode: WorkTabLabelMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed("agent-name" as const)),
+  ),
+  pinnedWorkTabs: PinnedWorkTabs.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  numericNavigationMode: NumericNavigationMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed("sidebar" as const)),
+  ),
   hostOrderEntryEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   notificationMode: NotificationMode.pipe(
     Schema.withDecodingDefault(Effect.succeed("off" as const)),
@@ -1790,6 +1815,9 @@ export function requiredScopesForProjectMutation(
 }
 
 export const ClientSettingsPatch = Schema.Struct({
+  workTabLabelMode: Schema.optionalKey(WorkTabLabelMode),
+  pinnedWorkTabs: Schema.optionalKey(PinnedWorkTabs),
+  numericNavigationMode: Schema.optionalKey(NumericNavigationMode),
   hostOrderEntryEnabled: Schema.optionalKey(Schema.Boolean),
   notificationMode: Schema.optionalKey(NotificationMode),
   inAppNotificationsEnabled: Schema.optionalKey(Schema.Boolean),

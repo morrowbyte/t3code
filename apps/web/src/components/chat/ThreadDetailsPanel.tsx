@@ -17,7 +17,7 @@ import ProjectScriptsControl, {
   type ProjectScriptActionResult,
 } from "../ProjectScriptsControl";
 import { memo, use, useRef, useState, type ComponentProps } from "react";
-import { AgentAvatarSettings } from "../agent-identity/AgentAvatarSettings";
+import { ThreadDetailsBoat } from "./ThreadDetailsBoat";
 import { ThreadDetailsCard } from "./ThreadDetailsCard";
 import { OpenInPicker } from "./OpenInPicker";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
@@ -304,7 +304,11 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                 />
               ) : null}
 
-              {!props.draftId ? <AgentAvatarSettings threadRef={activeThreadRef} /> : null}
+              <ThreadDetailsBoat
+                key={`${props.environmentId}:${props.projectId}`}
+                environmentId={props.environmentId}
+                projectId={props.projectId}
+              />
 
               {visible.usage ? <ThreadDetailsUsage {...props.usage} /> : null}
 

@@ -1,5 +1,7 @@
 "use client";
 
+import { useBoatProjectSetup } from "~/hooks/useBoatProjectSetup";
+
 import { dispatchKeyboardCommand, useKeyboardCommands } from "./keyboard/keyboardCommands";
 
 import { threadPullRequestLinkMode } from "@t3tools/client-runtime/thread-pull-request-compatibility";
@@ -43,6 +45,9 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import {
+  AuthSettingsWriteScope,
+  AuthFilesystemWriteScope,
+  AuthPreviewOperateScope,
   AuthOrchestrationOperateScope,
   AuthSourceControlWriteScope,
   AuthFilesystemReadScope,
@@ -416,6 +421,9 @@ function OpenCommandPaletteDialog(props: {
     setHighlightedItemValue(null);
   }
   const clientSettings = useClientSettings(selectCommandPaletteClientSettings);
+  const [newProjectBoat, setNewProjectBoat] = useState(false);
+  const setupBoatProject = useBoatProjectSetup();
+  const [autoSetupBoat, setAutoSetupBoat] = useState(true);
   const createProject = useAtomCommand(projectEnvironment.create, {
     reportFailure: false,
   });
@@ -569,6 +577,9 @@ function OpenCommandPaletteDialog(props: {
     }) ?? null;
   const browseEnvironmentId = addProjectEnvironmentId ?? defaultAddProjectEnvironmentId;
   const canCreateProject = useEnvironmentScope(browseEnvironmentId, AuthOrchestrationOperateScope);
+  const canConfigureBoat = useEnvironmentScope(browseEnvironmentId, AuthSettingsWriteScope);
+  const canWriteBoatFiles = useEnvironmentScope(browseEnvironmentId, AuthFilesystemWriteScope);
+  const canPreviewBoat = useEnvironmentScope(browseEnvironmentId, AuthPreviewOperateScope);
   const browseEnvironment =
     environments.find((environment) => environment.environmentId === browseEnvironmentId) ?? null;
   const browseEnvironmentIsDesktopLocal =
@@ -1833,6 +1844,18 @@ function OpenCommandPaletteDialog(props: {
       return;
     }
 
+    if (newProjectBoat) {
+      const opened = await setupBoatProject(
+        input.environmentId,
+        projectId,
+        autoSetupBoat && canCreateProject && canPreviewBoat,
+      );
+      setNewProjectBoat(false);
+      if (opened) {
+        setOpen(false);
+        return;
+      }
+    }
     const navigationResult = await settlePromise(() =>
       handleNewThread(scopeProjectRef(input.environmentId, projectId)),
     );
@@ -1884,6 +1907,9 @@ function OpenCommandPaletteDialog(props: {
         environmentId: newProjectFlow.environmentId,
         name: newProjectName,
         publishTo: newProjectPublishes ? newProjectPublishTarget : null,
+        ...(newProjectBoat
+          ? { boat: { autoSetup: autoSetupBoat && canCreateProject && canPreviewBoat } }
+          : {}),
       }),
     );
     newProjectSubmittingRef.current = false;
@@ -2058,6 +2084,15 @@ function OpenCommandPaletteDialog(props: {
     );
     const projectRef = scopeProjectRef(addProjectCloneFlow.environmentId, projectId);
     await waitForProject(projectRef, 3_000).catch(() => null);
+    if (newProjectBoat) {
+      const opened = await setupBoatProject(
+        addProjectCloneFlow.environmentId,
+        projectId,
+        autoSetupBoat && canCreateProject && canPreviewBoat,
+      );
+      setNewProjectBoat(false);
+      if (opened) return;
+    }
     const navigationResult = await settlePromise(() => handleNewThread(projectRef));
     if (navigationResult._tag === "Failure") {
       const error = squashAtomCommandFailure(navigationResult);
@@ -2739,12 +2774,38 @@ function OpenCommandPaletteDialog(props: {
       value={query}
     >
       {newProjectPathPreview !== null ? (
-        <NewProjectSummary
-          name={newProjectName}
-          pathPreview={newProjectPathPreview}
-          projectsRoot={newProjectsRoot}
-          environmentLabel={newProjectEnvironmentLabel}
-        />
+        <div>
+          <NewProjectSummary
+            name={newProjectName}
+            pathPreview={newProjectPathPreview}
+            projectsRoot={newProjectsRoot}
+            environmentLabel={newProjectEnvironmentLabel}
+          />
+        </div>
+      ) : null}
+      {newProjectFlow !== null || isBrowsing || addProjectCloneFlow?.step === "confirm" ? (
+        <div>
+          <label className="flex items-center gap-2 px-4 py-2 text-sm">
+            <input
+              type="checkbox"
+              checked={newProjectBoat}
+              disabled={!canConfigureBoat || !canWriteBoatFiles}
+              onChange={(event) => setNewProjectBoat(event.target.checked)}
+            />
+            Use Boat cloud environment
+          </label>
+          {newProjectBoat ? (
+            <label className="flex items-center gap-2 px-4 py-2 text-sm">
+              <input
+                type="checkbox"
+                checked={autoSetupBoat && canCreateProject && canPreviewBoat}
+                disabled={!canCreateProject || !canPreviewBoat}
+                onChange={(event) => setAutoSetupBoat(event.target.checked)}
+              />
+              Set up automatically with an agent
+            </label>
+          ) : null}
+        </div>
       ) : null}
       {addProjectCloneFlow?.step === "confirm" ? (
         <RemoteRepositorySummary

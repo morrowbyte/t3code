@@ -84,6 +84,10 @@ export function applyUsageLimitsUpdate(input: {
   return {
     ...makeUsageLimits({ checkedAt: input.checkedAt, windows: merged.values() }),
     ...(previous?.resetCredits !== undefined ? { resetCredits: previous.resetCredits } : {}),
+    ...(previous?.creditBalance !== undefined ? { creditBalance: previous.creditBalance } : {}),
+    ...(previous?.credentialFingerprint !== undefined
+      ? { credentialFingerprint: previous.credentialFingerprint }
+      : {}),
     ...(unavailable !== undefined ? { unavailable } : {}),
   };
 }
@@ -104,6 +108,14 @@ export function resolveUsageLimitsAfterProbe(input: {
   readonly probed: ServerProviderUsageLimits | undefined;
 }): ServerProviderUsageLimits | undefined {
   const { published, probed } = input;
+  if (
+    published?.credentialFingerprint !== undefined &&
+    probed?.credentialFingerprint !== undefined &&
+    published.credentialFingerprint !== probed.credentialFingerprint
+  )
+    return probed;
+  // Token updates advance checkedAt without reading credits; explicit probe metadata wins.
+  const creditBalance = probed?.creditBalance ?? published?.creditBalance;
   if (probed?.unavailable?.reason === "probeFailed" && published && !published.unavailable) {
     return published;
   }
@@ -114,7 +126,12 @@ export function resolveUsageLimitsAfterProbe(input: {
     !probed.unavailable &&
     Date.parse(published.checkedAt) > Date.parse(probed.checkedAt)
   ) {
-    return { ...probed, checkedAt: published.checkedAt, windows: published.windows };
+    return {
+      ...probed,
+      checkedAt: published.checkedAt,
+      windows: published.windows,
+      ...(creditBalance ? { creditBalance } : {}),
+    };
   }
-  return probed;
+  return probed && !probed.unavailable && creditBalance ? { ...probed, creditBalance } : probed;
 }

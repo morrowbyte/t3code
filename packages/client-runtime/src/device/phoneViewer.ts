@@ -43,6 +43,8 @@ export interface PhoneViewer {
     y: number,
     captured?: boolean,
   ) => { x: number; y: number } | null;
+  readonly setView: (view: "front" | "back") => void;
+  readonly zoomBy: (logDelta: number) => void;
   readonly orbit: (deltaX: number, deltaY: number) => void;
   readonly setInteractionActive: (active: boolean, mode: "touch" | "orbit") => void;
   readonly resetPose: () => void;
@@ -125,11 +127,11 @@ export function createPhoneViewer(options: {
   const rest = new Quaternion();
   const motion = createDeviceMotion({
     choose: (rotation) =>
-      nearestDeviceView(rotation, [{ rotation: new Quaternion(), yawLimit: Math.PI / 3 }])!
-        .rotation,
+      nearestDeviceView(rotation, [{ rotation: rest, yawLimit: Math.PI / 3 }])!.rotation,
   });
   motion.setPose(rest, performance.now(), true);
   const framing = createDeviceFraming();
+  let zoom = 1;
   const reducedMotion = () =>
     globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
   let viewport = { width: 0, height: 0, pixelRatio: 1 };
@@ -162,7 +164,7 @@ export function createPhoneViewer(options: {
     applyCamera();
   };
   const applyCamera = () => {
-    camera.position.set(framing.center.x, framing.center.y, framing.distance());
+    camera.position.set(framing.center.x, framing.center.y, framing.distance() / zoom);
     camera.lookAt(framing.center.x, framing.center.y, 0);
     camera.updateProjectionMatrix();
   };
@@ -399,6 +401,19 @@ export function createPhoneViewer(options: {
       applyPose();
       return phone.screenPoint(x, y, camera, captured);
     },
+    setView(view) {
+      if (disposed) return;
+      rest.setFromAxisAngle(new Vector3(0, 1, 0), view === "back" ? Math.PI : 0);
+      motion.setPose(rest, performance.now(), true);
+      applyPose();
+      fit(true);
+      scheduler.invalidate();
+    },
+    zoomBy(logDelta) {
+      if (disposed || !Number.isFinite(logDelta)) return;
+      zoom = Math.min(2.5, Math.max(0.6, zoom * Math.exp(logDelta)));
+      scheduler.invalidate();
+    },
     orbit(deltaX, deltaY) {
       if (disposed) return;
       motion.orbit(deltaX * viewport.width, deltaY * viewport.height, performance.now());
@@ -416,6 +431,7 @@ export function createPhoneViewer(options: {
     },
     resetPose() {
       if (disposed) return;
+      zoom = 1;
       motion.reset(rest, performance.now());
       scheduler.invalidate();
     },

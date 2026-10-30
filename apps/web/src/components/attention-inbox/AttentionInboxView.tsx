@@ -46,9 +46,6 @@ export function AttentionInboxView({
         {status !== "live" || !hasSnapshot ? (
           <p role="status">{attentionCoverageLabel(status, hasSnapshot)}</p>
         ) : null}
-        {model.completionTimeUnavailable > 0 ? (
-          <p>Completion time unavailable for {model.completionTimeUnavailable} threads.</p>
-        ) : null}
       </div>
       {synchronizationError ? (
         <p role="alert" className="text-sm text-destructive-foreground">
@@ -97,9 +94,7 @@ export function AttentionInboxView({
                 <Badge variant="secondary" size="sm">
                   {ATTENTION_CATEGORIES[entry.category]}
                 </Badge>
-                {entry.category !== "completed" ? (
-                  <span className="text-sm font-medium">{entry.title}</span>
-                ) : null}
+                <span className="text-sm font-medium">{entry.title}</span>
               </div>
               <p className="wrap-anywhere text-sm font-medium">{entry.threadTitle}</p>
               {entry.category === "warnings" && entry.title !== "Authentication required" ? (

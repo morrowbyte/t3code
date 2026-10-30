@@ -46,6 +46,35 @@ Settings that are environment-wide stay read-only while a project is selected. W
 targets disagree, a control shows **Mixed** until you choose one value. Appearance, keyboard,
 and other phone-only settings ignore the filter.
 
+## Cloud development with Boat
+
+Connect your Boat account in **Settings → Integrations** on the environment that owns
+your project. The key stays in that environment's private server storage, outside the
+cloud machine.
+
+When creating, adding or cloning a project, select Boat and **Set up automatically with
+an agent** to have an agent inspect the project and prepare its development environment.
+For an empty project, the agent asks what you want to build. **Open setup agent** in the
+project's Boat settings returns to the same setup thread.
+
+You can also configure the setup and development commands yourself before starting the
+environment. Starting or resuming runs the configured development setup and opens the
+project preview when it is ready. Choose Android for an emulator-based preview. After
+editing local files, use **Sync changes** to update the same machine, including removed
+source files, while preserving its running development process and dependency cache.
+
+Environments stop after one hour by default. Set another default or override it per project.
+Crew renews the deadline while an agent is using the environment and stops it when its last
+agent finishes. You can also stop it yourself and resume later. Retention controls how long
+Crew keeps a stopped environment before deleting it; deleting removes its remote disk.
+Save a snapshot explicitly when you need a reusable environment beyond that period.
+Wait until the snapshot is ready before using it as the template for another environment.
+
+The project's budget limits new compute reservations. **Usage** shows the account's
+remaining included compute, wallet balance and recorded machine costs. Enable project CI
+to write its GitHub workflow, then review and commit that workflow. GitHub must also be
+connected to Boat and allowed to run the repository's jobs.
+
 ## Worktree branch names
 
 In **Settings → Worktrees → Worktree branch naming**, choose a static prefix,

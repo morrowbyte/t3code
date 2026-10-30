@@ -3,6 +3,7 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import { EnvironmentId } from "@t3tools/contracts";
 import {
   collectLimitAccounts,
+  creditBalanceLabel,
   collectExternalUsageLinks,
   collectLimitNotices,
   collectLimitPools,
@@ -415,7 +416,12 @@ export function UsageLimitsSection({
     selectedEnvironmentIds === null
       ? presentations
       : new Map([...presentations].filter(([id]) => selectedEnvironmentIds.has(id)));
-  const pools = collectLimitPools(collectLimitAccounts(selected), now);
+  const accounts = collectLimitAccounts(selected);
+  const balances = accounts.flatMap((account) => {
+    const label = creditBalanceLabel(account.limits);
+    return label === null ? [] : [{ account, label }];
+  });
+  const pools = collectLimitPools(accounts, now);
   const notices = collectLimitNotices(selected);
   const externalLinks = collectExternalUsageLinks(selected);
   const colors = useProviderColors();
@@ -426,7 +432,8 @@ export function UsageLimitsSection({
     ) + 1;
   return (
     <View className="gap-6">
-      {pools.length === 0 &&
+      {balances.length === 0 &&
+      pools.length === 0 &&
       notices.length === 0 &&
       failedLabels.length === 0 &&
       !cursorPrompt &&
@@ -436,6 +443,34 @@ export function UsageLimitsSection({
             ? "Select an environment to see limits."
             : "No provider on the selected environments reports subscription limits."}
         </Text>
+      ) : null}
+      {balances.length > 0 ? (
+        <View
+          accessibilityLabel="Remaining credits"
+          className={wide ? "flex-row flex-wrap gap-3" : "gap-3"}
+        >
+          {balances.map(({ account, label }) => (
+            <View
+              key={account.key}
+              className="min-w-0 gap-2 rounded-[24px] border-continuous bg-grouped-card p-4"
+            >
+              <View className="flex-row items-center gap-2">
+                <ProviderIcon provider={account.driver} size={18} />
+                <Text className="text-sm font-t3-medium text-foreground">
+                  {DRIVER_LABEL[account.driver] ?? account.driver} · {accountName(account)}
+                </Text>
+              </View>
+              <Text selectable className="text-xl font-t3-bold tabular-nums text-foreground">
+                {label}
+              </Text>
+              <Text className="text-xs text-foreground-muted">
+                {account.environments.length > 0
+                  ? account.environments.map((environment) => environment.label).join(", ")
+                  : account.sourceLabel}
+              </Text>
+            </View>
+          ))}
+        </View>
       ) : null}
       {pools.map((pool, index) => {
         const windows = displayLimitWindows(pool);

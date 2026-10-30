@@ -41,6 +41,7 @@ import { observeResize } from "~/lib/observeResize";
 import { cn } from "~/lib/utils";
 import { textDirection } from "~/textDirection";
 import { useClientSettings } from "../../hooks/useSettings";
+import { PinnedWorkTabs } from "../PinnedWorkTabs";
 import { ThreadLinkBackButton } from "./ThreadLinkBackButton";
 import { GuestShareIndicator } from "./GuestShareControls";
 
@@ -281,7 +282,7 @@ export const ChatHeader = memo(function ChatHeader({
     <div
       ref={breadcrumbContainerRef}
       className={cn(
-        "flex min-w-0 flex-1 items-center gap-2 sm:gap-3",
+        "flex min-h-[var(--workspace-topbar-height)] min-w-0 flex-1 flex-wrap items-center gap-2 sm:gap-3",
         rightPanelOpen ? "pr-10" : "pr-24",
       )}
       onContextMenu={handleHeaderContextMenu}
@@ -289,7 +290,7 @@ export const ChatHeader = memo(function ChatHeader({
       <ThreadLinkBackButton />
       <WorkspaceBreadcrumb
         ariaLabel="Thread breadcrumb"
-        className="flex-1 overflow-clip [overflow-clip-margin:2px]"
+        className="flex-1 basis-64 overflow-clip [overflow-clip-margin:2px]"
       >
         {activeProject ? (
           <>
@@ -429,6 +430,7 @@ export const ChatHeader = memo(function ChatHeader({
           ) : null}
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
+      <PinnedWorkTabs maxRows={2} className="max-w-full flex-[1_1_44rem]" />
       {isServerThread ? <GuestShareIndicator threadRef={activeThreadRef} /> : null}
     </div>
   );
