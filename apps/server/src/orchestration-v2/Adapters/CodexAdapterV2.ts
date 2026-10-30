@@ -7950,11 +7950,24 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 : null;
             if (goalCommand !== null) return runGoalCommand(turnInput, goalCommand);
             return Effect.gen(function* () {
-              yield* startNativeTurn(
-                turnInput,
-                turnInput.restartContinuationOfRunId === undefined
-                  ? yield* toCodexInput(turnInput)
-                  : [],
+              if (turnInput.restartContinuationOfRunId === undefined) {
+                yield* startNativeTurn(turnInput, yield* toCodexInput(turnInput));
+                return;
+              }
+              yield* startNativeTurn(turnInput, []).pipe(
+                Effect.catchTags({
+                  CodexAppServerRequestError: (cause) => {
+                    if (
+                      cause.method !== "turn/start" ||
+                      cause.errorMessage !== "failed to submit turn input: EmptyInput"
+                    ) {
+                      return Effect.fail(cause);
+                    }
+                    return Effect.gen(function* () {
+                      yield* startNativeTurn(turnInput, yield* toCodexInput(turnInput));
+                    });
+                  },
+                }),
               );
             }).pipe(
               Effect.mapError(

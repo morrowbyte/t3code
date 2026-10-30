@@ -5248,91 +5248,140 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
-  it.effect("continues an interrupted native thread with empty input and reasoning summaries", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const scenario = "codex-restart-promptless";
-        const nativeThreadId = "native-restart-promptless";
-        const nativeTurnId = "turn-restart-promptless";
-        const preamble = codexReplayPreamble({
-          nativeThreadId,
-          nativeTurnId,
-          prompt: "unused",
-        }).slice(0, 5);
-        const transcript = makeCodexReplayTranscript({
-          scenario,
-          entries: [
-            ...preamble,
-            {
-              type: "expect_outbound",
-              label: "resume",
-              frame: {
-                id: 3,
-                method: "thread/resume",
-                params: {
-                  threadId: nativeThreadId,
-                  excludeTurns: true,
-                  config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+  it.effect.each([undefined, "failed to submit turn input: EmptyInput", "Start failed"] as const)(
+    "continues an interrupted native thread with response: %s",
+    (rejection) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const rejectEmpty = rejection === "failed to submit turn input: EmptyInput";
+          const scenario = `codex-restart-promptless-${rejection ?? "accepted"}`;
+          const nativeThreadId = "native-restart-promptless";
+          const nativeTurnId = "turn-restart-promptless";
+          const preamble = codexReplayPreamble({
+            nativeThreadId,
+            nativeTurnId,
+            prompt: "unused",
+          }).slice(0, 5);
+          const transcript = makeCodexReplayTranscript({
+            scenario,
+            entries: [
+              ...preamble,
+              {
+                type: "expect_outbound",
+                label: "resume",
+                frame: {
+                  id: 3,
+                  method: "thread/resume",
+                  params: {
+                    threadId: nativeThreadId,
+                    excludeTurns: true,
+                    config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+                  },
                 },
               },
-            },
-            {
-              type: "emit_inbound",
-              label: "resume",
-              frame: { id: 3, result: { thread: { id: nativeThreadId, updatedAt: 1782622450 } } },
-            },
-            {
-              type: "expect_outbound",
-              label: "continue",
-              frame: {
-                id: 4,
-                method: "turn/start",
-                params: {
-                  threadId: nativeThreadId,
-                  input: [],
-                  cwd: "/workspace",
-                  model: "gpt-5.4",
-                  approvalPolicy: "never",
-                  approvalsReviewer: "user",
-                  sandboxPolicy: { type: "dangerFullAccess" },
-                  summary: "detailed",
-                  collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
+              {
+                type: "emit_inbound",
+                label: "resume",
+                frame: { id: 3, result: { thread: { id: nativeThreadId, updatedAt: 1782622450 } } },
+              },
+              {
+                type: "expect_outbound",
+                label: "continue",
+                frame: {
+                  id: 4,
+                  method: "turn/start",
+                  params: {
+                    threadId: nativeThreadId,
+                    input: [],
+                    cwd: "/workspace",
+                    model: "gpt-5.4",
+                    approvalPolicy: "never",
+                    approvalsReviewer: "user",
+                    sandboxPolicy: { type: "dangerFullAccess" },
+                    summary: "detailed",
+                    collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
+                  },
                 },
               },
-            },
-            {
-              type: "emit_inbound",
-              label: "continue",
-              frame: {
-                id: 4,
-                result: { turn: makeCodexReplayTurn({ id: nativeTurnId, status: "inProgress" }) },
+              {
+                type: "emit_inbound",
+                label: "continue",
+                frame: {
+                  id: 4,
+                  ...(rejection !== undefined
+                    ? { error: { code: -32600, message: rejection } }
+                    : {
+                        result: {
+                          turn: makeCodexReplayTurn({ id: nativeTurnId, status: "inProgress" }),
+                        },
+                      }),
+                },
               },
-            },
-          ],
-        });
-        const harness = yield* makeCodexReplayHarness(transcript);
-        const resumed = yield* harness.runtime.resumeThread({
-          providerThread: harness.providerThread,
-          modelSelection: CODEX_TEST_MODEL_SELECTION,
-          runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
-        });
-        yield* harness.runtime.startTurn({
-          ...makeCodexTestTurnInput({
-            threadId: harness.threadId,
-            providerThread: resumed,
-            now: yield* DateTime.now,
-            attemptId: RunAttemptId.make("attempt-restart-promptless"),
-            text: "Continue where you left off.",
-          }),
-          restartContinuationOfRunId: RunId.make("run-before-restart"),
-        });
-        assert.equal(resumed.nativeThreadRef?.nativeId, nativeThreadId);
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+              ...(rejectEmpty
+                ? [
+                    {
+                      type: "expect_outbound" as const,
+                      label: "continue-with-prompt",
+                      frame: {
+                        id: 5,
+                        method: "turn/start",
+                        params: {
+                          threadId: nativeThreadId,
+                          input: [{ type: "text", text: "Continue where you left off." }],
+                          cwd: "/workspace",
+                          model: "gpt-5.4",
+                          approvalPolicy: "never",
+                          approvalsReviewer: "user",
+                          sandboxPolicy: { type: "dangerFullAccess" },
+                          summary: "detailed",
+                          collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
+                        },
+                      },
+                    },
+                    {
+                      type: "emit_inbound" as const,
+                      label: "continue-with-prompt",
+                      frame: {
+                        id: 5,
+                        result: {
+                          turn: makeCodexReplayTurn({ id: nativeTurnId, status: "inProgress" }),
+                        },
+                      },
+                    },
+                  ]
+                : []),
+            ],
+          });
+          const harness = yield* makeCodexReplayHarness(transcript);
+          const resumed = yield* harness.runtime.resumeThread({
+            providerThread: harness.providerThread,
+            modelSelection: CODEX_TEST_MODEL_SELECTION,
+            runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+          });
+          const start = harness.runtime.startTurn({
+            ...makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: resumed,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("attempt-restart-promptless"),
+              text: "Continue where you left off.",
+            }),
+            restartContinuationOfRunId: RunId.make("run-before-restart"),
+          });
+          if (rejection !== undefined && !rejectEmpty) {
+            const error = yield* Effect.flip(start);
+            assert.equal(error._tag, "ProviderAdapterTurnStartError");
+            assert.nestedPropertyVal(error, "cause.errorMessage", rejection);
+          } else {
+            yield* start;
+          }
+          assert.equal(resumed.nativeThreadRef?.nativeId, nativeThreadId);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
         ),
       ),
-    ),
   );
 
   it.effect.each([
