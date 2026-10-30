@@ -18,6 +18,7 @@ import {
 } from "./composerSend.logic";
 
 import { useComposerDraftStore, type ComposerImageAttachment } from "../../composerDraftStore";
+import { mergeDirectPreviewAnnotation } from "../ChatView.logic";
 import { ensureInlineContextReferences } from "../../lib/composerContextReferences";
 import { previewAnnotationContextReference } from "../../lib/composerContextRecords";
 
@@ -181,6 +182,32 @@ describe("unavailable direct preview send", () => {
       ]),
     );
   });
+  it("honors screenshot opt-out after an unavailable send without losing the draft", () => {
+    const store = useComposerDraftStore.getState();
+    const unrelatedImage = { ...image, id: "reference", name: "reference.png" };
+    store.setPrompt(target, "Existing request");
+    store.addImage(target, unrelatedImage);
+    retainUnavailablePreviewAnnotation(target, { annotation, image });
+    const retained = store.getComposerDraft(target)!;
+    const withoutScreenshot = { annotation: { ...annotation, screenshot: null }, image: null };
+
+    const ready = mergeDirectPreviewAnnotation({
+      images: retained.images,
+      fileCount: retained.files.length,
+      previewAnnotations: retained.previewAnnotations,
+      direct: withoutScreenshot,
+    });
+    expect(ready.images).toEqual([unrelatedImage]);
+    expect(ready.previewAnnotations).toEqual([withoutScreenshot.annotation]);
+    expect(retained.images).toEqual([unrelatedImage, image]);
+
+    retainUnavailablePreviewAnnotation(target, withoutScreenshot);
+    const revised = store.getComposerDraft(target)!;
+    expect(revised.images).toEqual([unrelatedImage]);
+    expect(revised.previewAnnotations).toEqual([withoutScreenshot.annotation]);
+    expect(revised.prompt).toBe(retained.prompt);
+  });
+
   it("keeps structured context without claiming a crop rejected by the attachment cap", () => {
     const store = useComposerDraftStore.getState();
     store.addImages(

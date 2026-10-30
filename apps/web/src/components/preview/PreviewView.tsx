@@ -179,6 +179,7 @@ export function PreviewView({
   );
   const addPreviewAnnotation = useComposerDraftStore((store) => store.addPreviewAnnotation);
   const addImage = useComposerDraftStore((store) => store.addImage);
+  const removeImage = useComposerDraftStore((store) => store.removeImage);
   const environmentHttpBaseUrl = useEnvironmentHttpBaseUrl(threadRef.environmentId);
   const open = useAtomCommand(previewEnvironment.open);
   const closePreview = useAtomCommand(previewEnvironment.close, "preview close");
@@ -801,6 +802,7 @@ export function PreviewView({
     } else {
       addPreviewAnnotation(threadRef, annotation);
       if (image) addImage(threadRef, image);
+      else if (!annotation.screenshot) removeImage(threadRef, annotation.id);
     }
   };
 
