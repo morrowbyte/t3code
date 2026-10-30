@@ -430,7 +430,7 @@ export const ChatHeader = memo(function ChatHeader({
           ) : null}
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
-      <PinnedWorkTabs maxRows={2} className="max-w-full basis-[42rem] flex-1" />
+      <PinnedWorkTabs maxRows={2} className="max-w-full flex-[1_1_44rem]" />
       {isServerThread ? <GuestShareIndicator threadRef={activeThreadRef} /> : null}
     </div>
   );

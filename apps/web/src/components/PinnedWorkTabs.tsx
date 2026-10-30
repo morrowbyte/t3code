@@ -17,6 +17,7 @@ import { cn } from "../lib/utils";
 import { useAgentIdentityTheme } from "./agent-identity/useAgentIdentityTheme";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { Button } from "./ui/button";
+import { ScrollArea } from "./ui/scroll-area";
 import { toastManager } from "./ui/toast";
 
 function savePin(tab: PinnedWorkTab) {
@@ -132,23 +133,25 @@ export function PinnedWorkTabs({
       className={cn("flex min-w-0 shrink items-center gap-1", "max-w-[50%] py-1", className)}
       onContextMenu={(event) => event.stopPropagation()}
     >
-      <div
-        className="grid min-w-0 flex-1 gap-x-2 gap-y-1 overflow-x-auto py-0.5"
-        style={{
-          gridTemplateColumns: `repeat(${Math.max(1, Math.ceil(tabs.length / maxRows))}, minmax(10rem, 1fr))`,
-        }}
-      >
-        {tabs.map((tab, index) => (
-          <WorkTab
-            key={JSON.stringify([tab.environmentId, tab.threadId])}
-            tab={tab}
-            index={index}
-            onRemove={savePin}
-            labelMode={labelMode}
-            active={current !== null && sameWorkTab(tab, current)}
-          />
-        ))}
-      </div>
+      <ScrollArea className="h-auto min-w-0 flex-1" scrollFade scrollFadePadding={false}>
+        <div
+          className="grid gap-x-2 gap-y-1 py-0.5"
+          style={{
+            gridTemplateColumns: `repeat(${Math.max(1, Math.ceil(tabs.length / maxRows))}, minmax(10rem, 1fr))`,
+          }}
+        >
+          {tabs.map((tab, index) => (
+            <WorkTab
+              key={JSON.stringify([tab.environmentId, tab.threadId])}
+              tab={tab}
+              index={index}
+              onRemove={savePin}
+              labelMode={labelMode}
+              active={current !== null && sameWorkTab(tab, current)}
+            />
+          ))}
+        </div>
+      </ScrollArea>
       {current && thread ? (
         <Button
           data-pin-current
