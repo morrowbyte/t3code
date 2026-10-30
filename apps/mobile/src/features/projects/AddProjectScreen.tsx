@@ -764,6 +764,7 @@ function useBoatCreation(environment: EnvironmentOption | null) {
     <ListSection>
       <ListRow
         title="Use Boat cloud environment"
+        icon={null}
         isFirst
         disabled={!canConfigure || !canWrite}
         right={
@@ -780,6 +781,7 @@ function useBoatCreation(environment: EnvironmentOption | null) {
         <ListRow
           disabled={!canPreview}
           title="Set up automatically with an agent"
+          icon={null}
           right={
             <ThemedSwitch
               accessibilityLabel="Set up automatically with an agent"

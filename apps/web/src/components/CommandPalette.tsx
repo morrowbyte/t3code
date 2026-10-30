@@ -1907,9 +1907,9 @@ function OpenCommandPaletteDialog(props: {
         environmentId: newProjectFlow.environmentId,
         name: newProjectName,
         publishTo: newProjectPublishes ? newProjectPublishTarget : null,
-        boat: newProjectBoat
-          ? { autoSetup: autoSetupBoat && canCreateProject && canPreviewBoat }
-          : undefined,
+        ...(newProjectBoat
+          ? { boat: { autoSetup: autoSetupBoat && canCreateProject && canPreviewBoat } }
+          : {}),
       }),
     );
     newProjectSubmittingRef.current = false;

@@ -11,7 +11,6 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
 import * as Clones from "../project/ProjectCloneTracker.ts";
 import * as Projects from "../project/ProjectService.ts";
@@ -59,13 +58,11 @@ it.effect(
       }),
       Layer.mock(Projects.ProjectService)({
         getShell: () =>
-          Effect.succeed(
-            Option.some({
-              id: projectId,
-              title: "New project",
-              workspaceRoot: "/project",
-            } as never),
-          ),
+          Effect.succeedSome({
+            id: projectId,
+            title: "New project",
+            workspaceRoot: "/project",
+          } as never),
       }),
       Layer.mock(Settings.ServerSettingsService)({
         getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
