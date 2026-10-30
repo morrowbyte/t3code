@@ -135,14 +135,11 @@ jobs:
         if: github.event_name != 'workflow_dispatch' || inputs.integrationOnly
         env:
           BASE_REF: ${{ inputs.integrationBase || github.event.pull_request.base.sha || github.event.before }}
-          CHECKOUT_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           [[ "$BASE_REF" =~ ^[A-Za-z0-9_][A-Za-z0-9_./-]*$ ]]
           if [[ "$BASE_REF" == 0000000000000000000000000000000000000000 ]]; then BASE_REF=main; fi
-          CHECKOUT_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$CHECKOUT_TOKEN" | base64 -w0)" \
-            git --config-env=http.https://github.com/.extraheader=CHECKOUT_HEADER \
-            fetch --no-tags --depth=1 origin "$BASE_REF"
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
           BASE_SHA="$(git rev-parse FETCH_HEAD)"
           vp run check:integration --exact-base "$BASE_SHA"
       - name: Run focused source gates

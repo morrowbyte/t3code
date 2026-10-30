@@ -24,7 +24,7 @@ try {
   if (-not (Test-Path -LiteralPath $bash)) {
     throw "Native Git Bash is missing at $bash; refusing the WSL bash shim."
   }
-  $process = Start-Process -FilePath $bash -ArgumentList @('"' + $scriptPath + '"') -NoNewWindow -PassThru
+  $process = Start-Process -FilePath $bash -ArgumentList @('"' + $scriptPath + '"') -WorkingDirectory $env:GITHUB_WORKSPACE -NoNewWindow -PassThru
   $null = $process.Handle
   Write-Host "Monitoring owned build PID $($process.Id), reserve $env:GUARDED_RESERVE_GIB GiB."
   while (-not $process.WaitForExit(5000)) { Test-StorageReserve }
