@@ -1975,6 +1975,9 @@ jobs:
           cache: false
           run-install: false
 
+      - name: Install checksum consumer dependencies
+        run: vp install --frozen-lockfile --ignore-scripts
+
       - name: Verify Android bytes from this build before publication
         if: ${{ !inputs.desktop_only }}
         env:
