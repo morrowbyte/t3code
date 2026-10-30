@@ -6,7 +6,10 @@ import {
   MessageId,
   ThreadId,
 } from "@t3tools/contracts";
-import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
+import {
+  resolveNewThreadModelSelection,
+  resolveProjectDefaultProviderModelSelection,
+} from "@t3tools/shared/usageLimits";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -64,8 +67,10 @@ export const layer = Layer.effect(
           .getThreadShell(threadId)
           .pipe(Effect.mapError(fail("launch")));
         if (existing && existing.projectId !== input.projectId) return yield* fail("project")(null);
+        const serverSettings = yield* settings.getSettings.pipe(Effect.mapError(fail("provider")));
+        const availableProviders = yield* providers.getProviders;
         const defaults = resolveProjectSettings(
-          yield* settings.getSettings.pipe(Effect.mapError(fail("provider"))),
+          serverSettings,
           input.projectId,
           project.value,
         ).settings;
@@ -73,9 +78,15 @@ export const layer = Layer.effect(
           existing?.modelSelection ??
           input.modelSelection ??
           resolveNewThreadModelSelection({
-            defaultSelection: defaults.defaultModelSelection,
+            defaultSelection:
+              defaults.defaultModelSelection ??
+              resolveProjectDefaultProviderModelSelection(
+                availableProviders,
+                serverSettings,
+                input.projectId,
+              ),
             fallbackSelection: defaults.fallbackModelSelection,
-            providers: yield* providers.getProviders,
+            providers: availableProviders,
             settings: defaults,
             projectId: input.projectId,
             now: DateTime.toEpochMillis(yield* DateTime.now),

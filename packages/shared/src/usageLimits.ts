@@ -1,4 +1,6 @@
 import {
+  DEFAULT_MODEL_BY_PROVIDER,
+  defaultInstanceIdForDriver,
   type EnvironmentId,
   type ModelSelection,
   type ServerSettings,
@@ -20,6 +22,42 @@ import * as DateTime from "effect/DateTime";
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
+
+export function resolveProjectDefaultProviderModelSelection(
+  providers: readonly ServerProvider[],
+  settings: ServerSettings,
+  projectId: ProjectId | null,
+): ModelSelection | null {
+  const groups = new Map<ServerProvider["driver"], ServerProvider[]>();
+  for (const provider of providers) {
+    const group = groups.get(provider.driver) ?? [];
+    group.push(provider);
+    groups.set(provider.driver, group);
+  }
+  const ordered = [...groups.values()].flatMap((group) => [
+    ...group.filter(
+      (provider) => provider.instanceId === defaultInstanceIdForDriver(provider.driver),
+    ),
+    ...group.filter(
+      (provider) => provider.instanceId !== defaultInstanceIdForDriver(provider.driver),
+    ),
+  ]);
+  const selectable = (provider: ServerProvider) =>
+    resolveProjectProviderInstanceEnabled(settings, projectId, provider.instanceId) &&
+    provider.availability !== "unavailable";
+  const pick = (entries: readonly ServerProvider[]) =>
+    entries.find((provider) => selectable(provider) && provider.status === "ready") ??
+    entries.find((provider) => selectable(provider) && provider.status !== "error");
+  const provider =
+    pick(ordered.filter((entry) => entry.driver === ordered[0]?.driver)) ?? pick(ordered);
+  if (!provider) return null;
+  const model =
+    provider.models.find((entry) => entry.isDefault && !entry.isCustom)?.slug ??
+    provider.models.find((entry) => !entry.isCustom)?.slug ??
+    provider.models[0]?.slug ??
+    DEFAULT_MODEL_BY_PROVIDER[provider.driver];
+  return model ? { instanceId: provider.instanceId, model } : null;
+}
 
 export function exhaustedUsageWindow(
   provider: ServerProvider | undefined,

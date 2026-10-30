@@ -3,6 +3,8 @@ import {
   EnvironmentId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProjectId,
+  DEFAULT_MODEL,
   type ServerProvider,
   UsageLimitSourceId,
 } from "@t3tools/contracts";
@@ -24,6 +26,7 @@ import {
   paceRemainingPercent,
   usesChatGptSharing,
   resolveNewThreadModelSelection,
+  resolveProjectDefaultProviderModelSelection,
 } from "./usageLimits.ts";
 
 const now = Date.parse("2026-09-03T12:00:00.000Z");
@@ -55,6 +58,23 @@ function provider(overrides: Partial<ServerProvider>): ServerProvider {
 }
 
 describe("new thread model fallback", () => {
+  it("selects available project providers without an explicit model and honors project exclusions", () => {
+    const projectId = ProjectId.make("default-provider-project");
+    const first = provider({});
+    const custom = provider({ instanceId: ProviderInstanceId.make("codex-custom") });
+    const resolve = (settings = DEFAULT_SERVER_SETTINGS, providers = [custom, first]) =>
+      resolveProjectDefaultProviderModelSelection(providers, settings, projectId);
+    expect(resolve()).toEqual({ instanceId: first.instanceId, model: DEFAULT_MODEL });
+    const restricted = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: {
+        [first.instanceId]: { driver: first.driver, enabled: false, config: {} },
+        [custom.instanceId]: { driver: custom.driver, enabled: true, config: {} },
+      },
+    };
+    expect(resolve(restricted)).toEqual({ instanceId: custom.instanceId, model: DEFAULT_MODEL });
+    expect(resolve(restricted, [{ ...custom, availability: "unavailable" }, first])).toBeNull();
+  });
   const selection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" };
   const fallback = { instanceId: ProviderInstanceId.make("claude"), model: "claude-fable-5-1" };
   const limited = provider({
