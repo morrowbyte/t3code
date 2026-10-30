@@ -125,11 +125,29 @@ print("Crew source synchronized:", len(current), "files;", len(previous - curren
 PYTHON`;
 const KEY = "boat-api-key";
 const rates = { small: 0.018, default: 0.036, large: 0.072, xlarge: 0.2 };
+const StoredInstance = Schema.Struct({
+  ...BoatInstance.fields,
+  revision: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
+  resumeOperation: Schema.NullOr(
+    Schema.Struct({
+      id: Schema.String,
+      ttlSeconds: Schema.Number,
+      previousState: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed("archived"))),
+      previousExpiresAt: Schema.NullOr(Schema.String).pipe(
+        Schema.withDecodingDefaultKey(Effect.succeed(null)),
+      ),
+      previousStoppedAt: Schema.NullOr(Schema.String).pipe(
+        Schema.withDecodingDefaultKey(Effect.succeed(null)),
+      ),
+    }),
+  ).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+});
+type StoredInstance = typeof StoredInstance.Type;
 const Ledger = Schema.Struct({
   defaults: BoatDefaults.pipe(Schema.withDecodingDefaultKey(Effect.succeed(DEFAULT_BOAT_DEFAULTS))),
   period: Schema.String,
   projects: Schema.Record(Schema.String, BoatProjectConfig),
-  instances: Schema.Array(BoatInstance),
+  instances: Schema.Array(StoredInstance),
 });
 const encodeLedger = Schema.encodeEffect(Schema.fromJsonString(Ledger));
 const ProjectManifest = Schema.Struct({
@@ -209,6 +227,7 @@ export const make = Effect.gen(function* () {
   const previews = yield* PreviewManager;
   const projections = yield* ProjectionStoreV2;
   const lock = yield* Semaphore.make(1);
+  const resumeInFlight = new Set<string>();
   const filename = path.join(config.stateDir, "boat.json");
   const initialPeriod = DateTime.formatIso(yield* DateTime.now).slice(0, 7);
   let ledger: typeof Ledger.Type = yield* fs.exists(filename).pipe(
@@ -236,27 +255,38 @@ export const make = Effect.gen(function* () {
   }, Effect.mapError(storageError));
   const updateInstance = Effect.fn("BoatService.updateInstance")(
     (
-      requestId: string,
-      update: Partial<BoatInstance> | ((item: BoatInstance) => Partial<BoatInstance>),
+      target: Pick<BoatInstance, "requestId" | "projectId">,
+      update: Partial<StoredInstance> | ((item: StoredInstance) => Partial<StoredInstance>),
     ) =>
       lock.withPermits(1)(
-        Effect.suspend(() =>
-          save({
+        Effect.gen(function* () {
+          yield* save({
             ...ledger,
-            instances: ledger.instances.map((item) =>
-              item.requestId === requestId
-                ? {
-                    ...item,
-                    ...(typeof update === "function" ? update(item) : update),
-                    // Snapshot transitions commit with the project template under this lock.
-                    savedSnapshot: item.savedSnapshot,
-                  }
-                : item,
-            ),
-          }),
-        ),
+            instances: ledger.instances.map((item) => {
+              if (item.requestId !== target.requestId || item.projectId !== target.projectId)
+                return item;
+              const patch = typeof update === "function" ? update(item) : update;
+              return {
+                ...item,
+                ...patch,
+                revision:
+                  item.revision +
+                  (patch.state !== undefined || patch.resumeOperation !== undefined ? 1 : 0),
+                // Snapshot transitions commit with the project template under this lock.
+                savedSnapshot: item.savedSnapshot,
+              };
+            }),
+          });
+          return ledger.instances.find(
+            (item) => item.requestId === target.requestId && item.projectId === target.projectId,
+          )!;
+        }),
       ),
   );
+  const publicInstances = (projectId?: ProjectId) =>
+    ledger.instances
+      .filter((item) => !projectId || item.projectId === projectId)
+      .map(({ revision: _revision, resumeOperation: _resumeOperation, ...item }) => item);
   const key = Effect.gen(function* () {
     const value = yield* secrets.get(KEY).pipe(Effect.mapError(storageError));
     if (Option.isNone(value)) return yield* new BoatError({ category: "not_configured" });
@@ -275,12 +305,16 @@ export const make = Effect.gen(function* () {
   };
   const previewLock = yield* Semaphore.make(1);
   const attachPreview = Effect.fn("BoatService.attachPreview")(
-    (item: BoatInstance, token: Redacted.Redacted<string>, reveal = false) =>
+    (item: StoredInstance, token: Redacted.Redacted<string>, reveal = false) =>
       previewLock.withPermits(1)(
         Effect.gen(function* () {
           const current =
-            ledger.instances.find((candidate) => candidate.requestId === item.requestId) ?? item;
-          if (!current.sandboxId) return current;
+            ledger.instances.find(
+              (candidate) =>
+                candidate.requestId === item.requestId && candidate.projectId === item.projectId,
+            ) ?? item;
+          if (!current.sandboxId || inactive.has(current.state) || current.state === "deleting")
+            return current;
           const settings = projectSettings(current.projectId);
           let previewUrl = current.previewUrl;
           if (!previewUrl || (reveal && settings.previewKind === "web")) {
@@ -328,9 +362,11 @@ export const make = Effect.gen(function* () {
                 .requestReveal({ threadId: current.threadId, tabId: existing.tabId, force: true })
                 .pipe(Effect.mapError(() => new BoatError({ category: "provider" })));
           }
-          const next = { ...current, previewUrl, previewTabId };
-          yield* updateInstance(current.requestId, next);
-          return next;
+          return yield* updateInstance(current, (latest) =>
+            latest.revision === current.revision && latest.sandboxId === current.sandboxId
+              ? { previewUrl, previewTabId }
+              : {},
+          );
         }),
       ),
   );
@@ -355,7 +391,7 @@ export const make = Effect.gen(function* () {
         configured: false,
         account: null,
         projects: ledger.projects,
-        instances: ledger.instances.filter((item) => !projectId || item.projectId === projectId),
+        instances: publicInstances(projectId),
       };
     const token = Redacted.make(new TextDecoder().decode(stored.value));
     const limits = yield* api.request(token, "/limits").pipe(Effect.flatMap(decode(Limits)));
@@ -371,12 +407,12 @@ export const make = Effect.gen(function* () {
                 `/deletion-operations/${encodeURIComponent(item.deletionOperationId)}`,
               )
               .pipe(Effect.flatMap(decode(Deletion)));
-            const next = {
-              ...item,
-              state: result.operation.status === "completed" ? "deleted" : "deleting",
-            };
-            yield* updateInstance(item.requestId, next);
-            return next;
+            return yield* updateInstance(item, (current) =>
+              current.revision === item.revision &&
+              current.deletionOperationId === item.deletionOperationId
+                ? { state: result.operation.status === "completed" ? "deleted" : "deleting" }
+                : {},
+            );
           }
           const remote = yield* api
             .request(token, `/sandboxes/${encodeURIComponent(item.sandboxId)}`)
@@ -390,9 +426,13 @@ export const make = Effect.gen(function* () {
               }),
             );
           if (remote.sandbox.state === "deleted") {
-            const next = { ...item, state: "deleted", processId: null, previewUrl: null };
-            yield* updateInstance(item.requestId, next);
-            return next;
+            return yield* updateInstance(item, (current) =>
+              current.revision === item.revision &&
+              current.sandboxId === item.sandboxId &&
+              !current.deletionOperationId
+                ? { state: "deleted", processId: null, previewUrl: null, resumeOperation: null }
+                : {},
+            );
           }
           const usage = yield* api
             .request(
@@ -401,13 +441,29 @@ export const make = Effect.gen(function* () {
             )
             .pipe(Effect.flatMap(decode(Usage)));
           const stopped = ["archived", "stopped"].includes(remote.sandbox.state);
-          const next = {
-            ...item,
-            state: remote.sandbox.state,
-            costUsd: usage.dollars,
-            stoppedAt: stopped ? (item.stoppedAt ?? DateTime.formatIso(yield* DateTime.now)) : null,
-          };
-          yield* updateInstance(item.requestId, next);
+          const stoppedAt = DateTime.formatIso(yield* DateTime.now);
+          const next = yield* updateInstance(item, (current) => {
+            if (
+              current.revision !== item.revision ||
+              current.sandboxId !== item.sandboxId ||
+              current.deletionOperationId
+            )
+              return {};
+            // A stopped GET cannot settle an outstanding resume POST.
+            const pending =
+              current.resumeOperation !== null &&
+              (stopped || resumeInFlight.has(current.requestId));
+            return {
+              state: pending ? current.state : remote.sandbox.state,
+              costUsd: usage.dollars,
+              stoppedAt: pending
+                ? current.stoppedAt
+                : stopped
+                  ? (current.stoppedAt ?? stoppedAt)
+                  : null,
+              ...(current.resumeOperation && !pending ? { resumeOperation: null } : {}),
+            };
+          });
           if (next.threadId && next.processId !== null && !inactive.has(next.state)) {
             if (next.previewUrl) return yield* attachPreview(next, token);
             const settings = projectSettings(item.projectId);
@@ -443,7 +499,9 @@ export const make = Effect.gen(function* () {
           yield* save({
             ...ledger,
             instances: ledger.instances.map((entry) =>
-              entry.requestId === item.requestId ? { ...entry, savedSnapshot: snapshot } : entry,
+              entry.requestId === item.requestId && entry.projectId === item.projectId
+                ? { ...entry, savedSnapshot: snapshot }
+                : entry,
             ),
             projects:
               snapshot.status === "ready" && ledger.projects[item.projectId]
@@ -481,7 +539,7 @@ export const make = Effect.gen(function* () {
           .filter((item): item is typeof BoatProjectConfig.Type.size => item in rates),
       },
       projects: ledger.projects,
-      instances: ledger.instances.filter((item) => !projectId || item.projectId === projectId),
+      instances: publicInstances(projectId),
     };
   });
   const connect = Effect.fn("BoatService.connect")(function* (apiKey: Redacted.Redacted<string>) {
@@ -670,15 +728,14 @@ export const make = Effect.gen(function* () {
     );
     if (action.action === "start") {
       if (instance?.sandboxId) return yield* read(action.projectId);
-      if (!settings.enabled) return yield* new BoatError({ category: "disabled" });
-      const status = yield* read(action.projectId);
-      if (!status.account?.canStart || !status.account.sizes.includes(settings.size))
-        return yield* new BoatError({ category: "capacity" });
+      const status = instance ? null : yield* read(action.projectId);
       const reservation = (settings.ttlMinutes / 60) * rates[settings.size];
       const now = yield* Clock.currentTimeMillis;
       instance ??= {
         requestId: action.requestId,
         projectId: action.projectId,
+        revision: 0,
+        resumeOperation: null,
         savedSnapshot: null,
         sandboxId: null,
         size: settings.size,
@@ -697,14 +754,17 @@ export const make = Effect.gen(function* () {
         previewUrl: null,
       };
       const reserved = instance;
-      yield* lock.withPermits(1)(
+      instance = yield* lock.withPermits(1)(
         Effect.gen(function* () {
-          if (
-            ledger.instances.some(
-              (item) => item.requestId === action.requestId && item.projectId === action.projectId,
-            )
-          )
-            return;
+          const existing = ledger.instances.find((item) => item.requestId === action.requestId);
+          if (existing) {
+            if (existing.projectId !== action.projectId)
+              return yield* new BoatError({ category: "conflict" });
+            return existing;
+          }
+          if (!settings.enabled) return yield* new BoatError({ category: "disabled" });
+          if (!status?.account?.canStart || !status.account.sizes.includes(settings.size))
+            return yield* new BoatError({ category: "capacity" });
           const own = ledger.instances.filter((item) => item.projectId === action.projectId);
           if (own.filter((item) => !inactive.has(item.state)).length >= settings.maxConcurrent)
             return yield* new BoatError({ category: "capacity" });
@@ -723,10 +783,14 @@ export const make = Effect.gen(function* () {
           )
             return yield* new BoatError({ category: "budget" });
           yield* save({ ...ledger, instances: [...ledger.instances, reserved] });
+          return reserved;
         }),
       );
+      if (instance.sandboxId) return yield* read(action.projectId);
+      if (instance.state !== "provisioning") return yield* new BoatError({ category: "conflict" });
       if (now - Date.parse(instance.createdAt) > 23 * 3600000)
         return yield* new BoatError({ category: "conflict" });
+      const createReservation = instance;
       const created = yield* api
         .request(
           token,
@@ -754,15 +818,26 @@ export const make = Effect.gen(function* () {
                 error.status < 500 &&
                 error.status !== 409
               )
-                yield* updateInstance(action.requestId, { state: "error" });
+                yield* updateInstance(action, (current) =>
+                  !current.sandboxId &&
+                  current.state === "provisioning" &&
+                  current.revision === createReservation.revision &&
+                  current.createdAt === createReservation.createdAt
+                    ? { state: "error" }
+                    : {},
+                );
               return yield* error;
             }),
           }),
         );
-      yield* updateInstance(action.requestId, {
-        sandboxId: created.sandbox.id,
-        state: created.sandbox.state,
-      });
+      yield* updateInstance(action, (current) =>
+        !current.sandboxId &&
+        current.state === "provisioning" &&
+        current.revision === createReservation.revision &&
+        current.createdAt === createReservation.createdAt
+          ? { sandboxId: created.sandbox.id, state: created.sandbox.state }
+          : {},
+      );
       return yield* read(action.projectId);
     }
     if (!instance?.sandboxId) return yield* new BoatError({ category: "not_found" });
@@ -772,7 +847,7 @@ export const make = Effect.gen(function* () {
       ["prepare", "exec", "resume", "renew"].includes(action.action) &&
       !instance.leases.includes(agentThreadId)
     ) {
-      yield* updateInstance(action.requestId, (current) => ({
+      yield* updateInstance(action, (current) => ({
         leases: Array.from(new Set([...current.leases, agentThreadId])),
       }));
     }
@@ -792,7 +867,7 @@ export const make = Effect.gen(function* () {
       if (spent + (settings.ttlMinutes / 60) * rates[instance.size] > settings.budgetUsd)
         return yield* new BoatError({ category: "budget" });
       yield* api.request(token, sandboxPath, "PATCH", { ttlSeconds: settings.ttlMinutes * 60 });
-      yield* updateInstance(action.requestId, {
+      yield* updateInstance(action, {
         expiresAt: DateTime.formatIso(DateTime.makeUnsafe(now + settings.ttlMinutes * 60000)),
       });
       return yield* read(action.projectId);
@@ -807,7 +882,7 @@ export const make = Effect.gen(function* () {
       const result = yield* api
         .request(token, sandboxPath, "DELETE")
         .pipe(Effect.flatMap(decode(Deletion)));
-      yield* updateInstance(action.requestId, {
+      yield* updateInstance(action, {
         state: "deleting",
         costUsd: usage.dollars,
         deletionOperationId: result.operation.id,
@@ -829,7 +904,7 @@ export const make = Effect.gen(function* () {
         typeof process === "object" &&
         "exitCode" in process &&
         process.exitCode === 0;
-      if (threadId) yield* updateInstance(action.requestId, { threadId });
+      if (threadId) yield* updateInstance(action, { threadId });
       if (!settings.enabled || !settings.devCommand.trim())
         return yield* new BoatError({ category: "disabled" });
       if (settings.previewKind === "android")
@@ -906,7 +981,7 @@ export const make = Effect.gen(function* () {
             .pipe(Effect.flatMap(decode(ProcessStatus)));
           if (result.exitCode !== undefined && result.exitCode !== 0)
             return yield* new BoatError({ category: "provider" });
-          yield* updateInstance(action.requestId, {
+          yield* updateInstance(action, {
             output: `${result.stdout ?? ""}\n${result.stderr ?? ""}`.slice(-12000),
           });
         } else {
@@ -917,7 +992,7 @@ export const make = Effect.gen(function* () {
               detached: true,
             })
             .pipe(Effect.flatMap(decode(Process)));
-          yield* updateInstance(action.requestId, { processId: started.processId });
+          yield* updateInstance(action, { processId: started.processId });
         }
       }).pipe(Effect.ensuring(fs.remove(archive).pipe(Effect.orElseSucceed(() => undefined))));
     } else if (action.action === "exec") {
@@ -928,7 +1003,7 @@ ${action.command}`,
           timeoutSeconds: 20,
         })
         .pipe(Effect.flatMap(decode(ProcessStatus)));
-      yield* updateInstance(action.requestId, {
+      yield* updateInstance(action, {
         output: `${output.stdout ?? ""}\n${output.stderr ?? ""}`
           .replace(/(#token=)[^\s]+/g, "$1[private]")
           .slice(-12000),
@@ -957,7 +1032,9 @@ ${action.command}`,
           yield* save({
             ...ledger,
             instances: ledger.instances.map((item) =>
-              item.requestId === action.requestId ? { ...item, savedSnapshot: snapshot } : item,
+              item.requestId === action.requestId && item.projectId === action.projectId
+                ? { ...item, savedSnapshot: snapshot }
+                : item,
             ),
             projects:
               snapshot.status === "ready"
@@ -977,7 +1054,7 @@ ${action.command}`,
       const output = yield* api
         .request(token, `${sandboxPath}/commands/${instance.processId}`)
         .pipe(Effect.flatMap(decode(ProcessStatus)));
-      yield* updateInstance(action.requestId, {
+      yield* updateInstance(action, {
         output: `${output.stdout ?? ""}\n${output.stderr ?? ""}`
           .replace(/(#token=)[^\s]+/g, "$1[private]")
           .slice(-12000),
@@ -985,56 +1062,150 @@ ${action.command}`,
     } else if (action.action === "cancel") {
       if (instance.processId !== null)
         yield* api.request(token, `${sandboxPath}/commands/${instance.processId}`, "DELETE");
-      yield* updateInstance(action.requestId, { processId: null });
+      yield* updateInstance(action, { processId: null });
     } else if (action.action === "preview") {
-      if (threadId) yield* updateInstance(action.requestId, { threadId });
+      if (threadId) yield* updateInstance(action, { threadId });
       yield* attachPreview({ ...instance, threadId: threadId ?? instance.threadId }, token, true);
     } else {
       if (action.action === "resume") {
-        if (!settings.enabled) return yield* new BoatError({ category: "disabled" });
         const fresh = yield* read(action.projectId);
-        if (!fresh.account?.canStart) return yield* new BoatError({ category: "capacity" });
-        const own = fresh.instances;
-        const others = own.filter(
-          (item) => item.requestId !== action.requestId && !inactive.has(item.state),
-        );
-        if (others.length >= settings.maxConcurrent)
-          return yield* new BoatError({ category: "capacity" });
         const now = yield* Clock.currentTimeMillis;
-        const reservedCost = others.reduce(
-          (sum, item) =>
-            sum + (Math.max(0, Date.parse(item.expiresAt) - now) / 3600000) * rates[item.size],
-          0,
+        let ownsResume = false;
+        yield* Effect.gen(function* () {
+          const operation = yield* lock.withPermits(1)(
+            Effect.gen(function* () {
+              const current = ledger.instances.find(
+                (item) =>
+                  item.requestId === action.requestId && item.projectId === action.projectId,
+              )!;
+              if (
+                current.state === "deleted" ||
+                current.state === "deleting" ||
+                current.state === "stopping"
+              )
+                return yield* new BoatError({ category: "conflict" });
+              if (resumeInFlight.has(current.requestId)) return null;
+              if (!current.resumeOperation) {
+                if (!inactive.has(current.state)) return null;
+                if (!settings.enabled) return yield* new BoatError({ category: "disabled" });
+                if (!fresh.account?.canStart) return yield* new BoatError({ category: "capacity" });
+              }
+              const ttlSeconds = current.resumeOperation?.ttlSeconds ?? settings.ttlMinutes * 60;
+              const expiresAt = Math.max(
+                current.resumeOperation ? Date.parse(current.expiresAt) : 0,
+                now + ttlSeconds * 1000,
+              );
+              const own = ledger.instances.filter((item) => item.projectId === action.projectId);
+              const others = own.filter(
+                (item) => item.requestId !== action.requestId && !inactive.has(item.state),
+              );
+              if (others.length >= settings.maxConcurrent)
+                return yield* new BoatError({ category: "capacity" });
+              const reservedCost = others.reduce(
+                (sum, item) =>
+                  sum +
+                  (Math.max(0, Date.parse(item.expiresAt) - now) / 3600000) * rates[item.size],
+                0,
+              );
+              if (
+                reservedCost +
+                  own.reduce((sum, item) => sum + item.costUsd, 0) +
+                  ((expiresAt - now) / 3600000) * rates[current.size] >
+                settings.budgetUsd
+              )
+                return yield* new BoatError({ category: "budget" });
+              const resumeOperation = current.resumeOperation ?? {
+                id: `${current.requestId}-resume-${current.revision + 1}`,
+                ttlSeconds,
+                previousState: current.state,
+                previousExpiresAt: current.expiresAt,
+                previousStoppedAt: current.stoppedAt,
+              };
+              yield* save({
+                ...ledger,
+                instances: ledger.instances.map((item) =>
+                  item === current
+                    ? {
+                        ...item,
+                        revision: item.revision + 1,
+                        resumeOperation,
+                        state: "provisioning",
+                        expiresAt: DateTime.formatIso(DateTime.makeUnsafe(expiresAt)),
+                        ...(current.resumeOperation
+                          ? {}
+                          : { stoppedAt: null, processId: null, previewUrl: null }),
+                      }
+                    : item,
+                ),
+              });
+              resumeInFlight.add(current.requestId);
+              ownsResume = true;
+              return resumeOperation;
+            }),
+          );
+          if (operation) {
+            yield* api
+              .request(
+                token,
+                `${sandboxPath}/resume`,
+                "POST",
+                { ttlSeconds: operation.ttlSeconds },
+                operation.id,
+              )
+              .pipe(
+                Effect.catchTags({
+                  BoatError: Effect.fn("BoatService.resumeFailed")(function* (error) {
+                    if (
+                      error.status !== undefined &&
+                      error.status >= 400 &&
+                      error.status < 500 &&
+                      error.status !== 408 &&
+                      error.status !== 409
+                    ) {
+                      const stoppedAt =
+                        operation.previousStoppedAt ?? DateTime.formatIso(yield* DateTime.now);
+                      yield* updateInstance(action, (current) =>
+                        current.resumeOperation?.id === operation.id &&
+                        current.state === "provisioning" &&
+                        !current.deletionOperationId
+                          ? {
+                              state: operation.previousState,
+                              expiresAt: operation.previousExpiresAt ?? current.expiresAt,
+                              stoppedAt,
+                              resumeOperation: null,
+                            }
+                          : {},
+                      );
+                    }
+                    return yield* error;
+                  }),
+                }),
+              );
+          }
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (ownsResume) resumeInFlight.delete(action.requestId);
+            }),
+          ),
         );
-        if (
-          reservedCost +
-            own.reduce((sum, item) => sum + item.costUsd, 0) +
-            (settings.ttlMinutes / 60) * rates[instance.size] >
-          settings.budgetUsd
-        )
-          return yield* new BoatError({ category: "budget" });
-        yield* updateInstance(action.requestId, {
-          expiresAt: DateTime.formatIso(DateTime.makeUnsafe(now + settings.ttlMinutes * 60000)),
+      } else {
+        yield* api.request(token, `${sandboxPath}/${action.action}`, "POST", {});
+        yield* updateInstance(action, {
+          state: "stopping",
+          processId: null,
+          previewUrl: null,
+          leases: [],
+          resumeOperation: null,
         });
       }
-      yield* api.request(
-        token,
-        `${sandboxPath}/${action.action}`,
-        "POST",
-        action.action === "resume" ? { ttlSeconds: settings.ttlMinutes * 60 } : {},
-      );
-      yield* updateInstance(action.requestId, {
-        state: action.action === "stop" ? "stopping" : "provisioning",
-        processId: null,
-        previewUrl: null,
-        leases: action.action === "resume" && agentThreadId ? [agentThreadId] : [],
-      });
     }
+
     if (["stop", "delete"].includes(action.action) && instance.threadId && instance.previewTabId) {
       yield* previews
         .close({ threadId: instance.threadId, tabId: PreviewTabId.make(instance.previewTabId) })
         .pipe(Effect.orElseSucceed(() => undefined));
-      yield* updateInstance(action.requestId, { previewTabId: null, processId: null });
+      yield* updateInstance(action, { previewTabId: null, processId: null });
     }
     const result = yield* read(
       action.action === "stop" || action.action === "delete" ? undefined : action.projectId,
@@ -1067,7 +1238,7 @@ ${action.command}`,
           });
         continue;
       }
-      if (inactive.has(item.state)) continue;
+      if (inactive.has(item.state) || item.resumeOperation) continue;
       if (Date.parse(item.expiresAt) <= now) {
         yield* operate({ action: "stop", projectId: item.projectId, requestId: item.requestId });
         continue;
