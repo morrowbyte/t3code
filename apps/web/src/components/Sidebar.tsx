@@ -1,6 +1,6 @@
 import { isEditableFocused } from "../lib/editableFocus";
 import { isNavigationKeyEvent } from "../keybindings";
-import { numericNavigationTarget } from "../pinnedWorkTabs";
+import { registerCommands } from "../shortcuts/dispatcher";
 import { ChevronRightIcon } from "lucide-react";
 import { SidebarThreadFamily } from "./sidebar/SidebarThreadRow";
 import { attachSidebarTree, SIDEBAR_TREE_PROPS } from "../lib/sidebarTree";
@@ -2882,7 +2882,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       ? selectThreadTerminalUiState(state.terminalUiStateByThreadKey, routeThreadRef).terminalOpen
       : false,
   );
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes to window keydown for thread navigation shortcuts using the current thread list
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers sidebar traversal and numeric commands with the shared keyboard dispatcher
   useEffect(() => {
     const onWindowKeyDown = (event: KeyboardEvent) => {
       if (
@@ -2891,7 +2891,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         isCommandPaletteOpen() ||
         isModelPickerOpen()
       ) {
-        return;
+        return false;
       }
       const command = resolveShortcutCommand(event, keybindings, {
         platform: navigator.platform,
@@ -2916,44 +2916,21 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       };
       const traversalDirection = threadTraversalDirectionFromCommand(command);
       if (traversalDirection !== null) {
-        navigateToThreadKey(
+        return navigateToThreadKey(
           resolveAdjacentThreadId({
             threadIds: orderedThreadKeys,
             currentThreadId: routeRowThreadKey,
             direction: traversalDirection,
           }),
         );
-        return;
       }
       const jumpIndex = threadJumpIndexFromCommand(command ?? "");
-      if (jumpIndex === null) return;
-      if (
-        numericNavigation.numericNavigationMode === "pinned-tabs" &&
-        (isTerminalFocused() ||
-          (event.target instanceof Element &&
-            event.target.closest(
-              '[data-keybinding-capture], [role="dialog"], [data-slot$="popup"]',
-            )))
-      )
-        return;
-      const sidebarThread = threadByKey.get(orderedThreadKeys[jumpIndex] ?? "");
-      const target = numericNavigationTarget(
-        numericNavigation,
-        jumpIndex,
-        sidebarThread ? scopeThreadRef(sidebarThread.environmentId, sidebarThread.id) : null,
-      );
-      if (numericNavigation.numericNavigationMode === "pinned-tabs") {
-        event.preventDefault();
-        event.stopPropagation();
+      if (jumpIndex === null || numericNavigation.numericNavigationMode === "pinned-tabs") {
+        return false;
       }
-      if (target) {
-        event.preventDefault();
-        event.stopPropagation();
-        navigateToThread(target);
-      }
+      return navigateToThreadKey(orderedThreadKeys[jumpIndex] ?? null);
     };
-    window.addEventListener("keydown", onWindowKeyDown);
-    return () => window.removeEventListener("keydown", onWindowKeyDown);
+    return registerCommands({}, { onKeyDown: onWindowKeyDown });
   }, [
     keybindings,
     numericNavigation,

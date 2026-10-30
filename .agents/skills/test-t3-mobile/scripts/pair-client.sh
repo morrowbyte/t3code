@@ -13,6 +13,8 @@ server_port="$1"
 base_dir="$2"
 mobile_origin="$3"
 agent_device_command="$4"
+mobile_app_id="${T3CODE_MOBILE_APP_ID:-com.t3tools.t3code.dev}"
+mobile_scheme="${T3CODE_MOBILE_SCHEME:-morrowbyte-dev}"
 shift 4
 
 repo_root="$(git rev-parse --show-toplevel)"
@@ -35,16 +37,16 @@ if [[ -z "$pairing_url" ]]; then
   exit 1
 fi
 
-deep_link="$(PAIRING_URL="$pairing_url" node - <<'NODE'
+deep_link="$(PAIRING_URL="$pairing_url" MOBILE_SCHEME="$mobile_scheme" node - <<'NODE'
 const query = new URLSearchParams({
   pairingUrl: process.env.PAIRING_URL,
   autoConnect: "1",
 });
-process.stdout.write(`t3code-dev://connections/new?${query}`);
+process.stdout.write(`${process.env.MOBILE_SCHEME}://connections/new?${query}`);
 NODE
 )"
 
-if ! "$agent_device_command" open com.t3tools.t3code.dev "$deep_link" "$@" \
+if ! "$agent_device_command" open "$mobile_app_id" "$deep_link" "$@" \
   >/dev/null 2>&1; then
   echo "AgentDevice could not open the pairing route. Check the Device panel and retry with a fresh credential." >&2
   exit 1

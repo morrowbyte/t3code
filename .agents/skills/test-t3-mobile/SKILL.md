@@ -72,6 +72,10 @@ through AgentDevice. For a backend on the device host, use
 `http://127.0.0.1:<server-port>` on iOS or `http://10.0.2.2:<server-port>`
 on Android. For a remote backend, use its reachable origin.
 
+For the Android fork, set `T3CODE_MOBILE_APP_ID=com.morrowbyte.t3code.dev` when
+calling the helper. The iOS development identifier remains its default. The
+helper uses `morrowbyte-dev`; override `T3CODE_MOBILE_SCHEME` for another variant.
+
 Confirm the intended projects appear, exercise the affected flow, and capture
 evidence. Retain the app and environment while iterating. At teardown, remove
 the disposable connection, close the AgentDevice session, call `device_close`,

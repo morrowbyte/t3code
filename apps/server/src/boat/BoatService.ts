@@ -33,7 +33,11 @@ import { PreviewManager } from "../preview/Manager.ts";
 import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
 import { BoatApi } from "./BoatApi.ts";
 
-const ANDROID_SETUP = `export ANDROID_HOME=/home/user/android JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+const ANDROID_SETUP = `if [ -d /home/user/android ] && [ ! -e /home/user/Android/Sdk ] && [ ! -L /home/user/Android/Sdk ]; then
+  mkdir -p /home/user/Android
+  ln -s /home/user/android /home/user/Android/Sdk
+fi
+export ANDROID_HOME=/home/user/Android/Sdk ANDROID_SDK_ROOT=/home/user/Android/Sdk JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
 if [ ! -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
   sudo apt-get update
@@ -471,7 +475,7 @@ export const make = Effect.gen(function* () {
               .request(token, `/sandboxes/${encodeURIComponent(item.sandboxId)}/commands`, "POST", {
                 command:
                   settings.previewKind === "android"
-                    ? "/home/user/android/platform-tools/adb shell getprop sys.boot_completed | grep -q '^1'"
+                    ? "/home/user/Android/Sdk/platform-tools/adb shell getprop sys.boot_completed | grep -q '^1'"
                     : `curl -fsS --max-time 2 http://127.0.0.1:${settings.port}/ -o /dev/null`,
                 timeoutSeconds: 3,
               })

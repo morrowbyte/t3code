@@ -9,6 +9,7 @@ import {
   useClientSettings,
   useClientSettingsHydrated,
 } from "../hooks/useSettings";
+import { useActiveWorkTabReveal } from "../hooks/useActiveWorkTabReveal";
 import { MAX_PINNED_WORK_TABS, sameWorkTab, togglePinnedWorkTab } from "../pinnedWorkTabs";
 import { useEnvironment } from "../state/environments";
 import { useProject, useThreadShell } from "../state/entities";
@@ -56,7 +57,10 @@ function WorkTab({
   const label = labelMode === "agent-name" ? agentName?.trim() || title : title;
   const openRef = useRef<HTMLButtonElement>(null);
   return (
-    <div className="group/work-tab flex min-w-0 items-center gap-0.5">
+    <div
+      data-active-work-tab={active ? "" : undefined}
+      className="group/work-tab flex min-w-0 items-center gap-0.5"
+    >
       <Tooltip>
         <TooltipTrigger
           render={
@@ -119,6 +123,7 @@ export function PinnedWorkTabs({
   className?: string;
   maxRows?: 1 | 2;
 }) {
+  const revealRef = useActiveWorkTabReveal();
   const params = useParams({ strict: false });
   const current = resolveThreadRouteRef(params);
   const thread = useThreadShell(current);
@@ -129,6 +134,7 @@ export function PinnedWorkTabs({
   if (!hydrated || (tabs.length === 0 && !thread)) return null;
   return (
     <nav
+      ref={revealRef}
       aria-label="Pinned work tabs"
       className={cn("flex min-w-0 shrink items-center gap-1", "max-w-[50%] py-1", className)}
       onContextMenu={(event) => event.stopPropagation()}
