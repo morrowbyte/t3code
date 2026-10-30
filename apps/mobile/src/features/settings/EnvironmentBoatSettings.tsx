@@ -1,3 +1,5 @@
+import { StackActions, useNavigation } from "@react-navigation/native";
+import * as Cause from "effect/Cause";
 import { useAtomValue } from "@effect/atom-react";
 import {
   DEFAULT_BOAT_PROJECT,
@@ -34,6 +36,9 @@ export function EnvironmentBoatSettings({ environmentId }: { environmentId: Envi
   const configureDefaults = useAtomCommand(boat.defaults);
   const configure = useAtomCommand(boat.configure);
   const operate = useAtomCommand(boat.operate);
+  const setup = useAtomCommand(boat.setup, { reportFailure: false });
+  const canSetup = useAtomValue(boat.setup.permissionAtom(environmentId));
+  const navigation = useNavigation();
   const canConfigure = useAtomValue(boat.configure.permissionAtom(environmentId));
   const canOperate = useAtomValue(boat.operate.permissionAtom(environmentId));
   const canConnect = useAtomValue(boat.connect.permissionAtom(environmentId));
@@ -200,6 +205,33 @@ export function EnvironmentBoatSettings({ environmentId }: { environmentId: Envi
         const config = state?.projects[project.id] ?? DEFAULT_BOAT_PROJECT;
         return (
           <View key={project.id}>
+            {config.enabled && canSetup && (
+              <ListActionRow
+                label="Open setup agent"
+                disabled={busy}
+                onPress={async () => {
+                  setBusy(true);
+                  try {
+                    const result = await setup({ environmentId, input: { projectId: project.id } });
+                    if (result._tag === "Success")
+                      navigation.dispatch(
+                        StackActions.push("Thread", {
+                          environmentId,
+                          threadId: result.value.threadId,
+                        }),
+                      );
+                    else {
+                      const failure = Cause.squash(result.cause);
+                      setError(
+                        failure instanceof Error ? failure.message : "Could not resume Boat setup.",
+                      );
+                    }
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              />
+            )}
             <ListActionRow
               label={project.title}
               description={config.enabled ? `Boat · ${config.size}` : "Local"}

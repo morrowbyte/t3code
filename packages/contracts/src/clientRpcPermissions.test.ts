@@ -126,6 +126,10 @@ it("guards host-order UI aliases without granting VM request sessions human cont
 });
 
 it("keeps Boat credentials behind settings authority and CI file writes behind filesystem authority", () => {
+  expect(clientRpcRequiredScopes(WS_METHODS.boatSetup, {})).toEqual([
+    AuthOrchestrationOperateScope,
+    AuthPreviewOperateScope,
+  ]);
   expect(clientRpcRequiredScopes(WS_METHODS.boatRead, {})).toEqual([AuthOrchestrationReadScope]);
   expect(clientRpcRequiredScopes(WS_METHODS.boatConnect, {})).toEqual([AuthSettingsWriteScope]);
   expect(clientRpcRequiredScopes(WS_METHODS.boatDisconnect, {})).toEqual([AuthSettingsWriteScope]);

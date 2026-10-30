@@ -22,6 +22,10 @@ export function createBoatEnvironment<R, E>(runtime: Atom.AtomRuntime<Environmen
       label: "boat:configure",
       tag: WS_METHODS.boatConfigure,
     }),
+    setup: createEnvironmentRpcCommand(runtime, {
+      label: "boat:setup",
+      tag: WS_METHODS.boatSetup,
+    }),
     operate: createEnvironmentRpcCommand(runtime, {
       label: "boat:operate",
       tag: WS_METHODS.boatOperate,

@@ -1,3 +1,4 @@
+import { useBoatProjectSetup } from "./useBoatProjectSetup";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import {
   getNewProjectRepository,
@@ -29,6 +30,7 @@ export function useNewProject() {
     reportFailure: false,
   });
   const handleNewThread = useNewThreadHandler();
+  const setupBoatProject = useBoatProjectSetup();
 
   const publishNewRepository = async (input: {
     readonly environmentId: EnvironmentId;
@@ -71,6 +73,7 @@ export function useNewProject() {
     readonly environmentId: EnvironmentId;
     readonly name: string;
     readonly publishTo: NewProjectPublishTarget | null;
+    readonly boat?: { readonly autoSetup: boolean };
   }): Promise<boolean> => {
     const result = await createNew({
       environmentId: input.environmentId,
@@ -122,6 +125,11 @@ export function useNewProject() {
       return null;
     });
     if (project === null) return true;
+    if (
+      input.boat &&
+      (await setupBoatProject(input.environmentId, projectId, input.boat.autoSetup))
+    )
+      return true;
     await handleNewThread(projectRef).catch((error: unknown) => {
       toastManager.add(
         stackedThreadToast({

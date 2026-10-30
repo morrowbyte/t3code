@@ -25,6 +25,7 @@ const ownerThreadId = ThreadId.make("thread-boat");
 function setup(
   onCall: (path: string, method: string, body?: unknown) => Effect.Effect<unknown> = () =>
     Effect.void,
+  threadId = ownerThreadId,
 ) {
   const calls: string[] = [];
   let machineState = "ready";
@@ -69,11 +70,15 @@ function setup(
   );
   const services = Layer.mergeAll(
     api,
-    Layer.mock(PreviewManager)({}),
+    Layer.mock(PreviewManager)({
+      list: () => Effect.succeed({ sessions: [] } as never),
+      open: () => Effect.succeed({ tabId: "setup-preview" } as never),
+      close: () => Effect.void,
+    }),
     Layer.mock(ProjectionStoreV2)({
       getThreadShell: (id) =>
         Effect.succeed(
-          id === ownerThreadId
+          id === threadId
             ? {
                 ...liveThreadShell(id),
                 projectId,
@@ -228,6 +233,9 @@ it.effect("prepares project commands and uses an embedded desktop for Android pr
       }),
     );
     yield* fs.writeFileString(`${root}/pnpm-workspace.yaml`, "catalog:\n  vite-plus: 1.4.0\n");
+    const workflow = `${root}/.github/workflows/crew-boat.yml`;
+    yield* fs.makeDirectory(`${root}/.github/workflows`, { recursive: true });
+    yield* fs.writeFileString(workflow, "name: Existing CI\non: workflow_dispatch\n");
     const boat = yield* make;
     yield* boat.connect(Redacted.make("boat_fixture_private"));
     const configured = yield* boat.configure(projectId, {
@@ -235,6 +243,14 @@ it.effect("prepares project commands and uses an embedded desktop for Android pr
       enabled: true,
       previewKind: "android",
     });
+    assert.equal(yield* fs.readFileString(workflow), "name: Existing CI\non: workflow_dispatch\n");
+    const conflictingCi = yield* boat
+      .configure(projectId, {
+        ...configured.projects[projectId]!,
+        ciEnabled: true,
+      })
+      .pipe(Effect.flip);
+    assert.equal(conflictingCi.category, "conflict");
     assert.include(configured.projects[projectId]!.setupCommand, "vite-plus@1.4.0");
     assert.equal(configured.projects[projectId]!.devCommand, "vp run dev");
     yield* boat.operate({ action: "start", projectId, requestId: "android" });
@@ -290,6 +306,30 @@ it.effect("renews active agent leases and stops after the last owner finishes", 
     }).pipe(Effect.provide(test.services), Effect.scoped);
   }),
 );
+
+it.effect("stops a completed setup preview when the last agent finishes", () => {
+  const threadId = ThreadId.make(`boat-setup:${projectId}`);
+  const test = setup(undefined, threadId);
+  return Effect.gen(function* () {
+    const boat = yield* make;
+    yield* boat.connect(Redacted.make("boat_fixture_private"));
+    yield* boat.configureDefaults({ ttlMinutes: 1, retentionDays: 14 });
+    yield* boat.configure(projectId, {
+      ...DEFAULT_BOAT_PROJECT,
+      enabled: true,
+      previewKind: "android",
+      devCommand: "npm run dev",
+    });
+    const requestId = `boat-setup:${projectId}`;
+    yield* boat.operate({ action: "start", projectId, requestId }, threadId);
+    yield* boat.operate({ action: "prepare", projectId, requestId }, threadId);
+    yield* boat.operate({ action: "preview", projectId, requestId }, threadId);
+    test.setOwnerActive(false);
+    yield* boat.reconcile();
+    assert.include(test.calls, "POST /sandboxes/bx_23456789/stop");
+    assert.notInclude(test.calls, "PATCH /sandboxes/bx_23456789");
+  }).pipe(Effect.provide(test.services), Effect.scoped);
+});
 
 it.effect("stops and deletes owned machines after their project is removed", () => {
   const test = setup();

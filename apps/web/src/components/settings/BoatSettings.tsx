@@ -1,3 +1,7 @@
+import { useNavigate } from "@tanstack/react-router";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { buildThreadRouteParams } from "../../threadRoutes";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { newMessageId } from "../../lib/utils";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -399,6 +403,9 @@ function BoatPanel({
   const disconnect = useAtomCommand(boatEnvironment.disconnect, { reportFailure: false });
   const configureDefaults = useAtomCommand(boatEnvironment.defaults, { reportFailure: false });
   const configure = useAtomCommand(boatEnvironment.configure, { reportFailure: false });
+  const setup = useAtomCommand(boatEnvironment.setup, { reportFailure: false });
+  const canSetup = useAtomValue(boatEnvironment.setup.permissionAtom(environmentId));
+  const navigate = useNavigate();
   const operate = useAtomCommand(boatEnvironment.operate, { reportFailure: false });
   const canConfigure = useAtomValue(boatEnvironment.configure.permissionAtom(environmentId));
   const canOperate = useAtomValue(boatEnvironment.operate.permissionAtom(environmentId));
@@ -638,6 +645,45 @@ function BoatPanel({
                 }
                 setBusy(false);
               }}
+            />
+          )}
+          {selectedProject && projectConfig?.enabled && canSetup && (
+            <SettingsRow
+              title="Setup agent"
+              control={
+                <Button
+                  size="sm"
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true);
+                    try {
+                      const result = await setup({
+                        environmentId,
+                        input: { projectId: selectedProject },
+                      });
+                      if (result._tag === "Success") {
+                        await navigate({
+                          to: "/$environmentId/$threadId",
+                          params: buildThreadRouteParams(
+                            scopeThreadRef(environmentId, result.value.threadId),
+                          ),
+                        });
+                      } else {
+                        const failure = squashAtomCommandFailure(result);
+                        setError(
+                          failure instanceof Error
+                            ? failure.message
+                            : "Could not resume Boat setup.",
+                        );
+                      }
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                >
+                  Open setup agent
+                </Button>
+              }
             />
           )}
           <SettingsRow

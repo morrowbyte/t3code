@@ -1,3 +1,4 @@
+import * as BoatSetupService from "./boat/BoatSetupService.ts";
 import * as BoatService from "./boat/BoatService.ts";
 import * as CuaControl from "./cua/CuaControl.ts";
 import { WindowsCuaStatusError } from "@t3tools/contracts";
@@ -115,6 +116,7 @@ import {
   type ProjectId,
   type ProviderDriverKind,
   type ProviderInstanceId,
+  BoatSetupError,
   ThreadId,
   type TerminalMetadataStreamEvent,
   type PullRequestRef,
@@ -842,6 +844,7 @@ const CoreSecondWsRpcGroup = CoreWsRpcGroup.omit(
 // Materialize the signatures once so deriving handler services does not repeatedly
 // expand the complete RPC schema union.
 type WsRpcHandlerServices =
+  | BoatSetupService.BoatSetupService
   | BoatService.BoatService
   | AgentAvatarService.AgentAvatarService
   | NativeAuthorService.NativeAuthorService
@@ -1601,6 +1604,7 @@ const layerCoreWsRpc = (
               Effect.orElseSucceed(() => null),
             );
       const boat = yield* BoatService.BoatService;
+      const boatSetup = yield* BoatSetupService.BoatSetupService;
       const usage = yield* UsageService.UsageService;
       const usageLimitSources = yield* UsageLimitSources.UsageLimitSources;
       const worktreeSetupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
@@ -2954,6 +2958,18 @@ const layerCoreWsRpc = (
         [WS_METHODS.boatRead]: (input) => boat.read(input.projectId),
         [WS_METHODS.boatConnect]: (input) => boat.connect(input.apiKey),
         [WS_METHODS.boatDisconnect]: () => boat.disconnect,
+        [WS_METHODS.boatSetup]: (input) =>
+          startup.enqueueCommand(boatSetup.start(input)).pipe(
+            Effect.catchTags({
+              ServerRuntimeStartupError: (cause) =>
+                new BoatSetupError({
+                  projectId: input.projectId,
+                  threadId: ThreadId.make(`boat-setup:${input.projectId}`),
+                  stage: "launch",
+                  cause,
+                }),
+            }),
+          ),
         [WS_METHODS.boatConfigure]: (input) => boat.configure(input.projectId, input.config),
         [WS_METHODS.boatOperate]: (input) => boat.operate(input),
         [WS_METHODS.serverGetUsageSummary]: (input) => usage.readSummary(input),

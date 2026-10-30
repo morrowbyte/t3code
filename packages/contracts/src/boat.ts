@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { ModelSelection } from "./modelSelection.ts";
 import { ProjectId, ThreadId } from "./baseSchemas.ts";
 
 export const BoatSize = Schema.Literals(["small", "default", "large", "xlarge"]);
@@ -11,6 +12,7 @@ export type BoatDefaults = typeof BoatDefaults.Type;
 export const DEFAULT_BOAT_DEFAULTS: BoatDefaults = { ttlMinutes: 60, retentionDays: 14 };
 export const BoatProjectConfig = Schema.Struct({
   enabled: Schema.Boolean,
+  autoSetup: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
   previewKind: Schema.Literals(["web", "android"]).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed("web" as const)),
   ),
@@ -34,6 +36,7 @@ export type BoatProjectConfig = typeof BoatProjectConfig.Type;
 
 export const DEFAULT_BOAT_PROJECT: BoatProjectConfig = {
   enabled: false,
+  autoSetup: false,
   previewKind: "web",
   size: "default",
   ttlMinutes: 60,
@@ -166,6 +169,35 @@ export class BoatError extends Schema.TaggedError<BoatError>()("BoatError", {
         return "The Boat state could not be saved or read.";
       case "provider":
         return `Boat could not complete the request${this.status ? ` (HTTP ${this.status})` : ""}.`;
+    }
+  }
+}
+
+export const BoatSetupInput = Schema.Struct({
+  projectId: ProjectId,
+  modelSelection: Schema.optional(ModelSelection),
+});
+export type BoatSetupInput = typeof BoatSetupInput.Type;
+export const BoatSetupResult = Schema.Struct({ threadId: ThreadId, resumed: Schema.Boolean });
+export type BoatSetupResult = typeof BoatSetupResult.Type;
+export class BoatSetupError extends Schema.TaggedError<BoatSetupError>()("BoatSetupError", {
+  projectId: ProjectId,
+  threadId: ThreadId,
+  stage: Schema.Literals(["project", "clone", "boat", "provider", "launch"]),
+  cause: Schema.Defect(),
+}) {
+  override get message(): string {
+    switch (this.stage) {
+      case "project":
+        return "The project is unavailable. Reconnect and reopen the project to resume setup.";
+      case "clone":
+        return "The repository was not cloned. Retry the clone, then resume Boat setup for this project.";
+      case "boat":
+        return "Boat is unavailable. Check the Boat account and enable Boat for this project, then resume setup.";
+      case "provider":
+        return "No setup provider is available. Choose an enabled default provider and model in Settings, then resume setup.";
+      case "launch":
+        return "The setup agent could not start. Reopen the project's setup thread to continue; retrying setup uses the same thread.";
     }
   }
 }

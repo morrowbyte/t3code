@@ -12,6 +12,7 @@ import * as NodeZlib from "node:zlib";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  ProjectId,
   ComposerContextRecord,
   DeviceOperationError,
   DeviceSummary,
@@ -32,6 +33,7 @@ import { Tool } from "effect/ai";
 import * as McpSchema from "effect/ai/McpSchema";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
+import { boatSetupPrompt } from "../../apps/server/src/boat/setupPrompt.ts";
 import { taskPrompt } from "../../apps/server/src/mcp/delegatedTaskModes.ts";
 import * as McpInvocationContext from "../../apps/server/src/mcp/McpInvocationContext.ts";
 import { advertisedJsonSchema } from "../../apps/server/src/mcp/advertisedJsonSchema.ts";
@@ -252,6 +254,7 @@ export const McpToolUseCase = Schema.Struct({
     ),
   }),
   prompt: Schema.String,
+  boatSetupProjectId: Schema.optional(ProjectId),
   /** Records for the context chips `prompt` links, projected as T3 sends them. */
   promptContext: Schema.optional(Schema.Struct({ records: Schema.Array(ComposerContextRecord) })),
   expect: McpToolUseExpect,
@@ -872,10 +875,13 @@ export const buildMessages = (sample: Sample) => {
     }
     if (turn.text) push(turn.role, text(turn.text));
   }
+  const taskText = testCase.boatSetupProjectId
+    ? `${boatSetupPrompt(testCase.boatSetupProjectId)}\n\n${testCase.prompt}`
+    : testCase.prompt;
   const prompt =
     testCase.promptContext === undefined
-      ? testCase.prompt
-      : projectComposerContextForProvider({ text: testCase.prompt, ...testCase.promptContext });
+      ? taskText
+      : projectComposerContextForProvider({ text: taskText, ...testCase.promptContext });
   const childPrompt = () => taskPrompt({ task: prompt, role: delegateRole });
   push("user", text(role === "delegated-child" ? childPrompt() : prompt));
   // Claude Code gives a subagent its SubagentStart hooks' context as a reminder after the task.

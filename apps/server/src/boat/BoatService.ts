@@ -555,9 +555,12 @@ export const make = Effect.gen(function* () {
     const workflow = path.join(source.workspaceRoot, ".github", "workflows", "crew-boat.yml");
     const marker = "# Managed by Crew Boat integration.\n";
     const exists = yield* fs.exists(workflow).pipe(Effect.mapError(storageError));
+    let managedWorkflow = false;
     if (exists) {
       const current = yield* fs.readFileString(workflow).pipe(Effect.mapError(storageError));
-      if (!current.startsWith(marker)) return yield* new BoatError({ category: "conflict" });
+      managedWorkflow = current.startsWith(marker);
+      if (settings.ciEnabled && !managedWorkflow)
+        return yield* new BoatError({ category: "conflict" });
     }
     if (settings.ciEnabled) {
       if (!settings.ciCommand.trim()) return yield* new BoatError({ category: "disabled" });
@@ -623,7 +626,7 @@ export const make = Effect.gen(function* () {
         .makeDirectory(path.dirname(workflow), { recursive: true })
         .pipe(Effect.mapError(storageError));
       yield* fs.writeFileString(workflow, content).pipe(Effect.mapError(storageError));
-    } else if (exists) {
+    } else if (managedWorkflow) {
       yield* fs.remove(workflow).pipe(Effect.mapError(storageError));
     }
     yield* lock.withPermits(1)(
