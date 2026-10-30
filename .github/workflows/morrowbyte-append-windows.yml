@@ -1,0 +1,238 @@
+name: Morrowbyte .93 Windows completion
+run-name: Complete .93 Windows from 7a86852051 (${{ inputs.windows_backend }})
+on:
+  workflow_dispatch:
+    inputs:
+      windows_backend:
+        description: Native first; Blacksmith only after an actual native build failure
+        type: choice
+        default: native
+        options: [native, blacksmith]
+concurrency:
+  group: morrowbyte-desktop-nightly
+  cancel-in-progress: false
+permissions:
+  actions: read
+  contents: read
+env:
+  GH_REPO: morrowbyte/t3code
+  SOURCE_SHA: 7a86852051116c2cfc2a0024b8cb95d70d030b9b
+  SOURCE_RUN_ID: "41137729371"
+  RELEASE_VERSION: 0.1.7-nightly.20261030.93
+  RELEASE_TAG: v0.1.7-nightly.20261030.93
+jobs:
+  verify_original:
+    if: github.repository == 'morrowbyte/t3code' && github.ref == 'refs/heads/main'
+    runs-on: ${{ vars.MORROWBYTE_BOAT_RUNNER || 'boat-large' }}
+    timeout-minutes: 5
+    steps:
+      - name: Verify original publication and successful source-bound jobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PYVERIFY'
+          import hashlib, json, os, urllib.request
+          repo = os.environ['GH_REPO']
+          def api(route):
+              request = urllib.request.Request('https://api.github.com/repos/' + repo + '/' + route,
+                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json'})
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+          source = os.environ['SOURCE_SHA']
+          run = api('actions/runs/' + os.environ['SOURCE_RUN_ID'])
+          assert run['head_sha'] == source and run['head_branch'] == 'main'
+          assert run['path'] == '.github/workflows/morrowbyte-release.yml' and run['event'] == 'workflow_dispatch'
+          assert run['status'] == 'completed' and run['run_attempt'] == 1
+          assert run['repository']['full_name'] == run['head_repository']['full_name'] == repo
+          jobs = api('actions/runs/' + str(run['id']) + '/jobs?per_page=100')['jobs']
+          for name in ['preflight', 'build_bundle', 'build_linux', 'build_nixos', 'Build Morrowbyte Android APK', 'Verify signed Android startup', 'publish_linux_first']:
+              matches = [job for job in jobs if job['name'] == name]
+              assert len(matches) == 1 and matches[0]['conclusion'] == 'success', name
+          release = api('releases/tags/' + os.environ['RELEASE_TAG'])
+          assert release['target_commitish'] == source and not release['draft'] and release['prerelease']
+          asset = next(asset for asset in release['assets'] if asset['name'] == 'RELEASE-RECEIPT.txt')
+          with urllib.request.urlopen(asset['browser_download_url'], timeout=30) as response:
+              receipt = response.read()
+          assert asset['digest'] == 'sha256:' + hashlib.sha256(receipt).hexdigest()
+          fields = {}
+          for line in receipt.decode().splitlines():
+              if '=' in line:
+                  key, value = line.split('=', 1)
+                  assert key not in fields, key
+                  fields[key] = value
+          assert fields['source_sha'] == source and fields['fork_release'] == os.environ['RELEASE_TAG']
+          assert fields['publication_run_id'] == fields['desktop_origin_run_id'] == str(run['id'])
+          assert fields['release_platforms'] == 'linux-x64,nixos-x64,android-arm64'
+          assert fields['windows_status'] == 'pending'
+          print('Verified original .93 publication, source, workflow and successful platform gates.')
+          PYVERIFY
+
+  build_windows:
+    needs: verify_original
+    runs-on: ${{ inputs.windows_backend == 'blacksmith' && 'blacksmith-8vcpu-windows-2025' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_WINDOWS_RUNNER || 'morrowbyte-windows')) }}
+    timeout-minutes: 50
+    steps:
+      - name: Checkout original application source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 1
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: false
+          run-install: false
+
+      - name: Install Windows build dependencies
+        uses: ./.github/actions/windows-storage-guard
+        with:
+          command: vp install --frozen-lockfile --filter=@t3tools/desktop... --filter=t3... --filter=@t3tools/scripts...
+
+      - name: Verify Windows installer checksum fallback
+        uses: ./.github/actions/windows-storage-guard
+        with:
+          command: cd scripts && vp test run --config ../vite.config.ts install.test.ts build-npm-launcher.test.ts
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Download source-bound bundle and WSL runtime
+        uses: ./.github/actions/windows-storage-guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          command: |
+            set -euo pipefail
+            node <<'NODE'
+            const assert = require('node:assert/strict');
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const { createHash } = require('node:crypto');
+            const { spawnSync } = require('node:child_process');
+            const gh = (...args) => {
+              const result = spawnSync('gh', ['api', '--allow-escape-sequences', ...args], { maxBuffer: 1024 * 1024 * 1024 });
+              assert.equal(result.status, 0, result.stderr?.toString());
+              return result.stdout;
+            };
+            const run = JSON.parse(gh(`repos/${process.env.GH_REPO}/actions/runs/${process.env.SOURCE_RUN_ID}`));
+            assert.equal(run.head_sha, process.env.SOURCE_SHA);
+            const items = JSON.parse(gh(`repos/${process.env.GH_REPO}/actions/runs/${process.env.SOURCE_RUN_ID}/artifacts?per_page=100`)).artifacts;
+            for (const [name, destination] of [['morrowbyte-js-bundle', 'apps'], ['morrowbyte-release-cli-linux', 'wsl-runtime']]) {
+              const matches = items.filter(item => item.name === name && !item.expired);
+              assert.equal(matches.length, 1, `Expected one original ${name}`);
+              const item = matches[0];
+              assert.equal(item.workflow_run.id, Number(process.env.SOURCE_RUN_ID));
+              assert.equal(item.workflow_run.head_sha, process.env.SOURCE_SHA);
+              assert.match(item.digest, /^sha256:[a-f0-9]{64}$/);
+              const bytes = gh(`repos/${process.env.GH_REPO}/actions/artifacts/${item.id}/zip`);
+              assert.equal('sha256:' + createHash('sha256').update(bytes).digest('hex'), item.digest);
+              const archive = path.join(process.env.RUNNER_TEMP, `${name}.zip`);
+              fs.writeFileSync(archive, bytes);
+              fs.mkdirSync(destination, { recursive: true });
+              const extract = spawnSync('tar', ['-xf', archive, '-C', destination], { encoding: 'utf8' });
+              assert.equal(extract.status, 0, extract.stderr);
+              fs.unlinkSync(archive);
+              console.log(`${name}: artifact ${item.id}, ${item.digest}, source ${run.head_sha}`);
+            }
+            const manifest = spawnSync('gh', ['release', 'download', process.env.RELEASE_TAG, '--repo', process.env.GH_REPO, '--pattern', 'SHA256SUMS', '--output', '-'], { encoding: 'utf8' });
+            assert.equal(manifest.status, 0, manifest.stderr);
+            const runtimeName = `t3-${process.env.RELEASE_VERSION}-linux-x64.tar.gz`;
+            const entries = manifest.stdout.split('\n').filter(line => line.endsWith(`  ${runtimeName}`));
+            assert.equal(entries.length, 1);
+            assert.equal(createHash('sha256').update(fs.readFileSync(path.join('wsl-runtime', runtimeName))).digest('hex'), entries[0].slice(0, 64));
+            NODE
+            node scripts/update-release-package-versions.ts "$RELEASE_VERSION"
+
+      - name: Build Windows CLI executable
+        env:
+          VP_NODE_VERSION: "26.12.1"
+        uses: ./.github/actions/windows-storage-guard
+        with:
+          command: node apps/server/scripts/cli.ts build-exe --verbose
+
+      - name: Build Windows x64 installer and updater metadata
+        env:
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+          T3CODE_DESKTOP_REUSE_PUBLISHED_WSL_RUNTIME: false
+          T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}
+          T3CODE_DESKTOP_APP_ID: ${{ vars.MORROWBYTE_DESKTOP_APP_ID || 'com.morrowbyte.t3code' }}
+          T3CODE_DESKTOP_INSTALLER_GUID: ${{ vars.MORROWBYTE_DESKTOP_INSTALLER_GUID }}
+          T3CODE_DESKTOP_PRODUCT_NAME: ${{ vars.MORROWBYTE_DESKTOP_PRODUCT_NAME || 'Crew' }}
+          T3CODE_DESKTOP_PROFILE: morrowbyte
+        uses: ./.github/actions/windows-storage-guard
+        with:
+          command: |
+            set -euo pipefail
+            node scripts/build-desktop-artifact.ts --platform win --target nsis --arch x64 --build-version "${{ env.RELEASE_VERSION }}" --skip-build --keep-stage --wsl-runtime "$GITHUB_WORKSPACE"/wsl-runtime/t3-*-linux-x64.tar.gz --output-dir release-windows
+            test -s release-windows/nightly.yml
+            tmp_roots=("$RUNNER_TEMP")
+            [[ -n "${TEMP:-}" ]] && tmp_roots+=("$TEMP")
+            [[ -n "${TMP:-}" ]] && tmp_roots+=("$TMP")
+            update_config="$(find "${tmp_roots[@]}" -path '*/resources/app-update.yml' -print -quit 2>/dev/null || true)"
+            test -n "$update_config"
+            IFS=/ read -r expected_owner expected_repo <<<"${T3CODE_DESKTOP_UPDATE_REPOSITORY}"
+            grep -Fq "owner: $expected_owner" "$update_config"
+            grep -Fq "repo: $expected_repo" "$update_config"
+
+      - name: Package and smoke-test Windows CLI archive
+        uses: ./.github/actions/windows-storage-guard
+        with:
+          command: |
+            set -euo pipefail
+            monitor_dir="$RUNNER_TEMP/cli-resource-monitor/win32-x64"
+            mkdir -p "$monitor_dir"
+            cp native/resource-monitor/target/x86_64-pc-windows-msvc/release/t3-resource-monitor.exe "$monitor_dir/"
+            node scripts/build-cli-archive.ts --platform win --arch x64 --version "${{ env.RELEASE_VERSION }}" --resource-monitor-dir "$RUNNER_TEMP/cli-resource-monitor" --output-dir release-cli
+            node scripts/smoke-cli-archive.ts --archive release-cli/* --expect-version "${{ env.RELEASE_VERSION }}"
+
+      - name: Upload Windows release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: morrowbyte-release-windows
+          path: release-windows/*
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload Windows CLI archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: morrowbyte-release-cli-windows
+          path: release-cli/*
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+
+  append_windows:
+    needs: build_windows
+    runs-on: ${{ vars.MORROWBYTE_BOAT_RUNNER || 'boat-large' }}
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Checkout qualified completion tools
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+      - uses: ./.github/actions/setup-ci-deps
+        with:
+          install-args: --frozen-lockfile --filter=@t3tools/shared...
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: morrowbyte-release-{windows,cli-windows}
+          merge-multiple: true
+          path: windows-assets
+      - name: Append Windows and reverify every original published byte
+        env:
+          GH_TOKEN: ${{ secrets.MORROWBYTE_RELEASE_TOKEN || github.token }}
+        run: node scripts/morrowbyte/append-windows-release.cjs publish windows-assets

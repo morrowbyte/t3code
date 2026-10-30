@@ -262,7 +262,12 @@ function publish(directory, env = process.env) {
       .map(([name, bytes]) => ({ name, digest: `sha256:${hash(bytes)}` }))
       .sort((a, b) => a.name.localeCompare(b.name));
     let receiptBytes = Buffer.from(
-      `fork_release=${cfg.tag}\nsource_sha=${cfg.source}\nrelease_platforms=windows-x64\npublication_run_id=${cfg.run}\npublication_run_attempt=${cfg.attempt}\ngithub_asset_digests=${JSON.stringify(digests)}\nartifact_sha256:\n${sums}`,
+      `fork_release=${cfg.tag}\nsource_sha=${cfg.source}\nrelease_platforms=windows-x64\npublication_run_id=${cfg.run}\npublication_run_attempt=${cfg.attempt}\n` +
+        (env.GITHUB_WORKFLOW_SHA
+          ? `publication_workflow_sha=${env.GITHUB_WORKFLOW_SHA}\npublication_workflow_ref=${env.GITHUB_WORKFLOW_REF}\n`
+          : "") +
+        (env.SOURCE_RUN_ID ? `retained_bundle_origin_run_id=${env.SOURCE_RUN_ID}\n` : "") +
+        `github_asset_digests=${JSON.stringify(digests)}\nartifact_sha256:\n${sums}`,
     );
     if (before.has("RELEASE-RECEIPT-windows.txt")) {
       receiptBytes = before.get("RELEASE-RECEIPT-windows.txt");

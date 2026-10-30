@@ -1256,7 +1256,7 @@ jobs:
       - name: Verify Windows installer checksum fallback
         uses: ./.github/actions/windows-storage-guard
         with:
-          command: vp test run scripts/install.test.ts scripts/build-npm-launcher.test.ts
+          command: cd scripts && vp test run --config ../vite.config.ts install.test.ts build-npm-launcher.test.ts
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
