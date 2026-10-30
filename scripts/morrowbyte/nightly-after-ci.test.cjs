@@ -672,3 +672,35 @@ test("the final .68 continuation builds only the missing NixOS closure and prese
     false,
   );
 });
+
+test("main-push CI can advance with the manual Windows guard skipped", async () => {
+  const nightly = require("./nightly-after-ci.cjs");
+  const context = {
+    repo: { owner: "morrowbyte", repo: "t3code" },
+    payload: { workflow_run: { ...run, run_attempt: 1 } },
+  };
+  await nightly({
+    context,
+    core: { info: () => {} },
+    github: {
+      paginate: async () => [],
+      rest: {
+        actions: {
+          getWorkflowRun: async () => ({ data: { ...run, run_attempt: 1 } }),
+          listJobsForWorkflowRunAttempt: async () => ({
+            data: {
+              total_count: 2,
+              jobs: [
+                { name: "check", status: "completed", conclusion: "success" },
+                { name: "windows_installer_guard", status: "completed", conclusion: "skipped" },
+              ],
+            },
+          }),
+          listWorkflowRuns: async () => ({ data: { workflow_runs: [], total_count: 0 } }),
+        },
+        git: { getRef: async () => ({ data: { object: { sha: other } } }) },
+        repos: { listCommitStatusesForRef: async () => ({ data: [] }), listReleases: () => {} },
+      },
+    },
+  });
+});

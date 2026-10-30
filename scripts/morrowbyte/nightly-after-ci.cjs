@@ -56,7 +56,11 @@ function decideDispatch({ source, main, statuses, runs, runCount, releases }) {
   return { action: "dispatch" };
 }
 
-async function nightlyAfterCI({ github, context, core }) {
+async function nightlyAfterCI({ github, context, core, options = {} }) {
+  assert(
+    !options.runnerBackend || ["self-hosted", "blacksmith", "boat"].includes(options.runnerBackend),
+    "invalid-runner-backend",
+  );
   const repository = `${context.repo.owner}/${context.repo.repo}`;
   const source = validateTrigger(context.payload.workflow_run, repository);
   const repo = context.repo;
@@ -78,7 +82,7 @@ async function nightlyAfterCI({ github, context, core }) {
     per_page: 100,
   });
   assert(jobs.total_count <= 100 && jobs.jobs.length === jobs.total_count, "incomplete-ci-jobs");
-  for (const name of ["check", "windows_installer_guard"]) {
+  for (const name of ["check"]) {
     const selected = jobs.jobs.filter((job) => job.name === name);
     assert(
       selected.length === 1 &&
@@ -150,7 +154,11 @@ async function nightlyAfterCI({ github, context, core }) {
       ...repo,
       workflow_id: WORKFLOW,
       ref: "main",
-      inputs: { publish: "true", source_sha: source },
+      inputs: {
+        publish: "true",
+        source_sha: source,
+        ...(options.runnerBackend ? { runner_backend: options.runnerBackend } : {}),
+      },
     });
   } catch {
     dispatchUncertain = true;

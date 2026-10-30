@@ -3,6 +3,11 @@ name: Morrowbyte CI
 on:
   workflow_dispatch:
     inputs:
+      runner_backend:
+        description: Linux runner backend
+        type: choice
+        default: self-hosted
+        options: [self-hosted, boat]
       integrationOnly:
         description: Run only the short integration check
         required: false
@@ -61,7 +66,7 @@ jobs:
             "${{ vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux' }}",
             "${{ vars.MORROWBYTE_WINDOWS_RUNNER || 'morrowbyte-windows' }}",
           ]
-    runs-on: [self-hosted, "${{ matrix.runner }}"]
+    runs-on: ${{ matrix.runner == (vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux') && (inputs.runner_backend == 'boat' || vars.MORROWBYTE_CI_BACKEND == 'boat') && (vars.MORROWBYTE_BOAT_RUNNER || 'boat-large') || fromJSON(format('["self-hosted","{0}"]', matrix.runner)) }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -86,49 +91,24 @@ jobs:
     if: >-
       github.repository == (vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code') &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on:
-      [
-        self-hosted,
-        "${{ vars.MORROWBYTE_INTEGRATION_RUNNER || vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux' }}",
-      ]
+    runs-on: ${{ (inputs.runner_backend == 'boat' || vars.MORROWBYTE_CI_BACKEND == 'boat') && (vars.MORROWBYTE_BOAT_RUNNER || 'boat-large') || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_INTEGRATION_RUNNER || vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
     timeout-minutes: 45
     steps:
-      - name: Update the isolated runner checkout
-        env:
-          CHECKOUT_TOKEN: ${{ github.token }}
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-ci-deps
+      - name: Install Linux build and browser prerequisites
+        if: inputs.runner_backend == 'boat' || vars.MORROWBYTE_CI_BACKEND == 'boat'
         run: |
-          set -euo pipefail
-          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
-          repository_url="https://github.com/$GITHUB_REPOSITORY.git"
-          if [[ ! -d .git ]]; then
-            git init
-            git remote add origin "$repository_url"
-          fi
-          actual_url="$(git remote get-url origin)"
-          test "${actual_url%.git}" = "${repository_url%.git}"
-          git config --local --unset-all http.https://github.com/.extraheader || true
-          CHECKOUT_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$CHECKOUT_TOKEN" | base64 -w0)" \
-            git --config-env=http.https://github.com/.extraheader=CHECKOUT_HEADER \
-            -c protocol.version=2 fetch --no-tags --depth=2 --filter=blob:none origin "$GITHUB_SHA"
-          unset CHECKOUT_TOKEN
-          git sparse-checkout set --no-cone '/*' '!/.repos/'
-          git checkout --force --detach "$GITHUB_SHA"
-          git clean -ffd
-      - name: Use the machine's installed Vite toolchain
-        run: |
-          set -euo pipefail
-          for directory in "$HOME/.vite-plus/bin" "$HOME/.local/share/vite-plus/bin"; do
-            if [[ -x "$directory/vp" ]]; then
-              export PATH="$directory:$PATH"
-              printf '%s\n' "$directory" >> "$GITHUB_PATH"
-              break
-            fi
-          done
-          command -v vp || { echo 'Install Vite+ once for the runner user before enabling CI.' >&2; exit 1; }
-          vp env install
-          vp node --version
-      - name: Install dependencies
-        run: vp install --frozen-lockfile
+          sudo apt-get update
+          sudo apt-get install -y libsecret-1-dev pkg-config
+          node apps/server/node_modules/playwright-core/cli.js install-deps chromium
       - name: Prepare pinned Electron runtime before desktop imports
         run: node apps/desktop/scripts/ensure-electron-runtime.mjs
       - name: Install pinned Chromium for focused renderer gates
@@ -239,7 +219,7 @@ jobs:
   product_bundle:
     needs: [check]
     if: github.event_name == 'workflow_dispatch' && (inputs.buildCandidateCLI || inputs.probeProtonPass)
-    runs-on: [self-hosted, "${{ vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux' }}"]
+    runs-on: ${{ (inputs.runner_backend == 'boat' || vars.MORROWBYTE_CI_BACKEND == 'boat') && (vars.MORROWBYTE_BOAT_RUNNER || 'boat-large') || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -375,7 +355,7 @@ jobs:
           retention-days: 7
   nix_updater:
     if: github.event_name == 'workflow_dispatch' && inputs.qualifyNixUpdater
-    runs-on: [self-hosted, "${{ vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux' }}"]
+    runs-on: ${{ (inputs.runner_backend == 'boat' || vars.MORROWBYTE_CI_BACKEND == 'boat') && (vars.MORROWBYTE_BOAT_RUNNER || 'boat-large') || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -397,7 +377,7 @@ jobs:
     if: >-
       github.repository == (vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code') &&
       github.event_name == 'workflow_dispatch' && inputs.qualifyUpstream
-    runs-on: [self-hosted, "${{ vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux' }}"]
+    runs-on: ${{ (inputs.runner_backend == 'boat' || vars.MORROWBYTE_CI_BACKEND == 'boat') && (vars.MORROWBYTE_BOAT_RUNNER || 'boat-large') || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
     timeout-minutes: 25
     strategy:
       fail-fast: false

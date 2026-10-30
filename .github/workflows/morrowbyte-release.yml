@@ -11,6 +11,7 @@ on:
         options:
           - self-hosted
           - blacksmith
+          - boat
       publish:
         description: Publish the built release (false keeps artifacts only)
         type: boolean
@@ -75,7 +76,7 @@ permissions:
 jobs:
   preflight:
     if: github.repository == (vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code')
-    runs-on: ${{ inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
+    runs-on: ${{ inputs.runner_backend == 'boat' && (vars.MORROWBYTE_BOAT_RUNNER || 'boat-large') || inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
     timeout-minutes: 15
     outputs:
       source_sha: ${{ steps.continuation75.outputs.source_sha || steps.continuation.outputs.source_sha || steps.windows_recovery.outputs.source_sha || steps.recovery.outputs.source_sha || steps.release.outputs.source_sha }}
@@ -123,7 +124,7 @@ jobs:
           fetch-depth: 0
 
       - name: Use local release build storage
-        if: inputs.runner_backend != 'blacksmith' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
+        if: inputs.runner_backend == 'self-hosted' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
         env:
           RUNNER_INIT_SCRIPT: ${{ vars.MORROWBYTE_LINUX_INIT_SCRIPT }}
         shell: bash
@@ -731,7 +732,7 @@ jobs:
         uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version-file: package.json
-          cache: ${{ inputs.runner_backend == 'blacksmith' }}
+          cache: ${{ inputs.runner_backend != 'self-hosted' }}
           run-install: false
       - name: Install dependencies
         if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && !inputs.continue_release75_run_id
@@ -749,7 +750,7 @@ jobs:
         if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && !inputs.continue_release75_run_id && (inputs.android_only != true || inputs.publish != true)
         run: |
           args=(install --only-shell chromium)
-          if [[ '${{ inputs.runner_backend }}' == blacksmith ]]; then
+          if [[ '${{ inputs.runner_backend }}' != self-hosted ]]; then
             args+=(--with-deps)
           fi
           node apps/server/node_modules/playwright-core/cli.js "${args[@]}"
@@ -887,7 +888,7 @@ jobs:
   build_bundle:
     if: inputs.android_only != true && inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && !inputs.continue_release75_run_id
     needs: [preflight]
-    runs-on: ${{ inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
+    runs-on: ${{ inputs.runner_backend == 'boat' && (vars.MORROWBYTE_BOAT_RUNNER || 'boat-large') || inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
     timeout-minutes: 30
     steps:
       - name: Checkout source
@@ -901,27 +902,22 @@ jobs:
           fetch-depth: 1
 
       - name: Use local release build storage
-        if: inputs.runner_backend != 'blacksmith' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
+        if: inputs.runner_backend == 'self-hosted' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
         env:
           RUNNER_INIT_SCRIPT: ${{ vars.MORROWBYTE_LINUX_INIT_SCRIPT }}
         shell: bash
         run: source "$RUNNER_INIT_SCRIPT" --github-env
 
-      - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+      - name: Setup cached dependencies
+        uses: ./.github/actions/setup-ci-deps
         with:
-          node-version-file: package.json
-          cache: ${{ inputs.runner_backend == 'blacksmith' }}
-          run-install: false
-
-      - name: Install bundle dependencies
-        run: vp install --frozen-lockfile --filter=t3... --filter=@t3tools/web... --filter=@t3tools/desktop... --filter=@t3tools/scripts...
+          install-args: --frozen-lockfile --filter=t3... --filter=@t3tools/web... --filter=@t3tools/desktop... --filter=@t3tools/scripts...
 
       - name: Align package versions and build shared assets
         run: |
           set -euo pipefail
           node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
-          if [[ '${{ inputs.runner_backend }}' == blacksmith ]]; then
+          if [[ '${{ inputs.runner_backend }}' != self-hosted ]]; then
             sudo apt-get update
             sudo apt-get install -y libsecret-1-dev pkg-config
           fi
@@ -999,7 +995,7 @@ jobs:
           ((inputs.continue_release68_run_id == '' && !inputs.continue_release75_run_id && needs.build_bundle.result == 'success') ||
            (inputs.continue_release68_run_id == '40291055865' && needs.build_bundle.result == 'skipped')) }}
     needs: [preflight, build_bundle]
-    runs-on: ${{ inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
+    runs-on: ${{ inputs.runner_backend == 'boat' && (vars.MORROWBYTE_BOAT_RUNNER || 'boat-large') || inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
     timeout-minutes: 80
     permissions:
       contents: read
@@ -1015,7 +1011,7 @@ jobs:
           fetch-depth: 1
 
       - name: Use local release build storage
-        if: inputs.runner_backend != 'blacksmith' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
+        if: inputs.runner_backend == 'self-hosted' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
         env:
           RUNNER_INIT_SCRIPT: ${{ vars.MORROWBYTE_LINUX_INIT_SCRIPT }}
         shell: bash
@@ -1040,14 +1036,14 @@ jobs:
         uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version-file: package.json
-          cache: ${{ inputs.runner_backend == 'blacksmith' }}
+          cache: ${{ inputs.runner_backend != 'self-hosted' }}
           run-install: false
 
       - name: Install Linux build dependencies
         run: |
           set -euo pipefail
           vp install --frozen-lockfile --filter=@t3tools/desktop... --filter=t3... --filter=@t3tools/scripts...
-          if [[ '${{ inputs.runner_backend }}' == blacksmith ]]; then
+          if [[ '${{ inputs.runner_backend }}' != self-hosted ]]; then
             sudo apt-get update
             sudo apt-get install -y libsecret-1-dev pkg-config imagemagick
           fi
@@ -1155,7 +1151,7 @@ jobs:
           (needs.build_linux.result == 'success' ||
            (inputs.continue_release68_run_id == '40297878651' && needs.build_linux.result == 'skipped')) }}
     needs: [preflight, build_linux]
-    runs-on: ${{ inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
+    runs-on: ${{ inputs.runner_backend == 'boat' && (vars.MORROWBYTE_BOAT_RUNNER || 'boat-large') || inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -1166,16 +1162,16 @@ jobs:
           sparse-checkout-cone-mode: false
           ref: ${{ needs.preflight.outputs.source_sha }}
       - name: Use local release build storage
-        if: inputs.runner_backend != 'blacksmith' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
+        if: inputs.runner_backend == 'self-hosted' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
         env:
           RUNNER_INIT_SCRIPT: ${{ vars.MORROWBYTE_LINUX_INIT_SCRIPT }}
         shell: bash
         run: source "$RUNNER_INIT_SCRIPT" --github-env
 
       - uses: cachix/install-nix-action@3c6342b75005b9cc7c7d4069c3e9179247c89012 # v31
-        if: inputs.runner_backend == 'blacksmith'
+        if: inputs.runner_backend != 'self-hosted'
       - name: Install closure packaging tools
-        if: inputs.runner_backend == 'blacksmith'
+        if: inputs.runner_backend != 'self-hosted'
         run: sudo apt-get update && sudo apt-get install -y zstd
       - name: Verify updater against a real Nix Store fixture
         run: env -u NIX_REMOTE python3 packaging/nixos/test-updater.py
@@ -1348,7 +1344,7 @@ jobs:
     name: Build Morrowbyte Android APK
     if: ${{ !inputs.windows_candidate_only && !inputs.windows_only && !inputs.desktop_only && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' }}
     needs: [preflight]
-    runs-on: ${{ inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_ANDROID_RUNNER || vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
+    runs-on: ${{ inputs.runner_backend == 'boat' && (vars.MORROWBYTE_BOAT_RUNNER || 'boat-large') || inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_ANDROID_RUNNER || vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
     timeout-minutes: 60
     outputs:
       apk_sha256: ${{ steps.apk.outputs.apk_sha256 }}
@@ -1376,7 +1372,7 @@ jobs:
           fetch-depth: 1
 
       - name: Use local release build storage
-        if: inputs.runner_backend != 'blacksmith' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
+        if: inputs.runner_backend == 'self-hosted' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
         env:
           RUNNER_INIT_SCRIPT: ${{ vars.MORROWBYTE_LINUX_INIT_SCRIPT }}
         shell: bash
@@ -1392,36 +1388,31 @@ jobs:
           git show "$DESKTOP_SOURCE_SHA:scripts/morrowbyte/android-startup-smoke.sh" > "$RUNNER_TEMP/morrowbyte-android-startup-smoke.sh"
           test -s "$RUNNER_TEMP/morrowbyte-android-startup-smoke.sh"
 
-      - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+      - name: Setup cached dependencies
+        uses: ./.github/actions/setup-ci-deps
         with:
-          node-version-file: package.json
-          cache: ${{ inputs.runner_backend == 'blacksmith' }}
-          run-install: false
-
-      - name: Install frozen mobile dependency closure
-        run: vp install --frozen-lockfile --filter=@t3tools/mobile... --filter=@t3tools/scripts...
+          install-args: --frozen-lockfile --filter=@t3tools/mobile... --filter=@t3tools/scripts...
 
       - name: Setup Java
-        if: inputs.runner_backend == 'blacksmith'
+        if: inputs.runner_backend != 'self-hosted'
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
 
       - name: Setup Android build and verification tools
-        if: inputs.runner_backend == 'blacksmith'
+        if: inputs.runner_backend != 'self-hosted'
         uses: android-actions/setup-android@v4
         with:
           packages: "platform-tools build-tools;36.0.0 emulator system-images;android-36;google_apis;x86_64"
           log-accepted-android-sdk-licenses: false
 
       - name: Setup Gradle cache
-        if: inputs.runner_backend == 'blacksmith'
+        if: inputs.runner_backend != 'self-hosted'
         uses: gradle/actions/setup-gradle@v5
 
       - name: Verify prepared Android toolchain
-        if: inputs.runner_backend != 'blacksmith'
+        if: inputs.runner_backend == 'self-hosted'
         run: |
           set -euo pipefail
           "$JAVA_HOME/bin/javac" -version | grep -E '^javac 21([.]|$)'
@@ -1688,7 +1679,7 @@ jobs:
     name: Verify signed Android startup
     if: ${{ !inputs.windows_candidate_only && !inputs.windows_only && !inputs.desktop_only && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && !cancelled() && needs.build_android_binaries.result == 'success' }}
     needs: [preflight, build_android_binaries, build_linux, build_nixos, build_windows]
-    runs-on: ${{ inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_ANDROID_RUNNER || vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
+    runs-on: ${{ inputs.runner_backend == 'boat' && (vars.MORROWBYTE_BOAT_RUNNER || 'boat-large') || inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_ANDROID_RUNNER || vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
     timeout-minutes: 15
     outputs:
       apk_sha256: ${{ needs.build_android_binaries.outputs.apk_sha256 }}
@@ -1710,21 +1701,21 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Use local release build storage
-        if: inputs.runner_backend != 'blacksmith' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
+        if: inputs.runner_backend == 'self-hosted' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
         env:
           RUNNER_INIT_SCRIPT: ${{ vars.MORROWBYTE_LINUX_INIT_SCRIPT }}
         shell: bash
         run: source "$RUNNER_INIT_SCRIPT" --github-env
 
       - name: Setup Java
-        if: inputs.runner_backend == 'blacksmith'
+        if: inputs.runner_backend != 'self-hosted'
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
 
       - name: Setup Android build and verification tools
-        if: inputs.runner_backend == 'blacksmith'
+        if: inputs.runner_backend != 'self-hosted'
         uses: android-actions/setup-android@v4
         with:
           packages: "platform-tools build-tools;36.0.0 emulator system-images;android-36;google_apis;x86_64"
@@ -1883,7 +1874,7 @@ jobs:
            (inputs.continue_release68_run_id == '40291055865' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'success' && needs.build_nixos.result == 'success' && needs.build_windows.result == 'success') ||
            (inputs.continue_release68_run_id == '40297878651' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'skipped' && needs.build_nixos.result == 'success' && needs.build_windows.result == 'skipped')) }}
     needs: [preflight, build_bundle, build_linux, build_nixos, build_windows, build_android_apk]
-    runs-on: ${{ inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
+    runs-on: ${{ inputs.runner_backend == 'boat' && (vars.MORROWBYTE_BOAT_RUNNER || 'boat-large') || inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
     timeout-minutes: 15
     permissions:
       contents: write
@@ -1899,7 +1890,7 @@ jobs:
           fetch-depth: 1
 
       - name: Use local release build storage
-        if: inputs.runner_backend != 'blacksmith' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
+        if: inputs.runner_backend == 'self-hosted' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
         env:
           RUNNER_INIT_SCRIPT: ${{ vars.MORROWBYTE_LINUX_INIT_SCRIPT }}
         shell: bash
@@ -2211,7 +2202,8 @@ jobs:
             fi
             if [[ "$DESKTOP_ONLY" == true ]]; then
               printf 'release_platforms=windows-x64,linux-x64,nixos-x64\nandroid_status=not-built-desktop-only\n'
-            else
+            fi
+            if [[ "$DESKTOP_ONLY" != true ]]; then
               printf 'android_source_sha=%s\nandroid_pnpm_lock_sha256=%s\n' \
                 "$ANDROID_SOURCE_SHA" "${ANDROID_LOCK_SHA256:-$lock_sha}"
             fi
@@ -2236,7 +2228,7 @@ jobs:
   publish_android:
     if: inputs.android_only && inputs.publish
     needs: [preflight, build_android_apk]
-    runs-on: ${{ inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
+    runs-on: ${{ inputs.runner_backend == 'boat' && (vars.MORROWBYTE_BOAT_RUNNER || 'boat-large') || inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
     timeout-minutes: 15
     permissions:
       contents: write
@@ -2265,7 +2257,7 @@ jobs:
           fetch-depth: 1
 
       - name: Use local release build storage
-        if: inputs.runner_backend != 'blacksmith' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
+        if: inputs.runner_backend == 'self-hosted' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
         env:
           RUNNER_INIT_SCRIPT: ${{ vars.MORROWBYTE_LINUX_INIT_SCRIPT }}
         shell: bash
@@ -2383,7 +2375,7 @@ jobs:
           needs.build_windows.result == 'success' && needs.build_linux.result == 'skipped' &&
           needs.build_nixos.result == 'skipped' && needs.build_android_apk.result == 'skipped' }}
     needs: [preflight, build_bundle, build_linux, build_nixos, build_windows, build_android_apk]
-    runs-on: ${{ inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
+    runs-on: ${{ inputs.runner_backend == 'boat' && (vars.MORROWBYTE_BOAT_RUNNER || 'boat-large') || inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
     timeout-minutes: 15
     permissions:
       contents: write
@@ -2398,7 +2390,7 @@ jobs:
           ref: ${{ needs.preflight.outputs.source_sha }}
           fetch-depth: 0
       - name: Use local release build storage
-        if: inputs.runner_backend != 'blacksmith' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
+        if: inputs.runner_backend == 'self-hosted' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
         env:
           RUNNER_INIT_SCRIPT: ${{ vars.MORROWBYTE_LINUX_INIT_SCRIPT }}
         shell: bash
@@ -2408,7 +2400,7 @@ jobs:
         uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
         with:
           node-version-file: package.json
-          cache: ${{ inputs.runner_backend == 'blacksmith' }}
+          cache: ${{ inputs.runner_backend != 'self-hosted' }}
           run-install: false
       - name: Install release metadata tools
         run: vp install --frozen-lockfile --filter=@t3tools/shared...
