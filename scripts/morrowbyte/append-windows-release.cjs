@@ -243,11 +243,16 @@ function publish(directory, env = process.env) {
       for (const asset of release.assets) assert(safeName(asset.name), "Unsafe release asset name");
       const dest = path.join(temp, label);
       fs.mkdirSync(dest);
+      console.log(
+        `Downloading ${label}: ${release.assets.length} assets, ${release.assets.reduce((sum, asset) => sum + asset.size, 0)} bytes.`,
+      );
       gh("release", "download", cfg.tag, "--repo", cfg.repo, "--dir", dest);
+      console.log(`Downloaded ${label}; verifying all asset bytes and receipts.`);
       const files = new Map(
         fs.readdirSync(dest).map((name) => [name, fs.readFileSync(path.join(dest, name))]),
       );
       verifyOriginal(release, files, cfg);
+      console.log(`Verified ${label}: ${files.size} assets.`);
       return files;
     };
     const before = download("before");
@@ -285,6 +290,7 @@ function publish(directory, env = process.env) {
       if (before.has(name)) continue;
       const file = path.join(temp, name);
       fs.writeFileSync(file, bytes);
+      console.log(`Appending ${name}: ${bytes.length} bytes.`);
       gh("release", "upload", cfg.tag, file, "--repo", cfg.repo);
     }
     const after = download("after");

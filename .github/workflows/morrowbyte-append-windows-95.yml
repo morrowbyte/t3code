@@ -1,0 +1,99 @@
+name: Morrowbyte .95 Windows append
+run-name: Append existing .95 Windows artifacts
+on:
+  workflow_dispatch:
+concurrency:
+  group: morrowbyte-desktop-nightly
+  cancel-in-progress: false
+permissions:
+  actions: read
+  contents: read
+env:
+  GH_REPO: morrowbyte/t3code
+  SOURCE_SHA: 899472390bb9ef4161e8df6194bc68d0f8fb4ead
+  SOURCE_RUN_ID: "41148387758"
+  WINDOWS_BUILD_RUN_ID: "41148387758"
+  WINDOWS_BUILD_WORKFLOW_SHA: 899472390bb9ef4161e8df6194bc68d0f8fb4ead
+  RELEASE_VERSION: 0.1.7-nightly.20261031.95
+  RELEASE_TAG: v0.1.7-nightly.20261031.95
+jobs:
+  append_windows:
+    if: github.repository == 'morrowbyte/t3code' && github.ref == 'refs/heads/main'
+    runs-on: ${{ vars.MORROWBYTE_BOAT_RUNNER || 'boat-large' }}
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Verify original source, successful builds and published receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, urllib.request
+          repo = os.environ['GH_REPO']
+          def api(route):
+              request = urllib.request.Request('https://api.github.com/repos/' + repo + '/' + route,
+                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json'})
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+          run = api('actions/runs/' + os.environ['SOURCE_RUN_ID'])
+          assert run['head_sha'] == os.environ['SOURCE_SHA'] and run['head_branch'] == 'main'
+          assert run['path'] == '.github/workflows/morrowbyte-release.yml'
+          assert run['event'] == 'workflow_dispatch' and run['status'] == 'completed'
+          assert run['run_attempt'] == 1 and run['repository']['full_name'] == repo
+          jobs = api('actions/runs/' + os.environ['SOURCE_RUN_ID'] + '/jobs?per_page=100')['jobs']
+          for name in ['preflight', 'build_bundle', 'build_linux', 'build_nixos', 'build_windows',
+                       'Build Morrowbyte Android APK', 'Verify signed Android startup', 'publish_linux_first']:
+              matches = [job for job in jobs if job['name'] == name]
+              assert len(matches) == 1 and matches[0]['conclusion'] == 'success', name
+          artifacts = api('actions/runs/' + os.environ['SOURCE_RUN_ID'] + '/artifacts?per_page=100')['artifacts']
+          for name, artifact_id in [('morrowbyte-release-windows', 13021879830),
+                                    ('morrowbyte-release-cli-windows', 13023050915)]:
+              matches = [artifact for artifact in artifacts if artifact['name'] == name]
+              assert len(matches) == 1 and matches[0]['id'] == artifact_id
+              assert not matches[0]['expired']
+              assert matches[0]['workflow_run']['head_sha'] == os.environ['SOURCE_SHA']
+          release = api('releases/tags/' + os.environ['RELEASE_TAG'])
+          assert release['target_commitish'] == os.environ['SOURCE_SHA']
+          assert release['prerelease'] and not release['draft']
+          asset = next(asset for asset in release['assets'] if asset['name'] == 'RELEASE-RECEIPT.txt')
+          with urllib.request.urlopen(asset['browser_download_url'], timeout=30) as response:
+              receipt = response.read()
+          assert asset['digest'] == 'sha256:' + hashlib.sha256(receipt).hexdigest()
+          fields = {}
+          for line in receipt.decode().splitlines():
+              if '=' in line:
+                  key, value = line.split('=', 1)
+                  assert key not in fields
+                  fields[key] = value
+          assert fields['source_sha'] == os.environ['SOURCE_SHA']
+          assert fields['fork_release'] == os.environ['RELEASE_TAG']
+          assert fields['publication_run_id'] == fields['desktop_origin_run_id'] == os.environ['SOURCE_RUN_ID']
+          assert fields['release_platforms'] == 'linux-x64,nixos-x64,android-arm64'
+          assert fields['windows_status'] == 'pending'
+          print('Verified .95 source, successful platform gates and exact retained Windows artifacts.')
+          PY
+      - name: Checkout qualified append tools
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: ./.github/actions/setup-ci-deps
+        with:
+          install-args: --frozen-lockfile --filter=@t3tools/shared...
+      - name: Download existing Windows build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: morrowbyte-release-{windows,cli-windows}
+          merge-multiple: true
+          path: windows-assets
+          run-id: "41148387758"
+          github-token: ${{ github.token }}
+      - name: Append Windows and verify every original published byte
+        env:
+          GH_TOKEN: ${{ secrets.MORROWBYTE_RELEASE_TOKEN || github.token }}
+        run: |
+          if [[ -f windows-assets/builder-debug.yml ]]; then
+            mv windows-assets/builder-debug.yml "$RUNNER_TEMP/windows-builder-debug.yml"
+          fi
+          node scripts/morrowbyte/append-windows-release.cjs publish windows-assets

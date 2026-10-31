@@ -2545,7 +2545,7 @@ jobs:
     if: ${{ !cancelled() && inputs.linux_first && inputs.publish && needs.publish_linux_first.result == 'success' && needs.build_windows.result == 'success' }}
     needs: [preflight, publish_linux_first, build_windows]
     runs-on: ${{ inputs.runner_backend == 'boat' && (vars.MORROWBYTE_BOAT_RUNNER || 'boat-large') || inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
-    timeout-minutes: 15
+    timeout-minutes: 45
     permissions:
       contents: write
     steps:
