@@ -60,17 +60,18 @@ async function fixture(message: string | null, platform: NodeJS.Platform, snapsh
   return {
     directory,
     worktree,
-    run: (args: string[] = [], entry = "setup-worktree.ts") =>
+    run: (args: string[] = [], entry = "setup-worktree.ts", target = worktree) =>
       new Promise<{ code: number | null; stderr: string }>((resolve, reject) => {
         const child = NodeChildProcess.spawn(
           process.execPath,
           [NodePath.join(scripts, entry), ...args],
           {
-            cwd: worktree,
+            cwd: target,
             env: {
               ...process.env,
               PATH: `${bin}${NodePath.delimiter}${process.env.PATH ?? ""}`,
               T3CODE_PROJECT_ROOT: projectRoot,
+              T3CODE_WORKTREE_PATH: target === worktree ? undefined : target,
             },
             stdio: ["ignore", "pipe", "pipe"],
           },
@@ -88,6 +89,39 @@ async function fixture(message: string | null, platform: NodeJS.Platform, snapsh
 }
 
 describe("worktree installer storage admission", () => {
+  it.live("prepares the requested worktree without executing or replacing its old helper", () =>
+    Effect.gen(function* () {
+      const platform = yield* HostProcess.Platform;
+      yield* Effect.promise(async () => {
+        await using test = await fixture(null, platform);
+        const target = NodePath.join(test.directory, "old-worktree");
+        await NodeFSP.mkdir(NodePath.join(target, "scripts"), { recursive: true });
+        const oldHelper = NodePath.join(target, "scripts/setup-worktree.ts");
+        const oldSource = 'throw new Error("old eager installer must not run");';
+        await NodeFSP.writeFile(oldHelper, oldSource);
+        expect(await test.run(["--prepare"], "setup-worktree.ts", target)).toEqual({
+          code: 0,
+          stderr: "",
+        });
+        expect(await NodeFSP.readFile(NodePath.join(target, ".t3/setup-done"), "utf8")).toBe("");
+        expect(await NodeFSP.readFile(oldHelper, "utf8")).toBe(oldSource);
+        await expect(NodeFSP.stat(NodePath.join(target, "node_modules"))).rejects.toHaveProperty(
+          "code",
+          "ENOENT",
+        );
+        await expect(NodeFSP.stat(NodePath.join(test.worktree, ".t3"))).rejects.toHaveProperty(
+          "code",
+          "ENOENT",
+        );
+        if (platform !== "win32") {
+          expect(await NodeFSP.readFile(NodePath.join(target, ".env"), "utf8")).toBe(
+            "SETUP_FIXTURE=1\n",
+          );
+        }
+      });
+    }),
+  );
+
   it.live("prepares source-only worktrees without installing dependencies", () =>
     Effect.gen(function* () {
       const platform = yield* HostProcess.Platform;

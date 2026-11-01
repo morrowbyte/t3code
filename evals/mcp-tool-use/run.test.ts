@@ -8,6 +8,7 @@ import * as HttpClient from "effect/http/HttpClient";
 import { assert, expect, it } from "@effect/vitest";
 import { ComposerContextId, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
+import { localComputeContext } from "../../apps/server/src/orchestration-v2/ProviderTurnStartService.ts";
 
 import {
   buildBase,
@@ -441,6 +442,15 @@ it("lists link tools only while a case turns the beta on, and sends chips as T3 
     projectComposerContextForProvider({ text: testCase.prompt, ...testCase.promptContext! }),
   );
   assert.include(prompt?.text, "environmentId: environment-vps");
+  for (const computePlacement of ["auto-local", "explicit-local"] as const) {
+    const placed = buildMessages(makeSample({ ...testCase, computePlacement }, on))
+      .at(-1)
+      ?.content.at(-1);
+    assert.equal(
+      placed?.text,
+      `${localComputeContext(false, computePlacement === "explicit-local")}\n\nUser message:\n${prompt?.text}`,
+    );
+  }
 });
 
 it("replays earlier capability results with the model under test as the caller", () => {

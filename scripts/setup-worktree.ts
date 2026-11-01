@@ -7,7 +7,9 @@ import { checkStorageAdmission } from "../packages/shared/src/node/storagePressu
 
 const ENV_FILES = [".env", NodePath.join("infra", "relay", ".env")];
 
-const worktree = NodePath.dirname(import.meta.dirname);
+const worktree = NodePath.resolve(
+  process.env.T3CODE_WORKTREE_PATH ?? NodePath.dirname(import.meta.dirname),
+);
 
 const storageMessage = await checkStorageAdmission([worktree]);
 if (storageMessage !== null) {

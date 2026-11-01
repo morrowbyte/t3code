@@ -1452,6 +1452,7 @@ function deriveTimelineTurnFolds(
 
 export function deriveMessagesTimelineRows(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
+  showThinkingInline?: boolean;
   pendingApprovalRequestIds?: ReadonlySet<RuntimeRequestId>;
   latestRun?: TimelineLatestRun | null;
   runningRunId?: RunId | null;
@@ -1588,6 +1589,7 @@ export function deriveMessagesTimelineRows(input: {
       if (
         entry.kind !== "work" ||
         workEntryIsDelegationCall(entry.entry) ||
+        (input.showThinkingInline && entry.entry.itemType === "reasoning") ||
         entry.entry.tone === "error" ||
         entry.entry.sourceActivityKind === "runtime.error" ||
         entry.entry.itemType === "system_notice" ||
@@ -1878,6 +1880,7 @@ export function deriveMessagesTimelineRows(input: {
     if (timelineEntry.kind === "work") {
       if (
         isPendingApproval(timelineEntry.entry) ||
+        (input.showThinkingInline && timelineEntry.entry.itemType === "reasoning") ||
         workEntryIsDelegationCall(timelineEntry.entry) ||
         (timelineEntry.entry.runId != null && itemizedRunIds.has(timelineEntry.entry.runId)) ||
         (timelineEntry.entry.itemType === "error" &&
@@ -1905,6 +1908,7 @@ export function deriveMessagesTimelineRows(input: {
           !nextEntry ||
           nextEntry.kind !== "work" ||
           workEntryIsDelegationCall(nextEntry.entry) ||
+          (input.showThinkingInline && nextEntry.entry.itemType === "reasoning") ||
           nextEntry.entry.sourceActivityKind === "context-compaction" ||
           (nextEntry.entry.itemType === "error" &&
             nextEntry.entry.toolLifecycleStatus === "failed") ||

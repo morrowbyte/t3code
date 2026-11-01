@@ -54,6 +54,62 @@ describe("resolveAssistantMessageCopyState", () => {
 });
 
 describe("deriveMessagesTimelineRows", () => {
+  it("keeps inline thinking between tool calls while streaming and switching views", () => {
+    const runId = RunId.make("inline-thinking-run");
+    const at = "2026-11-01T22:00:00Z";
+    const work = (
+      id: string,
+      reasoning: boolean,
+      detail: string,
+    ): Extract<TimelineEntry, { kind: "work" }> => ({
+      kind: "work",
+      id,
+      createdAt: at,
+      entry: {
+        id,
+        runId,
+        createdAt: at,
+        label: reasoning ? "Thought" : "Read file",
+        tone: reasoning ? "thinking" : "tool",
+        itemType: reasoning ? "reasoning" : "command_execution",
+        detail,
+        toolLifecycleStatus: "inProgress",
+      },
+    });
+    const first = work("short", true, "**Checking source**");
+    const tool = work("tool", false, "cat source.ts");
+    const last = work("long", true, "First paragraph.\n\nSecond paragraph.");
+    const entries = [first, tool, last];
+    const input = {
+      timelineEntries: entries,
+      runningRunId: runId,
+      isWorking: true,
+      activeTurnStartedAt: at,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    };
+    const project = (showThinkingInline: boolean, timelineEntries = entries) =>
+      deriveMessagesTimelineRows({ ...input, timelineEntries, showThinkingInline });
+    const contents = (rows: MessagesTimelineRow[]) =>
+      rows.flatMap((row) =>
+        row.kind === "work" || row.kind === "work-live" ? row.groupedEntries : [],
+      );
+    const inline = project(true);
+    expect(contents(inline).map((entry) => entry.id)).toEqual(["short", "tool", "long"]);
+    expect(
+      inline
+        .filter((row) => row.kind === "work")
+        .map((row) => row.groupedEntries.map((entry) => entry.id)),
+    ).toEqual([["short"], ["long"]]);
+    const updated = { ...last, entry: { ...last.entry, detail: last.entry.detail + " More." } };
+    expect(contents(project(true, [first, tool, updated])).at(-1)?.detail).toBe(
+      "First paragraph.\n\nSecond paragraph. More.",
+    );
+    expect(contents(project(false)).map((entry) => entry.id)).toEqual(["short", "tool", "long"]);
+    expect(
+      project(false).some((row) => row.kind === "work-live" && row.groupedEntries.length === 3),
+    ).toBe(true);
+  });
   it("stops stranded thinking after a steer and follows the next thought or tool", () => {
     const runId = RunId.make("steered-run");
     const at = "2026-10-01T06:19:10Z";

@@ -97,6 +97,69 @@ const stagePackageExtensions = {
   "@electron-webauthn/macos": { peerDependenciesMeta: { typescript: { optional: true } } },
 };
 
+it("stages pinned Cua packages as installed production dependencies", async () => {
+  await using directory = await NodeFSP.mkdtempDisposable(
+    NodePath.join(NodeOS.tmpdir(), "t3-cua-stage-"),
+  );
+  const appDir = NodePath.join(directory.path, "app");
+  const cuaRoot = NodePath.join(directory.path, "cua-runtime");
+  const names = ["@trycua/cua-driver", "@trycua/cua-driver-linux-x64-gnu"];
+  for (const name of names) {
+    const root = NodePath.join(cuaRoot, "node_modules", name);
+    await NodeFSP.mkdir(root, { recursive: true });
+    await NodeFSP.writeFile(
+      NodePath.join(root, "package.json"),
+      JSON.stringify({ name, version: "0.38.0", type: "module", main: "index.js" }),
+    );
+    await NodeFSP.writeFile(
+      NodePath.join(root, "index.js"),
+      `export default ${JSON.stringify(name)};`,
+    );
+  }
+  const dependencies = resolveMergedStageDependencies({
+    platform: "linux",
+    serverDependencies: {},
+    desktopDependencies: {},
+    arch: "x64",
+    fffNodeVersion: "0.9.4",
+    stagedCua: { root: cuaRoot, appDir },
+  });
+  await NodeFSP.mkdir(appDir);
+  await NodeFSP.writeFile(
+    NodePath.join(appDir, "package.json"),
+    JSON.stringify({
+      private: true,
+      dependencies: Object.fromEntries(
+        Object.entries(dependencies).filter(([name]) => names.includes(name)),
+      ),
+    }),
+  );
+  await NodeFSP.writeFile(NodePath.join(appDir, "pnpm-workspace.yaml"), "nodeLinker: hoisted\n");
+  const vpCli = NodePath.resolve(import.meta.dirname, "../node_modules/vite-plus/bin/vp");
+  NodeChildProcess.execFileSync(
+    process.execPath,
+    [
+      vpCli,
+      ...STAGE_INSTALL_ARGS,
+      "--offline",
+      "--ignore-scripts",
+      "--store-dir",
+      NodePath.join(directory.path, "store"),
+    ],
+    { cwd: appDir, stdio: "pipe" },
+  );
+  const result = NodeChildProcess.execFileSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `console.log(JSON.stringify(await Promise.all(${JSON.stringify(names)}.map(async name => (await import(name)).default))))`,
+    ],
+    { cwd: appDir, encoding: "utf8" },
+  );
+  assert.deepEqual(JSON.parse(result), names);
+});
+
 it("release stages can restage a dependency already installed from the same pnpm store", async () => {
   await using directory = await NodeFSP.mkdtempDisposable(
     NodePath.join(NodeOS.tmpdir(), "t3-stage-copy-"),

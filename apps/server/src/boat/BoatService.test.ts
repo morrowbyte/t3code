@@ -93,8 +93,11 @@ function setup(
   const subagents = new Map<ThreadId, OrchestrationV2Subagent[]>();
   const gitCwds: string[] = [];
   let onGitRead = () => {};
-  let commandResult: { processId: number; exitCode?: number } = { processId: 123, exitCode: 0 };
-  let commandFinished = false;
+  let commandResult: { processId: number; exitCode?: number | null } = {
+    processId: 123,
+    exitCode: 0,
+  };
+  let commandStatus: unknown = {};
   const api = Layer.succeed(BoatApi, {
     request: (_key, path, method = "GET", body, idempotencyKey) =>
       Effect.sync(() => {
@@ -116,7 +119,7 @@ function setup(
         if (path.endsWith("/commands")) {
           return commandResult;
         }
-        if (/\/commands\/\d+$/.test(path)) return commandFinished ? { exitCode: 0 } : {};
+        if (/\/commands\/\d+$/.test(path)) return commandStatus;
         if (path.endsWith("/host")) return { url: "https://preview.example.test/web" };
         if (path.endsWith("/sshkey"))
           return {
@@ -318,8 +321,8 @@ function setup(
     setCommandResult: (result: typeof commandResult) => {
       commandResult = result;
     },
-    finishCommand: () => {
-      commandFinished = true;
+    setCommandStatus: (status: typeof commandStatus) => {
+      commandStatus = status;
     },
     setCost: (cost: number) => {
       costUsd = cost;
@@ -2059,9 +2062,16 @@ it.effect("transfers a finished parent's lease to its active projected child", (
   }).pipe(Effect.scoped, Effect.provide(test.services));
 });
 
-it.effect.each(["completed", "expired", "missing", "unavailable"] as const)(
-  "tracks only the started check's command ID until %s",
-  (end) => {
+it.effect.each([
+  ["completed", undefined],
+  ["completed", null],
+  ["failed", null],
+  ["expired", null],
+  ["missing", null],
+  ["unavailable", null],
+] as const)(
+  "tracks only the started check's command ID until %s with exitCode=%s",
+  ([end, exitCode]) => {
     let statusFailure: number | null = null;
     const test = setup((path) =>
       path.endsWith("/commands/456") && statusFailure !== null
@@ -2075,7 +2085,7 @@ it.effect.each(["completed", "expired", "missing", "unavailable"] as const)(
         yield* boat.configureDefaults({ ttlMinutes: 1, retentionDays: 14 });
         yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: true });
         yield* boat.operate({ action: "start", projectId, requestId: "command" }, ownerThreadId);
-        test.setCommandResult({ processId: 456 });
+        test.setCommandResult({ processId: 456, ...(exitCode === undefined ? {} : { exitCode }) });
         yield* boat.operate(
           {
             action: "exec",
@@ -2086,12 +2096,22 @@ it.effect.each(["completed", "expired", "missing", "unavailable"] as const)(
           ownerThreadId,
         );
       }).pipe(Effect.scoped);
+      test.setCommandStatus({
+        processId: 456,
+        ...(exitCode === undefined ? {} : { exitCode }),
+        status: "running",
+        known: true,
+        running: true,
+        stdout: "",
+        stderr: "",
+      });
       const reopened = yield* make;
       test.setOwnerActive(false);
       yield* reopened.reconcile();
       assert.notInclude(test.calls, "POST /sandboxes/bx_23456789/stop");
       assert.include(test.calls, "GET /sandboxes/bx_23456789/commands/456");
-      if (end === "completed") test.finishCommand();
+      if (end === "completed" || end === "failed")
+        test.setCommandStatus({ exitCode: end === "completed" ? 0 : 1 });
       else if (end === "missing") statusFailure = 404;
       else if (end === "unavailable") {
         statusFailure = 503;
@@ -2209,11 +2229,21 @@ it.effect("uploads source archives in bounded chunks and assembles them before s
       commands.findIndex((entry) => entry.includes("node server.js")),
     );
     const firstProcessId = (yield* boat.read(projectId)).instances[0]!.processId;
+    const starts = commands.filter((entry) => entry.includes("node server.js")).length;
+    test.setCommandStatus({
+      processId: firstProcessId,
+      exitCode: null,
+      status: "running",
+      known: true,
+      running: true,
+      stdout: "",
+      stderr: "",
+    });
     yield* boat.operate({ action: "prepare", projectId, requestId: "chunks" });
     assert.equal((yield* boat.read(projectId)).instances[0]!.processId, firstProcessId);
     assert.include(test.calls, `GET /sandboxes/bx_23456789/commands/${firstProcessId}`);
     assert.notInclude(command, "node server.js");
-    const starts = commands.filter((entry) => entry.includes("node server.js")).length;
+    assert.equal(commands.filter((entry) => entry.includes("node server.js")).length, starts);
     test.setCommandResult({ processId: 123, exitCode: 1 });
     const failed = yield* boat
       .operate({ action: "prepare", projectId, requestId: "chunks" })

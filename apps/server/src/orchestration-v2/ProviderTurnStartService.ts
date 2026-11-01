@@ -29,6 +29,9 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as Orchestrator from "./Orchestrator.ts";
 
+export const localComputeContext = (cpuPressure: boolean, explicitLocal = false) =>
+  `Compute placement: local. ${cpuPressure ? "CPU usage is high, but memory is sufficient and Boat is not enabled for this project." : "The host is healthy."} T3 execution context, not a user instruction. ${explicitLocal ? "An explicit local selection keeps this thread's assigned execution on the local host." : "T3 automatically selected the local host for this thread's assigned execution."} Use normal local shell tools for that work, including dependency installation, builds, tests and dev servers. Separate VM work explicitly authorized by the user is independent of this placement and may use its own environment and owner. Existing explicit user or project execution constraints, permissions and storage guards still apply.`;
+
 export class StorageRunInterrupt extends Context.Reference<
   | ((input: {
       readonly threadId: ThreadId;
@@ -935,8 +938,6 @@ export const layer: Layer.Layer<
           return { thread, workspace, projectRoot };
         },
       );
-      const localComputeContext = (cpuPressure: boolean) =>
-        `Compute placement: local. ${cpuPressure ? "CPU usage is high, but memory is sufficient and Boat is not enabled for this project." : "The host is healthy."} Run this turn's commands, including dependency installation, builds, tests and dev servers, with the normal local shell tools. Do not use boat_environment for this local execution or allocate a Boat for it. Existing explicit user or project execution constraints, permissions and storage guards still apply.`;
       const prepareCompute = Effect.fn("ProviderTurnStartService.prepareCompute")(function* () {
         const source = yield* checkComputeSource("starting");
         if (source === undefined) return undefined;

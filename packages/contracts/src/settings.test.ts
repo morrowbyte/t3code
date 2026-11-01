@@ -307,6 +307,7 @@ describe("ClientSettings presentation defaults", () => {
   it("fills omitted preferences while preserving explicitly saved choices", () => {
     expect(decodeClientSettings({})).toMatchObject({
       mathRenderingEnabled: true,
+      showThinkingInline: false,
       inAppNotificationsEnabled: true,
       persistComposerContextStrip: true,
       diffIgnoreWhitespace: false,
@@ -314,6 +315,7 @@ describe("ClientSettings presentation defaults", () => {
     });
     const saved = {
       mathRenderingEnabled: false,
+      showThinkingInline: true,
       inAppNotificationsEnabled: false,
       persistComposerContextStrip: false,
       diffIgnoreWhitespace: true,

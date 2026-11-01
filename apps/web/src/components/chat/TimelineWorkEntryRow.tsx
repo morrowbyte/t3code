@@ -1,5 +1,6 @@
 import { workEntryExecutionStatus } from "@t3tools/client-runtime/work-log/presentation";
 import { useRightPanelStore } from "~/rightPanelStore";
+import { useClientSettings } from "../../hooks/useSettings";
 import { TimelinePendingApprovalRow } from "./TimelinePendingApprovalRow";
 import { WorkLogDetails, WorkLogRow } from "./WorkLog";
 import {
@@ -206,8 +207,26 @@ type WorkEntryRowProps = {
   onToggleEntry?: ((collapsed: boolean) => void) | undefined;
 };
 
+function InlineReasoningEntry({ entry }: { entry: TimelineWorkEntry }) {
+  const { isWorking, latestRunId } = use(TimelineRowActivityCtx);
+  return (
+    <div data-thinking-inline className="py-1 text-sm leading-relaxed">
+      <ReasoningTraceEntry
+        entry={entry}
+        isStreaming={
+          isWorking && entry.runId === latestRunId && entry.toolLifecycleStatus === "inProgress"
+        }
+      />
+    </div>
+  );
+}
+
 export const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: WorkEntryRowProps) {
   const ctx = use(TimelineRowCtx);
+  const showThinkingInline = useClientSettings((settings) => settings.showThinkingInline);
+  if (showThinkingInline && props.workEntry.itemType === "reasoning") {
+    return <InlineReasoningEntry entry={props.workEntry} />;
+  }
   const item = props.workEntry.projectedItem?.item;
   const childThreadId =
     item?.type === "notification" ? notificationChildThreadId(item.source) : undefined;
