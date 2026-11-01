@@ -239,6 +239,11 @@ resource_lifecycle_tests=(
   apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts
   apps/server/src/textGeneration/ReasoningSummaryGeneration.test.ts
   apps/server/src/textGeneration/ToolIntentGeneration.test.ts
+  packages/provider-core/src/server/runtimeInstructions.test.ts
+  packages/provider-core/src/server/orchestrationInstructions.test.ts
+  apps/server/src/provider/AgentContextBudget.test.ts
+  apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts
+  packages/client-runtime/src/work-log/itemDetail.test.ts
 )
 for resource_lifecycle_test in "${resource_lifecycle_tests[@]}"; do
   if [[ ! -f "$resource_lifecycle_test" ]]; then
