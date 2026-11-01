@@ -1734,6 +1734,7 @@ export interface CodexAppServerClientFactoryShape {
     readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
     readonly settings: CodexSettings;
     readonly environment: NodeJS.ProcessEnv;
+    readonly appManagedThreadLifecycle?: boolean;
   }) => Effect.Effect<
     CodexClient.CodexAppServerClient["Service"],
     ProviderAdapter.ProviderAdapterOpenSessionError,
@@ -1944,9 +1945,13 @@ export const layerAppServerClientFactory: Layer.Layer<
         };
         const command = yield* makeCodexAppServerSpawnCommand({
           command: input.settings.binaryPath || "codex",
-          args: codexAppServerArgs(
-            resolveCodexLaunchArgs(input.settings.launchArgs, input.environment),
-          ),
+          args: [
+            ...codexAppServerArgs(
+              resolveCodexLaunchArgs(input.settings.launchArgs, input.environment),
+            ),
+            // Crew's idle timer owns retention; Codex must not add another 30 minutes.
+            ...(input.appManagedThreadLifecycle ? ["-c", "thread_unload_delay_secs=0"] : []),
+          ],
           env: environment,
           threadId: input.threadId,
         }).pipe(Effect.provideService(AgentScope, agentScope));
@@ -2163,6 +2168,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           runtimePolicy: input.runtimePolicy,
           settings: resolvedRuntime?.config ?? adapterOptions.settings,
           environment: resolvedRuntime?.environment ?? adapterOptions.environment,
+          appManagedThreadLifecycle: true,
         });
         const additionalContextByThread = yield* Ref.make(
           new Map<
@@ -2393,7 +2399,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         );
         const activeTurns = yield* Ref.make(new Map<string, ActiveCodexTurnContext>());
         const observatoryRegisteredThreads = new Set<string>();
-        const cuaUnloadWaiters = new Map<string, Deferred.Deferred<void>>();
+        const threadUnloadWaiters = new Map<string, Deferred.Deferred<void>>();
         const observatoryCalls = new WeakMap<
           ActiveCodexTurnContext,
           Map<
@@ -5333,7 +5339,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         // their command items, while the shared provider session stays alive.
         yield* client.handleServerNotification("thread/closed", (payload) =>
           Effect.gen(function* () {
-            const unloaded = cuaUnloadWaiters.get(payload.threadId);
+            const unloaded = threadUnloadWaiters.get(payload.threadId);
             if (unloaded !== undefined) yield* Deferred.succeed(unloaded, undefined);
             const completedAt = yield* DateTime.now;
             for (const context of (yield* Ref.get(settledTurns)).values()) {
@@ -7355,7 +7361,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               // would cancel it and retain the old MCP connections. Fail closed if another
               // subscriber or an active turn prevents unloading; never replay an action.
               const unloaded = yield* Deferred.make<void>();
-              cuaUnloadWaiters.set(threadId, unloaded);
+              threadUnloadWaiters.set(threadId, unloaded);
               yield* Effect.gen(function* () {
                 const result = yield* client.request("thread/unsubscribe", { threadId });
                 if (result.status !== "notLoaded") {
@@ -7364,8 +7370,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               }).pipe(
                 Effect.ensuring(
                   Effect.sync(() => {
-                    if (cuaUnloadWaiters.get(threadId) === unloaded)
-                      cuaUnloadWaiters.delete(threadId);
+                    if (threadUnloadWaiters.get(threadId) === unloaded)
+                      threadUnloadWaiters.delete(threadId);
                   }),
                 ),
               );
@@ -8206,8 +8212,23 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           unloadThread: Effect.fn("CodexAdapterV2.unloadThread")(
             function* (unloadInput) {
               const nativeThreadId = yield* getNativeThreadId(unloadInput.providerThread);
-              sessionApprovals.delete(nativeThreadId);
-              yield* client.request("thread/unsubscribe", { threadId: nativeThreadId });
+              const unloaded = yield* Deferred.make<void>();
+              threadUnloadWaiters.set(nativeThreadId, unloaded);
+              // Unsubscribe acknowledges the subscription, not release of the thread's MCP servers.
+              yield* Effect.gen(function* () {
+                const result = yield* client.request("thread/unsubscribe", {
+                  threadId: nativeThreadId,
+                });
+                if (result.status !== "notLoaded") yield* Deferred.await(unloaded);
+                sessionApprovals.delete(nativeThreadId);
+              }).pipe(
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    if (threadUnloadWaiters.get(nativeThreadId) === unloaded)
+                      threadUnloadWaiters.delete(nativeThreadId);
+                  }),
+                ),
+              );
             },
             (effect, unloadInput) =>
               effect.pipe(

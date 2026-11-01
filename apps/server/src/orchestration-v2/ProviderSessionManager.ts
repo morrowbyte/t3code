@@ -57,6 +57,7 @@ import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+const DEFAULT_IDLE_THREAD_TIMEOUT_MS = 60 * 1000;
 const DEFAULT_MAX_IDLE_PIN_MS = 4 * 60 * 60 * 1000;
 const RELEASE_SCOPE_CLOSE_TIMEOUT_MS = 30 * 1000;
 /** Past adapters' own 10 s stop fallbacks, so they settle first when the provider answers at all. */
@@ -424,6 +425,10 @@ export const layerWithOptions = (
         readonly threadId: ThreadId;
       }) => `${input.providerSessionId}\u0000${input.threadId}`;
       const idleTimeoutMs = Math.max(1, options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS);
+      const idleThreadTimeoutMs = Math.max(
+        1,
+        options.idleTimeoutMs ?? DEFAULT_IDLE_THREAD_TIMEOUT_MS,
+      );
       const maxIdlePinMs = Math.max(0, options.maxIdlePinMs ?? DEFAULT_MAX_IDLE_PIN_MS);
       interface PreparedMcpCredential {
         readonly mcpCredentialId: string | undefined;
@@ -1527,20 +1532,22 @@ export const layerWithOptions = (
           providerSessionId,
           Effect.gen(function* () {
             const key = sessionKey(providerSessionId);
-            yield* Ref.update(sessions, (current) => {
+            const finished = yield* Ref.modify(sessions, (current) => {
               const entry = current.get(key);
-              if (entry === undefined) {
-                return current;
+              const turnKey = busyTurnKey(providerThreadId, runOrdinal);
+              if (entry === undefined || !entry.busyTurns.has(turnKey)) {
+                return [false, current] as const;
               }
               const busyTurns = new Set(entry.busyTurns);
-              busyTurns.delete(busyTurnKey(providerThreadId, runOrdinal));
+              busyTurns.delete(turnKey);
               const updated = new Map(current);
               updated.set(key, {
                 ...entry,
                 busyTurns,
               });
-              return updated;
+              return [true, updated] as const;
             });
+            if (!finished) return;
             yield* scheduleIdleReleaseInternal(providerSessionId);
             yield* scheduleThreadUnload(providerSessionId, providerThreadId);
           }),
@@ -1616,7 +1623,7 @@ export const layerWithOptions = (
           if (tracked === undefined) return;
           const [threadId, pending] = tracked;
           const generation = pending.generation + 1;
-          const fiber = yield* Effect.sleep(Duration.millis(idleTimeoutMs)).pipe(
+          const fiber = yield* Effect.sleep(Duration.millis(idleThreadTimeoutMs)).pipe(
             Effect.andThen(unloadIdleThread({ providerSessionId, threadId, generation })),
             Effect.forkIn(layerScope),
           );
@@ -1660,13 +1667,26 @@ export const layerWithOptions = (
                   ? false
                   : yield* entry.runtime
                       .hasPendingBackgroundWorkForThread(pending.providerThread)
-                      .pipe(Effect.catchCause(() => Effect.succeed(false)));
+                      .pipe(
+                        Effect.catchCause((cause) =>
+                          Effect.logWarning(
+                            "orchestration-v2.driver-session.idle-unload-probe-failed",
+                            {
+                              providerSessionId: input.providerSessionId,
+                              threadId: input.threadId,
+                              cause,
+                            },
+                          ).pipe(Effect.as(true)),
+                        ),
+                      );
               if (hasPendingWork) return "deferred" as const;
               const unloading = yield* Ref.modify(sessions, (current) => {
                 const latest = current.get(key);
                 if (
                   latest?.runtime !== entry.runtime ||
-                  latest.idleThreadUnloads.get(input.threadId)?.generation !== input.generation
+                  latest.idleThreadUnloads.get(input.threadId)?.generation !== input.generation ||
+                  !latest.attachedThreadIds.has(input.threadId) ||
+                  hasBusyTurn(latest, pending.providerThread.id)
                 ) {
                   return [false, current] as const;
                 }
@@ -1674,34 +1694,36 @@ export const layerWithOptions = (
                   latest.loadedProviderThreadKeyByThread,
                 );
                 loadedProviderThreadKeyByThread.delete(input.threadId);
-                const idleThreadUnloads = new Map(latest.idleThreadUnloads);
-                idleThreadUnloads.delete(input.threadId);
                 const updated = new Map(current);
                 updated.set(key, {
                   ...latest,
                   loadedProviderThreadKeyByThread,
-                  idleThreadUnloads,
                 });
                 return [true, updated] as const;
               });
               if (!unloading) return "skipped" as const;
-              yield* unloadThread({ providerThread: pending.providerThread }).pipe(
+              const unloaded = yield* unloadThread({ providerThread: pending.providerThread }).pipe(
                 Effect.timeout(UNLOAD_THREAD_TIMEOUT_MS),
+                Effect.as(true),
                 Effect.catchCause((cause) =>
                   Effect.logWarning("orchestration-v2.driver-session.idle-unload-failed", {
                     providerSessionId: input.providerSessionId,
                     threadId: input.threadId,
                     providerThreadId: pending.providerThread.id,
                     cause,
-                  }),
+                  }).pipe(Effect.as(false)),
                 ),
+              );
+              if (!unloaded) return "deferred" as const;
+              yield* updateIdleThreadUnload(input.providerSessionId, input.threadId, (current) =>
+                current?.generation === input.generation ? undefined : current,
               );
               return "unloaded" as const;
             }),
           );
           // Wait outside the lock so the next attach is not blocked.
           if (outcome === "deferred") {
-            yield* Effect.sleep(Duration.millis(idleTimeoutMs));
+            yield* Effect.sleep(Duration.millis(idleThreadTimeoutMs));
             return yield* unloadIdleThread(input);
           }
         },
@@ -1878,35 +1900,39 @@ export const layerWithOptions = (
                 ),
               ),
               Effect.andThen(
-                holdThreadLoaded({
-                  providerSessionId,
-                  threadId,
-                  providerThread: input.providerThread,
-                }),
-              ),
-              Effect.andThen(
-                isProviderThreadLoaded({ providerSessionId, threadId, providerThreadKey }),
-              ),
-              Effect.flatMap((loaded) =>
-                admit(
-                  threadId,
-                  loaded ? Effect.succeed(input.providerThread) : runtime.resumeThread(input),
+                threadAttachment.withLock(
+                  threadAttachmentKey({ providerSessionId, threadId }),
+                  holdThreadLoaded({
+                    providerSessionId,
+                    threadId,
+                    providerThread: input.providerThread,
+                  }).pipe(
+                    Effect.andThen(
+                      isProviderThreadLoaded({ providerSessionId, threadId, providerThreadKey }),
+                    ),
+                    Effect.flatMap((loaded) =>
+                      admit(
+                        threadId,
+                        loaded ? Effect.succeed(input.providerThread) : runtime.resumeThread(input),
+                      ),
+                    ),
+                    Effect.tap((providerThread) =>
+                      markProviderThreadLoaded({
+                        providerSessionId,
+                        threadId,
+                        providerThreadKey: providerThreadLoadKey({
+                          providerThread,
+                          ...(input.modelSelection === undefined
+                            ? {}
+                            : { modelSelection: input.modelSelection }),
+                          ...(input.runtimePolicy === undefined
+                            ? {}
+                            : { runtimePolicy: input.runtimePolicy }),
+                        }),
+                      }),
+                    ),
+                  ),
                 ),
-              ),
-              Effect.tap((providerThread) =>
-                markProviderThreadLoaded({
-                  providerSessionId,
-                  threadId,
-                  providerThreadKey: providerThreadLoadKey({
-                    providerThread,
-                    ...(input.modelSelection === undefined
-                      ? {}
-                      : { modelSelection: input.modelSelection }),
-                    ...(input.runtimePolicy === undefined
-                      ? {}
-                      : { runtimePolicy: input.runtimePolicy }),
-                  }),
-                }),
               ),
             );
           },
@@ -1954,41 +1980,47 @@ export const layerWithOptions = (
                 ),
               ),
               Effect.andThen(
-                holdThreadLoaded({
-                  providerSessionId,
-                  threadId: input.threadId,
-                  providerThread: input.providerThread,
-                }),
-              ),
-              Effect.andThen(
                 Effect.acquireUseRelease(
-                  markBusy(
-                    providerSessionId,
-                    busyTurnKey(input.providerThread.id, input.runOrdinal),
-                    runtime,
-                  ).pipe(
-                    Effect.catchCause((cause) =>
-                      Effect.logWarning("orchestration-v2.driver-session.activity-failed", {
+                  threadAttachment
+                    .withLock(
+                      threadAttachmentKey({ providerSessionId, threadId: input.threadId }),
+                      holdThreadLoaded({
                         providerSessionId,
-                        cause,
-                      }).pipe(Effect.as(true)),
-                    ),
-                    // A release between attach and markBusy leaves nothing to mark: fail the
-                    // start instead of running it on a runtime being torn down.
-                    Effect.flatMap((marked) =>
-                      marked
-                        ? Effect.void
-                        : Effect.fail(
-                            new ProviderAdapter.ProviderAdapterTurnStartError({
-                              driver: runtime.driver,
-                              threadId: input.threadId,
-                              providerThreadId: input.providerThread.id,
-                              runId: input.runId,
-                              cause: "The provider session was released while the turn started.",
-                            }),
+                        threadId: input.threadId,
+                        providerThread: input.providerThread,
+                      }).pipe(
+                        Effect.andThen(
+                          markBusy(
+                            providerSessionId,
+                            busyTurnKey(input.providerThread.id, input.runOrdinal),
+                            runtime,
                           ),
+                        ),
+                      ),
+                    )
+                    .pipe(
+                      Effect.catchCause((cause) =>
+                        Effect.logWarning("orchestration-v2.driver-session.activity-failed", {
+                          providerSessionId,
+                          cause,
+                        }).pipe(Effect.as(true)),
+                      ),
+                      // A release between attach and markBusy leaves nothing to mark: fail the
+                      // start instead of running it on a runtime being torn down.
+                      Effect.flatMap((marked) =>
+                        marked
+                          ? Effect.void
+                          : Effect.fail(
+                              new ProviderAdapter.ProviderAdapterTurnStartError({
+                                driver: runtime.driver,
+                                threadId: input.threadId,
+                                providerThreadId: input.providerThread.id,
+                                runId: input.runId,
+                                cause: "The provider session was released while the turn started.",
+                              }),
+                            ),
+                      ),
                     ),
-                  ),
                   () =>
                     admit(input.threadId, runtime.startTurn(input)).pipe(
                       turnMetrics("send", input.modelSelection.model),

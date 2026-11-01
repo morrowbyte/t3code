@@ -343,6 +343,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly startTurn?: Effect.Effect<void>;
     readonly interruptTurn?: Effect.Effect<void>;
     readonly beforeUnload?: Effect.Effect<void>;
+    readonly beforeResume?: Effect.Effect<void>;
     readonly ensureThread?: ProviderAdapter.ProviderAdapterV2SessionRuntime["ensureThread"];
     /** Registers the process's closeCount finalizer before `beforeOpen` runs. */
     readonly spawnBeforeOpen?: boolean;
@@ -435,10 +436,15 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
           ensureThread:
             options.ensureThread ?? (() => unimplemented("ensureThread unused in test")),
           resumeThread: (threadInput) =>
-            Ref.update(state, (current) => ({
-              ...current,
-              resumeCount: current.resumeCount + 1,
-            })).pipe(Effect.as(threadInput.providerThread)),
+            (options.beforeResume ?? Effect.void).pipe(
+              Effect.andThen(
+                Ref.update(state, (current) => ({
+                  ...current,
+                  resumeCount: current.resumeCount + 1,
+                })),
+              ),
+              Effect.as(threadInput.providerThread),
+            ),
           startTurn: () => options.startTurn ?? Effect.void,
           steerTurn: () => Effect.void,
           interruptTurn: () =>
@@ -471,7 +477,7 @@ function layerTest(input: {
   readonly ensureThread?: ProviderAdapter.ProviderAdapterV2SessionRuntime["ensureThread"];
   readonly observatoryLayer?: Layer.Layer<Observatory.AgentObservatoryService>;
   readonly state: Ref.Ref<TestProviderRuntimeState>;
-  readonly idleTimeoutMs: number;
+  readonly idleTimeoutMs?: number;
   readonly maxIdlePinMs?: number;
   readonly failEventStream?: boolean;
   readonly capabilities?: OrchestrationV2ProviderCapabilities;
@@ -498,6 +504,7 @@ function layerTest(input: {
   readonly startTurn?: Effect.Effect<void>;
   readonly interruptTurn?: Effect.Effect<void>;
   readonly beforeUnload?: Effect.Effect<void>;
+  readonly beforeResume?: Effect.Effect<void>;
   readonly spawnBeforeOpen?: boolean;
   readonly scopeCloseReached?: Deferred.Deferred<void>;
   readonly serverSettingsLayer?: ReturnType<typeof ServerSettings.layerTest>;
@@ -536,6 +543,7 @@ function layerTest(input: {
       ...(input.startTurn === undefined ? {} : { startTurn: input.startTurn }),
       ...(input.interruptTurn === undefined ? {} : { interruptTurn: input.interruptTurn }),
       ...(input.beforeUnload === undefined ? {} : { beforeUnload: input.beforeUnload }),
+      ...(input.beforeResume === undefined ? {} : { beforeResume: input.beforeResume }),
       ...(input.spawnBeforeOpen === undefined ? {} : { spawnBeforeOpen: input.spawnBeforeOpen }),
       ...(input.scopeCloseReached === undefined
         ? {}
@@ -584,7 +592,7 @@ function layerTest(input: {
     layerConfiguredMcpRegistry,
     McpProviderSessions.layer,
     ProviderSessionManager.layerWithOptions({
-      idleTimeoutMs: input.idleTimeoutMs,
+      ...(input.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: input.idleTimeoutMs }),
       ...(input.maxIdlePinMs === undefined ? {} : { maxIdlePinMs: input.maxIdlePinMs }),
     }).pipe(
       Layer.provide(
@@ -3808,6 +3816,202 @@ it.effect(
       });
 
       yield* effect.pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 1000 })));
+    }),
+);
+
+it.effect.each([
+  "resume",
+  "resume-in-flight",
+  "unload-failure",
+  "background-work",
+  "probe-failure",
+  "default-thread-timeout",
+] as const)(
+  "ProviderSessionManagerV2 resumes after idle unload and preserves active turns (%s)",
+  (scenario) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const unloadStarted = yield* Deferred.make<void>();
+      const releaseUnload = yield* Deferred.make<void>();
+      const resumeStarted = yield* Deferred.make<void>();
+      const releaseResume = yield* Deferred.make<void>();
+      let pauseResume = false;
+      let unloadAttempts = 0;
+      let backgroundChecks = 0;
+      const effect = Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("idle-unload-resume");
+        const otherThreadId = ThreadId.make("idle-unload-active-neighbor");
+        const providerSessionId = idAllocator.derive.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+        });
+        yield* eventSink.write({
+          events: [
+            yield* makeThreadCreatedEvent({ idAllocator, threadId, now }),
+            yield* makeThreadCreatedEvent({ idAllocator, threadId: otherThreadId, now }),
+          ],
+        });
+        const runtime = yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const providerThread = makeProviderThread({
+          idAllocator,
+          threadId,
+          providerSessionId,
+          now,
+          nativeThreadId: "idle-native",
+        });
+        const resume = runtime.resumeThread({
+          providerThread,
+          threadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        yield* resume;
+        const start = Effect.fnUntraced(function* (targetThreadId: ThreadId, runOrdinal: number) {
+          const runId = idAllocator.derive.run({ threadId: targetThreadId, ordinal: runOrdinal });
+          yield* runtime.startTurn({
+            appThread: (yield* projectionStore.getThreadProjection(targetThreadId)).thread,
+            threadId: targetThreadId,
+            runId,
+            runOrdinal,
+            providerTurnOrdinal: runOrdinal,
+            attemptId: idAllocator.derive.runAttempt({ runId, attemptOrdinal: 1 }),
+            rootNodeId: idAllocator.derive.rootNode({ runId }),
+            providerThread:
+              targetThreadId === threadId
+                ? providerThread
+                : makeProviderThread({
+                    idAllocator,
+                    threadId: targetThreadId,
+                    providerSessionId,
+                    now,
+                    nativeThreadId: "active-native",
+                  }),
+            message: {
+              createdBy: "user",
+              creationSource: "web",
+              messageId: yield* idAllocator.allocate.message({
+                threadId: targetThreadId,
+                ordinal: runOrdinal,
+              }),
+              text: "turn",
+              attachments: [],
+            },
+            modelSelection,
+            runtimePolicy,
+          });
+        });
+        yield* start(threadId, 1);
+        if (scenario !== "default-thread-timeout") yield* start(otherThreadId, 1);
+        const terminal = {
+          type: "turn.terminal" as const,
+          driver: CODEX_DRIVER,
+          providerThreadId: providerThread.id,
+          providerTurnId: idAllocator.derive.providerTurn({
+            driver: CODEX_DRIVER,
+            nativeTurnId: "idle-turn-1",
+          }),
+          runOrdinal: 1,
+          status: "completed" as const,
+          failure: null,
+          threadDisposition: "reusable" as const,
+        };
+        const publish = Effect.fnUntraced(function* () {
+          const subscription = yield* runtime.subscribeEvents!;
+          const queue = (yield* Ref.get(state)).eventQueues.get(String(providerSessionId))!;
+          yield* Queue.offer(queue, terminal);
+          assert.deepEqual(yield* subscription.events.pipe(Stream.runHead), Option.some(terminal));
+          yield* subscription.close;
+        });
+        yield* publish();
+        if (scenario === "resume-in-flight") {
+          pauseResume = true;
+          const resuming = yield* runtime
+            .resumeThread({
+              providerThread,
+              threadId,
+              modelSelection: { ...modelSelection, model: "gpt-5.4-mini" },
+              runtimePolicy,
+            })
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          yield* Deferred.await(resumeStarted);
+          yield* publish();
+          yield* TestClock.adjust("1 second");
+          assert.equal(unloadAttempts, 0);
+          yield* Deferred.succeed(releaseResume, undefined);
+          yield* Fiber.join(resuming);
+          yield* start(threadId, 2);
+          yield* TestClock.adjust("1 second");
+          assert.equal(unloadAttempts, 0);
+          assert.equal((yield* Ref.get(state)).resumeCount, 2);
+          return;
+        }
+        if (scenario === "default-thread-timeout") {
+          yield* TestClock.adjust("59 seconds");
+          assert.equal(unloadAttempts, 0);
+          assert.equal((yield* Ref.get(state)).closeCount, 0);
+          assert.isTrue(Option.isSome(yield* manager.get(providerSessionId)));
+        }
+        yield* TestClock.adjust("1 second");
+        if (scenario === "default-thread-timeout") assert.equal(unloadAttempts, 1);
+        if (scenario !== "resume" && scenario !== "default-thread-timeout") {
+          assert.equal(unloadAttempts, scenario === "unload-failure" ? 1 : 0);
+          yield* TestClock.adjust("1 second");
+          assert.equal(unloadAttempts, scenario === "unload-failure" ? 2 : 1);
+        }
+        yield* Deferred.await(unloadStarted);
+        const resuming = yield* resume.pipe(Effect.forkChild({ startImmediately: true }));
+        assert.isUndefined(resuming.pollUnsafe());
+        yield* Deferred.succeed(releaseUnload, undefined);
+        yield* Fiber.join(resuming);
+        assert.equal((yield* Ref.get(state)).resumeCount, 2);
+        assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, ["idle-native"]);
+        assert.isTrue(Option.isSome(yield* manager.get(providerSessionId)));
+
+        yield* start(threadId, 2);
+        yield* publish();
+        yield* TestClock.adjust("1 second");
+        assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, ["idle-native"]);
+        assert.equal((yield* Ref.get(state)).closeCount, 0);
+      });
+      yield* effect.pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            ...(scenario === "default-thread-timeout" ? {} : { idleTimeoutMs: 1000 }),
+            beforeResume: Effect.suspend(() =>
+              pauseResume
+                ? Deferred.succeed(resumeStarted, undefined).pipe(
+                    Effect.andThen(Deferred.await(releaseResume)),
+                  )
+                : Effect.void,
+            ),
+            hasPendingBackgroundWorkForThread: Effect.suspend(() => {
+              backgroundChecks += 1;
+              if (backgroundChecks === 1 && scenario === "probe-failure")
+                return Effect.die("background probe failed");
+              return Effect.succeed(backgroundChecks === 1 && scenario === "background-work");
+            }),
+            beforeUnload: Effect.suspend(() => {
+              unloadAttempts += 1;
+              if (unloadAttempts === 1 && scenario === "unload-failure")
+                return Effect.die("unload failed");
+              return Deferred.succeed(unloadStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseUnload)),
+              );
+            }),
+          }),
+        ),
+        Effect.scoped,
+      );
     }),
 );
 

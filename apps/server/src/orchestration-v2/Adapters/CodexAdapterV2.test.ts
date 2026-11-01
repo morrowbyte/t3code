@@ -1330,7 +1330,7 @@ describe("CodexAdapterV2 process spawning", () => {
     ),
   );
 
-  it.effect("launches the app-server with the configured launch arguments", () =>
+  it.effect("keeps isolated launch arguments and sets app-managed unload delay last", () =>
     Effect.gen(function* () {
       const spawnedArgs: Array<ReadonlyArray<string>> = [];
       const spawner = ChildProcessSpawner.make((command) => {
@@ -1347,33 +1347,89 @@ describe("CodexAdapterV2 process spawning", () => {
           ProviderEventLoggers.NoOpProviderEventLoggers,
         ),
       );
-      const open = (environment: NodeJS.ProcessEnv) =>
-        factory
-          .open({
-            instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
-            threadId: ThreadId.make("thread-launch-args"),
-            providerSessionId: ProviderSessionId.make("provider-session-launch-args"),
-            runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-              runtimeMode: "full-access",
-              interactionMode: "default",
-              cwd: "/workspace",
-            }),
-            settings: {
-              ...DEFAULT_CODEX_SETTINGS,
-              launchArgs: " --strict-config -c model_reasoning_summary=detailed ",
-            },
-            environment,
-          })
+      const open = Effect.fnUntraced(function* (
+        environment: NodeJS.ProcessEnv,
+        appManagedThreadLifecycle = false,
+      ) {
+        const settings = {
+          ...DEFAULT_CODEX_SETTINGS,
+          launchArgs:
+            " --strict-config -c model_reasoning_summary=detailed --config thread_unload_delay_secs=1800 ",
+        };
+        const input = {
+          threadId: ThreadId.make("thread-launch-args"),
+          providerSessionId: ProviderSessionId.make(
+            `provider-session-launch-args-${spawnedArgs.length}`,
+          ),
+          runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            cwd: "/workspace",
+          }),
+        };
+        if (!appManagedThreadLifecycle) {
+          return yield* factory
+            .open({
+              ...input,
+              instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
+              settings,
+              environment,
+            })
+            .pipe(Effect.scoped, Effect.exit);
+        }
+        const adapter = yield* CodexAdapterV2.makeCodexAdapterV2({
+          instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
+          settings,
+          environment,
+          clientFactory: factory,
+          crypto: yield* Crypto.Crypto,
+          fileSystem: yield* FileSystem.FileSystem,
+          idAllocator: yield* IdAllocator.IdAllocatorV2,
+          serverConfig: yield* ProviderReplayHarness.makeReplayServerConfig("startup-unload"),
+        });
+        return yield* adapter
+          .openSession({ ...input, modelSelection: CODEX_TEST_MODEL_SELECTION })
           .pipe(Effect.scoped, Effect.exit);
+      });
 
+      const environment = {
+        T3CODE_CODEX_LAUNCH_ARGS: " --enable env-feature -c thread_unload_delay_secs=120 ",
+      };
       yield* open({});
-      yield* open({ T3CODE_CODEX_LAUNCH_ARGS: " --enable env-feature " });
+      yield* open(environment);
+      yield* open({}, true);
+      yield* open(environment, true);
+      yield* open({ T3CODE_CODEX_LAUNCH_ARGS: "  " }, true);
 
+      const configuredArgs = [
+        "app-server",
+        "--strict-config",
+        "-c",
+        "model_reasoning_summary=detailed",
+        "--config",
+        "thread_unload_delay_secs=1800",
+      ];
+      const environmentArgs = [
+        "app-server",
+        "--enable",
+        "env-feature",
+        "-c",
+        "thread_unload_delay_secs=120",
+      ];
       assert.deepEqual(spawnedArgs, [
-        ["app-server", "--strict-config", "-c", "model_reasoning_summary=detailed"],
-        ["app-server", "--enable", "env-feature"],
+        configuredArgs,
+        environmentArgs,
+        [...configuredArgs, "-c", "thread_unload_delay_secs=0"],
+        [...environmentArgs, "-c", "thread_unload_delay_secs=0"],
+        [...configuredArgs, "-c", "thread_unload_delay_secs=0"],
       ]);
-    }).pipe(Effect.provideService(HostProcess.Platform, "linux")),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+      Effect.provideService(HostProcess.Platform, "linux"),
+    ),
   );
 
   it.effect("expands ~ in the configured binary path before spawning", () =>
@@ -3977,45 +4033,79 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
-  it.effect("unsubscribes from the native thread when it is unloaded", () =>
-    Effect.gen(function* () {
-      const nativeThreadId = "unload-thread";
-      const preamble = codexReplayPreamble({
-        nativeThreadId,
-        nativeTurnId: "unused",
-        prompt: "unused",
-      });
-      const transcript = makeCodexReplayTranscript({
-        scenario: "unload-thread",
-        entries: [
-          ...preamble.slice(0, 5),
-          {
-            type: "expect_outbound",
-            label: "thread/unsubscribe",
-            frame: { id: 3, method: "thread/unsubscribe", params: { threadId: nativeThreadId } },
-          },
-          {
-            type: "emit_inbound",
-            label: "thread/unsubscribe",
-            frame: { id: 3, result: { status: "unsubscribed" } },
-          },
-        ],
-      });
-      const requests: Array<string> = [];
-      const harness = yield* makeCodexReplayHarness(
-        transcript,
-        () => Effect.void,
-        (method) => Effect.sync(() => requests.push(method)),
-      );
-      assert.isDefined(harness.runtime.unloadThread);
-      yield* harness.runtime.unloadThread!({ providerThread: harness.providerThread });
-      assert.deepEqual(requests, ["initialize", "thread/start", "thread/unsubscribe"]);
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+  it.effect.each(["unsubscribed", "notSubscribed", "notLoaded"] as const)(
+    "waits for native thread closure after unsubscribe returns %s",
+    (status) =>
+      Effect.gen(function* () {
+        const closing = yield* Deferred.make<void>();
+        const close = yield* Deferred.make<void>();
+        let unloadCompleted = false;
+        const nativeThreadId = "unload-thread";
+        const preamble = codexReplayPreamble({
+          nativeThreadId,
+          nativeTurnId: "unused",
+          prompt: "unused",
+        });
+        const transcript = makeCodexReplayTranscript({
+          scenario: "unload-thread",
+          entries: [
+            ...preamble.slice(0, 5),
+            {
+              type: "expect_outbound",
+              label: "thread/unsubscribe",
+              frame: { id: 3, method: "thread/unsubscribe", params: { threadId: nativeThreadId } },
+            },
+            {
+              type: "emit_inbound",
+              label: "thread/unsubscribe",
+              frame: { id: 3, result: { status } },
+            },
+            ...(status === "notLoaded"
+              ? []
+              : [
+                  {
+                    type: "emit_inbound" as const,
+                    label: "thread/closed",
+                    frame: { method: "thread/closed", params: { threadId: nativeThreadId } },
+                  },
+                ]),
+          ],
+        });
+        const requests: Array<string> = [];
+        const harness = yield* makeCodexReplayHarness(
+          transcript,
+          () => Effect.void,
+          (method) => Effect.sync(() => requests.push(method)),
+          undefined,
+          undefined,
+          undefined,
+          (entry) =>
+            entry.label === "thread/closed"
+              ? Deferred.succeed(closing, undefined).pipe(Effect.andThen(Deferred.await(close)))
+              : Effect.void,
+        );
+        assert.isDefined(harness.runtime.unloadThread);
+        const unloading = yield* harness.runtime.unloadThread!({
+          providerThread: harness.providerThread,
+        }).pipe(
+          Effect.tap(() => Effect.sync(() => (unloadCompleted = true))),
+          Effect.forkChild({ startImmediately: true }),
+        );
+        if (status !== "notLoaded") {
+          yield* Deferred.await(closing);
+          yield* TestClock.adjust(0);
+          assert.isFalse(unloadCompleted);
+          yield* Deferred.succeed(close, undefined);
+        }
+        yield* Fiber.join(unloading);
+        assert.isTrue(unloadCompleted);
+        assert.deepEqual(requests, ["initialize", "thread/start", "thread/unsubscribe"]);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
       ),
-    ),
   );
 
   it.effect("keeps the app-server failure as the cause when an unload is rejected", () =>
