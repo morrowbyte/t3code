@@ -57,11 +57,11 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
     return (
       <section
         aria-label={activePrompt.questions[0]?.header}
-        className="flex max-h-[min(75dvh,44rem)] min-h-0 min-w-0 flex-col gap-3 p-4"
+        className="grid max-h-[min(75dvh,44rem)] min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] gap-3 overflow-hidden p-4"
         data-user-form={activePrompt.requestId}
       >
         <h3 className="shrink-0 text-sm font-semibold">{activePrompt.questions[0]?.header}</h3>
-        <div className="min-h-0 overflow-y-auto overscroll-contain scroll-py-3 pb-3 pr-1">
+        <div className="min-h-0 overflow-y-auto overscroll-contain scroll-py-3 pb-3 pe-1">
           <UserFormFields
             fields={fields}
             drafts={answers}

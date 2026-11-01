@@ -49,7 +49,13 @@ export function UserFormFields({
           onBlur: markTouched,
         };
         return (
-          <div key={field.id} className="min-w-0 space-y-1.5">
+          <div
+            key={field.id}
+            className="min-w-0 scroll-my-3 space-y-1.5"
+            onFocusCapture={(event) => {
+              event.currentTarget.scrollIntoView({ block: "nearest", inline: "nearest" });
+            }}
+          >
             <label htmlFor={id} className="block text-sm font-medium text-foreground">
               {field.label}
               {field.required === false ? (
