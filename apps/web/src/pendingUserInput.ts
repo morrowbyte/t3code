@@ -1,4 +1,8 @@
-import type { ThreadContextRecord, UserInputQuestion } from "@t3tools/contracts";
+import type {
+  PreviewAnnotationPayload,
+  ThreadContextRecord,
+  UserInputQuestion,
+} from "@t3tools/contracts";
 import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import {
@@ -9,15 +13,34 @@ import {
   type PendingUserInputDraftAnswer,
 } from "@t3tools/client-runtime/state/pending-user-input";
 
-import { collectInlineContextIds } from "./lib/composerContextReferences";
+import {
+  collectInlineContextIds,
+  formatInlineContextReference,
+} from "./lib/composerContextReferences";
+import { previewAnnotationContextReference } from "./lib/composerContextRecords";
 
 export function projectPendingUserInputAnswer(
   answer: unknown,
   threadContexts: ReadonlyArray<ThreadContextRecord>,
+  previewAnnotations: ReadonlyArray<PreviewAnnotationPayload> = [],
 ) {
-  if (typeof answer !== "string" || threadContexts.length === 0) return answer;
+  if (
+    typeof answer !== "string" ||
+    (threadContexts.length === 0 && previewAnnotations.length === 0)
+  )
+    return answer;
   const recordsById = new Map(threadContexts.map((record) => [record.contextId, record]));
+  const annotationsById = new Map(
+    previewAnnotations.map((annotation) => {
+      const reference = previewAnnotationContextReference(annotation);
+      return [reference.contextId, reference] as const;
+    }),
+  );
   return replaceComposerContextReferences(answer, (reference) => {
+    if (reference.kind === "preview-annotation") {
+      const current = annotationsById.get(reference.contextId);
+      return current ? formatInlineContextReference(current) : reference.source;
+    }
     const record = reference.kind === "thread" ? recordsById.get(reference.contextId) : undefined;
     return record ? formatThreadLink(record, reference.label) : reference.source;
   });

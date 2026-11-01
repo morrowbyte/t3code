@@ -314,6 +314,9 @@ export function usePendingThreadRequests(input: {
     if (userInputResponsesInFlight.current.has(responseKey)) return;
     const attachmentsByQuestionId = new Map<string, UserInputAttachments[string]>();
     const providerAnswers = { ...answers };
+    const previewAnnotations =
+      useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.previewAnnotations ??
+      [];
     for (const question of pendingInput.questions) {
       const target = questionAttachmentDraftId(
         environmentId,
@@ -326,6 +329,7 @@ export function usePendingThreadRequests(input: {
       providerAnswers[question.id] = projectPendingUserInputAnswer(
         answers[question.id],
         draft?.threadContexts ?? [],
+        previewAnnotations,
       );
       const attachments = draft ? [...draft.images, ...draft.files] : [];
       if (attachments.length === 0) continue;

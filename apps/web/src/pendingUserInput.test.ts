@@ -1,7 +1,10 @@
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import { formatInlineContextReference } from "./lib/composerContextReferences";
-import { threadContextReference } from "./lib/composerContextRecords";
+import {
+  previewAnnotationContextReference,
+  threadContextReference,
+} from "./lib/composerContextRecords";
 import { threadContextRecord } from "@t3tools/shared/composerContextReferences";
 
 import {
@@ -25,6 +28,30 @@ describe("projectPendingUserInputAnswer", () => {
     expect(projectPendingUserInputAnswer(answer, [record])).toBe(
       "Compare [Reference work](t3-thread://v2/env-answer/reference-thread)",
     );
+  });
+
+  it("submits the current annotation without reviving deleted references or rewriting free text", () => {
+    const annotation = {
+      id: "picked",
+      pageUrl: "http://localhost/page",
+      pageTitle: null,
+      comment: "Payload62 original",
+      elements: [],
+      regions: [],
+      strokes: [],
+      styleChanges: [],
+      screenshot: null,
+      createdAt: "2026-11-01T00:00:00.000Z",
+    } as const;
+    const original = formatInlineContextReference(previewAnnotationContextReference(annotation));
+    const corrected = { ...annotation, comment: "Payload62 corrected" };
+    const deleted = { ...annotation, id: "deleted", comment: "Do not restore" };
+    const answer = `Payload62 original stays literal.\n${original}`;
+    const expected = `Payload62 original stays literal.\n${formatInlineContextReference(previewAnnotationContextReference(corrected))}`;
+    expect(projectPendingUserInputAnswer(answer, [], [corrected, deleted])).toBe(expected);
+    expect(projectPendingUserInputAnswer("No reference", [], [corrected])).toBe("No reference");
+    const options = ["Payload62 original"];
+    expect(projectPendingUserInputAnswer(options, [], [corrected])).toBe(options);
   });
 
   // regression: #18789 answers to pending questions lost exact text and option values
