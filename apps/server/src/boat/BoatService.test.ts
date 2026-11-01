@@ -2085,7 +2085,7 @@ it.effect.each([
         yield* boat.configureDefaults({ ttlMinutes: 1, retentionDays: 14 });
         yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: true });
         yield* boat.operate({ action: "start", projectId, requestId: "command" }, ownerThreadId);
-        test.setCommandResult({ processId: 456, exitCode });
+        test.setCommandResult({ processId: 456, ...(exitCode === undefined ? {} : { exitCode }) });
         yield* boat.operate(
           {
             action: "exec",
