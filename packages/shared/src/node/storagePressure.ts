@@ -162,23 +162,34 @@ export async function sampleStorage(
       };
       if (probe.platform !== "linux" || resolved.stats.type !== BTRFS_MAGIC) return sample;
       const mountArgs = ["--json", "--target", resolved.path, "--output", "FSTYPE,UUID"];
-      let mountOutput: string;
-      try {
-        mountOutput = await probe.run("findmnt", mountArgs);
-      } catch (cause) {
-        if (
-          cause === null ||
-          typeof cause !== "object" ||
-          !("code" in cause) ||
-          cause.code !== "EAGAIN" ||
-          !("syscall" in cause) ||
-          cause.syscall !== "spawn findmnt"
-        ) {
+      let mount: unknown;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        let mountOutput: string;
+        try {
+          mountOutput = await probe.run("findmnt", mountArgs);
+        } catch (cause) {
+          if (
+            attempt === 0 &&
+            cause !== null &&
+            typeof cause === "object" &&
+            "code" in cause &&
+            cause.code === "EAGAIN" &&
+            "syscall" in cause &&
+            cause.syscall === "spawn findmnt"
+          )
+            continue;
           throw cause;
         }
-        mountOutput = await probe.run("findmnt", mountArgs);
+        try {
+          mount = JSON.parse(mountOutput);
+          break;
+        } catch {
+          if (attempt === 0) continue;
+          throw new Error(
+            `findmnt returned invalid JSON (${mountOutput.length} characters) at ${resolved.path} after two attempts; filesystem identity is unknown`,
+          );
+        }
       }
-      const mount: unknown = JSON.parse(mountOutput);
       const entry = (mount as { filesystems?: { fstype?: string; uuid?: string }[] })
         .filesystems?.[0];
       if (entry?.fstype !== "btrfs" || !/^[a-f0-9-]{36}$/iu.test(entry.uuid ?? "")) {

@@ -80,6 +80,41 @@ it.layer(NodePath.layer)("native storage samples", (it) => {
       }),
   );
 
+  it.effect.each(["", '{"filesystems":['])(
+    "measures again once after incomplete findmnt JSON: %j",
+    (output) =>
+      Effect.gen(function* () {
+        const { probe, workspace } = setup(yield* Path.Path);
+        probe.run.mockResolvedValueOnce(output);
+        const result = yield* Effect.promise(() =>
+          checkStorageAdmissionFailure([workspace], 0, false, (paths) =>
+            sampleStorage(paths, probe),
+          ),
+        );
+        expect(result).toBeNull();
+        expect(probe.run.mock.calls.filter(([command]) => command === "findmnt")).toHaveLength(2);
+      }),
+  );
+
+  it.effect(
+    "reports persistent invalid findmnt JSON without exposing stdout or admitting unknown storage",
+    () =>
+      Effect.gen(function* () {
+        const { probe, workspace } = setup(yield* Path.Path);
+        probe.run.mockResolvedValue("private incomplete payload");
+        const result = yield* Effect.promise(() =>
+          checkStorageAdmissionFailure([workspace], 0, false, (paths) =>
+            sampleStorage(paths, probe),
+          ),
+        );
+        expect(result?.code).toBe("storage_measurement_failed");
+        expect(result?.message).toContain("findmnt returned invalid JSON");
+        expect(result?.message).toContain("26 characters");
+        expect(result?.message).not.toContain("private incomplete payload");
+        expect(probe.run.mock.calls).toHaveLength(2);
+      }),
+  );
+
   it.effect("does not admit a known Btrfs volume when required measurements fail", () =>
     Effect.gen(function* () {
       for (const { cause, attempts } of [
