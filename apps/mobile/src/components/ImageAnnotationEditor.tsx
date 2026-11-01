@@ -17,6 +17,15 @@ import {
 import { uuidv4 } from "../lib/uuid";
 import { AppText } from "./ui/AppText";
 import type { ResolvedFilePreviewSource } from "./FilePreviewModal.types";
+import { useThreadSelection } from "../state/use-thread-selection";
+import { useCommentDictation } from "../features/voice-input/useCommentDictation";
+import {
+  ComposerDictationCancelAction,
+  ComposerDictationPrimaryAction,
+  ComposerDictationStatus,
+  ComposerDictationToolbar,
+} from "../features/voice-input/ComposerDictationControl";
+import { resolveVoiceComposerPresentation } from "../features/voice-input/voiceInputPresentation";
 
 const COLORS = ["#EF4444", "#FACC15", "#38BDF8", "#111827", "#FFFFFF"];
 const WIDTHS = [0.004, 0.008, 0.016];
@@ -136,7 +145,26 @@ export function ImageAnnotationEditor(props: {
   const sendingRef = useRef(false);
   const mounted = useRef(true);
   const ownedFiles = useRef(new Set<string>());
+  const { selectedThreadRef } = useThreadSelection();
+  const dictation = useCommentDictation({
+    environmentId: selectedThreadRef?.environmentId ?? null,
+    targetKey: JSON.stringify([selectedThreadRef, props.source.uri]),
+    value: text,
+    onChange: setText,
+    disabled: sending,
+    label: "Annotation message",
+  });
+  const dictationPresentation = resolveVoiceComposerPresentation(
+    dictation.state,
+    dictation.elapsedSeconds,
+  );
+  const close = () => {
+    dictation.cancel();
+    activeSend.current?.abort();
+    props.onRequestClose();
+  };
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Owns the prepared image files and aborts export when the source closes.
   useEffect(() => {
     mounted.current = true;
     let cancelled = false;
@@ -164,6 +192,7 @@ export function ImageAnnotationEditor(props: {
     };
   }, [props.source.uri]);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Holds the native image-load timeout only while the image is loading.
   useEffect(() => {
     if (!image || imageLoaded) return;
     const timeout = setTimeout(
@@ -175,12 +204,14 @@ export function ImageAnnotationEditor(props: {
 
   const rect = image ? annotationImageRect(image, viewport, zoom, pan) : null;
   const current = useRef({ rect, mode, color, width, sending, strokes, pan });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Native gesture callbacks read the latest committed drawing state.
   useLayoutEffect(() => {
     current.current = { rect, mode, color, width, sending, strokes, pan };
   });
   const drawing = useRef(false);
   const panStart = useRef(pan);
   const [responder, setResponder] = useState<ReturnType<typeof PanResponder.create> | null>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Installs the native pan responder for this mounted canvas.
   useEffect(() => {
     setResponder(
       PanResponder.create({
@@ -236,8 +267,16 @@ export function ImageAnnotationEditor(props: {
   }, []);
 
   async function send() {
-    if (sendingRef.current || !image || !imageLoaded || !svg.current || strokes.length === 0)
+    if (
+      sendingRef.current ||
+      dictation.blocksSubmission ||
+      !image ||
+      !imageLoaded ||
+      !svg.current ||
+      strokes.length === 0
+    )
       return;
+    dictation.cancel();
     const view = svg.current;
     const controller = new AbortController();
     activeSend.current = controller;
@@ -275,14 +314,7 @@ export function ImageAnnotationEditor(props: {
   }
 
   return (
-    <Modal
-      visible
-      presentationStyle="fullScreen"
-      onRequestClose={() => {
-        activeSend.current?.abort();
-        props.onRequestClose();
-      }}
-    >
+    <Modal visible presentationStyle="fullScreen" onRequestClose={close}>
       <View
         className="flex-1 bg-background"
         style={{ paddingTop: insets.top, paddingBottom: insets.bottom }}
@@ -290,16 +322,12 @@ export function ImageAnnotationEditor(props: {
         <View className="gap-2 p-3">
           <AppText className="text-lg font-t3-semibold">Annotate image</AppText>
           <View className="flex-row flex-wrap gap-2">
-            <Tool
-              label="Cancel"
-              onPress={() => {
-                activeSend.current?.abort();
-                props.onRequestClose();
-              }}
-            />
+            <Tool label="Cancel" onPress={close} />
             <Tool
               label={sending ? "Sending…" : "Send annotated image"}
-              disabled={sending || !imageLoaded || strokes.length === 0}
+              disabled={
+                sending || dictation.blocksSubmission || !imageLoaded || strokes.length === 0
+              }
               onPress={() => void send()}
             />
           </View>
@@ -450,11 +478,43 @@ export function ImageAnnotationEditor(props: {
           accessibilityLabel="Annotation message"
           placeholder="Message"
           multiline
-          editable={!sending}
+          editable={!sending && !dictation.freezesEditor}
           value={text}
-          onChangeText={setText}
+          onChangeText={dictation.onChangeText}
+          selection={dictation.selection}
+          onSelectionChange={({ nativeEvent }) =>
+            dictation.onSelectionChange(nativeEvent.selection)
+          }
           className="m-3 max-h-28 min-h-12 rounded-lg border border-border px-3 py-2 text-foreground"
         />
+        {dictation.isAvailable || dictationPresentation.statusLabel !== null ? (
+          <View className="px-3 pb-2">
+            <ComposerDictationToolbar showsDictation={dictationPresentation.statusLabel !== null}>
+              <View className="h-11 flex-row items-center justify-end">
+                <ComposerDictationCancelAction
+                  presentation={dictationPresentation}
+                  onCancel={dictation.cancel}
+                />
+                <ComposerDictationStatus
+                  audioLevels={dictation.audioLevels}
+                  elapsedSeconds={dictation.elapsedSeconds}
+                  phase={dictation.state.phase}
+                  presentation={dictationPresentation}
+                  onDismissError={dictation.cancel}
+                />
+                <ComposerDictationPrimaryAction
+                  state={dictation.state}
+                  presentation={dictationPresentation}
+                  isAvailable={dictation.isAvailable}
+                  disabled={sending}
+                  onStart={dictation.start}
+                  onConfirm={dictation.stop}
+                  onCancel={dictation.cancel}
+                />
+              </View>
+            </ComposerDictationToolbar>
+          </View>
+        ) : null}
       </View>
     </Modal>
   );

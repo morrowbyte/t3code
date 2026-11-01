@@ -15,6 +15,12 @@ cost, split by token type and by speed. These estimates are not your subscriptio
 split, such as a provider-reported cost for a model without public rates, shows as **Other**.
 Select a model under **Breakdown** to see its trend, cache hit rate, and cost per million tokens.
 
+Completed agent turns show their estimated API cost below the final response. Select the
+amount for the model, speed tier, token breakdown, and pricing date. The estimate includes
+the main agent's work during that turn; delegated agents report their own costs. Prices are
+saved with the response, so later price changes do not rewrite it. Partial measurements are
+marked, and responses without recorded usage or a known price show **Cost unavailable**.
+
 Totals depend on the history available on each server. Grok turns without a saved completed-turn
 record are missing from the totals.
 

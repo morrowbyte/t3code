@@ -41,6 +41,7 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as UsageService from "../usage/UsageService.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { makeProviderFailureTurnItem } from "@t3tools/provider-core/server/failure";
@@ -332,6 +333,7 @@ export const layer: Layer.Layer<
   | ProjectionStore.ProjectionStoreV2
   | ThreadCommandExecutor.ThreadCommandExecutor
   | ProviderInstanceRegistry.ProviderInstanceRegistry
+  | UsageService.UsageService
 > = Layer.effect(
   ProviderEventIngestorV2,
   Effect.gen(function* () {
@@ -345,6 +347,7 @@ export const layer: Layer.Layer<
     const analytics = yield* ProviderTurnAnalytics;
     const agentScope = yield* AgentScope;
     const instances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
+    const usageService = yield* UsageService.UsageService;
     const scope = yield* Effect.scope;
     const completedTurnAnalytics = new Set<string>();
 
@@ -608,7 +611,60 @@ export const layer: Layer.Layer<
                     })),
                   ];
             }
-            case "provider_turn.updated":
+            case "provider_turn.updated": {
+              let providerTurn = input.event.providerTurn;
+              if (
+                ["completed", "interrupted", "failed", "cancelled"].includes(providerTurn.status)
+              ) {
+                const threadId = input.event.threadId ?? input.threadId;
+                const foreignThread = threadId !== input.threadId;
+                const projection = yield* projections.getThreadRecords(
+                  threadId,
+                  ["providerTurns", "turnItems", "runs", "attempts"],
+                  {
+                    turnItemTypes: ["assistant_message"],
+                    turnItemStatuses: ["completed"],
+                    ...(input.runId == null || foreignThread ? {} : { turnItemRunId: input.runId }),
+                  },
+                );
+                const retained = projection.providerTurns.find(
+                  (turn) => turn.id === providerTurn.id,
+                )?.cost;
+                if (retained) {
+                  providerTurn = { ...providerTurn, cost: retained };
+                } else {
+                  const attempt = projection.attempts.find(
+                    (candidate) => candidate.id === providerTurn.runAttemptId,
+                  );
+                  const run = projection.runs.find((candidate) => candidate.id === attempt?.runId);
+                  const modelSelection =
+                    run?.modelSelection ??
+                    (foreignThread
+                      ? projection.thread.modelSelection
+                      : input.analyticsContext?.modelSelection);
+                  const answers = projection.turnItems.filter(
+                    (item) =>
+                      item.type === "assistant_message" &&
+                      item.providerTurnId === providerTurn.id &&
+                      item.status === "completed" &&
+                      !item.streaming,
+                  );
+                  const answer = answers.reduce<(typeof answers)[number] | undefined>(
+                    (last, item) => (!last || item.ordinal > last.ordinal ? item : last),
+                    undefined,
+                  );
+                  const cost = yield* usageService.priceTurn({
+                    ...(providerTurn.turnTokenUsage === undefined
+                      ? {}
+                      : { usage: providerTurn.turnTokenUsage }),
+                    ...(modelSelection === undefined ? {} : { modelSelection }),
+                  });
+                  providerTurn = {
+                    ...providerTurn,
+                    cost: { ...cost, answerItemId: answer?.id ?? null },
+                  };
+                }
+              }
               return [
                 ...(["completed", "interrupted", "failed", "cancelled"].includes(
                   input.event.providerTurn.status,
@@ -622,10 +678,11 @@ export const layer: Layer.Layer<
                 yield* makeDomainEvent(input, {
                   type: "provider-turn.updated",
                   ...(input.event.threadId === undefined ? {} : { threadId: input.event.threadId }),
-                  payload: input.event.providerTurn,
+                  payload: providerTurn,
                   nodeId: input.event.providerTurn.nodeId,
                 }),
               ];
+            }
             case "node.updated":
               // Adapters send an unchanged node again with each text delta. Compare with the
               // stored node, not the last one sent, because the server also writes nodes.

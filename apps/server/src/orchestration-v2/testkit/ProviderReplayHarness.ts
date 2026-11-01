@@ -3,6 +3,7 @@ import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type { ProviderDriverKind, ProviderReplayTranscript } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as UsageService from "../../usage/UsageService.ts";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -320,6 +321,20 @@ export function layerWithRegistry<Error>(
     Layer.provide(layerDatabase),
   );
   const layerProviderEventIngestorProvided = ProviderEventIngestor.layer.pipe(
+    Layer.provide(
+      Layer.mock(UsageService.UsageService)({
+        priceTurn: () =>
+          Effect.succeed({
+            status: "unavailable",
+            reason: "usage_unavailable",
+            model: null,
+            serviceTier: "standard",
+            source: null,
+            pricedAt: "2026-11-01T00:00:00Z",
+            ratesFetchedAt: null,
+          }),
+      }),
+    ),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({

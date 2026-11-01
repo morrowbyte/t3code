@@ -1,5 +1,7 @@
 import { type RuntimeRequestId, type ScopedThreadRef } from "@t3tools/contracts";
 import { markdownProseDirection, textDirection } from "~/textDirection";
+import { buildPendingUserInputAnswers } from "@t3tools/client-runtime/state/pending-user-input";
+import { UserFormActions, UserFormFields } from "./UserFormFields";
 import { memo, use, useEffect, useEffectEvent, useRef, useState } from "react";
 import { BackgroundThreadContext } from "./backgroundThread";
 import { useStableCallback } from "~/hooks/useStableCallback";
@@ -26,6 +28,7 @@ interface PendingUserInputPanelProps {
   onToggleOption: (questionId: string, optionValue: string) => void;
   onAdvance: () => void;
   onDismiss: (requestId: RuntimeRequestId) => void;
+  onChangeFormValue?: (questionId: string, value: string) => void;
 }
 
 export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserInputPanel({
@@ -39,10 +42,44 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
   onToggleOption,
   onAdvance,
   onDismiss,
+  onChangeFormValue,
 }: PendingUserInputPanelProps) {
   if (pendingUserInputs.length === 0) return null;
   const activePrompt = pendingUserInputs[0];
   if (!activePrompt) return null;
+
+  const fields = activePrompt.questions.flatMap((question) =>
+    question.field ? [question.field] : [],
+  );
+  if (fields.length > 0) {
+    const busy = respondingRequestIds.includes(activePrompt.requestId);
+    const unavailable = disabled || activePrompt.responseCapability === "not_resumable";
+    return (
+      <section
+        aria-label={activePrompt.questions[0]?.header}
+        className="flex max-h-[min(75dvh,44rem)] min-h-0 min-w-0 flex-col gap-3 p-4"
+        data-user-form={activePrompt.requestId}
+      >
+        <h3 className="shrink-0 text-sm font-semibold">{activePrompt.questions[0]?.header}</h3>
+        <div className="min-h-0 overflow-y-auto overscroll-contain scroll-py-3 pb-3 pr-1">
+          <UserFormFields
+            fields={fields}
+            drafts={answers}
+            disabled={unavailable || busy}
+            onChange={(id, value) => onChangeFormValue?.(id, value)}
+            onToggle={onToggleOption}
+          />
+        </div>
+        <UserFormActions
+          disabled={unavailable}
+          busy={busy}
+          complete={buildPendingUserInputAnswers(activePrompt.questions, answers) !== null}
+          onSubmit={onAdvance}
+          onCancel={() => onDismiss(activePrompt.requestId)}
+        />
+      </section>
+    );
+  }
 
   return (
     <ComposerPendingUserInputCard

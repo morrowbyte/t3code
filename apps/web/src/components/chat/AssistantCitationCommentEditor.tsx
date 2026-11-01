@@ -1,6 +1,12 @@
-import { ASSISTANT_CITATION_MAX_COMMENT_LENGTH, type AssistantCitation } from "@t3tools/contracts";
+import {
+  ASSISTANT_CITATION_MAX_COMMENT_LENGTH,
+  type AssistantCitation,
+  type EnvironmentId,
+} from "@t3tools/contracts";
 import { useState, type Ref } from "react";
 import { textDirection } from "~/textDirection";
+import { CommentDictationControl } from "~/voice/CommentDictationControl";
+import { useCommentDictation } from "~/voice/useCommentDictation";
 
 import { Button } from "../ui/button";
 
@@ -11,6 +17,7 @@ export function AssistantCitationCommentEditor({
   onSubmitAndSend,
   onCancel,
   onDraftChange,
+  dictationTarget,
 }: {
   citation: AssistantCitation;
   inputRef?: Ref<HTMLTextAreaElement>;
@@ -18,14 +25,32 @@ export function AssistantCitationCommentEditor({
   onSubmitAndSend?: (comment: string) => boolean;
   onCancel: () => void;
   onDraftChange?: (comment: string) => void;
+  dictationTarget?: { readonly environmentId: EnvironmentId | null; readonly targetKey: string };
 }) {
   const [comment, setComment] = useState(citation.comment ?? "");
+  const changeComment = (value: string) => {
+    setComment(value);
+    onDraftChange?.(value);
+  };
+  const dictation = useCommentDictation({
+    environmentId: dictationTarget?.environmentId ?? null,
+    targetKey: JSON.stringify([dictationTarget?.targetKey, citation]),
+    value: comment,
+    onChange: changeComment,
+  });
+  const cancel = () => {
+    dictation.cancel();
+    onCancel();
+  };
   const commentTooLong = comment.length > ASSISTANT_CITATION_MAX_COMMENT_LENGTH;
   const submit = () => {
-    if (!commentTooLong) onSubmit(comment);
+    if (commentTooLong || dictation.blocksSubmission()) return;
+    dictation.cancel();
+    onSubmit(comment);
   };
   const submitAndSend = () => {
-    if (commentTooLong) return;
+    if (commentTooLong || dictation.blocksSubmission()) return;
+    dictation.cancel();
     if (onSubmitAndSend) {
       onSubmitAndSend(comment);
     } else {
@@ -41,7 +66,7 @@ export function AssistantCitationCommentEditor({
         if (event.nativeEvent.isComposing || event.keyCode === 229) return;
         if (event.key === "Escape") {
           event.preventDefault();
-          onCancel();
+          cancel();
         }
       }}
     >
@@ -56,8 +81,7 @@ export function AssistantCitationCommentEditor({
         className="field-sizing-content block max-h-40 min-h-16 w-full resize-none bg-transparent px-1 py-1.5 text-base outline-none placeholder:text-muted-foreground sm:text-sm"
         value={comment}
         onChange={(event) => {
-          setComment(event.currentTarget.value);
-          onDraftChange?.(event.currentTarget.value);
+          changeComment(event.currentTarget.value);
         }}
         onKeyDown={(event) => {
           if (
@@ -81,18 +105,21 @@ export function AssistantCitationCommentEditor({
           characters.
         </p>
       ) : null}
-      <div className="mt-2 flex items-center justify-end gap-2">
+      <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
+        <div className="mr-auto min-w-0">
+          <CommentDictationControl dictation={dictation} />
+        </div>
         <Button
           variant="outline"
           size="xs"
           onPointerDown={(event) => event.preventDefault()}
-          onClick={onCancel}
+          onClick={cancel}
         >
           Cancel
         </Button>
         <Button
           size="xs"
-          disabled={commentTooLong}
+          disabled={commentTooLong || dictation.isBusy}
           onPointerDown={(event) => event.preventDefault()}
           onClick={submit}
         >

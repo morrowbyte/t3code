@@ -174,6 +174,7 @@ import { VideoPreviewModal, type VideoPreviewSource } from "../../components/Vid
 import { markdownFileEmbedLabel, resolveMarkdownMediaPreview } from "../../lib/markdownMedia";
 import { attachmentVideoPreviewSource } from "../../lib/videoPreviewSource";
 import { CopyTextButton } from "./CopyTextButton";
+import { AssistantCost } from "./AssistantCost";
 import { AgentMessage } from "./AgentMessage";
 import { AgentSendMessage } from "./AgentSendMessage";
 import { getReviewSectionIdForCheckpoint } from "../review/reviewModel";
@@ -2430,7 +2431,7 @@ function renderFeedEntry(
           />
         ) : null}
         {showAssistantMeta ? (
-          <View className="mt-1 flex-row items-center gap-1">
+          <View className="mt-1 flex-row flex-wrap items-center gap-1">
             <CopyTextButton
               accessibilityLabel="Copy message"
               text={renderedText}
@@ -2451,7 +2452,19 @@ function renderFeedEntry(
             <Text className="font-t3-medium text-xs tabular-nums text-foreground-secondary">
               {timestampLabel}
             </Text>
+            {message.projectedItem ? (
+              <AssistantCost
+                environmentId={props.environmentId}
+                projectedItem={message.projectedItem}
+              />
+            ) : null}
           </View>
+        ) : !message.streaming && message.projectedItem ? (
+          <AssistantCost
+            environmentId={props.environmentId}
+            projectedItem={message.projectedItem}
+            onlyBound
+          />
         ) : null}
       </Animated.View>
     );

@@ -45,6 +45,7 @@ import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import { continueRestartedRun } from "./RestartContinuation.ts";
 import * as RuntimeLayer from "./runtimeLayer.ts";
+import * as TestUsageService from "./testkit/TestUsageService.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as ProviderTurnStartServiceTestkit from "./ProviderTurnStartService.testkit.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -122,6 +123,7 @@ const layerTest = Layer.mergeAll(
   RuntimeLayer.layerEventSink,
   ThreadCommandExecutor.layer,
 ).pipe(
+  Layer.provide(TestUsageService.layer),
   Layer.provideMerge(RuntimeLayer.layerProjectService),
   Layer.provide(
     Layer.mock(WorkspacePaths.WorkspacePaths)({

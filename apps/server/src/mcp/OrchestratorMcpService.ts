@@ -35,6 +35,8 @@ import {
   type OrchestratorMcpDeleteScheduledTaskInput,
   type OrchestratorMcpRequestSecretInput,
   type OrchestratorMcpRequestSecretResult,
+  type RequestFormInput,
+  type RequestFormResult,
   type OrchestratorMcpDeleteScheduledTaskResult,
   type OrchestratorMcpListScheduledTasksResult,
   type OrchestratorMcpScheduledTask,
@@ -132,6 +134,7 @@ import {
 } from "./delegatedTaskModes.ts";
 import { isLiveCallerShell, threadNotFound } from "./threadAccess.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as FormRequests from "../orchestration-v2/FormRequests.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 
@@ -225,6 +228,10 @@ export interface OrchestratorMcpServiceShape {
     scope: McpInvocationScope,
     input: OrchestratorMcpRequestSecretInput,
   ) => Effect.Effect<OrchestratorMcpRequestSecretResult, OrchestratorMcpFailure>;
+  readonly requestForm: (
+    scope: McpInvocationScope,
+    input: RequestFormInput,
+  ) => Effect.Effect<RequestFormResult, OrchestratorMcpFailure>;
   readonly listThreads: (
     scope: McpInvocationScope,
     input: OrchestratorMcpThreadListInput,
@@ -2954,6 +2961,32 @@ const make = Effect.gen(function* () {
         return { scheduledTaskId: existing.id, deleted: true };
       },
     ),
+    requestForm: Effect.fn("OrchestratorMcpService.requestForm")(function* (scope, input) {
+      const { scope: threadScope, parent } = yield* loadThreadCaller(scope, "request_form");
+      const run = ThreadManagementService.latestActiveRun(parent);
+      if (
+        run === undefined ||
+        run.rootNodeId === null ||
+        run.providerInstanceId !== threadScope.thread.providerInstanceId
+      ) {
+        return yield* failure(
+          "parent_not_active",
+          "Asking for a form requires an active run owned by this MCP provider session.",
+        );
+      }
+      const key = yield* requestKey(input.clientRequestId);
+      return yield* FormRequests.request(
+        {
+          threadId: threadScope.thread.threadId,
+          runId: run.id,
+          rootNodeId: run.rootNodeId,
+          requestKey: key,
+        },
+        input,
+      ).pipe(
+        Effect.provideService(ThreadManagementService.ThreadManagementService, threadManagement),
+      );
+    }),
     requestSecret: Effect.fn("OrchestratorMcpService.requestSecret")(function* (scope, input) {
       const { scope: threadScope, parent } = yield* loadThreadCaller(scope, "request_secret");
       const threadId = threadScope.thread.threadId;

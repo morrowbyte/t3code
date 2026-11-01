@@ -189,6 +189,13 @@ const handlers = {
       return yield* service.requestSecret(scope, input);
     }),
   ),
+  request_form: McpToolAccess.actsAsCaller((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+      return yield* service.requestForm(scope, input);
+    }),
+  ),
   create_threads: McpToolAccess.actsAsCaller((input) =>
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.McpInvocationContext;

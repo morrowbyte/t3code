@@ -1,0 +1,60 @@
+import { expect, it } from "vite-plus/test";
+import { elicitationFormQuestions } from "./elicitationForm.ts";
+import { validateUserFormAnswers } from "@t3tools/contracts";
+
+it("preserves required fields, exact option values, bounds and typed native answers", () => {
+  const questions = elicitationFormQuestions(
+    {
+      title: "Visit",
+      properties: {
+        guests: { type: "number", title: "Guests", minimum: 1, maximum: 12, default: 2 },
+        extras: {
+          type: "array",
+          title: "Extras",
+          items: { type: "string", enum: [" a ", "b"] },
+          maxItems: 1,
+        },
+        notify: { type: "boolean", title: "Notify", default: false },
+      },
+      required: ["guests", "notify"],
+    },
+    "Visit",
+  );
+  expect(questions?.map((question) => question.field)).toEqual([
+    { id: "guests", type: "number", label: "Guests", min: 1, max: 12, default: 2, required: true },
+    {
+      id: "extras",
+      type: "multiselect",
+      label: "Extras",
+      max: 1,
+      options: [
+        { value: " a ", label: "a" },
+        { value: "b", label: "b" },
+      ],
+      required: false,
+    },
+    { id: "notify", type: "boolean", label: "Notify", default: false, required: true },
+  ]);
+  expect(
+    validateUserFormAnswers(questions!, { guests: "3", extras: [" a "], notify: "false" }),
+  ).toEqual({ errors: {}, answers: { guests: 3, extras: [" a "], notify: false } });
+  expect(validateUserFormAnswers(questions!, { guests: "13", notify: "yes" }).errors).toEqual({
+    guests: "Enter 12 or less.",
+    notify: "Choose yes or no.",
+  });
+});
+
+it("keeps legacy choice prompts and unsupported schemas on their existing path", () => {
+  expect(
+    elicitationFormQuestions(
+      { properties: { choice: { type: "string", enum: ["A", "B"] } } },
+      "Choose",
+    ),
+  ).toBeUndefined();
+  expect(
+    elicitationFormQuestions(
+      { properties: { nested: { type: "object", properties: {} } } },
+      "Nested",
+    ),
+  ).toBeUndefined();
+});

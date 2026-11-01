@@ -1,7 +1,9 @@
 import { speechTranscriptionContext } from "@t3tools/shared/speechTranscription";
+import { elicitationFormQuestions } from "./elicitationForm.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 
 import {
+  validateUserFormAnswers,
   type ChatAttachment,
   type ModelSelection,
   type OrchestrationV2ConversationMessage,
@@ -6324,10 +6326,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               const requestedSchema = unknownRecord(params.requestedSchema);
               const properties = unknownRecord(requestedSchema?.properties) ?? {};
               const nativeForm = flavor.extractElicitationForm?.(params);
+              const formQuestions =
+                nativeForm === undefined
+                  ? elicitationFormQuestions(params.requestedSchema, params.message)
+                  : undefined;
               const elicitationScopeId =
                 "sessionId" in params ? params.sessionId : `request:${params.requestId}`;
               const questions =
                 nativeForm?.questions ??
+                formQuestions ??
                 Object.entries(properties).map(
                   ([id, property], index): OrchestrationV2UserInputQuestion => {
                     const record = unknownRecord(property);
@@ -6373,10 +6380,9 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   : (nativeForm?.respond(userInput.answers) ??
                     ({
                       action: "accept",
-                      content: elicitationContent(
-                        userInput.answers,
-                        new Set(Object.keys(properties)),
-                      ),
+                      content: formQuestions
+                        ? validateUserFormAnswers(formQuestions, userInput.answers).answers
+                        : elicitationContent(userInput.answers, new Set(Object.keys(properties))),
                     } as const));
               yield* userInput.acknowledgeNativeResponse;
               return response;

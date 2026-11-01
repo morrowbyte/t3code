@@ -46,6 +46,7 @@ import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderTurnStartServiceTestkit from "./ProviderTurnStartService.testkit.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as RuntimeLayer from "./runtimeLayer.ts";
+import * as TestUsageService from "./testkit/TestUsageService.ts";
 import * as McpSessionRegistryTestkit from "../mcp/McpSessionRegistry.testkit.ts";
 import { CURSOR_MODEL_SELECTION, SUBAGENT_PROMPT } from "./testkit/fixtures/shared.ts";
 
@@ -128,6 +129,7 @@ const layerProviderInstanceRegistry = ProviderInstanceRegistryHydration.layer.pi
 );
 
 const layerLive = RuntimeLayer.layer.pipe(
+  Layer.provide(TestUsageService.layer),
   Layer.provide(ProviderTurnStartServiceTestkit.layer),
   Layer.provide(McpSessionRegistryTestkit.layer),
   Layer.provide(SqlitePersistence.layerMemory),

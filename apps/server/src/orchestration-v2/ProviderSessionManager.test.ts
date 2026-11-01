@@ -22,6 +22,7 @@ import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as UsageService from "../usage/UsageService.ts";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
@@ -546,6 +547,20 @@ function layerTest(input: {
       ? layerTestMcpRegistry
       : layerPausingMcpRegistry(input.pauseResolve);
   const layerProviderEventIngestorTest = ProviderEventIngestor.layer.pipe(
+    Layer.provide(
+      Layer.mock(UsageService.UsageService)({
+        priceTurn: () =>
+          Effect.succeed({
+            status: "unavailable",
+            reason: "usage_unavailable",
+            model: null,
+            serviceTier: "standard",
+            source: null,
+            pricedAt: "2026-11-01T00:00:00Z",
+            ratesFetchedAt: null,
+          }),
+      }),
+    ),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({

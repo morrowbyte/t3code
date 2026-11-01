@@ -28,6 +28,7 @@ import { ImageAnnotationEditor } from "./ImageAnnotationEditor";
 import { registerThreadOverlay } from "./threadOverlayRetention";
 import { mediaReferenceFileName } from "@t3tools/client-runtime/media-reference";
 import { mediaMimeType, mediaMimeTypeFromExtension } from "@t3tools/shared/mediaPreview";
+import { useCommentDictationTarget } from "~/voice/useCommentDictationTarget";
 
 interface ExpandedImageDialogProps {
   preview: ExpandedImagePreview;
@@ -106,6 +107,7 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
   onClose,
   onSendAnnotation,
 }: ExpandedImageDialogProps) {
+  const dictationTarget = useCommentDictationTarget();
   const [imageOffset, setImageOffset] = useState(0);
   const [annotating, setAnnotating] = useState(false);
   const [sendingAnnotation, setSendingAnnotation] = useState(false);
@@ -246,6 +248,7 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
                 key={`${index}:${item.src}`}
                 src={item.src}
                 name={item.name}
+                dictationTarget={dictationTarget}
                 onCancel={() => setAnnotating(false)}
                 onZoom={(factor) => zoomableImageRef.current?.zoom(factor)}
                 onFit={() => zoomableImageRef.current?.fit()}

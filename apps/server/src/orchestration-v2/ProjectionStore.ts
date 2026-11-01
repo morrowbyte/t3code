@@ -763,6 +763,10 @@ function upsertProviderTurn(
     ...((next.tokenUsage ?? current?.tokenUsage) === undefined
       ? {}
       : { tokenUsage: next.tokenUsage ?? current?.tokenUsage }),
+    ...((next.turnTokenUsage ?? current?.turnTokenUsage) === undefined
+      ? {}
+      : { turnTokenUsage: next.turnTokenUsage ?? current?.turnTokenUsage }),
+    ...((current?.cost ?? next.cost) === undefined ? {} : { cost: current?.cost ?? next.cost }),
   });
 }
 
@@ -2406,15 +2410,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               break;
             }
             case "provider-turn.updated": {
-              const existingRows =
-                event.payload.tokenUsage === undefined
-                  ? yield* sql<PayloadRow>`
+              const existingRows = yield* sql<PayloadRow>`
                     SELECT payload_json
                     FROM orchestration_v2_projection_provider_turns
                     WHERE provider_turn_id = ${event.payload.id}
                     LIMIT 1
-                  `
-                  : [];
+                  `;
               const existing = existingRows[0];
               const providerTurn =
                 existing === undefined

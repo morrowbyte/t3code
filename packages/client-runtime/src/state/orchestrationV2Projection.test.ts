@@ -151,6 +151,23 @@ describe("applyOrchestrationV2ProjectionEvent", () => {
         maxTokens: 200_000,
         updatedAt: "2026-08-29T00:00:00.000Z",
       },
+      turnTokenUsage: {
+        usageScope: "main_agent" as const,
+        usageStatus: "complete" as const,
+        inputTokens: 1000,
+        outputTokens: 200,
+        hasSubagents: false,
+      },
+      cost: {
+        status: "complete" as const,
+        model: "example",
+        serviceTier: "standard" as const,
+        source: "custom" as const,
+        pricedAt: "2026-11-01T00:00:00Z",
+        ratesFetchedAt: null,
+        amountUsd: 0.024,
+        answerItemId: TurnItemId.make("answer-reducer"),
+      },
     };
     const projection = { ...emptyProjection, providerTurns: [running] };
     const event = {
@@ -164,6 +181,8 @@ describe("applyOrchestrationV2ProjectionEvent", () => {
         status: "completed",
         completedAt: now,
         tokenUsage: undefined,
+        turnTokenUsage: undefined,
+        cost: { ...running.cost, amountUsd: 2 },
       },
     } as OrchestrationV2DomainEvent;
 
@@ -171,6 +190,8 @@ describe("applyOrchestrationV2ProjectionEvent", () => {
 
     expect(next?.providerTurns[0]?.status).toBe("completed");
     expect(next?.providerTurns[0]?.tokenUsage).toEqual(running.tokenUsage);
+    expect(next?.providerTurns[0]?.turnTokenUsage).toEqual(running.turnTokenUsage);
+    expect(next?.providerTurns[0]?.cost).toEqual(running.cost);
   });
 
   it("applies thread lifecycle payloads instead of leaving stale metadata", () => {

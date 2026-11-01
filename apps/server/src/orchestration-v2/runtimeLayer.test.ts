@@ -85,9 +85,12 @@ import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as RuntimeLayer from "./runtimeLayer.ts";
+import * as UsageService from "../usage/UsageService.ts";
+
 import { shellStreamItemFromThreadShell } from "./ShellStream.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
+import * as FormRequests from "./FormRequests.ts";
 import * as ConversationWorkCoordinator from "./ConversationWorkCoordinator.ts";
 import * as Semaphore from "effect/Semaphore";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
@@ -101,6 +104,20 @@ import * as ResourceCleanupService from "./ResourceCleanupService.ts";
 import * as ThreadLaunchService from "./ThreadLaunchService.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+
+const layerTurnCosts = Layer.mock(UsageService.UsageService)({
+  priceTurn: () =>
+    Effect.succeed({
+      status: "unavailable",
+      reason: "usage_unavailable",
+      model: null,
+      serviceTier: "standard",
+      source: null,
+      pricedAt: "2026-11-01T00:00:00Z",
+      ratesFetchedAt: null,
+    }),
+});
+const layerRuntime = RuntimeLayer.layer.pipe(Layer.provide(layerTurnCosts));
 
 const fixtureEnvironmentId = EnvironmentId.make("environment:observatory-fixture:runtimeLayer");
 const layerPlatformTest = Layer.mergeAll(
@@ -293,7 +310,7 @@ const moveProject = (projectId: ProjectId, workspaceRoot: string, updatedAt: str
   );
 
 const layerTest = Layer.mergeAll(
-  RuntimeLayer.layer,
+  layerRuntime,
   RuntimeLayer.layerEventSink,
   ProjectStore.layer,
   ProjectionStore.layer,
@@ -312,7 +329,7 @@ const layerTest = Layer.mergeAll(
   Layer.provide(layerPlatformTest),
 );
 
-const layerLegacyImportTest = RuntimeLayer.layer.pipe(
+const layerLegacyImportTest = layerRuntime.pipe(
   Layer.provide(McpSessionRegistryTestkit.layer),
   Layer.provide(McpProviderSessions.layer),
   Layer.provideMerge(SqlitePersistence.layerMemory),
@@ -350,7 +367,7 @@ const layerResourceCleanupTest = ResourceCleanupService.layer.pipe(
 );
 
 const layerProjectDeletionTest = Layer.mergeAll(
-  RuntimeLayer.layer.pipe(Layer.provide(RuntimeLayer.layerProjectService)),
+  layerRuntime.pipe(Layer.provide(RuntimeLayer.layerProjectService)),
   RuntimeLayer.layerProjectService,
   RuntimeLayer.layerEventSink,
   ThreadCommandExecutor.layer,
@@ -831,7 +848,7 @@ it.layer(layerProjectDeletionTest)("project deletion during thread commands", (i
 });
 
 const layerSharedApplicationDataPlaneTest = Layer.mergeAll(
-  RuntimeLayer.layer.pipe(Layer.provide(RuntimeLayer.layerProjectService)),
+  layerRuntime.pipe(Layer.provide(RuntimeLayer.layerProjectService)),
   RuntimeLayer.layerProjectService,
   RuntimeLayer.layerEventSink,
   RuntimeLayer.layerEventInfrastructure,
@@ -1362,6 +1379,340 @@ it.effect.each([
 );
 
 it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
+  it.effect("returns typed form answers and the durable result when the MCP call is retried", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threadId = ThreadId.make("mixed-form-mcp-thread");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("mixed-form-mcp-create"),
+        createdBy: "user",
+        creationSource: "web",
+        threadId,
+        projectId: ProjectId.make("mixed-form-mcp-project"),
+        title: "Lunch",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: process.cwd(),
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("mixed-form-mcp-start"),
+        threadId,
+        messageId: MessageId.make("mixed-form-mcp-message"),
+        text: "Plan lunch",
+        attachments: [],
+        createdBy: "user",
+        creationSource: "web",
+        dispatchMode: { type: "start_immediately" },
+      });
+      const run = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+      const afterSequence = yield* orchestrator.getThreadEventSequence(threadId);
+      const context = { threadId, runId: run.id, rootNodeId: run.rootNodeId!, requestKey: "lunch" };
+      const input = {
+        title: "Lunch",
+        clientRequestId: "lunch",
+        fields: [
+          { id: "guests", type: "number" as const, label: "Guests", min: 1, max: 12 },
+          { id: "reminder", type: "boolean" as const, label: "Reminder" },
+        ],
+      };
+      const call = yield* FormRequests.request(context, input).pipe(Effect.forkChild);
+      const opened = yield* orchestrator
+        .streamStoredEventsFrom({ threadId, afterSequence, eventType: "runtime-request.updated" })
+        .pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "runtime-request.updated" &&
+              stored.event.payload.kind === "user_input",
+          ),
+          Stream.runHead,
+        );
+      assert.isTrue(Option.isSome(opened));
+      if (Option.isNone(opened) || opened.value.event.type !== "runtime-request.updated") return;
+      const requestId = opened.value.event.payload.id;
+      yield* orchestrator.dispatch({
+        type: "runtime-request.respond",
+        commandId: CommandId.make("mixed-form-mcp-answer"),
+        threadId,
+        requestId,
+        answers: { guests: "4", reminder: "false" },
+      });
+      const result = yield* Fiber.join(call);
+      assert.deepEqual(result, {
+        requestId,
+        status: "submitted",
+        answers: { guests: 4, reminder: false },
+      });
+      assert.deepEqual(yield* FormRequests.request(context, input), result);
+      for (const changed of [
+        { ...input, title: "Dinner" },
+        { ...input, fields: [{ ...input.fields[0]!, min: 5 }, input.fields[1]!] },
+        {
+          ...input,
+          fields: [{ id: "guests", type: "text" as const, label: "Guests" }, input.fields[1]!],
+        },
+      ]) {
+        const retry = yield* FormRequests.request(context, changed).pipe(Effect.result);
+        assert.equal(retry._tag, "Failure");
+        if (retry._tag === "Failure") assert.equal(retry.failure.code, "invalid_request");
+      }
+      const stored = yield* orchestrator.getThreadProjection(threadId);
+      assert.lengthOf(
+        stored.runtimeRequests.filter((request) => request.id === requestId),
+        1,
+      );
+      const request = stored.runtimeRequests.find((candidate) => candidate.id === requestId)!;
+      const sink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make("mixed-form-invalid-stored-answer"),
+            type: "runtime-request.updated",
+            threadId,
+            runId: run.id,
+            nodeId: request.nodeId,
+            occurredAt: now,
+            payload: { ...request, answers: { guests: "invalid", reminder: "false" } },
+          },
+        ],
+      });
+      const invalidStored = yield* FormRequests.request(context, input).pipe(Effect.result);
+      assert.equal(invalidStored._tag, "Failure");
+      if (invalidStored._tag === "Failure")
+        assert.equal(invalidStored.failure.code, "orchestration_error");
+    }),
+  );
+
+  it.effect(
+    "returns submitted form answers when submission wins the timeout cancellation race",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const threads = yield* ThreadManagementService.ThreadManagementService;
+        const threadId = ThreadId.make("mixed-form-timeout-race-thread");
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("mixed-form-timeout-race-create"),
+          createdBy: "user",
+          creationSource: "web",
+          threadId,
+          projectId: ProjectId.make("mixed-form-timeout-race-project"),
+          title: "Lunch",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: process.cwd(),
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("mixed-form-timeout-race-start"),
+          threadId,
+          messageId: MessageId.make("mixed-form-timeout-race-message"),
+          text: "Plan lunch",
+          attachments: [],
+          createdBy: "user",
+          creationSource: "web",
+          dispatchMode: { type: "start_immediately" },
+        });
+        const run = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+        const afterSequence = yield* orchestrator.getThreadEventSequence(threadId);
+        const cancelEntered = yield* Deferred.make<void>();
+        const releaseCancel = yield* Deferred.make<void>();
+        const service = ThreadManagementService.ThreadManagementService.of({
+          ...threads,
+          dispatch: (command, options) =>
+            command.type === "runtime-request.respond" && command.decision === "cancel"
+              ? Deferred.succeed(cancelEntered, undefined).pipe(
+                  Effect.andThen(Deferred.await(releaseCancel)),
+                  Effect.andThen(threads.dispatch(command, options)),
+                )
+              : threads.dispatch(command, options),
+        });
+        const call = yield* FormRequests.request(
+          { threadId, runId: run.id, rootNodeId: run.rootNodeId!, requestKey: "lunch" },
+          {
+            title: "Lunch",
+            timeoutMs: 1000,
+            fields: [{ id: "guests", type: "number", label: "Guests", min: 1 }],
+          },
+        ).pipe(
+          Effect.provideService(ThreadManagementService.ThreadManagementService, service),
+          Effect.forkChild,
+        );
+        const opened = yield* orchestrator
+          .streamStoredEventsFrom({
+            threadId,
+            afterSequence,
+            eventType: "runtime-request.updated",
+          })
+          .pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "runtime-request.updated" &&
+                stored.event.payload.kind === "user_input",
+            ),
+            Stream.runHead,
+          );
+        assert.isTrue(Option.isSome(opened));
+        if (Option.isNone(opened) || opened.value.event.type !== "runtime-request.updated") return;
+        const requestId = opened.value.event.payload.id;
+        yield* TestClock.adjust("1 second");
+        yield* Deferred.await(cancelEntered);
+        yield* orchestrator.dispatch({
+          type: "runtime-request.respond",
+          commandId: CommandId.make("mixed-form-timeout-race-answer"),
+          threadId,
+          requestId,
+          answers: { guests: "4" },
+        });
+        yield* Deferred.succeed(releaseCancel, undefined);
+        assert.deepEqual(yield* Fiber.join(call), {
+          requestId,
+          status: "submitted",
+          answers: { guests: 4 },
+        });
+        assert.deepEqual(
+          (yield* orchestrator.getThreadProjection(threadId)).runtimeRequests.find(
+            (request) => request.id === requestId,
+          )?.answers,
+          { guests: "4" },
+        );
+      }),
+  );
+
+  it.effect("validates, persists and cancels mixed forms through the existing request flow", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const threadId = ThreadId.make("mixed-form-thread");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("mixed-form-create"),
+        createdBy: "user",
+        creationSource: "web",
+        threadId,
+        projectId: ProjectId.make("mixed-form-project"),
+        title: "Lunch",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: process.cwd(),
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("mixed-form-start"),
+        threadId,
+        messageId: MessageId.make("mixed-form-message"),
+        text: "Plan lunch",
+        attachments: [],
+        createdBy: "user",
+        creationSource: "web",
+        dispatchMode: { type: "start_immediately" },
+      });
+      const run = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+      assert.isNotNull(run.rootNodeId);
+      const requestId = RuntimeRequestId.make("mixed-form-request");
+      const submit = {
+        type: "user-form.submit" as const,
+        commandId: CommandId.make("mixed-form-open"),
+        threadId,
+        runId: run.id,
+        rootNodeId: run.rootNodeId!,
+        nodeId: NodeId.make("mixed-form-node"),
+        requestId,
+        turnItemId: TurnItemId.make("mixed-form-item"),
+        form: {
+          title: "Lunch",
+          fields: [
+            { id: "name", type: "text" as const, label: "Name", minLength: 2 },
+            { id: "guests", type: "number" as const, label: "Guests", min: 1, max: 12 },
+            { id: "reminder", type: "boolean" as const, label: "Reminder" },
+          ],
+        },
+      };
+      yield* orchestrator.dispatch(submit);
+      const before = yield* orchestrator.getThreadEventSequence(threadId);
+      const response = { type: "runtime-request.respond" as const, threadId, requestId };
+      const invalid = yield* orchestrator
+        .dispatch({
+          ...response,
+          commandId: CommandId.make("mixed-form-invalid"),
+          answers: { name: "A", guests: "Infinity", reminder: "yes" },
+        })
+        .pipe(Effect.flip);
+      assert.instanceOf(invalid, Orchestrator.OrchestratorDispatchError);
+      assert.equal(yield* orchestrator.getThreadEventSequence(threadId), before);
+      const answers = { name: "Ada", guests: "4", reminder: "false" };
+      const answerCommandId = CommandId.make("mixed-form-answer");
+      yield* orchestrator.dispatch({ ...response, commandId: answerCommandId, answers });
+      const stored = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(stored.runs.length, 1);
+      assert.deepEqual(
+        stored.runtimeRequests.find((item) => item.id === requestId)?.answers,
+        answers,
+      );
+      const item = stored.turnItems.find(
+        (item) => item.type === "user_input_request" && item.requestId === requestId,
+      );
+      assert.equal(item?.type, "user_input_request");
+      if (item?.type === "user_input_request") {
+        assert.equal(item.questions[1]?.field?.type, "number");
+        assert.deepEqual(item.questionAnswer?.answers, answers);
+      }
+      assert.deepEqual(yield* outbox.listByCommandId(answerCommandId), []);
+      yield* orchestrator
+        .dispatch({
+          ...response,
+          commandId: CommandId.make("mixed-form-second-answer"),
+          answers: { ...answers, guests: "5" },
+        })
+        .pipe(Effect.flip);
+      const replay = { ...submit, commandId: CommandId.make("mixed-form-replay") };
+      const beforeReplay = yield* orchestrator.getThreadEventSequence(threadId);
+      const receipt = yield* orchestrator.dispatch(replay);
+      assert.equal(receipt.sequence, beforeReplay);
+      assert.deepEqual(receipt.storedEvents, []);
+      assert.isTrue((yield* orchestrator.dispatch(replay)).replayed);
+      const afterReplay = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(
+        afterReplay.runtimeRequests.find((item) => item.id === requestId)?.answers,
+        answers,
+      );
+      assert.lengthOf(
+        afterReplay.turnItems.filter(
+          (item) => item.type === "user_input_request" && item.requestId === requestId,
+        ),
+        1,
+      );
+      const cancelledId = RuntimeRequestId.make("mixed-form-cancelled");
+      yield* orchestrator.dispatch({
+        ...submit,
+        commandId: CommandId.make("mixed-form-open-cancel"),
+        requestId: cancelledId,
+        nodeId: NodeId.make("mixed-form-cancel-node"),
+        turnItemId: TurnItemId.make("mixed-form-cancel-item"),
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.user-input.dismiss",
+        commandId: CommandId.make("mixed-form-dismiss"),
+        threadId,
+        requestId: cancelledId,
+      });
+      assert.equal(
+        (yield* orchestrator.getThreadProjection(threadId)).runtimeRequests.find(
+          (item) => item.id === cancelledId,
+        )?.decision,
+        "cancel",
+      );
+    }),
+  );
+
   it.effect(
     "persists a privileged non-start without claiming cleanup and replays its receipt",
     () =>
@@ -8995,7 +9346,7 @@ const queueResumeDisabledInstanceProjectId = ProjectId.make(
 );
 
 const layerQueueResumeDisabledInstanceTest = Layer.mergeAll(
-  RuntimeLayer.layer,
+  layerRuntime,
   RuntimeLayer.layerEventSink,
   ProjectStore.layer,
   ProjectionStore.layer,

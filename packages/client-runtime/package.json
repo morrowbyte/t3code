@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./answer-cost": {
+      "types": "./src/answerCost.ts",
+      "default": "./src/answerCost.ts"
+    },
     "./testing/approval-review": {
       "types": "./src/approvalReviewTestFixtures.ts",
       "default": "./src/approvalReviewTestFixtures.ts"
