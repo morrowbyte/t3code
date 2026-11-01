@@ -2,6 +2,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { ModelSelection } from "./modelSelection.ts";
 import { ProjectId, ThreadId } from "./baseSchemas.ts";
+import { DeviceHostId, DeviceId } from "./device.ts";
 
 export const BoatSize = Schema.Literals(["small", "default", "large", "xlarge"]);
 export const BoatDefaults = Schema.Struct({
@@ -19,6 +20,9 @@ export const BoatProjectConfig = Schema.Struct({
   webAccess: Schema.Literals(["hosted", "private"]).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed("hosted" as const)),
   ),
+  privateAndroidTarget: Schema.NullOr(
+    Schema.Struct({ hostId: DeviceHostId, deviceId: DeviceId }),
+  ).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   size: BoatSize,
   ttlMinutes: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 1440 })),
   inheritDefaults: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
@@ -42,6 +46,7 @@ export const DEFAULT_BOAT_PROJECT: BoatProjectConfig = {
   autoSetup: false,
   previewKind: "web",
   webAccess: "hosted",
+  privateAndroidTarget: null,
   size: "default",
   ttlMinutes: 60,
   inheritDefaults: true,

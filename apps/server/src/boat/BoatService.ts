@@ -12,6 +12,8 @@ import {
   BoatProjectConfig,
   BoatState,
   DEFAULT_BOAT_PROJECT,
+  DeviceHostUnavailableError,
+  type DeviceSession,
   ProjectId,
   ThreadId,
   PreviewTabId,
@@ -39,6 +41,7 @@ import * as Secrets from "../auth/ServerSecretStore.ts";
 import * as Git from "../vcs/GitVcsDriver.ts";
 import * as Projects from "../project/ProjectService.ts";
 import { PreviewManager } from "../preview/Manager.ts";
+import { DeviceService } from "../device/DeviceService.ts";
 import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
 import { BoatApi } from "./BoatApi.ts";
 import * as BoatSshTunnel from "./BoatSshTunnel.ts";
@@ -315,6 +318,7 @@ export const make = Effect.gen(function* () {
   const api = yield* BoatApi;
   const crypto = yield* Crypto.Crypto;
   const previews = yield* PreviewManager;
+  const devices = yield* DeviceService;
   const projections = yield* ProjectionStoreV2;
   const tunnels = yield* BoatSshTunnel.make;
   const serviceScope = yield* Effect.scope;
@@ -324,6 +328,15 @@ export const make = Effect.gen(function* () {
       scope: Scope.Closeable;
       lease: BoatLeaseAccess;
       tabId: string | null;
+    }
+  >();
+  const privateAndroidPreviews = new Map<
+    string,
+    {
+      scope: Scope.Closeable;
+      lease: BoatLeaseAccess;
+      target: NonNullable<BoatProjectConfig["privateAndroidTarget"]>;
+      session: DeviceSession | null;
     }
   >();
   const lock = yield* Semaphore.make(1);
@@ -516,6 +529,102 @@ export const make = Effect.gen(function* () {
     return value.inheritDefaults ? { ...value, ...ledger.defaults } : value;
   };
   const previewLock = yield* Semaphore.make(1);
+  const attachPrivateAndroid = Effect.fn("BoatService.attachPrivateAndroid")(function* (
+    current: StoredInstance,
+    token: Redacted.Redacted<string>,
+    callerThreadId?: ThreadId,
+  ) {
+    const target = projectSettings(current.projectId).privateAndroidTarget;
+    const source = work[current.requestId]?.source;
+    if (!callerThreadId || !current.sandboxId || !target || source?.projectId !== current.projectId)
+      return yield* new BoatError({ category: "conflict" });
+    yield* Effect.scoped(
+      assertActiveLease(
+        { requestId: current.requestId, sandboxId: current.sandboxId },
+        callerThreadId,
+      ),
+    );
+    const web = privatePreviews.get(current.requestId);
+    if (web) yield* Scope.close(web.scope, Exit.void);
+    const previous = privateAndroidPreviews.get(current.requestId);
+    if (previous) {
+      const valid = yield* previous.lease.check.pipe(Effect.isSuccess);
+      if (
+        valid &&
+        previous.lease.threadId === callerThreadId &&
+        previous.target.hostId === target.hostId &&
+        previous.target.deviceId === target.deviceId &&
+        previous.session &&
+        (yield* devices.state).sessions.includes(previous.session)
+      )
+        return current;
+      yield* Scope.close(previous.scope, Exit.void);
+    }
+    const scope = yield* Scope.fork(serviceScope, "sequential");
+    return yield* Effect.gen(function* () {
+      const lease = yield* assertActiveLease(
+        { requestId: current.requestId, sandboxId: current.sandboxId! },
+        callerThreadId,
+      );
+      const entry = { scope, lease, target, session: null as DeviceSession | null };
+      privateAndroidPreviews.set(current.requestId, entry);
+      yield* Effect.addFinalizer(() =>
+        Effect.gen(function* () {
+          if (privateAndroidPreviews.get(current.requestId) !== entry) return;
+          privateAndroidPreviews.delete(current.requestId);
+          yield* updateInstance(current, (latest) =>
+            latest.sandboxId === lease.sandboxId ? { previewUrl: null, previewTabId: null } : {},
+          ).pipe(Effect.orElseSucceed(() => undefined));
+        }),
+      );
+      yield* lease.revoked.pipe(
+        Effect.andThen(Scope.close(scope, Exit.void)),
+        Effect.forkIn(serviceScope),
+      );
+      const opened = yield* Effect.raceFirst(
+        Effect.gen(function* () {
+          const binding = yield* tunnels.authorize(lease, token);
+          return yield* devices
+            .openScopedSsh(
+              {
+                threadId: lease.threadId,
+                hostId: target.hostId,
+                deviceId: target.deviceId,
+                platform: "android",
+                boot: false,
+                includeAgentTarget: true,
+              },
+              {
+                ...binding,
+                check: binding.check.pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new DeviceHostUnavailableError({
+                        hostId: target.hostId,
+                        reason: "The Boat lease has ended.",
+                        cause,
+                      }),
+                  ),
+                ),
+              },
+              { workspaceRoot: source.workspaceRoot },
+            )
+            .pipe(Effect.mapError(() => new BoatError({ category: "provider" })));
+        }),
+        lease.revoked.pipe(Effect.andThen(Effect.fail(new BoatError({ category: "conflict" })))),
+      );
+      entry.session = opened.session;
+      yield* lease.check;
+      return yield* updateInstance(current, {
+        threadId: lease.threadId,
+        previewUrl: null,
+        previewTabId: null,
+      });
+    }).pipe(
+      Effect.provideService(Scope.Scope, scope),
+      Effect.onError(() => Scope.close(scope, Exit.void)),
+    );
+  });
   const attachPrivatePreview = Effect.fn("BoatService.attachPrivatePreview")(function* (
     current: StoredInstance,
     token: Redacted.Redacted<string>,
@@ -528,6 +637,11 @@ export const make = Effect.gen(function* () {
           callerThreadId,
         ),
       );
+    const android = privateAndroidPreviews.get(current.requestId);
+    if (android) {
+      if (!callerThreadId) return yield* new BoatError({ category: "conflict" });
+      yield* Scope.close(android.scope, Exit.void);
+    }
     const previous = privatePreviews.get(current.requestId);
     if (previous) {
       const valid = yield* previous.lease.check.pipe(Effect.isSuccess);
@@ -638,10 +752,10 @@ export const make = Effect.gen(function* () {
                 return current;
               const settings = projectSettings(current.projectId);
               if (settings.webAccess === "private") {
-                if (settings.previewKind !== "web")
-                  return yield* new BoatError({ category: "conflict" });
                 return reveal
-                  ? yield* attachPrivatePreview(current, token, callerThreadId)
+                  ? settings.previewKind === "android"
+                    ? yield* attachPrivateAndroid(current, token, callerThreadId)
+                    : yield* attachPrivatePreview(current, token, callerThreadId)
                   : current;
               }
               let previewUrl = current.previewUrl;
@@ -1021,7 +1135,7 @@ export const make = Effect.gen(function* () {
             const probe = yield* api
               .request(token, `/sandboxes/${encodeURIComponent(item.sandboxId)}/commands`, "POST", {
                 command:
-                  settings.previewKind === "android"
+                  settings.previewKind === "android" && settings.webAccess !== "private"
                     ? "/home/user/Android/Sdk/platform-tools/adb shell getprop sys.boot_completed | grep -q '^1'"
                     : `curl -fsS --max-time 2 http://127.0.0.1:${settings.port}/ -o /dev/null`,
                 timeoutSeconds: 3,
@@ -1120,7 +1234,9 @@ export const make = Effect.gen(function* () {
     settings: BoatProjectConfig,
   ) {
     if (
-      (settings.webAccess === "private" && settings.previewKind !== "web") ||
+      (settings.webAccess === "private" &&
+        settings.previewKind === "android" &&
+        !settings.privateAndroidTarget) ||
       (settings.webAccess !== projectSettings(projectId).webAccess &&
         ledger.instances.some(
           (item) => item.projectId === projectId && item.sandboxId && item.state !== "deleted",
@@ -1163,10 +1279,12 @@ export const make = Effect.gen(function* () {
           ...settings,
           setupCommand: settings.setupCommand.trim() || install,
           devCommand: crew
-            ? settings.previewKind === "android"
+            ? settings.previewKind === "android" && settings.webAccess !== "private"
               ? ANDROID_CREW_DEV
               : "T3CODE_PORT_OFFSET=0 ./node_modules/.bin/vp run dev --no-seed"
-            : settings.previewKind === "android" && manifest.dependencies?.expo
+            : settings.previewKind === "android" &&
+                settings.webAccess !== "private" &&
+                manifest.dependencies?.expo
               ? "npx expo run:android --no-bundler && npx expo start --dev-client --localhost --port 8081"
               : `${command} run dev`,
           port: crew ? 5733 : settings.port,
@@ -1282,7 +1400,11 @@ export const make = Effect.gen(function* () {
       return yield* new BoatError({ category: "not_found" });
     const token = yield* key;
     const settings = projectSettings(action.projectId);
-    if (settings.webAccess === "private" && settings.previewKind !== "web")
+    if (
+      settings.webAccess === "private" &&
+      settings.previewKind === "android" &&
+      !settings.privateAndroidTarget
+    )
       return yield* new BoatError({ category: "conflict" });
     if (
       ledger.instances.some(
@@ -1521,7 +1643,7 @@ export const make = Effect.gen(function* () {
       const running = process !== null && process.exitCode === undefined;
       if (!settings.enabled || !settings.devCommand.trim())
         return yield* new BoatError({ category: "disabled" });
-      if (settings.previewKind === "android")
+      if (settings.previewKind === "android" && settings.webAccess !== "private")
         yield* api.request(token, `${sandboxPath}/desktop?vnc=1`, "POST");
       const archive = yield* fs
         .makeTempFile({ prefix: "crew-boat-", suffix: ".tar.gz" })
@@ -1588,7 +1710,10 @@ export const make = Effect.gen(function* () {
             devAuth = `export T3CODE_DEV_AUTH_TOKEN=${credential}\nexport T3CODE_DEV_ALLOWED_ORIGINS=${new URL(hosted.url).origin}\nexport T3CODE_DEV_ALLOWED_HOSTS=${new URL(hosted.url).hostname}\nexport T3CODE_DEV_WEB_HOST=0.0.0.0\nexport NODE_OPTIONS="--dns-result-order=ipv4first \${NODE_OPTIONS:-}"\n`;
           }
         }
-        const androidSetup = settings.previewKind === "android" ? ANDROID_SETUP : "";
+        const androidSetup =
+          settings.previewKind === "android" && settings.webAccess !== "private"
+            ? ANDROID_SETUP
+            : "";
         const sync = `set -eu\ncat ${chunks.join(" ")} > ${remoteArchive}\nrm ${chunks.join(" ")}\nset -- ${remoteArchive} /home/user/crew /home/user/.crew-source-files.json\n${sourceSyncScript}`;
         const result = yield* api
           .request(token, `${sandboxPath}/commands`, "POST", {

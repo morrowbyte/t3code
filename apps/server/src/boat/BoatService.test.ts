@@ -1,6 +1,9 @@
 import { assert, it } from "@effect/vitest";
 import {
   DEFAULT_BOAT_PROJECT,
+  type DeviceError,
+  type DeviceOpenInput,
+  type DeviceSession,
   BoatInstance,
   BoatError,
   ProjectId,
@@ -32,6 +35,7 @@ import * as Secrets from "../auth/ServerSecretStore.ts";
 import * as Projects from "../project/ProjectService.ts";
 import * as Git from "../vcs/GitVcsDriver.ts";
 import { PreviewManager } from "../preview/Manager.ts";
+import { DeviceService } from "../device/DeviceService.ts";
 import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
 import { BoatApi } from "./BoatApi.ts";
 import * as BoatSshTunnel from "./BoatSshTunnel.ts";
@@ -52,12 +56,21 @@ function setup(
     idempotencyKey?: string,
   ) => Effect.Effect<unknown, BoatError> = () => Effect.void,
   threadId = ownerThreadId,
+  onDeviceOpen: () => Effect.Effect<void, DeviceError> = () => Effect.void,
 ) {
   const calls: string[] = [];
   const privateForwards: string[][] = [];
   const closedPreviews: string[] = [];
   const openedPreviews: string[] = [];
   const previewTabs = new Map<string, { tabId: string }>();
+  const deviceSessions: DeviceSession[] = [];
+  const deviceOpens: Array<{
+    input: DeviceOpenInput;
+    workspaceRoot: string | undefined;
+    hostname: string;
+  }> = [];
+  const deviceReleased = Deferred.makeUnsafe<void>();
+  let deviceReleaseCount = 0;
   const forwardClosed = Deferred.makeUnsafe<void>();
   let closedForwards = 0;
   let machineState = "ready";
@@ -132,6 +145,36 @@ function setup(
   );
   const services = Layer.mergeAll(
     api,
+    Layer.mock(DeviceService)({
+      state: Effect.sync(() => ({ sessions: [...deviceSessions] }) as never),
+      openScopedSsh: (input, binding, context) =>
+        Effect.gen(function* () {
+          yield* binding.check;
+          deviceOpens.push({
+            input,
+            workspaceRoot: context?.workspaceRoot,
+            hostname: binding.hostname,
+          });
+          let released = false;
+          const session = {
+            ...input,
+            deviceId: "canonical-android",
+            openedAt: "2026-11-01T12:00:00.000Z",
+          } as DeviceSession;
+          const release = Effect.sync(() => {
+            if (released) return;
+            released = true;
+            deviceReleaseCount++;
+            const index = deviceSessions.indexOf(session);
+            if (index !== -1) deviceSessions.splice(index, 1);
+          }).pipe(Effect.andThen(Deferred.succeed(deviceReleased, undefined)), Effect.asVoid);
+          yield* Effect.addFinalizer(() => release);
+          yield* onDeviceOpen();
+          yield* binding.check;
+          deviceSessions.push(session);
+          return { session, release };
+        }),
+    }),
     Layer.mock(Net.NetService)({ reserveLoopbackPort: () => Effect.succeed(39123) }),
     Layer.effect(
       ChildProcessSpawner.ChildProcessSpawner,
@@ -242,6 +285,10 @@ function setup(
     privateForwards,
     closedPreviews,
     openedPreviews,
+    deviceOpens,
+    deviceSessions,
+    deviceReleased: Deferred.await(deviceReleased),
+    deviceReleaseCount: () => deviceReleaseCount,
     closedForwardCount: () => closedForwards,
     forwardClosed: Deferred.await(forwardClosed),
     gitCwds,
@@ -573,37 +620,187 @@ it.effect("cancels an in-flight SSH grant on lease removal without public fallba
   });
 });
 
-it.effect("rejects private Android and changing a retained hosted VM to private", () => {
+it.effect(
+  "rejects private Android without a target and changing a retained hosted VM to private",
+  () => {
+    const test = setup();
+    return Effect.gen(function* () {
+      const boat = yield* make;
+      yield* boat.connect(Redacted.make("boat_fixture_private"));
+      assert.isTrue(
+        Exit.isFailure(
+          yield* boat
+            .configure(projectId, {
+              ...DEFAULT_BOAT_PROJECT,
+              enabled: true,
+              webAccess: "private",
+              previewKind: "android",
+            })
+            .pipe(Effect.exit),
+        ),
+      );
+      yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: true });
+      yield* boat.operate({ action: "start", projectId, requestId: "retained" }, ownerThreadId);
+      yield* boat.operate({ action: "stop", projectId, requestId: "retained" });
+      assert.isTrue(
+        Exit.isFailure(
+          yield* boat
+            .configure(projectId, {
+              ...DEFAULT_BOAT_PROJECT,
+              enabled: true,
+              webAccess: "private",
+            })
+            .pipe(Effect.exit),
+        ),
+      );
+    }).pipe(Effect.scoped, Effect.provide(test.services));
+  },
+);
+
+it.effect.each(["stop", "delete", "lease removed"] as const)(
+  "opens the explicit private Android target without provisioning and releases it on %s",
+  (end) => {
+    const scripts: string[] = [];
+    const test = setup((_path, _method, body) =>
+      Effect.sync(() => {
+        if (body && typeof body === "object" && "command" in body)
+          scripts.push(String(body.command));
+      }),
+    );
+    return Effect.gen(function* () {
+      const boat = yield* make;
+      yield* boat.connect(Redacted.make("boat_fixture_private"));
+      yield* boat.configure(projectId, {
+        ...DEFAULT_BOAT_PROJECT,
+        enabled: true,
+        webAccess: "private",
+        previewKind: "android",
+        privateAndroidTarget: { hostId: "boat-android", deviceId: "selected-android" },
+        devCommand: "npm run dev",
+      });
+      yield* boat.operate(
+        { action: "start", projectId, requestId: "private-android" },
+        ownerThreadId,
+      );
+      yield* boat.operate(
+        { action: "prepare", projectId, requestId: "private-android" },
+        ownerThreadId,
+      );
+      assert.deepEqual(test.deviceOpens, [
+        {
+          input: {
+            threadId: ownerThreadId,
+            hostId: "boat-android",
+            deviceId: "selected-android",
+            platform: "android",
+            boot: false,
+            includeAgentTarget: true,
+          },
+          workspaceRoot: process.cwd(),
+          hostname: "192.0.2.1",
+        },
+      ]);
+      assert.isTrue(
+        test.calls.every((call) => !call.includes("/host") && !call.includes("/desktop")),
+      );
+      assert.isTrue(
+        scripts.every(
+          (script) => !/sdkmanager|avdmanager|adb |mobile:install|expo run:android/.test(script),
+        ),
+      );
+      assert.lengthOf(test.privateForwards, 0);
+      assert.lengthOf(test.openedPreviews, 0);
+      yield* boat.operate(
+        { action: "preview", projectId, requestId: "private-android" },
+        ownerThreadId,
+      );
+      assert.lengthOf(test.deviceOpens, 1);
+      if (end === "lease removed") {
+        test.setOwnerActive(false);
+        yield* boat.reconcile();
+      } else {
+        yield* boat.operate({ action: end, projectId, requestId: "private-android" });
+      }
+      yield* test.deviceReleased;
+      assert.equal(test.deviceReleaseCount(), 1);
+      assert.lengthOf(test.deviceSessions, 0);
+    }).pipe(Effect.scoped, Effect.provide(test.services));
+  },
+);
+
+it.effect("reopens a closed private Android session without accepting a foreign lease", () => {
   const test = setup();
   return Effect.gen(function* () {
     const boat = yield* make;
     yield* boat.connect(Redacted.make("boat_fixture_private"));
+    yield* boat.configure(projectId, {
+      ...DEFAULT_BOAT_PROJECT,
+      enabled: true,
+      webAccess: "private",
+      previewKind: "android",
+      privateAndroidTarget: { hostId: "boat-android", deviceId: "selected-android" },
+      devCommand: "npm run dev",
+    });
+    yield* boat.operate(
+      { action: "start", projectId, requestId: "private-android" },
+      ownerThreadId,
+    );
+    yield* boat.operate(
+      { action: "prepare", projectId, requestId: "private-android" },
+      ownerThreadId,
+    );
+    const stranger = ThreadId.make("stranger-android");
+    test.setThread(stranger, { activeRunId: RunId.make("stranger-run") });
     assert.isTrue(
       Exit.isFailure(
         yield* boat
-          .configure(projectId, {
-            ...DEFAULT_BOAT_PROJECT,
-            enabled: true,
-            webAccess: "private",
-            previewKind: "android",
-          })
+          .operate({ action: "preview", projectId, requestId: "private-android" }, stranger)
           .pipe(Effect.exit),
       ),
     );
-    yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: true });
-    yield* boat.operate({ action: "start", projectId, requestId: "retained" }, ownerThreadId);
-    yield* boat.operate({ action: "stop", projectId, requestId: "retained" });
-    assert.isTrue(
-      Exit.isFailure(
-        yield* boat
-          .configure(projectId, {
-            ...DEFAULT_BOAT_PROJECT,
-            enabled: true,
-            webAccess: "private",
-          })
-          .pipe(Effect.exit),
-      ),
+    assert.equal(test.deviceReleaseCount(), 0);
+    test.deviceSessions.length = 0;
+    yield* boat.operate(
+      { action: "preview", projectId, requestId: "private-android" },
+      ownerThreadId,
     );
+    assert.lengthOf(test.deviceOpens, 2);
+    assert.equal(test.deviceReleaseCount(), 1);
+    assert.lengthOf(test.deviceSessions, 1);
+  }).pipe(Effect.scoped, Effect.provide(test.services));
+});
+
+it.effect("cancels an in-flight private Android open when the lease ends", () => {
+  const entered = Deferred.makeUnsafe<void>();
+  const waiting = Deferred.makeUnsafe<void>();
+  const test = setup(undefined, ownerThreadId, () =>
+    Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(waiting))),
+  );
+  return Effect.gen(function* () {
+    const boat = yield* make;
+    yield* boat.connect(Redacted.make("boat_fixture_private"));
+    yield* boat.configure(projectId, {
+      ...DEFAULT_BOAT_PROJECT,
+      enabled: true,
+      webAccess: "private",
+      previewKind: "android",
+      privateAndroidTarget: { hostId: "boat-android", deviceId: "selected-android" },
+      devCommand: "npm run dev",
+    });
+    yield* boat.operate(
+      { action: "start", projectId, requestId: "private-android" },
+      ownerThreadId,
+    );
+    const opening = yield* boat
+      .operate({ action: "prepare", projectId, requestId: "private-android" }, ownerThreadId)
+      .pipe(Effect.exit, Effect.forkChild);
+    yield* Effect.raceFirst(Deferred.await(entered), Fiber.join(opening));
+    assert.lengthOf(test.deviceOpens, 1);
+    test.setOwnerActive(false);
+    yield* boat.reconcile();
+    assert.isTrue(Exit.isFailure(yield* Fiber.join(opening)));
+    yield* test.deviceReleased;
+    assert.lengthOf(test.deviceSessions, 0);
   }).pipe(Effect.scoped, Effect.provide(test.services));
 });
 

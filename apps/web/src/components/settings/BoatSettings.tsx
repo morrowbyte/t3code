@@ -17,6 +17,7 @@ import {
 import * as Redacted from "effect/Redacted";
 import { useEffect, useEffectEvent, useState } from "react";
 import { boatEnvironment } from "../../state/boat";
+import { useDeviceState } from "../../state/device";
 import { useEnvironmentScope } from "../../state/session";
 import { useProjects, useThreadShells } from "../../state/entities";
 import { usePrimaryEnvironmentId } from "../../state/environments";
@@ -48,17 +49,34 @@ export function BoatUsagePanel() {
 }
 
 function ProjectForm({
+  environmentId,
   config,
   defaults,
   save,
   busy,
 }: {
+  environmentId: EnvironmentId;
   config: BoatProjectConfig;
   defaults: BoatDefaults;
   save: (config: BoatProjectConfig) => void;
   busy: boolean;
 }) {
   const [draft, setDraft] = useState(config);
+  const privateAndroid = draft.webAccess === "private" && draft.previewKind === "android";
+  const devices = useDeviceState(privateAndroid ? environmentId : null);
+  const androidTargets = devices.state.devices.filter(
+    (device) =>
+      device.platform === "android" &&
+      devices.state.hosts.some((host) => host.id === device.hostId && host.kind === "ssh"),
+  );
+  const selectedAndroidTarget = androidTargets.find(
+    (device) =>
+      device.hostId === draft.privateAndroidTarget?.hostId &&
+      device.id === draft.privateAndroidTarget.deviceId,
+  );
+  const androidTargetValue = draft.privateAndroidTarget
+    ? JSON.stringify([draft.privateAndroidTarget.hostId, draft.privateAndroidTarget.deviceId])
+    : "none";
   const machineLabels = {
     small: "Small · 2 CPU / 4 GB",
     default: "Default · 4 CPU / 8 GB",
@@ -108,7 +126,7 @@ function ProjectForm({
           <Select
             value={draft.previewKind}
             onValueChange={(value) => {
-              if (value === "web" || (value === "android" && draft.webAccess !== "private"))
+              if (value === "web" || value === "android")
                 setDraft({ ...draft, previewKind: value });
             }}
           >
@@ -119,13 +137,71 @@ function ProjectForm({
             </SelectTrigger>
             <SelectPopup>
               <SelectItem value="web">Web</SelectItem>
-              <SelectItem value="android" disabled={draft.webAccess === "private"}>
-                Android emulator
-              </SelectItem>
+              <SelectItem value="android">Android emulator</SelectItem>
             </SelectPopup>
           </Select>
         }
       />
+      {privateAndroid && (
+        <SettingsRow
+          title="Android device"
+          description={
+            devices.error
+              ? "Could not load Android devices."
+              : devices.loaded && androidTargets.length === 0
+                ? "No Android devices available."
+                : undefined
+          }
+          control={
+            <Select
+              value={androidTargetValue}
+              disabled={busy || !devices.loaded || devices.error !== null}
+              onValueChange={(value) => {
+                if (value === "none") {
+                  setDraft({ ...draft, privateAndroidTarget: null });
+                  return;
+                }
+                const device = androidTargets.find(
+                  (target) => JSON.stringify([target.hostId, target.id]) === value,
+                );
+                if (device)
+                  setDraft({
+                    ...draft,
+                    privateAndroidTarget: { hostId: device.hostId, deviceId: device.id },
+                  });
+              }}
+            >
+              <SelectTrigger size="sm" className="w-full sm:w-56" aria-label="Boat Android device">
+                <SelectValue>
+                  {selectedAndroidTarget
+                    ? `${selectedAndroidTarget.name} · ${devices.state.hosts.find((host) => host.id === selectedAndroidTarget.hostId)?.label ?? selectedAndroidTarget.hostId}`
+                    : draft.privateAndroidTarget
+                      ? "Selected device unavailable"
+                      : "Choose existing device"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup>
+                <SelectItem value="none">Choose existing device</SelectItem>
+                {draft.privateAndroidTarget && !selectedAndroidTarget && (
+                  <SelectItem value={androidTargetValue} disabled>
+                    Selected device unavailable
+                  </SelectItem>
+                )}
+                {androidTargets.map((device) => (
+                  <SelectItem
+                    key={JSON.stringify([device.hostId, device.id])}
+                    value={JSON.stringify([device.hostId, device.id])}
+                  >
+                    {device.name} ·{" "}
+                    {devices.state.hosts.find((host) => host.id === device.hostId)?.label ??
+                      device.hostId}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+      )}
       <SettingsRow
         title="Machine"
         control={
@@ -337,7 +413,7 @@ function ProjectForm({
             type="button"
             variant="outline"
             size="sm"
-            disabled={busy}
+            disabled={busy || (privateAndroid && !draft.privateAndroidTarget)}
             onClick={() => save(draft)}
           >
             Save project
@@ -652,6 +728,7 @@ function BoatPanel({
           {selectedProject && editable && canConfigure && (
             <ProjectForm
               key={selectedProject}
+              environmentId={environmentId}
               config={state.projects[selectedProject] ?? DEFAULT_BOAT_PROJECT}
               defaults={state.defaults}
               busy={busy}
