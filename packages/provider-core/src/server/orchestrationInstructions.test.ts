@@ -10,6 +10,14 @@ import {
 } from "./orchestrationInstructions.ts";
 
 describe("T3 device instructions", () => {
+  it("names other threads with their returned title and canonical link", () => {
+    assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "actual thread title");
+    assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "returned canonical `link` verbatim");
+    assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "internal aliases such as U or V");
+    assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "one bounded `t3_thread_read`");
+    assert.notInclude(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "t3-thread://v1/<threadId>");
+  });
+
   it("route device work through device_open and give Claude the line that loads the tools", () => {
     for (const intent of ["`device_list`", "`device_open`", "`agent-device`", "ssh", "`hostId`"]) {
       assert.include(T3_CODE_DEVICE_TOOL_INSTRUCTIONS, intent);

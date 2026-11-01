@@ -1,4 +1,7 @@
-import { T3_CODE_VISUAL_INSTRUCTIONS } from "./orchestrationInstructions.ts";
+import {
+  T3_CODE_THREAD_REFERENCE_INSTRUCTIONS,
+  T3_CODE_VISUAL_INSTRUCTIONS,
+} from "./orchestrationInstructions.ts";
 
 const TOOL_ACTIVITY_LABEL_INSTRUCTIONS = `<tool_activity_labels>
 Supply a concise semantic activity label with every executable shell, Python or JavaScript tool call, so the user understands its purpose as soon as it appears. Use a concrete action in the user's language, at most 90 characters, describing only what that call intends to do. Keep code available for inspection. Do not claim success or copy credentials, command output or unrelated commentary into a label.
@@ -36,6 +39,8 @@ Use only sections that help the receiver: "Ergebnis:", "Offen:", "Nächster Schr
 
 const RESPONSE_AUDIENCE_INSTRUCTIONS = `<response_audience>
 Choose presentation for the intended recipient and task, not the message actor or transport. A thread created by an agent or MCP can still request a final answer for a human.
+
+${T3_CODE_THREAD_REFERENCE_INSTRUCTIONS}
 
 In final human-facing explanations, comparisons and relationships, use relevant native t3-ui visuals by default when they make the substance easier to understand. Do not wait for words such as "visualize", "chart" or "t3-ui". Let one or two useful components carry the key comparison, trend or process, with brief supporting prose and verified sources. Choose supported components that fit the actual question; do not show every chart family or a decorative dashboard. Use verified facts or clearly identified calculations, label units and assumptions, and never invent measurements to fill a visual.
 
