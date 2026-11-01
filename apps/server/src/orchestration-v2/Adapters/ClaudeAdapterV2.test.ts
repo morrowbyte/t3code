@@ -39,6 +39,7 @@ import {
   type OrchestrationV2AppThread,
   type OrchestrationV2PendingBackgroundTask,
   OrchestrationV2ProviderThread,
+  Project,
   ProjectId,
   ProviderInstanceId,
   type ResolvedProviderInstanceEnvironment,
@@ -76,6 +77,7 @@ import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 
 import * as PortScanner from "../../preview/PortScanner.ts";
+import * as ProjectService from "../../project/ProjectService.ts";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { WorkflowAgentTranscriptReadObserver } from "../workflowAgentTranscript.ts";
 import * as ServerConfig from "../../config.ts";
@@ -100,6 +102,7 @@ import { ClaudeOrchestratorReplayHarness } from "./ClaudeAdapterV2.testkit.ts";
 import { provideDeterministicTestRuntime } from "../testkit/DeterministicRuntime.ts";
 import { runOrchestratorV2Scenario } from "../testkit/OrchestratorScenario.ts";
 import { layerProviderReplay } from "../testkit/ProviderReplayHarness.ts";
+import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import {
   assertBaseProjection,
   assertSemanticProjectionIntegrity,
@@ -122,6 +125,7 @@ beforeEach(() => {
 });
 
 const DEFAULT_CLAUDE_SETTINGS = Schema.decodeSync(ClaudeSettings)({});
+const decodeProject = Schema.decodeSync(Project);
 const AUTO_COMPACT_CLAUDE_SETTINGS = Schema.decodeSync(ClaudeSettings)({
   autoCompactWindow: "300000",
 });
@@ -7836,7 +7840,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         driver: ProviderDriverKind.make("claudeAgent"),
         modelSelection: CLAUDE_MODEL_SELECTION,
       }).pipe(Effect.provide(IdAllocator.layer), provideDeterministicTestRuntime);
-      const scenario = { name: transcript.scenario, transcript, ...materialized };
+      const workspace = yield* checkpointWorkspace(transcript.scenario);
+      const scenario = {
+        name: transcript.scenario,
+        transcript,
+        ...materialized,
+        runtimePolicyOverride: { cwd: workspace },
+      };
       yield* Effect.gen(function* () {
         const result = yield* runOrchestratorV2Scenario(scenario);
         assertBaseProjection({ result, transcript, runCount: 1, runStatuses: ["completed"] });
@@ -7853,7 +7863,25 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           1,
         );
       }).pipe(
-        Effect.provide(layerProviderReplay(scenario, ClaudeOrchestratorReplayHarness)),
+        Effect.provide(
+          layerProviderReplay(scenario, ClaudeOrchestratorReplayHarness, {
+            projectServiceLayer: Layer.mock(ProjectService.ProjectService)({
+              getById: (id) =>
+                Effect.succeedSome(
+                  decodeProject({
+                    id,
+                    title: transcript.scenario,
+                    workspaceRoot: workspace,
+                    defaultModelSelection: CLAUDE_MODEL_SELECTION,
+                    scripts: [],
+                    createdAt: "2026-11-01T00:00:00Z",
+                    updatedAt: "2026-11-01T00:00:00Z",
+                    deletedAt: null,
+                  }),
+                ),
+            }),
+          }),
+        ),
         provideDeterministicTestRuntime,
         Effect.scoped,
       );
