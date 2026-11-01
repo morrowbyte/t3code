@@ -365,8 +365,6 @@ const DESKTOP_ATTACH_TIMEOUT = "10 seconds";
 const VIEWER_OUTPUT_LIMIT = 64;
 const RECORDING_SCREENCAST = { format: "jpeg", quality: 90, everyNthFrame: 1 } as const;
 const decodeViewportSetting = Schema.decodeUnknownSync(PreviewViewportSettingSchema);
-const AGENT_CURSOR_MOVE_MS = 160;
-const AGENT_CURSOR_CLICK_LEAD_MS = 40;
 /** A dialog blocks page script, so a desktop size read gives up after this. */
 const DESKTOP_VIEWPORT_READ_TIMEOUT = "1 second";
 
@@ -2167,10 +2165,8 @@ const make = Effect.gen(function* () {
           .catch(constVoid);
       };
       show("move");
-      await sleepUntil(Date.now() + AGENT_CURSOR_MOVE_MS);
       if (phase !== "click") return;
       show("click");
-      await sleepUntil(Date.now() + AGENT_CURSOR_CLICK_LEAD_MS);
     };
 
   const recordAction = <A>(tab: ServerTab, action: string, run: () => Promise<A>): Promise<A> => {

@@ -541,6 +541,40 @@ it.live("visible user tabs retain their desktop attach wait", () =>
   ).pipe(Effect.provide(layer)),
 );
 
+it.live("dispatches a visible browser click without waiting for cursor animation", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, broker, tabId } = yield* ready;
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, false));
+      const click = vi.fn(async () => {});
+      Object.assign(contexts[0]!.page, { mouse: { click } });
+      yield* Effect.acquireRelease(
+        Effect.sync(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })),
+        () =>
+          Effect.promise(() => vi.runAllTimersAsync()).pipe(
+            Effect.ensuring(Effect.sync(() => vi.useRealTimers())),
+          ),
+      );
+      const running = yield* broker
+        .invoke({ scope, tabId, operation: "click", input: { x: 20, y: 30 } })
+        .pipe(Effect.forkScoped);
+      let event = yield* Queue.take(viewer.output);
+      while (event._tag !== "pointer") event = yield* Queue.take(viewer.output);
+      expect(event).toMatchObject({ phase: "move", x: 20, y: 30 });
+      yield* Effect.promise(() => vi.advanceTimersByTimeAsync(0));
+      expect(click).toHaveBeenCalledExactlyOnceWith(20, 30, {
+        button: "left",
+        clickCount: 1,
+      });
+      yield* Fiber.join(running);
+      const remaining = yield* Queue.takeAll(viewer.output);
+      expect(remaining).toContainEqual(
+        expect.objectContaining({ _tag: "pointer", phase: "click", x: 20, y: 30 }),
+      );
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
 it.live(
   "a confirmed challenge stops agent mutations and new tabs but leaves snapshots readable until human release",
   () =>
