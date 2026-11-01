@@ -21,10 +21,22 @@ const markerDir = NodePath.join(worktree, ".t3");
 const runningMarker = NodePath.join(markerDir, "setup-running");
 const doneMarker = NodePath.join(markerDir, "setup-done");
 const failedMarker = NodePath.join(markerDir, "setup-failed");
+NodeFS.mkdirSync(markerDir, { recursive: true });
+if (NodeFS.existsSync(runningMarker)) {
+  const owner = Number(NodeFS.readFileSync(runningMarker, "utf8").trim());
+  if (!Number.isSafeInteger(owner) || owner <= 0)
+    throw new Error("Invalid dependency operation marker.");
+  try {
+    process.kill(owner, 0);
+    throw new Error("Another dependency operation is running in this worktree.");
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
+  }
+  NodeFS.rmSync(runningMarker);
+}
+NodeFS.writeFileSync(runningMarker, `${process.pid}\n`, { flag: "wx" });
 NodeFS.rmSync(doneMarker, { force: true });
 NodeFS.rmSync(failedMarker, { force: true });
-NodeFS.mkdirSync(markerDir, { recursive: true });
-NodeFS.writeFileSync(runningMarker, `${process.pid}\n`);
 let failureDetail = "";
 process.on("uncaughtExceptionMonitor", (error) => {
   failureDetail = error.stack ?? String(error);
@@ -48,92 +60,93 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
   });
 }
 
-const projectRoot = process.env.T3CODE_PROJECT_ROOT;
-if (!projectRoot) {
-  throw new Error("T3CODE_PROJECT_ROOT is not set. Run this through the t3.json setup action.");
-}
+const projectRoot = process.env.T3CODE_PROJECT_ROOT ?? worktree;
 
-// oxlint-disable-next-line t3code/no-global-process-runtime -- Bootstrap runs before workspace dependencies exist.
-const vpBinaryName = process.platform === "win32" ? "vp.exe" : "vp";
-const vpHomes = [
-  ...(process.env.VP_HOME ? [process.env.VP_HOME] : []),
-  NodePath.join(
-    process.env.XDG_DATA_HOME ?? NodePath.join(NodeOS.homedir(), ".local", "share"),
-    "vite-plus",
-  ),
-  NodePath.join(NodeOS.homedir(), ".vite-plus"),
-  ...[process.env.LOCALAPPDATA, process.env.APPDATA].flatMap((directory) =>
-    directory ? [NodePath.join(directory, "vite-plus")] : [],
-  ),
-];
-// A running desktop can retain the PATH from before Vite+ was installed.
-const vpOnPath = (process.env.PATH ?? "")
-  .split(NodePath.delimiter)
-  .some((directory) =>
-    (vpBinaryName === "vp.exe" ? ["vp.exe", "vp.cmd", "vp.bat"] : ["vp"]).some((name) =>
-      NodeFS.existsSync(NodePath.join(directory, name)),
+// Creating a source checkout must not materialize a dependency tree.
+if (process.argv.includes("--install")) {
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Bootstrap runs before workspace dependencies exist.
+  const vpBinaryName = process.platform === "win32" ? "vp.exe" : "vp";
+  const vpHomes = [
+    ...(process.env.VP_HOME ? [process.env.VP_HOME] : []),
+    NodePath.join(
+      process.env.XDG_DATA_HOME ?? NodePath.join(NodeOS.homedir(), ".local", "share"),
+      "vite-plus",
     ),
-  );
-const vpExecutable =
-  (vpOnPath
-    ? "vp"
-    : vpHomes
-        .map((directory) => NodePath.join(directory, "bin", vpBinaryName))
-        .find((file) => NodeFS.existsSync(file))) ?? "vp";
+    NodePath.join(NodeOS.homedir(), ".vite-plus"),
+    ...[process.env.LOCALAPPDATA, process.env.APPDATA].flatMap((directory) =>
+      directory ? [NodePath.join(directory, "vite-plus")] : [],
+    ),
+  ];
+  // A running desktop can retain the PATH from before Vite+ was installed.
+  const vpOnPath = (process.env.PATH ?? "")
+    .split(NodePath.delimiter)
+    .some((directory) =>
+      (vpBinaryName === "vp.exe" ? ["vp.exe", "vp.cmd", "vp.bat"] : ["vp"]).some((name) =>
+        NodeFS.existsSync(NodePath.join(directory, name)),
+      ),
+    );
+  const vpExecutable =
+    (vpOnPath
+      ? "vp"
+      : vpHomes
+          .map((directory) => NodePath.join(directory, "bin", vpBinaryName))
+          .find((file) => NodeFS.existsSync(file))) ?? "vp";
 
-const install = NodeChildProcess.spawn(vpExecutable, ["i", "--frozen-lockfile", "--", "--yes"], {
-  cwd: worktree,
-  shell: vpExecutable === "vp" && vpBinaryName === "vp.exe",
-  stdio: ["ignore", "pipe", "pipe"],
-});
-activeInstall = install;
-let installOutput = "";
-for (const [source, target] of [
-  [install.stdout, process.stdout],
-  [install.stderr, process.stderr],
-] as const) {
-  source.setEncoding("utf8");
-  source.on("data", (chunk: string) => {
-    target.write(chunk);
-    installOutput = (installOutput + chunk).slice(-8_000);
+  const install = NodeChildProcess.spawn(vpExecutable, ["i", "--frozen-lockfile", "--", "--yes"], {
+    cwd: worktree,
+    shell: vpExecutable === "vp" && vpBinaryName === "vp.exe",
+    stdio: ["ignore", "pipe", "pipe"],
   });
-}
-const installStatus = await new Promise<number | null>((resolve) => install.on("close", resolve));
-activeInstall = undefined;
-if (installStatus !== 0 || cancelSignal) {
-  failureDetail = cancelSignal
-    ? `Cancelled by ${cancelSignal}.`
-    : installOutput.trimEnd().split("\n").slice(-30).join("\n");
-  process.exit(installStatus || 1);
-}
+  activeInstall = install;
+  let installOutput = "";
+  for (const [source, target] of [
+    [install.stdout, process.stdout],
+    [install.stderr, process.stderr],
+  ] as const) {
+    source.setEncoding("utf8");
+    source.on("data", (chunk: string) => {
+      target.write(chunk);
+      installOutput = (installOutput + chunk).slice(-8_000);
+    });
+  }
+  const installStatus = await new Promise<number | null>((resolve) => install.on("close", resolve));
+  activeInstall = undefined;
+  if (installStatus !== 0 || cancelSignal) {
+    failureDetail = cancelSignal
+      ? `Cancelled by ${cancelSignal}.`
+      : installOutput.trimEnd().split("\n").slice(-30).join("\n");
+    process.exit(installStatus || 1);
+  }
 
-// pnpm cannot clone or hardlink across filesystems, so a store on another
-// device silently turns every worktree install into a full copy.
-const storeDir: unknown = JSON.parse(
-  NodeFS.readFileSync(NodePath.join(worktree, "node_modules", ".modules.yaml"), "utf8"),
-).storeDir;
-if (
-  typeof storeDir === "string" &&
-  NodeFS.statSync(storeDir).dev !== NodeFS.statSync(NodePath.join(worktree, "node_modules")).dev
-) {
-  process.stderr.write(
-    [
-      "",
-      "WARNING: the pnpm store is on a different filesystem than this worktree.",
-      `  store:    ${storeDir}`,
-      `  worktree: ${worktree}`,
-      "pnpm cannot hardlink or clone across filesystems, so it copied every package into node_modules.",
-      "Fix: put the store on the worktree's filesystem, for example:",
-      `  pnpm config set store-dir ${JSON.stringify(NodePath.join(NodePath.dirname(worktree), ".pnpm-store"))} --global`,
-      "",
-      "",
-    ].join("\n"),
-  );
+  // pnpm cannot clone or hardlink across filesystems, so a store on another
+  // device silently turns every worktree install into a full copy.
+  const storeDir: unknown = JSON.parse(
+    NodeFS.readFileSync(NodePath.join(worktree, "node_modules", ".modules.yaml"), "utf8"),
+  ).storeDir;
+  if (
+    typeof storeDir === "string" &&
+    NodeFS.statSync(storeDir).dev !== NodeFS.statSync(NodePath.join(worktree, "node_modules")).dev
+  ) {
+    process.stderr.write(
+      [
+        "",
+        "WARNING: the pnpm store is on a different filesystem than this worktree.",
+        `  store:    ${storeDir}`,
+        `  worktree: ${worktree}`,
+        "pnpm cannot hardlink or clone across filesystems, so it copied every package into node_modules.",
+        "Fix: put the store on the worktree's filesystem, for example:",
+        `  pnpm config set store-dir ${JSON.stringify(NodePath.join(NodePath.dirname(worktree), ".pnpm-store"))} --global`,
+        "",
+        "",
+      ].join("\n"),
+    );
+  }
 }
 
 // Worktrees link main-checkout env files; replace only symlinks so real files always survive.
 for (const file of ENV_FILES) {
   const source = NodePath.join(projectRoot, file);
+  if (NodePath.resolve(projectRoot) === worktree) continue;
   const sourceStat = NodeFS.statSync(source, { throwIfNoEntry: false });
   if (!sourceStat) continue;
   if (!sourceStat.isFile()) {

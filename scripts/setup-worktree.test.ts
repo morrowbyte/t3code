@@ -30,6 +30,14 @@ async function fixture(message: string | null, platform: NodeJS.Platform) {
     NodeURL.fileURLToPath(new URL("./setup-worktree.ts", import.meta.url)),
     NodePath.join(scripts, "setup-worktree.ts"),
   );
+  await NodeFSP.copyFile(
+    NodeURL.fileURLToPath(new URL("./dev-entry.ts", import.meta.url)),
+    NodePath.join(scripts, "dev-entry.ts"),
+  );
+  await NodeFSP.writeFile(
+    NodePath.join(scripts, "dev-runner.ts"),
+    'import { writeFileSync } from "node:fs"; writeFileSync("dev-started", "yes");',
+  );
   await NodeFSP.writeFile(NodePath.join(worktree, "package.json"), '{"type":"module"}');
   await NodeFSP.writeFile(
     NodePath.join(shared, "storagePressure.ts"),
@@ -49,11 +57,11 @@ async function fixture(message: string | null, platform: NodeJS.Platform) {
   );
   return {
     worktree,
-    run: () =>
+    run: (args: string[] = [], entry = "setup-worktree.ts") =>
       new Promise<{ code: number | null; stderr: string }>((resolve, reject) => {
         const child = NodeChildProcess.spawn(
           process.execPath,
-          [NodePath.join(scripts, "setup-worktree.ts")],
+          [NodePath.join(scripts, entry), ...args],
           {
             cwd: worktree,
             env: {
@@ -77,6 +85,60 @@ async function fixture(message: string | null, platform: NodeJS.Platform) {
 }
 
 describe("worktree installer storage admission", () => {
+  it.live("prepares source-only worktrees without installing dependencies", () =>
+    Effect.gen(function* () {
+      const platform = yield* HostProcess.Platform;
+      yield* Effect.promise(async () => {
+        await using test = await fixture(null, platform);
+        expect(await test.run()).toEqual({ code: 0, stderr: "" });
+        await expect(
+          NodeFSP.stat(NodePath.join(test.worktree, "installer-started")),
+        ).rejects.toHaveProperty("code", "ENOENT");
+        await expect(
+          NodeFSP.stat(NodePath.join(test.worktree, "node_modules")),
+        ).rejects.toHaveProperty("code", "ENOENT");
+        expect(await NodeFSP.readFile(NodePath.join(test.worktree, ".t3/setup-done"), "utf8")).toBe(
+          "",
+        );
+      });
+    }),
+  );
+  it.live("installs only on first development start and reuses the installation", () =>
+    Effect.gen(function* () {
+      const platform = yield* HostProcess.Platform;
+      yield* Effect.promise(async () => {
+        await using test = await fixture(null, platform);
+        expect((await test.run()).code).toBe(0);
+        expect((await test.run(["dev"], "dev-entry.ts")).code).toBe(0);
+        expect(await NodeFSP.readFile(NodePath.join(test.worktree, "dev-started"), "utf8")).toBe(
+          "yes",
+        );
+        await NodeFSP.writeFile(NodePath.join(test.worktree, "installer-started"), "unchanged");
+        expect((await test.run(["dev"], "dev-entry.ts")).code).toBe(0);
+        expect(
+          await NodeFSP.readFile(NodePath.join(test.worktree, "installer-started"), "utf8"),
+        ).toBe("unchanged");
+      });
+    }),
+  );
+
+  it.live("does not race another dependency operation in the same worktree", () =>
+    Effect.gen(function* () {
+      const platform = yield* HostProcess.Platform;
+      yield* Effect.promise(async () => {
+        await using test = await fixture(null, platform);
+        await NodeFSP.mkdir(NodePath.join(test.worktree, ".t3"));
+        const marker = NodePath.join(test.worktree, ".t3/setup-running");
+        await NodeFSP.writeFile(marker, `${process.pid}\n`);
+        expect((await test.run()).code).not.toBe(0);
+        expect(await NodeFSP.readFile(marker, "utf8")).toBe(`${process.pid}\n`);
+        await expect(
+          NodeFSP.stat(NodePath.join(test.worktree, "installer-started")),
+        ).rejects.toHaveProperty("code", "ENOENT");
+      });
+    }),
+  );
+
   it.live("blocks before marker mkdir and installer start on critical storage pressure", () =>
     Effect.gen(function* () {
       const platform = yield* HostProcess.Platform;
@@ -102,7 +164,7 @@ describe("worktree installer storage admission", () => {
       const platform = yield* HostProcess.Platform;
       yield* Effect.promise(async () => {
         await using test = await fixture(null, platform);
-        const result = await test.run();
+        const result = await test.run(["--install"]);
         expect(result).toEqual({ code: 0, stderr: "" });
         if (platform !== "win32") {
           expect(await NodeFSP.readFile(NodePath.join(test.worktree, ".env"), "utf8")).toBe(

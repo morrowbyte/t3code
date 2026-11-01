@@ -35,6 +35,7 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -3017,6 +3018,194 @@ it.effect.each([
           yield* Deferred.succeed(release, undefined);
         }),
     });
+  }),
+);
+
+it.effect.each(["none", "subagent", "background_turn"] as const)(
+  "releases storage after active %s work settles while the consumer remains open",
+  (work) =>
+    Effect.gen(function* () {
+      const rootEnded = yield* Deferred.make<void>();
+      const finishWork = yield* Deferred.make<void>();
+      const workEnded = yield* Deferred.make<void>();
+      const finishConsumer = yield* Deferred.make<void>();
+      let releases = 0;
+      let storageChecks = 0;
+      yield* captureRootRunTermination({
+        key: `storage-consumer:${work}`,
+        shouldFinalizeRun: () => Effect.succeed(true),
+        hasPendingBackgroundWorkForThread: () => Effect.succeed(true),
+        storagePressure: {
+          paths: ["work"],
+          guard: {
+            check: async () => null,
+            checkRunning: async () => {
+              storageChecks += 1;
+              return null;
+            },
+            acquire: async () => ({
+              failure: null,
+              release: () => {
+                releases += 1;
+              },
+            }),
+          },
+        },
+        events: (ids) => {
+          const subagent = (status: "running" | "completed") => ({
+            type: "subagent.updated" as const,
+            driver,
+            subagent: makeRunOwnedSubagentFixture({
+              ids,
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              childThreadId: ids.childThreadId,
+              driver,
+              status,
+            }),
+          });
+          const background = (pending: boolean) => ({
+            type: "background_work.updated" as const,
+            driver,
+            providerTurnId: ids.rootProviderTurnId,
+            pending,
+          });
+          return Stream.concat(
+            Stream.fromIterable([
+              ...(work === "subagent" ? [subagent("running")] : []),
+              ...(work === "background_turn" ? [background(true)] : []),
+              rootTerminalEvent(ids, "completed"),
+            ]),
+            Stream.fromEffect(
+              Deferred.succeed(rootEnded, undefined).pipe(
+                Effect.andThen(Deferred.await(finishWork)),
+              ),
+            ).pipe(
+              Stream.flatMap(() =>
+                Stream.fromIterable([
+                  ...(work === "subagent" ? [subagent("completed")] : []),
+                  ...(work === "background_turn" ? [background(false)] : []),
+                ]),
+              ),
+              Stream.concat(
+                Stream.fromEffect(
+                  Deferred.succeed(workEnded, undefined).pipe(
+                    Effect.andThen(Deferred.await(finishConsumer)),
+                  ),
+                ).pipe(Stream.drain),
+              ),
+            ),
+          );
+        },
+        afterStart: (closed) =>
+          Effect.gen(function* () {
+            yield* Effect.raceFirst(
+              Deferred.await(rootEnded),
+              Deferred.await(closed).pipe(
+                Effect.andThen(Effect.die(new Error("Consumer closed before the root boundary"))),
+              ),
+            );
+            assert.equal(releases, work === "none" ? 1 : 0);
+            assert.isFalse(yield* Deferred.isDone(closed));
+            yield* Deferred.succeed(finishWork, undefined);
+            yield* Effect.raceFirst(
+              Deferred.await(workEnded),
+              Deferred.await(closed).pipe(
+                Effect.andThen(Effect.die(new Error("Consumer closed before the work boundary"))),
+              ),
+            );
+            assert.equal(releases, 1);
+            const checksAtEnd = storageChecks;
+            yield* TestClock.adjust("10 seconds");
+            assert.equal(storageChecks, checksAtEnd);
+            assert.isFalse(yield* Deferred.isDone(closed));
+            yield* Deferred.succeed(finishConsumer, undefined);
+          }),
+      });
+      yield* TestClock.adjust(0);
+      assert.equal(releases, 1);
+    }),
+);
+
+it.effect.each(["start_failure", "stream_failure", "interrupted"] as const)(
+  "releases storage exactly once after %s",
+  (mode) =>
+    Effect.gen(function* () {
+      let releases = 0;
+      const streamStarted = yield* Deferred.make<void>();
+      yield* captureRootRunTermination({
+        key: `storage-release:${mode}`,
+        shouldFinalizeRun: () => Effect.succeed(true),
+        storagePressure: {
+          paths: ["work"],
+          guard: {
+            check: async () => null,
+            checkRunning: async () => null,
+            acquire: async () => ({
+              failure: null,
+              release: () => {
+                releases += 1;
+              },
+            }),
+          },
+        },
+        ...(mode === "start_failure"
+          ? {
+              startTurn: () =>
+                Deferred.await(streamStarted).pipe(
+                  Effect.andThen(Effect.die(new Error("start failed"))),
+                ),
+            }
+          : {}),
+        events: (ids) =>
+          mode === "stream_failure"
+            ? Stream.die(new Error("stream failed"))
+            : mode === "start_failure"
+              ? Stream.unwrap(
+                  Deferred.succeed(streamStarted, undefined).pipe(Effect.as(Stream.never)),
+                )
+              : Stream.make(rootTerminalEvent(ids, "interrupted")),
+      });
+      yield* TestClock.adjust(0);
+      assert.equal(releases, 1);
+    }),
+);
+
+it.effect("releases storage exactly once when an accepted reservation's start is interrupted", () =>
+  Effect.gen(function* () {
+    const starting = yield* Deferred.make<void>();
+    const streamStarted = yield* Deferred.make<void>();
+    const closed = yield* Deferred.make<void>();
+    let releases = 0;
+    const running = yield* captureRootRunTermination({
+      key: "storage-start-cancel",
+      shouldFinalizeRun: () => Effect.succeed(true),
+      storagePressure: {
+        paths: ["work"],
+        guard: {
+          check: async () => null,
+          checkRunning: async () => null,
+          acquire: async () => ({
+            failure: null,
+            release: () => {
+              releases += 1;
+            },
+          }),
+        },
+      },
+      startTurn: () =>
+        Deferred.await(streamStarted).pipe(
+          Effect.andThen(Deferred.succeed(starting, undefined)),
+          Effect.andThen(Effect.never),
+        ),
+      events: () =>
+        Stream.unwrap(Deferred.succeed(streamStarted, undefined).pipe(Effect.as(Stream.never))),
+      onSubscriptionClose: Deferred.succeed(closed, undefined),
+    }).pipe(Effect.forkChild);
+    yield* Deferred.await(starting);
+    assert.equal(releases, 0);
+    yield* Fiber.interrupt(running);
+    yield* Deferred.await(closed);
+    assert.equal(releases, 1);
   }),
 );
 

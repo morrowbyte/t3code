@@ -4,9 +4,15 @@
   "scripts": [
     {
       "name": "Setup Worktree",
-      "command": "node scripts/setup-worktree.ts",
+      "command": "node scripts/setup-worktree.ts --prepare",
       "icon": "configure",
       "runOnWorktreeCreate": true
+    },
+    {
+      "name": "Release Worktree Dependencies",
+      "command": "node scripts/prune-worktree-dependencies.ts",
+      "icon": "configure",
+      "runOnSettle": true
     }
   ]
 }
