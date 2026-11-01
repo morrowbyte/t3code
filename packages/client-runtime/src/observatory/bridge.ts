@@ -43,6 +43,7 @@ export function createObservatoryProjectionBridge(input: {
   readonly connectionAtom: (id: EnvironmentId) => Atom.Atom<ObservatoryConnection | null>;
   readonly sessionAtom: (id: EnvironmentId) => Atom.Atom<AuthSessionState | null>;
   readonly createScope: () => ProjectionScope;
+  readonly taskCards?: boolean;
 }) {
   const scopes = new WeakMap<
     AtomRegistry.AtomRegistry,
@@ -110,6 +111,7 @@ export function createObservatoryProjectionBridge(input: {
     ),
   );
   return createObservatoryViewAtoms({
+    taskCards: input.taskCards === true,
     catalogReadyAtom: Atom.make((get) => get(input.catalogAtom).isReady),
     sourcesAtom: Atom.make((get) =>
       [...get(input.catalogAtom).entries.keys()].map((id) => get(hostAtom(id)).source),
@@ -171,6 +173,7 @@ export function createLiveObservatory<R, E>(
     }),
   );
   return createObservatoryProjectionBridge({
+    taskCards: true,
     catalogAtom,
     connectionAtom: connections,
     sessionAtom: grants,

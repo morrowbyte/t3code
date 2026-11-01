@@ -1,5 +1,5 @@
 import { useId } from "react";
-import type { ObservatoryView } from "@t3tools/client-runtime/observatory";
+import { OBSERVATORY_TASK_LABELS, type ObservatoryView } from "@t3tools/client-runtime/observatory";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { Button } from "../components/ui/button";
 
@@ -61,7 +61,7 @@ export function ObservatoryGraph({
                     {node.title}
                   </Button>
                   <p>
-                    Observed: {node.nativeStatus}
+                    {OBSERVATORY_TASK_LABELS[node.task.status]}
                     {node.shell.archivedAt !== null && " · archived"}
                   </p>
                   <p className="break-words text-xs text-muted-foreground">

@@ -83,6 +83,62 @@ function command(n: number): OrchestrationV2ProjectedTurnItem {
 const decodeOrchestrationV2ThreadProjection = Schema.decodeSync(OrchestrationV2ThreadProjection);
 
 describe("observatory canonical projection view", () => {
+  it("retains the owner's plan across runs and excludes a child agent's plan", () => {
+    const projection = decodeOrchestrationV2ThreadProjection({
+      ...v2Projection,
+      runs: [1, 2].map((ordinal) => ({
+        id: `run:${ordinal}`,
+        threadId: ref.threadId,
+        ordinal,
+        providerInstanceId: "codex",
+        modelSelection: v2ThreadShell.modelSelection,
+        providerThreadId: "native-thread",
+        userMessageId: `message:${ordinal}`,
+        rootNodeId: `root:${ordinal}`,
+        activeAttemptId: null,
+        status: "completed",
+        requestedAt: v2Now,
+        startedAt: v2Now,
+        completedAt: v2Now,
+        checkpointId: null,
+        contextHandoffId: null,
+      })),
+      plans: [
+        {
+          id: "owner-plan",
+          threadId: ref.threadId,
+          runId: "run:1",
+          nodeId: "root:1",
+          status: "active",
+          kind: "todo_list",
+          steps: [
+            { id: "done", text: "Read source", status: "completed" },
+            { id: "now", text: "Implement cards", status: "running" },
+            { id: "next", text: "Verify live", status: "pending" },
+          ],
+        },
+        {
+          id: "child-plan",
+          threadId: ref.threadId,
+          runId: "run:2",
+          nodeId: "child-node",
+          status: "active",
+          kind: "todo_list",
+          steps: [{ id: "child", text: "Unrelated child step", status: "running" }],
+        },
+      ],
+    });
+    const original = projectObservatoryNative([source]).nodes[0]!;
+    const node = { ...original, runId: RunId.make("run:2") };
+    const result = projectObservatoryDetails(node, source, {
+      ...detail,
+      data: Option.some(projection),
+    });
+    expect(result?.currentStep?.text).toBe("Implement cards");
+    expect(result?.completedSteps.map((step) => step.text)).toEqual(["Read source"]);
+    expect(result?.nextSteps.map((step) => step.text)).toEqual(["Verify live"]);
+    expect(result?.plans.map((plan) => plan.id)).toEqual(["owner-plan"]);
+  });
   it("updates the shared graph/list nodes and drops selected detail on revoke, disconnect, and missing run", () => {
     const registry = AtomRegistry.make();
     const sources = Atom.make<readonly ObservatoryEnvironment[]>([source]);

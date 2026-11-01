@@ -2,6 +2,7 @@ import type { ScopedThreadRef } from "@t3tools/contracts";
 import { Atom, type AtomRegistry } from "effect/reactivity";
 import type { EnvironmentThreadState } from "../state/threads.ts";
 import { createObservatoryAuthoredProjector, observedObservatoryOwner } from "./authored.ts";
+import { projectObservatoryTask } from "./tasks.ts";
 import {
   observatoryKey,
   projectObservatoryDetails,
@@ -24,6 +25,7 @@ export function createObservatoryViewAtoms(input: {
   readonly selectedAtom: Atom.Writable<ScopedThreadRef | null>;
   readonly detailAtom: (ref: ScopedThreadRef) => Atom.Atom<EnvironmentThreadState | null>;
   readonly authoredAtom?: (ref: ScopedThreadRef) => Atom.Atom<ObservatoryAuthoredSource | null>;
+  readonly taskCards?: boolean;
 }) {
   const queryAtom = Atom.make<ObservatoryQuery>(EMPTY_OBSERVATORY_QUERY);
   // Retire the current selection intent when its authorized live shell disappears.
@@ -74,10 +76,17 @@ export function createObservatoryViewAtoms(input: {
             read.read,
             read.checkpointReached,
           );
-    return { node, source, detail, visual };
+    return {
+      node,
+      source,
+      detail,
+      visual,
+      task: projectObservatoryTask(node, graph.nodes, detail),
+    };
   });
   const snapshotAtom = Atom.make((get) => {
-    const graph = projectObservatoryNative(get(input.sourcesAtom));
+    const sources = get(input.sourcesAtom);
+    const graph = projectObservatoryNative(sources);
     const selection = get(selectionAtom);
     const nodes = graph.nodes.map((node) =>
       selection?.node.key === node.key && selection.visual.status === "ready"
@@ -88,8 +97,23 @@ export function createObservatoryViewAtoms(input: {
           }
         : { ...node, authoredRevision: null },
     );
+    const page = projectObservatoryPage(
+      { ...graph, nodes },
+      get(queryAtom),
+      input.taskCards ? 12 : undefined,
+      input.taskCards,
+    );
     return {
-      ...projectObservatoryPage({ ...graph, nodes }, get(queryAtom)),
+      ...page,
+      nodes: page.nodes.map((node) => {
+        const source = sources.find((source) => source.environmentId === node.ref.environmentId)!;
+        const detail = input.taskCards
+          ? projectObservatoryDetails(node, source, get(input.detailAtom(node.ref)))
+          : selection?.node.key === node.key
+            ? selection.detail
+            : null;
+        return { ...node, task: projectObservatoryTask(node, graph.nodes, detail) };
+      }),
       catalogReady: get(input.catalogReadyAtom),
       selection,
     };

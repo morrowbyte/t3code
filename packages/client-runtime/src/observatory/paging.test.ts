@@ -1,6 +1,6 @@
 import { EMPTY_SHELL_STATE } from "../state/shell.ts";
 import { describe, expect, it } from "vite-plus/test";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, RuntimeRequestId, ThreadId } from "@t3tools/contracts";
 import { Atom, AtomRegistry } from "effect/reactivity";
 import * as Option from "effect/Option";
 import { v2Projection, v2ThreadShell, v2Now } from "../state/orchestrationV2TestFixtures.ts";
@@ -38,6 +38,87 @@ function environment(environmentId: EnvironmentId, count: number): ObservatoryEn
 const lastRef = { environmentId: second, threadId: ThreadId.make("thread-0038") };
 
 describe("shell-only observatory pages", () => {
+  it("prioritizes actual input and active work while keeping completed tasks reachable", () => {
+    const registry = AtomRegistry.make();
+    const original = environment(first, 3);
+    const source = {
+      ...original,
+      shell: {
+        ...original.shell!,
+        snapshot: Option.map(original.shell!.snapshot, (snapshot) => ({
+          ...snapshot,
+          threads: snapshot.threads.map((thread, index) =>
+            index === 0
+              ? {
+                  ...thread,
+                  goal: { objective: "Finished assignment", status: "complete" as const },
+                }
+              : index === 1
+                ? { ...thread, status: "running" as const }
+                : {
+                    ...thread,
+                    pendingRuntimeRequest: {
+                      id: RuntimeRequestId.make("question"),
+                      kind: "user_input" as const,
+                      createdAt: v2Now,
+                    },
+                  },
+          ),
+        })),
+      },
+    };
+    const view = createObservatoryViewAtoms({
+      catalogReadyAtom: Atom.make(true),
+      sourcesAtom: Atom.make([source]),
+      selectedAtom: Atom.make<typeof lastRef | null>(null),
+      detailAtom: () => Atom.make(null),
+      taskCards: true,
+    });
+    const unmount = registry.mount(view.snapshotAtom);
+    try {
+      expect(registry.get(view.snapshotAtom).nodes.map((node) => node.ref.threadId)).toEqual([
+        "thread-0002",
+        "thread-0001",
+        "thread-0000",
+      ]);
+      registry.set(view.queryAtom, { ...EMPTY_OBSERVATORY_QUERY, taskFilter: "complete" });
+      expect(registry.get(view.snapshotAtom).nodes.map((node) => node.task.status)).toEqual([
+        "complete",
+      ]);
+    } finally {
+      unmount();
+      registry.dispose();
+    }
+  });
+  it("bounds live task detail reads to the visible page and keeps other pages reachable", () => {
+    const registry = AtomRegistry.make();
+    const reads = new Set<string>();
+    const detailFamily = Atom.family((threadId: ThreadId) =>
+      Atom.make(() => {
+        reads.add(threadId);
+        return null;
+      }),
+    );
+    const view = createObservatoryViewAtoms({
+      catalogReadyAtom: Atom.make(true),
+      sourcesAtom: Atom.make([environment(first, 25)]),
+      selectedAtom: Atom.make<typeof lastRef | null>(null),
+      detailAtom: (ref) => detailFamily(ref.threadId),
+      taskCards: true,
+    });
+    const unmount = registry.mount(view.snapshotAtom);
+    try {
+      const page = registry.get(view.snapshotAtom);
+      expect(page.nodes).toHaveLength(12);
+      expect(reads.size).toBe(12);
+      registry.set(view.queryAtom, { ...page.page.query, anchorKey: page.page.nextKey });
+      expect(registry.get(view.snapshotAtom).nodes).toHaveLength(12);
+      expect(reads.size).toBe(24);
+    } finally {
+      unmount();
+      registry.dispose();
+    }
+  });
   it("reaches the 539th thread on another host, traverses every page, and mounts only selected detail", () => {
     const registry = AtomRegistry.make();
     const sources = Atom.make<readonly ObservatoryEnvironment[]>([
