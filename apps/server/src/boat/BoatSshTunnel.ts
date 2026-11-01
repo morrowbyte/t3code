@@ -30,11 +30,9 @@ export const make = Effect.gen(function* () {
   const net = yield* Net.NetService;
   const api = yield* BoatApi;
   const ssh = yield* resolveSshCommand;
-  const open = Effect.fn("BoatSshTunnel.open")(
-    function* (lease: BoatLeaseAccess, token: Redacted.Redacted<string>, remotePort: number) {
+  const authorize = Effect.fn("BoatSshTunnel.authorize")(
+    function* (lease: BoatLeaseAccess, token: Redacted.Redacted<string>) {
       yield* lease.check;
-      if (!Number.isInteger(remotePort) || remotePort < 1 || remotePort > 65535)
-        return yield* new BoatError({ category: "conflict" });
       const directory = yield* fs.makeTempDirectoryScoped({ prefix: "crew-boat-ssh-" });
       yield* fs.chmod(directory, 0o700);
       const identity = path.join(directory, "identity");
@@ -69,6 +67,28 @@ export const make = Effect.gen(function* () {
       const hostAlias = "crew-boat";
       const knownHosts = path.join(directory, "known_hosts");
       yield* fs.writeFileString(knownHosts, `${hostAlias} ${access.hostKey}\n`, { mode: 0o600 });
+      yield* lease.check;
+      return {
+        hostname,
+        port,
+        username: "user",
+        identityFile: identity,
+        knownHostsFile: knownHosts,
+        hostKeyAlias: hostAlias,
+        check: lease.check,
+        revoked: lease.revoked,
+      } as const;
+    },
+    Effect.mapError((error) =>
+      isBoatError(error) ? error : new BoatError({ category: "provider" }),
+    ),
+  );
+  const open = Effect.fn("BoatSshTunnel.open")(
+    function* (lease: BoatLeaseAccess, token: Redacted.Redacted<string>, remotePort: number) {
+      yield* lease.check;
+      if (!Number.isInteger(remotePort) || remotePort < 1 || remotePort > 65535)
+        return yield* new BoatError({ category: "conflict" });
+      const binding = yield* authorize(lease, token);
       const localPort = yield* net.reserveLoopbackPort("127.0.0.1");
       yield* lease.check;
       const child = yield* spawner.spawn(
@@ -76,13 +96,18 @@ export const make = Effect.gen(function* () {
           ssh,
           [
             ...baseSshArgs(
-              { alias: hostname, hostname, username: "user", port },
+              {
+                alias: binding.hostname,
+                hostname: binding.hostname,
+                username: binding.username,
+                port: binding.port,
+              },
               { batchMode: "yes" },
             ),
             "-F",
             "none",
             "-i",
-            identity,
+            binding.identityFile,
             "-o",
             "IdentitiesOnly=yes",
             "-o",
@@ -100,11 +125,11 @@ export const make = Effect.gen(function* () {
             "-o",
             "StrictHostKeyChecking=yes",
             "-o",
-            `UserKnownHostsFile=${knownHosts}`,
+            `UserKnownHostsFile=${binding.knownHostsFile}`,
             "-o",
             "GlobalKnownHostsFile=none",
             "-o",
-            `HostKeyAlias=${hostAlias}`,
+            `HostKeyAlias=${binding.hostKeyAlias}`,
             "-o",
             "ServerAliveInterval=10",
             "-o",
@@ -112,7 +137,7 @@ export const make = Effect.gen(function* () {
             "-T",
             "-L",
             `127.0.0.1:${localPort}:127.0.0.1:${remotePort}`,
-            `user@${hostname}`,
+            `user@${binding.hostname}`,
             "sh",
             "-c",
             "'echo READY; exec cat >/dev/null'",
@@ -139,5 +164,5 @@ export const make = Effect.gen(function* () {
       isBoatError(error) ? error : new BoatError({ category: "provider" }),
     ),
   );
-  return { open };
+  return { authorize, open };
 });

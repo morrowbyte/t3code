@@ -34,6 +34,7 @@ import * as Git from "../vcs/GitVcsDriver.ts";
 import { PreviewManager } from "../preview/Manager.ts";
 import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
 import { BoatApi } from "./BoatApi.ts";
+import * as BoatSshTunnel from "./BoatSshTunnel.ts";
 import { make, sourceSyncScript } from "./BoatService.ts";
 import { boatUsageWindows, estimateBoatThreadUsage } from "./boatAnalytics.ts";
 
@@ -478,6 +479,37 @@ it.effect.each(["stop", "delete", "lease removed"] as const)(
     }).pipe(Effect.scoped, Effect.provide(test.services));
   },
 );
+
+it.effect("authorizes a pinned SSH binding without opening a web forward", () => {
+  const test = setup();
+  return Effect.gen(function* () {
+    const boat = yield* make;
+    const ssh = yield* BoatSshTunnel.make;
+    const fs = yield* FileSystem.FileSystem;
+    yield* boat.connect(Redacted.make("boat_fixture_private"));
+    yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: true });
+    yield* boat.operate({ action: "start", projectId, requestId: "pinned-device" }, ownerThreadId);
+    const lease = yield* boat.assertActiveLease(
+      { requestId: "pinned-device", sandboxId: "bx_23456789" },
+      ownerThreadId,
+    );
+    const binding = yield* ssh.authorize(lease, Redacted.make("boat_fixture_private"));
+    assert.equal(binding.hostname, "192.0.2.1");
+    assert.equal(binding.port, 22);
+    assert.equal(binding.username, "user");
+    assert.equal(binding.hostKeyAlias, "crew-boat");
+    assert.equal(
+      yield* fs.readFileString(binding.knownHostsFile),
+      "crew-boat ssh-ed25519 Zml4dHVyZQ==\n",
+    );
+    assert.equal((yield* fs.stat(binding.knownHostsFile)).mode & 0o777, 0o600);
+    assert.lengthOf(test.privateForwards, 0);
+    assert.lengthOf(test.openedPreviews, 0);
+    test.setOwnerActive(false);
+    yield* boat.reconcile();
+    assert.isTrue(Exit.isFailure(yield* binding.check.pipe(Effect.exit)));
+  }).pipe(Effect.scoped, Effect.provide(test.services));
+});
 
 it.effect("reopens a closed private preview while retaining the active Boat lease", () => {
   const test = setup();
