@@ -21,6 +21,7 @@ export function retainUnavailablePreviewAnnotation(
   if (!direct) return false;
   const store = useComposerDraftStore.getState();
   if (direct.image) store.addImage(target, direct.image);
+  else if (!direct.annotation.screenshot) store.removeImage(target, direct.annotation.id);
   const cropAttached =
     direct.image !== null &&
     store.getComposerDraft(target)?.images.some((image) => image.id === direct.image?.id);
