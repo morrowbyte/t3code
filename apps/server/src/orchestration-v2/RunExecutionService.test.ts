@@ -3978,7 +3978,7 @@ function makeRunOwnedSubagentFixture(input: {
   readonly providerInstanceId: ProviderInstanceId;
   readonly childThreadId: ThreadId;
   readonly driver: typeof driver;
-  readonly status: "running" | "interrupted";
+  readonly status: "running" | "interrupted" | "completed";
 }): OrchestrationV2Subagent {
   const now = DateTime.makeUnsafe("2026-07-21T12:00:00.000Z");
   return {
