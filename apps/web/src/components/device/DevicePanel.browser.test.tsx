@@ -96,7 +96,6 @@ vi.mock("~/rightPanelStore", () => ({
   },
   selectThreadRightPanelState: () => ({ isOpen: false, activeSurfaceId: null, surfaces: [] }),
 }));
-vi.mock("~/components/device/DeviceHostUpdates", () => ({ DeviceHostUpdates: () => null }));
 vi.mock("~/components/device/DeviceWorkspace", () => ({
   DeviceWorkspace: ({ onPowerOff }: { onPowerOff: () => void }) => (
     <button onClick={onPowerOff}>Power off</button>
@@ -122,7 +121,7 @@ const switches = [
 ] as const;
 const threadB = switches[0][1];
 const picker: Extract<RightPanelSurface, { kind: "device" }> = { id: "device", kind: "device" };
-const phoneTarget = { hostId: "local", deviceId: "phone", platform: "ios", name: "Phone" };
+const phoneTarget = { hostId: "local", deviceId: "phone", platform: "ios", name: "Phone" } as const;
 const opened = { _tag: "Success", value: { hostId: "local", deviceId: "phone" } } as const;
 const failed = { _tag: "Failure", cause: new Error("boom") } as const;
 
@@ -200,6 +199,30 @@ describe("DevicePanel thread switches", () => {
 });
 
 describe("DevicePanel host probe", () => {
+  it("keeps host failures in the picker without taking space from an open device", async () => {
+    setup();
+    currentState = {
+      ...deviceState,
+      hosts: [
+        ...deviceState.hosts,
+        { ...deviceState.hosts[0]!, id: "remote", label: "Remote host", kind: "ssh" },
+      ],
+      hostStatuses: {
+        local: { status: "ready" },
+        remote: { status: "failed", detail: "Remote host unavailable" },
+      },
+    };
+    await using screen = await render(devicePanel(threadA), { container });
+    await expect.element(screen.getByText("Remote host unavailable")).toBeVisible();
+
+    const selected = { ...picker, target: phoneTarget };
+    await screen.rerender(devicePanel(threadA, selected));
+    await expect.element(screen.getByText("Remote host unavailable")).not.toBeVisible();
+
+    await screen.rerender(devicePanel(threadA));
+    await expect.element(screen.getByText("Remote host unavailable")).toBeVisible();
+  });
+
   it("probes the hosts once while setup shows inside the panel", async () => {
     setup();
     currentState = { ...deviceState, onboardingCompleted: false };
