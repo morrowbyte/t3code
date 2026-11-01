@@ -22,7 +22,6 @@
 // run's summary.
 import * as NodeCrypto from "node:crypto";
 import * as NodeOS from "node:os";
-import * as NodeModule from "node:module";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -43,6 +42,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { batchCheckArguments } from "./check-changed-args.ts";
+import { vitePlusCommand } from "./check-changed-command.ts";
 
 const GiB = 1024 ** 3;
 
@@ -188,6 +188,15 @@ export const comparisonBase = Effect.fn("checkChanged.comparisonBase")(function*
 
 const CODE = /\.[cm]?[jt]sx?$/;
 const TEST = /\.test\.[cm]?[jt]sx?$/;
+// CI runs the .github/scripts tests with `node --test`; vitest passes a failing node:test file.
+const NODE_TEST = /^\.github[/\\]scripts[/\\]/;
+export const splitTests = (tests: Iterable<string>) => {
+  const all = [...tests];
+  return {
+    vitestTests: all.filter((file) => !NODE_TEST.test(file)),
+    nodeTests: all.filter((file) => NODE_TEST.test(file)),
+  };
+};
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // A flag wins over its environment variable; either must be a positive integer.
@@ -223,11 +232,6 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const root = yield* path.fromFileUrl(new URL("..", import.meta.url));
   const inRoot = (file: string) => path.join(root, file);
-  // Invoke the workspace CLI through Node; Windows cannot spawn the vp.cmd shim directly.
-  const vpPackage = NodeModule.findPackageJSON("vite-plus", import.meta.url);
-  if (!vpPackage) return yield* Effect.fail("The workspace Vite+ installation is missing.");
-  const vpEntry = path.join(path.dirname(vpPackage), "bin", "vp");
-
   // macOS counts its file cache as used, so available memory there would
   // starve a large Mac. Elsewhere availableMemory() honors a cgroup limit.
   const platform = yield* HostProcess.Platform;
@@ -346,6 +350,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   for (const test of docReaderTests(files)) tests.add(test);
   // It reads files other than the ones beside it, so no changed file selects it.
   if (affected.includes("t3")) tests.add("apps/server/src/provider/AgentContextBudget.test.ts");
+  const { vitestTests, nodeTests } = splitTests(tests);
 
   // React Compiler coverage compiles every client source file, so run only the
   // changed files' cases, in one extra step: a -t filter in the main test step
@@ -422,8 +427,9 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const vp = (args: ReadonlyArray<string>, cwd = root) =>
     Effect.scoped(
       Effect.gen(function* () {
+        const [command, commandArgs] = vitePlusCommand(args, platform);
         const handle = yield* spawner.spawn(
-          ChildProcess.make(process.execPath, [vpEntry, ...args], {
+          ChildProcess.make(command, commandArgs, {
             cwd,
             env,
             extendEnv: true,
@@ -538,21 +544,31 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
         ]
       : []),
     // From the repo root, the root vite.config.ts hands each file to its package's config.
-    ...(tests.size > 0
+    ...(vitestTests.length > 0
       ? [
           {
             ...command(
-              `test (${tests.size} files)`,
+              `test (${vitestTests.length} files)`,
               [
                 "test",
                 "run",
                 "--passWithNoTests",
                 ...(platform === "win32" ? ["--maxWorkers", "2"] : []),
               ],
-              [...tests],
+              [...vitestTests],
             ),
             serial: true,
           },
+        ]
+      : []),
+    ...(nodeTests.length > 0
+      ? [
+          command(`node --test (${nodeTests.length} files)`, [
+            "exec",
+            "node",
+            "--test",
+            ...nodeTests,
+          ]),
         ]
       : []),
     ...(compilerApps.length > 0

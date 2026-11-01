@@ -178,12 +178,12 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
             </Button>
           ) : null}
         </div>
-        {row.showAssistantMeta ? (
+        {row.showAssistantMeta || row.showAssistantTimestamp ? (
           <AssistantMessageMeta
             className="mt-1.5"
             projectedItem={row.projectedItem}
             message={row.message}
-            showCopyButton={row.showAssistantCopyButton}
+            showCopyButton={row.showAssistantMeta && row.showAssistantCopyButton}
             copyStreaming={row.assistantCopyStreaming}
           />
         ) : !row.message.streaming && row.projectedItem ? (
@@ -256,7 +256,7 @@ export function AssistantMetaTimelineRow({
         className="mt-0.5"
         projectedItem={row.projectedItem}
         message={row.message}
-        showCopyButton={row.showAssistantCopyButton}
+        showCopyButton={row.showAssistantMeta && row.showAssistantCopyButton}
         copyStreaming={row.assistantCopyStreaming}
         alwaysVisible
       />

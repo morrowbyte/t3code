@@ -2804,6 +2804,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   const appId = resolveDesktopAppId();
   const profile = process.env.T3CODE_DESKTOP_PROFILE?.trim();
   const buildConfig: Record<string, unknown> = {
+    afterPack: (yield* Path.Path).join(yield* RepoRoot, "scripts/prepare-server-compile-cache.cjs"),
     appId,
     productName: resolveDesktopProductName(version),
     ...(profile

@@ -8,7 +8,7 @@ const money = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 3,
 });
 
-export function formatAnswerCost(amount: number): string {
+function formatAnswerCost(amount: number): string {
   return amount > 0 && amount < 0.001 ? "< $0.001" : `≈ ${money.format(amount)}`;
 }
 

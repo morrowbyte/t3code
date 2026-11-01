@@ -1,3 +1,4 @@
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -220,13 +221,19 @@ const make = Effect.gen(function* () {
     function* (databasePath: string) {
       const legacy = legacyPath(databasePath);
       if (!(yield* fs.exists(legacy))) return;
-      // Closing under the exclusive lock lets SQLite clean its WAL/SHM before
-      // Windows can unlink the database. Sidecars recreated after close belong
-      // to another connection and must not be deleted here.
-      yield* lockExclusively(legacy).pipe(
-        Effect.provide(NodeSqliteClient.layer({ filename: legacy })),
-      );
-      yield* fs.remove(legacy, { force: true });
+      // Sidecars recreated after our connection closes can belong to a new writer.
+      const removeFiles = fs.remove(legacy, { force: true });
+      const connection = NodeSqliteClient.layer({ filename: legacy });
+      if ((yield* HostProcess.Platform) === "win32") {
+        // Windows blocks unlink while any SQLite handle is open, including our own.
+        yield* lockExclusively(legacy).pipe(Effect.provide(connection));
+        yield* removeFiles;
+      } else {
+        yield* lockExclusively(legacy).pipe(
+          Effect.andThen(removeFiles),
+          Effect.provide(connection),
+        );
+      }
     },
     (effect, databasePath) =>
       effect.pipe(

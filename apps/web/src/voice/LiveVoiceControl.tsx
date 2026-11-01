@@ -607,7 +607,7 @@ export function createVoiceEventBridge(): VoiceEventBridge {
   };
 }
 
-export function LiveVoiceEventFeed(props: {
+function LiveVoiceEventFeed(props: {
   readonly environmentId: EnvironmentId;
   readonly lease: LiveVoiceLease;
   readonly bridge: VoiceEventBridge;

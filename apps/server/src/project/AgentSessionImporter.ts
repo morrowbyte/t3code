@@ -3,6 +3,7 @@ import {
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
+  isRuntimeModeAbove,
   AgentSessionImportProjectChangedError,
   AgentSessionImportProjectNotFoundError,
   AgentSessionImportSource,
@@ -24,6 +25,7 @@ import {
   type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -36,6 +38,7 @@ import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as AgentSessionScanner from "./AgentSessionScanner.ts";
 import * as ProjectService from "./ProjectService.ts";
 
@@ -173,6 +176,8 @@ const make = Effect.gen(function* () {
   const eventSink = yield* EventSink.EventSinkV2;
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const runtimes = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
+  const settingsService = yield* ServerSettings.ServerSettingsService;
+  const ceiling = settingsService.managedPolicy?.limits?.maxRuntimeMode;
   const importRecentAgentThreads = Effect.fn("importRecentAgentThreadsV2")(function* (
     input: AgentSessionImportInput,
   ) {
@@ -193,6 +198,21 @@ const make = Effect.gen(function* () {
     ) {
       return yield* new AgentSessionImportProjectChangedError({ projectId: input.projectId });
     }
+    // Imports run in full access, except under a policy ceiling: then in the project's default,
+    // which the policy keeps under it, so imported threads never sit above the ceiling.
+    const runtimeMode =
+      ceiling === undefined
+        ? DEFAULT_RUNTIME_MODE
+        : yield* settingsService.getSettings.pipe(
+            Effect.mapError(
+              (cause) => new AgentSessionScanError({ operation: "read-settings", cause }),
+            ),
+            Effect.map((settings) => {
+              const mode = resolveProjectSettings(settings, input.projectId, project).settings
+                .defaultRuntimeMode;
+              return isRuntimeModeAbove(mode, ceiling) ? ceiling : mode;
+            }),
+          );
     const runtimeRows = yield* runtimes
       .list()
       .pipe(
@@ -284,7 +304,7 @@ const make = Effect.gen(function* () {
               providerName: driver,
               providerInstanceId: thread.providerInstanceId,
               adapterKey: driver,
-              runtimeMode: DEFAULT_RUNTIME_MODE,
+              runtimeMode,
               status: "stopped",
               lastSeenAt: thread.updatedAt,
               resumeCursor:
@@ -329,7 +349,7 @@ const make = Effect.gen(function* () {
             title: thread.title.trim() === "" ? "Untitled thread" : thread.title,
             providerInstanceId: thread.providerInstanceId,
             modelSelection: { instanceId: thread.providerInstanceId, model },
-            runtimeMode: DEFAULT_RUNTIME_MODE,
+            runtimeMode,
             interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
             branch: null,
             worktreePath: null,

@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "prepare": "node packages/cua-driver/build.mjs && vp config --no-agent",
+    "profile:startup": "node scripts/profile-startup.mjs",
     "dev": "node scripts/dev-entry.ts dev",
     "dev:share": "node scripts/dev-entry.ts dev --share",
     "dev:server": "node scripts/dev-entry.ts dev:server",

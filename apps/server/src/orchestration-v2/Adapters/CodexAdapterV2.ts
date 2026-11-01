@@ -113,6 +113,7 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { resolveAttachmentPath, resolveAttachmentPathById } from "../../attachmentStore.ts";
+import * as PortScanner from "../../preview/PortScanner.ts";
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
 import { ServerConfig } from "../../config.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
@@ -1541,6 +1542,7 @@ function withCodexManagedFailure(
 }
 
 interface ActiveCodexTurnContext {
+  hookStopReason?: string;
   capacityRetryAttempt?: number;
   capacityRetryPending?: Deferred.Deferred<ActiveCodexTurnContext | undefined>;
   closedCommandItemIds?: ReadonlySet<string>;
@@ -1759,6 +1761,7 @@ const CODEX_T3_MCP_TOOL_TIMEOUT_SEC = 65 * 60;
 
 export function codexThreadRuntimeParams(input: {
   readonly cuaConnection?: CuaConnection | undefined;
+  readonly threadId: ThreadId | null;
   readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
   readonly nativeSubagents?: false;
   readonly modelSelection?: { readonly model: string };
@@ -1775,6 +1778,9 @@ export function codexThreadRuntimeParams(input: {
     config: codexCuaConfig(
       {
         ...CODEX_THREAD_CONFIG,
+        ...(input.threadId === null
+          ? {}
+          : { [`shell_environment_policy.set.${PortScanner.AGENT_THREAD_ENV}`]: input.threadId }),
         // Saved threads must receive the transport restriction again on resume.
         ...(input.nativeSubagents === false
           ? { "features.multi_agent": false, "features.multi_agent_v2": false }
@@ -3706,6 +3712,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                           excludeTurns: true,
                           ...(resolvedRuntime?.nativeSubagents === false
                             ? codexThreadRuntimeParams({
+                                threadId: null,
                                 mcpSession: undefined,
                                 nativeSubagents: false,
                               })
@@ -5148,6 +5155,22 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           updateSubagentSelection(payload.threadId, payload.toModel),
         );
 
+        yield* client.handleServerNotification("hook/completed", (payload) =>
+          Effect.gen(function* () {
+            if (payload.turnId == null || payload.run.status !== "stopped") return;
+            const context = (yield* Ref.get(activeTurns)).get(payload.turnId);
+            if (context?.providerThread.nativeThreadRef?.nativeId !== payload.threadId) return;
+            const reason = payload.run.entries
+              .filter((entry) => entry.kind === "stop")
+              .map((entry) => entry.text.trim())
+              .filter(Boolean)
+              .join("\n");
+            if (!reason) return;
+            const source = payload.run.source === undefined ? "" : ` (${payload.run.source})`;
+            context.hookStopReason = `${payload.run.eventName} hook${source}: ${reason}`;
+          }),
+        );
+
         yield* client.handleServerNotification("turn/started", (payload) =>
           Effect.gen(function* () {
             const context = (yield* Ref.get(activeTurns)).get(payload.turn.id);
@@ -6477,6 +6500,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runOrdinal: input.context.input.runOrdinal,
               status: terminalStatus,
               failure: null,
+              ...(terminalStatus === "interrupted" && input.context.hookStopReason !== undefined
+                ? { reason: input.context.hookStopReason }
+                : {}),
               threadDisposition: "reusable",
             };
           },
@@ -7422,6 +7448,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 threadId,
                 excludeTurns: true,
                 ...codexThreadRuntimeParams({
+                  threadId: turnInput.threadId,
                   mcpSession,
                   cuaConnection: reboundConnection,
                   modelSelection: turnInput.modelSelection,
@@ -7944,6 +7971,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 Effect.gen(function* () {
                   const params = yield* provisionalParams(
                     codexThreadRuntimeParams({
+                      threadId: threadInput.threadId,
                       cuaConnection: threadInput.runtimePolicy.provisionalVoiceIntake
                         ? undefined
                         : yield* prepareCua(threadInput.threadId),
@@ -8023,6 +8051,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 const policy = threadInput.runtimePolicy;
                 const params = yield* provisionalParams(
                   codexThreadRuntimeParams({
+                    threadId: threadInput.threadId ?? threadInput.providerThread.appThreadId,
                     cuaConnection: policy?.provisionalVoiceIntake
                       ? undefined
                       : yield* prepareCua(
@@ -9311,6 +9340,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       ? { nativeSubagents: false }
                       : {}),
                     cuaConnection: yield* prepareCua(threadInput.providerThread.appThreadId),
+                    threadId: threadInput.providerThread.appThreadId,
                     mcpSession: yield* readMcpSession(threadInput.providerThread.appThreadId),
                     modelSelection: input.modelSelection,
                     runtimePolicy: input.runtimePolicy,
@@ -9367,6 +9397,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                         ? { nativeSubagents: false }
                         : {}),
                       cuaConnection: yield* prepareCua(threadInput.targetThreadId),
+                      threadId: threadInput.targetThreadId,
                       mcpSession: yield* mcpSessions.read(threadInput.targetThreadId),
                       ...(threadInput.modelSelection === undefined
                         ? {}

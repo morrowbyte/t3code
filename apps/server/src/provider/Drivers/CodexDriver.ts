@@ -158,11 +158,19 @@ export const CodexDriver: ProviderDriver<
     const instancePath = environment?.findLast(
       (variable) => variable.name.toUpperCase() === "PATH",
     );
-    const mergedEnvironment = yield* mergeProviderInstanceEnvironment(environment);
+    const mergedEnvironment = yield* mergeProviderInstanceEnvironment(
+      environment,
+      yield* HostProcess.Environment,
+    );
     const processEnv = instancePath
       ? { ...mergedEnvironment, PATH: instancePath.value }
       : mergedEnvironment;
-    const homeLayout = yield* resolveCodexHomeLayout(config);
+    const environmentHome = processEnv.CODEX_HOME;
+    const homeLayout = yield* resolveCodexHomeLayout(
+      !config.homePath.trim() && !config.shadowHomePath.trim() && environmentHome?.trim()
+        ? { ...config, homePath: environmentHome }
+        : config,
+    );
     const continuationIdentity = codexContinuationIdentity(homeLayout);
     const stampIdentity = withInstanceIdentity({
       instanceId,

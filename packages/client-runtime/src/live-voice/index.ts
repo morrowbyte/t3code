@@ -17,11 +17,7 @@ export {
   type LiveVoiceTarget,
 } from "./controller.ts";
 export { acquireMicrophoneOwnership } from "./microphoneOwnership.ts";
-export {
-  LiveVoiceSessionOwner,
-  liveVoiceIsBusy,
-  type LiveVoiceSessionSnapshot,
-} from "./session.ts";
+export { LiveVoiceSessionOwner, type LiveVoiceSessionSnapshot } from "./session.ts";
 export {
   observeVoiceConversation,
   retainVoiceCalls,
