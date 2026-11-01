@@ -532,7 +532,8 @@ export const make = Effect.gen(function* () {
     if (previous) {
       const valid = yield* previous.lease.check.pipe(Effect.isSuccess);
       if (valid && (!callerThreadId || previous.lease.threadId === callerThreadId)) {
-        if (previous.tabId)
+        const listed = yield* previews.list({ threadId: previous.lease.threadId });
+        if (previous.tabId && listed.sessions.some((session) => session.tabId === previous.tabId)) {
           yield* previews
             .requestReveal({
               threadId: previous.lease.threadId,
@@ -540,7 +541,8 @@ export const make = Effect.gen(function* () {
               force: true,
             })
             .pipe(Effect.mapError(() => new BoatError({ category: "provider" })));
-        return current;
+          return current;
+        }
       }
       yield* Scope.close(previous.scope, Exit.void);
     }

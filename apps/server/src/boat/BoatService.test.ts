@@ -4,6 +4,7 @@ import {
   BoatInstance,
   BoatError,
   ProjectId,
+  PreviewTabId,
   ThreadId,
   RunId,
   type OrchestrationV2ThreadShell,
@@ -55,6 +56,7 @@ function setup(
   const privateForwards: string[][] = [];
   const closedPreviews: string[] = [];
   const openedPreviews: string[] = [];
+  const previewTabs = new Map<string, { tabId: string }>();
   const forwardClosed = Deferred.makeUnsafe<void>();
   let closedForwards = 0;
   let machineState = "ready";
@@ -167,15 +169,20 @@ function setup(
       }),
     ),
     Layer.mock(PreviewManager)({
-      list: () => Effect.succeed({ sessions: [] } as never),
+      list: (input) =>
+        Effect.succeed({
+          sessions: previewTabs.has(input.threadId) ? [previewTabs.get(input.threadId)!] : [],
+        } as never),
       open: (input) =>
         Effect.sync(() => {
           if (input.url) openedPreviews.push(input.url);
+          previewTabs.set(input.threadId, { tabId: "setup-preview" });
           return { tabId: "setup-preview" } as never;
         }),
       close: (input) =>
         Effect.sync(() => {
           if (input.tabId) closedPreviews.push(input.tabId);
+          previewTabs.delete(input.threadId);
         }),
       requestReveal: () => Effect.void,
     }),
@@ -471,6 +478,35 @@ it.effect.each(["stop", "delete", "lease removed"] as const)(
     }).pipe(Effect.scoped, Effect.provide(test.services));
   },
 );
+
+it.effect("reopens a closed private preview while retaining the active Boat lease", () => {
+  const test = setup();
+  return Effect.gen(function* () {
+    const boat = yield* make;
+    const previews = yield* PreviewManager;
+    yield* boat.connect(Redacted.make("boat_fixture_private"));
+    yield* boat.configure(projectId, {
+      ...DEFAULT_BOAT_PROJECT,
+      enabled: true,
+      webAccess: "private",
+      devCommand: "npm run dev",
+    });
+    const target = { projectId, requestId: "reopen-private" };
+    yield* boat.operate({ ...target, action: "start" }, ownerThreadId);
+    yield* boat.operate({ ...target, action: "prepare" }, ownerThreadId);
+    yield* previews.close({ threadId: ownerThreadId, tabId: PreviewTabId.make("setup-preview") });
+
+    const reopened = yield* boat.operate({ ...target, action: "preview" }, ownerThreadId);
+    assert.lengthOf(test.privateForwards, 2);
+    assert.lengthOf(test.openedPreviews, 2);
+    assert.equal(test.closedForwardCount(), 1);
+    assert.deepEqual(reopened.instances[0]?.leases, [ownerThreadId]);
+    yield* boat.operate({ ...target, action: "preview" }, ownerThreadId);
+    assert.lengthOf(test.privateForwards, 2);
+    assert.lengthOf(test.openedPreviews, 2);
+    assert.isTrue(test.calls.every((call) => !call.includes("/host")));
+  }).pipe(Effect.scoped, Effect.provide(test.services));
+});
 
 it.effect("cancels an in-flight SSH grant on lease removal without public fallback", () => {
   return Effect.gen(function* () {
