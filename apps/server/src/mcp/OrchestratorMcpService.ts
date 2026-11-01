@@ -4,6 +4,7 @@ import {
   CommandId,
   type RunId,
   isProviderAvailable,
+  resolveProjectProviderInstanceEnabled,
   MessageId,
   type ModelSelection,
   NodeId,
@@ -3163,6 +3164,17 @@ const make = Effect.gen(function* () {
             provider,
             orchestrationCapableInstanceIds.has(provider.instanceId),
           );
+          if (
+            parent !== undefined &&
+            provider.enabled &&
+            !resolveProjectProviderInstanceEnabled(
+              settings,
+              parent.thread.projectId,
+              provider.instanceId,
+            )
+          ) {
+            constraints.push("Provider instance is disabled for this project.");
+          }
           const { listed, omitted } = listCapabilityModels({
             provider,
             preferences: settings.providerModelPreferences?.[provider.instanceId],
