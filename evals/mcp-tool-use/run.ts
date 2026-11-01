@@ -50,6 +50,7 @@ import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import { buildCodexAdditionalContext } from "../../apps/server/src/provider/CodexDeveloperInstructions.ts";
 import { makeSideChatContext } from "../../apps/server/src/orchestration-v2/ContextHandoffService.ts";
 import { withInlineContext } from "../../apps/server/src/orchestration-v2/ContextHandoffDelivery.ts";
+import { localComputeContext } from "../../apps/server/src/orchestration-v2/ProviderTurnStartService.ts";
 import { AttachmentToolkit } from "../../apps/server/src/mcp/toolkits/attachment/tools.ts";
 import { ComputerToolkit } from "../../apps/server/src/mcp/toolkits/computer/tools.ts";
 import { DeviceToolkit } from "../../apps/server/src/mcp/toolkits/device/tools.ts";
@@ -286,6 +287,7 @@ export const McpToolUseCase = Schema.Struct({
     ),
   }),
   prompt: Schema.String,
+  computePlacement: Schema.optional(Schema.Literals(["auto-local", "explicit-local"])),
   boatSetupProjectId: Schema.optional(ProjectId),
   /** Records for the context chips `prompt` links, projected as T3 sends them. */
   promptContext: Schema.optional(Schema.Struct({ records: Schema.Array(ComposerContextRecord) })),
@@ -935,10 +937,16 @@ export const buildMessages = (sample: Sample) => {
   const taskText = testCase.boatSetupProjectId
     ? `${boatSetupPrompt(testCase.boatSetupProjectId)}\n\n${testCase.prompt}`
     : testCase.prompt;
-  const userText =
+  const contextualizedUserText =
     testCase.promptContext === undefined
       ? taskText
       : projectComposerContextForProvider({ text: taskText, ...testCase.promptContext });
+  const userText = withInlineContext(
+    testCase.computePlacement === undefined
+      ? ""
+      : localComputeContext(false, testCase.computePlacement === "explicit-local"),
+    contextualizedUserText,
+  );
   const sideChat = testCase.setup.sideChat;
   const prompt =
     sideChat === undefined
