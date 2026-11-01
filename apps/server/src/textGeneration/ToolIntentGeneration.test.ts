@@ -180,6 +180,69 @@ describe("tool intent generation", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("replaces a waiting admission before capacity is available", () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const finished = yield* Deferred.make<void>();
+      const messages: string[] = [];
+      const committed: number[] = [];
+      let oldAdmitted = false;
+      let staleCommits = 0;
+      const service = yield* Service.make.pipe(
+        Effect.provide(
+          Layer.mock(TextGeneration.TextGeneration)({
+            generateThreadTitle: (request) =>
+              Effect.gen(function* () {
+                messages.push(request.message);
+                if (messages.length === 1) {
+                  yield* Deferred.succeed(started, undefined);
+                  yield* Deferred.await(release);
+                }
+                return { title: `Inspect request ${messages.length}` };
+              }),
+          }),
+        ),
+      );
+      const observe = (index: number, revision = "initial") =>
+        service.observe({
+          ...identity,
+          item: { ...item, id: TurnItemId.make(`replace-${index}`), input: { index, revision } },
+          commitTitle: () =>
+            Effect.gen(function* () {
+              if (revision === "old-waiter") staleCommits++;
+              committed.push(index);
+              if (committed.length === 513) yield* Deferred.succeed(finished, undefined);
+            }),
+        });
+      for (let index = 0; index < 512; index++) {
+        yield* observe(index);
+        if (index === 0) yield* Deferred.await(started);
+      }
+      const old = yield* observe(512, "old-waiter").pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            oldAdmitted = true;
+          }),
+        ),
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust(0);
+      expect(oldAdmitted).toBe(false);
+      const current = yield* observe(512, "new-waiter").pipe(Effect.forkChild);
+      yield* TestClock.adjust(0);
+      expect(oldAdmitted).toBe(true);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(old);
+      yield* Fiber.join(current);
+      yield* Deferred.await(finished);
+      expect(messages).toHaveLength(513);
+      expect(messages.some((message) => message.includes("old-waiter"))).toBe(false);
+      expect(messages.some((message) => message.includes("new-waiter"))).toBe(true);
+      expect(staleCommits).toBe(0);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("shares a Boat translation while binding each subscriber's own source title", () =>
     Effect.gen(function* () {
       const started = yield* Deferred.make<void>();

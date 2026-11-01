@@ -288,6 +288,84 @@ describe("completed public reasoning summaries", () => {
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.effect.each(["streaming", "empty", "updated", "interrupted"] as const)(
+    "retires a capacity-waiting admission after %s and preserves a newer completion",
+    (change) =>
+      Effect.gen(function* () {
+        const h = yield* setup({ automaticReplies: true });
+        const replacing = change === "updated" || change === "interrupted";
+        const expectedCommits = replacing ? 513 : 512;
+        const allCommitted = yield* Deferred.make<void>();
+        let commitCount = 0;
+        const observe = (next: typeof item) =>
+          h.service.observe({
+            ...identity,
+            item: next,
+            commitTitle: (title) =>
+              Queue.offer(h.commits, title).pipe(
+                Effect.andThen(
+                  Effect.suspend(() => {
+                    commitCount += 1;
+                    return commitCount === expectedCommits
+                      ? Deferred.succeed(allCommitted, undefined).pipe(Effect.asVoid)
+                      : Effect.void;
+                  }),
+                ),
+              ),
+          });
+        yield* observe(item);
+        const first = yield* Queue.take(h.requests);
+        for (let index = 1; index < 512; index++) {
+          yield* observe({ ...item, id: TurnItemId.make(`occupied-${index}`) });
+        }
+        const waiting = {
+          ...item,
+          id: TurnItemId.make("waiting-summary"),
+          text: "Old public summary waiting for capacity.",
+        };
+        const retired = yield* Deferred.make<void>();
+        const admission = yield* observe(waiting).pipe(
+          Effect.ensuring(Deferred.succeed(retired, undefined)),
+          Effect.forkChild,
+        );
+        yield* TestClock.adjust(0);
+        expect(yield* Deferred.isDone(retired)).toBe(false);
+
+        const current = { ...waiting, text: "Current public summary about Boat." };
+        const replacementAdmitted = yield* Deferred.make<void>();
+        if (change === "interrupted") yield* Fiber.interrupt(admission);
+        if (replacing) {
+          yield* observe(current).pipe(
+            Effect.andThen(Deferred.succeed(replacementAdmitted, undefined)),
+            Effect.forkChild,
+          );
+        } else {
+          yield* observe(
+            change === "streaming"
+              ? { ...waiting, status: "running", streaming: true }
+              : { ...waiting, text: "" },
+          );
+        }
+        yield* TestClock.adjust(0);
+        expect(yield* Deferred.isDone(retired)).toBe(true);
+        expect(yield* Deferred.isDone(replacementAdmitted)).toBe(false);
+        expect(h.calls).toHaveLength(1);
+        const exit = yield* Fiber.await(admission);
+        expect(exit._tag).toBe(change === "interrupted" ? "Failure" : "Success");
+
+        yield* Deferred.succeed(first.reply, { title: "Erste Zusammenfassung" });
+        yield* Deferred.await(allCommitted);
+        expect(h.calls).toHaveLength(expectedCommits);
+        expect(yield* Queue.size(h.commits)).toBe(expectedCommits);
+        const summaries = h.calls.map((call) => JSON.parse(call.message).publicProviderSummary);
+        expect(summaries).not.toContain(waiting.text);
+        if (replacing) {
+          expect(yield* Deferred.isDone(replacementAdmitted)).toBe(true);
+          expect(summaries.filter((summary) => summary === current.text)).toHaveLength(1);
+        }
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("coalesces a superseded queued completion before calling the model", () =>
     Effect.gen(function* () {
       const h = yield* setup({ automaticReplies: true });

@@ -4,6 +4,7 @@ import type {
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -44,6 +45,7 @@ export const make = Effect.gen(function* () {
   const wake = yield* Queue.sliding<void>(1);
   const capacity = yield* Semaphore.make(512);
   const pendingItems = new Set<string>();
+  const admissions = new Map<string, Deferred.Deferred<void>>();
   const latest = new Map<string, { input: Observation; revision: number }>();
   const queued = new Map<string, { input: Observation; revision: number }>();
   let activeItem: string | undefined;
@@ -142,43 +144,63 @@ export const make = Effect.gen(function* () {
       );
     }
   }).pipe(Effect.forever, Effect.forkIn(scope));
-  const observe = Effect.fn("ReasoningSummaryGeneration.observe")(function* (input: Observation) {
-    const id = itemKey(input.item);
-    if (input.item.streaming || input.item.status !== "completed" || !input.item.text.trim()) {
-      latest.delete(id);
-      queued.delete(id);
-      retained.delete(id);
-      yield* release(id);
-      return;
-    }
-    const previous = latest.get(id)?.input;
-    if (
-      previous?.item.text === input.item.text &&
-      previous.item.title === input.item.title &&
-      previous.providerInstanceId === input.providerInstanceId &&
-      previous.driverKind === input.driverKind
-    )
-      return;
-    const work = { input, revision: ++revision };
-    yield* Effect.uninterruptibleMask((restore) =>
+  const observe = Effect.fn("ReasoningSummaryGeneration.observe")((input: Observation) =>
+    Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
-        let releaseExtra = false;
-        if (!pendingItems.has(id)) {
-          while (!(yield* capacity.takeIfAvailable(1))) {
-            yield* restore(capacity.withPermits(1)(Effect.void));
+        const id = itemKey(input.item);
+        const previousAdmission = admissions.get(id);
+        admissions.delete(id);
+        if (previousAdmission) Deferred.doneUnsafe(previousAdmission, Effect.void);
+        if (input.item.streaming || input.item.status !== "completed" || !input.item.text.trim()) {
+          latest.delete(id);
+          queued.delete(id);
+          retained.delete(id);
+          yield* release(id);
+          return;
+        }
+        const previous = latest.get(id)?.input;
+        if (
+          previous?.item.text === input.item.text &&
+          previous.item.title === input.item.title &&
+          previous.providerInstanceId === input.providerInstanceId &&
+          previous.driverKind === input.driverKind
+        )
+          return;
+        const token = Deferred.makeUnsafe<void>();
+        admissions.set(id, token);
+        const work = { input, revision: ++revision };
+        let acquired = false;
+        yield* Effect.gen(function* () {
+          if (!pendingItems.has(id)) {
+            while (admissions.get(id) === token) {
+              acquired = yield* capacity.takeIfAvailable(1);
+              if (acquired) break;
+              yield* restore(
+                Effect.raceFirst(capacity.withPermits(1)(Effect.void), Deferred.await(token)),
+              );
+            }
+            if (admissions.get(id) !== token) return;
+            if (!pendingItems.has(id)) {
+              pendingItems.add(id);
+              acquired = false;
+            }
           }
-          if (pendingItems.has(id)) releaseExtra = true;
-          else pendingItems.add(id);
-        }
-        if ((latest.get(id)?.revision ?? 0) <= work.revision) {
-          latest.set(id, work);
-          queued.set(id, work);
-          yield* Queue.offer(wake, undefined);
-        }
-        if (releaseExtra) yield* capacity.release(1);
+          if (admissions.get(id) === token && (latest.get(id)?.revision ?? 0) <= work.revision) {
+            latest.set(id, work);
+            queued.set(id, work);
+            yield* Queue.offer(wake, undefined);
+          }
+        }).pipe(
+          Effect.ensuring(
+            Effect.gen(function* () {
+              if (admissions.get(id) === token) admissions.delete(id);
+              if (acquired) yield* capacity.release(1);
+            }),
+          ),
+        );
       }),
-    );
-  });
+    ),
+  );
   return {
     observe,
     retainedTitle: (item: ReasoningItem) => {

@@ -11,6 +11,7 @@ import {
   toolActivitySourceTitle,
 } from "@t3tools/shared/toolActivity";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as FileSystem from "effect/FileSystem";
@@ -107,6 +108,7 @@ export const make = Effect.gen(function* () {
   const wake = yield* Queue.sliding<void>(1);
   const capacity = yield* Semaphore.make(512);
   const pendingItems = new Set<string>();
+  const admissions = new Map<string, Deferred.Deferred<void>>();
   type Work = { input: Observation; revision: number; source: string };
   const latest = new Map<string, Work>();
   const queued = new Map<string, Work>();
@@ -249,51 +251,72 @@ export const make = Effect.gen(function* () {
       );
     }
   }).pipe(Effect.forever, Effect.forkIn(scope));
-  const observe = Effect.fn("ToolIntentGeneration.observe")(function* (input: Observation) {
-    const id = itemKey(input.item);
-    const source = toolIntentInput(input.item);
-    if (retainedInputs.has(id) && retainedInputs.get(id) !== source) {
-      retained.delete(id);
-      authored.delete(id);
-      retainedInputs.delete(id);
-      presentations.delete(id);
-    }
-    const sourceTitle = toolActivitySourceTitle(input.item);
-    if (sourceTitle) remember(input.item, sourceTitle, true);
-    if (!sourceTitle && (authored.has(id) || !isToolIntentMissing(input.item))) {
-      latest.delete(id);
-      queued.delete(id);
-      yield* release(id);
-      return;
-    }
-    const previous = latest.get(id);
-    if (
-      previous?.source === source &&
-      previous.input.item.title === input.item.title &&
-      previous.input.providerInstanceId === input.providerInstanceId &&
-      previous.input.driverKind === input.driverKind
-    )
-      return;
-    const work = { input, revision: ++revision, source };
-    yield* Effect.uninterruptibleMask((restore) =>
+  const observe = Effect.fn("ToolIntentGeneration.observe")((input: Observation) =>
+    Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
-        let releaseExtra = false;
-        if (!pendingItems.has(id)) {
-          while (!(yield* capacity.takeIfAvailable(1))) {
-            yield* restore(capacity.withPermits(1)(Effect.void));
-          }
-          if (pendingItems.has(id)) releaseExtra = true;
-          else pendingItems.add(id);
+        const id = itemKey(input.item);
+        const source = toolIntentInput(input.item);
+        if (retainedInputs.has(id) && retainedInputs.get(id) !== source) {
+          retained.delete(id);
+          authored.delete(id);
+          retainedInputs.delete(id);
+          presentations.delete(id);
         }
-        if ((latest.get(id)?.revision ?? 0) <= work.revision) {
+        const sourceTitle = toolActivitySourceTitle(input.item);
+        if (sourceTitle) remember(input.item, sourceTitle, true);
+        if (!sourceTitle && (authored.has(id) || !isToolIntentMissing(input.item))) {
+          const waiting = admissions.get(id);
+          admissions.delete(id);
+          if (waiting) Deferred.doneUnsafe(waiting, Effect.void);
+          latest.delete(id);
+          queued.delete(id);
+          yield* release(id);
+          return;
+        }
+        const previous = latest.get(id);
+        if (
+          previous?.source === source &&
+          previous.input.item.title === input.item.title &&
+          previous.input.providerInstanceId === input.providerInstanceId &&
+          previous.input.driverKind === input.driverKind
+        )
+          return;
+        const work = { input, revision: ++revision, source };
+        const admission = Deferred.makeUnsafe<void>();
+        const waiting = admissions.get(id);
+        admissions.set(id, admission);
+        if (waiting) Deferred.doneUnsafe(waiting, Effect.void);
+        let acquired = false;
+        yield* Effect.gen(function* () {
+          if (!pendingItems.has(id)) {
+            while (admissions.get(id) === admission) {
+              acquired = yield* capacity.takeIfAvailable(1);
+              if (acquired) break;
+              yield* restore(
+                Effect.raceFirst(capacity.withPermits(1)(Effect.void), Deferred.await(admission)),
+              );
+            }
+            if (admissions.get(id) !== admission) return;
+            if (!pendingItems.has(id)) {
+              pendingItems.add(id);
+              acquired = false;
+            }
+          }
+          if (admissions.get(id) !== admission) return;
           latest.set(id, work);
           queued.set(id, work);
           yield* Queue.offer(wake, undefined);
-        }
-        if (releaseExtra) yield* capacity.release(1);
+        }).pipe(
+          Effect.ensuring(
+            Effect.gen(function* () {
+              if (admissions.get(id) === admission) admissions.delete(id);
+              if (acquired) yield* capacity.release(1);
+            }),
+          ),
+        );
       }),
-    );
-  });
+    ),
+  );
   return {
     retainedTitle: (item: ToolItem) =>
       isToolIntentMissing(item) && retainedInputs.get(itemKey(item)) === toolIntentInput(item)
