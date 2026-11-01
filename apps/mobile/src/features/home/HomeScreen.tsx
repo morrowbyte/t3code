@@ -13,7 +13,11 @@ import {
 } from "@t3tools/client-runtime/state/shell";
 import { pickableProjectGroups } from "@t3tools/client-runtime/state/project-grouping";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
-import { type EnvironmentId, type SidebarProjectGroupingMode } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  type SidebarProjectGroupingMode,
+  type ThreadId,
+} from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { use, useEffect, useRef, useState, type ComponentProps } from "react";
 import {
@@ -50,6 +54,8 @@ import {
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { useNativeWorkspaceColumnsSupported } from "../../native/NativeWorkspaceColumns";
 import { useThreadSearch } from "../../state/queries";
+import { appAtomRegistry } from "../../state/atom-registry";
+import { threadFamilies } from "../../state/threads";
 import { requestThreadMessageJump } from "../threads/threadMessageJump";
 import { useThreadListSearchMatches } from "../threads/useThreadListSearchMatches";
 import { useThreadListV2 } from "../threads/useThreadListV2";
@@ -405,6 +411,31 @@ export function HomeScreen(props: HomeScreenProps) {
     );
     if (revealed !== familyDisclosure) setFamilyDisclosure(revealed);
   }
+  const familyReadTargets = new Map<string, readonly [EnvironmentId, ThreadId]>();
+  for (const thread of props.threads) {
+    const key = scopedThreadKey(thread.environmentId, thread.id);
+    if (key !== selectedThreadKey && !familyDisclosure.expandedKeys.has(key)) continue;
+    const rootId = thread.lineage.rootThreadId;
+    familyReadTargets.set(scopedThreadKey(thread.environmentId, rootId), [
+      thread.environmentId,
+      rootId,
+    ]);
+  }
+  const familyReadKey = JSON.stringify(
+    [...familyReadTargets]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([, ref]) => ref),
+  );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps requested families in the server-trimmed shell while selected or expanded
+  useEffect(() => {
+    const targets = JSON.parse(familyReadKey) as ReadonlyArray<readonly [EnvironmentId, ThreadId]>;
+    const releases = targets.map(([environmentId, threadId]) =>
+      threadFamilies.mount(appAtomRegistry, environmentId, threadId),
+    );
+    return () => {
+      for (const release of releases) release();
+    };
+  }, [familyReadKey]);
   const toggleFamily = (key: string) => {
     setFamilyDisclosure((previous) => toggleThreadListV2Family(previous, key));
   };

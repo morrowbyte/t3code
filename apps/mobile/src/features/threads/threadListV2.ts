@@ -285,10 +285,7 @@ export function getThreadListV2OrderedSection(input: {
     ) {
       return false;
     }
-    if (
-      (input.snoozeEnvironmentIds?.has(thread.environmentId) ?? true) &&
-      effectiveSnoozed(thread, { now: input.now })
-    ) {
+    if (effectiveSnoozed(thread, { now: input.now })) {
       return false;
     }
     return (thread.pinnedAt != null) === (input.section === "pinned");
@@ -321,8 +318,24 @@ export interface ThreadListV2FamilyDisclosure {
 
 type ThreadListV2FamilyThread = Pick<
   EnvironmentThreadShell,
-  "id" | "environmentId" | "projectId" | "lineage" | "presentation"
+  "id" | "environmentId" | "projectId" | "lineage" | "presentation" | "delegatedFrom"
 >;
+
+function familyParent<T extends ThreadListV2FamilyThread>(
+  thread: T,
+  byKey: ReadonlyMap<string, T>,
+) {
+  if (
+    thread.presentation !== "top_level" &&
+    thread.lineage.relationshipToParent === "subagent" &&
+    thread.lineage.parentThreadId !== null
+  ) {
+    const parent = byKey.get(`${thread.environmentId}:${thread.lineage.parentThreadId}`);
+    return parent?.projectId === thread.projectId ? parent : undefined;
+  }
+  const from = thread.delegatedFrom;
+  return from == null ? undefined : byKey.get(`${from.environmentId}:${from.threadId}`);
+}
 
 export function revealThreadListV2RouteAncestors(
   previous: ThreadListV2FamilyDisclosure,
@@ -337,15 +350,11 @@ export function revealThreadListV2RouteAncestors(
   const seen = new Set<string>();
   let thread = routeKey === null ? undefined : byKey.get(routeKey);
   let familyRoot: string | null = null;
-  while (
-    thread !== undefined &&
-    thread.presentation !== "top_level" &&
-    thread.lineage.relationshipToParent === "subagent" &&
-    thread.lineage.parentThreadId !== null
-  ) {
-    const key = `${thread.environmentId}:${thread.lineage.parentThreadId}`;
-    const parent = byKey.get(key);
-    if (parent === undefined || parent.projectId !== thread.projectId || seen.has(key)) break;
+  while (thread !== undefined) {
+    const parent = familyParent(thread, byKey);
+    if (parent === undefined) break;
+    const key = `${parent.environmentId}:${parent.id}`;
+    if (seen.has(key)) break;
     seen.add(key);
     familyRoot = key;
     thread = parent;
@@ -413,17 +422,13 @@ export function buildThreadListV2FamilyRows(input: {
   const inputKeys = new Set(
     input.items.filter(({ thread }) => isThreadAwaitingInput(thread)).map(keyOf),
   );
+  const threadsByKey = new Map([...byKey].map(([itemKey, item]) => [itemKey, item.thread]));
   for (const [key, { thread }] of byKey) {
-    if (
-      thread.presentation === "top_level" ||
-      thread.lineage.relationshipToParent !== "subagent" ||
-      thread.lineage.parentThreadId === null
-    )
-      continue;
-    const parentKey = `${thread.environmentId}:${thread.lineage.parentThreadId}`;
-    const parent = byKey.get(parentKey)?.thread;
-    if (parent && parent.projectId === thread.projectId && parentKey !== key)
-      parents.set(key, parentKey);
+    const parent = familyParent(thread, threadsByKey);
+    if (parent !== undefined) {
+      const parentKey = `${parent.environmentId}:${parent.id}`;
+      if (parentKey !== key) parents.set(key, parentKey);
+    }
   }
   // Bad lineage must leave every thread reachable in the flat native list.
   const roots = new Map<string, string>();
@@ -917,8 +922,7 @@ export function buildThreadListV2Items(input: {
       contentOnlyThreadKeys.add(key);
     }
     const supportsSettlement = input.settlementEnvironmentIds?.has(thread.environmentId) ?? true;
-    const supportsSnooze = input.snoozeEnvironmentIds?.has(thread.environmentId) ?? true;
-    if (supportsSnooze && effectiveSnoozed(thread, { now })) {
+    if (effectiveSnoozed(thread, { now })) {
       snoozed.push(thread);
       if (
         thread.snoozedUntil != null &&
