@@ -3187,10 +3187,12 @@ const make = Effect.gen(function* () {
         runtimeMode: limits.runtimeMode,
         interactionMode: limits.interactionMode,
         providers: providers.map((provider) => {
-          const constraints = providerConstraints(
-            provider,
-            orchestrationCapableInstanceIds.has(provider.instanceId),
-          );
+          const constraints = [
+            ...providerConstraints(
+              provider,
+              orchestrationCapableInstanceIds.has(provider.instanceId),
+            ),
+          ];
           if (
             parent !== undefined &&
             provider.enabled &&

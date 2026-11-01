@@ -296,7 +296,7 @@ it.effect.each([false, true])(
     const layerTest = layerDispatchChokepointTest(
       ServerSettings.layerTest({
         providerInstances: {
-          codex_work: { driver: "codex", enabled: true },
+          [ProviderInstanceId.make("codex_work")]: { driver: "codex", enabled: true },
           [instanceId]: { driver: "codex", enabled: true },
         },
         projectSettingsOverrides: {

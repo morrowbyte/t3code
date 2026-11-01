@@ -789,7 +789,7 @@ describe("orchestrator MCP toolkit", () => {
                 { ...scope, capabilities: new Set() },
               )).isError,
             ).toBe(true);
-            const admitted = [];
+            const admitted: Array<typeof OrchestratorMcpThreadSendResult.Type> = [];
             for (const [index, message] of [
               "Research releases",
               "Inspect another issue",
