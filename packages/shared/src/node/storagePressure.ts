@@ -161,15 +161,24 @@ export async function sampleStorage(
         ),
       };
       if (probe.platform !== "linux" || resolved.stats.type !== BTRFS_MAGIC) return sample;
-      const mount: unknown = JSON.parse(
-        await probe.run("findmnt", [
-          "--json",
-          "--target",
-          resolved.path,
-          "--output",
-          "FSTYPE,UUID",
-        ]),
-      );
+      const mountArgs = ["--json", "--target", resolved.path, "--output", "FSTYPE,UUID"];
+      let mountOutput: string;
+      try {
+        mountOutput = await probe.run("findmnt", mountArgs);
+      } catch (cause) {
+        if (
+          cause === null ||
+          typeof cause !== "object" ||
+          !("code" in cause) ||
+          cause.code !== "EAGAIN" ||
+          !("syscall" in cause) ||
+          cause.syscall !== "spawn findmnt"
+        ) {
+          throw cause;
+        }
+        mountOutput = await probe.run("findmnt", mountArgs);
+      }
+      const mount: unknown = JSON.parse(mountOutput);
       const entry = (mount as { filesystems?: { fstype?: string; uuid?: string }[] })
         .filesystems?.[0];
       if (entry?.fstype !== "btrfs" || !/^[a-f0-9-]{36}$/iu.test(entry.uuid ?? "")) {

@@ -56,12 +56,57 @@ it.layer(NodePath.layer)("native storage samples", (it) => {
     }),
   );
 
+  it.effect.each([8, 9.5])(
+    "retries a transient findmnt spawn failure before evaluating metadata usage of %s GiB",
+    (metadataUsedGiB) =>
+      Effect.gen(function* () {
+        const { probe, counters, workspace } = setup(yield* Path.Path);
+        counters.bytes_used = String(metadataUsedGiB * GiB);
+        probe.run.mockRejectedValueOnce(
+          Object.assign(new Error("spawn findmnt EAGAIN"), {
+            code: "EAGAIN",
+            syscall: "spawn findmnt",
+          }),
+        );
+        const result = yield* Effect.promise(() =>
+          checkStorageAdmissionFailure([workspace], 0, false, (paths) =>
+            sampleStorage(paths, probe),
+          ),
+        );
+        if (metadataUsedGiB === 8) expect(result).toBeNull();
+        else expect(result?.code).toBe("storage_pressure");
+        expect(probe.run.mock.calls.filter(([command]) => command === "findmnt")).toHaveLength(2);
+        expect(probe.run.mock.calls.filter(([command]) => command === "btrfs")).toHaveLength(1);
+      }),
+  );
+
   it.effect("does not admit a known Btrfs volume when required measurements fail", () =>
     Effect.gen(function* () {
-      for (const cause of ["missing counter", "spawn findmnt EAGAIN"]) {
+      for (const { cause, attempts } of [
+        { cause: new Error("missing counter"), attempts: 1 },
+        { cause: new Error("spawn findmnt EAGAIN"), attempts: 1 },
+        {
+          cause: Object.assign(new Error("spawn findmnt EAGAIN"), {
+            code: "EAGAIN",
+            syscall: "spawn findmnt",
+          }),
+          attempts: 2,
+        },
+        {
+          cause: Object.assign(new Error("spawn findmnt EACCES"), {
+            code: "EACCES",
+            syscall: "spawn findmnt",
+          }),
+          attempts: 1,
+        },
+        {
+          cause: Object.assign(new Error("read EAGAIN"), { code: "EAGAIN", syscall: "read" }),
+          attempts: 1,
+        },
+      ]) {
         const { probe, counters, workspace } = setup(yield* Path.Path);
-        if (cause === "missing counter") delete counters.bytes_may_use;
-        else probe.run.mockRejectedValueOnce(new Error(cause));
+        if (cause.message === "missing counter") delete counters.bytes_may_use;
+        else probe.run.mockRejectedValue(cause);
         const result = yield* Effect.promise(() =>
           checkStorageAdmissionFailure([workspace], 0, false, (paths) =>
             sampleStorage(paths, probe),
@@ -70,9 +115,11 @@ it.layer(NodePath.layer)("native storage samples", (it) => {
         expect(result?.code).toBe("storage_measurement_failed");
         expect(result?.message).toContain("Cannot check storage capacity");
         expect(result?.message).toContain("Capacity is unknown");
-        expect(result?.message).toContain(cause);
+        expect(result?.message).toContain(cause.message);
         expect(result?.message).not.toContain("Not enough");
-        expect(probe.run.mock.calls.filter(([command]) => command === "findmnt")).toHaveLength(1);
+        expect(probe.run.mock.calls.filter(([command]) => command === "findmnt")).toHaveLength(
+          attempts,
+        );
       }
     }),
   );
