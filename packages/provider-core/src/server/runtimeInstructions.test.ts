@@ -4,6 +4,18 @@ import { T3_CODE_VISUAL_INSTRUCTIONS } from "./orchestrationInstructions.ts";
 import { parseStreamableUi } from "@t3tools/shared/streamableUi";
 
 describe("buildRuntimeInstructions", () => {
+  it.each(["Codex", "Claude Code", "Cursor"])(
+    "gives %s readable cross-thread references without rewriting ordinary variables",
+    (harness) => {
+      const instructions = buildRuntimeInstructions({ harness });
+      expect(instructions).toContain("actual thread title");
+      expect(instructions).toContain("returned canonical `link` verbatim");
+      expect(instructions).toContain("internal aliases such as U or V");
+      expect(instructions).toContain("one bounded `t3_thread_read`");
+      expect(instructions).toContain("Ordinary code variables are unaffected");
+    },
+  );
+
   it("allows authorized native commands when existing OS rights suffice", () => {
     const instructions = buildRuntimeInstructions({ harness: "Codex" });
     expect(instructions).toContain(

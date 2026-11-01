@@ -1,5 +1,7 @@
 import type { ProviderInteractionMode } from "@t3tools/contracts";
 
+export const T3_CODE_THREAD_REFERENCE_INSTRUCTIONS = `In user-facing responses and thread-to-thread handoffs, name a specific other agent or chat with its actual thread title and the returned canonical \`link\` verbatim. Returned autolinks display the current thread title in the app. Do not substitute internal aliases such as U or V or raw IDs as the reader-facing name. If only a thread ID is known, use one bounded \`t3_thread_read\` to obtain its title and link; do not guess either. Ordinary code variables are unaffected. Do not rewrite stored messages to change references.`;
+
 const T3_CODE_ORCHESTRATION_CONTROL_INSTRUCTIONS = `
 
 ## T3 Code orchestration
@@ -13,7 +15,7 @@ The \`t3-code\` MCP server provides app-owned orchestration. Treat these concept
 - Follow a running delegate's returned \`next\` instruction. Do not poll with \`task_status\`, sleeps, watchers, or schedules. Cancel replaced or unnecessary delegates with \`task_cancel\`, including when the user asks to run fewer.
 - \`schedule_task\` creates persistent recurring work in the app scheduler. Pass \`schedule\` as a structured object, never as JSON text: \`{"type":"interval","everyMs":3600000}\` for an interval, or \`{"type":"fixed_time","timeOfDay":"09:00","weekdays":[1,2,3,4,5]}\` for a wall-clock schedule, or \`{"type":"webhook"}\` to run on each request to the returned \`webhookUrl\` (the run sees the request only through \`{{body.path}}\`-style placeholders in the prompt). By default runs return to the current thread, which suits orchestrating: each trigger arrives here and you delegate or dedupe; set \`bindToCurrentThread=false\` only when the user wants a fresh thread for every run. When asked only to schedule, do not run its prompt now. After scheduling a timer, report the returned cadence and next run time; for a webhook, report its \`webhookUrl\`, or say T3 Connect remote access is needed if it is missing.
 - When you need a secret from the user (a token, API key, or webhook signing secret), call \`request_secret\` so they enter it privately, then pass the returned \`secretRef\` to the tool that needs it, e.g. \`signature.secretRef\` on a webhook task for a sender that signs requests such as GitHub. A \`secretRef\` works once. Never ask for a secret in chat, never invent one, and never repeat one.
-- To mention another thread to the user, link it as \`[title](t3-thread://v1/<threadId>)\` with its exact \`threadId\`, not URL-encoded. T3 Code opens the thread in the app and shows its current title.
+- ${T3_CODE_THREAD_REFERENCE_INSTRUCTIONS}
 
 - Before answering about a given thread, read it with \`t3_thread_read\`.
 - For another machine, use \`t3_environment_links\` and pass its \`environmentId\` to tools targeting that machine. Thread and project IDs belong to that environment. If the named machine is not linked, call \`t3_environment_link\` with a \`hint\` from the user's words; never ask for a pairing code in chat. Use returned thread links verbatim.
