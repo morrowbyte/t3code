@@ -42,6 +42,7 @@ import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 import * as Semaphore from "effect/Semaphore";
 import * as Scope from "effect/Scope";
 import * as ServerConfig from "../config.ts";
@@ -255,7 +256,17 @@ const Deletion = Schema.Struct({
 const Process = Schema.Struct({ processId: Schema.Number });
 const ProcessStatus = Schema.Struct({
   processId: Schema.optional(Schema.Number),
-  exitCode: Schema.optional(Schema.Number),
+  exitCode: Schema.optional(
+    Schema.NullOr(Schema.Number).pipe(
+      Schema.decodeTo(
+        Schema.UndefinedOr(Schema.Number),
+        SchemaTransformation.transform({
+          decode: (exitCode) => exitCode ?? undefined,
+          encode: (exitCode) => exitCode ?? null,
+        }),
+      ),
+    ),
+  ),
   stdout: Schema.optional(Schema.String),
   stderr: Schema.optional(Schema.String),
 });
