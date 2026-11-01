@@ -30,6 +30,7 @@ const Frame = Schema.Struct({
 });
 const decodeFrame = Schema.decodeUnknownSync(Schema.fromJsonString(Frame));
 const encodeFrame = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 const selection = {
   instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
   model: "requested-eval-model",
@@ -64,10 +65,10 @@ const makeHarness = Effect.fn("CodexEvaluationTest.makeHarness")(function* (
     Queue.offer(inbound, new TextEncoder().encode(`${encodeFrame(frame)}\n`));
   const adapter = yield* CodexAdapterV2.makeCodexAdapterV2({
     instanceId: selection.instanceId,
-    settings: Schema.decodeSync(CodexSettings)({}),
+    settings: decodeCodexSettings({}),
     environment: {},
     resolveRuntime: Effect.succeed({
-      config: Schema.decodeSync(CodexSettings)({ binaryPath: "resolved-codex" }),
+      config: decodeCodexSettings({ binaryPath: "resolved-codex" }),
       environment: { EVALUATION_RUNTIME: "resolved" },
       revision: "test-runtime",
     }),

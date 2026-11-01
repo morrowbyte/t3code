@@ -36,6 +36,7 @@ export const ProviderEvalBoatInput = Schema.Struct({
   samples: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 3 })),
 });
 export type ProviderEvalBoatInput = typeof ProviderEvalBoatInput.Type;
+const decodeProviderEvalBoatInput = Schema.decodeUnknownEffect(ProviderEvalBoatInput);
 
 export const ProviderEvalBoatResult = Schema.Struct({
   jobId: Schema.String,
@@ -101,7 +102,7 @@ const make = Effect.gen(function* () {
   const run: ProviderEvalBoat["Service"]["run"] = Effect.fn("ProviderEvalBoat.run")(
     function* (input) {
       yield* McpInvocationContext.McpInvocationContext;
-      const checked = yield* Schema.decodeUnknownEffect(ProviderEvalBoatInput)(input).pipe(
+      const checked = yield* decodeProviderEvalBoatInput(input).pipe(
         Effect.mapError((cause) => new ProviderEvalBoatError({ code: "invalid_input", cause })),
       );
       if (new Set(checked.caseIds).size !== checked.caseIds.length) {

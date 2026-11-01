@@ -51,6 +51,7 @@ const ToolCall = Schema.Struct({
   arguments: Schema.Json,
   visibleText: Schema.optional(Schema.String.check(Schema.isMaxLength(maximumPayloadLength))),
 });
+const decodeToolCall = Schema.decodeUnknownEffect(ToolCall);
 const Complete = Schema.Struct({
   type: Schema.Literal("complete"),
   evaluationId: identifier,
@@ -231,7 +232,7 @@ const make = Effect.gen(function* () {
         sessions.set(session.id, session);
         const onToolCall: ProviderAdapter.ProviderAdapterV2EvaluationInput["onToolCall"] =
           Effect.fn("ProviderEvalSession.onToolCall")(function* (call) {
-            const event = yield* Schema.decodeUnknownEffect(ToolCall)({
+            const event = yield* decodeToolCall({
               type: "tool_call",
               evaluationId: session.id,
               ...call,
