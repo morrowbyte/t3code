@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
 import type { SetStateAction } from "react";
-import type { ChatMessage } from "../../types";
+import { isImageAttachment, type ChatMessage } from "../../types";
 import { collectUserMessageBlobPreviewUrls } from "../ChatView.logic";
 
 /**
@@ -14,7 +14,7 @@ import { collectUserMessageBlobPreviewUrls } from "../ChatView.logic";
 export interface OptimisticUserMessages {
   readonly threadId: ThreadId;
   readonly messages: ChatMessage[];
-  readonly handoff: Readonly<Record<string, ReadonlyArray<string>>>;
+  readonly handoff: Readonly<Record<string, ReadonlyArray<string | null>>>;
 }
 
 export function emptyOptimisticUserMessages(threadId: ThreadId): OptimisticUserMessages {
@@ -33,14 +33,18 @@ export function reconcileOptimisticUserMessages(
   if (state.threadId !== threadId) return emptyOptimisticUserMessages(threadId);
   if (!state.messages.some((message) => acknowledgedIds.has(message.id))) return state;
   const messages: ChatMessage[] = [];
-  const handoff: Record<string, ReadonlyArray<string>> = { ...state.handoff };
+  const handoff: Record<string, ReadonlyArray<string | null>> = { ...state.handoff };
   for (const message of state.messages) {
     if (!acknowledgedIds.has(message.id)) {
       messages.push(message);
       continue;
     }
     const previewUrls = collectUserMessageBlobPreviewUrls(message);
-    if (previewUrls.length > 0) handoff[message.id] = previewUrls;
+    if (previewUrls.length > 0) {
+      handoff[message.id] = (message.attachments ?? [])
+        .filter(isImageAttachment)
+        .map((image) => image.previewUrl ?? null);
+    }
   }
   return { ...state, messages, handoff };
 }
@@ -103,7 +107,9 @@ export function createOptimisticBlobPreviews(): OptimisticBlobPreviews {
     },
     handOff: (state) => {
       for (const previewUrls of Object.values(state.handoff)) {
-        for (const previewUrl of previewUrls) handedOff.add(previewUrl);
+        for (const previewUrl of previewUrls) {
+          if (previewUrl?.startsWith("blob:")) handedOff.add(previewUrl);
+        }
       }
     },
     revoke,
