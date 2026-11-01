@@ -254,9 +254,7 @@ export function getKeyboardTraitOptions(
   if (selected.modelIsUnavailable) return [];
   const descriptor =
     kind === "reasoning"
-      ? (selected.selectDescriptors.find((entry) =>
-          REASONING_SELECT_DESCRIPTOR_IDS.has(entry.id),
-        ) ?? selected.thinkingDescriptor)
+      ? (selected.selectDescriptors.find(isReasoningSelect) ?? selected.thinkingDescriptor)
       : (selected.selectDescriptors.find((entry) => entry.id === "serviceTier") ??
         selected.fastModeDescriptor);
   if (!descriptor) return [];
