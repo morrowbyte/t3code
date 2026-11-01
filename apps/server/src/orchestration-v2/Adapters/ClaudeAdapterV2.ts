@@ -8429,7 +8429,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 ) {
                   yield* emitAssistantTextArtifacts({
                     context,
-                    nativeItemId: update.itemId,
+                    nativeItemId: `${update.itemId}:public-update`,
                     text: update.text,
                   });
                 }

@@ -26,7 +26,8 @@ import {
   type ReactElement,
 } from "react";
 import * as DateTime from "effect/DateTime";
-import { Atom } from "effect/reactivity";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
+import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import { describe, expect, it, onTestFinished, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
 
@@ -57,21 +58,28 @@ import {
 } from "@t3tools/shared/composerContextClipboard";
 import { collectComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 
+const QUERY_FALLBACK = Atom.make(AsyncResult.initial<never, never>());
 const environmentQuery = vi.hoisted(() => ({
   error: "Pull request not found",
   data: null as unknown,
+  pending: false,
+  sources: new WeakSet<object>(),
 }));
 vi.mock(import("~/state/query"), async (original) => ({
   ...(await original()),
-  useEnvironmentQuery: (() => ({
-    data: environmentQuery.data,
-    dataUpdatedAt: 0,
-    error: environmentQuery.error,
-    failure: null,
-    isPending: false,
-    isSuccess: false,
-    refresh: () => {},
-  })) as never,
+  useEnvironmentQuery: ((atom: Atom.Atom<AsyncResult.AsyncResult<unknown, unknown>> | null) => {
+    const sourced = atom !== null && environmentQuery.sources.has(atom);
+    const result = useAtomValue(sourced ? atom : QUERY_FALLBACK);
+    return {
+      data: sourced ? AsyncResult.getOrElse(result, () => null) : environmentQuery.data,
+      dataUpdatedAt: 0,
+      error: environmentQuery.error,
+      failure: null,
+      isPending: sourced ? result.waiting : environmentQuery.pending,
+      isSuccess: false,
+      refresh: () => {},
+    };
+  }) as never,
 }));
 
 const audioAsset = vi.hoisted(() => ({ url: "" }));
@@ -218,6 +226,8 @@ function setup({
 } = {}): Disposable {
   environmentQuery.error = "Pull request not found";
   environmentQuery.data = { tasks: scheduledTasks };
+  environmentQuery.pending = false;
+  environmentQuery.sources = new WeakSet();
   leaveNavigationMode();
   return { [Symbol.dispose]: leaveNavigationMode };
 }
@@ -1752,40 +1762,163 @@ it("keeps concurrent approvals actionable outside collapsed work and restores se
     .toBeVisible();
 });
 
-it("shows the localized completed reasoning summary collapsed and preserves the original on expansion", async () => {
-  using _state = setup();
-  const summary = "Der Shell-Wrapper wird geprüft, bevor die Ausführung geändert wird.";
-  const original = "Inspect the existing shell wrapper before choosing an executor change.";
-  const entries: Entry[] = [
-    {
-      id: "localized-reasoning",
-      kind: "work",
-      createdAt: CREATED_AT,
-      entry: {
-        id: "localized-reasoning",
-        createdAt: CREATED_AT,
-        label: summary,
-        tone: "thinking",
-        itemType: "reasoning",
-        detail: original,
-        toolLifecycleStatus: "completed",
-        structuredPayload: {
-          id: TurnItemId.make("localized-reasoning"),
-          threadId: ThreadId.make("fixture"),
-          runId: null,
-          type: "reasoning",
-          title: summary,
-          status: "completed",
-          text: original,
-          streaming: false,
-        } as import("@t3tools/contracts").OrchestrationV2TurnItem,
+it.each([
+  { source: "inline", streaming: false },
+  { source: "shallow", streaming: false },
+  { source: "inline", streaming: true },
+  { source: "shallow", streaming: true },
+] as const)(
+  "keeps the summary and opens the original for $source reasoning (streaming=$streaming)",
+  async ({ source, streaming }) => {
+    using _state = setup();
+    const runId = RunId.make("original-reasoning-run");
+    const summary = "Der Shell-Wrapper wird geprüft, bevor die Ausführung geändert wird.";
+    const original = "Inspect the existing shell wrapper before choosing an executor change.";
+    const prefix = "Inspect the existing shell wrapper";
+    const at = (second: number) =>
+      DateTime.makeUnsafe(new Date(Date.UTC(2026, 2, 17, 19, 12, 0, second * 1_000)).toISOString());
+    const item = (
+      text: string,
+      live: boolean,
+      second: number,
+    ): import("@t3tools/contracts").OrchestrationV2ProjectedTurnItem =>
+      v2Item("reasoning", {
+        id: "original-reasoning",
+        runId,
+        title: summary,
+        text,
+        status: live ? "running" : "completed",
+        streaming: live,
+        updatedAt: at(second),
+        startedAt: at(28),
+        completedAt: live ? null : at(second),
+      });
+    const entries = (text: string, live: boolean, second: number) =>
+      deriveTimelineEntriesFromVisibleTurnItems({
+        visibleTurnItems: [item(source === "shallow" ? "" : text, live, second)],
+        optimisticMessages: [],
+      });
+    environmentQuery.error = "";
+    const initialText = streaming ? prefix : original;
+    const registry = AtomRegistry.make();
+    using _registry = { [Symbol.dispose]: () => registry.dispose() };
+    const responses = Atom.family((revision: string) =>
+      Atom.make<
+        AsyncResult.AsyncResult<
+          import("@t3tools/contracts").OrchestrationV2GetTurnItemResult,
+          unknown
+        >
+      >(
+        AsyncResult.initial<import("@t3tools/contracts").OrchestrationV2GetTurnItemResult, unknown>(
+          true,
+        ),
+      ).pipe(Atom.keepAlive, Atom.withLabel(revision)),
+    );
+    const revision = (live: boolean, second: number) =>
+      live
+        ? `live:${Math.floor(DateTime.toEpochMillis(at(second)) / 1_000)}`
+        : DateTime.formatIso(at(second));
+    registry.set(
+      responses(revision(streaming, 28)),
+      AsyncResult.success({ item: item(initialText, streaming, 28).item }),
+    );
+    const detail = vi.fn<NonNullable<TimelineProps["turnItemSource"]>["detail"]>((input) => {
+      const response = responses(input.revision);
+      environmentQuery.sources.add(response);
+      return response;
+    });
+    const props = {
+      ...baseProps(),
+      turnItemSource: {
+        detail,
+        commandOutput: vi.fn<NonNullable<TimelineProps["turnItemSource"]>["commandOutput"]>(),
       },
-    },
-  ];
-  await using screen = await renderTimeline(entries);
-  await expect.element(screen.getByRole("button", { name: new RegExp(summary) })).toBeVisible();
-  expect(screen.text()).not.toContain(original);
-  await screen.getByRole("button", { name: new RegExp(summary) }).click();
-  await vi.waitFor(() => expect(screen.text()).toContain(original));
-  expect(screen.text()).toContain(summary);
-});
+    };
+    const draw = (text: string, live: boolean, second: number, otherThread = false) => (
+      <RegistryContext.Provider value={registry}>
+        <MessagesTimeline
+          {...props}
+          routeThreadKey={otherThread ? "other-thread" : props.routeThreadKey}
+          timelineEntries={otherThread ? [] : entries(text, live, second)}
+          isWorking={live}
+          runningRunId={live ? runId : null}
+          latestRun={{
+            runId,
+            status: live ? "running" : "completed",
+            startedAt: CREATED_AT,
+            completedAt: live ? null : CREATED_AT,
+          }}
+        />
+      </RegistryContext.Provider>
+    );
+    await using screen = await renderElement(draw(initialText, streaming, 28));
+    const openOriginal = async () => {
+      const fold = screen.buttons(/Worked for/)[0];
+      if (fold?.getAttribute("aria-expanded") === "false") await click(fold);
+      const toggle = screen.getByRole("button", { name: new RegExp(summary) });
+      await expect.element(toggle).toBeVisible();
+      if (toggle.element().getAttribute("aria-expanded") !== "true") await toggle.click();
+    };
+    await openOriginal();
+    await vi.waitFor(() => expect(screen.text()).toContain(initialText));
+    if (source === "shallow") {
+      expect(detail).toHaveBeenCalledWith({
+        threadId: ThreadId.make("thread-1"),
+        itemId: TurnItemId.make("original-reasoning"),
+        revision: streaming
+          ? `live:${Math.floor(DateTime.toEpochMillis(at(28)) / 1_000)}`
+          : DateTime.formatIso(at(28)),
+      });
+    } else {
+      expect(detail).not.toHaveBeenCalled();
+    }
+    if (streaming) {
+      if (source === "shallow") {
+        await screen.rerender(draw(prefix, true, 28.5));
+        expect(new Set(detail.mock.calls.map(([input]) => input.revision)).size).toBe(1);
+        await screen.rerender(draw(prefix, true, 29));
+        await vi.waitFor(() => expect(screen.text()).toContain(prefix));
+        expect(screen.text()).not.toContain("Loading provider text");
+        expect(screen.text()).not.toContain(original);
+      }
+      if (source === "shallow") {
+        await act(() =>
+          registry.set(
+            responses(revision(true, 29)),
+            AsyncResult.success({ item: item(original, true, 29).item }),
+          ),
+        );
+      } else {
+        await screen.rerender(draw(original, true, 29));
+      }
+      await vi.waitFor(() => expect(screen.text()).toContain(original));
+      if (source === "shallow") {
+        expect(detail).toHaveBeenCalledWith({
+          threadId: ThreadId.make("thread-1"),
+          itemId: TurnItemId.make("original-reasoning"),
+          revision: `live:${Math.floor(DateTime.toEpochMillis(at(29)) / 1_000)}`,
+        });
+      }
+    }
+    registry.set(
+      responses(revision(false, 30)),
+      AsyncResult.success({ item: item(original, false, 30).item }),
+    );
+    await screen.rerender(draw(original, false, 30));
+    await openOriginal();
+    await vi.waitFor(() => expect(screen.text()).toContain(original));
+    expect(screen.text()).toContain(summary);
+    if (source === "shallow")
+      expect(detail).toHaveBeenCalledWith({
+        threadId: ThreadId.make("thread-1"),
+        itemId: TurnItemId.make("original-reasoning"),
+        revision: DateTime.formatIso(at(30)),
+      });
+    await screen.rerender(draw(original, false, 30, true));
+    expect(screen.text()).not.toContain(original);
+    await screen.rerender(draw(original, false, 30));
+    await openOriginal();
+    await vi.waitFor(() => expect(screen.text()).toContain(original));
+    expect(screen.text()).toContain(summary);
+  },
+);

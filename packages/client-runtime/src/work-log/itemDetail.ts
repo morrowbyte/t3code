@@ -126,16 +126,21 @@ const LIVE_TURN_ITEM_STATUSES: ReadonlySet<OrchestrationV2TurnItem["status"]> = 
   "waiting",
 ]);
 
-/**
- * A running item keeps one key, so an open row fetches once while it streams and
- * again when it finishes, not on every update.
- */
+/** Missing reasoning text refreshes at most once a second; terminal items use their exact revision. */
 export function turnItemDetailRevision(item: OrchestrationV2TurnItem): string {
+  if (
+    item.type === "reasoning" &&
+    turnItemNeedsDetailFetch(item) &&
+    LIVE_TURN_ITEM_STATUSES.has(item.status)
+  )
+    return `live:${Math.floor(DateTime.toEpochMillis(item.updatedAt) / 1_000)}`;
   return LIVE_TURN_ITEM_STATUSES.has(item.status) ? "live" : DateTime.formatIso(item.updatedAt);
 }
 
 export function turnItemNeedsDetailFetch(item: OrchestrationV2TurnItem): boolean {
   switch (item.type) {
+    case "reasoning":
+      return !item.text.trim() && Boolean(item.title?.trim());
     case "command_execution":
       return item.outputOmitted === true;
     case "dynamic_tool":
@@ -216,7 +221,7 @@ export function turnItemOutputImages(
 export function turnItemHasDetail(item: OrchestrationV2TurnItem): boolean {
   switch (item.type) {
     case "reasoning":
-      return item.text.trim().length > 0;
+      return item.text.trim().length > 0 || turnItemNeedsDetailFetch(item);
     case "command_execution":
       return (
         toolCallLines({ command: item.input }).command !== null ||

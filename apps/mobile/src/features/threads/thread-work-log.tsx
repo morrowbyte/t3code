@@ -536,6 +536,7 @@ export function ThreadWorkLog(props: ThreadWorkLogProps) {
     return (
       <WorkLogBlock continues={props.continuesWorkLog}>
         <ThreadReasoningGroup
+          environmentId={props.environmentId}
           activities={props.activities}
           edgeFadeColor={props.edgeFadeColor}
           renderReasoning={props.renderReasoning}
@@ -564,6 +565,7 @@ export function ThreadWorkLog(props: ThreadWorkLogProps) {
 }
 
 function ThreadReasoningGroup(props: {
+  readonly environmentId: EnvironmentId;
   readonly activities: ReadonlyArray<ThreadFeedActivity>;
   readonly edgeFadeColor: string;
   readonly renderReasoning: (text: string) => ReactNode;
@@ -598,7 +600,12 @@ function ThreadReasoningGroup(props: {
         }}
       >
         {props.activities.map((row) => (
-          <View key={row.id}>{props.renderReasoning(row.workEntry.detail ?? "")}</View>
+          <ThreadReasoningContent
+            key={row.id}
+            environmentId={props.environmentId}
+            row={row}
+            renderReasoning={props.renderReasoning}
+          />
         ))}
       </Animated.ScrollView>
       <Animated.View
@@ -608,6 +615,50 @@ function ThreadReasoningGroup(props: {
       >
         <EdgeFade color={props.edgeFadeColor} direction="up" />
       </Animated.View>
+    </View>
+  );
+}
+
+function ThreadReasoningContent(props: {
+  readonly environmentId: EnvironmentId;
+  readonly row: ThreadFeedActivity;
+  readonly renderReasoning: (text: string) => ReactNode;
+}) {
+  const detail = useTurnItemDetail(
+    props.row.fetchesDetail
+      ? { environmentId: props.environmentId, row: props.row.projectedItem }
+      : null,
+  );
+  const item = props.row.projectedItem.item;
+  const fetched = detail.data?.item;
+  const text =
+    props.row.fetchesDetail &&
+    fetched?.type === "reasoning" &&
+    fetched.id === props.row.projectedItem.sourceItemId &&
+    fetched.threadId === props.row.projectedItem.sourceThreadId
+      ? fetched.text
+      : props.row.workEntry.detail || (item.type === "reasoning" ? item.text : "");
+  const key = JSON.stringify([
+    props.environmentId,
+    props.row.projectedItem.sourceThreadId,
+    props.row.projectedItem.sourceItemId,
+  ]);
+  const [retained, setRetained] = useState({ key, text });
+  if (retained.key !== key || (text && retained.text !== text)) setRetained({ key, text });
+  const shownText = text || (retained.key === key ? retained.text : "");
+  return (
+    <View>
+      {shownText ? (
+        props.renderReasoning(shownText)
+      ) : (
+        <Text className="text-foreground-muted">
+          {detail.isPending
+            ? "Loading provider text…"
+            : detail.error
+              ? `Couldn't load provider text: ${detail.error}`
+              : "No provider text available."}
+        </Text>
+      )}
     </View>
   );
 }
@@ -950,7 +1001,7 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
     useCommandOutputStreaming(props.environmentId) &&
     row.projectedItem.item.type === "command_execution";
   const fetchedDetail = useTurnItemDetail(
-    expanded && row.fetchesDetail && !streamsOutput
+    expanded && row.fetchesDetail && !streamsOutput && row.projectedItem.item.type !== "reasoning"
       ? { environmentId: props.environmentId, row: row.projectedItem }
       : null,
   );
@@ -1033,10 +1084,10 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
       ? notificationChildThreadId(row.projectedItem.item.source)
       : undefined;
   const canExpand = row.canExpand && notifiedSubagentThreadId === undefined;
-  const reasoning = row.projectedItem.item.type === "reasoning" ? row.projectedItem.item : null;
   const fetchedItem = fetchedDetail.data?.item ?? null;
   const isRead = toolGroupAction(row.workEntry) === "read";
   const shownItem = fetchedItem ?? row.projectedItem.item;
+  const reasoning = shownItem.type === "reasoning" ? shownItem : null;
   const call =
     expanded && !isRead && shownItem.type === "command_execution"
       ? toolCallLines({ command: shownItem.input })
@@ -1328,7 +1379,11 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
             contentContainerStyle={{ paddingRight: 8 }}
           >
             {reasoning ? (
-              props.renderReasoning(reasoning.text)
+              <ThreadReasoningContent
+                environmentId={props.environmentId}
+                row={row}
+                renderReasoning={props.renderReasoning}
+              />
             ) : call ? (
               [
                 call.command ? (

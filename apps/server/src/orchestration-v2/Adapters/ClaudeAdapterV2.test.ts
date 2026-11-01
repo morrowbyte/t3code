@@ -5116,6 +5116,70 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       ),
   );
 
+  it.effect("preserves thinking originals when Claude promotes a public tool update", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarness;
+      yield* harness.runtime.startTurn(
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("thinking-original"),
+          text: "Inspect the files",
+          attachments: [],
+        }),
+      );
+      for (const [uuid, content] of [
+        [
+          "first-thinking",
+          [{ type: "thinking", thinking: "Compare both parsers.", signature: "sig" }],
+        ],
+        [
+          "second-thinking",
+          [
+            { type: "thinking", thinking: "Inspect the parser files.", signature: "sig" },
+            {
+              type: "tool_use",
+              id: "inspect-files",
+              name: "Read",
+              input: { file_path: "/workspace/parser.ts" },
+            },
+          ],
+        ],
+      ] as const) {
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "assistant",
+            uuid,
+            session_id: WAKE_NATIVE_SESSION,
+            parent_tool_use_id: null,
+            message: { id: "thinking-update-message", model: "claude-sonnet-5-5", content },
+          }),
+        );
+      }
+      yield* Queue.offer(
+        harness.sdkMessages,
+        makeResultFrame({ uuid: "thinking-done", result: "Done" }),
+      );
+      yield* Queue.take(harness.terminalReceipts);
+      const latest = new Map(
+        harness.events.flatMap((event) =>
+          event.type === "turn_item.updated" ? [[event.turnItem.id, event.turnItem] as const] : [],
+        ),
+      );
+      assert.deepEqual(
+        [...latest.values()].flatMap((item) => (item.type === "reasoning" ? [item.text] : [])),
+        ["Compare both parsers.", "Inspect the parser files."],
+      );
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
   // regression: #15892 non-execution metadata is carried through, not guessed from result text
   it.effect.each(["cancelled", "denied", "permission_denied", undefined])(
     "preserves native tool non-execution metadata %s without inferring a denial from text",

@@ -23,6 +23,7 @@ import {
 } from "@t3tools/client-runtime/work-log/presentation";
 import {
   turnItemHasDetail,
+  turnItemDetailRevision,
   turnItemNeedsDetailFetch,
 } from "@t3tools/client-runtime/work-log/item-detail";
 import { claudeSkillInvocation } from "@t3tools/shared/toolActivity";
@@ -38,6 +39,7 @@ import { ChevronRightIcon, CircleAlertIcon, XIcon, RotateCcwIcon, CodeIcon } fro
 import { Button, InlineButton } from "../ui/button";
 import { useAssetUrls } from "../../assets/assetUrls";
 import { useThreadShell } from "../../state/entities";
+import { useTurnItemDetail } from "../../state/queries";
 import {
   threadReadLabelPrefix,
   threadReadTargetId,
@@ -119,28 +121,81 @@ const toolCallExpandedBodyClassName =
 const stopRowToggle = (e: { stopPropagation: () => void }) => e.stopPropagation();
 
 export function ReasoningTraceContent({ entries }: { entries: ReadonlyArray<TimelineWorkEntry> }) {
-  const ctx = use(TimelineRowCtx);
   const { isWorking, latestRunId } = use(TimelineRowActivityCtx);
   const isStreaming = (entry: TimelineWorkEntry) =>
     isWorking && entry.runId === latestRunId && entry.toolLifecycleStatus === "inProgress";
   return (
     <WorkLogDetails followLive={entries.some(isStreaming)}>
       {entries.map((entry) => (
-        <ChatMarkdown
-          key={entry.id}
-          className="text-foreground"
-          text={entry.detail ?? ""}
-          cwd={ctx.markdownCwd}
-          threadRef={ctx.threadRef ?? undefined}
-          skills={ctx.skills}
-          isStreaming={isStreaming(entry)}
-          headingLevelOffset={MESSAGE_HEADING_LEVEL}
-          onUseArtifactTemplate={ctx.onUseArtifactTemplate}
-          onImageExpand={ctx.onImageExpand}
-          lineBreaks
-        />
+        <ReasoningTraceEntry key={entry.id} entry={entry} isStreaming={isStreaming(entry)} />
       ))}
     </WorkLogDetails>
+  );
+}
+
+function ReasoningTraceEntry({
+  entry,
+  isStreaming,
+}: {
+  entry: TimelineWorkEntry;
+  isStreaming: boolean;
+}) {
+  const ctx = use(TimelineRowCtx);
+  const projected = entry.projectedItem;
+  const item = projected?.item;
+  const fetches =
+    item?.type === "reasoning" && !entry.detail?.trim() && turnItemNeedsDetailFetch(item);
+  const detail = useTurnItemDetail(
+    fetches && projected
+      ? {
+          environmentId: ctx.activeThreadEnvironmentId,
+          threadId: projected.sourceThreadId,
+          itemId: projected.sourceItemId,
+          revision: turnItemDetailRevision(item),
+        }
+      : null,
+    ctx.turnItemSource?.detail,
+  );
+  const fetched = detail.data?.item;
+  const text =
+    fetches &&
+    fetched?.type === "reasoning" &&
+    fetched.id === projected?.sourceItemId &&
+    fetched.threadId === projected.sourceThreadId
+      ? fetched.text
+      : entry.detail || (item?.type === "reasoning" ? item.text : "");
+  const key = JSON.stringify([
+    ctx.activeThreadEnvironmentId,
+    projected?.sourceThreadId ?? ctx.threadRef?.threadId,
+    projected?.sourceItemId ?? entry.id,
+  ]);
+  const [retained, setRetained] = useState({ key, text });
+  if (retained.key !== key || (text && retained.text !== text)) setRetained({ key, text });
+  const shownText = text || (retained.key === key ? retained.text : "");
+  if (!shownText && fetches) {
+    return (
+      <p role="status">
+        {detail.isPending
+          ? "Loading provider text…"
+          : detail.error
+            ? `Couldn't load provider text: ${detail.error}`
+            : "No provider text available."}
+      </p>
+    );
+  }
+  return (
+    <ChatMarkdown
+      className="text-foreground"
+      text={shownText}
+      cwd={ctx.markdownCwd}
+      threadRef={ctx.threadRef ?? undefined}
+      skills={ctx.skills}
+      isStreaming={isStreaming}
+      headingLevelOffset={MESSAGE_HEADING_LEVEL}
+      onUseArtifactTemplate={ctx.onUseArtifactTemplate}
+      onImageExpand={ctx.onImageExpand}
+      lineBreaks
+    />
   );
 }
 
@@ -285,14 +340,9 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
   const questionHeading = workEntry.questionAnswer
     ? getQuestionTextPreview(workEntry.questionAnswer)
     : "";
-  const reasoningSummary =
-    isReasoning && workEntry.toolLifecycleStatus !== "inProgress"
-      ? workEntry.structuredPayload?.title?.trim()
-      : undefined;
+  const reasoningSummary = isReasoning ? workEntry.structuredPayload?.title?.trim() : undefined;
   const previewText =
-    isReasoning &&
-    workEntry.toolLifecycleStatus !== "inProgress" &&
-    workEntry.structuredPayload?.title?.trim()
+    isReasoning && workEntry.structuredPayload?.title?.trim()
       ? workEntry.structuredPayload.title
       : isReasoning && expanded
         ? workEntry.toolLifecycleStatus === "inProgress"
@@ -353,13 +403,11 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
       ? Boolean(plainOutput || viewedImage || workEntry.questionAnswer || plainOutputFetches)
       : workEntry.projectedItem === undefined
         ? canExpand
-        : isReasoning
-          ? Boolean(workEntry.detail?.trim())
-          : Boolean(
-              viewedImage ||
-              workEntry.questionAnswer ||
-              turnItemHasDetail(workEntry.projectedItem.item),
-            );
+        : Boolean(
+            viewedImage ||
+            workEntry.questionAnswer ||
+            turnItemHasDetail(workEntry.projectedItem.item),
+          );
   const iconWrapperClass = cn(
     "flex size-4 items-center justify-center",
     showWarningIndicator

@@ -1,4 +1,5 @@
 import { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
+import { turnItemHasDetail } from "@t3tools/client-runtime/work-log/item-detail";
 import { resolveUserMessagePresentation } from "@t3tools/client-runtime/user-message";
 import { isLiveSubagentTurnItem } from "@t3tools/client-runtime/state/subagentRuntime";
 import * as DateTime from "effect/DateTime";
@@ -253,7 +254,7 @@ export function liveWorkEntryLabel(
   const status = liveActivityToolStatus(entry.toolLifecycleStatus, active);
   if (entry.itemType === "reasoning") {
     return (
-      (status !== "inProgress" ? entry.structuredPayload?.title?.trim() : undefined) ||
+      entry.structuredPayload?.title?.trim() ||
       entry.detail?.trim().replace(/\s+/g, " ") ||
       (status === "inProgress" ? "Thinking" : "Thought")
     );
@@ -274,7 +275,10 @@ export function workEntryIsVisibleInGroup(
   entry: WorkLogEntry,
   expandedToolGroupEntry = false,
 ): boolean {
-  if (entry.itemType === "reasoning") return Boolean(entry.detail?.trim());
+  if (entry.itemType === "reasoning")
+    return Boolean(
+      entry.detail?.trim() || (entry.projectedItem && turnItemHasDetail(entry.projectedItem.item)),
+    );
   return (
     (expandedToolGroupEntry &&
       (entry.toolLifecycleStatus === "inProgress" ||
