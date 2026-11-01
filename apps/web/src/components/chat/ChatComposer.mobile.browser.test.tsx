@@ -33,7 +33,12 @@ import {
   ComposerFooterModeControls,
   useLiveVoiceComposerState,
 } from "./ChatComposer";
-import { LiveVoiceControl, resolveLiveVoiceAvailability } from "../../voice/LiveVoiceControl";
+import {
+  GlobalLiveVoiceControl,
+  LiveVoiceControl,
+  resolveLiveVoiceAvailability,
+} from "../../voice/LiveVoiceControl";
+import { WebLiveVoiceSessionProvider } from "../../voice/sessionContext";
 import { Button } from "../ui/button";
 import { TooltipProvider } from "../ui/tooltip";
 import { runtimeModeConfig, runtimeModeOptions } from "./runtimeModeConfig";
@@ -73,7 +78,7 @@ function expectPassive() {
 }
 
 describe("production composer mobile footer", () => {
-  it("keeps unfocused voice controls mounted through draft hydration until deliberate End", async () => {
+  it("keeps global voice controls mounted through draft hydration until deliberate End", async () => {
     using _state = setup();
     let finishSaving!: () => void;
     const saving = new Promise<void>((resolve) => {
@@ -127,18 +132,21 @@ describe("production composer mobile footer", () => {
               />
             }
           />
+          <GlobalLiveVoiceControl />
         </TooltipProvider>
       );
     }
-    await using screen = await render(<Fixture />);
+    await using screen = await render(
+      <WebLiveVoiceSessionProvider>
+        <Fixture />
+      </WebLiveVoiceSessionProvider>,
+    );
     const { container } = screen;
     const editor = container.querySelector<HTMLTextAreaElement>('[aria-label="Unfocused message"]');
     expect(document.activeElement).not.toBe(editor);
     await act(async () => control(container, "Start voice call").click());
     const end = control(container, "End Live voice");
-    const footer = container.querySelector<HTMLElement>('[data-chat-composer-footer="true"]');
-    expect(footer).not.toBeNull();
-    expect(footer?.classList.contains("hidden")).toBe(false);
+    expect(container.querySelector('[aria-label="Voice call"]')).not.toBeNull();
     expect(container.querySelector('[data-live-voice-phase="preparing"]')).not.toBeNull();
     expect(editor?.value).toBe("Keep this draft");
     expect(document.activeElement).not.toBe(editor);
@@ -149,6 +157,7 @@ describe("production composer mobile footer", () => {
       finishSaving();
       await saving;
     });
+    await vi.waitFor(() => expect(container.querySelector('[aria-label="Voice call"]')).toBeNull());
     expect(container.querySelector('[data-chat-composer-footer="true"]')).toBeNull();
     expectPassive();
     expect(commands.stop).not.toHaveBeenCalled();
@@ -228,7 +237,11 @@ describe("production composer mobile footer", () => {
         </TooltipProvider>
       );
     }
-    await using screen = await render(<Fixture />);
+    await using screen = await render(
+      <WebLiveVoiceSessionProvider>
+        <Fixture />
+      </WebLiveVoiceSessionProvider>,
+    );
     const { container } = screen;
     expect(controlsRef.current?.contains(control(container, "Options"))).toBe(true);
     expect(actionsRef.current?.contains(control(container, "Send message"))).toBe(true);
