@@ -66,6 +66,27 @@ it("keeps dependencies used by a process or another worktree", async () => {
   expect((await NodeFSP.stat(NodePath.join(f.root, "node_modules"))).isDirectory()).toBe(true);
 });
 
+it("keeps dependencies shared through a package-local link or a package entry", async () => {
+  await using f = await fixture();
+  const packages = NodePath.join(f.main, "apps", "server", "node_modules");
+  await NodeFSP.mkdir(NodePath.dirname(packages), { recursive: true });
+  await NodeFSP.symlink(NodePath.join(f.root, "node_modules"), packages, "junction");
+  expect(
+    await pruneWorktreeDependencies(f.root, { platform: "linux", inUse: async () => false }),
+  ).toBe("kept: shared dependencies");
+  await NodeFSP.unlink(packages);
+  await NodeFSP.mkdir(packages);
+  await NodeFSP.mkdir(NodePath.join(f.root, "node_modules", "some-package"));
+  await NodeFSP.symlink(
+    NodePath.join(f.root, "node_modules", "some-package"),
+    NodePath.join(packages, "shared"),
+    "junction",
+  );
+  expect(
+    await pruneWorktreeDependencies(f.root, { platform: "linux", inUse: async () => false }),
+  ).toBe("kept: shared dependencies");
+});
+
 it("retains tracked dependencies and an active install", async () => {
   await using f = await fixture();
   const marker = NodePath.join(f.root, ".t3/setup-running");

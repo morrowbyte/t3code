@@ -79,6 +79,30 @@ async function referencedByProcess(root: string) {
   return false;
 }
 
+// Inspect source links and public dependency links, including package-local installs.
+// A pnpm store's real directories belong to that store; its consumers are public links.
+async function hasSharedDependencies(worktree: string, modules: string) {
+  const pending = [worktree];
+  let inspected = 0;
+  while (pending.length > 0) {
+    const directory = pending.pop()!;
+    for (const entry of await NodeFSP.readdir(directory, { withFileTypes: true })) {
+      if (++inspected > 100_000) throw new Error("Dependency ownership scan limit reached");
+      const path = NodePath.join(directory, entry.name);
+      if (entry.isSymbolicLink()) {
+        try {
+          if (inside(modules, await NodeFSP.realpath(path))) return true;
+        } catch (error) {
+          if (!missing(error)) throw error;
+        }
+      } else if (entry.isDirectory() && entry.name !== ".git" && entry.name !== ".pnpm") {
+        pending.push(path);
+      }
+    }
+  }
+  return false;
+}
+
 export async function pruneWorktreeDependencies(
   root: string,
   options: {
@@ -123,13 +147,9 @@ export async function pruneWorktreeDependencies(
       .map((row) => row.slice(9));
   for (const worktree of worktrees) {
     if (worktree === root) continue;
-    try {
-      if ((await NodeFSP.realpath(NodePath.join(worktree, "node_modules"))) === modules)
-        return "kept: shared dependencies";
-    } catch (error) {
-      if (!missing(error)) throw error;
-    }
+    if (await hasSharedDependencies(worktree, modules)) return "kept: shared dependencies";
   }
+
   const marker = NodePath.join(root, ".t3", "setup-running");
   await NodeFSP.mkdir(NodePath.dirname(marker), { recursive: true });
   try {
