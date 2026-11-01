@@ -11,6 +11,7 @@ import {
   type EnvironmentServerConfig,
 } from "@t3tools/client-runtime/connection";
 import { environmentCatalog } from "../connection/catalog";
+import { primaryEnvironmentIdAtom } from "../state/primaryEnvironment";
 import { ThreadContextDragGhost } from "./chat/ThreadContextDragGhost";
 import {
   dropThreadContext,
@@ -342,12 +343,14 @@ const EMPTY_THREADS: readonly EnvironmentThreadShell[] = [];
 const NO_HIDDEN_ENVIRONMENTS: ReadonlySet<EnvironmentId> = new Set();
 const sidebarOfflineEnvironmentIdsAtom = Atom.make((get) => {
   const offline = new Set<EnvironmentId>();
+  const primaryEnvironmentId = get(primaryEnvironmentIdAtom);
   for (const environmentId of get(environmentCatalog.catalogValueAtom).entries.keys()) {
     const state = AsyncResult.getOrElse(
       get(environmentCatalog.stateAtom(environmentId)),
       () => AVAILABLE_CONNECTION_STATE,
     );
-    if (isSidebarEnvironmentOffline(state)) offline.add(environmentId);
+    if (isSidebarEnvironmentOffline(state, environmentId, primaryEnvironmentId))
+      offline.add(environmentId);
   }
   const previous = Option.getOrNull(get.self<ReadonlySet<EnvironmentId>>());
   return previous !== null &&

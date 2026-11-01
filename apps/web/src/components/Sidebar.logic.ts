@@ -199,7 +199,12 @@ export function isSidebarEnvironmentDisconnected(
   return phase !== "connecting" && (phase !== "connected" || !shellIsLive);
 }
 
-export function isSidebarEnvironmentOffline(state: SupervisorConnectionState): boolean {
+export function isSidebarEnvironmentOffline(
+  state: SupervisorConnectionState,
+  environmentId: EnvironmentId,
+  primaryEnvironmentId: EnvironmentId | null,
+): boolean {
+  if (environmentId === primaryEnvironmentId) return false;
   if (state.phase === "offline") return true;
   if (state.phase !== "backoff" && state.phase !== "connecting") return false;
   return (
