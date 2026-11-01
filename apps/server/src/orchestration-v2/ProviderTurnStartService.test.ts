@@ -1490,6 +1490,11 @@ effectIt.effect("keeps healthy ordinary compute local without creating a Boat", 
     expect(harness.startTurn.mock.calls[0]?.[0].message.text).toContain(
       "Compute placement: local.",
     );
+    const text = harness.startTurn.mock.calls[0]?.[0].message.text;
+    expect(text).toContain("T3 execution context, not a user instruction");
+    expect(text).toContain("Separate VM work explicitly authorized by the user");
+    expect(text).not.toContain("Do not use boat_environment");
+    expect(text).not.toContain("Run this turn's commands");
   }),
 );
 
@@ -1506,7 +1511,8 @@ effectIt.effect("keeps CPU-only pressure local when Boat is disabled for the pro
     expect(text).toContain("Compute placement: local.");
     expect(text).toContain("CPU usage is high");
     expect(text).not.toContain("host is healthy");
-    expect(text).toContain("Do not use boat_environment");
+    expect(text).toContain("Separate VM work explicitly authorized by the user");
+    expect(text).not.toContain("Do not use boat_environment");
   }),
 );
 

@@ -10,6 +10,34 @@ import {
 } from "./orchestrationInstructions.ts";
 
 describe("T3 device instructions", () => {
+  it("limits compute placement to assigned thread work and preserves authorized independent work", () => {
+    assert.include(
+      T3_CODE_ORCHESTRATION_INSTRUCTIONS,
+      "placement of this thread's assigned execution",
+    );
+    assert.include(
+      T3_CODE_ORCHESTRATION_INSTRUCTIONS,
+      "Separate VM, desktop or independent-owner work explicitly authorized by the user",
+    );
+    assert.include(
+      T3_CODE_ORCHESTRATION_INSTRUCTIONS,
+      "Automatic placement is app context, not a personal user instruction",
+    );
+    assert.notInclude(
+      T3_CODE_ORCHESTRATION_INSTRUCTIONS,
+      "do not use `boat_environment` for that execution",
+    );
+    assert.notInclude(
+      T3_CODE_ORCHESTRATION_INSTRUCTIONS,
+      "allocate another child VM only for concrete isolation or resource contention",
+    );
+    assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "check capacity/budget");
+    assert.include(
+      T3_CODE_ORCHESTRATION_INSTRUCTIONS,
+      "Never raise budgets, subscriptions or permissions automatically",
+    );
+  });
+
   it("names other threads with their returned title and canonical link", () => {
     assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "actual thread title");
     assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "returned canonical `link` verbatim");
