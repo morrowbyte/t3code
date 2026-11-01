@@ -86,10 +86,10 @@ describe("observatory canonical projection view", () => {
   it("retains the owner's plan across runs and excludes a child agent's plan", () => {
     const projection = decodeOrchestrationV2ThreadProjection({
       ...v2Projection,
-      runs: [1, 2].map((ordinal) => ({
+      runs: [0, 1, 2].map((ordinal) => ({
         id: `run:${ordinal}`,
         threadId: ref.threadId,
-        ordinal,
+        ordinal: ordinal + 1,
         providerInstanceId: "codex",
         modelSelection: v2ThreadShell.modelSelection,
         providerThreadId: "native-thread",
@@ -126,6 +126,15 @@ describe("observatory canonical projection view", () => {
           kind: "todo_list",
           steps: [{ id: "child", text: "Unrelated child step", status: "running" }],
         },
+        {
+          id: "older-plan",
+          threadId: ref.threadId,
+          runId: "run:0",
+          nodeId: "root:0",
+          status: "active",
+          kind: "todo_list",
+          steps: [{ id: "old", text: "Earlier task step", status: "running" }],
+        },
       ],
       nodes: [
         { id: "own-plan-node", parentNodeId: "root:1", kind: "todo_list" as const, runId: "run:1" },
@@ -160,7 +169,14 @@ describe("observatory canonical projection view", () => {
     expect(result?.currentStep?.text).toBe("Implement cards");
     expect(result?.completedSteps.map((step) => step.text)).toEqual(["Read source"]);
     expect(result?.nextSteps.map((step) => step.text)).toEqual(["Verify live"]);
-    expect(result?.plans.map((plan) => plan.id)).toEqual(["owner-plan"]);
+    expect(result?.plans.map((plan) => plan.id)).toEqual(["older-plan", "owner-plan"]);
+    expect(result?.hasUnresolvedPlans).toBe(false);
+    const incomplete = projectObservatoryDetails(node, source, {
+      ...detail,
+      data: Option.some({ ...projection, nodes: [] }),
+    });
+    expect(incomplete?.plans.map((plan) => plan.id)).toEqual(["older-plan"]);
+    expect(incomplete?.hasUnresolvedPlans).toBe(true);
   });
   it("updates the shared graph/list nodes and drops selected detail on revoke, disconnect, and missing run", () => {
     const registry = AtomRegistry.make();

@@ -188,7 +188,9 @@ function TaskCard({
               ? "Loading plan…"
               : task.planStatus === "missing"
                 ? "No plan recorded"
-                : "No active step")}
+                : task.planStatus === "unavailable"
+                  ? "Plan outside loaded history"
+                  : "No active step")}
         </p>
         {task.completedSteps.slice(-2).map((step) => (
           <p key={step.id}>✓ {step.text}</p>

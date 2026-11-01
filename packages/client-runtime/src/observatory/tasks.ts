@@ -144,7 +144,9 @@ export function projectObservatoryTask(
       detail === null
         ? ("loading" as const)
         : detail.plans.length === 0
-          ? ("missing" as const)
+          ? detail.hasUnresolvedPlans
+            ? ("unavailable" as const)
+            : ("missing" as const)
           : ("ready" as const),
     currentStep: detail?.currentStep?.text ?? null,
     completedSteps: detail?.completedSteps ?? [],

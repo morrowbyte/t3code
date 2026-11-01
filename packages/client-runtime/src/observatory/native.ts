@@ -224,6 +224,16 @@ export function projectObservatoryDetails(
   for (const id of ownedNodeIds) {
     for (const childId of children.get(id) ?? []) ownedNodeIds.add(childId);
   }
+  const visibleNodeIds = new Set([...rootIds, ...projection.nodes.map((item) => item.id)]);
+  const runOrdinals = new Map<RunId | null, number>(
+    projection.runs.map((run) => [run.id, run.ordinal]),
+  );
+  const hasUnresolvedPlans = projection.plans.some(
+    (plan) =>
+      plan.threadId === node.ref.threadId &&
+      plan.status !== "superseded" &&
+      !visibleNodeIds.has(plan.nodeId),
+  );
   const plans = projection.plans
     .filter(
       (plan) =>
@@ -243,7 +253,10 @@ export function projectObservatoryDetails(
       if (plan.kind === "proposed_plan" && item?.type === "proposed_plan")
         return { ...body, kind: "proposed_plan" as const, markdown: item.markdown };
       return plan;
-    });
+    })
+    .sort(
+      (left, right) => (runOrdinals.get(left.runId) ?? -1) - (runOrdinals.get(right.runId) ?? -1),
+    );
   const todo = [...plans].reverse().find((plan) => plan.kind === "todo_list");
   const steps = todo?.kind === "todo_list" ? todo.steps : [];
   const tools = currentItems.filter(
@@ -256,6 +269,7 @@ export function projectObservatoryDetails(
   return {
     projection,
     ownedNodeIds,
+    hasUnresolvedPlans,
     plans: plans.slice(-8),
     steps,
     currentStep: steps.find((step) => step.status === "running") ?? null,
