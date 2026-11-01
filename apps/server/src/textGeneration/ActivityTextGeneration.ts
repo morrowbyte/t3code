@@ -32,15 +32,18 @@ export const makeContextResolver = Effect.gen(function* () {
           .getThread(input.item.threadId)
           .pipe(Effect.orElseSucceed(() => undefined))
       : undefined;
+    if (Option.isSome(projections) && !thread) return undefined;
     const message =
       Option.isSome(projections) && input.item.runId !== null
         ? yield* projections.value
             .getRunMessage(input.item.threadId, input.item.runId)
             .pipe(Effect.orElseSucceed(() => undefined))
         : undefined;
+    if (Option.isSome(projections) && input.item.runId !== null && !message) return undefined;
     const settings = Option.isSome(settingsService)
       ? yield* settingsService.value.getSettings.pipe(Effect.orElseSucceed(() => undefined))
       : undefined;
+    if (Option.isSome(settingsService) && !settings) return undefined;
     const resolved =
       settings && thread ? resolveProjectSettings(settings, thread.projectId).settings : settings;
     const model = DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER[input.driverKind];

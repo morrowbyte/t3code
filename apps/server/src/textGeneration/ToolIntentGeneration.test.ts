@@ -15,9 +15,11 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import { TestClock } from "effect/testing";
 import * as ServerSettingsService from "../serverSettings.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as TextGeneration from "./TextGeneration.ts";
@@ -54,6 +56,334 @@ const identity = {
 };
 
 describe("tool intent generation", () => {
+  it.effect("preserves every completion with backpressure after 512 pending items", () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const finished = yield* Deferred.make<void>();
+      let calls = 0;
+      let accepted = false;
+      const committed: string[] = [];
+      const service = yield* Service.make.pipe(
+        Effect.provide(
+          Layer.mock(TextGeneration.TextGeneration)({
+            generateThreadTitle: () =>
+              Effect.gen(function* () {
+                if (++calls === 1) {
+                  yield* Deferred.succeed(started, undefined);
+                  yield* Deferred.await(release);
+                }
+                return { title: `Inspect request ${calls}` };
+              }),
+          }),
+        ),
+      );
+      const observe = (index: number) =>
+        service.observe({
+          ...identity,
+          item: {
+            ...item,
+            id: TurnItemId.make(`capacity-${index}`),
+            input: { index },
+            status: "completed",
+          },
+          commitTitle: (title) =>
+            Effect.gen(function* () {
+              committed.push(title);
+              if (committed.length === 513) yield* Deferred.succeed(finished, undefined);
+            }),
+        });
+      for (let index = 0; index < 512; index++) {
+        yield* observe(index);
+        if (index === 0) yield* Deferred.await(started);
+      }
+      const overflow = yield* observe(512).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            accepted = true;
+          }),
+        ),
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust(0);
+      expect(accepted).toBe(false);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(overflow);
+      yield* Deferred.await(finished);
+      expect(calls).toBe(513);
+      expect(committed).toHaveLength(513);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("shares a Boat translation while binding each subscriber's own source title", () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const reply = yield* Deferred.make<{ title: string }>();
+      let calls = 0;
+      const service = yield* Service.make.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.mock(ServerSettingsService.ServerSettingsService)({
+              getSettings: Effect.succeed({
+                ...DEFAULT_SERVER_SETTINGS,
+                toolActivityLanguage: "de",
+              }),
+            }),
+            Layer.mock(TextGeneration.TextGeneration)({
+              generateThreadTitle: () =>
+                Effect.gen(function* () {
+                  calls++;
+                  yield* Deferred.succeed(started, undefined);
+                  return yield* Deferred.await(reply);
+                }),
+            }),
+          ),
+        ),
+      );
+      const first = {
+        ...item,
+        id: TurnItemId.make("boat-first"),
+        toolName: "boat_environment",
+        title: "Boot-Umgebung",
+        input: { request: { command: "# Intent: Cache prüfen\nnode check.js" } },
+      };
+      const second = { ...first, id: TurnItemId.make("boat-second"), title: "Boat environment" };
+      const observe = (next: typeof first) =>
+        service.observe({
+          ...identity,
+          item: next,
+          commitTitle: () => Effect.die("Preserve source"),
+        });
+      yield* observe(first);
+      yield* Deferred.await(started);
+      yield* observe(second);
+      yield* Deferred.succeed(reply, { title: "Cache prüfen" });
+      yield* TestClock.adjust(0);
+      expect(calls).toBe(1);
+      expect(service.retainedPresentation(first)?.sourceTitle).toBe(first.title);
+      expect(service.retainedPresentation(second)?.sourceTitle).toBe(second.title);
+      expect(service.retainedPresentation(second)?.title).toBe("Cache prüfen");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect(
+    "drains a completed burst beyond the old pending limit without another observation",
+    () =>
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const requests: string[] = [];
+        const committed: string[] = [];
+        const service = yield* Service.make.pipe(
+          Effect.provide(
+            Layer.mock(TextGeneration.TextGeneration)({
+              generateThreadTitle: (input) =>
+                Effect.gen(function* () {
+                  requests.push(input.message);
+                  if (requests.length === 1) {
+                    yield* Deferred.succeed(started, undefined);
+                    yield* Deferred.await(release);
+                  }
+                  return { title: `Inspect request ${requests.length}` };
+                }),
+            }),
+          ),
+        );
+        for (let index = 0; index < 33; index += 1) {
+          yield* service.observe({
+            ...identity,
+            item: {
+              ...item,
+              id: TurnItemId.make(`burst-${index}`),
+              status: "completed",
+              input: { index },
+            },
+            commitTitle: (title) =>
+              Effect.sync(() => {
+                committed.push(title);
+              }),
+          });
+          if (index === 0) yield* Deferred.await(started);
+        }
+        yield* Deferred.succeed(release, undefined);
+        yield* TestClock.adjust(0);
+        expect(requests).toHaveLength(33);
+        expect(committed).toHaveLength(33);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("recovers from one failed generation without permanently caching failure", () =>
+    Effect.gen(function* () {
+      let attempts = 0;
+      const committed: string[] = [];
+      const service = yield* Service.make.pipe(
+        Effect.provide(
+          Layer.mock(TextGeneration.TextGeneration)({
+            generateThreadTitle: () =>
+              Effect.suspend(() => {
+                attempts += 1;
+                return attempts === 1
+                  ? Effect.fail(
+                      new TextGenerationError({
+                        operation: "generateThreadTitle",
+                        detail: "Temporary overload",
+                      }),
+                    )
+                  : Effect.succeed({ title: "Compare shipment quotes" });
+              }),
+          }),
+        ),
+      );
+      yield* service.observe({
+        ...identity,
+        item,
+        commitTitle: (title) =>
+          Effect.sync(() => {
+            committed.push(title);
+          }),
+      });
+      yield* TestClock.adjust(0);
+      expect(attempts).toBe(2);
+      expect(committed).toEqual(["Compare shipment quotes"]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("shares one generation across more than 32 completed subscribers", () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      let requests = 0;
+      const committed: string[] = [];
+      const service = yield* Service.make.pipe(
+        Effect.provide(
+          Layer.mock(TextGeneration.TextGeneration)({
+            generateThreadTitle: () =>
+              Effect.gen(function* () {
+                requests += 1;
+                yield* Deferred.succeed(started, undefined);
+                yield* Deferred.await(release);
+                return { title: "Compare shipment quotes" };
+              }),
+          }),
+        ),
+      );
+      for (let index = 0; index < 33; index += 1) {
+        yield* service.observe({
+          ...identity,
+          item: { ...item, id: TurnItemId.make(`subscriber-${index}`), status: "completed" },
+          commitTitle: (title) =>
+            Effect.sync(() => {
+              committed.push(title);
+            }),
+        });
+        if (index === 0) yield* Deferred.await(started);
+      }
+      yield* Deferred.succeed(release, undefined);
+      yield* TestClock.adjust(0);
+      expect(requests).toBe(1);
+      expect(committed).toHaveLength(33);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("discards an older observation whose context finishes after the newer title", () =>
+    Effect.gen(function* () {
+      const reading = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<ServerSettings>();
+      let reads = 0;
+      const requested: string[] = [];
+      const committed: string[] = [];
+      const service = yield* Service.make.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.mock(ServerSettingsService.ServerSettingsService)({
+              getSettings: Effect.suspend(() => {
+                reads += 1;
+                return reads === 1
+                  ? Deferred.succeed(reading, undefined).pipe(
+                      Effect.andThen(Deferred.await(release)),
+                    )
+                  : Effect.succeed(DEFAULT_SERVER_SETTINGS);
+              }),
+            }),
+            Layer.mock(TextGeneration.TextGeneration)({
+              generateThreadTitle: (input) =>
+                Effect.sync(() => {
+                  const title = input.message.includes("older")
+                    ? "Older activity"
+                    : "Newer activity";
+                  requested.push(title);
+                  return { title };
+                }),
+            }),
+          ),
+        ),
+      );
+      const observe = (revision: string) =>
+        service.observe({
+          ...identity,
+          item: { ...item, input: { revision } },
+          commitTitle: (title) =>
+            Effect.sync(() => {
+              committed.push(title);
+            }),
+        });
+      const older = yield* observe("older").pipe(Effect.forkChild);
+      yield* Deferred.await(reading);
+      yield* observe("newer");
+      yield* TestClock.adjust(0);
+      yield* Deferred.succeed(release, DEFAULT_SERVER_SETTINGS);
+      yield* Fiber.join(older);
+      yield* TestClock.adjust(0);
+      expect(requested).toEqual(["Newer activity"]);
+      expect(committed).toEqual(["Newer activity"]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("uses the command intent before a generic Boat label without changing its source", () =>
+    Effect.gen(function* () {
+      const requests: TextGeneration.ThreadTitleGenerationInput[] = [];
+      const service = yield* Service.make.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.mock(ServerSettingsService.ServerSettingsService)({
+              getSettings: Effect.succeed({
+                ...DEFAULT_SERVER_SETTINGS,
+                toolActivityLanguage: "de",
+              }),
+            }),
+            Layer.mock(TextGeneration.TextGeneration)({
+              generateThreadTitle: (input) =>
+                Effect.sync(() => {
+                  requests.push(input);
+                  return { title: "Cache-Schlüssel prüfen" };
+                }),
+            }),
+          ),
+        ),
+      );
+      const next = {
+        ...item,
+        toolName: "mcp__t3_code__boat_environment",
+        title: "Boot-Umgebung",
+        input: {
+          request: { action: "exec", command: "# Intent: Cache-Schlüssel prüfen\nnode check.js" },
+        },
+      };
+      yield* service.observe({
+        ...identity,
+        item: next,
+        commitTitle: () => Effect.die("Preserve source"),
+      });
+      yield* TestClock.adjust(0);
+      expect(requests).toHaveLength(1);
+      expect(JSON.parse(requests[0]!.message).authoredActivityLabel).toBe("Cache-Schlüssel prüfen");
+      expect(requests[0]!.instructions).toContain("Boat is not Boot");
+      expect(service.retainedPresentation(next)?.sourceTitle).toBe("Boot-Umgebung");
+      expect(service.retainedPresentation(next)?.title).toBe("Cache-Schlüssel prüfen");
+      expect(next.title).toBe("Boot-Umgebung");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect(
     "bounds source and excludes credential/output fields without changing original data",
     () =>
