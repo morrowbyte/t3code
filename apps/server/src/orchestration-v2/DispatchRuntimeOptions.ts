@@ -3,6 +3,7 @@ import type { NodeId, ThreadId } from "@t3tools/contracts";
 
 /** Runtime coordination only: never serialize this with commands or receipts. */
 export interface DispatchRuntimeOptions {
+  readonly requireAvailableWorkOwner?: boolean;
   /** Persist cancellation with the child Stop before its interrupt effects can settle the task. */
   readonly delegatedTaskCancellation?: {
     readonly parentThreadId: ThreadId;

@@ -14135,6 +14135,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       } satisfies OrchestratorV2DispatchResult;
     }
 
+    if (options?.requireAvailableWorkOwner && command.type === "message.dispatch") {
+      const shell = yield* projectionStore
+        .getThreadShell(command.threadId)
+        .pipe(
+          Effect.mapError(
+            (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+          ),
+        );
+      const now = DateTime.toEpochMillis(yield* DateTime.now);
+      if (
+        shell === null ||
+        shell.deletedAt != null ||
+        shell.archivedAt != null ||
+        shell.settledAt != null ||
+        (shell.snoozedUntil != null && DateTime.toEpochMillis(shell.snoozedUntil) > now)
+      )
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "The work owner was closed or snoozed before the message was accepted.",
+        });
+    }
+
     // Recheck under the lock; the user may have raised modes since sender preflight.
     const limit = yield* DispatchModeLimit;
     if (limit !== undefined) {

@@ -1,3 +1,4 @@
+import { BoatService } from "../boat/BoatService.ts";
 import * as DocumentText from "../provider/DocumentText.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
@@ -16,6 +17,8 @@ import {
   type ChatAttachment,
   CommandId,
   DEFAULT_SERVER_SETTINGS,
+  DEFAULT_BOAT_PROJECT,
+  BoatError,
   GitCommandError,
   MessageId,
   ProjectId,
@@ -133,6 +136,10 @@ interface HarnessOptions {
   readonly serverSettings?: Parameters<typeof ServerSettings.layerTest>[0];
   readonly providers?: ReadonlyArray<ServerProvider>;
   readonly git?: Partial<GitWorkflow.GitWorkflowService["Service"]>;
+  readonly boatEnabled?: boolean;
+  readonly boatError?: "budget" | "capacity";
+  readonly boatStopped?: boolean;
+  readonly boatStatusUnavailable?: boolean;
 }
 
 function makeHarness(options: HarnessOptions = {}) {
@@ -175,7 +182,41 @@ function makeHarness(options: HarnessOptions = {}) {
   const generateThreadTitle = vi.fn(
     options.generateTitle ?? (() => Effect.succeed({ title: "Generated title" })),
   );
+  const boatCalls: Array<{ action: string; threadId: ThreadId | undefined }> = [];
   const layerExternalServices = Layer.mergeAll(
+    NodeServices.layer,
+    NodeCrypto.layer,
+    Layer.mock(BoatService)({
+      isEnabled: () => Effect.succeed(options.boatEnabled ?? false),
+      read: () =>
+        options.boatStatusUnavailable
+          ? Effect.fail(new BoatError({ category: "provider" }))
+          : Effect.succeed({
+              configured: options.boatEnabled ?? false,
+              defaults: { ttlMinutes: 60, retentionDays: 1 },
+              account: null,
+              projects: options.boatEnabled
+                ? { [projectId]: { ...DEFAULT_BOAT_PROJECT, enabled: true } }
+                : {},
+              instances: [],
+            }),
+      operate: (action, threadId) => {
+        boatCalls.push({ action: action.action, threadId });
+        if (options.boatError) return Effect.fail(new BoatError({ category: options.boatError }));
+        return Effect.succeed({
+          configured: true,
+          defaults: { ttlMinutes: 60, retentionDays: 1 },
+          account: null,
+          projects: { [projectId]: { ...DEFAULT_BOAT_PROJECT, enabled: true } },
+          instances: [
+            {
+              requestId: action.requestId,
+              state: options.boatStopped && action.action === "start" ? "archived" : "idle",
+            },
+          ],
+        } as never);
+      },
+    }),
     WorktreeSetupTracker.layer,
     Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
     Layer.mock(TerminalManager.TerminalManager)({ close: closeTerminal }),
@@ -283,6 +324,7 @@ function makeHarness(options: HarnessOptions = {}) {
     generateThreadTitle,
     runSetup,
     closeTerminal,
+    boatCalls,
   };
 }
 
@@ -314,6 +356,324 @@ function launchInput(input: {
     creationSource: "web" as const,
   };
 }
+
+it.effect.each([undefined, "budget"] as const)(
+  "prepares an enabled Boat project without local fallback (%s)",
+  (boatError) => {
+    const harness = makeHarness({
+      boatEnabled: true,
+      ...(boatError === undefined ? {} : { boatError }),
+    });
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const launched = yield* launches.launch({
+        ...launchInput({ command: "boat-owner", thread: "ignored", message: "Implement report" }),
+        workKey: "boat-report",
+        workspaceStrategy: { type: "worktree", baseRef: "main" },
+      });
+      const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+      const finished = yield* tracker.stream(launched.threadId).pipe(
+        Stream.filter((item) => item !== null && item.phase !== "running"),
+        Stream.runHead,
+      );
+      assert.strictEqual(
+        Option.getOrNull(finished)?.phase,
+        boatError === undefined ? "done" : "failed",
+      );
+      assert.deepEqual(
+        harness.boatCalls,
+        boatError === undefined
+          ? [
+              { action: "start", threadId: launched.threadId },
+              { action: "prepare", threadId: launched.threadId },
+            ]
+          : [{ action: "start", threadId: launched.threadId }],
+      );
+      assert.strictEqual(harness.runSetup.mock.calls.length, 0);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
+it.effect("reuses a project work owner across callers and concurrent intake", () =>
+  Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const request = (command: string) => ({
+      ...launchInput({ command, thread: command, message: command }),
+      workKey: "export-report",
+      workspaceStrategy: { type: "worktree" as const, baseRef: "main" },
+      createdBy: "agent" as const,
+    });
+    const [first, second] = yield* Effect.all(
+      [launches.launch(request("jarvis-request")), launches.launch(request("crew-request"))],
+      { concurrency: "unbounded" },
+    );
+    assert.strictEqual(first.threadId, second.threadId);
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const owner = yield* threads.getThreadProjection(first.threadId);
+    assert.strictEqual(owner.thread.projectId, projectId);
+    assert.strictEqual(owner.thread.lineage.parentThreadId, null);
+    assert.strictEqual(owner.thread.lineage.relationshipToParent, null);
+    assert.deepEqual(owner.messages.map((message) => message.text).sort(), [
+      "crew-request",
+      "jarvis-request",
+    ]);
+    const retry = yield* launches.launch(request("jarvis-request"));
+    assert.strictEqual(retry.threadId, first.threadId);
+    assert.strictEqual(retry.projection.messages.length, 2);
+    const repeatedFollowup = yield* launches.launch(request("crew-request"));
+    assert.strictEqual(repeatedFollowup.projection.messages.length, 2);
+    const independent = yield* launches.launch({
+      ...request("different-feature"),
+      workKey: "search",
+    });
+    assert.notStrictEqual(independent.threadId, first.threadId);
+    const other = yield* launches.launch({
+      ...request("other-request"),
+      projectId: otherProjectId,
+    });
+    assert.notStrictEqual(other.threadId, first.threadId);
+  }).pipe(Effect.provide(makeHarness().layer)),
+);
+
+it.effect("resumes an existing idle owner's Boat before releasing its next turn", () => {
+  const harness = makeHarness({ boatEnabled: true, boatStopped: true });
+  return Effect.gen(function* () {
+    const threadId = yield* ThreadLaunch.workOwnerThreadId(projectId, "existing-owner");
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    yield* threads.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("seed-owner"),
+      threadId,
+      projectId,
+      title: "Existing owner",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: "feature/report",
+      worktreePath: "/repo-worktrees/feature",
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const request = {
+      ...launchInput({
+        command: "resume-owner",
+        thread: "ignored",
+        message: "Continue the report",
+      }),
+      workKey: "existing-owner",
+    };
+    yield* launches.launch(request);
+    const repeated = yield* launches.launch(request);
+    assert.strictEqual(repeated.projection.messages.length, 1);
+    const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+    const finished = yield* tracker.stream(threadId).pipe(
+      Stream.filter((item) => item !== null && item.phase !== "running"),
+      Stream.runHead,
+    );
+    assert.strictEqual(Option.getOrNull(finished)?.phase, "done");
+    assert.deepEqual(
+      harness.boatCalls.map((call) => call.action),
+      ["start", "resume", "prepare"],
+    );
+    assert.strictEqual(harness.runSetup.mock.calls.length, 0);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("keeps a racing linked caller outside another work owner's thread", () =>
+  Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const request = {
+      ...launchInput({ command: "local-owner", thread: "ignored", message: "Implement report" }),
+      workKey: "fenced-owner",
+      workspaceStrategy: { type: "worktree" as const, baseRef: "main" },
+    };
+    const [first, linked] = yield* Effect.all(
+      [
+        launches.launch(request),
+        launches
+          .launch({
+            ...request,
+            commandId: CommandId.make("linked-owner"),
+            linkOrigin: { sessionId: "link-other", label: "Other machine", access: "auto" },
+          })
+          .pipe(Effect.exit),
+      ],
+      { concurrency: "unbounded" },
+    );
+    assert.isTrue(Exit.isFailure(linked));
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    assert.strictEqual((yield* threads.getThreadProjection(first.threadId)).messages.length, 1);
+  }).pipe(Effect.provide(makeHarness().layer)),
+);
+
+it.effect("rejects an alias of an occupied worktree for a different owner", () =>
+  Effect.gen(function* () {
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    yield* threads.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("seed-other-owner"),
+      threadId: ThreadId.make("other-owner"),
+      projectId,
+      title: "Existing owner",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: "feature/report",
+      worktreePath: "/repo-worktrees/feature",
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const result = yield* launches
+      .launch({
+        ...launchInput({ command: "alias-owner", thread: "ignored", message: "Implement report" }),
+        workKey: "alias-owner",
+        workspaceStrategy: { type: "existing_worktree", worktreePath: "/repo-worktrees/feature/." },
+      })
+      .pipe(Effect.exit);
+    assert.isTrue(Exit.isFailure(result));
+  }).pipe(Effect.provide(makeHarness().layer)),
+);
+
+it.effect("keeps local project setup independent of an unavailable Boat account", () => {
+  const harness = makeHarness({ boatStatusUnavailable: true });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const launched = yield* launches.launch({
+      ...launchInput({ command: "local-owner", thread: "ignored", message: "Build report" }),
+      workKey: "local-owner",
+      workspaceStrategy: { type: "worktree", baseRef: "main" },
+    });
+    const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+    const finished = yield* tracker.stream(launched.threadId).pipe(
+      Stream.filter((item) => item !== null && item.phase !== "running"),
+      Stream.runHead,
+    );
+    assert.strictEqual(Option.getOrNull(finished)?.phase, "done");
+    assert.strictEqual(harness.runSetup.mock.calls.length, 1);
+    assert.deepEqual(harness.boatCalls, []);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect.each(["snooze", "settle"] as const)(
+  "preserves a concurrent owner %s while replaying accepted input",
+  (close) =>
+    Effect.gen(function* () {
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const threadId = ThreadId.make("guarded-owner");
+      yield* threads.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("guard-create"),
+        threadId,
+        projectId,
+        title: "Owner",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const command = {
+        type: "message.dispatch" as const,
+        commandId: CommandId.make("guard-first"),
+        threadId,
+        messageId: MessageId.make("guard-first-message"),
+        text: "Accepted input",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" as const },
+        createdBy: "agent" as const,
+        creationSource: "mcp" as const,
+      };
+      yield* threads.dispatch(command);
+      yield* threads.dispatch({
+        type: "thread.stop",
+        commandId: CommandId.make("guard-stop"),
+        threadId,
+      });
+      yield* threads.dispatch(
+        close === "snooze"
+          ? {
+              type: "thread.snooze",
+              commandId: CommandId.make("guard-close"),
+              threadId,
+              snoozedUntil: "2099-01-01T00:00:00.000Z",
+            }
+          : { type: "thread.settle", commandId: CommandId.make("guard-close"), threadId },
+      );
+      const rejected = yield* threads
+        .dispatch(
+          {
+            ...command,
+            commandId: CommandId.make("guard-new"),
+            messageId: MessageId.make("guard-new-message"),
+          },
+          { requireAvailableWorkOwner: true },
+        )
+        .pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(rejected));
+      const replayed = yield* threads.dispatch(command, { requireAvailableWorkOwner: true });
+      assert.isTrue(replayed.replayed);
+      const projection = yield* threads.getThreadProjection(threadId);
+      assert.strictEqual(projection.messages.length, 1);
+      if (close === "snooze") assert.isNotNull(projection.thread.snoozedUntil);
+      else assert.isNotNull(projection.thread.settledAt);
+    }).pipe(Effect.provide(makeHarness().layer)),
+);
+
+it.effect("does not reopen a stopped work owner or exceed its caller's modes", () =>
+  Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const request = {
+      ...launchInput({ command: "owner-first", thread: "ignored", message: "Implement report" }),
+      workKey: "report-owner",
+      workspaceStrategy: { type: "worktree" as const, baseRef: "main" },
+      createdBy: "agent" as const,
+    };
+    const first = yield* launches.launch(request);
+    const limited = yield* Effect.exit(
+      launches.launch({
+        ...request,
+        commandId: CommandId.make("limited-caller"),
+        runtimeMode: "approval-required",
+        initialMessage: {
+          text: "Follow up",
+          messageId: MessageId.make("limited-message"),
+          attachments: [],
+        },
+      }),
+    );
+    assert.isTrue(Exit.isFailure(limited));
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    yield* threads.dispatch({
+      type: "thread.snooze",
+      commandId: CommandId.make("snooze-owner"),
+      threadId: first.threadId,
+      snoozedUntil: "2099-01-01T00:00:00.000Z",
+    });
+    const snoozed = yield* Effect.exit(
+      launches.launch({
+        ...request,
+        commandId: CommandId.make("after-snooze"),
+      }),
+    );
+    assert.isTrue(Exit.isFailure(snoozed));
+    yield* threads.dispatch({
+      type: "thread.archive",
+      commandId: CommandId.make("archive-owner"),
+      threadId: first.threadId,
+    });
+    const stopped = yield* Effect.exit(
+      launches.launch({
+        ...request,
+        commandId: CommandId.make("after-archive"),
+      }),
+    );
+    assert.isTrue(Exit.isFailure(stopped));
+  }).pipe(Effect.provide(makeHarness().layer)),
+);
 
 it.effect.each(
   (["new", "existing"] as const).flatMap((target) =>

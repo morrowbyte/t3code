@@ -831,6 +831,9 @@ function listItemFromShell(
 ): OrchestratorMcpThreadListItem {
   return {
     threadId: shell.id,
+    ...(ThreadLaunchService.workOwnerKey(shell.id) === undefined
+      ? {}
+      : { workKey: ThreadLaunchService.workOwnerKey(shell.id) }),
     projectId: shell.projectId,
     title: shell.title,
     link: threadLinkFor(scope, shell.id),
@@ -865,6 +868,9 @@ function threadDetail(
   const active = ThreadManagementService.latestActiveRun(projection);
   return {
     threadId: projection.thread.id,
+    ...(ThreadLaunchService.workOwnerKey(projection.thread.id) === undefined
+      ? {}
+      : { workKey: ThreadLaunchService.workOwnerKey(projection.thread.id) }),
     projectId: projection.thread.projectId,
     title: projection.thread.title,
     link: threadLinkFor(scope, projection.thread.id),
@@ -3199,6 +3205,7 @@ const make = Effect.gen(function* () {
           cancellation: true,
           batchThreadCreation: true,
           threadManagement: true,
+          projectWorkRouting: true,
           incrementalThreadRead: true,
           scheduledTasks: true,
           maxBatchThreads: 20,

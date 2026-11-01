@@ -39,6 +39,7 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import { BoatService } from "../boat/BoatService.ts";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
@@ -955,6 +956,7 @@ it.effect.each(["enabled", "opt-out", "missing", "deleted", "foreign"] as const)
         Effect.provide(
           RuntimeLayer.layerProduction.pipe(
             Layer.provide(layerTurnCosts),
+            Layer.provide(Layer.mock(BoatService)({})),
             Layer.provideMerge(ProjectStore.layer),
             Layer.provide(
               Layer.mergeAll(

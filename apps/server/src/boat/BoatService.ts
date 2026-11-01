@@ -9,10 +9,12 @@ import {
   BoatProjectConfig,
   BoatState,
   DEFAULT_BOAT_PROJECT,
-  type ProjectId,
-  type ThreadId,
+  ProjectId,
+  ThreadId,
   PreviewTabId,
+  isOrchestrationV2WorkActive,
 } from "@t3tools/contracts";
+import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as Crypto from "effect/Crypto";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
@@ -185,10 +187,29 @@ const Deletion = Schema.Struct({
 });
 const Process = Schema.Struct({ processId: Schema.Number });
 const ProcessStatus = Schema.Struct({
+  processId: Schema.optional(Schema.Number),
   exitCode: Schema.optional(Schema.Number),
   stdout: Schema.optional(Schema.String),
   stderr: Schema.optional(Schema.String),
 });
+const Work = Schema.Record(
+  Schema.String,
+  Schema.Struct({
+    source: Schema.Struct({
+      projectId: ProjectId,
+      threadId: Schema.NullOr(ThreadId),
+      workspaceRoot: Schema.String,
+    }),
+    commands: Schema.Array(
+      Schema.Struct({
+        processId: Schema.Number,
+        threadId: Schema.NullOr(ThreadId),
+        expiresAt: Schema.String,
+      }),
+    ),
+  }),
+);
+const encodeWork = Schema.encodeEffect(Schema.fromJsonString(Work));
 const Desktop = Schema.Struct({ desktopUrl: Schema.NullOr(Schema.String) });
 const Hosted = Schema.Struct({ url: Schema.String });
 const inactive = new Set(["archived", "stopped", "deleted", "error"]);
@@ -206,6 +227,7 @@ export class BoatService extends Context.Service<
     readonly reconcile: () => Effect.Effect<void, BoatError>;
     readonly configureDefaults: (defaults: BoatDefaults) => Effect.Effect<BoatState, BoatError>;
     readonly read: (projectId?: ProjectId) => Effect.Effect<BoatState, BoatError>;
+    readonly isEnabled: (projectId: ProjectId) => Effect.Effect<boolean>;
     readonly connect: (apiKey: Redacted.Redacted<string>) => Effect.Effect<BoatState, BoatError>;
     readonly disconnect: Effect.Effect<void, BoatError>;
     readonly configure: (
@@ -233,6 +255,24 @@ export const make = Effect.gen(function* () {
   const lock = yield* Semaphore.make(1);
   const resumeInFlight = new Set<string>();
   const filename = path.join(config.stateDir, "boat.json");
+  const workFilename = path.join(config.stateDir, "boat-work.json");
+  const workLock = yield* Semaphore.make(1);
+  let work: typeof Work.Type = yield* fs.exists(workFilename).pipe(
+    Effect.flatMap((exists) =>
+      exists
+        ? fs
+            .readFileString(workFilename)
+            .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Work))))
+        : Effect.succeed({}),
+    ),
+    Effect.mapError(storageError),
+  );
+  const saveWork = Effect.fn("BoatService.saveWork")(function* (next: typeof Work.Type) {
+    yield* fs.makeDirectory(config.stateDir, { recursive: true });
+    yield* fs.writeFileString(`${workFilename}.tmp`, yield* encodeWork(next), { mode: 0o600 });
+    yield* fs.rename(`${workFilename}.tmp`, workFilename);
+    work = next;
+  }, Effect.mapError(storageError));
   const initialPeriod = DateTime.formatIso(yield* DateTime.now).slice(0, 7);
   let ledger: typeof Ledger.Type = yield* fs.exists(filename).pipe(
     Effect.flatMap((exists) =>
@@ -303,6 +343,72 @@ export const make = Effect.gen(function* () {
     if (Option.isNone(found)) return yield* new BoatError({ category: "not_found" });
     return found.value;
   });
+  const bindSource = Effect.fn("BoatService.bindSource")(
+    (action: BoatAction, instance: StoredInstance | undefined, threadId?: ThreadId) =>
+      workLock.withPermits(1)(
+        Effect.gen(function* () {
+          const root = yield* project(action.projectId);
+          const caller = threadId
+            ? yield* projections.getThreadShell(threadId).pipe(Effect.mapError(storageError))
+            : null;
+          if (
+            threadId &&
+            (!caller || caller.projectId !== action.projectId || caller.deletedAt !== null)
+          )
+            return yield* new BoatError({ category: "not_found" });
+          const existing = work[action.requestId];
+          const ownerThreadId = instance ? instance.threadId : (threadId ?? null);
+          const owner =
+            !existing && ownerThreadId
+              ? yield* projections.getThreadShell(ownerThreadId).pipe(Effect.mapError(storageError))
+              : null;
+          if (!existing && ownerThreadId && (!owner || owner.projectId !== action.projectId))
+            return yield* new BoatError({ category: "not_found" });
+          const source = existing?.source ?? {
+            projectId: action.projectId,
+            threadId: ownerThreadId,
+            // Before source bindings, prepare always synchronized the project root.
+            workspaceRoot: path.resolve(
+              instance ? root.workspaceRoot : (owner?.worktreePath ?? root.workspaceRoot),
+            ),
+          };
+          if (source.projectId !== action.projectId)
+            return yield* new BoatError({ category: "conflict" });
+          if (existing && caller && source.threadId === null)
+            return yield* new BoatError({ category: "conflict" });
+          const moved =
+            caller &&
+            path.resolve(caller.worktreePath ?? root.workspaceRoot) !== source.workspaceRoot;
+          if (caller && (source.threadId !== null || moved)) {
+            if (moved && action.action === "prepare")
+              return yield* new BoatError({ category: "conflict" });
+            let ancestor = caller;
+            const visited = new Set<ThreadId>();
+            while (ancestor.id !== source.threadId) {
+              if (
+                visited.has(ancestor.id) ||
+                visited.size >= 64 ||
+                ancestor.lineage.relationshipToParent !== "subagent" ||
+                !ancestor.lineage.parentThreadId
+              )
+                return yield* new BoatError({ category: "conflict" });
+              visited.add(ancestor.id);
+              const parent = yield* projections
+                .getThreadShell(ancestor.lineage.parentThreadId)
+                .pipe(Effect.mapError(storageError));
+              if (!parent || parent.projectId !== action.projectId)
+                return yield* new BoatError({ category: "not_found" });
+              ancestor = parent;
+            }
+            // A moved owner cannot silently rebind its existing machine either.
+            if (moved && caller.id === source.threadId)
+              return yield* new BoatError({ category: "conflict" });
+          }
+          if (!existing) yield* saveWork({ ...work, [action.requestId]: { source, commands: [] } });
+          return source;
+        }),
+      ),
+  );
   const projectSettings = (projectId: ProjectId) => {
     const value = ledger.projects[projectId] ?? DEFAULT_BOAT_PROJECT;
     return value.inheritDefaults ? { ...value, ...ledger.defaults } : value;
@@ -589,9 +695,9 @@ export const make = Effect.gen(function* () {
           viteVersion = workspace?.catalog?.["vite-plus"];
         }
         const manager = manifest.packageManager?.split("@")[0] ?? "npm";
-        const command = viteVersion ? "vp" : manager;
+        const command = viteVersion ? "./node_modules/.bin/vp" : manager;
         const install = viteVersion
-          ? `npm install --prefix $HOME/.crew-tools --no-save vite-plus@${viteVersion}\nexport PATH="$HOME/.crew-tools/node_modules/.bin:$PATH"\nif [ -n "\${GITHUB_PATH:-}" ]; then echo "$HOME/.crew-tools/node_modules/.bin" >> "$GITHUB_PATH"; fi\nvp install --frozen-lockfile`
+          ? `npm install --prefix $HOME/.crew-tools --no-save vite-plus@${viteVersion}\n"$HOME/.crew-tools/node_modules/.bin/vp" install --frozen-lockfile\nexport PATH="$PWD/node_modules/.bin:$PATH"\nif [ -n "\${GITHUB_PATH:-}" ]; then echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"; fi`
           : manager === "npm"
             ? "npm ci"
             : `corepack ${manager} install --frozen-lockfile`;
@@ -602,7 +708,7 @@ export const make = Effect.gen(function* () {
           devCommand: crew
             ? settings.previewKind === "android"
               ? ANDROID_CREW_DEV
-              : "T3CODE_PORT_OFFSET=0 vp run dev --no-seed"
+              : "T3CODE_PORT_OFFSET=0 ./node_modules/.bin/vp run dev --no-seed"
             : settings.previewKind === "android" && manifest.dependencies?.expo
               ? "npx expo run:android --no-bundler && npx expo start --dev-client --localhost --port 8081"
               : `${command} run dev`,
@@ -712,13 +818,11 @@ export const make = Effect.gen(function* () {
     if (action.action !== "stop" && action.action !== "delete") yield* project(action.projectId);
     const agentThreadId = threadId;
     threadId ??= action.threadId;
-    if (threadId) {
-      const thread = yield* projections
-        .getThreadShell(threadId)
-        .pipe(Effect.mapError(storageError));
-      if (!thread || thread.projectId !== action.projectId)
-        return yield* new BoatError({ category: "not_found" });
-    }
+    const caller = threadId
+      ? yield* projections.getThreadShell(threadId).pipe(Effect.mapError(storageError))
+      : null;
+    if (threadId && (!caller || caller.projectId !== action.projectId || caller.deletedAt !== null))
+      return yield* new BoatError({ category: "not_found" });
     const token = yield* key;
     const settings = projectSettings(action.projectId);
     if (
@@ -730,8 +834,41 @@ export const make = Effect.gen(function* () {
     let instance = ledger.instances.find(
       (item) => item.requestId === action.requestId && item.projectId === action.projectId,
     );
+    if (agentThreadId && (instance || work[action.requestId])) {
+      const binding = work[action.requestId]?.source;
+      const ownerThreadId = binding ? binding.threadId : instance?.threadId;
+      if (!caller || !ownerThreadId || (binding && binding.projectId !== action.projectId))
+        return yield* new BoatError({ category: "conflict" });
+      let ancestor = caller;
+      const visited = new Set<ThreadId>();
+      while (ancestor.id !== ownerThreadId) {
+        if (
+          visited.has(ancestor.id) ||
+          visited.size >= 64 ||
+          ancestor.lineage.relationshipToParent !== "subagent" ||
+          !ancestor.lineage.parentThreadId
+        )
+          return yield* new BoatError({ category: "conflict" });
+        visited.add(ancestor.id);
+        const parent = yield* projections
+          .getThreadShell(ancestor.lineage.parentThreadId)
+          .pipe(Effect.mapError(storageError));
+        if (!parent || parent.projectId !== action.projectId || parent.deletedAt !== null)
+          return yield* new BoatError({ category: "not_found" });
+        ancestor = parent;
+      }
+    }
+    const source = ["start", "prepare", "exec", "resume", "renew"].includes(action.action)
+      ? yield* bindSource(action, instance, threadId)
+      : null;
     if (action.action === "start") {
-      if (instance?.sandboxId) return yield* read(action.projectId);
+      if (instance?.sandboxId) {
+        if (agentThreadId && !inactive.has(instance.state))
+          yield* updateInstance(action, (current) => ({
+            leases: Array.from(new Set([...current.leases, agentThreadId])),
+          }));
+        return yield* read(action.projectId);
+      }
       const status = instance ? null : yield* read(action.projectId);
       const reservation = (settings.ttlMinutes / 60) * rates[settings.size];
       const now = yield* Clock.currentTimeMillis;
@@ -893,22 +1030,13 @@ export const make = Effect.gen(function* () {
         previewUrl: null,
       });
     } else if (action.action === "prepare") {
-      const source = yield* project(action.projectId);
       const process =
         instance.processId === null
           ? null
           : yield* api
-              .request(token, `${sandboxPath}/commands`, "POST", {
-                command: `kill -0 ${instance.processId} 2>/dev/null`,
-                timeoutSeconds: 3,
-              })
-              .pipe(Effect.orElseSucceed(() => null));
-      const running =
-        process !== null &&
-        typeof process === "object" &&
-        "exitCode" in process &&
-        process.exitCode === 0;
-      if (threadId) yield* updateInstance(action, { threadId });
+              .request(token, `${sandboxPath}/commands/${instance.processId}`)
+              .pipe(Effect.flatMap(decode(ProcessStatus)));
+      const running = process !== null && process.exitCode === undefined;
       if (!settings.enabled || !settings.devCommand.trim())
         return yield* new BoatError({ category: "disabled" });
       if (settings.previewKind === "android")
@@ -921,7 +1049,7 @@ export const make = Effect.gen(function* () {
         const env = { GIT_INDEX_FILE: indexPath };
         const execute = (args: ReadonlyArray<string>) =>
           git
-            .execute({ operation: "boat-archive", cwd: source.workspaceRoot, args, env })
+            .execute({ operation: "boat-archive", cwd: source!.workspaceRoot, args, env })
             .pipe(Effect.mapError(() => new BoatError({ category: "storage" })));
         yield* Effect.gen(function* () {
           yield* execute(["read-tree", "HEAD"]);
@@ -976,20 +1104,19 @@ export const make = Effect.gen(function* () {
         }
         const androidSetup = settings.previewKind === "android" ? ANDROID_SETUP : "";
         const sync = `set -eu\ncat ${chunks.join(" ")} > ${remoteArchive}\nrm ${chunks.join(" ")}\nset -- ${remoteArchive} /home/user/crew /home/user/.crew-source-files.json\n${sourceSyncScript}`;
+        const result = yield* api
+          .request(token, `${sandboxPath}/commands`, "POST", {
+            command: sync,
+            timeoutSeconds: 20,
+          })
+          .pipe(Effect.flatMap(decode(ProcessStatus)));
+        if (result.exitCode !== 0) return yield* new BoatError({ category: "provider" });
         if (running) {
-          const result = yield* api
-            .request(token, `${sandboxPath}/commands`, "POST", {
-              command: sync,
-              timeoutSeconds: 20,
-            })
-            .pipe(Effect.flatMap(decode(ProcessStatus)));
-          if (result.exitCode !== undefined && result.exitCode !== 0)
-            return yield* new BoatError({ category: "provider" });
           yield* updateInstance(action, {
             output: `${result.stdout ?? ""}\n${result.stderr ?? ""}`.slice(-12000),
           });
         } else {
-          const script = `${sync}\n${devAuth}${androidSetup}\ncd /home/user/crew\n${settings.setupCommand}\n${settings.devCommand}`;
+          const script = `set -eu\n${devAuth}${androidSetup}\ncd /home/user/crew\n${settings.setupCommand}\nexport PATH="$PWD/node_modules/.bin:$PATH"\n${settings.devCommand}`;
           const started = yield* api
             .request(token, `${sandboxPath}/commands`, "POST", {
               command: script,
@@ -1000,13 +1127,40 @@ export const make = Effect.gen(function* () {
         }
       }).pipe(Effect.ensuring(fs.remove(archive).pipe(Effect.orElseSucceed(() => undefined))));
     } else if (action.action === "exec") {
+      if (agentThreadId)
+        yield* updateInstance(action, (current) => ({
+          leases: Array.from(new Set([...current.leases, agentThreadId])),
+        }));
       const output = yield* api
         .request(token, `${sandboxPath}/commands`, "POST", {
           command: `mkdir -p /home/user/crew && cd /home/user/crew || exit
+export PATH="$PWD/node_modules/.bin:$PATH"
 ${action.command}`,
           timeoutSeconds: 20,
         })
         .pipe(Effect.flatMap(decode(ProcessStatus)));
+      if (output.processId !== undefined && output.exitCode === undefined) {
+        const command = {
+          processId: output.processId,
+          threadId: agentThreadId ?? null,
+          expiresAt: instance.expiresAt,
+        };
+        yield* workLock.withPermits(1)(
+          Effect.gen(function* () {
+            const current = work[action.requestId]!;
+            yield* saveWork({
+              ...work,
+              [action.requestId]: {
+                ...current,
+                commands: [
+                  ...current.commands.filter((item) => item.processId !== command.processId),
+                  command,
+                ],
+              },
+            });
+          }),
+        );
+      }
       yield* updateInstance(action, {
         output: `${output.stdout ?? ""}\n${output.stderr ?? ""}`
           .replace(/(#token=)[^\s]+/g, "$1[private]")
@@ -1212,6 +1366,15 @@ ${action.command}`,
         .pipe(Effect.orElseSucceed(() => undefined));
       yield* updateInstance(action, { previewTabId: null, processId: null });
     }
+    if (["stop", "delete"].includes(action.action)) {
+      yield* workLock.withPermits(1)(
+        Effect.gen(function* () {
+          const current = work[action.requestId];
+          if (current && current.commands.length > 0)
+            yield* saveWork({ ...work, [action.requestId]: { ...current, commands: [] } });
+        }),
+      );
+    }
     const result = yield* read(
       action.action === "stop" || action.action === "delete" ? undefined : action.projectId,
     );
@@ -1220,6 +1383,37 @@ ${action.command}`,
       instances: result.instances.filter((item) => item.projectId === action.projectId),
     };
   });
+  const activeLeaseOwners = Effect.fn("BoatService.activeLeaseOwners")(function* (
+    threadId: ThreadId,
+    projectId: ProjectId,
+  ) {
+    const pending = [threadId];
+    const visited = new Set<ThreadId>();
+    const active = new Set<ThreadId>();
+    while (pending.length > 0 && visited.size < 64) {
+      const id = pending.pop()!;
+      if (visited.has(id)) continue;
+      visited.add(id);
+      const thread = yield* projections.getThreadShell(id);
+      if (!thread || thread.projectId !== projectId || thread.deletedAt !== null) continue;
+      if (
+        thread.activeRunId !== null ||
+        thread.activityRunStatus != null ||
+        backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])
+      )
+        active.add(id);
+      const { subagents } = yield* projections.getThreadRecords(id, ["subagents"]);
+      for (const task of subagents) {
+        if (task.threadId !== id) continue;
+        if (isOrchestrationV2WorkActive(task.status) && !task.childThreadId) active.add(id);
+        if (task.childThreadId && !visited.has(task.childThreadId))
+          pending.push(task.childThreadId);
+      }
+    }
+    // Larger trees retain their lease only until the same hard VM deadline.
+    if (pending.length > 0) active.add(threadId);
+    return active;
+  }, Effect.mapError(storageError));
   const reconcile = Effect.fn("BoatService.reconcile")(function* () {
     const owned = ledger.instances.filter(
       (item) => item.sandboxId && item.state !== "deleted" && item.state !== "error",
@@ -1244,21 +1438,81 @@ ${action.command}`,
         continue;
       }
       if (inactive.has(item.state) || item.resumeOperation) continue;
-      if (Date.parse(item.expiresAt) <= now) {
+      const spent = ledger.instances
+        .filter((entry) => entry.projectId === item.projectId)
+        .reduce((sum, entry) => sum + entry.costUsd, 0);
+      if (Date.parse(item.expiresAt) <= now || spent >= settings.budgetUsd) {
         yield* operate({ action: "stop", projectId: item.projectId, requestId: item.requestId });
         continue;
       }
-      if (item.leases.length === 0) continue;
-      const owners = yield* Effect.forEach(item.leases, (threadId) =>
-        projections.getThreadShell(threadId).pipe(Effect.mapError(storageError)),
+      const commands = work[item.requestId]?.commands ?? [];
+      if (item.leases.length === 0 && commands.length === 0) continue;
+      const token = yield* key;
+      const finishedCommands = new Set<number>();
+      for (const command of commands) {
+        if (Date.parse(command.expiresAt) <= now) {
+          finishedCommands.add(command.processId);
+          continue;
+        }
+        const status = yield* api
+          .request(
+            token,
+            `/sandboxes/${encodeURIComponent(item.sandboxId)}/commands/${command.processId}`,
+          )
+          .pipe(
+            Effect.flatMap(decode(ProcessStatus)),
+            Effect.catchTags({
+              BoatError: (error) => Effect.succeed(error.status === 404 ? { exitCode: -1 } : null),
+            }),
+          );
+        if (status?.exitCode !== undefined) finishedCommands.add(command.processId);
+      }
+      const liveCommands = commands.filter((command) => !finishedCommands.has(command.processId));
+      if (finishedCommands.size > 0)
+        yield* workLock.withPermits(1)(
+          Effect.gen(function* () {
+            const current = work[item.requestId]!;
+            yield* saveWork({
+              ...work,
+              [item.requestId]: {
+                ...current,
+                commands: current.commands.filter(
+                  (command) => !finishedCommands.has(command.processId),
+                ),
+              },
+            });
+          }),
+        );
+      const liveOwners = new Set(
+        liveCommands.flatMap((command) => (command.threadId ? [command.threadId] : [])),
       );
-      const inUse = owners.some(
-        (thread) => thread && (thread.activeRunId !== null || thread.activityRunStatus != null),
-      );
-      if (!inUse)
+      const sourceOwner = work[item.requestId]?.source.threadId ?? item.threadId;
+      const roots = new Set([...item.leases, ...(sourceOwner ? [sourceOwner] : [])]);
+      for (const threadId of roots) {
+        for (const active of yield* activeLeaseOwners(threadId, item.projectId))
+          liveOwners.add(active);
+      }
+      const finishedOwners = new Set(item.leases.filter((threadId) => !liveOwners.has(threadId)));
+      const newOwners = [...liveOwners].filter((threadId) => !item.leases.includes(threadId));
+      const current =
+        finishedOwners.size > 0 || newOwners.length > 0
+          ? yield* updateInstance(item, (latest) => ({
+              leases: [
+                ...new Set([
+                  ...latest.leases.filter(
+                    (threadId) =>
+                      !finishedOwners.has(threadId) ||
+                      work[item.requestId]?.commands.some(
+                        (command) => command.threadId === threadId,
+                      ),
+                  ),
+                  ...newOwners,
+                ]),
+              ],
+            }))
+          : item;
+      if (current.leases.length === 0 && (work[item.requestId]?.commands.length ?? 0) === 0)
         yield* operate({ action: "stop", projectId: item.projectId, requestId: item.requestId });
-      else if (Date.parse(item.expiresAt) - now < settings.ttlMinutes * 30000)
-        yield* operate({ action: "renew", projectId: item.projectId, requestId: item.requestId });
     }
   });
   yield* Effect.forever(
@@ -1267,7 +1521,16 @@ ${action.command}`,
       yield* Effect.sleep("10 seconds");
     }),
   ).pipe(Effect.forkScoped);
-  return { read, connect, disconnect, configure, configureDefaults, operate, reconcile };
+  return {
+    read,
+    isEnabled: (projectId: ProjectId) => Effect.sync(() => projectSettings(projectId).enabled),
+    connect,
+    disconnect,
+    configure,
+    configureDefaults,
+    operate,
+    reconcile,
+  };
 });
 
 export const layer = Layer.effect(BoatService, make);

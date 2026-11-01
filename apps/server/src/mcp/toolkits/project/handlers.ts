@@ -28,6 +28,7 @@ import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { resolveRuntimeMode } from "../../delegatedTaskModes.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
+import { assertSameLink } from "../../linkOrigin.ts";
 import {
   newCommandId,
   readCaller,
@@ -52,10 +53,16 @@ function projectFailure(error: Project.ProjectServiceError) {
 const assertProjectWorktree = Effect.fn("mcp.assertProjectWorktree")(function* (
   workspaceRoot: string,
   worktreePath: string,
+  independent = false,
 ) {
   const git = yield* GitVcsDriver.GitVcsDriver;
   const fileSystem = yield* FileSystem.FileSystem;
   const real = (path: string) => fileSystem.realPath(path).pipe(Effect.orElseSucceed(() => path));
+  if (independent && (yield* real(workspaceRoot)) === (yield* real(worktreePath)))
+    return yield* new OrchestratorMcpFailure({
+      code: "invalid_request",
+      message: "An independent work owner needs a separate worktree, not the project root.",
+    });
   const worktrees = yield* git.listWorktreePaths(workspaceRoot).pipe(
     Effect.flatMap((paths) => Effect.forEach(paths, real)),
     Effect.orElseSucceed((): ReadonlyArray<string> => []),
@@ -143,7 +150,18 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           input.clientRequestId === undefined
             ? yield* newCommandId()
             : yield* launchCommandId(scope.requestNamespace, input.clientRequestId);
-        const threadId = ThreadId.make(commandId);
+        if (
+          input.workKey !== undefined &&
+          (input.projectId === undefined ||
+            input.message === undefined ||
+            input.clientRequestId === undefined ||
+            input.scratch === true)
+        )
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message:
+              "Independent work requires projectId, workKey, message and clientRequestId; resolve an ambiguous project before launching.",
+          });
         const messageId = MessageId.make(commandId);
         const attachments = input.attachments ?? [];
         if (attachments.some((attachment) => !Claims.attachmentIsPendingUpload(attachment)))
@@ -173,6 +191,12 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 ),
               )).projectId
             : yield* resolveProjectId(context, input.projectId);
+        const threadId =
+          input.workKey === undefined
+            ? ThreadId.make(commandId)
+            : yield* ThreadLaunch.workOwnerThreadId(projectId, input.workKey).pipe(
+                Effect.mapError(unavailable),
+              );
         const readProject = Project.ProjectService.pipe(
           Effect.flatMap((projects) => projects.getById(projectId)),
           Effect.mapError(unavailable),
@@ -187,6 +211,8 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             : yield* context.threads.getThreadShell(threadId).pipe(Effect.mapError(unavailable));
         const launchedModel =
           launched === null || launched.deletedAt !== null ? undefined : launched.modelSelection;
+        if (input.workKey !== undefined && launched !== null)
+          yield* assertSameLink(context, launched);
         const replaying = launchedModel !== undefined;
         if (!replaying && input.workspaceStrategy?.type === "existing_worktree") {
           const project = yield* readProject;
@@ -195,10 +221,22 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               code: "invalid_request",
               message: "The project was not found.",
             });
-          yield* assertProjectWorktree(project.workspaceRoot, input.workspaceStrategy.worktreePath);
+          yield* assertProjectWorktree(
+            project.workspaceRoot,
+            input.workspaceStrategy.worktreePath,
+            input.workKey !== undefined,
+          );
         }
         // Reject unresolved base refs before accepting a launch; worktree provisioning happens later.
-        const strategy = input.workspaceStrategy;
+        const strategy =
+          input.workspaceStrategy ??
+          (input.workKey === undefined
+            ? { type: "root" as const }
+            : {
+                type: "worktree" as const,
+                baseRef: caller?.projectId === projectId ? (caller.branch ?? "HEAD") : "HEAD",
+                startFromOrigin: false,
+              });
         if (!replaying && strategy?.type === "worktree")
           yield* ThreadLaunch.ThreadLaunchService.pipe(
             Effect.flatMap((launches) =>
@@ -272,13 +310,14 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
         }
         const result = yield* ThreadMessageIntake.launchThread({
           commandId,
+          ...(input.workKey === undefined ? {} : { workKey: input.workKey }),
           threadId,
           projectId,
           title: input.title,
           modelSelection,
           runtimeMode: startedRuntimeMode,
           interactionMode,
-          workspaceStrategy: input.workspaceStrategy ?? { type: "root" },
+          workspaceStrategy: strategy,
           ...(input.message === undefined && attachments.length === 0
             ? {}
             : {
@@ -308,6 +347,11 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 message: error.message,
               });
             }
+            if (typeof error.cause === "string")
+              return new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: error.cause,
+              });
             return unavailable();
           }),
         );
@@ -320,6 +364,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           modelSelection: thread.modelSelection,
           runId: run?.id ?? null,
           status: run?.status ?? null,
+          ...(input.workKey === undefined ? {} : { reusedOwner: result.resumed }),
         };
       }),
     // The launched thread carries the caller's link, if it has one.

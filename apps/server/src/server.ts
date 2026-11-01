@@ -669,6 +669,13 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.effectDiscard(ProjectSettingsOverrideSweep.sweep),
 ).pipe(
   Layer.provideMerge(layerOrchestrationApplication),
+  Layer.provideMerge(
+    BoatService.layer.pipe(
+      Layer.provide(ProjectionStoreV2.layer),
+      Layer.provide(BoatApi.layer),
+      Layer.provide(RuntimeLayer.layerProjectService),
+    ),
+  ),
   Layer.provideMerge(RuntimeLayer.layerEventInfrastructure),
   Layer.provideMerge(Layer.merge(ProjectStore.layer, ThreadSearch.layer)),
   Layer.provideMerge(SecretResolver.layer),
@@ -741,13 +748,6 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
 const layerRuntimeDependencies = BoatSetupService.layer.pipe(
   Layer.provideMerge(AgentAvatarService.layer.pipe(Layer.provide(CodexAvatarGenerator.layer))),
   Layer.provideMerge(layerRuntimeCoreDependencies),
-  Layer.provideMerge(
-    BoatService.layer.pipe(
-      Layer.provide(ProjectionStoreV2.layer),
-      Layer.provide(BoatApi.layer),
-      Layer.provide(layerRuntimeCoreDependencies),
-    ),
-  ),
   Layer.provideMerge(layerUsage),
   Layer.provideMerge(layerBackground),
   Layer.provideMerge(layerResourceDiagnostics),
