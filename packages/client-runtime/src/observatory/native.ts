@@ -1,5 +1,6 @@
 import type {
   EnvironmentId,
+  NodeId,
   OrchestrationV2ProjectedTurnItem,
   OrchestrationV2ThreadShell,
   RunId,
@@ -8,6 +9,7 @@ import type {
 import * as Option from "effect/Option";
 import type { EnvironmentShellState } from "../state/shell.ts";
 import type { EnvironmentThreadState } from "../state/threads.ts";
+import { observatoryTaskPriority } from "./tasks.ts";
 
 export type ObservatorySourceStatus = "live" | "synchronizing" | "offline" | "denied" | "unknown";
 export interface ObservatoryEnvironment {
@@ -28,6 +30,25 @@ export interface ObservatoryNode {
 }
 export const observatoryKey = (ref: ScopedThreadRef) =>
   `${ref.environmentId.length}:${ref.environmentId}${ref.threadId}`;
+
+export function observatoryNode(
+  environmentId: EnvironmentId,
+  shell: OrchestrationV2ThreadShell,
+): ObservatoryNode {
+  const ref = { environmentId, threadId: shell.id };
+  return {
+    key: observatoryKey(ref),
+    ref,
+    title: shell.title,
+    nativeStatus: shell.status,
+    runId: shell.activeRunId ?? shell.latestRunId,
+    parentKey:
+      shell.lineage.parentThreadId === null
+        ? null
+        : observatoryKey({ environmentId, threadId: shell.lineage.parentThreadId }),
+    shell,
+  };
+}
 
 /** One derived node array feeds graph/list/dashboard; it is never a second native store. */
 export function projectObservatoryNative(environments: readonly ObservatoryEnvironment[]) {
@@ -50,22 +71,7 @@ export function projectObservatoryNative(environments: readonly ObservatoryEnvir
             ).values(),
           ].filter((thread) => thread.deletedAt === null);
     for (const shell of threads) {
-      const ref = { environmentId: source.environmentId, threadId: shell.id };
-      nodes.push({
-        key: observatoryKey(ref),
-        ref,
-        title: shell.title,
-        nativeStatus: shell.status,
-        runId: shell.activeRunId ?? shell.latestRunId,
-        parentKey:
-          shell.lineage.parentThreadId === null
-            ? null
-            : observatoryKey({
-                environmentId: source.environmentId,
-                threadId: shell.lineage.parentThreadId,
-              }),
-        shell,
-      });
+      nodes.push(observatoryNode(source.environmentId, shell));
     }
     return {
       environmentId: source.environmentId,
@@ -88,6 +94,7 @@ export interface ObservatoryQuery {
   readonly search: string;
   /** First visible identity, not an array offset: source reordering cannot retarget a page. */
   readonly anchorKey: string | null;
+  readonly taskFilter?: "all" | "needs_input" | "active" | "complete";
 }
 const OBSERVATORY_PAGE_SIZE = 50;
 export const EMPTY_OBSERVATORY_QUERY: ObservatoryQuery = {
@@ -100,6 +107,8 @@ export const EMPTY_OBSERVATORY_QUERY: ObservatoryQuery = {
 export function projectObservatoryPage<Node extends ObservatoryNode>(
   graph: Omit<ObservatoryNativeGraph, "nodes"> & { readonly nodes: readonly Node[] },
   query: ObservatoryQuery,
+  pageSize = OBSERVATORY_PAGE_SIZE,
+  prioritizeTasks = false,
 ) {
   const search = query.search.slice(0, 200).trim().toLowerCase();
   const labels = new Map(graph.sources.map((source) => [source.environmentId, source.label]));
@@ -107,22 +116,31 @@ export function projectObservatoryPage<Node extends ObservatoryNode>(
     .filter(
       (node) =>
         (query.environmentId === null || query.environmentId === node.ref.environmentId) &&
+        (query.taskFilter === undefined ||
+          query.taskFilter === "all" ||
+          (query.taskFilter === "needs_input" && observatoryTaskPriority(node.shell) === 0) ||
+          (query.taskFilter === "active" && observatoryTaskPriority(node.shell) === 1) ||
+          (query.taskFilter === "complete" && node.shell.goal?.status === "complete")) &&
         (search === "" ||
           `${node.title} ${node.ref.threadId} ${node.ref.environmentId} ${labels.get(node.ref.environmentId) ?? ""} ${node.shell.archivedAt === null ? "" : "archived"}`
             .toLowerCase()
             .includes(search)),
     )
-    .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    .sort(
+      (a, b) =>
+        (prioritizeTasks
+          ? observatoryTaskPriority(a.shell) - observatoryTaskPriority(b.shell)
+          : 0) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0),
+    );
   const anchorIndex =
     query.anchorKey === null
       ? 0
-      : matching.findIndex((node) => node.key >= (query.anchorKey ?? ""));
-  const lastStart = Math.max(
-    0,
-    Math.floor((matching.length - 1) / OBSERVATORY_PAGE_SIZE) * OBSERVATORY_PAGE_SIZE,
-  );
+      : matching.findIndex((node) =>
+          prioritizeTasks ? node.key === query.anchorKey : node.key >= (query.anchorKey ?? ""),
+        );
+  const lastStart = Math.max(0, Math.floor((matching.length - 1) / pageSize) * pageSize);
   const start = matching.length === 0 ? 0 : anchorIndex < 0 ? lastStart : anchorIndex;
-  const pageNodes = matching.slice(start, start + OBSERVATORY_PAGE_SIZE);
+  const pageNodes = matching.slice(start, start + pageSize);
   const allKeys = new Set(graph.nodes.map((node) => node.key));
   const pageKeys = new Set(pageNodes.map((node) => node.key));
   const counts = new Map<EnvironmentId, { matching: number; visible: number }>();
@@ -158,14 +176,13 @@ export function projectObservatoryPage<Node extends ObservatoryNode>(
     }),
     page: {
       query: { ...query, search: query.search.slice(0, 200) },
-      size: OBSERVATORY_PAGE_SIZE,
+      size: pageSize,
       totalKnownThreads: graph.nodes.length,
       matchingThreads: matching.length,
       from: matching.length === 0 ? 0 : start + 1,
       to: start + pageNodes.length,
-      previousKey:
-        start > 0 ? (matching[Math.max(0, start - OBSERVATORY_PAGE_SIZE)]?.key ?? null) : null,
-      nextKey: matching[start + OBSERVATORY_PAGE_SIZE]?.key ?? null,
+      previousKey: start > 0 ? (matching[Math.max(0, start - pageSize)]?.key ?? null) : null,
+      nextKey: matching[start + pageSize]?.key ?? null,
       lastKey: matching[lastStart]?.key ?? null,
       hasPrevious: start > 0,
       hasNext: start + pageNodes.length < matching.length,
@@ -194,9 +211,56 @@ export function projectObservatoryDetails(
   const currentItems = projection.visibleTurnItems.filter(
     (row) => row.sourceThreadId === node.ref.threadId && row.item.runId === node.runId,
   );
-  const plans = projection.plans.filter(
-    (plan) => plan.runId === node.runId && plan.status !== "superseded",
+  const rootIds = new Set(
+    projection.runs.flatMap((run) =>
+      run.threadId === node.ref.threadId && run.rootNodeId ? [run.rootNodeId] : [],
+    ),
   );
+  const children = new Map<NodeId, NodeId[]>();
+  for (const item of projection.nodes) {
+    if (item.threadId !== node.ref.threadId || item.kind === "subagent" || !item.parentNodeId)
+      continue;
+    const siblings = children.get(item.parentNodeId) ?? [];
+    siblings.push(item.id);
+    children.set(item.parentNodeId, siblings);
+  }
+  const ownedNodeIds = new Set(rootIds);
+  for (const id of ownedNodeIds) {
+    for (const childId of children.get(id) ?? []) ownedNodeIds.add(childId);
+  }
+  const visibleNodeIds = new Set([...rootIds, ...projection.nodes.map((item) => item.id)]);
+  const runOrdinals = new Map<RunId | null, number>(
+    projection.runs.map((run) => [run.id, run.ordinal]),
+  );
+  const hasUnresolvedPlans = projection.plans.some(
+    (plan) =>
+      plan.threadId === node.ref.threadId &&
+      plan.status !== "superseded" &&
+      !visibleNodeIds.has(plan.nodeId),
+  );
+  const plans = projection.plans
+    .filter(
+      (plan) =>
+        plan.threadId === node.ref.threadId &&
+        ownedNodeIds.has(plan.nodeId) &&
+        plan.status !== "superseded",
+    )
+    .map((plan) => {
+      if (!plan.detailInTurnItem) return plan;
+      const item = projection.turnItems.findLast(
+        (item) =>
+          (item.type === "todo_list" || item.type === "proposed_plan") && item.planId === plan.id,
+      );
+      const { detailInTurnItem: _, ...body } = plan;
+      if (plan.kind === "todo_list" && item?.type === "todo_list")
+        return { ...body, kind: "todo_list" as const, steps: item.steps };
+      if (plan.kind === "proposed_plan" && item?.type === "proposed_plan")
+        return { ...body, kind: "proposed_plan" as const, markdown: item.markdown };
+      return plan;
+    })
+    .sort(
+      (left, right) => (runOrdinals.get(left.runId) ?? -1) - (runOrdinals.get(right.runId) ?? -1),
+    );
   const todo = [...plans].reverse().find((plan) => plan.kind === "todo_list");
   const steps = todo?.kind === "todo_list" ? todo.steps : [];
   const tools = currentItems.filter(
@@ -208,6 +272,8 @@ export function projectObservatoryDetails(
   const compactions = projection.visibleTurnItems.filter((row) => row.item.type === "compaction");
   return {
     projection,
+    ownedNodeIds,
+    hasUnresolvedPlans,
     plans: plans.slice(-8),
     steps,
     currentStep: steps.find((step) => step.status === "running") ?? null,

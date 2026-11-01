@@ -45,6 +45,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
   return { ...actual, useNavigate: () => openThread };
 });
 vi.mock("../components/chat/V2ItemInspector", () => ({ V2ItemInspector: () => inspect() }));
+vi.mock("../components/PinnedWorkTabs", () => ({ PinnedWorkTabs: () => null }));
 const now = DateTime.makeUnsafe("2026-10-16T00:00:00.000Z");
 const environmentId = EnvironmentId.make("one");
 const runId = RunId.make("run");
@@ -296,6 +297,9 @@ function searchThreads(container: HTMLElement, text: string) {
 
 function setup() {
   const registry = AtomRegistry.make();
+  registry.set(sources, [source]);
+  registry.set(selected, null);
+  registry.set(authored, null);
   openThread.mockClear();
   inspect.mockReset().mockReturnValue(<p>Authorized single-entry inspector</p>);
   return { registry, [Symbol.dispose]: () => registry.dispose() };
@@ -313,6 +317,10 @@ describe("mounted observatory projection dashboard", () => {
       { router: false },
     );
     const { container } = screen;
+    expect(container.querySelector('[aria-label="Agent list"]')?.textContent).toContain(
+      "Observe provider",
+    );
+    await act(async () => button(container, "Show graph").click());
     expect(container.querySelector('[aria-label="Agent graph"]')?.textContent).toContain(
       "Observe provider",
     );
@@ -373,7 +381,6 @@ describe("mounted observatory projection dashboard", () => {
       ]),
     );
     expect(container.textContent).toContain("Latest revision");
-    await act(async () => button(container, "Show list").click());
     expect(container.querySelector('[aria-label="Agent list"]')?.textContent).toContain(
       "Latest revision",
     );
@@ -438,7 +445,7 @@ describe("mounted observatory projection dashboard", () => {
     expect(container.textContent).toContain("Declared first plan");
     expect(container.textContent).toContain("Agent updates · Revision 1 · stale");
     expect(container.textContent).toContain("Worker availability is observed separately");
-    expect(container.textContent).toContain("Observed:");
+    expect(container.textContent).toContain("Observed run:");
     expect(container.textContent).toContain("Inspect Declared first plan");
     expect(registry.get(view.snapshotAtom).nodes[0]?.title).toBe("Declared first plan");
     expect(container.textContent).toContain("Requested · Unconfirmed");
@@ -516,6 +523,7 @@ describe("mounted observatory projection dashboard", () => {
         },
       ]),
     );
+    await act(async () => button(container, "Show graph").click());
     expect(
       container.querySelectorAll('path[aria-label="Observed parent-child relationship"]'),
     ).toHaveLength(1);
@@ -525,7 +533,7 @@ describe("mounted observatory projection dashboard", () => {
     expect(container.querySelector('[aria-label="Agent list"]')?.textContent).toContain(
       "Actual child",
     );
-    expect(container.textContent).toContain("Parent: Observe provider");
+    expect(container.textContent).toContain("For Observe provider");
   });
   it("makes the 539th cross-host shell selectable through bounded shared graph/list pages", async () => {
     using fixture = setup();
@@ -539,6 +547,7 @@ describe("mounted observatory projection dashboard", () => {
     );
     const { container } = screen;
     await act(async () => registry.set(sources, largeSources()));
+    await act(async () => button(container, "Show graph").click());
     expect(container.textContent).toContain("Threads 1–50 of 539 matching");
     expect(container.querySelectorAll("foreignObject")).toHaveLength(50);
     expect(inspect).not.toHaveBeenCalled();
@@ -578,6 +587,7 @@ describe("mounted observatory projection dashboard", () => {
     const { container } = screen;
     const large = largeSources();
     await act(async () => registry.set(sources, large));
+    await act(async () => button(container, "Show graph").click());
     const trigger = container.querySelector('button[aria-label="Filter environment"]');
     if (!(trigger instanceof HTMLButtonElement)) throw new Error("Missing environment filter");
     await act(async () => trigger.click());
@@ -660,6 +670,7 @@ describe("mounted observatory projection dashboard", () => {
       },
     };
     await act(async () => registry.set(sources, [paged]));
+    await act(async () => button(container, "Show graph").click());
     await act(async () => button(container, "Last page").click());
     expect(container.textContent).toContain("Threads 51–51 of 51 matching");
     expect(container.textContent).toContain("Parent outside this page");
@@ -667,6 +678,6 @@ describe("mounted observatory projection dashboard", () => {
       container.querySelectorAll('path[aria-label="Observed parent-child relationship"]'),
     ).toHaveLength(0);
     await act(async () => button(container, "Show list").click());
-    expect(container.textContent).toContain("Parent: outside this page");
+    expect(container.textContent).toContain("For Local 0");
   });
 });

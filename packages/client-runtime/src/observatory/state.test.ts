@@ -83,6 +83,101 @@ function command(n: number): OrchestrationV2ProjectedTurnItem {
 const decodeOrchestrationV2ThreadProjection = Schema.decodeSync(OrchestrationV2ThreadProjection);
 
 describe("observatory canonical projection view", () => {
+  it("retains the owner's plan across runs and excludes a child agent's plan", () => {
+    const projection = decodeOrchestrationV2ThreadProjection({
+      ...v2Projection,
+      runs: [0, 1, 2].map((ordinal) => ({
+        id: `run:${ordinal}`,
+        threadId: ref.threadId,
+        ordinal: ordinal + 1,
+        providerInstanceId: "codex",
+        modelSelection: v2ThreadShell.modelSelection,
+        providerThreadId: "native-thread",
+        userMessageId: `message:${ordinal}`,
+        rootNodeId: `root:${ordinal}`,
+        activeAttemptId: null,
+        status: "completed",
+        requestedAt: v2Now,
+        startedAt: v2Now,
+        completedAt: v2Now,
+        checkpointId: null,
+        contextHandoffId: null,
+      })),
+      plans: [
+        {
+          id: "owner-plan",
+          threadId: ref.threadId,
+          runId: "run:1",
+          nodeId: "own-plan-node",
+          status: "active",
+          kind: "todo_list",
+          steps: [
+            { id: "done", text: "Read source", status: "completed" },
+            { id: "now", text: "Implement cards", status: "running" },
+            { id: "next", text: "Verify live", status: "pending" },
+          ],
+        },
+        {
+          id: "child-plan",
+          threadId: ref.threadId,
+          runId: "run:2",
+          nodeId: "child-node",
+          status: "active",
+          kind: "todo_list",
+          steps: [{ id: "child", text: "Unrelated child step", status: "running" }],
+        },
+        {
+          id: "older-plan",
+          threadId: ref.threadId,
+          runId: "run:0",
+          nodeId: "root:0",
+          status: "active",
+          kind: "todo_list",
+          steps: [{ id: "old", text: "Earlier task step", status: "running" }],
+        },
+      ],
+      nodes: [
+        { id: "own-plan-node", parentNodeId: "root:1", kind: "todo_list" as const, runId: "run:1" },
+        { id: "child-agent", parentNodeId: "root:2", kind: "subagent" as const, runId: "run:2" },
+        {
+          id: "child-node",
+          parentNodeId: "child-agent",
+          kind: "todo_list" as const,
+          runId: "run:2",
+        },
+      ].map((entry) => ({
+        ...entry,
+        threadId: ref.threadId,
+        rootNodeId: entry.runId === "run:1" ? "root:1" : "root:2",
+        status: "completed",
+        countsForRun: true,
+        providerThreadId: "native-thread",
+        providerTurnId: null,
+        nativeItemRef: null,
+        runtimeRequestId: null,
+        checkpointScopeId: null,
+        startedAt: v2Now,
+        completedAt: v2Now,
+      })),
+    });
+    const original = projectObservatoryNative([source]).nodes[0]!;
+    const node = { ...original, runId: RunId.make("run:2") };
+    const result = projectObservatoryDetails(node, source, {
+      ...detail,
+      data: Option.some(projection),
+    });
+    expect(result?.currentStep?.text).toBe("Implement cards");
+    expect(result?.completedSteps.map((step) => step.text)).toEqual(["Read source"]);
+    expect(result?.nextSteps.map((step) => step.text)).toEqual(["Verify live"]);
+    expect(result?.plans.map((plan) => plan.id)).toEqual(["older-plan", "owner-plan"]);
+    expect(result?.hasUnresolvedPlans).toBe(false);
+    const incomplete = projectObservatoryDetails(node, source, {
+      ...detail,
+      data: Option.some({ ...projection, nodes: [] }),
+    });
+    expect(incomplete?.plans.map((plan) => plan.id)).toEqual(["older-plan"]);
+    expect(incomplete?.hasUnresolvedPlans).toBe(true);
+  });
   it("updates the shared graph/list nodes and drops selected detail on revoke, disconnect, and missing run", () => {
     const registry = AtomRegistry.make();
     const sources = Atom.make<readonly ObservatoryEnvironment[]>([source]);

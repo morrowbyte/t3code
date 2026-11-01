@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import {
   nativeItemText,
+  OBSERVATORY_TASK_LABELS,
   type ObservatoryView,
   type ObservatoryQuery,
 } from "@t3tools/client-runtime/observatory";
@@ -15,6 +16,8 @@ import {
   SelectItem,
 } from "../components/ui/select";
 import { ObservatoryGraph } from "./ObservatoryGraph";
+import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
+import { SidebarInset } from "../components/ui/sidebar";
 
 export function AgentObservatory({
   view,
@@ -29,16 +32,15 @@ export function AgentObservatory({
   readonly onQueryChange: (query: ObservatoryQuery) => void;
   readonly renderTool: (row: OrchestrationV2ProjectedTurnItem, ref: ScopedThreadRef) => ReactNode;
 }) {
-  const [mode, setMode] = useState<"graph" | "list">("graph");
+  const [mode, setMode] = useState<"graph" | "list">("list");
   const selection = view.selection;
   return (
-    <main className="flex h-full min-h-0 flex-col bg-background text-foreground">
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4">
-        <div>
-          <h1 className="text-lg font-semibold">Agent observatory</h1>
-          <p className="text-sm text-muted-foreground">Live activity · Read-only</p>
+    <SidebarInset className="h-dvh min-h-0 min-w-0">
+      <WorkspacePageHeader className="border-b">
+        <div className="min-w-0 flex-1">
+          <h1 className="truncate text-lg font-semibold">Agent observatory</h1>
         </div>
-        <div className="flex gap-2">
+        <div className="flex shrink-0 gap-2">
           {selection && (
             <Button variant="outline" onClick={() => onSelect(null)}>
               All threads
@@ -48,8 +50,11 @@ export function AgentObservatory({
             {mode === "graph" ? "Show list" : "Show graph"}
           </Button>
         </div>
-      </header>
-      <section aria-label="Environment coverage" className="border-b px-5 py-3 text-sm">
+      </WorkspacePageHeader>
+      <details aria-label="Environment coverage" className="border-b px-5 py-3 text-sm">
+        <summary className="cursor-pointer text-muted-foreground">
+          Environments · {view.sources.length}
+        </summary>
         {!view.catalogReady && <p>Environment coverage unknown · Catalog not ready</p>}
         {view.sources.map((source) => (
           <p key={source.environmentId}>
@@ -64,7 +69,7 @@ export function AgentObservatory({
           <summary>Selected thread details · Native roster unavailable</summary>
           {view.nativeAgentCoverage} Agent editing unavailable.
         </details>
-      </section>
+      </details>
       <div className="min-h-0 flex-1 overflow-auto p-5">
         {selection ? (
           <Dashboard
@@ -76,9 +81,28 @@ export function AgentObservatory({
         ) : (
           <>
             <h2 className="mb-3 font-medium">
-              {mode === "graph" ? "Thread relationships" : "Threads"}
+              {mode === "graph" ? "Thread relationships" : "Agent tasks"}
             </h2>
             <ShellBrowserControls view={view} onQueryChange={onQueryChange} />
+            {view.sources
+              .filter((source) => source.status !== "live")
+              .map((source) => (
+                <section
+                  key={source.environmentId}
+                  className="mb-3 rounded-lg border p-4"
+                  aria-label={`${source.label} unavailable`}
+                >
+                  <h3 className="font-medium">{source.label}</h3>
+                  <p className="text-sm text-muted-foreground">
+                    {source.status === "offline"
+                      ? "Offline"
+                      : source.status === "denied"
+                        ? "Access unavailable"
+                        : "Connecting"}
+                    {" · Task details unavailable"}
+                  </p>
+                </section>
+              ))}
             {view.nodes.length === 0 && (
               <p className="text-sm text-muted-foreground">
                 {view.page.totalKnownThreads > 0
@@ -90,33 +114,18 @@ export function AgentObservatory({
               <ObservatoryGraph nodes={view.nodes} onSelect={onSelect} />
             ) : (
               <>
-                <div role="list" aria-label="Agent list" className="flex flex-col gap-2">
+                <div
+                  role="list"
+                  aria-label="Agent list"
+                  className="grid items-start gap-3 md:grid-cols-2 xl:grid-cols-3"
+                >
                   {view.nodes.map((node) => (
-                    <div
-                      role="listitem"
+                    <TaskCard
                       key={node.key}
-                      className="min-w-0 break-words rounded-lg border bg-card p-4"
-                    >
-                      <Button
-                        variant="ghost"
-                        size="sm-multiline"
-                        onClick={() => onSelect(node.ref)}
-                      >
-                        {node.title}
-                      </Button>
-                      <p className="text-sm">
-                        Observed: {node.nativeStatus} · {node.ref.environmentId}
-                        {node.shell.archivedAt !== null && " · archived"}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {node.parentKey === null
-                          ? "Root thread"
-                          : `Parent: ${view.nodes.find((parent) => parent.key === node.parentKey)?.title ?? (node.parentLocation === "outside-page" ? "outside this page" : "outside loaded coverage")}`}
-                      </p>
-                      {node.authoredRevision !== null && (
-                        <p className="text-xs">Agent-authored revision {node.authoredRevision}</p>
-                      )}
-                    </div>
+                      node={node}
+                      onSelect={onSelect}
+                      onOpenThread={onOpenThread}
+                    />
                   ))}
                 </div>
               </>
@@ -124,7 +133,142 @@ export function AgentObservatory({
           </>
         )}
       </div>
-    </main>
+    </SidebarInset>
+  );
+}
+
+function TaskCard({
+  node,
+  onSelect,
+  onOpenThread,
+}: {
+  readonly node: ObservatoryView["nodes"][number];
+  readonly onSelect: (ref: ScopedThreadRef) => void;
+  readonly onOpenThread: (ref: ScopedThreadRef) => void;
+}) {
+  const task = node.task;
+  return (
+    <article
+      role="listitem"
+      className="min-w-0 space-y-3 break-words rounded-lg border bg-card p-4"
+    >
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <h3 className="min-w-0 flex-1 font-medium">
+          <Button variant="ghost" size="sm-multiline" onClick={() => onSelect(node.ref)}>
+            {node.title}
+          </Button>
+        </h3>
+        <span className="rounded-md bg-muted px-2 py-1 text-xs" role="status">
+          {OBSERVATORY_TASK_LABELS[task.status]}
+        </span>
+      </div>
+      <p className="line-clamp-3 whitespace-pre-line text-sm">
+        {task.objective ?? "No goal recorded"}
+      </p>
+      <p className="text-xs text-muted-foreground">
+        {node.shell.providerInstanceId} · {node.shell.modelSelection.model}
+        {node.shell.archivedAt !== null && " · Archived"}
+      </p>
+      {task.parent && (
+        <div className="text-xs">
+          <span className="text-muted-foreground">For </span>
+          <Button variant="link" size="sm-multiline" onClick={() => onOpenThread(task.parent!.ref)}>
+            {task.parent.title}
+          </Button>
+        </div>
+      )}
+      {task.parentOutsidePage && (
+        <p className="text-xs text-muted-foreground">Parent outside loaded coverage</p>
+      )}
+      <div className="space-y-2 text-sm">
+        <p>
+          <span className="text-muted-foreground">Current: </span>
+          {task.currentStep ??
+            (task.planStatus === "loading"
+              ? "Loading plan…"
+              : task.planStatus === "missing"
+                ? "No plan recorded"
+                : task.planStatus === "unavailable"
+                  ? "Plan outside loaded history"
+                  : "No active step")}
+        </p>
+        {task.completedSteps.slice(-2).map((step) => (
+          <p key={step.id}>✓ {step.text}</p>
+        ))}
+        {task.nextSteps.slice(0, 2).map((step) => (
+          <p key={step.id}>
+            <span aria-hidden="true">○ </span>
+            {step.text}
+          </p>
+        ))}
+      </div>
+      {task.dependencies.length > 0 && (
+        <details className="text-sm">
+          <summary className="cursor-pointer">Agents · {task.dependencies.length}</summary>
+          <ul className="mt-2 space-y-2">
+            {task.dependencies.map((dependency) => (
+              <li key={dependency.key}>
+                {dependency.ref ? (
+                  <Button
+                    variant="link"
+                    size="sm-multiline"
+                    onClick={() => onOpenThread(dependency.ref!)}
+                  >
+                    {dependency.title}
+                  </Button>
+                ) : (
+                  dependency.title
+                )}
+                {dependency.active && (
+                  <span className="text-xs text-muted-foreground"> · Pending</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {task.request && (
+        <section
+          aria-label="Your input"
+          className="space-y-2 rounded-md border border-primary/30 p-3 text-sm"
+        >
+          <h4 className="font-medium">
+            {task.request.blocking ? "Your input needed" : "Open question"}
+          </h4>
+          <p className="line-clamp-3">{task.request.label}</p>
+          <Button variant="outline" size="sm" onClick={() => onOpenThread(node.ref)}>
+            Open request
+          </Button>
+        </section>
+      )}
+      {task.planStatus === "ready" && (
+        <details className="text-sm">
+          <summary className="cursor-pointer">
+            Plan · {task.completedSteps.length} done · {task.nextSteps.length} open
+          </summary>
+          <ul className="mt-2 space-y-2">
+            {task.steps.map((step) => (
+              <li key={step.id}>
+                {step.status === "completed" ? "✓" : step.status === "running" ? "→" : "○"}{" "}
+                {step.text}
+              </li>
+            ))}
+          </ul>
+          {task.plans
+            .filter((plan) => plan.kind === "proposed_plan")
+            .map((plan) => (
+              <p className="mt-2 whitespace-pre-wrap" key={plan.id}>
+                {plan.detailInTurnItem ? "Full plan in thread" : plan.markdown}
+              </p>
+            ))}
+        </details>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <Button variant="outline" size="sm" onClick={() => onOpenThread(node.ref)}>
+          Open task
+        </Button>
+      </div>
+    </article>
   );
 }
 
@@ -145,6 +289,31 @@ function ShellBrowserControls({
   return (
     <section aria-label="Thread filters and pages" className="mb-4 space-y-3">
       <div className="flex flex-wrap items-end gap-3">
+        <div className="w-full sm:w-44">
+          <span className="mb-1 block text-sm">Tasks</span>
+          <Select
+            value={filter.taskFilter ?? "all"}
+            onValueChange={(value) => {
+              if (
+                value === "all" ||
+                value === "needs_input" ||
+                value === "active" ||
+                value === "complete"
+              )
+                onQueryChange({ ...filter, taskFilter: value, anchorKey: null });
+            }}
+          >
+            <SelectTrigger aria-label="Filter tasks">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectPopup>
+              <SelectItem value="all">All tasks</SelectItem>
+              <SelectItem value="needs_input">Needs you</SelectItem>
+              <SelectItem value="active">Working</SelectItem>
+              <SelectItem value="complete">Complete</SelectItem>
+            </SelectPopup>
+          </Select>
+        </div>
         <div className="w-full sm:w-56">
           <span className="mb-1 block text-sm">Environment</span>
           <Select
@@ -252,7 +421,9 @@ function Dashboard({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold">{title}</h2>
-          <p className="text-sm text-muted-foreground">Observed: {selection.node.nativeStatus}</p>
+          <p className="text-sm text-muted-foreground">
+            {OBSERVATORY_TASK_LABELS[selection.task.status]}
+          </p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => setShowText(!showText)}>
@@ -263,6 +434,9 @@ function Dashboard({
           </Button>
         </div>
       </div>
+      {selection.task.objective && (
+        <p className="max-w-3xl whitespace-pre-line text-sm">{selection.task.objective}</p>
+      )}
       <details className="text-sm text-muted-foreground">
         <summary>
           {authored
@@ -271,7 +445,7 @@ function Dashboard({
         </summary>
         {authored && <p>Source: {authored.snapshot.provenance}</p>}
         <p>Worker availability is observed separately. Agent editing is unavailable.</p>
-        <p>Silence does not confirm pause or completion.</p>
+        <p>Observed run: {selection.node.nativeStatus}</p>
       </details>
       <section
         aria-label="Agent overview"
