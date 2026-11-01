@@ -1907,6 +1907,7 @@ export const runCrewSample = Effect.fn("evaluateMcpToolUse.runCrewSample")(funct
   const runPromise = Effect.runPromiseWith(yield* Effect.context<HttpClient.HttpClient>());
   let evaluationId: string | undefined;
   let finalText = "";
+  let visibleText = "";
   let stopReason = "max_steps";
   const limit = Math.min(maxSteps, testCase.maxSteps === undefined ? maxSteps : testCase.maxSteps + 4);
   yield* Effect.addFinalizer(() => evaluationId === undefined ? Effect.void :
@@ -1929,6 +1930,9 @@ export const runCrewSample = Effect.fn("evaluateMcpToolUse.runCrewSample")(funct
   });
   for (let step = 0; step <= limit; step++) {
     transcript.push(response);
+    if (response.type !== "cancelled") {
+      visibleText = response.visibleText ?? (response.type === "complete" ? response.text : visibleText);
+    }
     if (response.type === "complete") {
       finalText = response.text;
       stopReason = "end_turn";
@@ -1973,7 +1977,7 @@ export const runCrewSample = Effect.fn("evaluateMcpToolUse.runCrewSample")(funct
       catch: (cause) => cause instanceof CrewFixtureError ? cause :
         new CrewFixtureError({ code: "invalid_native_call" }),
     });
-    if (failedEarly(testCase.expect, { calls, text: finalText, stopReason })) {
+    if (failedEarly(testCase.expect, { calls, text: visibleText, stopReason })) {
       stopReason = "failed_early";
       break;
     }
@@ -1982,7 +1986,7 @@ export const runCrewSample = Effect.fn("evaluateMcpToolUse.runCrewSample")(funct
     });
   }
   return {
-    calls, text: finalText, finalText, stopReason, linked: [...sample.linked],
+    calls, text: visibleText, finalText, stopReason, linked: [...sample.linked],
     ...(sample.devices ? { launchers: [...sample.devices.launchers] } : {}),
     transcript, transport: "crew-json-exec" as const, usage: null, shellUsage: null,
   };

@@ -56,6 +56,7 @@ export const runCodexEvaluation = Effect.fn("CodexAdapterV2.runEvaluation")(func
   let nativeTurnId: string | undefined;
   let observedTurnId: string | undefined;
   let finalText: string | undefined;
+  let visibleText = "";
   let completed = false;
   let toolFailure: ProviderAdapter.ProviderAdapterV2Error | undefined;
   const matches = (threadId: string, turnId: string) => {
@@ -106,6 +107,7 @@ export const runCodexEvaluation = Effect.fn("CodexAdapterV2.runEvaluation")(func
           name: payload.tool,
           ...(payload.namespace != null ? { namespace: payload.namespace } : {}),
           arguments: payload.arguments,
+          visibleText,
         }),
       ).pipe(
         Effect.catch((cause) => {
@@ -132,6 +134,7 @@ export const runCodexEvaluation = Effect.fn("CodexAdapterV2.runEvaluation")(func
     if (item.type === "agentMessage") {
       if (item.delivery === "async" || item.questions?.length)
         return Deferred.fail(answer, refused).pipe(Effect.asVoid);
+      visibleText += `${visibleText ? "\n\n" : ""}${item.text}`;
       if (item.phase !== "commentary") finalText = item.text;
     } else if (item.type === "dynamicToolCall") {
       if (!tools.has(item.tool)) return Deferred.fail(answer, refused).pipe(Effect.asVoid);
@@ -157,7 +160,7 @@ export const runCodexEvaluation = Effect.fn("CodexAdapterV2.runEvaluation")(func
       Effect.andThen(
         payload.turn.status !== "completed" || finalText === undefined || pending.size > 0 || toolFailure
           ? Deferred.fail(answer, toolFailure ?? refused)
-          : Deferred.succeed(answer, { text: finalText }),
+          : Deferred.succeed(answer, { text: finalText, visibleText }),
       ),
       Effect.asVoid,
     );

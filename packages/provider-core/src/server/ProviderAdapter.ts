@@ -445,6 +445,7 @@ export interface ProviderAdapterV2EvaluationToolCall {
   readonly name: string;
   readonly namespace?: string;
   readonly arguments: unknown;
+  readonly visibleText?: string;
 }
 
 export interface ProviderAdapterV2EvaluationInput {
@@ -467,6 +468,7 @@ export interface ProviderAdapterV2EvaluationInput {
 
 export interface ProviderAdapterV2EvaluationResult {
   readonly text: string;
+  readonly visibleText?: string;
 }
 
 export interface ProviderAdapterV2OpenSessionInput {

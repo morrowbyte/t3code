@@ -61,14 +61,14 @@ describe("ProviderEvalSession", () => {
       >();
       const evaluate: Evaluate =
         (input) => Effect.gen(function* () {
-          const result = yield* input.onToolCall(call);
+          const result = yield* input.onToolCall({ ...call, visibleText: "Reading the fixture." });
           yield* Queue.offer(replies, result);
-          return { text: "Read fixture content." };
+          return { text: "Read fixture content.", visibleText: "Reading the fixture.\n\nRead fixture content." };
         });
       return yield* Effect.gen(function* () {
         const service = yield* ProviderEvalSession.ProviderEvalSession;
         const event = yield* service.run(start);
-        expect(event).toMatchObject({ type: "tool_call", ...call });
+        expect(event).toMatchObject({ type: "tool_call", ...call, visibleText: "Reading the fixture." });
         expect(yield* Queue.size(replies)).toBe(0);
         const mismatch = yield* service.run({
           action: "respond", evaluationId: event.evaluationId, callId: "wrong-call", ...reply,
@@ -79,6 +79,7 @@ describe("ProviderEvalSession", () => {
         });
         expect(complete).toEqual({
           type: "complete", evaluationId: event.evaluationId, text: "Read fixture content.",
+          visibleText: "Reading the fixture.\n\nRead fixture content.",
         });
         expect(yield* Queue.take(replies)).toEqual(reply);
       }).pipe(Effect.provide(layer(evaluate)));

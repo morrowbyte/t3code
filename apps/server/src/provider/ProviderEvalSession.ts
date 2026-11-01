@@ -49,11 +49,13 @@ const ToolCall = Schema.Struct({
   name: identifier,
   namespace: Schema.optional(identifier),
   arguments: Schema.Json,
+  visibleText: Schema.optional(Schema.String.check(Schema.isMaxLength(maximumPayloadLength))),
 });
 const Complete = Schema.Struct({
   type: Schema.Literal("complete"),
   evaluationId: identifier,
   text: Schema.String.check(Schema.isMaxLength(maximumPayloadLength)),
+  visibleText: Schema.optional(Schema.String.check(Schema.isMaxLength(maximumPayloadLength))),
 });
 export const ProviderEvalResponse = Schema.Union([
   ToolCall,
@@ -158,7 +160,7 @@ const make = Effect.gen(function* () {
       yield* Deferred.fail(session.first, error);
       yield* Queue.fail(session.events, error);
     } else {
-      const event: Event = { type: "complete", evaluationId: session.id, text: result.value.text };
+      const event: Event = { type: "complete", evaluationId: session.id, ...result.value };
       session.terminal = Exit.succeed(event);
       yield* publish(session, event);
     }
@@ -271,7 +273,7 @@ const make = Effect.gen(function* () {
           }),
         ).pipe(
           Effect.flatMap((result) =>
-            result.text.length > maximumPayloadLength
+            result.text.length + (result.visibleText?.length ?? 0) > maximumPayloadLength
               ? Effect.fail(new ProviderEvalSessionError({ code: "payload_too_large" }))
               : Effect.succeed(result),
           ),

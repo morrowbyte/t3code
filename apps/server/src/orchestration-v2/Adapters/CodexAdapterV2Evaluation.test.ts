@@ -182,12 +182,17 @@ it.effect("routes an isolated native eval tool call only after its callback reso
     const foreign = yield* Queue.take(harness.responses);
     assert.equal(foreign.id, "foreign-rpc");
     assert.deepInclude(foreign.result, { success: false });
+    yield* harness.emit({ method: "item/completed", params: {
+      threadId: "private-eval", turnId: "eval-turn", completedAtMs: 0,
+      item: { type: "agentMessage", id: "commentary", phase: "commentary", text: "Checking the fixture." },
+    } });
     yield* harness.emit({ id: "original-rpc-id", method: "item/tool/call", params: {
       threadId: "private-eval", turnId: "eval-turn", callId: "call-1", namespace: "functions",
       tool: tool.name, arguments: { command: "pwd" },
     } });
     assert.deepEqual(yield* Deferred.await(callback), {
       callId: "call-1", namespace: "functions", name: "boat_command", arguments: { command: "pwd" },
+      visibleText: "Checking the fixture.",
     });
     assert.lengthOf(harness.replies, 1);
     yield* Deferred.succeed(release, output);
@@ -199,7 +204,9 @@ it.effect("routes an isolated native eval tool call only after its callback reso
     yield* harness.emit({ method: "turn/completed", params: {
       threadId: "private-eval", turn: { id: "eval-turn", items: [], status: "completed" },
     } });
-    assert.deepEqual(yield* Fiber.join(evaluation), { text: "Evaluated." });
+    assert.deepEqual(yield* Fiber.join(evaluation), {
+      text: "Evaluated.", visibleText: "Checking the fixture.\n\nEvaluated.",
+    });
     yield* Deferred.await(harness.closed);
     assert.include(harness.methods, "thread/archive");
     assert.include(harness.methods, "thread/unsubscribe");

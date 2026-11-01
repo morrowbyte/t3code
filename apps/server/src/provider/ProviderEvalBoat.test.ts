@@ -46,12 +46,13 @@ const boatState: BoatState = {
   }],
 };
 
-const makeHarness = (mode: "complete" | "foreign" | "interrupt" | "wrong-host") => Effect.gen(function* () {
+const makeHarness = (mode: "complete" | "foreign" | "interrupt" | "wrong-host" | "exit-start" | "exit-respond") => Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const home = yield* fs.makeTempDirectoryScoped({ prefix: "crew-boat-test-" });
   const stdout = yield* Queue.unbounded<Uint8Array>();
   const exit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
   const received = yield* Deferred.make<void>();
+  const providerWaiting = yield* Deferred.make<void>();
   const cleaned = yield* Deferred.make<void>();
   const stopped = yield* Deferred.make<void>();
   const commands: Array<unknown> = [];
@@ -81,7 +82,7 @@ const makeHarness = (mode: "complete" | "foreign" | "interrupt" | "wrong-host") 
           yield* Deferred.succeed(received, undefined);
           if (mode === "foreign") {
             yield* Queue.offer(stdout, new TextEncoder().encode("AUTH_REQUIRED use a token\n"));
-          } else if (mode === "complete") {
+          } else if (mode === "complete" || mode === "exit-respond") {
             yield* send({ type: "request", id: "request-2", request: {
               action: "respond", evaluationId: frame.response.evaluationId, callId: frame.response.callId,
               contentItems: [{ type: "inputText", text: "fixture result" }], success: true,
@@ -105,8 +106,16 @@ const makeHarness = (mode: "complete" | "foreign" | "interrupt" | "wrong-host") 
     openSession: () => Effect.die("unused"),
     evaluate: (request) => Effect.gen(function* () {
       expect(request.modelSelection).toEqual(input.modelSelection);
+      if (mode === "exit-start") {
+        yield* Deferred.succeed(providerWaiting, undefined);
+        return yield* Effect.never;
+      }
       const response = yield* request.onToolCall({ callId: "call-1", name: "exec", arguments: { code: "fixture" } });
       expect(response).toEqual({ contentItems: [{ type: "inputText", text: "fixture result" }], success: true });
+      if (mode === "exit-respond") {
+        yield* Deferred.succeed(providerWaiting, undefined);
+        return yield* Effect.never;
+      }
       return { text: "Read the fixture." };
     }).pipe(Effect.ensuring(Deferred.succeed(cleaned, undefined))),
   }]);
@@ -120,7 +129,10 @@ const makeHarness = (mode: "complete" | "foreign" | "interrupt" | "wrong-host") 
     Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
     Layer.succeed(HostProcess.HomeDirectory, home),
   ]));
-  return { layer, received, cleaned, stopped, replies, commands, fs };
+  const disconnect = Queue.end(stdout).pipe(
+    Effect.andThen(Deferred.succeed(exit, ChildProcessSpawner.ExitCode(255))),
+  );
+  return { layer, received, providerWaiting, disconnect, cleaned, stopped, replies, commands, fs };
 });
 
 it.effect("round-trips SSH request IDs through the native session tool callback", () =>
@@ -158,14 +170,20 @@ it.effect("rejects a foreign SSH protocol and closes its pending native evaluati
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-it.effect("cancels the captured process scope and its evaluation on interruption", () =>
+it.effect.each(["interrupt", "exit-start", "exit-respond"] as const)("cancels the captured process scope and its evaluation on %s", (mode) =>
   Effect.gen(function* () {
-    const h = yield* makeHarness("interrupt");
+    const h = yield* makeHarness(mode);
     yield* Effect.gen(function* () {
       const service = yield* ProviderEvalBoat.ProviderEvalBoat;
-      const fiber = yield* service.run(input).pipe(Effect.forkChild);
-      yield* Deferred.await(h.received);
-      yield* Fiber.interrupt(fiber);
+      const fiber = yield* service.run(input).pipe(Effect.flip, Effect.forkChild);
+      if (mode === "interrupt") {
+        yield* Deferred.await(h.received);
+        yield* Fiber.interrupt(fiber);
+      } else {
+        yield* Deferred.await(h.providerWaiting);
+        yield* h.disconnect;
+        expect((yield* Fiber.join(fiber)).code).toBe("ssh");
+      }
       expect(yield* Deferred.isDone(h.cleaned)).toBe(true);
       expect(yield* Deferred.isDone(h.stopped)).toBe(true);
       expect(h.commands).toHaveLength(1);

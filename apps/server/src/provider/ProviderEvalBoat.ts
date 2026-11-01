@@ -189,7 +189,13 @@ const make = Effect.gen(function* () {
         }
         const response = yield* sessions.run(request.action === "start" ? {
           ...request, modelSelection: checked.modelSelection, clientRequestId: `${jobId}:${frame.id}`,
-        } : request).pipe(Effect.mapError((cause) => fail("provider", cause)));
+        } : request).pipe(
+          Effect.mapError((cause) => fail("provider", cause)),
+          Effect.raceFirst(child.exitCode.pipe(
+            Effect.mapError((cause) => fail("ssh", cause)),
+            Effect.andThen(Effect.fail(fail("ssh"))),
+          )),
+        );
         if (response.type === "tool_call") owned.add(response.evaluationId);
         else {
           if (response.type === "complete") {
