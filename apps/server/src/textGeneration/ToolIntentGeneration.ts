@@ -276,6 +276,7 @@ export const make = Effect.gen(function* () {
         const previous = latest.get(id);
         if (
           previous?.source === source &&
+          toolActivitySourceTitle(previous.input.item) === sourceTitle &&
           previous.input.item.title === input.item.title &&
           previous.input.providerInstanceId === input.providerInstanceId &&
           previous.input.driverKind === input.driverKind

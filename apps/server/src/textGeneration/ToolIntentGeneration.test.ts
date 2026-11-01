@@ -838,5 +838,41 @@ it.effect(
         sourceTitle: "Inspect recording permissions",
         language: "auto",
       });
+
+      yield* observe({
+        ...german,
+        id: TurnItemId.make("label-change-blocker"),
+        input: "# Intent: Hold this worker\nnode inspect.js",
+      });
+      const blocker = yield* Queue.take(requests);
+      const oldLabel = {
+        ...item,
+        id: TurnItemId.make("long-code-label"),
+        toolName: "js",
+        input: { code: "console.log(1);".repeat(250), title: "Cache prüfen" },
+      };
+      const newLabel = { ...oldLabel, input: { ...oldLabel.input, title: "Status prüfen" } };
+      expect(Service.toolIntentInput(oldLabel)).toBe(Service.toolIntentInput(newLabel));
+      const observeLabel = (next: typeof oldLabel) =>
+        service.observe({
+          ...identity,
+          item: next,
+          commitTitle: () => Effect.die("Preserve authored label"),
+          commitPresentation: (presentation) =>
+            presentation ? Queue.offer(committed, presentation).pipe(Effect.asVoid) : Effect.void,
+        });
+      yield* observeLabel(oldLabel);
+      yield* observeLabel(newLabel);
+      yield* Deferred.succeed(blocker.reply, { title: "Diesen Worker halten" });
+      yield* Queue.take(committed);
+      const replacement = yield* Queue.take(requests);
+      expect(replacement.input.message).toContain("Status prüfen");
+      expect(replacement.input.message).not.toContain("Cache prüfen");
+      yield* Deferred.succeed(replacement.reply, { title: "Status prüfen" });
+      expect(yield* Queue.take(committed)).toEqual({
+        title: "Status prüfen",
+        sourceTitle: "Status prüfen",
+        language: "auto",
+      });
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
