@@ -2103,9 +2103,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 driver: CODEX_PROVIDER,
               });
             }
-            const resolvedRuntime = yield* (
-              adapterOptions.resolveRuntime ?? Effect.succeed(undefined)
-            );
+            const resolvedRuntime = yield* adapterOptions.resolveRuntime ?? Effect.void;
             const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-evaluation-" });
             const id = yield* crypto.randomUUIDv4();
             const client = yield* clientFactory.open({

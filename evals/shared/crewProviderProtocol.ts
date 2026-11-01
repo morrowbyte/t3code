@@ -59,7 +59,7 @@ export const decodeCrewFrame = <S extends Schema.Top>(schema: S, line: string) =
   if (line.length > CREW_MAX_LINE_LENGTH) {
     return Effect.fail(new CrewProtocolError({ code: "limit" }));
   }
-  return Schema.decodeUnknownEffect(Schema.fromJsonString(schema))(
+  return Schema.decodeEffect(Schema.fromJsonString(schema))(
     line.slice(CREW_STDIO_PREFIX.length),
   ).pipe(Effect.mapError(() => new CrewProtocolError({ code: "invalid_frame" })));
 };

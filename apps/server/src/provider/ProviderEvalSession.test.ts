@@ -143,10 +143,9 @@ describe("ProviderEvalSession", () => {
     () => {
       const calls = [call, { ...call, callId: "call-2", namespace: "fixture" }];
       const evaluate: Evaluate = (input) =>
-        Effect.all(
-          calls.map((entry) => input.onToolCall(entry)),
-          { concurrency: "unbounded" },
-        ).pipe(Effect.as({ text: "both replied" }));
+        Effect.forEach(calls, (entry) => input.onToolCall(entry), {
+          concurrency: "unbounded",
+        }).pipe(Effect.as({ text: "both replied" }));
       return Effect.gen(function* () {
         const service = yield* ProviderEvalSession.ProviderEvalSession;
         const first = yield* service.run(start);

@@ -41,6 +41,8 @@ const Respond = Schema.Struct({
 const Cancel = Schema.Struct({ action: Schema.Literal("cancel"), evaluationId: identifier });
 export const ProviderEvalRequest = Schema.Union([Start, Respond, Cancel]);
 export type ProviderEvalRequest = typeof ProviderEvalRequest.Type;
+const encodeRequest = Schema.encodeSync(Schema.fromJsonString(ProviderEvalRequest));
+const encodeOwner = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
 
 const ToolCall = Schema.Struct({
   type: Schema.Literal("tool_call"),
@@ -52,6 +54,7 @@ const ToolCall = Schema.Struct({
   visibleText: Schema.optional(Schema.String.check(Schema.isMaxLength(maximumPayloadLength))),
 });
 const decodeToolCall = Schema.decodeUnknownEffect(ToolCall);
+const encodeToolCall = Schema.encodeSync(Schema.fromJsonString(ToolCall));
 const Complete = Schema.Struct({
   type: Schema.Literal("complete"),
   evaluationId: identifier,
@@ -253,7 +256,7 @@ const make = Effect.gen(function* () {
                   session.seen.has(event.callId) ||
                   session.seen.size >= 128 ||
                   session.pending.size >= 32 ||
-                  JSON.stringify(event).length > maximumPayloadLength
+                  encodeToolCall(event).length > maximumPayloadLength
                 ) {
                   return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                     driver: adapter.driver,
@@ -284,10 +287,10 @@ const make = Effect.gen(function* () {
             onToolCall,
           }),
         ).pipe(
-          Effect.flatMap((result) =>
-            result.text.length + (result.visibleText?.length ?? 0) > maximumPayloadLength
-              ? Effect.fail(new ProviderEvalSessionError({ code: "payload_too_large" }))
-              : Effect.succeed(result),
+          Effect.filterOrFail(
+            (result) =>
+              result.text.length + (result.visibleText?.length ?? 0) <= maximumPayloadLength,
+            () => new ProviderEvalSessionError({ code: "payload_too_large" }),
           ),
           Effect.mapError(
             (cause) => new ProviderEvalSessionError({ code: "provider_failed", cause }),
@@ -297,9 +300,11 @@ const make = Effect.gen(function* () {
           Effect.interruptible,
           Effect.forkIn(session.scope),
         );
-        yield* Effect.sleep(sessionLifetime).pipe(
-          Effect.andThen(dispose(session, "expired")),
-          Effect.raceFirst(Deferred.await(session.closed)),
+        yield* Deferred.await(session.closed).pipe(
+          Effect.timeoutOrElse({
+            duration: sessionLifetime,
+            orElse: () => dispose(session, "expired"),
+          }),
           Effect.interruptible,
           Effect.forkIn(serviceScope),
         );
@@ -339,13 +344,13 @@ const make = Effect.gen(function* () {
       const scope = yield* McpInvocationContext.requireThreadMcpCapability("orchestration").pipe(
         Effect.mapError((cause) => new ProviderEvalSessionError({ code: "unavailable", cause })),
       );
-      const owner = JSON.stringify([
+      const owner = encodeOwner([
         scope.environmentId,
         scope.thread.threadId,
         scope.thread.providerSessionId,
         scope.thread.providerInstanceId,
       ]);
-      if (JSON.stringify(request).length > maximumPayloadLength)
+      if (encodeRequest(request).length > maximumPayloadLength)
         return yield* new ProviderEvalSessionError({ code: "payload_too_large" });
       if (request.action === "start") return yield* start(owner, request);
       const session = sessions.get(request.evaluationId);

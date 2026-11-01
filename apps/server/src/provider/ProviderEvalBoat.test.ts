@@ -11,6 +11,7 @@ import {
   type BoatState,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import type { Done } from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -87,7 +88,7 @@ const makeHarness = (
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const home = yield* fs.makeTempDirectoryScoped({ prefix: "crew-boat-test-" });
-    const stdout = yield* Queue.unbounded<Uint8Array>();
+    const stdout = yield* Queue.unbounded<Uint8Array, Done>();
     const exit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
     const received = yield* Deferred.make<void>();
     const providerWaiting = yield* Deferred.make<void>();

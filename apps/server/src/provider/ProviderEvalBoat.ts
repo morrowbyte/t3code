@@ -2,6 +2,7 @@ import { DeviceHostId, ModelSelection, ProjectId, TrimmedNonEmptyString } from "
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { baseSshArgs, buildSshHostSpecEffect, resolveSshCommand } from "@t3tools/ssh/command";
 import * as Context from "effect/Context";
+import type { Done } from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -37,6 +38,7 @@ export const ProviderEvalBoatInput = Schema.Struct({
 });
 export type ProviderEvalBoatInput = typeof ProviderEvalBoatInput.Type;
 const decodeProviderEvalBoatInput = Schema.decodeUnknownEffect(ProviderEvalBoatInput);
+const encodeCaptureManifest = Schema.encodeSync(Schema.fromJsonString(Schema.Json));
 
 export const ProviderEvalBoatResult = Schema.Struct({
   jobId: Schema.String,
@@ -71,6 +73,8 @@ export class ProviderEvalBoatError extends Schema.TaggedError<ProviderEvalBoatEr
     return `Boat evaluation failed (${this.code}). The registered Boat and Crew stdio runner are required.`;
   }
 }
+
+const isProviderEvalBoatError = Schema.is(ProviderEvalBoatError);
 
 export class ProviderEvalBoat extends Context.Service<
   ProviderEvalBoat,
@@ -179,7 +183,7 @@ const make = Effect.gen(function* () {
         yield* fs
           .writeFileString(
             path.join(captureDirectory, "manifest.json"),
-            JSON.stringify({
+            encodeCaptureManifest({
               jobId,
               purpose: "Bounded private Boat eval SSH captures",
               maxBytesPerStream: CREW_MAX_CAPTURE_BYTES,
@@ -204,7 +208,7 @@ const make = Effect.gen(function* () {
             if (written > CREW_MAX_CAPTURE_BYTES) return yield* fail("output_limit");
           });
         };
-        const replies = yield* Queue.bounded<string>(4);
+        const replies = yield* Queue.bounded<string, Done>(4);
         const owned = new Set<string>();
         yield* Effect.addFinalizer(() =>
           Effect.forEach(
@@ -343,9 +347,7 @@ const make = Effect.gen(function* () {
         };
       }).pipe(
         Effect.scoped,
-        Effect.mapError((cause) =>
-          cause instanceof ProviderEvalBoatError ? cause : fail("ssh", cause),
-        ),
+        Effect.mapError((cause) => (isProviderEvalBoatError(cause) ? cause : fail("ssh", cause))),
         Effect.timeoutOrElse({
           duration: "16 minutes",
           orElse: () => Effect.fail(fail("timeout")),

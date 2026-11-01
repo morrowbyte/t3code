@@ -4,6 +4,7 @@ import { assert, it } from "@effect/vitest";
 import { CodexSettings } from "@t3tools/contracts";
 import * as CodexClient from "effect-codex-app-server/client";
 import * as Crypto from "effect/Crypto";
+import type { Done } from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -52,7 +53,7 @@ const output = {
 const makeHarness = Effect.fn("CodexEvaluationTest.makeHarness")(function* (
   isolation: "empty" | "inherited" = "empty",
 ) {
-  const inbound = yield* Queue.unbounded<Uint8Array>();
+  const inbound = yield* Queue.unbounded<Uint8Array, Done>();
   const responses = yield* Queue.unbounded<typeof Frame.Type>();
   const started = yield* Deferred.make<void>();
   const closed = yield* Deferred.make<void>();
