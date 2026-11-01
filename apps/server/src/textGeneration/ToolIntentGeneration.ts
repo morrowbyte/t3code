@@ -253,6 +253,7 @@ export const make = Effect.gen(function* () {
         const after = pending.after;
         const through = pending.through;
         const next = yield* pending.readNext(after, through).pipe(
+          Effect.mapError((cause) => new Error("Stored title work read failed", { cause })),
           Effect.retry({ times: 1 }),
           Effect.catchCause(() =>
             Effect.logWarning("Stored title work could not be read", {
