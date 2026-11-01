@@ -1,4 +1,4 @@
-import { ModelSelection, TrimmedNonEmptyString } from "@t3tools/contracts";
+import { ModelSelection, type ThreadId, TrimmedNonEmptyString } from "@t3tools/contracts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -13,6 +13,7 @@ import * as Semaphore from "effect/Semaphore";
 
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 
 const identifier = TrimmedNonEmptyString.check(Schema.isMaxLength(256));
 const text = Schema.String.check(Schema.isMaxLength(65_536));
@@ -138,6 +139,7 @@ export class ProviderEvalSession extends Context.Service<
 
 const make = Effect.gen(function* () {
   const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
+  const threadManagement = yield* ThreadManagement.ThreadManagementService;
   const crypto = yield* Crypto.Crypto;
   const serviceScope = yield* Scope.Scope;
   const admission = yield* Semaphore.make(1);
@@ -191,6 +193,7 @@ const make = Effect.gen(function* () {
 
   const start = Effect.fn("ProviderEvalSession.start")(function* (
     owner: string,
+    callerThreadId: ThreadId,
     request: typeof Start.Type,
   ) {
     const session = yield* admission.withPermits(1)(
@@ -200,6 +203,22 @@ const make = Effect.gen(function* () {
             (entry) => entry.owner === owner && entry.clientRequestId === request.clientRequestId,
           );
           if (previous) return previous;
+        }
+        const caller = yield* threadManagement
+          .getThreadShell(callerThreadId)
+          .pipe(
+            Effect.mapError(
+              (cause) => new ProviderEvalSessionError({ code: "unavailable", cause }),
+            ),
+          );
+        if (
+          !caller ||
+          !(yield* threadManagement.isProviderInstanceEnabledForProject({
+            projectId: caller.projectId,
+            instanceId: request.modelSelection.instanceId,
+          }))
+        ) {
+          return yield* new ProviderEvalSessionError({ code: "unavailable" });
         }
         if (sessions.size >= 32) {
           const retired = Array.from(sessions.values()).find(
@@ -352,7 +371,7 @@ const make = Effect.gen(function* () {
       ]);
       if (encodeRequest(request).length > maximumPayloadLength)
         return yield* new ProviderEvalSessionError({ code: "payload_too_large" });
-      if (request.action === "start") return yield* start(owner, request);
+      if (request.action === "start") return yield* start(owner, scope.thread.threadId, request);
       const session = sessions.get(request.evaluationId);
       if (!session || session.owner !== owner || session.closing)
         return yield* new ProviderEvalSessionError({ code: "unavailable" });

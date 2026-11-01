@@ -28,7 +28,9 @@ import {
 } from "../../../../evals/shared/crewProviderProtocol.ts";
 import * as BoatService from "../boat/BoatService.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
+import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ProviderEvalBoat from "./ProviderEvalBoat.ts";
 import * as ProviderEvalSession from "./ProviderEvalSession.ts";
@@ -213,7 +215,15 @@ const makeHarness = (
     ]);
     const layer = ProviderEvalBoat.layer.pipe(
       Layer.provide([
-        ProviderEvalSession.layer.pipe(Layer.provide(registry)),
+        ProviderEvalSession.layer.pipe(
+          Layer.provide(registry),
+          Layer.provide(
+            Layer.mock(ThreadManagement.ThreadManagementService)({
+              getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
+              isProviderInstanceEnabledForProject: () => Effect.succeed(true),
+            }),
+          ),
+        ),
         Layer.mock(BoatService.BoatService)({ read: () => Effect.succeed(boatState) }),
         ServerSettings.ServerSettingsService.layerTest({
           deviceHosts: [

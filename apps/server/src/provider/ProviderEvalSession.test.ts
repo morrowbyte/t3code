@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
   EnvironmentId,
+  ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
@@ -15,7 +16,9 @@ import * as Queue from "effect/Queue";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
+import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderEvalSession from "./ProviderEvalSession.ts";
 
 const owner: McpInvocationContext.McpInvocationScope = {
@@ -42,7 +45,15 @@ const start: ProviderEvalSession.ProviderEvalRequest = {
 
 type Evaluate = NonNullable<ProviderAdapter.ProviderAdapterV2["Service"]["evaluate"]>;
 
-const layer = (evaluate?: Evaluate) =>
+const layer = (
+  evaluate?: Evaluate,
+  threadAccess: Partial<
+    Pick<
+      ThreadManagement.ThreadManagementServiceShape,
+      "getThreadShell" | "isProviderInstanceEnabledForProject"
+    >
+  > = {},
+) =>
   ProviderEvalSession.layer.pipe(
     Layer.provide(
       ProviderAdapterRegistry.layerFromAdapters([
@@ -56,6 +67,13 @@ const layer = (evaluate?: Evaluate) =>
         },
       ]),
     ),
+    Layer.provide(
+      Layer.mock(ThreadManagement.ThreadManagementService)({
+        getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
+        isProviderInstanceEnabledForProject: () => Effect.succeed(true),
+        ...threadAccess,
+      }),
+    ),
     Layer.provide(NodeCrypto.layer),
   );
 
@@ -66,6 +84,87 @@ const reply = {
 };
 
 describe("ProviderEvalSession", () => {
+  it.effect("rejects new evaluations disabled in the caller's project", () => {
+    const allowedThreadId = ThreadId.make("allowed-thread");
+    const allowedProjectId = ProjectId.make("allowed-project");
+    const disabledProjectId = ProjectId.make("disabled-project");
+    let starts = 0;
+    const evaluate: Evaluate = () =>
+      Effect.sync(() => {
+        starts++;
+        return { text: "done" };
+      });
+    return Effect.gen(function* () {
+      const service = yield* ProviderEvalSession.ProviderEvalSession;
+      const denied = yield* service.run(start).pipe(Effect.flip);
+      expect(denied.code).toBe("unavailable");
+      expect(starts).toBe(0);
+      const allowed = yield* service.run(start).pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, {
+          ...owner,
+          thread: { ...owner.thread!, threadId: allowedThreadId },
+        }),
+      );
+      expect(allowed).toMatchObject({ type: "complete", text: "done" });
+      expect(starts).toBe(1);
+    }).pipe(
+      Effect.provide(
+        layer(evaluate, {
+          getThreadShell: (threadId) =>
+            Effect.succeed({
+              ...liveThreadShell(threadId),
+              projectId: threadId === allowedThreadId ? allowedProjectId : disabledProjectId,
+            }),
+          isProviderInstanceEnabledForProject: ({ projectId, instanceId }) =>
+            Effect.succeed(
+              projectId === allowedProjectId && instanceId === start.modelSelection.instanceId,
+            ),
+        }),
+      ),
+      Effect.provideService(McpInvocationContext.McpInvocationContext, owner),
+    );
+  });
+
+  it.effect("keeps receipts, replies and cancellation usable after a provider is disabled", () => {
+    let enabled = true;
+    let starts = 0;
+    const evaluate: Evaluate = (input) =>
+      Effect.gen(function* () {
+        starts++;
+        if (starts === 1) yield* input.onToolCall(call);
+        return { text: "done" };
+      });
+    return Effect.gen(function* () {
+      const service = yield* ProviderEvalSession.ProviderEvalSession;
+      const event = yield* service.run(start);
+      enabled = false;
+      expect(yield* service.run(start)).toEqual(event);
+      expect(
+        yield* service.run({
+          action: "respond",
+          evaluationId: event.evaluationId,
+          callId: call.callId,
+          ...reply,
+        }),
+      ).toMatchObject({ type: "complete", text: "done" });
+      const denied = yield* service
+        .run({ ...start, clientRequestId: "new-request" })
+        .pipe(Effect.flip);
+      expect(denied.code).toBe("unavailable");
+      expect(yield* service.run({ action: "cancel", evaluationId: event.evaluationId })).toEqual({
+        type: "cancelled",
+        evaluationId: event.evaluationId,
+      });
+    }).pipe(
+      Effect.provide(
+        layer(evaluate, {
+          isProviderInstanceEnabledForProject: () => Effect.sync(() => enabled),
+        }),
+      ),
+      Effect.provideService(McpInvocationContext.McpInvocationContext, owner),
+    );
+  });
+
   it.effect("waits for the exact tool call reply and returns final text", () => {
     return Effect.gen(function* () {
       const replies =
