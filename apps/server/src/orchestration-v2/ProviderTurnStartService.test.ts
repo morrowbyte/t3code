@@ -1493,6 +1493,23 @@ effectIt.effect("keeps healthy ordinary compute local without creating a Boat", 
   }),
 );
 
+effectIt.effect("keeps CPU-only pressure local when Boat is disabled for the project", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Read a small source file",
+      compute: { resources: pressuredHostResources, boat: { ...computeBoat(), projects: {} } },
+    });
+    yield* harness.start;
+    expect(harness.operateBoat).not.toHaveBeenCalled();
+    expect(harness.startTurn).toHaveBeenCalledOnce();
+    const text = harness.startTurn.mock.calls[0]?.[0].message.text;
+    expect(text).toContain("Compute placement: local.");
+    expect(text).toContain("CPU usage is high");
+    expect(text).not.toContain("host is healthy");
+    expect(text).toContain("Do not use boat_environment");
+  }),
+);
+
 effectIt.effect(
   "waits for the selected compute request before preparing and starting the provider",
   () =>

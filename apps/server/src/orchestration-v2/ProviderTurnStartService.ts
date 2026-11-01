@@ -127,6 +127,8 @@ class ComputePlacementError extends Schema.TaggedError<ComputePlacementError>()(
   { reason: Schema.String },
 ) {
   override get message(): string {
+    if (this.reason === "boat_disabled")
+      return "This turn requires remote compute, but Boat is not enabled for this project. Enable Boat for this project or resolve the local resource constraint before retrying.";
     return `Cannot start provider work: compute placement is blocked (${this.reason}).`;
   }
 }
@@ -919,6 +921,8 @@ export const layer: Layer.Layer<
           return { thread, workspace, projectRoot };
         },
       );
+      const localComputeContext = (cpuPressure: boolean) =>
+        `Compute placement: local. ${cpuPressure ? "CPU usage is high, but memory is sufficient and Boat is not enabled for this project." : "The host is healthy."} Run this turn's commands, including dependency installation, builds, tests and dev servers, with the normal local shell tools. Do not use boat_environment for this local execution or allocate a Boat for it. Existing explicit user or project execution constraints, permissions and storage guards still apply.`;
       const prepareCompute = Effect.fn("ProviderTurnStartService.prepareCompute")(function* () {
         const source = yield* checkComputeSource("starting");
         if (source === undefined) return undefined;
@@ -939,9 +943,7 @@ export const layer: Layer.Layer<
         };
         let placement = chooseComputePlacement({ ...placementInput, boat: null });
         if (placement.target === "local") {
-          return (yield* boat.isEnabled(thread.projectId))
-            ? "Compute placement: local. The host is healthy. Run this turn's commands, including dependency installation, builds, tests and dev servers, with the normal local shell tools. Do not use boat_environment for this local execution or allocate a Boat for it. Existing explicit user or project execution constraints, permissions and storage guards still apply."
-            : "";
+          return (yield* boat.isEnabled(thread.projectId)) ? localComputeContext(false) : "";
         }
         if (placement.target !== "blocked" || placement.reason !== "boat_unavailable")
           return yield* new ComputePlacementError({ reason: placement.reason });
@@ -997,6 +999,7 @@ export const layer: Layer.Layer<
             lineage = parent.lineage;
           }
         }
+        if (placement.target === "local") return localComputeContext(true);
         if (placement.target !== "boat")
           return yield* new ComputePlacementError({ reason: placement.reason });
         if ((yield* checkComputeSource("starting")) === undefined) return undefined;

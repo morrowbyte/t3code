@@ -20,7 +20,7 @@ export interface ComputePlacementInput {
 }
 
 export type ComputePlacement =
-  | { readonly target: "local"; readonly reason: "healthy" }
+  | { readonly target: "local"; readonly reason: "healthy" | "boat_disabled" }
   | {
       readonly target: "boat";
       readonly requestId: string;
@@ -93,15 +93,16 @@ export function chooseComputePlacement(input: ComputePlacementInput): ComputePla
       return { target: "blocked", reason: "resources_unavailable" };
     }
     if (!validResources(resources)) return { target: "blocked", reason: "resources_invalid" };
-    if (resources.cpuUtilization >= 0.9) reason = "cpu_pressure";
-    else if (
-      resources.availableMemoryBytes <= Math.max(2 * GiB, resources.totalMemoryBytes * 0.1)
-    ) {
+    if (resources.availableMemoryBytes <= Math.max(2 * GiB, resources.totalMemoryBytes * 0.1)) {
       reason = "memory_pressure";
-    } else return { target: "local", reason: "healthy" };
+    } else if (resources.cpuUtilization >= 0.9) reason = "cpu_pressure";
+    else return { target: "local", reason: "healthy" };
   }
   const state = input.boat;
   if (state === null) return { target: "blocked", reason: "boat_unavailable" };
+  if (reason === "cpu_pressure" && !state.projects[input.projectId]?.enabled) {
+    return { target: "local", reason: "boat_disabled" };
+  }
   if (!state.configured) return { target: "blocked", reason: "boat_unconfigured" };
   if (!state.projects[input.projectId]?.enabled) {
     return { target: "blocked", reason: "boat_disabled" };

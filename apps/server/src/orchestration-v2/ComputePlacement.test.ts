@@ -120,6 +120,28 @@ describe("chooseComputePlacement", () => {
     });
   });
 
+  it.each([{}, { [projectId]: DEFAULT_BOAT_PROJECT }])(
+    "keeps CPU-only pressure local when the project has not enabled Boat: %j",
+    (projects) => {
+      expect(
+        chooseComputePlacement(
+          input({
+            resources: { ...healthy, cpuUtilization: 1 },
+            boat: boat({ projects }),
+          }),
+        ),
+      ).toEqual({ target: "local", reason: "boat_disabled" });
+      expect(
+        chooseComputePlacement(
+          input({
+            resources: { ...healthy, cpuUtilization: 1, availableMemoryBytes: GiB },
+            boat: boat({ projects }),
+          }),
+        ),
+      ).toEqual({ target: "blocked", reason: "boat_disabled" });
+    },
+  );
+
   it.each([
     [0.899, "local"],
     [0.9, "boat"],
