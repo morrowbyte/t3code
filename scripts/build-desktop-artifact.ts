@@ -4000,7 +4000,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
           desktopDependencies: resolvedDesktopRuntimeDependencies,
           arch: options.arch,
           fffNodeVersion: serverPackageJson.dependencies["@ff-labs/fff-node"],
-          stagedCua,
+          ...(stagedCua ? { stagedCua } : {}),
         });
   const stagePatchedDependencies = createStagePatchedDependencies(
     workspacePatchedDependencies,
