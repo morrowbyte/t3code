@@ -297,6 +297,18 @@ export function AppearanceSettingsPanel() {
         />
         <ThreadDetailsItemsRow />
         <SettingsRow
+          {...searchableSetting("thinking-inline")}
+          control={
+            <Switch
+              checked={settings.showThinkingInline}
+              onCheckedChange={(checked) =>
+                updateSettings({ showThinkingInline: Boolean(checked) })
+              }
+              aria-label="Thinking direkt anzeigen"
+            />
+          }
+        />
+        <SettingsRow
           {...searchableSetting("effort-display")}
           description="Show reasoning effort in the composer as its name, such as High, or as bars."
           resetAction={

@@ -370,6 +370,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["reasoning effort thinking bars graph word label level composer"],
   },
   {
+    id: "thinking-inline",
+    title: "Thinking direkt anzeigen",
+    to: "/settings/appearance",
+    searchTerms: [
+      "thinking reasoning thoughts inline expanded direct Gedanken direkt anzeigen aufklappen",
+    ],
+  },
+  {
     id: "math-rendering",
     title: "Render math",
     to: "/settings/appearance",
