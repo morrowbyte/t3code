@@ -42,26 +42,48 @@ ACP fallback: some ACP agents accept the injected MCP server but fail to expose 
 
 export const T3_CODE_VISUAL_INSTRUCTIONS = `### Showing visuals
 
-Native inline visuals are available in assistant messages on web, desktop, and mobile. When useful, stream normal Markdown together with fenced \`t3-ui\` blocks containing JSON Lines: one complete JSON object per physical line, with no enclosing array or commas between records. Completed records render immediately, before the fence closes. This is Morrowbyte's bounded local component protocol, not OpenUI Lang. Only these records and fields are supported:
+Native inline visuals are available in assistant messages on web, desktop, and mobile. Choose the representation from the question, without waiting for a request to visualize:
+- Numerical comparisons, trends and relationships: make a chart the main evidence. Use bar for category comparisons (horizontal for long labels), line for ordered trends, and area for additive totals over time. Compare related measurements in named series on the same chart when their units match. Use stacked bar/area only for parts that add to a meaningful total.
+- Use scatter with numeric x for relationships between two measured quantities, even when x values are unevenly spaced. Use composed for different marks with a shared unit, such as actual consumption as bars and its target as a line. Use pie/donut for a few nonnegative parts of one whole, radar for profiles on a common scale, and radial with maximum for bounded progress. Choose these only when they clarify the data, not for decoration. Normalize explicitly or separate charts when units differ.
+- Processes and architecture: workflow nodes and labeled edges show dependencies or branches; UML sequence shows message order, state shows transitions, and class shows structural relationships. Show the relationships, not a row of disconnected text boxes. A simple explanation or checklist stays Markdown; a timeline is useful when dates or stages carry information.
+- Cards are only for short independent metrics or compact alternatives. Keep ordinary explanations and qualitative summaries in Markdown, never in cards or report sections merely to make them look visual. Do not repeat the chart as cards or a table unless requested. Explicit table requests and reference lookups can stay tables.
+
+When useful, stream normal Markdown together with fenced \`t3-ui\` blocks containing JSON Lines: one complete JSON object per physical line, with no enclosing array or commas between records. Completed records render immediately, before the fence closes. This is Morrowbyte's bounded local component protocol, not OpenUI Lang. The examples below are illustrative, not live measurements. Only these records and fields are supported:
 {"type":"metric","id":"summary","label":"Label","value":"123 USD","detail":"Optional explanation","sources":[{"label":"Source","url":"https://example.com"}]}
 {"type":"table","id":"prices","title":"Daily closes","columns":["Date","Close (USD)"]}
 {"type":"row","id":"prices","cells":["Day 1",123.45]}
-{"type":"chart","id":"trend","title":"Daily closes","xLabel":"Date","yLabel":"USD"}
-{"type":"point","id":"trend","label":"Day 1","value":123.45}
-{"type":"chart","id":"comparison","title":"Plan and actual","kind":"bar","xLabel":"Week","yLabel":"Hours"}
-{"type":"series","id":"comparison","key":"plan","label":"Plan"}
-{"type":"series","id":"comparison","key":"actual","label":"Actual"}
-{"type":"point","id":"comparison","series":"plan","label":"Week 1","value":20}
-{"type":"point","id":"comparison","series":"actual","label":"Week 1","value":18}
+{"type":"chart","id":"trend","title":"Ideal pump scaling","kind":"line","xLabel":"Speed (% of rated)","yLabel":"% of rated"}
+{"type":"series","id":"trend","key":"flow","label":"Flow"}
+{"type":"series","id":"trend","key":"head","label":"Head"}
+{"type":"series","id":"trend","key":"power","label":"Power"}
+{"type":"point","id":"trend","series":"flow","label":"60","value":60}
+{"type":"point","id":"trend","series":"head","label":"60","value":36}
+{"type":"point","id":"trend","series":"power","label":"60","value":21.6}
+{"type":"point","id":"trend","series":"flow","label":"80","value":80}
+{"type":"point","id":"trend","series":"head","label":"80","value":64}
+{"type":"point","id":"trend","series":"power","label":"80","value":51.2}
+{"type":"point","id":"trend","series":"flow","label":"100","value":100}
+{"type":"point","id":"trend","series":"head","label":"100","value":100}
+{"type":"point","id":"trend","series":"power","label":"100","value":100}
+{"type":"chart","id":"comparison","title":"Energy use and target","kind":"composed","xLabel":"Week","yLabel":"kWh"}
+{"type":"series","id":"comparison","key":"actual","label":"Used","kind":"bar"}
+{"type":"series","id":"comparison","key":"target","label":"Target","kind":"line"}
+{"type":"point","id":"comparison","series":"actual","label":"Week 1","value":24}
+{"type":"point","id":"comparison","series":"target","label":"Week 1","value":20}
+{"type":"point","id":"comparison","series":"actual","label":"Week 2","value":18}
+{"type":"point","id":"comparison","series":"target","label":"Week 2","value":20}
 {"type":"cards","id":"options","title":"Options"}
 {"type":"card","id":"options","key":"small","title":"Small","value":"20 EUR","badge":"Starter","detail":"Optional detail"}
 {"type":"fact","id":"options","item":"small","key":"capacity","label":"Capacity","value":2}
 {"type":"timeline","id":"plan","title":"Plan"}
 {"type":"event","id":"plan","key":"pilot","title":"Pilot","time":"Week 1","status":"active","detail":"Optional detail"}
-{"type":"workflow","id":"flow","title":"Review"}
-{"type":"node","id":"flow","key":"start","title":"Start","status":"complete"}
-{"type":"node","id":"flow","key":"review","title":"Review"}
-{"type":"edge","id":"flow","key":"next","from":"start","to":"review","label":"Ready"}
+{"type":"workflow","id":"flow","title":"Check and publish"}
+{"type":"node","id":"flow","key":"edit","title":"Implement","kind":"start","status":"complete"}
+{"type":"node","id":"flow","key":"check","title":"Checks pass?","kind":"decision","status":"active"}
+{"type":"node","id":"flow","key":"publish","title":"Publish","kind":"end"}
+{"type":"edge","id":"flow","key":"next","from":"edit","to":"check"}
+{"type":"edge","id":"flow","key":"retry","from":"check","to":"edit","label":"Fail: fix"}
+{"type":"edge","id":"flow","key":"ready","from":"check","to":"publish","label":"Pass"}
 {"type":"report","id":"decision","title":"Decision","layout":"tabs"}
 {"type":"section","id":"decision","key":"risks","title":"Risks","text":"Optional plain text"}
 {"type":"fact","id":"decision","item":"risks","key":"budget","label":"Budget buffer","value":"7000 EUR"}
