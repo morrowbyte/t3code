@@ -197,7 +197,7 @@ function makeDeterministicAdapter(input: {
               ]);
               const eventTime = yield* DateTime.now;
               const providerTurnId = ProviderTurnId.make(
-                `provider-turn:${input.instanceId}:${turnInput.threadId}:${turnInput.runOrdinal}`,
+                `provider-turn:${input.instanceId}:${turnInput.threadId}:${turnInput.attemptId}:${turnInput.providerTurnOrdinal}`,
               );
               runOrdinals.set(providerTurnId, turnInput.runOrdinal);
               turnInputs.set(providerTurnId, turnInput);
@@ -212,7 +212,7 @@ function makeDeterministicAdapter(input: {
                     runAttemptId: turnInput.attemptId,
                     nativeTurnRef: {
                       driver: input.driver,
-                      nativeId: `native-turn:${turnInput.threadId}:${turnInput.runOrdinal}`,
+                      nativeId: `native-turn:${turnInput.threadId}:${turnInput.attemptId}:${turnInput.providerTurnOrdinal}`,
                       strength: "strong",
                     },
                     ordinal: turnInput.providerTurnOrdinal,
@@ -240,7 +240,7 @@ function makeDeterministicAdapter(input: {
                     runAttemptId: turnInput.attemptId,
                     nativeTurnRef: {
                       driver: input.driver,
-                      nativeId: `native-turn:${turnInput.threadId}:${turnInput.runOrdinal}`,
+                      nativeId: `native-turn:${turnInput.threadId}:${turnInput.attemptId}:${turnInput.providerTurnOrdinal}`,
                       strength: "strong",
                     },
                     ordinal: turnInput.providerTurnOrdinal,
@@ -311,7 +311,7 @@ function makeDeterministicAdapter(input: {
                       runAttemptId: turnInput.attemptId,
                       nativeTurnRef: {
                         driver: input.driver,
-                        nativeId: `native-turn:${turnInput.threadId}:${turnInput.runOrdinal}`,
+                        nativeId: `native-turn:${turnInput.threadId}:${turnInput.attemptId}:${turnInput.providerTurnOrdinal}`,
                         strength: "strong",
                       },
                       ordinal: turnInput.providerTurnOrdinal,
