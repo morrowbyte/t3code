@@ -29,6 +29,7 @@ import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import * as RuntimeLayer from "./runtimeLayer.ts";
+import { layerCompute } from "./ProviderTurnStartService.testkit.ts";
 import * as TestUsageService from "./testkit/TestUsageService.ts";
 
 const projectId = ProjectId.make("project:upgrade");
@@ -141,6 +142,7 @@ const layerRuntime = (dbPath: string) => {
         Layer.provide(VcsProcess.layer),
         Layer.provide(layerServerConfig),
         Layer.provide(layerPlatform),
+        Layer.provide(layerCompute),
       ),
     ),
   );
@@ -183,6 +185,7 @@ const layerRuntime = (dbPath: string) => {
       }),
     ),
     Layer.provide(layerPlatform),
+    Layer.provide(layerCompute),
   );
 };
 

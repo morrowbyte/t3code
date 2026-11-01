@@ -1,3 +1,4 @@
+import * as NodeOS from "node:os";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
@@ -5,6 +6,8 @@ import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   CommandId,
   linkOriginIsFenced,
+  isCompactionCommandMessage,
+  parseGoalCommand,
   type ChatAttachment,
   MessageId,
   type ModelSelection,
@@ -62,6 +65,14 @@ import * as ThreadManagement from "./ThreadManagementService.ts";
 import { isSnoozed } from "./ThreadSettlementService.ts";
 import * as DateTime from "effect/DateTime";
 import { BoatService } from "../boat/BoatService.ts";
+import { HostResources } from "../resourceTelemetry/HostResources.ts";
+import { StoragePressure } from "../storagePressure.ts";
+import { ServerConfig } from "../config.ts";
+import {
+  chooseComputePlacement,
+  computeRequestId,
+  type ComputePlacement,
+} from "./ComputePlacement.ts";
 
 export type ThreadLaunchWorkspaceStrategy =
   | { readonly type: "root"; readonly branch?: string | undefined }
@@ -241,6 +252,9 @@ const make = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
   const boat = yield* BoatService;
+  const resources = yield* HostResources;
+  const storage = yield* StoragePressure;
+  const serverConfig = yield* ServerConfig;
   const crypto = yield* Crypto.Crypto;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -401,6 +415,59 @@ const make = Effect.gen(function* () {
             );
         },
       );
+
+      const preparingThread = yield* threads
+        .getThreadShell(threadId)
+        .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
+      if (preparingThread === null) {
+        return yield* mapError(input, "update-thread", threadId)("Thread no longer exists.");
+      }
+      const fenced =
+        preparingThread.linkOrigin !== undefined && linkOriginIsFenced(preparingThread.linkOrigin);
+      const provider = (yield* providerRegistry.getProviders).find(
+        (entry) => entry.instanceId === preparingThread.modelSelection.instanceId,
+      );
+      const controlCommand =
+        initialMessage !== undefined &&
+        (isCompactionCommandMessage({ ...initialMessage, role: "user" }) ||
+          ((provider?.driver === "codex" || provider?.driver === "claudeAgent") &&
+            parseGoalCommand(initialMessage) !== null) ||
+          ((provider?.driver === "cursor" || provider?.driver === "antigravity") &&
+            initialMessage.attachments.length === 0 &&
+            initialMessage.text.trim() === "/logout"));
+      let placement: ComputePlacement = { target: "local", reason: "healthy" };
+      if (!controlCommand) {
+        const forceBoat =
+          !fenced && threadId.startsWith("work-owner:") && (yield* boat.isEnabled(input.projectId));
+        const requestId = computeRequestId(input.projectId, threadId);
+        const storageFailure = yield* Effect.promise(() =>
+          storage.check([serverConfig.stateDir, project.workspaceRoot]),
+        );
+        const placementInput = {
+          projectId: input.projectId,
+          ownerThreadId: threadId,
+          requestId,
+          resources: yield* resources.read,
+          storageFailure,
+          forceBoat,
+        };
+        placement = chooseComputePlacement({ ...placementInput, boat: null });
+        if (placement.target === "blocked" && placement.reason === "boat_unavailable" && !fenced) {
+          const state = yield* boat
+            .read(input.projectId)
+            .pipe(Effect.mapError(mapError(input, "run-setup-script", threadId)));
+          placement = chooseComputePlacement({ ...placementInput, boat: state });
+        }
+        if (placement.target === "blocked") {
+          return yield* mapError(
+            input,
+            "run-setup-script",
+            threadId,
+          )(
+            `Compute placement blocked (${placement.reason}).${storageFailure ? ` ${storageFailure.message}` : ""}`,
+          );
+        }
+      }
 
       const requestedBranch = input.workspaceStrategy.branch;
       let branch: string | null;
@@ -599,60 +666,57 @@ const make = Effect.gen(function* () {
       }
       yield* setupTracker.stageStatus(threadId, "setup-script", "running");
       let boatSetup = false;
-      const preparingThread = threadId.startsWith("work-owner:")
-        ? yield* threads
-            .getThreadShell(threadId)
-            .pipe(Effect.mapError(mapError(input, "update-thread", threadId)))
-        : null;
-      if (
-        preparingThread &&
-        (preparingThread.linkOrigin === undefined ||
-          !linkOriginIsFenced(preparingThread.linkOrigin)) &&
-        (yield* boat.isEnabled(input.projectId))
-      ) {
-        const state = yield* boat
-          .read(input.projectId)
+      if (placement.target === "boat") {
+        const target = { projectId: input.projectId, requestId: placement.requestId };
+        let prepared = yield* boat
+          .operate({ ...target, action: placement.action }, threadId)
           .pipe(Effect.mapError(mapError(input, "run-setup-script", threadId)));
-        if (state.projects[input.projectId]?.enabled) {
-          const target = {
-            projectId: input.projectId,
-            requestId: `work-${threadId.split(":")[1]}`,
-          };
-          let prepared = yield* boat
-            .operate({ ...target, action: "start" }, threadId)
+        const instance = () =>
+          prepared.instances.find((item) => item.requestId === target.requestId);
+        if (["archived", "stopped"].includes(instance()?.state ?? "")) {
+          prepared = yield* boat
+            .operate({ ...target, action: "resume" }, threadId)
             .pipe(Effect.mapError(mapError(input, "run-setup-script", threadId)));
-          const instance = () =>
-            prepared.instances.find((item) => item.requestId === target.requestId);
-          if (["archived", "stopped"].includes(instance()?.state ?? "")) {
-            prepared = yield* boat
-              .operate({ ...target, action: "resume" }, threadId)
-              .pipe(Effect.mapError(mapError(input, "run-setup-script", threadId)));
-          }
-          for (
-            let attempt = 0;
-            attempt < 60 && !["idle", "ready"].includes(instance()?.state ?? "");
-            attempt++
-          ) {
-            if (["error", "deleted", "deleting"].includes(instance()?.state ?? "")) break;
-            yield* Effect.sleep("1 second");
-            prepared = yield* boat
-              .read(input.projectId)
-              .pipe(Effect.mapError(mapError(input, "run-setup-script", threadId)));
-          }
-          if (!["idle", "ready"].includes(instance()?.state ?? ""))
-            return yield* mapError(
-              input,
-              "run-setup-script",
-              threadId,
-            )("Boat did not become ready within the preparation limit.");
-          yield* boat
-            .operate({ ...target, action: "prepare" }, threadId)
-            .pipe(Effect.mapError(mapError(input, "run-setup-script", threadId)));
-          boatSetup = true;
         }
+        for (
+          let attempt = 0;
+          attempt < 60 && !["idle", "ready", "running"].includes(instance()?.state ?? "");
+          attempt++
+        ) {
+          if (["error", "deleted", "deleting"].includes(instance()?.state ?? "")) break;
+          yield* Effect.sleep("1 second");
+          prepared = yield* boat
+            .read(input.projectId)
+            .pipe(Effect.mapError(mapError(input, "run-setup-script", threadId)));
+        }
+        if (!["idle", "ready", "running"].includes(instance()?.state ?? ""))
+          return yield* mapError(
+            input,
+            "run-setup-script",
+            threadId,
+          )("Boat did not become ready within the preparation limit.");
+        const archiveStorageFailure = yield* Effect.promise(() =>
+          storage.check([
+            serverConfig.stateDir,
+            project.workspaceRoot,
+            worktreePath ?? project.workspaceRoot,
+            NodeOS.tmpdir(),
+          ]),
+        );
+        if (archiveStorageFailure !== null) {
+          return yield* mapError(
+            input,
+            "run-setup-script",
+            threadId,
+          )(archiveStorageFailure.message);
+        }
+        yield* boat
+          .operate({ ...target, action: "prepare" }, threadId)
+          .pipe(Effect.mapError(mapError(input, "run-setup-script", threadId)));
+        boatSetup = true;
       }
       const setup =
-        worktreePath === null || boatSetup
+        worktreePath === null || boatSetup || controlCommand
           ? ({ status: "no-script" } as const)
           : yield* setupScripts
               .runForThread({
@@ -1407,6 +1471,9 @@ const make = Effect.gen(function* () {
                       commandId: input.commandId,
                       projectId: input.projectId,
                       workspaceStrategy: resumedWorkspace,
+                      ...(input.initialMessage === undefined
+                        ? {}
+                        : { initialMessage: input.initialMessage }),
                       reusedWorktree: { baseRef: owner.branch ?? "HEAD" },
                     },
                     threadId,

@@ -1,4 +1,8 @@
-import { SourceControlProviderError, SourceControlProviderKind } from "@t3tools/contracts";
+import {
+  DEFAULT_BOAT_DEFAULTS,
+  SourceControlProviderError,
+  SourceControlProviderKind,
+} from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ServerConfig from "../config.ts";
 import * as GitManager from "../git/GitManager.ts";
@@ -18,9 +22,35 @@ import * as Layer from "effect/Layer";
 
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import { HostResources } from "../resourceTelemetry/HostResources.ts";
+import { BoatService } from "../boat/BoatService.ts";
 import * as PortScanner from "../preview/PortScanner.ts";
 
+export const layerCompute = Layer.mergeAll(
+  Layer.succeed(HostResources, {
+    read: Effect.succeed({
+      sampledAt: 0,
+      cpuUtilization: 0.1,
+      cpuCount: 8,
+      availableMemoryBytes: 16 * 1024 ** 3,
+      totalMemoryBytes: 32 * 1024 ** 3,
+    }),
+  }),
+  Layer.mock(BoatService)({
+    isEnabled: () => Effect.succeed(false),
+    read: () =>
+      Effect.succeed({
+        configured: false,
+        defaults: DEFAULT_BOAT_DEFAULTS,
+        account: null,
+        projects: {},
+        instances: [],
+      }),
+  }),
+);
+
 export const layer = Layer.mergeAll(
+  layerCompute,
   Layer.mock(PortScanner.PortDiscovery)({ trackAgent: () => () => undefined }),
   Layer.mock(GitWorkflow.GitWorkflowService)({
     pruneWorktrees: () => Effect.void,

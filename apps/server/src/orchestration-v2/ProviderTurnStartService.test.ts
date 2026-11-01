@@ -1,4 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeOS from "node:os";
 import { expect, it, vi } from "vite-plus/test";
 import { it as effectIt } from "@effect/vitest";
 import {
@@ -20,11 +21,19 @@ import {
   ProjectId,
   type OrchestrationV2ThreadProjection,
   OrchestrationV2DomainEvent,
+  BoatError,
+  DEFAULT_BOAT_DEFAULTS,
+  DEFAULT_BOAT_PROJECT,
+  type BoatInstance,
+  type BoatState,
+  type HostResourcesSnapshot,
+  type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -32,9 +41,12 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
 import * as StoragePressure from "../storagePressure.ts";
+import * as BoatService from "../boat/BoatService.ts";
+import * as HostResources from "../resourceTelemetry/HostResources.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
@@ -53,10 +65,32 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import { computeRequestId } from "./ComputePlacement.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
 const managedWorktreesDir = "/tmp/provider-turn-start-worktrees";
+const healthyHostResources: HostResourcesSnapshot = {
+  sampledAt: 1,
+  cpuUtilization: 0.2,
+  cpuCount: 8,
+  availableMemoryBytes: 8 * 1024 ** 3,
+  totalMemoryBytes: 16 * 1024 ** 3,
+};
+const emptyBoat: BoatState = {
+  defaults: DEFAULT_BOAT_DEFAULTS,
+  configured: false,
+  account: null,
+  projects: {},
+  instances: [],
+};
+type ComputeHarness = {
+  readonly resources?: HostResourcesSnapshot;
+  readonly boat?: BoatState;
+  readonly read?: BoatService.BoatService["Service"]["read"];
+  readonly operate?: BoatService.BoatService["Service"]["operate"];
+  readonly ancestors?: ReadonlyArray<OrchestrationV2ThreadShell>;
+};
 // fs.realpath applies `..` and `.` before following symlinks.
 const normalize = (target: string) => {
   const parts: Array<string> = [];
@@ -70,6 +104,11 @@ const layerWorktreeLocation = (
   worktreesDir = managedWorktreesDir,
   guard?: StoragePressure.StoragePressureGuard,
   path?: Path.Path,
+  compute?: {
+    readonly resources: HostResourcesSnapshot;
+    readonly read: BoatService.BoatService["Service"]["read"];
+    readonly operate: BoatService.BoatService["Service"]["operate"];
+  },
 ) =>
   Layer.mergeAll(
     guard ? Layer.succeed(StoragePressure.StoragePressure, guard) : StoragePressure.layerTest,
@@ -80,6 +119,18 @@ const layerWorktreeLocation = (
       cwd: "/tmp",
     } as ServerConfig.ServerConfig["Service"]),
     ServerSettings.layerTest(),
+    Layer.succeed(HostResources.HostResources, {
+      read: Effect.succeed(compute?.resources ?? healthyHostResources),
+    }),
+    Layer.mock(BoatService.BoatService)({
+      read: compute?.read ?? (() => Effect.succeed(emptyBoat)),
+      operate: compute?.operate ?? (() => Effect.succeed(emptyBoat)),
+      isEnabled: (projectId) =>
+        (compute?.read(projectId) ?? Effect.succeed(emptyBoat)).pipe(
+          Effect.map((state) => state.projects[projectId]?.enabled === true),
+          Effect.orElseSucceed(() => false),
+        ),
+    }),
   );
 
 function startWithMissingWorktree(
@@ -277,6 +328,8 @@ it.each([
 
 function makeLocalCommandHarness(input: {
   readonly text: string;
+  readonly threadId?: ThreadId;
+  readonly compute?: ComputeHarness;
   readonly storageGuard?: StoragePressure.StoragePressureGuard;
   readonly worktreePath?: string;
   readonly worktreesDir?: string;
@@ -314,7 +367,12 @@ function makeLocalCommandHarness(input: {
   };
 }) {
   const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
-  const threadId = ThreadId.make("thread-native-account-command");
+  const threadId = input.threadId ?? ThreadId.make("thread-native-account-command");
+  let projectWorkspaceRoot =
+    input.workspaceRoot ??
+    (input.worktreePath === undefined
+      ? "/tmp/native-account-command"
+      : "/tmp/native-account-project");
   const runId = RunId.make("run-native-account-command");
   const rootNodeId = NodeId.make("root-native-account-command");
   const attemptId = RunAttemptId.make("attempt-native-account-command");
@@ -380,6 +438,7 @@ function makeLocalCommandHarness(input: {
       projectId: ProjectId.make("project-native-account-command"),
       branch: input.worktreePath === undefined ? null : "feature/restore",
       worktreePath: input.worktreePath ?? null,
+      deletedAt: null,
       lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
     } as OrchestrationV2ThreadProjection["thread"],
     runs: [
@@ -750,6 +809,7 @@ function makeLocalCommandHarness(input: {
     lastError: null,
   };
   const startTurn = vi.fn((_turn: ProviderAdapter.ProviderAdapterV2TurnInput) => Effect.void);
+  const compactThread = vi.fn((_turn: ProviderAdapter.ProviderAdapterV2TurnInput) => Effect.void);
   const sideChatThread = {
     ...providerThread,
     nativeThreadRef: {
@@ -768,47 +828,61 @@ function makeLocalCommandHarness(input: {
     startTurn,
   };
   const open = vi.fn(() =>
-    input.sideChat !== undefined
-      ? Effect.succeed(sideChatSession as never)
-      : input.interruptOpen === true
-        ? Effect.interrupt
-        : "historyReadFailureAfterFallback" in input
-          ? Effect.succeed(resumeFallbackSession as never)
-          : "ensureThreadFailure" in input
-            ? Effect.succeed({ driver: providerThread.driver, ensureThread } as never)
-            : "openFailure" in input
-              ? Effect.sync(() => {
-                  if (input.interruptRunBeforeOpenFailure === true) interruptRun();
-                }).pipe(
-                  Effect.andThen(
-                    Effect.fail(
-                      new ProviderSessionManager.ProviderSessionOpenError({
-                        instanceId: newInstanceId,
-                        providerSessionId,
-                        cause: input.openFailure,
-                      }),
+    input.compute !== undefined
+      ? Effect.succeed({
+          ...sideChatSession,
+          ensureThread: () => Effect.succeed(providerThread),
+          resumeThread: () => Effect.succeed(providerThread),
+          compactThread,
+        } as never)
+      : input.sideChat !== undefined
+        ? Effect.succeed(sideChatSession as never)
+        : input.interruptOpen === true
+          ? Effect.interrupt
+          : "historyReadFailureAfterFallback" in input
+            ? Effect.succeed(resumeFallbackSession as never)
+            : "ensureThreadFailure" in input
+              ? Effect.succeed({ driver: providerThread.driver, ensureThread } as never)
+              : "openFailure" in input
+                ? Effect.sync(() => {
+                    if (input.interruptRunBeforeOpenFailure === true) interruptRun();
+                  }).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        new ProviderSessionManager.ProviderSessionOpenError({
+                          instanceId: newInstanceId,
+                          providerSessionId,
+                          cause: input.openFailure,
+                        }),
+                      ),
                     ),
-                  ),
-                )
-              : input.failReadsAfterRunning === true || input.previousTurn !== undefined
-                ? Effect.succeed({
-                    driver: providerThread.driver,
-                    providerSession,
-                    ensureThread: () => Effect.succeed(providerThread),
-                    resumeThread: () => Effect.succeed(projection.providerThreads[0]),
-                  } as never)
-                : Effect.die("A local command must not open a native session."),
+                  )
+                : input.failReadsAfterRunning === true || input.previousTurn !== undefined
+                  ? Effect.succeed({
+                      driver: providerThread.driver,
+                      providerSession,
+                      ensureThread: () => Effect.succeed(providerThread),
+                      resumeThread: () => Effect.succeed(projection.providerThreads[0]),
+                    } as never)
+                  : Effect.die("A local command must not open a native session."),
   );
   const startRootRun = vi.fn<
     (input: RunExecutionService.RunExecutionServiceV2StartRootRunInput) => Effect.Effect<void>
   >((runInput) =>
-    input.sideChat !== undefined
-      ? runInput.session.startTurn(runInput as never).pipe(Effect.orDie)
-      : input.failReadsAfterRunning === true || input.previousTurn !== undefined
-        ? Effect.suspend(() =>
-            providerBusy ? Effect.die("The previous provider turn is still running.") : Effect.void,
-          )
-        : Effect.die("A local command must not start a native turn."),
+    input.compute !== undefined
+      ? (runInput.message.text.trim().toLowerCase() === "/compact"
+          ? runInput.session.compactThread!(runInput as never)
+          : runInput.session.startTurn(runInput as never)
+        ).pipe(Effect.orDie)
+      : input.sideChat !== undefined
+        ? runInput.session.startTurn(runInput as never).pipe(Effect.orDie)
+        : input.failReadsAfterRunning === true || input.previousTurn !== undefined
+          ? Effect.suspend(() =>
+              providerBusy
+                ? Effect.die("The previous provider turn is still running.")
+                : Effect.void,
+            )
+          : Effect.die("A local command must not start a native turn."),
   );
   const failReadIfRunning = Effect.suspend(() =>
     input.failReadsAfterRunning === true &&
@@ -820,7 +894,7 @@ function makeLocalCommandHarness(input: {
   );
   const tryHandlePromptCommand = vi.fn(() =>
     input.logoutFailure === undefined
-      ? Effect.succeed(true)
+      ? Effect.succeed(input.compute === undefined)
       : Effect.fail(
           new ProviderSetupError({
             instanceId: oldInstanceId,
@@ -876,6 +950,33 @@ function makeLocalCommandHarness(input: {
       ),
     }),
   );
+  const readBoat = vi.fn<BoatService.BoatService["Service"]["read"]>(
+    input.compute?.read ?? (() => Effect.succeed(input.compute?.boat ?? emptyBoat)),
+  );
+  const operateBoat = vi.fn<BoatService.BoatService["Service"]["operate"]>(
+    input.compute?.operate ?? (() => Effect.succeed(input.compute?.boat ?? emptyBoat)),
+  );
+  const getTurnStartHistory = vi.fn<ProjectionStore.ProjectionStoreV2Shape["getTurnStartHistory"]>(
+    () =>
+      input.sideChat !== undefined
+        ? Effect.succeed([])
+        : Effect.fail(
+            new ProjectionStore.ProjectionStoreReadError({
+              threadId,
+              cause: input.historyReadFailureAfterFallback,
+            }),
+          ),
+  );
+  const writeEvents = vi.fn(
+    ({ events: incoming }: { events: ReadonlyArray<OrchestrationV2DomainEvent> }) =>
+      Effect.sync(() => {
+        for (const event of incoming) {
+          events.push(event);
+          projection = ProjectionStore.applyToProjection(projection, event);
+        }
+        return [];
+      }),
+  );
   const layer = ProviderTurnStart.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -895,17 +996,14 @@ function makeLocalCommandHarness(input: {
         }),
         Layer.mock(EventSink.EventSinkV2)({
           writeIfRunCurrent,
-          write: ({ events: incoming }) =>
-            Effect.sync(() => {
-              for (const event of incoming) {
-                events.push(event);
-                projection = ProjectionStore.applyToProjection(projection, event);
-              }
-              return [];
-            }),
+          write: writeEvents,
         }),
         IdAllocator.layer,
-        layerWorktreeLocation(input.worktreesDir, input.storageGuard, input.path),
+        layerWorktreeLocation(input.worktreesDir, input.storageGuard, input.path, {
+          resources: input.compute?.resources ?? healthyHostResources,
+          read: readBoat,
+          operate: operateBoat,
+        }),
         input.fileSystem === undefined
           ? FileSystem.layerNoop({ exists: () => Effect.succeed(true) })
           : Layer.succeed(FileSystem.FileSystem, input.fileSystem),
@@ -919,12 +1017,18 @@ function makeLocalCommandHarness(input: {
         Layer.mock(ProjectService.ProjectService)({
           getById: () =>
             Effect.succeedSome({
-              workspaceRoot: input.workspaceRoot ?? "/tmp/native-account-project",
+              workspaceRoot: projectWorkspaceRoot,
             } as never),
         }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getThreadRecords,
           getTurnStartContext,
+          getThreadShell: (id) =>
+            Effect.succeed(
+              id === projection.thread.id
+                ? (projection.thread as unknown as OrchestrationV2ThreadShell)
+                : (input.compute?.ancestors?.find((thread) => thread.id === id) ?? null),
+            ),
           getRuntimeRecoveryProjection: () =>
             Effect.as(failReadIfRunning, {
               ...projection,
@@ -934,15 +1038,7 @@ function makeLocalCommandHarness(input: {
                   (m.text.trim().toLowerCase() !== "/compact" || m.attachments.length > 0),
               ),
             }),
-          getTurnStartHistory: () =>
-            input.sideChat !== undefined
-              ? Effect.succeed([])
-              : Effect.fail(
-                  new ProjectionStore.ProjectionStoreReadError({
-                    threadId,
-                    cause: input.historyReadFailureAfterFallback,
-                  }),
-                ),
+          getTurnStartHistory,
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
           open,
@@ -971,12 +1067,20 @@ function makeLocalCommandHarness(input: {
     setProjection: (next: OrchestrationV2ThreadProjection) => {
       projection = next;
     },
+    setProjectWorkspaceRoot: (next: string) => {
+      projectWorkspaceRoot = next;
+    },
     resolveRuntimePolicy,
     createWorktree,
     open,
     writeIfRunCurrent,
+    writeEvents,
+    getTurnStartHistory,
     startRootRun,
     startTurn,
+    compactThread,
+    readBoat,
+    operateBoat,
     forkThread,
     interruptTurn,
     tryHandlePromptCommand,
@@ -997,6 +1101,678 @@ function makeLocalCommandHarness(input: {
     }).pipe(Effect.provide(layer)),
   };
 }
+
+const computeProjectId = ProjectId.make("project-native-account-command");
+const computeThreadId = ThreadId.make("thread-native-account-command");
+const computeBoat = (instances: ReadonlyArray<BoatInstance> = []): BoatState => ({
+  ...emptyBoat,
+  configured: true,
+  projects: { [computeProjectId]: { ...DEFAULT_BOAT_PROJECT, enabled: true } },
+  account: {
+    status: "ready",
+    canStart: true,
+    reason: null,
+    remainingHours: 1,
+    walletUsd: 1,
+    maxConcurrent: 2,
+    sizes: ["default"],
+  },
+  instances,
+});
+const computeInstance = (overrides: Partial<BoatInstance> = {}): BoatInstance => ({
+  requestId: computeRequestId(computeProjectId, computeThreadId),
+  projectId: computeProjectId,
+  threadId: computeThreadId,
+  sandboxId: "sandbox-compute",
+  leases: [],
+  state: "ready",
+  size: "default",
+  createdAt: "2026-11-01T00:00:00Z",
+  expiresAt: "2026-11-01T01:00:00Z",
+  stoppedAt: null,
+  costUsd: 0,
+  snapshot: "",
+  savedSnapshot: null,
+  processId: null,
+  deletionOperationId: null,
+  previewTabId: null,
+  previewUrl: null,
+  output: "",
+  ...overrides,
+});
+const pressuredHostResources = { ...healthyHostResources, cpuUtilization: 0.95 };
+
+effectIt.effect(
+  "prepares selected compute before native start and delivers its exact binding without handoffs",
+  () =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const boat = computeBoat([computeInstance({ state: "idle" })]);
+      const harness = makeLocalCommandHarness({
+        text: "Run the focused checks",
+        compute: {
+          resources: pressuredHostResources,
+          boat,
+          operate: (action) =>
+            Effect.gen(function* () {
+              if (action.action === "prepare") {
+                yield* Deferred.succeed(entered, undefined);
+                yield* Deferred.await(release);
+              }
+              return boat;
+            }),
+        },
+      });
+      const starting = yield* harness.start.pipe(Effect.forkChild);
+      yield* Effect.raceFirst(
+        Deferred.await(entered),
+        Fiber.join(starting).pipe(
+          Effect.andThen(Effect.die("Native start finished without preparing compute")),
+        ),
+      );
+      expect(harness.startTurn).not.toHaveBeenCalled();
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(starting);
+      const requestId = computeRequestId(computeProjectId, computeThreadId);
+      expect(harness.operateBoat.mock.calls).toEqual([
+        [{ action: "renew", projectId: computeProjectId, requestId }, computeThreadId],
+        [{ action: "prepare", projectId: computeProjectId, requestId }, computeThreadId],
+      ]);
+      expect(harness.startTurn).toHaveBeenCalledOnce();
+      const text = harness.startTurn.mock.calls[0]![0].message.text;
+      for (const expected of [
+        computeProjectId,
+        computeThreadId,
+        requestId,
+        "boat_environment",
+        "exec",
+      ])
+        expect(text).toContain(expected);
+      expect(harness.projection().messages.at(-1)?.text).toBe("Run the focused checks");
+    }),
+);
+
+effectIt.effect.each(["worktree removed", "project root changed"] as const)(
+  "rejects compute when its source changes during Boat read: %s",
+  (change) =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const boat = computeBoat([computeInstance({ state: "idle" })]);
+      const harness = makeLocalCommandHarness({
+        text: "Run checks",
+        ...(change === "worktree removed" ? { worktreePath: "/tmp/original-compute-source" } : {}),
+        workspaceRoot: "/tmp/native-account-command",
+        compute: {
+          resources: pressuredHostResources,
+          boat,
+          read: () =>
+            Effect.gen(function* () {
+              yield* Deferred.succeed(entered, undefined);
+              yield* Deferred.await(release);
+              return boat;
+            }),
+        },
+      });
+      const starting = yield* harness.start.pipe(Effect.forkChild);
+      yield* Effect.raceFirst(
+        Deferred.await(entered),
+        Fiber.join(starting).pipe(
+          Effect.andThen(Effect.die("Provider start ended before the Boat read barrier")),
+        ),
+      );
+      if (change === "worktree removed") {
+        const projection = harness.projection();
+        harness.setProjection({
+          ...projection,
+          thread: { ...projection.thread, worktreePath: null },
+        });
+      } else {
+        harness.setProjectWorkspaceRoot("/tmp/replaced-project-root");
+      }
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(starting);
+      expect(harness.operateBoat).not.toHaveBeenCalled();
+      expect(harness.startTurn).not.toHaveBeenCalled();
+      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+      expect(JSON.stringify(harness.events)).toContain("source_changed");
+    }),
+);
+
+effectIt.effect("rejects native start when the source changes during Boat prepare", () =>
+  Effect.gen(function* () {
+    const entered = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const boat = computeBoat([computeInstance({ state: "idle" })]);
+    const harness = makeLocalCommandHarness({
+      text: "Run checks",
+      worktreePath: "/tmp/original-compute-source",
+      workspaceRoot: "/tmp/native-account-command",
+      compute: {
+        resources: pressuredHostResources,
+        boat,
+        operate: (action) =>
+          Effect.gen(function* () {
+            if (action.action === "prepare") {
+              yield* Deferred.succeed(entered, undefined);
+              yield* Deferred.await(release);
+            }
+            return boat;
+          }),
+      },
+    });
+    const starting = yield* harness.start.pipe(Effect.forkChild);
+    yield* Effect.raceFirst(
+      Deferred.await(entered),
+      Fiber.join(starting).pipe(
+        Effect.andThen(Effect.die("Provider start ended before the Boat prepare barrier")),
+      ),
+    );
+    const projection = harness.projection();
+    harness.setProjection({
+      ...projection,
+      thread: { ...projection.thread, worktreePath: "/tmp/replaced-compute-source" },
+    });
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.join(starting);
+    expect(harness.startTurn).not.toHaveBeenCalled();
+    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+    expect(JSON.stringify(harness.events)).toContain("source_changed");
+  }),
+);
+
+effectIt.effect("rejects native start when the source changes during context delivery", () =>
+  Effect.gen(function* () {
+    const entered = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const boat = computeBoat([computeInstance()]);
+    const harness = makeLocalCommandHarness({
+      text: "Run checks after the handoff",
+      worktreePath: "/tmp/original-compute-source",
+      workspaceRoot: "/tmp/native-account-command",
+      compute: { resources: pressuredHostResources, boat },
+    });
+    harness.getTurnStartHistory.mockReturnValue(Effect.succeed([]));
+    const projection = harness.projection();
+    harness.setProjection({
+      ...projection,
+      contextHandoffs: [
+        {
+          id: ContextHandoffId.make("compute-source-handoff"),
+          threadId: projection.thread.id,
+          targetRunId: projection.runs[0]!.id,
+          fromProviderThreadIds: [],
+          toProviderThreadId: projection.providerThreads[0]!.id,
+          coveredRunOrdinals: { from: 1, to: 1 },
+          strategy: "manual_context",
+          status: "ready",
+          summaryMessageId: null,
+          summaryText: "Previous task context.",
+          createdByProviderInstanceId: null,
+          createdAt: projection.updatedAt,
+          updatedAt: projection.updatedAt,
+        },
+      ],
+    });
+    const persist = harness.writeEvents.getMockImplementation()!;
+    harness.writeEvents.mockImplementation((input) =>
+      persist(input).pipe(
+        Effect.andThen(
+          Effect.gen(function* () {
+            if (
+              input.events.some(
+                (event) =>
+                  event.type === "context-handoff.updated" &&
+                  event.payload.id === "compute-source-handoff",
+              ) &&
+              harness.projection().runs.at(-1)?.status === "running"
+            ) {
+              yield* Deferred.succeed(entered, undefined);
+              yield* Deferred.await(release);
+            }
+          }),
+        ),
+        Effect.as([]),
+      ),
+    );
+    const starting = yield* harness.start.pipe(Effect.exit, Effect.forkChild);
+    yield* Effect.raceFirst(
+      Deferred.await(entered),
+      Fiber.join(starting).pipe(
+        Effect.andThen(Effect.die("Provider start ended before context delivery")),
+      ),
+    );
+    expect(harness.projection().runs.at(-1)?.status).toBe("running");
+    expect(
+      harness.writeEvents.mock.calls
+        .flatMap(([input]) => input.events)
+        .some(
+          (event) =>
+            event.type === "context-handoff.updated" &&
+            event.payload.id === "compute-source-handoff",
+        ),
+    ).toBe(true);
+    const current = harness.projection();
+    harness.setProjection({
+      ...current,
+      thread: { ...current.thread, worktreePath: "/tmp/replaced-compute-source" },
+    });
+    yield* Deferred.succeed(release, undefined);
+    const result = yield* Fiber.join(starting);
+    expect(harness.startTurn).not.toHaveBeenCalled();
+    expect(Exit.isFailure(result)).toBe(true);
+    if (Exit.isFailure(result)) expect(Cause.pretty(result.cause)).toContain("source_changed");
+  }),
+);
+
+effectIt.effect("rechecks archive storage after Boat renewal and before prepare", () =>
+  Effect.gen(function* () {
+    const entered = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    let pressured = false;
+    const failure = { code: "storage_pressure" as const, message: "Archive storage is full." };
+    const check = vi.fn(async () => (pressured ? failure : null));
+    const boat = computeBoat([computeInstance({ state: "idle" })]);
+    const harness = makeLocalCommandHarness({
+      text: "Run checks",
+      worktreePath: "/tmp/original-compute-source",
+      workspaceRoot: "/tmp/native-account-command",
+      storageGuard: {
+        check,
+        checkRunning: async () => null,
+        acquire: async () => ({ failure: null, release: () => {} }),
+      },
+      compute: {
+        resources: pressuredHostResources,
+        boat,
+        operate: (action) =>
+          Effect.gen(function* () {
+            if (action.action === "renew") {
+              yield* Deferred.succeed(entered, undefined);
+              yield* Deferred.await(release);
+            }
+            return boat;
+          }),
+      },
+    });
+    const starting = yield* harness.start.pipe(Effect.forkChild);
+    yield* Effect.raceFirst(
+      Deferred.await(entered),
+      Fiber.join(starting).pipe(
+        Effect.andThen(Effect.die("Provider start ended before the Boat renewal barrier")),
+      ),
+    );
+    expect(check).toHaveBeenCalledOnce();
+    pressured = true;
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.join(starting);
+    expect(harness.operateBoat.mock.calls.map(([action]) => action.action)).toEqual(["renew"]);
+    expect(harness.startTurn).not.toHaveBeenCalled();
+    expect(check).toHaveBeenLastCalledWith([
+      "/tmp/t3-data",
+      "/tmp/original-compute-source",
+      NodeOS.tmpdir(),
+    ]);
+    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+    expect(JSON.stringify(harness.events)).toContain("storage_pressure");
+  }),
+);
+
+effectIt.effect.each([
+  { state: null, action: "start", prepares: true },
+  { state: "stopped", action: "resume", prepares: true },
+  { state: "ready", action: "renew", prepares: false },
+  { state: "running", action: "renew", prepares: false },
+] as const)(
+  "uses $action for $state compute without touching another owner",
+  ({ state, action, prepares }) =>
+    Effect.gen(function* () {
+      const neighbour = computeInstance({
+        requestId: "neighbour-request",
+        threadId: ThreadId.make("neighbour-thread"),
+        state: "running",
+      });
+      const selected = computeInstance({ state: state ?? "idle" });
+      const harness = makeLocalCommandHarness({
+        text: "Run checks",
+        compute: {
+          resources: pressuredHostResources,
+          boat: computeBoat([neighbour, ...(state === null ? [] : [selected])]),
+          operate: () =>
+            Effect.succeed(
+              computeBoat([
+                neighbour,
+                { ...selected, state: state === "running" ? "running" : "ready" },
+              ]),
+            ),
+        },
+      });
+      yield* harness.start;
+      const target = { projectId: computeProjectId, requestId: selected.requestId };
+      expect(harness.operateBoat.mock.calls).toEqual([
+        [{ ...target, action }, computeThreadId],
+        ...(prepares ? [[{ ...target, action: "prepare" }, computeThreadId]] : []),
+      ]);
+      expect(harness.startTurn).toHaveBeenCalledOnce();
+    }),
+);
+
+effectIt.effect("refuses native start when the selected compute renewal exceeds its budget", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Run checks",
+      compute: {
+        resources: pressuredHostResources,
+        boat: computeBoat([computeInstance()]),
+        operate: () => Effect.fail(new BoatError({ category: "budget" })),
+      },
+    });
+    const result = yield* Effect.exit(harness.start);
+    expect(harness.startTurn).not.toHaveBeenCalled();
+    expect(harness.operateBoat).toHaveBeenCalledOnce();
+    const failure = Exit.isFailure(result)
+      ? Cause.pretty(result.cause)
+      : JSON.stringify(harness.events);
+    expect(failure.toLowerCase()).toContain("budget");
+  }),
+);
+
+effectIt.effect("keeps healthy ordinary compute local without creating a Boat", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Run checks",
+      compute: { boat: computeBoat() },
+    });
+    yield* harness.start;
+    expect(harness.operateBoat).not.toHaveBeenCalled();
+    expect(harness.startTurn).toHaveBeenCalledOnce();
+    expect(harness.startTurn.mock.calls[0]?.[0].message.text).toContain(
+      "Compute placement: local.",
+    );
+  }),
+);
+
+effectIt.effect(
+  "waits for the selected compute request before preparing and starting the provider",
+  () =>
+    Effect.gen(function* () {
+      const provisioned = yield* Deferred.make<void>();
+      const neighbour = computeInstance({
+        requestId: "ready-neighbour",
+        threadId: ThreadId.make("neighbour-thread"),
+      });
+      let state = computeBoat([neighbour]);
+      const harness = makeLocalCommandHarness({
+        text: "Run checks",
+        compute: {
+          resources: pressuredHostResources,
+          read: () => Effect.sync(() => state),
+          operate: (action) =>
+            Effect.gen(function* () {
+              if (action.action === "start") {
+                state = computeBoat([neighbour, computeInstance({ state: "provisioning" })]);
+                yield* Deferred.succeed(provisioned, undefined);
+              }
+              return state;
+            }),
+        },
+      });
+      const starting = yield* harness.start.pipe(Effect.forkChild);
+      yield* Deferred.await(provisioned);
+      yield* TestClock.adjust(0);
+      expect(harness.projection().runs.at(-1)?.status).toBe("starting");
+      expect(harness.startTurn).not.toHaveBeenCalled();
+      expect(harness.operateBoat.mock.calls.map(([action]) => action.action)).toEqual(["start"]);
+      state = computeBoat([neighbour, computeInstance({ state: "idle" })]);
+      yield* TestClock.adjust("1 second");
+      const target = {
+        projectId: computeProjectId,
+        requestId: computeRequestId(computeProjectId, computeThreadId),
+      };
+      expect(harness.operateBoat.mock.calls).toEqual([
+        [{ ...target, action: "start" }, computeThreadId],
+        [{ ...target, action: "prepare" }, computeThreadId],
+      ]);
+      expect(harness.startTurn).toHaveBeenCalledOnce();
+      expect(harness.projection().runs.at(-1)?.status).toBe("running");
+      yield* Fiber.join(starting);
+    }),
+);
+
+effectIt.effect("bounds the selected compute readiness wait to sixty seconds", () =>
+  Effect.gen(function* () {
+    const provisioned = yield* Deferred.make<void>();
+    let state = computeBoat();
+    const harness = makeLocalCommandHarness({
+      text: "Run checks",
+      compute: {
+        resources: pressuredHostResources,
+        read: () => Effect.sync(() => state),
+        operate: () =>
+          Effect.gen(function* () {
+            state = computeBoat([computeInstance({ state: "provisioning" })]);
+            yield* Deferred.succeed(provisioned, undefined);
+            return state;
+          }),
+      },
+    });
+    const starting = yield* harness.start.pipe(Effect.forkChild);
+    yield* Deferred.await(provisioned);
+    yield* TestClock.adjust(0);
+    expect(harness.projection().runs.at(-1)?.status).toBe("starting");
+    yield* TestClock.adjust("59 seconds");
+    expect(harness.projection().runs.at(-1)?.status).toBe("starting");
+    expect(harness.startTurn).not.toHaveBeenCalled();
+    yield* TestClock.adjust("1 second");
+    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+    expect(harness.startTurn).not.toHaveBeenCalled();
+    expect(harness.operateBoat.mock.calls.map(([action]) => action.action)).toEqual(["start"]);
+    expect(JSON.stringify(harness.events)).toContain("boat_not_ready");
+    yield* Fiber.join(starting);
+  }),
+);
+
+effectIt.effect.each(["interrupted", "source changed"] as const)(
+  "abandons compute readiness before another Boat read when %s",
+  (change) =>
+    Effect.gen(function* () {
+      const provisioned = yield* Deferred.make<void>();
+      let state = computeBoat();
+      const harness = makeLocalCommandHarness({
+        text: "Run checks",
+        worktreePath: "/tmp/original-compute-source",
+        compute: {
+          resources: pressuredHostResources,
+          read: () => Effect.sync(() => state),
+          operate: () =>
+            Effect.gen(function* () {
+              state = computeBoat([computeInstance({ state: "provisioning" })]);
+              yield* Deferred.succeed(provisioned, undefined);
+              return state;
+            }),
+        },
+      });
+      const starting = yield* harness.start.pipe(Effect.forkChild);
+      yield* Deferred.await(provisioned);
+      yield* TestClock.adjust(0);
+      expect(harness.projection().runs.at(-1)?.status).toBe("starting");
+      const readsBeforeChange = harness.readBoat.mock.calls.length;
+      const projection = harness.projection();
+      harness.setProjection(
+        change === "interrupted"
+          ? {
+              ...projection,
+              runs: projection.runs.map((run) => ({
+                ...run,
+                status: "interrupted" as const,
+                completedAt: projection.updatedAt,
+              })),
+            }
+          : {
+              ...projection,
+              thread: { ...projection.thread, worktreePath: "/tmp/replaced-compute-source" },
+            },
+      );
+      yield* TestClock.adjust("1 second");
+      expect(harness.readBoat).toHaveBeenCalledTimes(readsBeforeChange);
+      expect(harness.startTurn).not.toHaveBeenCalled();
+      expect(harness.operateBoat.mock.calls.map(([action]) => action.action)).toEqual(["start"]);
+      expect(harness.projection().runs.at(-1)?.status).toBe(
+        change === "interrupted" ? "interrupted" : "failed",
+      );
+      if (change === "source changed")
+        expect(JSON.stringify(harness.events)).toContain("source_changed");
+      yield* Fiber.join(starting);
+    }),
+);
+
+effectIt.effect.each(["/goal Finish the current task", "/compact"])(
+  "does not acquire compute for native control command %s",
+  (text) =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make(`work-owner:${"a".repeat(64)}:controls`);
+      const harness = makeLocalCommandHarness({
+        text,
+        threadId,
+        previousMessages: ["Existing conversation"],
+        compute: { boat: computeBoat(), resources: pressuredHostResources },
+      });
+      yield* harness.start;
+      expect(harness.readBoat).not.toHaveBeenCalled();
+      expect(harness.operateBoat).not.toHaveBeenCalled();
+      expect(harness.startTurn).toHaveBeenCalledTimes(text === "/compact" ? 0 : 1);
+      expect(harness.compactThread).toHaveBeenCalledTimes(text === "/compact" ? 1 : 0);
+    }),
+);
+
+effectIt.effect.each(["ready", "running"] as const)(
+  "revalidates a reused parent Boat source through prepare when %s",
+  (state) =>
+    Effect.gen(function* () {
+      const parentId = ThreadId.make("compute-parent");
+      const ancestors: Array<OrchestrationV2ThreadShell> = [];
+      const instance = computeInstance({
+        requestId: computeRequestId(computeProjectId, parentId),
+        threadId: parentId,
+        state,
+      });
+      const boat = computeBoat([instance]);
+      const check = vi.fn(async () => null);
+      const harness = makeLocalCommandHarness({
+        text: "Run checks for this subagent",
+        worktreePath: "/tmp/current-source-b",
+        storageGuard: {
+          check,
+          checkRunning: async () => null,
+          acquire: async () => ({ failure: null, release: () => {} }),
+        },
+        compute: {
+          ancestors,
+          resources: pressuredHostResources,
+          boat,
+          // The persisted Boat source is A; the current parent and child both point at B.
+          operate: (action) =>
+            action.action === "prepare"
+              ? Effect.fail(new BoatError({ category: "conflict" }))
+              : Effect.succeed(boat),
+        },
+      });
+      const projection = harness.projection();
+      ancestors.push({
+        ...projection.thread,
+        id: parentId,
+        lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: parentId },
+      } as unknown as OrchestrationV2ThreadShell);
+      harness.setProjection({
+        ...projection,
+        thread: {
+          ...projection.thread,
+          lineage: {
+            parentThreadId: parentId,
+            relationshipToParent: "subagent",
+            rootThreadId: parentId,
+          },
+        },
+      });
+      yield* harness.start;
+      expect(harness.startTurn).not.toHaveBeenCalled();
+      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+      const target = { projectId: computeProjectId, requestId: instance.requestId };
+      expect(harness.operateBoat.mock.calls).toEqual([
+        [{ ...target, action: "renew" }, computeThreadId],
+        [{ ...target, action: "prepare" }, computeThreadId],
+      ]);
+      expect(check).toHaveBeenCalledTimes(2);
+      expect(check).toHaveBeenLastCalledWith([
+        "/tmp/t3-data",
+        "/tmp/current-source-b",
+        NodeOS.tmpdir(),
+      ]);
+    }),
+);
+
+effectIt.effect.each([true, false])(
+  "reuses authentic subagent owner compute only for the same source: %s",
+  (sameSource) =>
+    Effect.gen(function* () {
+      const parentId = ThreadId.make("compute-parent");
+      const ancestors: Array<OrchestrationV2ThreadShell> = [];
+      const parentInstance = computeInstance({
+        requestId: computeRequestId(computeProjectId, parentId),
+        threadId: parentId,
+      });
+      const harness = makeLocalCommandHarness({
+        text: "Run checks for this subagent",
+        worktreePath: sameSource ? "/tmp/shared-compute" : "/tmp/isolated-compute",
+        compute: {
+          ancestors,
+          resources: pressuredHostResources,
+          boat: computeBoat([parentInstance]),
+          operate: (action) =>
+            Effect.succeed(
+              computeBoat([
+                parentInstance,
+                ...(action.requestId === parentInstance.requestId
+                  ? []
+                  : [computeInstance({ requestId: action.requestId })]),
+              ]),
+            ),
+        },
+      });
+      const projection = harness.projection();
+      ancestors.push({
+        ...projection.thread,
+        id: parentId,
+        worktreePath: "/tmp/shared-compute",
+        lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: parentId },
+      } as unknown as OrchestrationV2ThreadShell);
+      harness.setProjection({
+        ...projection,
+        thread: {
+          ...projection.thread,
+          lineage: {
+            parentThreadId: parentId,
+            relationshipToParent: "subagent",
+            rootThreadId: parentId,
+          },
+        },
+      });
+      yield* harness.start;
+      const owner = sameSource ? parentId : computeThreadId;
+      const requestId = computeRequestId(computeProjectId, owner);
+      expect(harness.operateBoat.mock.calls).toEqual([
+        [
+          { projectId: computeProjectId, requestId, action: sameSource ? "renew" : "start" },
+          computeThreadId,
+        ],
+        [{ projectId: computeProjectId, requestId, action: "prepare" }, computeThreadId],
+      ]);
+      const text = harness.startTurn.mock.calls[0]?.[0].message.text;
+      expect(text).toContain(owner);
+      expect(text).toContain(requestId);
+    }),
+);
 
 effectIt.effect.each([
   {

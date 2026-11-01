@@ -1,4 +1,6 @@
 import { BoatService } from "../boat/BoatService.ts";
+import * as HostResources from "../resourceTelemetry/HostResources.ts";
+import * as StoragePressure from "../storagePressure.ts";
 import * as DocumentText from "../provider/DocumentText.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
@@ -29,6 +31,8 @@ import {
   OrchestrationV2ThreadLaunchInput,
   ScheduledTaskId,
   type ServerProvider,
+  type HostResourcesSnapshot,
+  type BoatInstance,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -123,6 +127,7 @@ const claudeAdapter = {
 } as ProviderAdapter.ProviderAdapterV2["Service"];
 
 interface HarnessOptions {
+  readonly boatInstances?: ReadonlyArray<BoatInstance>;
   readonly closeTerminal?: TerminalManager.TerminalManager["Service"]["close"];
   readonly adapters?: ReadonlyArray<ProviderAdapter.ProviderAdapterV2["Service"]>;
   readonly managedFolders?: Layer.Layer<ManagedProjectFolders.ManagedProjectFolders>;
@@ -141,6 +146,9 @@ interface HarnessOptions {
   readonly boatError?: "budget" | "capacity";
   readonly boatStopped?: boolean;
   readonly boatStatusUnavailable?: boolean;
+  readonly hostResources?: Omit<HostResourcesSnapshot, "sampledAt">;
+  readonly storageFailure?: StoragePressure.StorageFailure;
+  readonly storageCheck?: StoragePressure.StoragePressureGuard["check"];
 }
 
 function makeHarness(options: HarnessOptions = {}) {
@@ -184,9 +192,30 @@ function makeHarness(options: HarnessOptions = {}) {
     options.generateTitle ?? (() => Effect.succeed({ title: "Generated title" })),
   );
   const boatCalls: Array<{ action: string; threadId: ThreadId | undefined }> = [];
+  const boatTargets: string[] = [];
   const layerExternalServices = Layer.mergeAll(
     NodeServices.layer,
     NodeCrypto.layer,
+    ServerConfig.layerTest("/repo", { prefix: "t3-launch-compute-" }).pipe(
+      Layer.provide(NodeServices.layer),
+    ),
+    Layer.succeed(HostResources.HostResources, {
+      read: DateTime.now.pipe(
+        Effect.map((now) => ({
+          sampledAt: DateTime.toEpochMillis(now),
+          cpuCount: 8,
+          cpuUtilization: 0.1,
+          availableMemoryBytes: 16 * 1024 ** 3,
+          totalMemoryBytes: 32 * 1024 ** 3,
+          ...options.hostResources,
+        })),
+      ),
+    }),
+    Layer.mock(StoragePressure.StoragePressure)({
+      check: options.storageCheck ?? (async () => options.storageFailure ?? null),
+      checkRunning: async () => options.storageFailure ?? null,
+      acquire: async () => ({ failure: options.storageFailure ?? null, release: () => {} }),
+    }),
     Layer.mock(BoatService)({
       isEnabled: () => Effect.succeed(options.boatEnabled ?? false),
       read: () =>
@@ -195,14 +224,23 @@ function makeHarness(options: HarnessOptions = {}) {
           : Effect.succeed({
               configured: options.boatEnabled ?? false,
               defaults: { ttlMinutes: 60, retentionDays: 1 },
-              account: null,
+              account: {
+                status: "active",
+                canStart: true,
+                reason: null,
+                remainingHours: 10,
+                walletUsd: 0,
+                maxConcurrent: 4,
+                sizes: ["default"],
+              },
               projects: options.boatEnabled
                 ? { [projectId]: { ...DEFAULT_BOAT_PROJECT, enabled: true } }
                 : {},
-              instances: [],
+              instances: options.boatInstances ?? [],
             }),
       operate: (action, threadId) => {
         boatCalls.push({ action: action.action, threadId });
+        boatTargets.push(action.requestId);
         if (options.boatError) return Effect.fail(new BoatError({ category: options.boatError }));
         return Effect.succeed({
           configured: true,
@@ -326,6 +364,7 @@ function makeHarness(options: HarnessOptions = {}) {
     runSetup,
     closeTerminal,
     boatCalls,
+    boatTargets,
   };
 }
 
@@ -395,6 +434,240 @@ it.effect.each([undefined, "budget"] as const)(
   },
 );
 
+it.effect.each(["running", "archived"] as const)(
+  "reuses only the bound owner's %s Boat under pressure",
+  (state) => {
+    const owner = ThreadId.make(`reuse-${state}`);
+    const harness = makeHarness({
+      boatEnabled: true,
+      hostResources: {
+        cpuUtilization: 0.98,
+        cpuCount: 8,
+        totalMemoryBytes: 32 * 1024 ** 3,
+        availableMemoryBytes: 16 * 1024 ** 3,
+      },
+      boatInstances: [
+        {
+          projectId,
+          threadId: ThreadId.make("foreign"),
+          requestId: "foreign-vm",
+          sandboxId: "foreign-sandbox",
+          state: "running",
+        } as BoatInstance,
+        {
+          projectId,
+          threadId: owner,
+          requestId: "owned-vm",
+          sandboxId: "owned-sandbox",
+          state,
+        } as BoatInstance,
+      ],
+    });
+    return Effect.gen(function* () {
+      const launch = yield* ThreadLaunch.ThreadLaunchService;
+      yield* launch.launch(
+        launchInput({
+          command: `reuse-${state}`,
+          thread: owner,
+          workspace: { type: "worktree", baseRef: "main" },
+        }),
+      );
+      const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+      const finished = yield* tracker.stream(owner).pipe(
+        Stream.filter(
+          (value) => value !== null && (value.phase === "done" || value.phase === "failed"),
+        ),
+        Stream.runHead,
+      );
+      assert.strictEqual(Option.getOrNull(finished)?.phase, "done");
+      assert.deepEqual(
+        harness.boatCalls.map((call) => call.action),
+        [state === "archived" ? "resume" : "renew", "prepare"],
+      );
+      assert.deepEqual(harness.boatTargets, ["owned-vm", "owned-vm"]);
+      assert.strictEqual(harness.runSetup.mock.calls.length, 0);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
+it.effect.each([
+  { driver: "codex", message: "/goal implement the report" },
+  { driver: "codex", message: "/compact" },
+  { driver: "cursor", message: "/logout" },
+  { driver: "antigravity", message: "/logout" },
+])(
+  "does not acquire compute when launching native control command $driver $message",
+  ({ driver, message }) => {
+    const harness = makeHarness({
+      providers: [{ instanceId: modelSelection.instanceId, driver } as ServerProvider],
+      boatEnabled: true,
+      hostResources: {
+        cpuUtilization: 0.98,
+        cpuCount: 8,
+        availableMemoryBytes: 16 * 1024 ** 3,
+        totalMemoryBytes: 32 * 1024 ** 3,
+      },
+    });
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const launched = yield* launches.launch({
+        ...launchInput({ command: `control-${message}`, thread: `control-${message}`, message }),
+        workspaceStrategy: { type: "worktree", baseRef: "main" },
+      });
+      const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+      const finished = yield* tracker.stream(launched.threadId).pipe(
+        Stream.filter((entry) => entry !== null && entry.phase !== "running"),
+        Stream.runHead,
+      );
+      assert.strictEqual(Option.getOrNull(finished)?.phase, "done");
+      assert.deepEqual(harness.boatCalls, []);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
+it.effect("checks local archive storage again immediately before Boat prepare", () => {
+  let checks = 0;
+  const harness = makeHarness({
+    boatEnabled: true,
+    hostResources: {
+      cpuUtilization: 0.98,
+      cpuCount: 8,
+      availableMemoryBytes: 16 * 1024 ** 3,
+      totalMemoryBytes: 32 * 1024 ** 3,
+    },
+    storageCheck: async () =>
+      ++checks === 1
+        ? null
+        : {
+            code: "storage_pressure",
+            message: "Archive storage became critical",
+          },
+  });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const launched = yield* launches.launch({
+      ...launchInput({ command: "late-storage", thread: "late-storage", message: "Build" }),
+      workspaceStrategy: { type: "worktree", baseRef: "main" },
+    });
+    const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+    const finished = yield* tracker.stream(launched.threadId).pipe(
+      Stream.filter((entry) => entry !== null && entry.phase !== "running"),
+      Stream.runHead,
+    );
+    assert.strictEqual(Option.getOrNull(finished)?.phase, "failed");
+    assert.deepEqual(
+      harness.boatCalls.map((call) => call.action),
+      ["start"],
+    );
+    assert.strictEqual(harness.runSetup.mock.calls.length, 0);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect.each([
+  { stage: "placement", code: "storage_pressure" },
+  { stage: "placement", code: "storage_measurement_failed" },
+  { stage: "archive", code: "storage_pressure" },
+  { stage: "archive", code: "storage_measurement_failed" },
+] as const)("checks state storage before $stage ($code)", ({ stage, code }) => {
+  let stateDir = "";
+  const checkedPaths: string[][] = [];
+  const harness = makeHarness({
+    boatEnabled: true,
+    hostResources: {
+      cpuUtilization: 0.98,
+      cpuCount: 8,
+      availableMemoryBytes: 16 * 1024 ** 3,
+      totalMemoryBytes: 32 * 1024 ** 3,
+    },
+    storageCheck: async (paths) => {
+      checkedPaths.push([...paths]);
+      return paths.includes(stateDir) && (stage === "placement" || checkedPaths.length > 1)
+        ? { code, message: "State filesystem admission refused" }
+        : null;
+    },
+  });
+  return Effect.gen(function* () {
+    stateDir = (yield* ServerConfig.ServerConfig).stateDir;
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const launched = yield* launches.launch({
+      ...launchInput({
+        command: `state-${stage}-${code}`,
+        thread: `state-${stage}-${code}`,
+        message: "Build",
+      }),
+      workspaceStrategy: { type: "worktree", baseRef: "main" },
+    });
+    const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+    const finished = yield* tracker.stream(launched.threadId).pipe(
+      Stream.filter((entry) => entry !== null && entry.phase !== "running"),
+      Stream.runHead,
+    );
+    assert.strictEqual(Option.getOrNull(finished)?.phase, "failed");
+    assert.deepEqual(
+      harness.boatCalls.map((call) => call.action),
+      stage === "placement" ? [] : ["start"],
+    );
+    assert.strictEqual(harness.runSetup.mock.calls.length, 0);
+    assert.include(checkedPaths.at(-1) ?? [], stateDir);
+    if (stage === "placement") assert.strictEqual(harness.createWorktree.mock.calls.length, 0);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect.each(["cpu", "memory", "budget", "storage", "healthy"] as const)(
+  "places ordinary development according to resources without bypassing admission (%s)",
+  (condition) => {
+    const pressured = condition !== "healthy";
+    const harness = makeHarness({
+      boatEnabled: true,
+      hostResources: {
+        cpuCount: 8,
+        cpuUtilization: condition === "memory" ? 0.1 : pressured ? 0.98 : 0.1,
+        availableMemoryBytes: condition === "memory" ? 512 * 1024 ** 2 : 16 * 1024 ** 3,
+        totalMemoryBytes: 32 * 1024 ** 3,
+      },
+      ...(condition === "budget" ? { boatError: "budget" as const } : {}),
+      ...(condition === "storage"
+        ? {
+            storageFailure: {
+              code: "storage_pressure" as const,
+              message: "Synthetic metadata pressure",
+            },
+          }
+        : {}),
+    });
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const launched = yield* launches.launch({
+        ...launchInput({
+          command: `compute-${condition}`,
+          thread: `compute-${condition}`,
+          message: "Build the application",
+        }),
+        workspaceStrategy: { type: "worktree", baseRef: "main" },
+      });
+      const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+      const finished = yield* tracker.stream(launched.threadId).pipe(
+        Stream.filter((entry) => entry !== null && entry.phase !== "running"),
+        Stream.runHead,
+      );
+      assert.strictEqual(
+        Option.getOrNull(finished)?.phase,
+        condition === "budget" || condition === "storage" ? "failed" : "done",
+      );
+      assert.strictEqual(harness.runSetup.mock.calls.length, condition === "healthy" ? 1 : 0);
+      assert.deepEqual(
+        harness.boatCalls.map((call) => call.action),
+        condition === "healthy" || condition === "storage"
+          ? []
+          : condition === "budget"
+            ? ["start"]
+            : ["start", "prepare"],
+      );
+      if (condition === "storage") assert.strictEqual(harness.createWorktree.mock.calls.length, 0);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
 it.effect("reuses a project work owner across callers and concurrent intake", () =>
   Effect.gen(function* () {
     const launches = yield* ThreadLaunch.ThreadLaunchService;
@@ -436,50 +709,59 @@ it.effect("reuses a project work owner across callers and concurrent intake", ()
   }).pipe(Effect.provide(makeHarness().layer)),
 );
 
-it.effect("resumes an existing idle owner's Boat before releasing its next turn", () => {
-  const harness = makeHarness({ boatEnabled: true, boatStopped: true });
-  return Effect.gen(function* () {
-    const threadId = yield* ThreadLaunch.workOwnerThreadId(projectId, "existing-owner");
-    const threads = yield* ThreadManagement.ThreadManagementService;
-    yield* threads.dispatch({
-      type: "thread.create",
-      commandId: CommandId.make("seed-owner"),
-      threadId,
-      projectId,
-      title: "Existing owner",
-      modelSelection,
-      runtimeMode: "full-access",
-      interactionMode: "default",
-      branch: "feature/report",
-      worktreePath: "/repo-worktrees/feature",
-      createdBy: "user",
-      creationSource: "web",
+it.effect.each(["Continue the report", "/compact", "/goal pause"])(
+  "resumes an existing idle owner for %s without unrelated compute",
+  (message) => {
+    const control = message !== "Continue the report";
+    const harness = makeHarness({
+      boatEnabled: true,
+      providers: [{ instanceId: modelSelection.instanceId, driver: "codex" } as ServerProvider],
+      boatStopped: true,
+      ...(control ? { boatError: "budget" as const } : {}),
     });
-    const launches = yield* ThreadLaunch.ThreadLaunchService;
-    const request = {
-      ...launchInput({
-        command: "resume-owner",
-        thread: "ignored",
-        message: "Continue the report",
-      }),
-      workKey: "existing-owner",
-    };
-    yield* launches.launch(request);
-    const repeated = yield* launches.launch(request);
-    assert.strictEqual(repeated.projection.messages.length, 1);
-    const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
-    const finished = yield* tracker.stream(threadId).pipe(
-      Stream.filter((item) => item !== null && item.phase !== "running"),
-      Stream.runHead,
-    );
-    assert.strictEqual(Option.getOrNull(finished)?.phase, "done");
-    assert.deepEqual(
-      harness.boatCalls.map((call) => call.action),
-      ["start", "resume", "prepare"],
-    );
-    assert.strictEqual(harness.runSetup.mock.calls.length, 0);
-  }).pipe(Effect.provide(harness.layer));
-});
+    return Effect.gen(function* () {
+      const threadId = yield* ThreadLaunch.workOwnerThreadId(projectId, "existing-owner");
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      yield* threads.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("seed-owner"),
+        threadId,
+        projectId,
+        title: "Existing owner",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: "feature/report",
+        worktreePath: "/repo-worktrees/feature",
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const request = {
+        ...launchInput({
+          command: "resume-owner",
+          thread: "ignored",
+          message,
+        }),
+        workKey: "existing-owner",
+      };
+      yield* launches.launch(request);
+      const repeated = yield* launches.launch(request);
+      assert.strictEqual(repeated.projection.messages.length, 1);
+      const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+      const finished = yield* tracker.stream(threadId).pipe(
+        Stream.filter((item) => item !== null && item.phase !== "running"),
+        Stream.runHead,
+      );
+      assert.strictEqual(Option.getOrNull(finished)?.phase, "done");
+      assert.deepEqual(
+        harness.boatCalls.map((call) => call.action),
+        control ? [] : ["start", "resume", "prepare"],
+      );
+      assert.strictEqual(harness.runSetup.mock.calls.length, 0);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
 
 it.effect("keeps a racing linked caller outside another work owner's thread", () =>
   Effect.gen(function* () {
