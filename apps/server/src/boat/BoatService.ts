@@ -309,6 +309,13 @@ export interface BoatDesktopAccess {
   readonly actor: BoatDesktopDescriptor["actor"];
 }
 
+export interface BoatDesktopViewer {
+  readonly activate: Effect.Effect<void, BoatError>;
+  readonly touch: Effect.Effect<void, BoatError>;
+  readonly deactivate: Effect.Effect<void>;
+  readonly disconnect: Effect.Effect<void>;
+}
+
 export class BoatService extends Context.Service<
   BoatService,
   {
@@ -332,6 +339,11 @@ export class BoatService extends Context.Service<
       binding: BoatDesktopAccess["binding"],
       callerThreadId: ThreadId,
     ) => Effect.Effect<BoatDesktopAccess, BoatError>;
+    readonly registerDesktopViewer: (
+      binding: BoatDesktopAccess["binding"],
+      callerThreadId: ThreadId,
+      viewer: { readonly tabId: string; readonly viewerId: string },
+    ) => Effect.Effect<BoatDesktopViewer, BoatError, Scope.Scope>;
     readonly connect: (apiKey: Redacted.Redacted<string>) => Effect.Effect<BoatState, BoatError>;
     readonly disconnect: Effect.Effect<void, BoatError>;
     readonly configure: (
@@ -373,6 +385,7 @@ export const make = Effect.gen(function* () {
       readonly scope: Scope.Closeable;
       readonly ended: Deferred.Deferred<void>;
       access: BoatDesktopAccess | null;
+      readonly viewers: Map<string, { activeUntil: number }>;
     }
   >();
   const privateAndroidPreviews = new Map<
@@ -780,8 +793,13 @@ export const make = Effect.gen(function* () {
     );
   });
   const closeDesktopAccess = Effect.fn("BoatService.closeDesktopAccess")(
-    (entry: { readonly scope: Scope.Closeable; readonly ended: Deferred.Deferred<void> }) =>
-      Deferred.succeed(entry.ended, undefined).pipe(
+    (entry: {
+      readonly scope: Scope.Closeable;
+      readonly ended: Deferred.Deferred<void>;
+      readonly viewers: Map<string, { activeUntil: number }>;
+    }) =>
+      Effect.sync(() => entry.viewers.clear()).pipe(
+        Effect.andThen(Deferred.succeed(entry.ended, undefined)),
         Effect.andThen(Scope.close(entry.scope, Exit.void)),
       ),
   );
@@ -800,6 +818,72 @@ export const make = Effect.gen(function* () {
     if (privateDesktopPreviews.get(binding.requestId)?.access !== access)
       return yield* new BoatError({ category: "conflict" });
     return access;
+  });
+  const registerDesktopViewer = Effect.fn("BoatService.registerDesktopViewer")(function* (
+    binding: BoatDesktopAccess["binding"],
+    callerThreadId: ThreadId,
+    viewer: { readonly tabId: string; readonly viewerId: string },
+  ) {
+    const access = yield* getDesktopAccess(binding, callerThreadId);
+    const entry = privateDesktopPreviews.get(binding.requestId);
+    if (
+      !entry ||
+      viewer.tabId !== access.viewer.tabId ||
+      !viewer.viewerId ||
+      viewer.viewerId.length > 256 ||
+      entry.viewers.has(viewer.viewerId)
+    )
+      return yield* new BoatError({ category: "conflict" });
+    return yield* Effect.gen(function* () {
+      if (
+        privateDesktopPreviews.get(binding.requestId) !== entry ||
+        entry.viewers.has(viewer.viewerId)
+      )
+        return yield* new BoatError({ category: "conflict" });
+      const usage = { activeUntil: 0 };
+      entry.viewers.set(viewer.viewerId, usage);
+      const disconnect = Effect.sync(() => {
+        if (entry.viewers.get(viewer.viewerId) === usage) entry.viewers.delete(viewer.viewerId);
+      });
+      yield* Effect.addFinalizer(() => disconnect);
+      // Accepted input is frequent; refresh uses in-memory checks without per-input spans or I/O.
+      const refresh = Effect.fnUntraced(function* (requireActive: boolean) {
+        const now = yield* Clock.currentTimeMillis;
+        const ended = yield* Deferred.isDone(entry.ended);
+        const instance = ledger.instances.find((item) => item.requestId === binding.requestId);
+        if (
+          ended ||
+          privateDesktopPreviews.get(binding.requestId) !== entry ||
+          entry.viewers.get(viewer.viewerId) !== usage ||
+          entry.access !== access ||
+          instance?.projectId !== binding.projectId ||
+          instance.sandboxId !== binding.sandboxId ||
+          !["ready", "idle", "running"].includes(instance.state) ||
+          !instance.leases.includes(binding.threadId) ||
+          !projectSettings(binding.projectId).enabled ||
+          projectSettings(binding.projectId).webAccess !== "private" ||
+          work[binding.requestId]?.sourceTree !== binding.sourceTree ||
+          !Number.isFinite(Date.parse(access.lease.expiresAt)) ||
+          Date.parse(access.lease.expiresAt) <= now ||
+          Date.parse(instance.expiresAt) <= now ||
+          (requireActive && usage.activeUntil <= now)
+        )
+          return yield* new BoatError({ category: "conflict" });
+        usage.activeUntil = Math.min(
+          now + 60_000,
+          Date.parse(access.lease.expiresAt),
+          Date.parse(instance.expiresAt),
+        );
+      });
+      return {
+        activate: refresh(false),
+        touch: refresh(true),
+        deactivate: Effect.sync(() => {
+          if (entry.viewers.get(viewer.viewerId) === usage) usage.activeUntil = 0;
+        }),
+        disconnect,
+      } satisfies BoatDesktopViewer;
+    }).pipe(Effect.uninterruptible);
   });
   const openDesktopAccess = Effect.fn("BoatService.openDesktopAccess")(
     (
@@ -858,7 +942,7 @@ export const make = Effect.gen(function* () {
           }
           const scope = yield* Scope.fork(serviceScope, "sequential");
           const ended = yield* Deferred.make<void>();
-          const lifecycle = { scope, ended };
+          const lifecycle = { scope, ended, viewers: new Map<string, { activeUntil: number }>() };
           return yield* Effect.gen(function* () {
             const underlying = yield* assertActiveLease(target, callerThreadId);
             const lease: BoatLeaseAccess = {
@@ -2284,7 +2368,16 @@ ${action.command}`,
   const activeLeaseOwners = Effect.fn("BoatService.activeLeaseOwners")(function* (
     threadId: ThreadId,
     projectId: ProjectId,
+    requestId: string,
   ) {
+    const now = yield* Clock.currentTimeMillis;
+    const desktop = privateDesktopPreviews.get(requestId);
+    const desktopBinding = desktop?.access?.binding;
+    const viewerActive =
+      desktop !== undefined &&
+      desktopBinding?.projectId === projectId &&
+      work[requestId]?.sourceTree === desktopBinding.sourceTree &&
+      [...desktop.viewers.values()].some((viewer) => viewer.activeUntil > now);
     const pending = [threadId];
     const visited = new Set<ThreadId>();
     const active = new Set<ThreadId>();
@@ -2295,6 +2388,7 @@ ${action.command}`,
       const thread = yield* projections.getThreadShell(id);
       if (!thread || thread.projectId !== projectId || thread.deletedAt !== null) continue;
       if (
+        (viewerActive && desktopBinding?.threadId === id) ||
         thread.activeRunId !== null ||
         thread.activityRunStatus != null ||
         backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])
@@ -2346,7 +2440,7 @@ ${action.command}`,
       const now = yield* Clock.currentTimeMillis;
       if (!Number.isFinite(Date.parse(instance.expiresAt)) || Date.parse(instance.expiresAt) <= now)
         return yield* new BoatError({ category: "conflict" });
-      const owners = yield* activeLeaseOwners(source.threadId, caller.projectId);
+      const owners = yield* activeLeaseOwners(source.threadId, caller.projectId, target.requestId);
       if (!owners.has(callerThreadId)) return yield* new BoatError({ category: "conflict" });
       const latest = ledger.instances.find((item) => item.requestId === target.requestId);
       if (
@@ -2488,7 +2582,7 @@ ${action.command}`,
       const sourceOwner = work[item.requestId]?.source.threadId ?? item.threadId;
       const roots = new Set([...item.leases, ...(sourceOwner ? [sourceOwner] : [])]);
       for (const threadId of roots) {
-        for (const active of yield* activeLeaseOwners(threadId, item.projectId))
+        for (const active of yield* activeLeaseOwners(threadId, item.projectId, item.requestId))
           liveOwners.add(active);
       }
       const finishedOwners = new Set(item.leases.filter((threadId) => !liveOwners.has(threadId)));
@@ -2525,6 +2619,7 @@ ${action.command}`,
     assertActiveLease,
     openDesktopAccess,
     getDesktopAccess,
+    registerDesktopViewer,
     isEnabled: (projectId: ProjectId) => Effect.sync(() => projectSettings(projectId).enabled),
     connect,
     disconnect,

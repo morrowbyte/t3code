@@ -30,6 +30,7 @@ import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
+import * as Scope from "effect/Scope";
 import * as ServerConfig from "../config.ts";
 import * as Secrets from "../auth/ServerSecretStore.ts";
 import * as Projects from "../project/ProjectService.ts";
@@ -708,6 +709,147 @@ it.effect("keeps borrowed desktop access alive until its source generation is re
     assert.isTrue(
       test.calls.every((call) => !call.includes("/desktop") && !call.includes("/host")),
     );
+  }).pipe(Effect.scoped, Effect.provide(test.services));
+});
+
+it.effect(
+  "keeps explicit desktop control alive after its agent finishes until input expires",
+  () => {
+    const test = setup();
+    return Effect.gen(function* () {
+      const boat = yield* make;
+      yield* boat.connect(Redacted.make("boat_fixture_private"));
+      yield* boat.configureDefaults({ ttlMinutes: 3, retentionDays: 14 });
+      yield* boat.configure(projectId, {
+        ...DEFAULT_BOAT_PROJECT,
+        enabled: true,
+        webAccess: "private",
+      });
+      const target = { requestId: "desktop-human", sandboxId: "bx_23456789" };
+      yield* boat.operate(
+        { action: "start", projectId, requestId: target.requestId },
+        ownerThreadId,
+      );
+      yield* boat.operate(
+        { action: "prepare", projectId, requestId: target.requestId },
+        ownerThreadId,
+      );
+      const access = yield* boat.openDesktopAccess(target, ownerThreadId, desktopDescriptor);
+      const viewer = yield* boat.registerDesktopViewer(access.binding, ownerThreadId, {
+        tabId: access.viewer.tabId,
+        viewerId: "viewer-human",
+      });
+      yield* viewer.activate;
+      test.setOwnerActive(false);
+      yield* boat.reconcile();
+      yield* access.lease.check;
+      assert.notInclude(test.calls, "POST /sandboxes/bx_23456789/stop");
+      yield* TestClock.adjust("50 seconds");
+      yield* viewer.touch;
+      yield* TestClock.adjust("59 seconds");
+      yield* boat.reconcile();
+      assert.notInclude(test.calls, "POST /sandboxes/bx_23456789/stop");
+      yield* TestClock.adjust("1 second");
+      yield* boat.reconcile();
+      assert.include(test.calls, "POST /sandboxes/bx_23456789/stop");
+      yield* access.lease.revoked;
+      assert.isTrue(Exit.isFailure(yield* viewer.touch.pipe(Effect.exit)));
+    }).pipe(Effect.scoped, Effect.provide(test.services));
+  },
+);
+
+it.effect.each(["passive", "release", "disconnect", "scope"] as const)(
+  "does not retain a desktop viewer after %s", (end) => {
+    const test = setup();
+    return Effect.gen(function* () {
+      const boat = yield* make;
+      yield* boat.connect(Redacted.make("boat_fixture_private"));
+      yield* boat.configure(projectId, {
+        ...DEFAULT_BOAT_PROJECT,
+        enabled: true,
+        webAccess: "private",
+      });
+      const target = { requestId: "desktop-ended", sandboxId: "bx_23456789" };
+      yield* boat.operate(
+        { action: "start", projectId, requestId: target.requestId },
+        ownerThreadId,
+      );
+      yield* boat.operate(
+        { action: "prepare", projectId, requestId: target.requestId },
+        ownerThreadId,
+      );
+      const access = yield* boat.openDesktopAccess(target, ownerThreadId, desktopDescriptor);
+      const scope = yield* Scope.make();
+      const viewer = yield* boat
+        .registerDesktopViewer(access.binding, ownerThreadId, {
+          tabId: access.viewer.tabId,
+          viewerId: "viewer-ended",
+        })
+        .pipe(Effect.provideService(Scope.Scope, scope));
+      if (end !== "passive") yield* viewer.activate;
+      if (end === "release") yield* viewer.deactivate;
+      if (end === "disconnect") yield* viewer.disconnect;
+      if (end === "scope") yield* Scope.close(scope, Exit.void);
+      test.setOwnerActive(false);
+      yield* boat.reconcile();
+      assert.include(test.calls, "POST /sandboxes/bx_23456789/stop");
+      yield* access.lease.revoked;
+      yield* Scope.close(scope, Exit.void);
+    }).pipe(Effect.scoped, Effect.provide(test.services));
+  },
+);
+
+it.effect("binds desktop usage to the exact viewer generation and hard Boat deadline", () => {
+  const test = setup();
+  return Effect.gen(function* () {
+    const boat = yield* make;
+    yield* boat.connect(Redacted.make("boat_fixture_private"));
+    yield* boat.configureDefaults({ ttlMinutes: 1, retentionDays: 14 });
+    yield* boat.configure(projectId, {
+      ...DEFAULT_BOAT_PROJECT,
+      enabled: true,
+      webAccess: "private",
+    });
+    const target = { requestId: "desktop-generation", sandboxId: "bx_23456789" };
+    yield* boat.operate({ action: "start", projectId, requestId: target.requestId }, ownerThreadId);
+    yield* boat.operate(
+      { action: "prepare", projectId, requestId: target.requestId },
+      ownerThreadId,
+    );
+    const access = yield* boat.openDesktopAccess(target, ownerThreadId, desktopDescriptor);
+    assert.equal(Date.parse(access.lease.expiresAt) - (yield* Clock.currentTimeMillis), 60_000);
+    const identity = { tabId: access.viewer.tabId, viewerId: "viewer-same" };
+    assert.isTrue(
+      Exit.isFailure(
+        yield* boat
+          .registerDesktopViewer({ ...access.binding }, ownerThreadId, identity)
+          .pipe(Effect.exit),
+      ),
+    );
+    assert.isTrue(
+      Exit.isFailure(
+        yield* boat
+          .registerDesktopViewer(access.binding, ownerThreadId, { ...identity, tabId: "other-tab" })
+          .pipe(Effect.exit),
+      ),
+    );
+    const previous = yield* boat.registerDesktopViewer(access.binding, ownerThreadId, identity);
+    assert.isTrue(Exit.isFailure(yield* previous.touch.pipe(Effect.exit)));
+    yield* previous.disconnect;
+    const current = yield* boat.registerDesktopViewer(access.binding, ownerThreadId, identity);
+    yield* current.activate;
+    yield* previous.deactivate;
+    yield* previous.disconnect;
+    assert.isTrue(Exit.isFailure(yield* previous.activate.pipe(Effect.exit)));
+    test.setOwnerActive(false);
+    yield* TestClock.adjust("59 seconds");
+    yield* current.touch;
+    yield* boat.reconcile();
+    assert.notInclude(test.calls, "POST /sandboxes/bx_23456789/stop");
+    yield* TestClock.adjust("1 second");
+    yield* boat.reconcile();
+    assert.include(test.calls, "POST /sandboxes/bx_23456789/stop");
+    yield* access.lease.revoked;
   }).pipe(Effect.scoped, Effect.provide(test.services));
 });
 
