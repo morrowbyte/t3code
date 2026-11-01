@@ -145,6 +145,10 @@ async function nightlyAfterCI({ github, context, core, options = {} }) {
     return false;
   };
   if (await finish(await observe())) return;
+  const { verifySourceProof } = require("./source-proof.cjs");
+  const sourceProof = await verifySourceProof({ github, repo, source });
+  // Qualification can take time; main and the durable intent must still agree.
+  if (await finish(await observe())) return;
   // Persist BEFORE the one mutating request. A crash or ambiguous HTTP result
   // leaves a pending marker; a later job only reconciles and never blind retries.
   await mark("pending", `Exclusive Nightly dispatch intent from CI ${ci.id}`, ci.html_url);
@@ -157,6 +161,9 @@ async function nightlyAfterCI({ github, context, core, options = {} }) {
       inputs: {
         publish: "true",
         source_sha: source,
+        source_proof_run_id: String(sourceProof.runId),
+        source_proof_artifact_id: String(sourceProof.artifactId),
+        source_proof_digest: sourceProof.artifactDigest,
         ...(options.runnerBackend ? { runner_backend: options.runnerBackend } : {}),
       },
     });

@@ -27,6 +27,18 @@ on:
         description: Exact source commit (fork main for publishing, dispatched branch for artifacts only)
         required: true
         type: string
+      source_proof_run_id:
+        description: Successful full source qualification run (required for new builds)
+        type: string
+        default: ""
+      source_proof_artifact_id:
+        description: Exact source qualification artifact ID
+        type: string
+        default: ""
+      source_proof_digest:
+        description: GitHub SHA256 digest of the source qualification artifact
+        type: string
+        default: ""
       linux_first:
         description: Publish Linux and Android before appending Windows from the same run
         type: boolean
@@ -101,6 +113,9 @@ jobs:
       desktop_workflow_sha: ${{ steps.continuation75.outputs.desktop_workflow_sha || steps.continuation.outputs.desktop_workflow_sha || steps.windows_recovery.outputs.desktop_workflow_sha || steps.recovery.outputs.desktop_workflow_sha || github.workflow_sha }}
       desktop_workflow_ref: ${{ steps.continuation75.outputs.desktop_workflow_ref || steps.continuation.outputs.desktop_workflow_ref || steps.windows_recovery.outputs.desktop_workflow_ref || steps.recovery.outputs.desktop_workflow_ref || github.workflow_ref }}
       source_ci_run_id: ${{ steps.android_ci.outputs.run_id }}
+      source_proof_run_id: ${{ steps.source_proof.outputs.run_id }}
+      source_proof_attempt: ${{ steps.source_proof.outputs.attempt }}
+      source_proof_workflow_ref: ${{ steps.source_proof.outputs.workflow_ref }}
       recovery_artifact_attempt: ${{ steps.continuation75.outputs.recovery_artifact_attempt || steps.continuation.outputs.recovery_artifact_attempt || steps.windows_recovery.outputs.recovery_artifact_attempt || steps.recovery.outputs.recovery_artifact_attempt }}
       recovery_receipt_sha256: ${{ steps.recovery.outputs.recovery_receipt_sha256 }}
       recovery75_receipt_sha256: ${{ steps.continuation75.outputs.recovery75_receipt_sha256 }}
@@ -744,6 +759,56 @@ jobs:
               output.write(f'android_source_sha={source}\nandroid_lock_sha256={lock}\nsource_ci_run_id=40582582053\n')
           PYRESTORE
 
+      - id: source_proof
+        name: Verify full source qualification before packaging
+        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && !inputs.continue_release75_run_id
+        uses: actions/github-script@v7
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_PROOF_RUN_ID: ${{ inputs.source_proof_run_id }}
+          SOURCE_PROOF_ARTIFACT_ID: ${{ inputs.source_proof_artifact_id }}
+          SOURCE_PROOF_DIGEST: ${{ inputs.source_proof_digest }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const { execFileSync } = require('node:child_process');
+            const { sourceIdentity, verifySourceProof } = require(path.resolve('scripts/morrowbyte/source-proof.cjs'));
+            const source = process.env.SOURCE_SHA;
+            if (!/^[1-9][0-9]*$/.test(process.env.SOURCE_PROOF_RUN_ID) ||
+                !/^[1-9][0-9]*$/.test(process.env.SOURCE_PROOF_ARTIFACT_ID) ||
+                !/^sha256:[0-9a-f]{64}$/.test(process.env.SOURCE_PROOF_DIGEST)) throw Error('Exact full source proof is required');
+            const base = execFileSync('git', ['rev-parse', 'HEAD^1'], {encoding: 'utf8'}).trim();
+            const expected = sourceIdentity(file => fs.readFileSync(file), source, base);
+            const verified = await verifySourceProof({github, repo: context.repo, source,
+              runId: process.env.SOURCE_PROOF_RUN_ID, artifactId: process.env.SOURCE_PROOF_ARTIFACT_ID,
+              artifactDigest: process.env.SOURCE_PROOF_DIGEST, expected});
+            const directory = path.join(process.env.RUNNER_TEMP, 'source-qualification');
+            fs.mkdirSync(directory, {mode: 0o700});
+            fs.writeFileSync(path.join(directory, 'source-proof.json'), verified.files['source-proof.json']);
+            fs.writeFileSync(path.join(directory, 'origin.json'), JSON.stringify({runId: verified.runId,
+              artifactId: verified.artifactId, artifactDigest: verified.artifactDigest}) + '\n');
+            if (fs.existsSync('apps/web/src/routes/observatory.tsx')) {
+              if (!verified.proof.route) throw Error('Source proof has no generated route evidence');
+              const route = path.join(process.env.RUNNER_TEMP, 'observatory-route-generation');
+              fs.mkdirSync(route, {mode: 0o700});
+              for (const file of ['receipt.json', 'routeTree.gen.ts', 'routeTree.diff'])
+                fs.writeFileSync(path.join(route, file), verified.files[file]);
+              fs.writeFileSync('apps/web/src/routeTree.gen.ts', verified.files['routeTree.gen.ts']);
+            }
+            core.setOutput('run_id', String(verified.runId));
+            core.setOutput('attempt', String(verified.proof.producer.attempt));
+            core.setOutput('workflow_ref', verified.proof.producer.workflowRef);
+
+      - name: Retain verified source qualification provenance
+        if: steps.source_proof.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: morrowbyte-source-qualification-${{ inputs.source_sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/source-qualification/*
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Setup cached preflight dependencies
         if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && !inputs.continue_release75_run_id
         uses: ./.github/actions/setup-ci-deps
@@ -752,25 +817,6 @@ jobs:
       - name: Prepare pinned Electron runtime before desktop imports
         if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && !inputs.continue_release75_run_id
         run: node apps/desktop/scripts/ensure-electron-runtime.mjs
-
-      - name: Install pinned Chromium for focused renderer gates
-        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && !inputs.continue_release75_run_id && (inputs.android_only != true || inputs.publish != true)
-        run: |
-          args=(install --only-shell chromium)
-          if [[ '${{ inputs.runner_backend }}' != self-hosted ]]; then
-            args+=(--with-deps)
-          fi
-          node apps/server/node_modules/playwright-core/cli.js "${args[@]}"
-
-      - name: Check source before release
-        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && !inputs.continue_release75_run_id && (inputs.android_only != true || inputs.publish != true)
-        env:
-          EFFECTIVE_SOURCE_SHA: ${{ inputs.source_sha }}
-        run: |
-          set -euo pipefail
-          [[ "$EFFECTIVE_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          test "$(git rev-parse HEAD)" = "$EFFECTIVE_SOURCE_SHA"
-          bash scripts/morrowbyte/check.sh
 
       - id: android_ci
         name: Reuse exact main source CI before Android-only release
@@ -800,6 +846,9 @@ jobs:
         if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && !inputs.continue_release75_run_id && (inputs.android_only != true || inputs.publish != true)
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_PROOF_RUN_ID: ${{ steps.source_proof.outputs.run_id }}
+          SOURCE_PROOF_ATTEMPT: ${{ steps.source_proof.outputs.attempt }}
+          SOURCE_PROOF_WORKFLOW_REF: ${{ steps.source_proof.outputs.workflow_ref }}
         run: |
           set -euo pipefail
           if [[ ! -f apps/web/src/routes/observatory.tsx ]]; then
@@ -816,10 +865,9 @@ jobs:
           assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == source
           assert receipt['status'] == 'generated-unreviewed'
           assert receipt['source'] == receipt['effectiveSourceSha'] == source
-          assert receipt['run'] == os.environ['GITHUB_RUN_ID'] and receipt['attempt'] == os.environ['GITHUB_RUN_ATTEMPT']
-          assert receipt['trustedContextSha'] == os.environ['GITHUB_SHA']
-          assert receipt['trustedWorkflowSha'] == os.environ['GITHUB_WORKFLOW_SHA']
-          assert receipt['trustedWorkflowRef'] == os.environ['GITHUB_WORKFLOW_REF']
+          assert receipt['run'] == os.environ['SOURCE_PROOF_RUN_ID'] and receipt['attempt'] == os.environ['SOURCE_PROOF_ATTEMPT']
+          assert receipt['trustedContextSha'] == receipt['trustedWorkflowSha'] == source
+          assert receipt['trustedWorkflowRef'] == os.environ['SOURCE_PROOF_WORKFLOW_REF']
           assert receipt['lockSha256'] == digest(pathlib.Path('pnpm-lock.yaml'))
           assert receipt['checkScriptSha256'] == digest(pathlib.Path('scripts/morrowbyte/check.sh'))
           before = subprocess.check_output(['git', 'show', source + ':apps/web/src/routeTree.gen.ts'])
@@ -941,6 +989,8 @@ jobs:
         env:
           SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
           PREFLIGHT_ROUTE_SHA: ${{ needs.preflight.outputs.observatory_route_sha256 }}
+          SOURCE_PROOF_RUN_ID: ${{ needs.preflight.outputs.source_proof_run_id }}
+          SOURCE_PROOF_ATTEMPT: ${{ needs.preflight.outputs.source_proof_attempt }}
         run: |
           set -euo pipefail
           if [[ ! -f apps/web/src/routes/observatory.tsx ]]; then
@@ -958,7 +1008,7 @@ jobs:
           preflight = pathlib.Path(os.environ['RUNNER_TEMP']) / 'observatory-release-preflight'
           before = json.loads((preflight / 'receipt.json').read_bytes())
           assert before['source'] == before['effectiveSourceSha'] == source
-          assert before['run'] == os.environ['GITHUB_RUN_ID'] and before['attempt'] == os.environ['GITHUB_RUN_ATTEMPT']
+          assert before['run'] == os.environ['SOURCE_PROOF_RUN_ID'] and before['attempt'] == os.environ['SOURCE_PROOF_ATTEMPT']
           assert before['lockSha256'] == digest(pathlib.Path('pnpm-lock.yaml'))
           assert before['afterSha256'] == digest(preflight / 'routeTree.gen.ts') == expected
           actual = pathlib.Path('apps/web/src/routeTree.gen.ts')
@@ -1972,6 +2022,9 @@ jobs:
         env:
           SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
           PREFLIGHT_ROUTE_SHA: ${{ needs.preflight.outputs.observatory_route_sha256 }}
+          SOURCE_PROOF_RUN_ID: ${{ needs.preflight.outputs.source_proof_run_id }}
+          SOURCE_PROOF_ATTEMPT: ${{ needs.preflight.outputs.source_proof_attempt }}
+          SOURCE_PROOF_WORKFLOW_REF: ${{ needs.preflight.outputs.source_proof_workflow_ref }}
           DESKTOP_RUN_ID: ${{ needs.preflight.outputs.desktop_run_id }}
           DESKTOP_RUN_ATTEMPT: ${{ needs.preflight.outputs.desktop_run_attempt }}
           DESKTOP_CONTEXT_SHA: ${{ needs.preflight.outputs.desktop_context_sha }}
@@ -2000,13 +2053,19 @@ jobs:
           build = root / 'observatory-publish-build'
           pre = json.loads((preflight / 'receipt.json').read_bytes())
           built = json.loads((build / 'receipt.json').read_bytes())
-          for receipt in [pre, built]:
+          for kind, receipt in [('preflight', pre), ('build', built)]:
+              qualified = kind == 'preflight' and os.environ['SOURCE_PROOF_RUN_ID']
+              run_id = os.environ['SOURCE_PROOF_RUN_ID'] if qualified else os.environ['DESKTOP_RUN_ID']
+              attempt = os.environ['SOURCE_PROOF_ATTEMPT'] if qualified else os.environ['DESKTOP_RUN_ATTEMPT']
+              context_sha = source if qualified else os.environ['DESKTOP_CONTEXT_SHA']
+              workflow_sha = source if qualified else os.environ['DESKTOP_WORKFLOW_SHA']
+              workflow_ref = os.environ['SOURCE_PROOF_WORKFLOW_REF'] if qualified else os.environ['DESKTOP_WORKFLOW_REF']
               assert receipt['source'] == source
-              assert receipt['run'] == os.environ['DESKTOP_RUN_ID'] and receipt['attempt'] == os.environ['DESKTOP_RUN_ATTEMPT']
+              assert receipt['run'] == run_id and receipt['attempt'] == attempt
               assert receipt['lockSha256'] == digest(pathlib.Path('pnpm-lock.yaml'))
-              assert receipt['trustedContextSha'] == os.environ['DESKTOP_CONTEXT_SHA']
-              assert receipt['trustedWorkflowSha'] == os.environ['DESKTOP_WORKFLOW_SHA']
-              assert receipt['trustedWorkflowRef'] == os.environ['DESKTOP_WORKFLOW_REF']
+              assert receipt['trustedContextSha'] == context_sha
+              assert receipt['trustedWorkflowSha'] == workflow_sha
+              assert receipt['trustedWorkflowRef'] == workflow_ref
           assert pre['effectiveSourceSha'] == source and pre['status'] == 'generated-unreviewed'
           assert pre['afterSha256'] == built['generatedRouteSha256'] == expected
           assert digest(preflight / 'routeTree.gen.ts') == digest(build / 'routeTree.gen.ts') == expected
@@ -2329,6 +2388,9 @@ jobs:
         env:
           SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
           PREFLIGHT_ROUTE_SHA: ${{ needs.preflight.outputs.observatory_route_sha256 }}
+          SOURCE_PROOF_RUN_ID: ${{ needs.preflight.outputs.source_proof_run_id }}
+          SOURCE_PROOF_ATTEMPT: ${{ needs.preflight.outputs.source_proof_attempt }}
+          SOURCE_PROOF_WORKFLOW_REF: ${{ needs.preflight.outputs.source_proof_workflow_ref }}
           DESKTOP_RUN_ID: ${{ needs.preflight.outputs.desktop_run_id }}
           DESKTOP_RUN_ATTEMPT: ${{ needs.preflight.outputs.desktop_run_attempt }}
           DESKTOP_CONTEXT_SHA: ${{ needs.preflight.outputs.desktop_context_sha }}
@@ -2357,13 +2419,19 @@ jobs:
           build = root / 'observatory-publish-build'
           pre = json.loads((preflight / 'receipt.json').read_bytes())
           built = json.loads((build / 'receipt.json').read_bytes())
-          for receipt in [pre, built]:
+          for kind, receipt in [('preflight', pre), ('build', built)]:
+              qualified = kind == 'preflight' and os.environ['SOURCE_PROOF_RUN_ID']
+              run_id = os.environ['SOURCE_PROOF_RUN_ID'] if qualified else os.environ['DESKTOP_RUN_ID']
+              attempt = os.environ['SOURCE_PROOF_ATTEMPT'] if qualified else os.environ['DESKTOP_RUN_ATTEMPT']
+              context_sha = source if qualified else os.environ['DESKTOP_CONTEXT_SHA']
+              workflow_sha = source if qualified else os.environ['DESKTOP_WORKFLOW_SHA']
+              workflow_ref = os.environ['SOURCE_PROOF_WORKFLOW_REF'] if qualified else os.environ['DESKTOP_WORKFLOW_REF']
               assert receipt['source'] == source
-              assert receipt['run'] == os.environ['DESKTOP_RUN_ID'] and receipt['attempt'] == os.environ['DESKTOP_RUN_ATTEMPT']
+              assert receipt['run'] == run_id and receipt['attempt'] == attempt
               assert receipt['lockSha256'] == digest(pathlib.Path('pnpm-lock.yaml'))
-              assert receipt['trustedContextSha'] == os.environ['DESKTOP_CONTEXT_SHA']
-              assert receipt['trustedWorkflowSha'] == os.environ['DESKTOP_WORKFLOW_SHA']
-              assert receipt['trustedWorkflowRef'] == os.environ['DESKTOP_WORKFLOW_REF']
+              assert receipt['trustedContextSha'] == context_sha
+              assert receipt['trustedWorkflowSha'] == workflow_sha
+              assert receipt['trustedWorkflowRef'] == workflow_ref
           assert pre['effectiveSourceSha'] == source and pre['status'] == 'generated-unreviewed'
           assert pre['afterSha256'] == built['generatedRouteSha256'] == expected
           assert digest(preflight / 'routeTree.gen.ts') == digest(build / 'routeTree.gen.ts') == expected

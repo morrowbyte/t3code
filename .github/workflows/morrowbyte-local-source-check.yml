@@ -1,10 +1,20 @@
 name: Morrowbyte local source check
+run-name: Full source qualification ${{ inputs.source_sha }}
 
 on:
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Frozen full source SHA; dispatch this workflow on that same commit
+        required: true
+        type: string
+      base_sha:
+        description: Full first-parent SHA of the frozen source (not a moving ref)
+        required: true
+        type: string
 
 concurrency:
-  group: morrowbyte-local-source-check-${{ github.ref }}
+  group: morrowbyte-local-source-check-${{ inputs.source_sha }}
   cancel-in-progress: false
 
 permissions:
@@ -12,30 +22,52 @@ permissions:
 
 jobs:
   check:
-    if: github.repository == 'morrowbyte/t3code' && github.ref == 'refs/heads/main'
-    runs-on:
-      [
-        self-hosted,
-        "${{ vars.MORROWBYTE_INTEGRATION_RUNNER || vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux' }}",
-      ]
+    if: github.repository == 'morrowbyte/t3code'
+    runs-on: boat-large
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
         with:
-          node-version-file: package.json
-          cache: false
-          run-install: false
-      - name: Install dependencies
-        run: vp install --frozen-lockfile
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+      - name: Validate frozen source and comparison base
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          BASE_SHA: ${{ inputs.base_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ && "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_SHA" = "$SOURCE_SHA"
+          test "$GITHUB_WORKFLOW_SHA" = "$SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse HEAD^1)" = "$BASE_SHA"
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-ci-deps
+        with:
+          install-args: --frozen-lockfile
       - name: Prepare pinned Electron runtime
         run: node apps/desktop/scripts/ensure-electron-runtime.mjs
       - name: Install pinned Chromium
         run: node apps/server/node_modules/playwright-core/cli.js install --only-shell chromium
-      - name: Run existing focused source gates
+      - name: Run complete source qualification
         env:
-          EFFECTIVE_SOURCE_SHA: ${{ github.sha }}
+          EFFECTIVE_SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_BASE_SHA: ${{ inputs.base_sha }}
+          MORROWBYTE_SOURCE_RUNNER: boat-large
+          MORROWBYTE_SOURCE_PROOF: ${{ runner.temp }}/source-proof/source-proof.json
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$EFFECTIVE_SOURCE_SHA"
-          bash scripts/morrowbyte/check.sh
+          mkdir "$RUNNER_TEMP/source-proof"
+          setpriv --inh-caps=-dac_override,-dac_read_search --ambient-caps=-dac_override,-dac_read_search \
+            bash scripts/morrowbyte/check.sh
+      - name: Preserve complete successful source qualification
+        uses: actions/upload-artifact@v4
+        with:
+          name: morrowbyte-source-proof-${{ inputs.source_sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/source-proof/*
+          if-no-files-found: error
+          retention-days: 7

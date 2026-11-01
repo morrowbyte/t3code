@@ -192,14 +192,13 @@ test("desktop-only cannot enter Android recovery or publish mobile assets", () =
     false,
   );
 });
-test("Android artifacts retain normal source checks without requiring main publication CI", () => {
+test("Android artifacts require full source proof while main publication CI remains separate", () => {
   const steps = releaseWorkflow.jobs.preflight.steps;
   const inputs = { ...platformInputs(), android_only: true, publish: false };
   assert.equal(expression(steps.find((step) => step.id === "android_ci").if, inputs, {}), false);
   for (const name of [
     "Prepare pinned Electron runtime before desktop imports",
-    "Install pinned Chromium for focused renderer gates",
-    "Check source before release",
+    "Verify full source qualification before packaging",
     "Verify reviewed Observatory preflight route",
   ])
     assert.equal(expression(steps.find((step) => step.name === name).if, inputs, {}), true, name);
@@ -207,11 +206,11 @@ test("Android artifacts retain normal source checks without requiring main publi
   assert.equal(expression(steps.find((step) => step.id === "android_ci").if, publishing, {}), true);
   assert.equal(
     expression(
-      steps.find((step) => step.name === "Check source before release").if,
+      steps.find((step) => step.name === "Verify full source qualification before packaging").if,
       publishing,
       {},
     ),
-    false,
+    true,
   );
 });
 test("Android-only publication never schedules desktop packages", () => {

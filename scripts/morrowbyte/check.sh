@@ -10,15 +10,29 @@ if [[ -z "${RUNNER_TEMP:-}" ]]; then
   printf 'Release check artifacts: %s\n' "$RUNNER_TEMP"
 fi
 
-node scripts/sync-third-party-license-notices.ts --check
+source_proof() {
+  if [[ -n "${MORROWBYTE_SOURCE_PROOF:-}" ]]; then
+    node scripts/morrowbyte/source-proof.cjs "$@"
+  fi
+}
+if [[ -n "${MORROWBYTE_SOURCE_PROOF:-}" && "${MORROWBYTE_ALLOW_MISSING_VOICE_TESTS:-0}" == 1 ]]; then
+  echo "A full source proof cannot skip missing voice tests." >&2
+  exit 1
+fi
+source_proof begin
 
-node --test scripts/morrowbyte/nightly-after-ci.test.cjs
+node scripts/sync-third-party-license-notices.ts --check
+source_proof group licenses
+
+node --test scripts/morrowbyte/nightly-after-ci.test.cjs scripts/morrowbyte/source-proof.test.cjs
 python3 scripts/morrowbyte/release68-continuation.test.py
 python3 scripts/morrowbyte/release75-continuation.test.py
+source_proof group dispatch-and-recovery
 
 bash scripts/morrowbyte/test.sh
 # Consumer fixtures must exist in the host store, not the builder's private store.
 env -u NIX_REMOTE python3 packaging/nixos/test-updater.py
+source_proof group shell-and-nix-updater
 
 vp_cmd() {
   if command -v vp >/dev/null 2>&1; then
@@ -30,6 +44,7 @@ vp_cmd() {
 
 # Fail fast on release packaging before the unchanged renderer suites.
 (cd scripts && vp_cmd test run --config ../vite.config.ts build-desktop-artifact.test.ts lib/morrowbyte-branding.test.ts)
+source_proof group packaging-tests
 
 # Route generation is hosted evidence, not a committed source edit.
 if [[ -f apps/web/src/routes/observatory.tsx ]]; then
@@ -81,6 +96,7 @@ try {
 } finally { persist(); }
 OBSERVATORY_ROUTE_GENERATION
 fi
+source_proof group route-generation
 
 typecheck_failed=0
 for package in \
@@ -102,6 +118,7 @@ fi
 if [[ "$typecheck_failed" != 0 ]]; then
   exit 1
 fi
+source_proof group typecheck
 focused_tests=(
   packages/client-runtime/src/state/authAccessHttp.test.ts
   packages/client-runtime/src/state/threadInbox.test.ts
@@ -462,6 +479,7 @@ for renderer_test in "${renderer_tests[@]}"; do
   fi
 done
 vp_cmd lint --report-unused-disable-directives "$mobile_composer_test"
+source_proof group mobile-composer-lint
 node_focused_tests=()
 mobile_focused_tests=()
 for focused_test in "${focused_tests[@]}"; do
@@ -472,6 +490,11 @@ for focused_test in "${focused_tests[@]}"; do
   fi
 done
 vp_cmd test run --config vite.config.ts "${node_focused_tests[@]}"
+source_proof group node-tests
 (cd apps/mobile && vp_cmd test run "${mobile_focused_tests[@]}")
+source_proof group mobile-tests
 (cd apps/web && vp_cmd test run --project unit src/terminal/ghostty/core.test.ts)
+source_proof group terminal-tests
 (cd apps/web && vp_cmd test run --project browser "${renderer_tests[@]#apps/web/}")
+source_proof group browser-tests
+source_proof complete

@@ -38,10 +38,14 @@ jobs:
             const path = require('node:path');
             // Fetch only the CI-approved main-push helper; no checkout or Git credentials.
             const source = context.payload.workflow_run.head_sha;
-            const { data } = await github.rest.repos.getContent({ ...context.repo, path: 'scripts/morrowbyte/nightly-after-ci.cjs', ref: source });
-            if (data.type !== 'file' || data.encoding !== 'base64' || data.size > 65536) throw Error('Invalid dispatch helper');
             const directory = fs.mkdtempSync(path.join(process.env.RUNNER_TEMP, 'nightly-dispatch-'));
+            for (const name of ['nightly-after-ci.cjs', 'source-proof.cjs']) {
+              const { data } = await github.rest.repos.getContent({ ...context.repo, path: 'scripts/morrowbyte/' + name, ref: source });
+              if (data.type !== 'file' || data.encoding !== 'base64' || data.size > 65536) throw Error('Invalid dispatch helper');
+              const bytes = Buffer.from(data.content, 'base64');
+              if (bytes.length !== data.size) throw Error('Incomplete dispatch helper');
+              fs.writeFileSync(path.join(directory, name), bytes, { flag: 'wx', mode: 0o600 });
+            }
             const filename = path.join(directory, 'nightly-after-ci.cjs');
-            fs.writeFileSync(filename, Buffer.from(data.content, 'base64'), { flag: 'wx', mode: 0o600 });
             const dispatch = require(filename);
             await dispatch({github, context, core, options: {runnerBackend: process.env.RELEASE_BACKEND || undefined}});
