@@ -6,6 +6,8 @@ import {
   ProjectId,
   ThreadId,
   RunId,
+  type OrchestrationV2ThreadShell,
+  type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
@@ -48,11 +50,17 @@ function setup(
   const calls: string[] = [];
   let machineState = "ready";
   let canStart = true;
+  let costUsd = 0.01;
   let snapshotStatus = "saving";
   let workspaceRoot = process.cwd();
   let ownerActive = true;
   let projectExists = true;
   let archiveBytes = new Uint8Array();
+  const threads = new Map<ThreadId, Partial<OrchestrationV2ThreadShell>>();
+  const subagents = new Map<ThreadId, OrchestrationV2Subagent[]>();
+  const gitCwds: string[] = [];
+  let commandResult: { processId: number; exitCode?: number } = { processId: 123, exitCode: 0 };
+  let commandFinished = false;
   const api = Layer.succeed(BoatApi, {
     request: (_key, path, method = "GET", body, idempotencyKey) =>
       Effect.sync(() => {
@@ -72,12 +80,13 @@ function setup(
         if (path === "/saved-snapshots" || path.startsWith("/saved-snapshots/"))
           return { snapshot: { name: "crew-first", status: snapshotStatus } };
         if (path.endsWith("/commands")) {
-          return { processId: 123, exitCode: 0 };
+          return commandResult;
         }
+        if (/\/commands\/\d+$/.test(path)) return commandFinished ? { exitCode: 0 } : {};
         if (path.endsWith("/host")) return { url: "https://preview.example.test/web" };
         if (path.endsWith("/desktop?vnc=1"))
           return { desktopUrl: "https://preview.example.test/android" };
-        if (path.includes("/usage")) return { dollars: 0.01 };
+        if (path.includes("/usage")) return { dollars: costUsd };
         if (method === "DELETE" || path.startsWith("/deletion-operations/"))
           return { operation: { id: "delete-test", status: "completed" } };
         if (path.endsWith("/stop")) machineState = "archived";
@@ -98,15 +107,17 @@ function setup(
     Layer.mock(ProjectionStoreV2)({
       getThreadShell: (id) =>
         Effect.succeed(
-          id === threadId
+          id === threadId || threads.has(id)
             ? {
                 ...liveThreadShell(id),
                 projectId,
-                activeRunId: ownerActive ? RunId.make("run-boat") : null,
+                activeRunId: id === threadId && ownerActive ? RunId.make("run-boat") : null,
                 activityRunStatus: null,
+                ...threads.get(id),
               }
             : null,
         ),
+      getThreadRecords: (id) => Effect.succeed({ subagents: subagents.get(id) ?? [] } as never),
     }),
     Layer.mock(Projects.ProjectService)({
       getShell: () =>
@@ -124,8 +135,9 @@ function setup(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         return Layer.mock(Git.GitVcsDriver)({
-          execute: ({ args }) =>
+          execute: ({ args, cwd }) =>
             Effect.gen(function* () {
+              gitCwds.push(cwd);
               if (args[0] === "archive") {
                 yield* fs.writeFile(args[args.indexOf("--output") + 1]!, archiveBytes);
               }
@@ -144,7 +156,23 @@ function setup(
   ).pipe(Layer.provideMerge(base));
   return {
     calls,
+    gitCwds,
     services,
+    setThread: (id: ThreadId, thread: Partial<OrchestrationV2ThreadShell>) => {
+      threads.set(id, thread);
+    },
+    setSubagents: (id: ThreadId, tasks: OrchestrationV2Subagent[]) => {
+      subagents.set(id, tasks);
+    },
+    setCommandResult: (result: typeof commandResult) => {
+      commandResult = result;
+    },
+    finishCommand: () => {
+      commandFinished = true;
+    },
+    setCost: (cost: number) => {
+      costUsd = cost;
+    },
     setMachineState: (value: string) => {
       machineState = value;
     },
@@ -181,9 +209,12 @@ it.effect(
         enabled: true,
         maxConcurrent: 1,
       });
-      yield* boat.operate({ action: "start", projectId, requestId: "first" });
+      yield* boat.operate({ action: "start", projectId, requestId: "first" }, ownerThreadId);
       const reopened = yield* make;
-      const state = yield* reopened.operate({ action: "start", projectId, requestId: "first" });
+      const state = yield* reopened.operate(
+        { action: "start", projectId, requestId: "first" },
+        ownerThreadId,
+      );
       assert.equal(test.calls.filter((call) => call === "POST /sandboxes").length, 1);
       assert.equal(state.instances[0]?.sandboxId, "bx_23456789");
       const legacyInstance = { ...state.instances[0] };
@@ -194,11 +225,11 @@ it.effect(
         .operate({ action: "start", projectId, requestId: "second" })
         .pipe(Effect.flip);
       assert.equal(denied.category, "capacity");
-      yield* reopened.operate({ action: "stop", projectId, requestId: "first" });
+      yield* reopened.operate({ action: "stop", projectId, requestId: "first" }, ownerThreadId);
       yield* reopened.operate({ action: "delete", projectId, requestId: "first" });
       yield* reopened.disconnect;
       assert.isFalse((yield* reopened.read()).configured);
-    }).pipe(Effect.provide(test.services), Effect.scoped);
+    }).pipe(Effect.scoped, Effect.provide(test.services));
   },
 );
 
@@ -236,7 +267,7 @@ it.effect("reserves the full auto-stop cost before creating a billable machine",
       .pipe(Effect.flip);
     assert.equal(resumeDenied.category, "budget");
     assert.isFalse(test.calls.includes("POST /sandboxes/bx_23456789/resume"));
-  }).pipe(Effect.provide(test.services), Effect.scoped);
+  }).pipe(Effect.scoped, Effect.provide(test.services));
 });
 
 it.effect("prepares project commands and uses an embedded desktop for Android previews", () => {
@@ -278,7 +309,11 @@ it.effect("prepares project commands and uses an embedded desktop for Android pr
       .pipe(Effect.flip);
     assert.equal(conflictingCi.category, "conflict");
     assert.include(configured.projects[projectId]!.setupCommand, "vite-plus@1.4.0");
-    assert.equal(configured.projects[projectId]!.devCommand, "vp run dev");
+    assert.include(
+      configured.projects[projectId]!.setupCommand,
+      'export PATH="$PWD/node_modules/.bin:$PATH"',
+    );
+    assert.equal(configured.projects[projectId]!.devCommand, "./node_modules/.bin/vp run dev");
     yield* boat.operate({ action: "start", projectId, requestId: "android" });
     yield* boat.operate({
       action: "exec",
@@ -287,13 +322,14 @@ it.effect("prepares project commands and uses an embedded desktop for Android pr
       command: "cat restored.txt",
     });
     assert.deepEqual(execBody, {
-      command: "mkdir -p /home/user/crew && cd /home/user/crew || exit\ncat restored.txt",
+      command:
+        'mkdir -p /home/user/crew && cd /home/user/crew || exit\nexport PATH="$PWD/node_modules/.bin:$PATH"\ncat restored.txt',
       timeoutSeconds: 20,
     });
     const preview = yield* boat.operate({ action: "preview", projectId, requestId: "android" });
     assert.equal(preview.instances[0]?.previewUrl, "https://preview.example.test/android");
     assert.include(test.calls, "POST /sandboxes/bx_23456789/desktop?vnc=1");
-  }).pipe(Effect.provide(test.services), Effect.scoped);
+  }).pipe(Effect.scoped, Effect.provide(test.services));
 });
 
 it.effect("rejects preview ownership outside the selected project before starting compute", () => {
@@ -311,27 +347,347 @@ it.effect("rejects preview ownership outside the selected project before startin
       .pipe(Effect.flip);
     assert.equal(error.category, "not_found");
     assert.isFalse(test.calls.includes("POST /sandboxes"));
-  }).pipe(Effect.provide(test.services), Effect.scoped);
+  }).pipe(Effect.scoped, Effect.provide(test.services));
 });
 
-it.effect("renews active agent leases and stops after the last owner finishes", () =>
-  Effect.gen(function* () {
+it.effect(
+  "keeps active agent leases within their TTL and stops after the last owner finishes",
+  () =>
+    Effect.gen(function* () {
+      const test = setup();
+      yield* Effect.gen(function* () {
+        const boat = yield* make;
+        yield* boat.connect(Redacted.make("boat_fixture_private"));
+        yield* boat.configureDefaults({ ttlMinutes: 1, retentionDays: 14 });
+        yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: true });
+        yield* boat.operate({ action: "start", projectId, requestId: "lease" }, ownerThreadId);
+        yield* TestClock.adjust("31 seconds");
+        yield* boat.reconcile();
+        assert.notInclude(test.calls, "POST /sandboxes/bx_23456789/stop");
+        test.setOwnerActive(false);
+        yield* boat.reconcile();
+        assert.notInclude(test.calls, "PATCH /sandboxes/bx_23456789");
+        assert.include(test.calls, "POST /sandboxes/bx_23456789/stop");
+        assert.deepEqual((yield* boat.read(projectId)).instances[0]?.leases, []);
+      }).pipe(Effect.scoped, Effect.provide(test.services));
+    }),
+);
+
+it.effect("binds the caller worktree across restart and rejects a later source rewrite", () => {
+  const test = setup();
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "boat-source-" });
+    const callerRoot = `${root}/caller`;
+    const otherThreadId = ThreadId.make("other-source");
+    test.setProjectRoot(root);
+    test.setThread(ownerThreadId, { worktreePath: callerRoot });
+    test.setThread(otherThreadId, { worktreePath: null });
+    const boat = yield* make;
+    yield* boat.connect(Redacted.make("boat_fixture_private"));
+    yield* boat.configure(projectId, {
+      ...DEFAULT_BOAT_PROJECT,
+      enabled: true,
+      devCommand: "node server.js",
+    });
+    yield* boat.operate({ action: "start", projectId, requestId: "source" }, ownerThreadId);
+    const reopened = yield* make;
+    yield* reopened.operate(
+      { action: "prepare", projectId, requestId: "source", threadId: otherThreadId },
+      ownerThreadId,
+    );
+    assert.isAbove(test.gitCwds.length, 0);
+    assert.isTrue(test.gitCwds.every((cwd) => cwd === callerRoot));
+    const callsBefore = test.calls.length;
+    test.setThread(ownerThreadId, { worktreePath: `${root}/moved` });
+    const moved = yield* reopened
+      .operate({ action: "prepare", projectId, requestId: "source" }, ownerThreadId)
+      .pipe(Effect.flip);
+    assert.equal(moved.category, "conflict");
+    const foreign = yield* reopened
+      .operate({ action: "prepare", projectId, requestId: "source" }, otherThreadId)
+      .pipe(Effect.flip);
+    assert.equal(foreign.category, "conflict");
+    test.setThread(otherThreadId, { worktreePath: callerRoot });
+    for (const action of ["stop", "delete", "cancel"] as const) {
+      const denied = yield* reopened
+        .operate({ action, projectId, requestId: "source", threadId: ownerThreadId }, otherThreadId)
+        .pipe(Effect.flip);
+      assert.equal(denied.category, "conflict");
+    }
+    assert.equal(test.calls.length, callsBefore);
+    yield* reopened.operate({ action: "cancel", projectId, requestId: "source" }, ownerThreadId);
+    assert.include(test.calls, "DELETE /sandboxes/bx_23456789/commands/123");
+  }).pipe(Effect.scoped, Effect.provide(test.services));
+});
+
+it.effect.each(["stop", "delete", "cancel"] as const)(
+  "allows an owner's child to %s without changing the bound source",
+  (action) => {
     const test = setup();
-    yield* Effect.gen(function* () {
+    return Effect.gen(function* () {
+      const childThreadId = ThreadId.make("boat-control-child");
+      test.setThread(ownerThreadId, { worktreePath: "/work/owner" });
+      test.setThread(childThreadId, {
+        worktreePath: "/work/child",
+        lineage: {
+          rootThreadId: ownerThreadId,
+          parentThreadId: ownerThreadId,
+          relationshipToParent: "subagent",
+        },
+      });
       const boat = yield* make;
       yield* boat.connect(Redacted.make("boat_fixture_private"));
-      yield* boat.configureDefaults({ ttlMinutes: 1, retentionDays: 14 });
-      yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: true });
-      yield* boat.operate({ action: "start", projectId, requestId: "lease" }, ownerThreadId);
-      yield* TestClock.adjust("31 seconds");
-      yield* boat.reconcile();
-      test.setOwnerActive(false);
-      yield* boat.reconcile();
-      assert.include(test.calls, "PATCH /sandboxes/bx_23456789");
-      assert.include(test.calls, "POST /sandboxes/bx_23456789/stop");
-    }).pipe(Effect.provide(test.services), Effect.scoped);
-  }),
+      yield* boat.configure(projectId, {
+        ...DEFAULT_BOAT_PROJECT,
+        enabled: true,
+        devCommand: "node server.js",
+      });
+      yield* boat.operate({ action: "start", projectId, requestId: "control" }, ownerThreadId);
+      yield* boat.operate({ action: "prepare", projectId, requestId: "control" }, ownerThreadId);
+      const fs = yield* FileSystem.FileSystem;
+      const config = yield* ServerConfig.ServerConfig;
+      const sourceBefore = yield* fs.readFileString(`${config.stateDir}/boat-work.json`);
+      const controlled = yield* boat.operate(
+        { action, projectId, requestId: "control" },
+        childThreadId,
+      );
+      assert.equal(controlled.instances[0]?.threadId, ownerThreadId);
+      assert.equal(yield* fs.readFileString(`${config.stateDir}/boat-work.json`), sourceBefore);
+      assert.include(
+        test.calls,
+        action === "cancel"
+          ? "DELETE /sandboxes/bx_23456789/commands/123"
+          : action === "delete"
+            ? "DELETE /sandboxes/bx_23456789"
+            : "POST /sandboxes/bx_23456789/stop",
+      );
+    }).pipe(Effect.scoped, Effect.provide(test.services));
+  },
 );
+
+it.effect("rejects a racing unrelated owner even when its workspace matches", () => {
+  const test = setup();
+  const otherThreadId = ThreadId.make("other-owner");
+  test.setThread(otherThreadId, {});
+  return Effect.gen(function* () {
+    const boat = yield* make;
+    yield* boat.connect(Redacted.make("boat_fixture_private"));
+    yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: true });
+    const results = yield* Effect.forEach(
+      [ownerThreadId, otherThreadId],
+      (id) =>
+        boat
+          .operate({ action: "start", projectId, requestId: "racing-owner" }, id)
+          .pipe(Effect.exit),
+      { concurrency: "unbounded" },
+    );
+    assert.equal(results.filter(Exit.isSuccess).length, 1);
+    assert.equal(test.calls.filter((call) => call === "POST /sandboxes").length, 1);
+  }).pipe(Effect.scoped, Effect.provide(test.services));
+});
+
+it.effect("shares an owner's VM with its child without replacing the bound source", () => {
+  const test = setup();
+  return Effect.gen(function* () {
+    const childThreadId = ThreadId.make("boat-child");
+    test.setThread(ownerThreadId, { worktreePath: "/work/owner" });
+    test.setThread(childThreadId, {
+      worktreePath: "/work/child",
+      activeRunId: RunId.make("child-run"),
+      lineage: {
+        rootThreadId: ownerThreadId,
+        parentThreadId: ownerThreadId,
+        relationshipToParent: "subagent",
+      },
+    });
+    const boat = yield* make;
+    yield* boat.connect(Redacted.make("boat_fixture_private"));
+    yield* boat.configure(projectId, {
+      ...DEFAULT_BOAT_PROJECT,
+      enabled: true,
+      devCommand: "node server.js",
+    });
+    yield* boat.operate({ action: "start", projectId, requestId: "shared-source" }, ownerThreadId);
+    const shared = yield* boat.operate(
+      { action: "start", projectId, requestId: "shared-source" },
+      childThreadId,
+    );
+    assert.deepEqual(shared.instances[0]?.leases, [ownerThreadId, childThreadId]);
+    yield* boat.operate(
+      {
+        action: "exec",
+        projectId,
+        requestId: "shared-source",
+        command: "vp test run focused.test.ts",
+      },
+      childThreadId,
+    );
+    const denied = yield* boat
+      .operate({ action: "prepare", projectId, requestId: "shared-source" }, childThreadId)
+      .pipe(Effect.flip);
+    assert.equal(denied.category, "conflict");
+    test.setOwnerActive(false);
+    yield* boat.reconcile();
+    assert.deepEqual((yield* boat.read(projectId)).instances[0]?.leases, [childThreadId]);
+    assert.notInclude(test.calls, "POST /sandboxes/bx_23456789/stop");
+    test.setThread(childThreadId, { worktreePath: "/work/child", activeRunId: null });
+    yield* boat.reconcile();
+    assert.include(test.calls, "POST /sandboxes/bx_23456789/stop");
+  }).pipe(Effect.scoped, Effect.provide(test.services));
+});
+
+it.effect("does not adopt a caller worktree for an existing unbound machine", () => {
+  const test = setup();
+  return Effect.gen(function* () {
+    const boat = yield* make;
+    yield* boat.connect(Redacted.make("boat_fixture_private"));
+    yield* boat.configure(projectId, {
+      ...DEFAULT_BOAT_PROJECT,
+      enabled: true,
+      devCommand: "node server.js",
+    });
+    yield* boat.operate({ action: "start", projectId, requestId: "legacy" });
+    const fs = yield* FileSystem.FileSystem;
+    const config = yield* ServerConfig.ServerConfig;
+    yield* fs.remove(`${config.stateDir}/boat-work.json`);
+    test.setThread(ownerThreadId, { worktreePath: "/work/caller" });
+    const reopened = yield* make;
+    const error = yield* reopened
+      .operate({ action: "prepare", projectId, requestId: "legacy" }, ownerThreadId)
+      .pipe(Effect.flip);
+    assert.equal(error.category, "conflict");
+    assert.deepEqual(test.gitCwds, []);
+    assert.notInclude(test.calls, "PUT /sandboxes/bx_23456789/files");
+  }).pipe(Effect.scoped, Effect.provide(test.services));
+});
+
+it.effect.each([
+  { kind: "command", awaited: true, holds: true },
+  { kind: "command", holds: false },
+  { kind: "background_task", holds: true },
+  { kind: "subagent", holds: true },
+] as const)("honors structured background liveness: %j", (task) => {
+  const test = setup();
+  return Effect.gen(function* () {
+    const boat = yield* make;
+    yield* boat.connect(Redacted.make("boat_fixture_private"));
+    yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: true });
+    yield* boat.operate({ action: "start", projectId, requestId: "background" }, ownerThreadId);
+    test.setOwnerActive(false);
+    test.setThread(ownerThreadId, {
+      pendingBackgroundTasks: [
+        {
+          taskId: "check",
+          kind: task.kind,
+          ...("awaited" in task ? { awaited: task.awaited } : {}),
+        },
+      ],
+    });
+    yield* boat.reconcile();
+    assert.equal(test.calls.includes("POST /sandboxes/bx_23456789/stop"), !task.holds);
+    test.setThread(ownerThreadId, { pendingBackgroundTasks: [] });
+    yield* boat.reconcile();
+    assert.include(test.calls, "POST /sandboxes/bx_23456789/stop");
+  }).pipe(Effect.scoped, Effect.provide(test.services));
+});
+
+it.effect("transfers a finished parent's lease to its active projected child", () => {
+  const test = setup();
+  return Effect.gen(function* () {
+    const boat = yield* make;
+    yield* boat.connect(Redacted.make("boat_fixture_private"));
+    yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: true });
+    yield* boat.operate({ action: "start", projectId, requestId: "child-task" }, ownerThreadId);
+    test.setOwnerActive(false);
+    const child = { threadId: ownerThreadId, status: "running" } as OrchestrationV2Subagent;
+    test.setSubagents(ownerThreadId, [child]);
+    yield* boat.reconcile();
+    assert.notInclude(test.calls, "POST /sandboxes/bx_23456789/stop");
+    assert.deepEqual((yield* boat.read(projectId)).instances[0]?.leases, [ownerThreadId]);
+    const childThreadId = ThreadId.make("projected-child");
+    test.setSubagents(ownerThreadId, [{ ...child, childThreadId, status: "completed" }]);
+    test.setThread(childThreadId, {
+      activeRunId: null,
+      pendingBackgroundTasks: [{ taskId: "grandchild", kind: "subagent" }],
+    });
+    yield* boat.reconcile();
+    assert.notInclude(test.calls, "POST /sandboxes/bx_23456789/stop");
+    assert.deepEqual((yield* boat.read(projectId)).instances[0]?.leases, [childThreadId]);
+    test.setOwnerActive(true);
+    test.setThread(childThreadId, { activeRunId: null, pendingBackgroundTasks: [] });
+    yield* boat.reconcile();
+    assert.notInclude(test.calls, "POST /sandboxes/bx_23456789/stop");
+    assert.deepEqual((yield* boat.read(projectId)).instances[0]?.leases, [ownerThreadId]);
+    test.setOwnerActive(false);
+    yield* boat.reconcile();
+    assert.include(test.calls, "POST /sandboxes/bx_23456789/stop");
+  }).pipe(Effect.scoped, Effect.provide(test.services));
+});
+
+it.effect.each(["completed", "expired", "missing", "unavailable"] as const)(
+  "tracks only the started check's command ID until %s",
+  (end) => {
+    let statusFailure: number | null = null;
+    const test = setup((path) =>
+      path.endsWith("/commands/456") && statusFailure !== null
+        ? Effect.fail(new BoatError({ category: "provider", status: statusFailure }))
+        : Effect.void,
+    );
+    return Effect.gen(function* () {
+      yield* Effect.gen(function* () {
+        const boat = yield* make;
+        yield* boat.connect(Redacted.make("boat_fixture_private"));
+        yield* boat.configureDefaults({ ttlMinutes: 1, retentionDays: 14 });
+        yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: true });
+        yield* boat.operate({ action: "start", projectId, requestId: "command" }, ownerThreadId);
+        test.setCommandResult({ processId: 456 });
+        yield* boat.operate(
+          {
+            action: "exec",
+            projectId,
+            requestId: "command",
+            command: "vp test run focused.test.ts",
+          },
+          ownerThreadId,
+        );
+      }).pipe(Effect.scoped);
+      const reopened = yield* make;
+      test.setOwnerActive(false);
+      yield* reopened.reconcile();
+      assert.notInclude(test.calls, "POST /sandboxes/bx_23456789/stop");
+      assert.include(test.calls, "GET /sandboxes/bx_23456789/commands/456");
+      if (end === "completed") test.finishCommand();
+      else if (end === "missing") statusFailure = 404;
+      else if (end === "unavailable") {
+        statusFailure = 503;
+        yield* reopened.reconcile();
+        assert.notInclude(test.calls, "POST /sandboxes/bx_23456789/stop");
+        yield* TestClock.adjust("61 seconds");
+      } else yield* TestClock.adjust("61 seconds");
+      yield* reopened.reconcile();
+      assert.include(test.calls, "POST /sandboxes/bx_23456789/stop");
+      assert.notInclude(test.calls, "PATCH /sandboxes/bx_23456789");
+      assert.deepEqual((yield* reopened.read(projectId)).instances[0]?.leases, []);
+    }).pipe(Effect.scoped, Effect.provide(test.services));
+  },
+);
+
+it.effect.each(["ttl", "budget"] as const)("stops active owners at the hard %s limit", (limit) => {
+  const test = setup();
+  return Effect.gen(function* () {
+    const boat = yield* make;
+    yield* boat.connect(Redacted.make("boat_fixture_private"));
+    yield* boat.configureDefaults({ ttlMinutes: 1, retentionDays: 14 });
+    yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: true, budgetUsd: 0.1 });
+    yield* boat.operate({ action: "start", projectId, requestId: "limit" }, ownerThreadId);
+    if (limit === "ttl") yield* TestClock.adjust("61 seconds");
+    else test.setCost(0.1);
+    yield* boat.reconcile();
+    assert.include(test.calls, "POST /sandboxes/bx_23456789/stop");
+    assert.notInclude(test.calls, "PATCH /sandboxes/bx_23456789");
+  }).pipe(Effect.scoped, Effect.provide(test.services));
+});
 
 it.effect("stops a completed setup preview when the last agent finishes", () => {
   const threadId = ThreadId.make(`boat-setup:${projectId}`);
@@ -354,7 +710,7 @@ it.effect("stops a completed setup preview when the last agent finishes", () => 
     yield* boat.reconcile();
     assert.include(test.calls, "POST /sandboxes/bx_23456789/stop");
     assert.notInclude(test.calls, "PATCH /sandboxes/bx_23456789");
-  }).pipe(Effect.provide(test.services), Effect.scoped);
+  }).pipe(Effect.scoped, Effect.provide(test.services));
 });
 
 it.effect("stops and deletes owned machines after their project is removed", () => {
@@ -371,17 +727,22 @@ it.effect("stops and deletes owned machines after their project is removed", () 
     yield* boat.reconcile();
     assert.include(test.calls, "POST /sandboxes/bx_23456789/stop");
     assert.include(test.calls, "DELETE /sandboxes/bx_23456789");
-  }).pipe(Effect.provide(test.services), Effect.scoped);
+  }).pipe(Effect.scoped, Effect.provide(test.services));
 });
 
 it.effect("uploads source archives in bounded chunks and assembles them before setup", () => {
   const uploads: { path: string; content: string }[] = [];
+  const commands: string[] = [];
   let command = "";
   const test = setup((path, method, body) =>
     Effect.sync(() => {
       if (path.endsWith("/files") && method === "PUT")
         uploads.push(body as (typeof uploads)[number]);
-      if (path.endsWith("/commands")) command = (body as { command: string }).command;
+      if (path.endsWith("/commands")) {
+        const next = (body as { command: string }).command;
+        commands.push(next);
+        if (next.includes("python3")) command = next;
+      }
     }),
   );
   const bytes = new Uint8Array(6 * 1024 * 1024).fill(17);
@@ -409,11 +770,23 @@ it.effect("uploads source archives in bounded chunks and assembles them before s
       `cat /home/user/${uploads[0]!.path} /home/user/${uploads[1]!.path} > /home/user/${uploads[0]!.path.replace(/\.part-0$/, "")}`,
     );
     assert.isBelow(command.indexOf("cat "), command.indexOf("python3"));
+    assert.isBelow(
+      commands.indexOf(command),
+      commands.findIndex((entry) => entry.includes("node server.js")),
+    );
     const firstProcessId = (yield* boat.read(projectId)).instances[0]!.processId;
     yield* boat.operate({ action: "prepare", projectId, requestId: "chunks" });
     assert.equal((yield* boat.read(projectId)).instances[0]!.processId, firstProcessId);
+    assert.include(test.calls, `GET /sandboxes/bx_23456789/commands/${firstProcessId}`);
     assert.notInclude(command, "node server.js");
-  }).pipe(Effect.provide(test.services), Effect.scoped);
+    const starts = commands.filter((entry) => entry.includes("node server.js")).length;
+    test.setCommandResult({ processId: 123, exitCode: 1 });
+    const failed = yield* boat
+      .operate({ action: "prepare", projectId, requestId: "chunks" })
+      .pipe(Effect.flip);
+    assert.equal(failed.category, "provider");
+    assert.equal(commands.filter((entry) => entry.includes("node server.js")).length, starts);
+  }).pipe(Effect.scoped, Effect.provide(test.services));
 });
 
 it.live("source sync removes deleted files and preserves ignored runtime data", () =>
@@ -502,7 +875,7 @@ it.effect.each(["ready", "failed"] as const)(
       );
       const persisted = yield* (yield* make).read(projectId);
       assert.deepEqual(persisted.instances[0]?.savedSnapshot, { name: "crew-first", status });
-    }).pipe(Effect.provide(test.services), Effect.scoped);
+    }).pipe(Effect.scoped, Effect.provide(test.services));
   },
 );
 
@@ -535,7 +908,7 @@ it.effect("keeps a process installed while an older usage read is suspended", ()
       yield* boat.operate({ action: "prepare", projectId, requestId: "first" });
       yield* Deferred.succeed(release, undefined);
       assert.equal((yield* Fiber.join(reading)).instances[0]?.processId, 123);
-    }).pipe(Effect.provide(test.services), Effect.scoped);
+    }).pipe(Effect.scoped, Effect.provide(test.services));
   }),
 );
 
@@ -566,7 +939,7 @@ it.effect("keeps deletion ownership when an older read finishes", () =>
       const item = (yield* Fiber.join(reading)).instances[0];
       assert.equal(item?.deletionOperationId, "delete-test");
       assert.equal(item?.state, "deleted");
-    }).pipe(Effect.provide(test.services), Effect.scoped);
+    }).pipe(Effect.scoped, Effect.provide(test.services));
   }),
 );
 
@@ -575,11 +948,11 @@ it.effect("reserves a request globally when two projects start together", () =>
     const entered = yield* Deferred.make<void>();
     const release = yield* Deferred.make<void>();
     let hold = false;
-    let arrivals = 0;
     const test = setup((path) =>
       path === "/limits" && hold
         ? Effect.gen(function* () {
-            if (++arrivals === 2) yield* Deferred.succeed(entered, undefined);
+            hold = false;
+            yield* Deferred.succeed(entered, undefined);
             yield* Deferred.await(release);
           })
         : Effect.void,
@@ -594,17 +967,16 @@ it.effect("reserves a request globally when two projects start together", () =>
       const first = yield* boat
         .operate({ action: "start", projectId, requestId: "shared" })
         .pipe(Effect.exit, Effect.forkChild);
+      yield* Deferred.await(entered);
       const second = yield* boat
         .operate({ action: "start", projectId: other, requestId: "shared" })
-        .pipe(Effect.exit, Effect.forkChild);
-      yield* Deferred.await(entered);
-      hold = false;
+        .pipe(Effect.flip);
+      assert.equal(second.category, "conflict");
       yield* Deferred.succeed(release, undefined);
-      const results = [yield* Fiber.join(first), yield* Fiber.join(second)];
-      assert.equal(results.filter(Exit.isSuccess).length, 1);
+      assert.isTrue(Exit.isSuccess(yield* Fiber.join(first)));
       assert.equal(test.calls.filter((call) => call === "POST /sandboxes").length, 1);
       assert.equal((yield* boat.read()).instances.length, 1);
-    }).pipe(Effect.provide(test.services), Effect.scoped);
+    }).pipe(Effect.scoped, Effect.provide(test.services));
   }),
 );
 
@@ -660,7 +1032,7 @@ it.effect.each(["capacity", "budget"] as const)(
         yield* Fiber.join(first);
         assert.isTrue(Exit.isFailure(second));
         assert.equal(test.calls.filter((call) => call.endsWith("/resume")).length, 1);
-      }).pipe(Effect.provide(test.services), Effect.scoped);
+      }).pipe(Effect.scoped, Effect.provide(test.services));
     }),
 );
 
@@ -696,7 +1068,7 @@ it.effect("replays unknown creation with the original parameters despite canStar
     assert.equal(bodies.length, 2);
     assert.deepEqual(bodies[0], bodies[1]);
     assert.deepEqual(keys, ["first", "first"]);
-  }).pipe(Effect.provide(test.services), Effect.scoped);
+  }).pipe(Effect.scoped, Effect.provide(test.services));
 });
 
 it.effect("treats an active resume retry as success without clearing the process or leases", () => {
@@ -726,7 +1098,7 @@ it.effect("treats an active resume retry as success without clearing the process
     assert.equal(result.instances[0]?.previewUrl, before?.previewUrl);
     assert.equal(result.instances[0]?.processId, 123);
     assert.deepEqual(result.instances[0]?.leases, [ownerThreadId]);
-  }).pipe(Effect.provide(test.services), Effect.scoped);
+  }).pipe(Effect.scoped, Effect.provide(test.services));
 });
 
 it.effect("retains an unknown resume reservation and its idempotency key across restart", () => {
@@ -771,7 +1143,7 @@ it.effect("retains an unknown resume reservation and its idempotency key across 
     assert.deepEqual(bodies[0], bodies[1]);
     assert.equal(keys[0], keys[1]);
     assert.isString(keys[0]);
-  }).pipe(Effect.provide(test.services), Effect.scoped);
+  }).pipe(Effect.scoped, Effect.provide(test.services));
 });
 
 it.effect("deduplicates an in-flight resume and replays its reservation after interruption", () =>
@@ -795,7 +1167,7 @@ it.effect("deduplicates an in-flight resume and replays its reservation after in
       const boat = yield* make;
       yield* boat.connect(Redacted.make("boat_fixture_private"));
       yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: true });
-      yield* boat.operate({ action: "start", projectId, requestId: "first" });
+      yield* boat.operate({ action: "start", projectId, requestId: "first" }, ownerThreadId);
       yield* boat.operate({ action: "stop", projectId, requestId: "first" });
       const first = yield* boat
         .operate({ action: "resume", projectId, requestId: "first" }, ownerThreadId)
@@ -810,7 +1182,7 @@ it.effect("deduplicates an in-flight resume and replays its reservation after in
       yield* boat.operate({ action: "resume", projectId, requestId: "first" });
       assert.equal(keys.length, 2);
       assert.equal(keys[0], keys[1]);
-    }).pipe(Effect.provide(test.services), Effect.scoped);
+    }).pipe(Effect.scoped, Effect.provide(test.services));
   }),
 );
 
@@ -840,7 +1212,7 @@ it.effect("releases a definitively rejected resume reservation", () => {
     assert.equal(after.instances[0]?.stoppedAt, stopped.instances[0]?.stoppedAt);
     yield* boat.operate({ action: "start", projectId, requestId: "second" });
     assert.equal(test.calls.filter((call) => call === "POST /sandboxes").length, 2);
-  }).pipe(Effect.provide(test.services), Effect.scoped);
+  }).pipe(Effect.scoped, Effect.provide(test.services));
 });
 
 it.effect("keeps a completed create when a duplicate response rejects late", () =>
@@ -884,7 +1256,7 @@ it.effect("keeps a completed create when a duplicate response rejects late", () 
       const stored = JSON.parse(yield* fs.readFileString(`${config.stateDir}/boat.json`));
       assert.equal(stored.instances[0].state, "ready");
       assert.equal(stored.instances[0].sandboxId, "bx_23456789");
-    }).pipe(Effect.provide(test.services), Effect.scoped);
+    }).pipe(Effect.scoped, Effect.provide(test.services));
   }),
 );
 
@@ -945,7 +1317,7 @@ it.effect.each([0.2, 0.1])(
         yield* reopened.reconcile();
         assert.equal(test.calls.filter((call) => call.endsWith("/stop")).length, stops);
       }
-    }).pipe(Effect.provide(test.services), Effect.scoped);
+    }).pipe(Effect.scoped, Effect.provide(test.services));
   },
 );
 
@@ -984,6 +1356,6 @@ it.effect("does not roll back a newer deletion when resume rejects late", () =>
       const state = yield* boat.read(projectId);
       assert.equal(state.instances[0]?.state, "deleted");
       assert.equal(state.instances[0]?.deletionOperationId, "delete-test");
-    }).pipe(Effect.provide(test.services), Effect.scoped);
+    }).pipe(Effect.scoped, Effect.provide(test.services));
   }),
 );
