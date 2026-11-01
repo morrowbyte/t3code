@@ -141,6 +141,17 @@ jobs:
           if [[ "$BASE_REF" == 0000000000000000000000000000000000000000 ]]; then BASE_REF=main; fi
           git fetch --no-tags --depth=1 origin "$BASE_REF"
           BASE_SHA="$(git rev-parse FETCH_HEAD)"
+          export GIT_TRACE2_EVENT="$RUNNER_TEMP/integration-git-trace.json"
+          trap 'result=$?; if (( result != 0 )); then tail -n 80 "$GIT_TRACE2_EVENT" || true; fi' EXIT
+          git version --build-options
+          set +e
+          git -c core.quotePath=false diff --name-only --no-renames "$BASE_SHA" -- > "$RUNNER_TEMP/integration-working-tree-paths.txt"
+          printf 'working-tree git diff exit: %s\n' "$?"
+          git -c core.quotePath=false diff --name-only --no-renames "$BASE_SHA" HEAD -- > "$RUNNER_TEMP/integration-committed-paths.txt"
+          printf 'committed git diff exit: %s\n' "$?"
+          git -c core.quotePath=false diff --name-only --no-renames HEAD -- > "$RUNNER_TEMP/integration-pending-paths.txt"
+          printf 'pending git diff exit: %s\n' "$?"
+          set -e
           vp run check:integration --exact-base "$BASE_SHA"
       - name: Run focused source gates
         if: github.event_name == 'workflow_dispatch' && !inputs.integrationOnly
