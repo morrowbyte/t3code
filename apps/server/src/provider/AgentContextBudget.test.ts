@@ -49,9 +49,13 @@ import { ProviderRegistry } from "./ProviderRegistry.ts";
 import { ProviderEvalSession } from "./ProviderEvalSession.ts";
 import { ProviderEvalBoat } from "./ProviderEvalBoat.ts";
 import budget from "./agentContextBudget.json" with { type: "json" };
+import * as ComputerRouting from "../computer/ComputerRouting.ts";
+import * as DesktopApplications from "../computer/DesktopApplications.ts";
 
 // Registration only stores tool definitions, so the handlers' services are never called.
 const toolHandlerServices = Layer.mergeAll(
+  Layer.mock(DesktopApplications.DesktopApplications)({}),
+  Layer.mock(ComputerRouting.ComputerRouting)({}),
   Layer.mock(BoatService)({}),
   Layer.mock(AgentAvatarService)({}),
   Layer.mock(ConnectedEnvironmentBroker)({}),

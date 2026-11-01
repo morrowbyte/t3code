@@ -1,3 +1,5 @@
+import * as ComputerRouting from "./computer/ComputerRouting.ts";
+import * as DesktopApplications from "./computer/DesktopApplications.ts";
 import * as BoatSetupService from "./boat/BoatSetupService.ts";
 import * as BoatService from "./boat/BoatService.ts";
 import * as BoatApi from "./boat/BoatApi.ts";
@@ -870,7 +872,12 @@ const layerMakeRoutes = Layer.mergeAll(
         Layer.provideMerge(PeerLinks.layer),
       ),
     ),
-    Layer.provide(PreviewAutomationBroker.layer),
+    Layer.provide(
+      ComputerRouting.layer.pipe(
+        Layer.provideMerge(DesktopApplications.layer),
+        Layer.provideMerge(PreviewAutomationBroker.layer),
+      ),
+    ),
     Layer.provide(ConnectedEnvironmentBroker.layer),
     Layer.provide(ConnectedEnvironmentAdmission.layer),
     Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),

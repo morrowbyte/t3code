@@ -2,6 +2,8 @@ import { BoatToolkit } from "./toolkits/boat/tools.ts";
 import * as BoatHandlers from "./toolkits/boat/handlers.ts";
 import { ProviderEvalToolkit } from "./toolkits/providerEval/tools.ts";
 import * as ProviderEvalHandlers from "./toolkits/providerEval/handlers.ts";
+import { ComputerToolkit } from "./toolkits/computer/tools.ts";
+import * as ComputerHandlers from "./toolkits/computer/handlers.ts";
 import * as ApprovalReviewOrderAgent from "../orchestration-v2/ApprovalReviewOrderAgent.ts";
 import * as ApprovalReviewOrderAgentToolkit from "../orchestration-v2/ApprovalReviewOrderAgentToolkit.ts";
 import * as ApprovalReviewOrderForward from "../orchestration-v2/ApprovalReviewOrderForward.ts";
@@ -1206,6 +1208,7 @@ export const layerMcpTransport = McpServer.layerHttp({
 
 /** Every tool the T3 MCP server advertises. AgentContextBudget.test.ts measures this set. */
 export const layerTools = Layer.mergeAll(
+  toolkitRegistration(ComputerToolkit, ComputerHandlers.layer),
   toolkitRegistration(BoatToolkit, BoatHandlers.layer),
   toolkitRegistration(ProviderEvalToolkit, ProviderEvalHandlers.layer),
   toolkitRegistration(ConnectedEnvironmentToolkit, ConnectedEnvironmentHandlers.layer),
