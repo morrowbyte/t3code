@@ -46,6 +46,7 @@ export function UserFormFields({
           "aria-required": field.required !== false,
           "aria-invalid": Boolean(error),
           "aria-describedby": describedBy,
+          style: { scrollMarginBlock: 12 },
           onBlur: markTouched,
         };
         return (

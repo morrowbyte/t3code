@@ -954,6 +954,7 @@ it.effect.each(["enabled", "opt-out", "missing", "deleted", "foreign"] as const)
       }).pipe(
         Effect.provide(
           RuntimeLayer.layerProduction.pipe(
+            Layer.provide(layerTurnCosts),
             Layer.provideMerge(ProjectStore.layer),
             Layer.provide(
               Layer.mergeAll(

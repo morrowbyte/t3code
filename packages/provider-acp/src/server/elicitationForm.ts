@@ -28,6 +28,7 @@ export function elicitationFormQuestions(
       return (
         field?.type !== "string" ||
         field.multiline === true ||
+        field.format === "textarea" ||
         field.minLength !== undefined ||
         field.maxLength !== undefined
       );
@@ -41,7 +42,7 @@ export function elicitationFormQuestions(
     const property = record(value);
     if (
       !property ||
-      property.format !== undefined ||
+      (property.format !== undefined && property.format !== "textarea") ||
       property.oneOf !== undefined ||
       property.anyOf !== undefined
     )
@@ -71,7 +72,10 @@ export function elicitationFormQuestions(
           ? { ...base, type: "select", options }
           : {
               ...base,
-              type: property.multiline === true ? "multiline" : "text",
+              type:
+                property.multiline === true || property.format === "textarea"
+                  ? "multiline"
+                  : "text",
               minLength: property.minLength,
               maxLength: property.maxLength,
             }
