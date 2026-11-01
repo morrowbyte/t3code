@@ -29,6 +29,46 @@ const v2TableCount = Effect.gen(function* () {
 });
 
 describe("runMigrations", () => {
+  it.effect("upgrades the packaged desktop fixture and preserves its saved thread", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const filename = path.join(
+        yield* fs.makeTempDirectoryScoped({ prefix: "desktop-migration-" }),
+        "statev2.sqlite",
+      );
+      yield* fs.copyFile(
+        path.resolve(
+          import.meta.dirname,
+          "../../../../scripts/fixtures/desktop-launch/statev2.sqlite",
+        ),
+        filename,
+      );
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const savedThreads = sql`SELECT thread_id, title, payload_json
+          FROM orchestration_v2_projection_threads ORDER BY thread_id`;
+        const savedMessages = sql`SELECT message_id, payload_json
+          FROM orchestration_v2_projection_messages ORDER BY message_id`;
+        const beforeThreads = yield* savedThreads;
+        const beforeMessages = yield* savedMessages;
+        assert.isTrue(beforeThreads.some((thread) => thread.title === "Release launch check"));
+        assert.isTrue(
+          beforeMessages.some((message) =>
+            String(message.payload_json).includes("The release opens and shows this thread."),
+          ),
+        );
+        assert.deepStrictEqual(
+          yield* runMigrations(),
+          migrationManifest.filter(([id]) => id > 76),
+        );
+        assert.deepStrictEqual(yield* history, migrationManifest);
+        assert.deepStrictEqual(yield* savedThreads, beforeThreads);
+        assert.deepStrictEqual(yield* savedMessages, beforeMessages);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename })));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect.each([63, 64, 65, 68, 69, 70, 71, 72, 73, 74, 75, 76])(
     "appends upstream migrations after the shipped fork prefix %s",
     (id) =>

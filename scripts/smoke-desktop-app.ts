@@ -11,8 +11,8 @@ import { _electron, type ElectronApplication } from "playwright-core";
 import * as Effect from "effect/Effect";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
-// A snapshot from an older build on purpose: the packaged server must migrate it forward, as it
-// does for every upgrading user. It holds one project and two threads, nothing else.
+// Generated through the fork's shipped migration 76, with one synthetic project and two threads.
+// The packaged server must upgrade it; the separate upstream migration lineage is incompatible.
 const FIXTURE_DB = NodePath.join(import.meta.dirname, "fixtures/desktop-launch/statev2.sqlite");
 const THREAD_TITLE = "Release launch check";
 const THREAD_MESSAGE = "The release opens and shows this thread.";
