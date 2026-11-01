@@ -5,6 +5,7 @@ const nightlyAfterCI = require("./nightly-after-ci.cjs");
 
 const API = "https://api.github.com";
 const REPOSITORY = "morrowbyte/t3code";
+const REPOSITORY_ID = 1175532637;
 const MAX_PAGES = 100;
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 const MAX_ARCHIVE_BYTES = 4 * 1024 * 1024;
@@ -196,7 +197,8 @@ function createGitHubClient({ token, fetchImpl = globalThis.fetch }) {
       const url = new URL(next, API);
       if (
         url.origin !== base.origin ||
-        url.pathname !== base.pathname ||
+        (url.pathname !== base.pathname &&
+          url.pathname !== `/repositories/${REPOSITORY_ID}/releases`) ||
         url.username ||
         url.password ||
         url.hash ||
