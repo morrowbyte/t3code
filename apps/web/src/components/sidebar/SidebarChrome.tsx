@@ -47,6 +47,10 @@ import { SidebarUpdateArchitectureWarning, SidebarUpdatePill } from "./SidebarUp
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { observeResize } from "~/lib/observeResize";
 import { AttentionInbox } from "../attention-inbox/AttentionInbox";
+import { useThreadRouteTarget } from "../../hooks/useThreadRouteTarget";
+import { useComposerDraftStore } from "../../composerDraftStore";
+import { resolveActiveThreadRouteRef } from "../../threadRoutes";
+import { useQuietThreadShell } from "../../state/entities";
 
 export const SidebarChromeHeader = memo(function SidebarChromeHeader({
   isElectron,
@@ -228,6 +232,12 @@ function SidebarUtilityItem({
 
 const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   const navigate = useNavigate();
+  const routeTarget = useThreadRouteTarget();
+  const draft = useComposerDraftStore((store) =>
+    routeTarget?.kind === "draft" ? store.getDraftSession(routeTarget.draftId) : null,
+  );
+  const threadRef = resolveActiveThreadRouteRef(routeTarget, draft);
+  const thread = useQuietThreadShell(threadRef);
   const navigateToMainApp = useNavigateToMainApp();
   const { isMobile, setOpenMobile } = useSidebar();
   const isOnUtilityPage = useLocation({
@@ -253,7 +263,15 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
 
   const handleBoatClick = () => {
     closeMobileSidebar();
-    void navigate({ to: "/settings/integrations", hash: "boat" });
+    void navigate({
+      to: "/boat",
+      search: {
+        machine: threadRef?.environmentId ?? draft?.environmentId,
+        project: thread?.projectId ?? draft?.projectId,
+        thread: threadRef?.threadId,
+        range: "month",
+      },
+    });
   };
 
   const handleUsageClick = () => {

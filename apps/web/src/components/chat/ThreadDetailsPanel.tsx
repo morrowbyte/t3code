@@ -311,9 +311,10 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
               ) : null}
 
               <ThreadDetailsBoat
-                key={`${props.environmentId}:${props.projectId}`}
+                key={`${props.environmentId}:${props.projectId}:${props.threadId}`}
                 environmentId={props.environmentId}
                 projectId={props.projectId}
+                threadId={props.threadId}
               />
 
               {visible.usage ? <ThreadDetailsUsage {...props.usage} /> : null}

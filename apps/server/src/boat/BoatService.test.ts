@@ -31,6 +31,7 @@ import { PreviewManager } from "../preview/Manager.ts";
 import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
 import { BoatApi } from "./BoatApi.ts";
 import { make, sourceSyncScript } from "./BoatService.ts";
+import { boatUsageWindows, estimateBoatThreadUsage } from "./boatAnalytics.ts";
 
 const decodeInstance = Schema.decodeUnknownEffect(BoatInstance);
 const decodeStoredInstances = Schema.decodeUnknownEffect(
@@ -86,7 +87,22 @@ function setup(
         if (path.endsWith("/host")) return { url: "https://preview.example.test/web" };
         if (path.endsWith("/desktop?vnc=1"))
           return { desktopUrl: "https://preview.example.test/android" };
-        if (path.includes("/usage")) return { dollars: costUsd };
+        if (path.includes("/usage")) {
+          const query = new URL(path, "https://boat.test").searchParams;
+          return query.has("until")
+            ? {
+                sandboxId: path.split("/")[2],
+                sandboxType: "default",
+                billingMultiplier: 1,
+                since: query.get("since"),
+                until: query.get("until"),
+                seconds: 3600,
+                dollars: costUsd,
+                secondsPerDollar: 360000,
+                running: machineState !== "archived",
+              }
+            : { dollars: costUsd };
+        }
         if (method === "DELETE" || path.startsWith("/deletion-operations/"))
           return { operation: { id: "delete-test", status: "completed" } };
         if (path.endsWith("/stop")) machineState = "archived";
@@ -196,6 +212,244 @@ function setup(
     },
   };
 }
+
+it("uses UTC periods across year, month and daylight-saving boundaries", () => {
+  for (const [range, now, since] of [
+    ["day", "2026-10-25T01:30:00Z", "2026-10-25T00:00:00.000Z"],
+    ["week", "2027-01-01T12:00:00Z", "2026-12-26T00:00:00.000Z"],
+    ["month", "2026-03-31T23:59:00Z", "2026-03-01T00:00:00.000Z"],
+  ] as const) {
+    const period = boatUsageWindows(range, Date.parse(now));
+    assert.equal(period.since, since);
+    assert.isAtMost(period.windows.length, 8);
+    assert.equal(period.windows.at(-1)?.until, period.until);
+  }
+});
+
+it("leaves unrecorded thread history unassigned and preserves saved measurement freshness", () => {
+  const point = {
+    since: "2026-11-01T00:00:00Z",
+    until: "2026-11-01T04:00:00Z",
+    measuredUntil: "2026-11-01T04:00:00Z",
+    recordedAt: "2026-11-01T05:00:00Z",
+    seconds: 14400,
+    dollars: 0.04,
+    status: "stale" as const,
+  };
+  const unknown = estimateBoatThreadUsage(point, [], point.since, ownerThreadId);
+  assert.equal(unknown.dollars, null);
+  assert.equal(unknown.attribution, "unknown");
+  const partial = estimateBoatThreadUsage(
+    point,
+    [
+      {
+        at: "2026-11-01T02:00:00Z",
+        threadIds: [ownerThreadId],
+        running: true,
+      },
+    ],
+    point.since,
+    ownerThreadId,
+  );
+  assert.closeTo(partial.dollars!, 0.02, 0.000001);
+  assert.equal(partial.attribution, "unknown");
+  assert.equal(partial.status, "stale");
+});
+
+it.effect("reads bounded measured history without preview work and retains stale samples", () => {
+  let unavailable = false;
+  const test = setup((path) =>
+    unavailable && path.includes("until=")
+      ? Effect.fail(new BoatError({ category: "provider" }))
+      : Effect.void,
+  );
+  return Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse("2026-11-01T00:00:00Z"));
+    yield* Effect.gen(function* () {
+      const boat = yield* make;
+      yield* boat.connect(Redacted.make("boat_fixture_private"));
+      yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: true });
+      yield* boat.operate({ action: "start", projectId, requestId: "analytics" }, ownerThreadId);
+      yield* TestClock.adjust("12 hours");
+      const offset = test.calls.length;
+      const first = yield* boat.read(projectId, { range: "day", threadId: ownerThreadId });
+      assert.equal(first.instances.length, 0);
+      assert.equal(first.analytics?.instances.length, 1);
+      assert.equal(first.analytics?.instances[0]?.points.length, 3);
+      assert.equal(first.analytics?.instances[0]?.points[0]?.seconds, 3600);
+      assert.equal(first.analytics?.instances[0]?.points[0]?.dollars, 0.01);
+      assert.ok(
+        test.calls
+          .slice(offset)
+          .every((call) => !call.includes("/commands") && !call.includes("/host")),
+      );
+      const count = test.calls.filter((call) => call.includes("until=")).length;
+      yield* boat.read(projectId, { range: "day", threadId: ownerThreadId });
+      assert.equal(test.calls.filter((call) => call.includes("until=")).length, count);
+      unavailable = true;
+      yield* TestClock.adjust("2 minutes");
+      const stale = yield* boat.read(projectId, { range: "day", threadId: ownerThreadId });
+      assert.equal(stale.analytics?.instances[0]?.points[0]?.dollars, 0.01);
+      assert.equal(stale.analytics?.instances[0]?.points[0]?.status, "stale");
+    }).pipe(Effect.scoped);
+    const restarted = yield* make;
+    const restored = yield* restarted.read(projectId, { range: "day" });
+    assert.equal(restored.analytics?.instances[0]?.points[0]?.dollars, 0.01);
+    assert.equal(restored.analytics?.instances[0]?.points[0]?.status, "stale");
+  }).pipe(Effect.scoped, Effect.provide(test.services));
+});
+
+it.effect("discards analytics from a disconnected Boat account", () => {
+  return Effect.gen(function* () {
+    const started = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    let hold = false;
+    const test = setup((path) =>
+      path.includes("until=") && hold
+        ? Effect.gen(function* () {
+            yield* Deferred.succeed(started, undefined);
+            yield* Deferred.await(release);
+          })
+        : Effect.void,
+    );
+    yield* Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-11-01T00:00:00Z"));
+      const boat = yield* make;
+      yield* boat.connect(Redacted.make("boat_fixture_private"));
+      yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: true });
+      yield* boat.operate(
+        { action: "start", projectId, requestId: "disconnect-read" },
+        ownerThreadId,
+      );
+      yield* boat.operate({ action: "stop", projectId, requestId: "disconnect-read" });
+      yield* TestClock.setTime(Date.parse("2026-11-01T04:00:00Z"));
+      hold = true;
+      const read = yield* boat.read(projectId, { range: "day" }).pipe(Effect.forkChild);
+      yield* Deferred.await(started);
+      yield* boat.disconnect;
+      yield* Deferred.succeed(release, undefined);
+      const result = yield* Fiber.await(read);
+      assert.isTrue(Exit.isFailure(result));
+      const current = yield* boat.read(projectId, { range: "day" });
+      assert.isFalse(current.configured);
+      assert.equal(current.analytics?.instances[0]?.points[0]?.dollars, null);
+    }).pipe(Effect.scoped, Effect.provide(test.services));
+  }).pipe(Effect.scoped);
+});
+
+it.effect(
+  "estimates shared thread usage from recorded lease intervals and retains it after restart",
+  () => {
+    const test = setup();
+    const otherThreadId = ThreadId.make("other-thread");
+    test.setThread(otherThreadId, {
+      activeRunId: RunId.make("other-run"),
+      lineage: {
+        rootThreadId: ownerThreadId,
+        parentThreadId: ownerThreadId,
+        relationshipToParent: "subagent",
+      },
+    });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-11-01T00:00:00Z"));
+      const vm = yield* Effect.gen(function* () {
+        const boat = yield* make;
+        yield* boat.connect(Redacted.make("boat_fixture_private"));
+        yield* boat.configure(projectId, {
+          ...DEFAULT_BOAT_PROJECT,
+          enabled: true,
+          inheritDefaults: false,
+          ttlMinutes: 1440,
+        });
+        yield* boat.operate(
+          { action: "start", projectId, requestId: "shared-usage" },
+          ownerThreadId,
+        );
+        yield* TestClock.setTime(Date.parse("2026-11-01T01:00:00Z"));
+        yield* boat.operate(
+          { action: "renew", projectId, requestId: "shared-usage" },
+          otherThreadId,
+        );
+        yield* TestClock.setTime(Date.parse("2026-11-01T02:00:00Z"));
+        yield* boat.operate({ action: "stop", projectId, requestId: "shared-usage" });
+        yield* TestClock.setTime(Date.parse("2026-11-01T04:00:00Z"));
+        const owner = yield* boat.read(projectId, { range: "day", threadId: ownerThreadId });
+        const other = yield* boat.read(projectId, { range: "day", threadId: otherThreadId });
+        const vm = owner.analytics!.instances[0]!;
+        assert.closeTo(vm.threadPoints[0]!.dollars!, 0.0075, 0.000001);
+        assert.closeTo(other.analytics!.instances[0]!.threadPoints[0]!.dollars!, 0.0025, 0.000001);
+        assert.equal(vm.threadPoints[0]!.attribution, "estimated");
+        assert.equal(vm.points[0]!.dollars, 0.01);
+        assert.equal(vm.starts, 1);
+        assert.equal(vm.stops, 1);
+        return vm;
+      }).pipe(Effect.scoped);
+      const reopened = yield* make;
+      const restored = yield* reopened.read(projectId, { range: "day", threadId: ownerThreadId });
+      assert.deepEqual(restored.analytics!.instances[0]!.threadPoints, vm.threadPoints);
+    }).pipe(Effect.scoped, Effect.provide(test.services));
+  },
+);
+
+it.effect(
+  "bounds legacy VM history, deduplicates shared VMs and excludes private runtime fields",
+  () => {
+    const test = setup();
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-10-01T00:00:00Z"));
+      const started = yield* Effect.gen(function* () {
+        const boat = yield* make;
+        yield* boat.connect(Redacted.make("boat_fixture_private"));
+        yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: true });
+        return yield* boat.operate(
+          { action: "start", projectId, requestId: "legacy" },
+          ownerThreadId,
+        );
+      }).pipe(Effect.scoped);
+      const instances = Array.from({ length: 9 }, (_, index) => ({
+        ...started.instances[0]!,
+        requestId: `legacy-${index}`,
+        sandboxId: `bx_fixture${index}`,
+        leases: [ownerThreadId, ThreadId.make("other-thread")],
+        previewUrl: "https://preview.test/?token=do-not-copy",
+        output: "private command output",
+      }));
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.writeFileString(
+        `${config.stateDir}/boat.json`,
+        JSON.stringify({
+          period: "2026-10",
+          projects: started.projects,
+          instances: [...instances, { ...instances[0]!, requestId: "duplicate" }],
+        }),
+      );
+      yield* TestClock.setTime(Date.parse("2026-11-30T12:00:00Z"));
+      const restored = yield* make;
+      const offset = test.calls.length;
+      const result = yield* restored.read(projectId, { range: "month", threadId: ownerThreadId });
+      assert.equal(result.analytics?.instances.length, 8);
+      assert.equal(result.analytics?.omittedInstances, 1);
+      assert.equal(result.analytics?.activeInstances.default, 9);
+      assert.equal(test.calls.slice(offset).filter((call) => call.includes("until=")).length, 64);
+      assert.equal(result.analytics?.instances[0]?.historyKnownSince, null);
+      assert.equal(result.analytics?.instances[0]?.threadPoints[0]?.dollars, null);
+      assert.equal(result.analytics?.instances[0]?.threadPoints[0]?.attribution, "unknown");
+      assert.deepEqual(result.analytics?.instances[0]?.threadIds, [
+        ownerThreadId,
+        ThreadId.make("other-thread"),
+      ]);
+      assert.isFalse(JSON.stringify(result.analytics).includes("do-not-copy"));
+      assert.isFalse(JSON.stringify(result.analytics).includes("private command output"));
+      assert.isFalse(JSON.stringify(result.analytics).includes("boat_fixture_private"));
+      const unrelated = yield* restored.read(projectId, {
+        range: "month",
+        threadId: ThreadId.make("unrelated"),
+      });
+      assert.equal(unrelated.analytics?.instances.length, 0);
+    }).pipe(Effect.scoped, Effect.provide(test.services));
+  },
+);
 
 it.effect(
   "persists account secrets separately, deduplicates starts and retains ownership after restart",

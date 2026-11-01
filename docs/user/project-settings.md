@@ -70,10 +70,15 @@ Crew keeps a stopped environment before deleting it; deleting removes its remote
 Save a snapshot explicitly when you need a reusable environment beyond that period.
 Wait until the snapshot is ready before using it as the template for another environment.
 
-The project's budget limits new compute reservations. **Usage** shows the account's
-remaining included compute, wallet balance and recorded machine costs. Enable project CI
-to write its GitHub workflow, then review and commit that workflow. GitHub must also be
-connected to Boat and allowed to run the repository's jobs.
+The project's budget limits new compute reservations. Open **Boat** in the sidebar to
+compare project and thread usage today, over the last seven days, or this month; periods
+use UTC. VM list values are before plan and credit coverage. Thread shares are estimates
+based on recorded time sharing each VM; older time without a recorded assignment stays
+unknown. The thread details panel links directly to that thread's analytics.
+
+Account capacity and configuration remain in **Settings → Integrations**. Enable project
+CI to write its GitHub workflow, then review and commit that workflow. GitHub must also
+be connected to Boat and allowed to run the repository's jobs.
 
 ## Pin and archive projects
 

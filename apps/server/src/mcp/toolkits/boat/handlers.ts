@@ -17,7 +17,7 @@ export const layer = McpToolAccess.toLayer(BoatToolkit, {
   boat_status: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
       const boat = yield* BoatService.BoatService;
-      return yield* boat.read(input.projectId).pipe(Effect.mapError(failure));
+      return yield* boat.read(input.projectId, input.analytics).pipe(Effect.mapError(failure));
     }),
   ),
   boat_project: McpToolAccess.writesEnvironment((input) =>

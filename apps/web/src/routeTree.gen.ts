@@ -23,6 +23,7 @@ import { Route as ChatUsageRouteImport } from './routes/_chat.usage'
 import { Route as ChatSettingsRouteImport } from './routes/_chat.settings'
 import { Route as ChatPullRequestsRouteImport } from './routes/_chat.pull-requests'
 import { Route as ChatNewRouteImport } from './routes/_chat.new'
+import { Route as ChatBoatRouteImport } from './routes/_chat.boat'
 import { Route as ChatSettingsWorktreesRouteImport } from './routes/_chat.settings.worktrees'
 import { Route as ChatSettingsVoiceRouteImport } from './routes/_chat.settings.voice'
 import { Route as ChatSettingsUpdatesRouteImport } from './routes/_chat.settings.updates'
@@ -123,6 +124,11 @@ const ChatPullRequestsRoute = ChatPullRequestsRouteImport.update({
 const ChatNewRoute = ChatNewRouteImport.update({
   id: '/new',
   path: '/new',
+  getParentRoute: () => ChatRoute,
+} as any)
+const ChatBoatRoute = ChatBoatRouteImport.update({
+  id: '/boat',
+  path: '/boat',
   getParentRoute: () => ChatRoute,
 } as any)
 const ChatSettingsWorktreesRoute = ChatSettingsWorktreesRouteImport.update({
@@ -301,6 +307,7 @@ export interface FileRoutesByFullPath {
   '/observatory': typeof ObservatoryRoute
   '/pair': typeof PairRoute
   '/welcome': typeof WelcomeRoute
+  '/boat': typeof ChatBoatRoute
   '/new': typeof ChatNewRoute
   '/pull-requests': typeof ChatPullRequestsRoute
   '/settings': typeof ChatSettingsRouteWithChildren
@@ -347,6 +354,7 @@ export interface FileRoutesByTo {
   '/observatory': typeof ObservatoryRoute
   '/pair': typeof PairRoute
   '/welcome': typeof WelcomeRoute
+  '/boat': typeof ChatBoatRoute
   '/new': typeof ChatNewRoute
   '/pull-requests': typeof ChatPullRequestsRoute
   '/settings': typeof ChatSettingsRouteWithChildren
@@ -396,6 +404,7 @@ export interface FileRoutesById {
   '/observatory': typeof ObservatoryRoute
   '/pair': typeof PairRoute
   '/welcome': typeof WelcomeRoute
+  '/_chat/boat': typeof ChatBoatRoute
   '/_chat/new': typeof ChatNewRoute
   '/_chat/pull-requests': typeof ChatPullRequestsRoute
   '/_chat/settings': typeof ChatSettingsRouteWithChildren
@@ -446,6 +455,7 @@ export interface FileRouteTypes {
     | '/observatory'
     | '/pair'
     | '/welcome'
+    | '/boat'
     | '/new'
     | '/pull-requests'
     | '/settings'
@@ -492,6 +502,7 @@ export interface FileRouteTypes {
     | '/observatory'
     | '/pair'
     | '/welcome'
+    | '/boat'
     | '/new'
     | '/pull-requests'
     | '/settings'
@@ -540,6 +551,7 @@ export interface FileRouteTypes {
     | '/observatory'
     | '/pair'
     | '/welcome'
+    | '/_chat/boat'
     | '/_chat/new'
     | '/_chat/pull-requests'
     | '/_chat/settings'
@@ -690,6 +702,13 @@ declare module '@tanstack/react-router' {
       path: '/new'
       fullPath: '/new'
       preLoaderRoute: typeof ChatNewRouteImport
+      parentRoute: typeof ChatRoute
+    }
+    '/_chat/boat': {
+      id: '/_chat/boat'
+      path: '/boat'
+      fullPath: '/boat'
+      preLoaderRoute: typeof ChatBoatRouteImport
       parentRoute: typeof ChatRoute
     }
     '/_chat/settings/worktrees': {
@@ -990,6 +1009,7 @@ const ChatSettingsRouteWithChildren = ChatSettingsRoute._addFileChildren(
 )
 
 interface ChatRouteChildren {
+  ChatBoatRoute: typeof ChatBoatRoute
   ChatNewRoute: typeof ChatNewRoute
   ChatPullRequestsRoute: typeof ChatPullRequestsRoute
   ChatSettingsRoute: typeof ChatSettingsRouteWithChildren
@@ -1000,6 +1020,7 @@ interface ChatRouteChildren {
 }
 
 const ChatRouteChildren: ChatRouteChildren = {
+  ChatBoatRoute: ChatBoatRoute,
   ChatNewRoute: ChatNewRoute,
   ChatPullRequestsRoute: ChatPullRequestsRoute,
   ChatSettingsRoute: ChatSettingsRouteWithChildren,

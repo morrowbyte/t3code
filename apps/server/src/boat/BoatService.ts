@@ -1,6 +1,9 @@
 import { parse as parseYaml, stringify as yaml } from "yaml";
 import {
   BoatAction,
+  type BoatAnalytics,
+  type BoatAnalyticsInput,
+  type BoatUsagePoint,
   BoatDefaults,
   DEFAULT_BOAT_DEFAULTS,
   BoatError,
@@ -34,6 +37,16 @@ import * as Projects from "../project/ProjectService.ts";
 import { PreviewManager } from "../preview/Manager.ts";
 import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
 import { BoatApi } from "./BoatApi.ts";
+import {
+  boatLifecycleCounts,
+  boatThreadIds,
+  boatUsageRunning,
+  boatUsageWindows,
+  estimateBoatThreadUsage,
+  recordBoatLease,
+  MAX_ANALYTICS_INSTANCES,
+  MAX_USAGE_SAMPLES,
+} from "./boatAnalytics.ts";
 
 const ANDROID_SETUP = `if [ -d /home/user/android ] && [ ! -e /home/user/Android/Sdk ] && [ ! -L /home/user/Android/Sdk ]; then
   mkdir -p /home/user/Android
@@ -133,6 +146,17 @@ const KEY = "boat-api-key";
 const rates = { small: 0.018, default: 0.036, large: 0.072, xlarge: 0.2 };
 const StoredInstance = Schema.Struct({
   ...BoatInstance.fields,
+  usageThreadIds: Schema.Array(ThreadId).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
+  usageHistoryKnownSince: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
+  usageTimeline: Schema.Array(
+    Schema.Struct({
+      at: Schema.String,
+      threadIds: Schema.Array(ThreadId),
+      running: Schema.Boolean,
+    }),
+  ).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
   revision: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
   resumeOperation: Schema.NullOr(
     Schema.Struct({
@@ -149,13 +173,23 @@ const StoredInstance = Schema.Struct({
   ).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
 });
 type StoredInstance = typeof StoredInstance.Type;
+const UsageSample = Schema.Struct({
+  sandboxId: Schema.String,
+  since: Schema.String,
+  until: Schema.String,
+  seconds: Schema.Number,
+  dollars: Schema.Number,
+  recordedAt: Schema.String,
+});
 const Ledger = Schema.Struct({
   defaults: BoatDefaults.pipe(Schema.withDecodingDefaultKey(Effect.succeed(DEFAULT_BOAT_DEFAULTS))),
   period: Schema.String,
   projects: Schema.Record(Schema.String, BoatProjectConfig),
   instances: Schema.Array(StoredInstance),
+  usageSamples: Schema.Array(UsageSample).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
 });
 const encodeLedger = Schema.encodeEffect(Schema.fromJsonString(Ledger));
+const encodeCacheKey = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const ProjectManifest = Schema.Struct({
   scripts: Schema.Record(Schema.String, Schema.String),
   packageManager: Schema.optional(Schema.String),
@@ -182,6 +216,14 @@ const Limits = Schema.Struct({
   machineTypes: Schema.Array(Schema.Struct({ type: Schema.String, available: Schema.Boolean })),
 });
 const Usage = Schema.Struct({ dollars: Schema.Number });
+const AnalyticsUsage = Schema.Struct({
+  sandboxId: Schema.String,
+  since: Schema.String,
+  until: Schema.String,
+  seconds: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  dollars: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  running: Schema.Boolean,
+});
 const Deletion = Schema.Struct({
   operation: Schema.Struct({ id: Schema.String, status: Schema.String }),
 });
@@ -226,7 +268,10 @@ export class BoatService extends Context.Service<
   {
     readonly reconcile: () => Effect.Effect<void, BoatError>;
     readonly configureDefaults: (defaults: BoatDefaults) => Effect.Effect<BoatState, BoatError>;
-    readonly read: (projectId?: ProjectId) => Effect.Effect<BoatState, BoatError>;
+    readonly read: (
+      projectId?: ProjectId,
+      analytics?: BoatAnalyticsInput,
+    ) => Effect.Effect<BoatState, BoatError>;
     readonly isEnabled: (projectId: ProjectId) => Effect.Effect<boolean>;
     readonly connect: (apiKey: Redacted.Redacted<string>) => Effect.Effect<BoatState, BoatError>;
     readonly disconnect: Effect.Effect<void, BoatError>;
@@ -285,6 +330,7 @@ export const make = Effect.gen(function* () {
             defaults: DEFAULT_BOAT_DEFAULTS,
             projects: {},
             instances: [],
+            usageSamples: [],
           }),
     ),
     Effect.mapError(storageError),
@@ -304,15 +350,25 @@ export const make = Effect.gen(function* () {
     ) =>
       lock.withPermits(1)(
         Effect.gen(function* () {
+          const at = DateTime.formatIso(yield* DateTime.now);
           yield* save({
             ...ledger,
             instances: ledger.instances.map((item) => {
               if (item.requestId !== target.requestId || item.projectId !== target.projectId)
                 return item;
               const patch = typeof update === "function" ? update(item) : update;
+              const next = { ...item, ...patch };
+              const usageTimeline = recordBoatLease(item.usageTimeline, {
+                at,
+                threadIds: next.leases,
+                running: boatUsageRunning(next.state),
+              });
               return {
                 ...item,
                 ...patch,
+                usageThreadIds: boatThreadIds({ ...item, ...patch }),
+                usageTimeline,
+                usageHistoryKnownSince: usageTimeline[0]?.at ?? null,
                 revision:
                   item.revision +
                   (patch.state !== undefined || patch.resumeOperation !== undefined ? 1 : 0),
@@ -330,7 +386,16 @@ export const make = Effect.gen(function* () {
   const publicInstances = (projectId?: ProjectId) =>
     ledger.instances
       .filter((item) => !projectId || item.projectId === projectId)
-      .map(({ revision: _revision, resumeOperation: _resumeOperation, ...item }) => item);
+      .map(
+        ({
+          revision: _revision,
+          resumeOperation: _resumeOperation,
+          usageThreadIds: _usageThreadIds,
+          usageHistoryKnownSince: _usageHistoryKnownSince,
+          usageTimeline: _usageTimeline,
+          ...item
+        }) => item,
+      );
   const key = Effect.gen(function* () {
     const value = yield* secrets.get(KEY).pipe(Effect.mapError(storageError));
     if (Option.isNone(value)) return yield* new BoatError({ category: "not_configured" });
@@ -480,7 +545,226 @@ export const make = Effect.gen(function* () {
         }),
       ),
   );
-  const read = Effect.fn("BoatService.read")(function* (projectId?: ProjectId) {
+  const analyticsLock = yield* Semaphore.make(1);
+  const analyticsCache = new Map<string, { at: number; state: BoatState }>();
+  let analyticsGeneration = 0;
+  const readAnalytics = Effect.fn("BoatService.readAnalytics")(
+    (input: BoatAnalyticsInput, projectId?: ProjectId) =>
+      analyticsLock.withPermits(1)(
+        Effect.gen(function* () {
+          const generation = analyticsGeneration;
+          const now = yield* Clock.currentTimeMillis;
+          const period = boatUsageWindows(input.range, now);
+          const candidates = ledger.instances
+            .filter(
+              (item) =>
+                (!projectId || item.projectId === projectId) &&
+                (!input.threadId || boatThreadIds(item).includes(input.threadId)),
+            )
+            .sort(
+              (a, b) =>
+                Number(inactive.has(a.state)) - Number(inactive.has(b.state)) ||
+                b.createdAt.localeCompare(a.createdAt),
+            );
+          const cacheKey = encodeCacheKey([
+            input,
+            projectId,
+            period.since,
+            candidates.map((item) => [
+              item.requestId,
+              item.state,
+              boatThreadIds(item),
+              item.usageTimeline.at(-1),
+            ]),
+          ]);
+          const cached = analyticsCache.get(cacheKey);
+          if (cached && now - cached.at < 60_000) return cached.state;
+          const stored = yield* secrets.get(KEY).pipe(Effect.mapError(storageError));
+          const token = Option.isSome(stored)
+            ? Redacted.make(new TextDecoder().decode(stored.value))
+            : null;
+          const samples: (typeof UsageSample.Type)[] = [];
+          const observedRunning = new Map<string, boolean>();
+          const activeInstances = { small: 0, default: 0, large: 0, xlarge: 0 };
+          const seen = new Set<string>();
+          const unique = candidates.filter((item) => {
+            const id = item.sandboxId ?? item.requestId;
+            if (seen.has(id)) return false;
+            seen.add(id);
+            if (!inactive.has(item.state)) activeInstances[item.size] += 1;
+            return true;
+          });
+          const selected = unique.slice(0, MAX_ANALYTICS_INSTANCES);
+          // At most eight VMs and eight real windows: never extrapolate a total into a curve.
+          const points = yield* Effect.forEach(
+            selected.flatMap((item) => period.windows.map((window) => ({ item, window }))),
+            ({ item, window }) =>
+              Effect.gen(function* () {
+                const fallback = ledger.usageSamples
+                  .filter(
+                    (sample) =>
+                      sample.sandboxId === item.sandboxId &&
+                      sample.since === window.since &&
+                      sample.until <= window.until,
+                  )
+                  .sort((a, b) => b.until.localeCompare(a.until))[0];
+                if (Date.parse(item.createdAt) >= Date.parse(window.until)) {
+                  return {
+                    ...window,
+                    seconds: 0,
+                    dollars: 0,
+                    measuredUntil: window.until,
+                    recordedAt: period.until,
+                    status: "measured",
+                  } satisfies BoatUsagePoint;
+                }
+                const measured =
+                  token && item.sandboxId && item.state !== "deleted"
+                    ? yield* api
+                        .request(
+                          token,
+                          `/sandboxes/${encodeURIComponent(item.sandboxId)}/usage?${new URLSearchParams(window)}`,
+                        )
+                        .pipe(
+                          Effect.flatMap(decode(AnalyticsUsage)),
+                          Effect.filterOrFail(
+                            (usage) =>
+                              usage.sandboxId === item.sandboxId &&
+                              Number.isFinite(usage.seconds) &&
+                              Number.isFinite(usage.dollars) &&
+                              Date.parse(usage.since) === Date.parse(window.since) &&
+                              Date.parse(usage.until) === Date.parse(window.until),
+                            () => new BoatError({ category: "provider" }),
+                          ),
+                          Effect.catchTags({ BoatError: () => Effect.succeed(null) }),
+                        )
+                    : null;
+                if (measured) {
+                  if (window.until === period.until)
+                    observedRunning.set(item.requestId, measured.running);
+                  const sample = {
+                    sandboxId: measured.sandboxId,
+                    ...window,
+                    seconds: measured.seconds,
+                    dollars: measured.dollars,
+                    recordedAt: period.until,
+                  };
+                  samples.push(sample);
+                  return {
+                    ...window,
+                    seconds: sample.seconds,
+                    dollars: sample.dollars,
+                    measuredUntil: sample.until,
+                    recordedAt: sample.recordedAt,
+                    status: "measured",
+                  } satisfies BoatUsagePoint;
+                }
+                return {
+                  ...window,
+                  seconds: fallback?.seconds ?? null,
+                  dollars: fallback?.dollars ?? null,
+                  measuredUntil: fallback?.until ?? null,
+                  recordedAt: fallback?.recordedAt ?? null,
+                  status: fallback ? "stale" : "unavailable",
+                } satisfies BoatUsagePoint;
+              }),
+            { concurrency: 4 },
+          );
+          if (generation !== analyticsGeneration)
+            return yield* new BoatError({ category: "conflict" });
+          if (samples.length > 0) {
+            yield* lock.withPermits(1)(
+              Effect.suspend(() => {
+                if (generation !== analyticsGeneration)
+                  return Effect.fail(new BoatError({ category: "conflict" }));
+                const retained = new Map(
+                  ledger.usageSamples.map((sample) => [
+                    `${sample.sandboxId}:${sample.since}:${sample.until}`,
+                    sample,
+                  ]),
+                );
+                for (const sample of samples)
+                  retained.set(`${sample.sandboxId}:${sample.since}:${sample.until}`, sample);
+                return save({
+                  ...ledger,
+                  usageSamples: [...retained.values()]
+                    .sort((a, b) => b.recordedAt.localeCompare(a.recordedAt))
+                    .slice(0, MAX_USAGE_SAMPLES),
+                });
+              }),
+            );
+          }
+          const analytics: BoatAnalytics = {
+            range: input.range,
+            since: period.since,
+            until: period.until,
+            generatedAt: period.until,
+            omittedInstances: unique.length - selected.length,
+            activeInstances,
+            instances: selected.map((item, index) => {
+              const instancePoints = points.slice(
+                index * period.windows.length,
+                (index + 1) * period.windows.length,
+              );
+              return {
+                requestId: item.requestId,
+                projectId: item.projectId,
+                sandboxId: item.sandboxId,
+                size: item.size,
+                state: observedRunning.has(item.requestId)
+                  ? observedRunning.get(item.requestId)
+                    ? "running"
+                    : "stopped"
+                  : item.state,
+                threadIds: boatThreadIds(item),
+                historyKnownSince: item.usageHistoryKnownSince,
+                points: instancePoints,
+                threadPoints: input.threadId
+                  ? instancePoints.map((point) =>
+                      estimateBoatThreadUsage(
+                        point,
+                        item.usageTimeline,
+                        item.createdAt,
+                        input.threadId!,
+                      ),
+                    )
+                  : [],
+                ...boatLifecycleCounts(
+                  item.usageTimeline,
+                  period.since,
+                  period.until,
+                  item.createdAt,
+                ),
+              };
+            }),
+          };
+          for (const item of selected) {
+            const running = observedRunning.get(item.requestId);
+            if (running !== undefined) {
+              activeInstances[item.size] += Number(running) - Number(!inactive.has(item.state));
+            }
+          }
+          const state: BoatState = {
+            configured: token !== null,
+            defaults: ledger.defaults,
+            projects: ledger.projects,
+            account: null,
+            instances: [],
+            analytics,
+          };
+          if (generation !== analyticsGeneration)
+            return yield* new BoatError({ category: "conflict" });
+          if (analyticsCache.size >= 20) analyticsCache.delete(analyticsCache.keys().next().value!);
+          analyticsCache.set(cacheKey, { at: now, state });
+          return state;
+        }),
+      ),
+  );
+  const read = Effect.fn("BoatService.read")(function* (
+    projectId?: ProjectId,
+    analytics?: BoatAnalyticsInput,
+  ) {
+    if (analytics) return yield* readAnalytics(analytics, projectId);
     if (projectId) yield* project(projectId);
     const period = DateTime.formatIso(yield* DateTime.now).slice(0, 7);
     if (ledger.period !== period)
@@ -659,12 +943,16 @@ export const make = Effect.gen(function* () {
     yield* secrets
       .set(KEY, new TextEncoder().encode(Redacted.value(apiKey)))
       .pipe(Effect.mapError(storageError));
+    analyticsCache.clear();
+    analyticsGeneration++;
     return yield* read();
   });
   const disconnect = Effect.gen(function* () {
     if (ledger.instances.some((item) => !inactive.has(item.state)))
       return yield* new BoatError({ category: "conflict" });
     yield* secrets.remove(KEY).pipe(Effect.mapError(storageError));
+    analyticsCache.clear();
+    analyticsGeneration++;
   });
   const configure = Effect.fn("BoatService.configure")(function* (
     projectId: ProjectId,
@@ -887,6 +1175,17 @@ export const make = Effect.gen(function* () {
         threadId: threadId ?? null,
         previewTabId: null,
         leases: agentThreadId ? [agentThreadId] : [],
+        usageThreadIds: Array.from(
+          new Set([...(threadId ? [threadId] : []), ...(agentThreadId ? [agentThreadId] : [])]),
+        ),
+        usageHistoryKnownSince: DateTime.formatIso(DateTime.makeUnsafe(now)),
+        usageTimeline: [
+          {
+            at: DateTime.formatIso(DateTime.makeUnsafe(now)),
+            threadIds: agentThreadId ? [agentThreadId] : [],
+            running: false,
+          },
+        ],
         stoppedAt: null,
         processId: null,
         deletionOperationId: null,

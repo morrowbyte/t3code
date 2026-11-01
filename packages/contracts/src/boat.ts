@@ -84,6 +84,54 @@ export const BoatInstance = Schema.Struct({
 });
 export type BoatInstance = typeof BoatInstance.Type;
 
+export const BoatAnalyticsInput = Schema.Struct({
+  range: Schema.Literals(["day", "week", "month"]),
+  threadId: Schema.optional(ThreadId),
+});
+export type BoatAnalyticsInput = typeof BoatAnalyticsInput.Type;
+
+export const BoatUsagePoint = Schema.Struct({
+  since: Schema.String,
+  until: Schema.String,
+  seconds: Schema.NullOr(Schema.Number),
+  dollars: Schema.NullOr(Schema.Number),
+  measuredUntil: Schema.NullOr(Schema.String),
+  recordedAt: Schema.NullOr(Schema.String),
+  status: Schema.Literals(["measured", "stale", "unavailable"]),
+  attribution: Schema.optional(Schema.Literals(["estimated", "unknown"])),
+});
+export type BoatUsagePoint = typeof BoatUsagePoint.Type;
+
+export const BoatAnalytics = Schema.Struct({
+  range: BoatAnalyticsInput.fields.range,
+  since: Schema.String,
+  until: Schema.String,
+  generatedAt: Schema.String,
+  omittedInstances: Schema.Number,
+  activeInstances: Schema.Struct({
+    small: Schema.Number,
+    default: Schema.Number,
+    large: Schema.Number,
+    xlarge: Schema.Number,
+  }),
+  instances: Schema.Array(
+    Schema.Struct({
+      requestId: Schema.String,
+      projectId: ProjectId,
+      sandboxId: Schema.NullOr(Schema.String),
+      size: BoatSize,
+      state: Schema.String,
+      threadIds: Schema.Array(ThreadId),
+      historyKnownSince: Schema.NullOr(Schema.String),
+      points: Schema.Array(BoatUsagePoint),
+      threadPoints: Schema.Array(BoatUsagePoint),
+      starts: Schema.Number,
+      stops: Schema.Number,
+    }),
+  ),
+});
+export type BoatAnalytics = typeof BoatAnalytics.Type;
+
 export const BoatState = Schema.Struct({
   defaults: BoatDefaults,
   configured: Schema.Boolean,
@@ -100,10 +148,14 @@ export const BoatState = Schema.Struct({
   ),
   projects: Schema.Record(ProjectId, BoatProjectConfig),
   instances: Schema.Array(BoatInstance),
+  analytics: Schema.optional(BoatAnalytics),
 });
 export type BoatState = typeof BoatState.Type;
 
-export const BoatReadInput = Schema.Struct({ projectId: Schema.optional(ProjectId) });
+export const BoatReadInput = Schema.Struct({
+  projectId: Schema.optional(ProjectId),
+  analytics: Schema.optional(BoatAnalyticsInput),
+});
 export const BoatConnectInput = Schema.Struct({ apiKey: Schema.Redacted(Schema.String) });
 export const BoatProjectInput = Schema.Struct({ projectId: ProjectId, config: BoatProjectConfig });
 const instanceFields = {

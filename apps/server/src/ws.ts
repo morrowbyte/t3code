@@ -2992,7 +2992,7 @@ const layerCoreWsRpc = (
         [WS_METHODS.serverGetResourceTelemetryHistory]: (input) =>
           resourceTelemetry.readHistory(input),
         [WS_METHODS.boatDefaults]: (input) => boat.configureDefaults(input),
-        [WS_METHODS.boatRead]: (input) => boat.read(input.projectId),
+        [WS_METHODS.boatRead]: (input) => boat.read(input.projectId, input.analytics),
         [WS_METHODS.boatConnect]: (input) => boat.connect(input.apiKey),
         [WS_METHODS.boatDisconnect]: () => boat.disconnect,
         [WS_METHODS.boatSetup]: (input) =>
