@@ -198,6 +198,7 @@ test("follows all release pages but rejects changed origins, paths, queries and 
   assert.equal(requests.length, 2);
   for (const location of [
     next.replace("api.github.com", "example.com"),
+    next.replace("/repos/morrowbyte/t3code/", "/repositories/1175532638/"),
     next.replace("/releases?", "/statuses?"),
     next.replace("page=2", "page=1"),
     next + "&extra=1",
@@ -217,6 +218,34 @@ test("follows all release pages but rejects changed origins, paths, queries and 
     );
     assert.equal(calls, 1);
   }
+});
+
+test("follows GitHub's canonical numeric repository links across release pages", async () => {
+  const requests = [];
+  const github = createGitHubClient({
+    token,
+    fetchImpl: async (url) => {
+      requests.push(url);
+      const page = requests.length;
+      return json(
+        [{ id: page }],
+        page < 3
+          ? {
+              link: `<https://api.github.com/repositories/1175532637/releases?per_page=100&page=${page + 1}>; rel="next"`,
+            }
+          : undefined,
+      );
+    },
+  });
+  assert.deepEqual(
+    await github.paginate(github.rest.repos.listReleases, { ...repo, per_page: 100 }),
+    [{ id: 1 }, { id: 2 }, { id: 3 }],
+  );
+  assert.deepEqual(requests, [
+    "https://api.github.com/repos/morrowbyte/t3code/releases?per_page=100",
+    "https://api.github.com/repositories/1175532637/releases?per_page=100&page=2",
+    "https://api.github.com/repositories/1175532637/releases?per_page=100&page=3",
+  ]);
 });
 
 test("bounds release pagination and rejects malformed pagination rather than hiding releases", async () => {
