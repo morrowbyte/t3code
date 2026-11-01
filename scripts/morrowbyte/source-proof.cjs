@@ -319,7 +319,9 @@ function produce(command, group) {
         workflowRef: process.env.GITHUB_WORKFLOW_REF,
       },
       environment: {
+        // oxlint-disable-next-line t3code/no-global-process-runtime -- This standalone CI helper has no Effect runtime.
         platform: process.platform,
+        // oxlint-disable-next-line t3code/no-global-process-runtime -- This standalone CI helper has no Effect runtime.
         arch: process.arch,
         runnerLabel: process.env.MORROWBYTE_SOURCE_RUNNER,
         node: process.versions.node,
