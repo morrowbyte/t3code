@@ -152,7 +152,13 @@ jobs:
           git -c core.quotePath=false diff --name-only --no-renames HEAD -- > "$RUNNER_TEMP/integration-pending-paths.txt"
           printf 'pending git diff exit: %s\n' "$?"
           set -e
-          vp run check:integration --exact-base "$BASE_SHA"
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            # Permission fixtures must not inherit the container's DAC bypass.
+            setpriv --inh-caps=-dac_override,-dac_read_search --ambient-caps=-dac_override,-dac_read_search \
+              vp run check:integration --exact-base "$BASE_SHA"
+          else
+            vp run check:integration --exact-base "$BASE_SHA"
+          fi
       - name: Run focused source gates
         if: github.event_name == 'workflow_dispatch' && !inputs.integrationOnly
         env:

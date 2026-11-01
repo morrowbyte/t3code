@@ -154,8 +154,6 @@ describe("ExpandedImageDialog", () => {
           }}
           onClose={vi.fn()}
         />,
-        // The dialog renders no links and reads no route.
-        { router: false },
       );
 
       const viewer = screen.getByRole("region", { name: "Pipeline, zoomable image" });
