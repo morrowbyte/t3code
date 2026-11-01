@@ -139,10 +139,16 @@ const ProjectCloneTool = Tool.make("t3_project_clone", {
 const ThreadLaunchTool = Tool.make("t3_thread_launch", {
   ...shared,
   description:
-    "Create one new top-level thread, bound to its workspace before the agent starts. Task in `message`. Omit `projectId`, model and modes to inherit yours (outside a thread, pass `projectId` or `scratch`); modes cannot exceed yours. After an error or lost reply, retry with the same `clientRequestId`. Follow it with `t3_thread_read` or `t3_thread_wait`. Mention it with its `link`.",
+    "Launch independent work in its target project. For a large feature, pass projectId, workKey, clientRequestId and message: creates a real top-level owner with its own worktree, or sends to the existing owner for that project/workKey. Small bounded subtasks use delegate_task. Resolve the environment and exact project first; ask when ambiguous. Model and modes inherit; modes cannot exceed yours. Retry uncertain replies with the same clientRequestId. Follow with t3_thread_read; mention its link.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     projectId: Schema.optional(ProjectId),
+    workKey: Schema.optional(
+      Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9._-]{0,127}$/)).annotate({
+        description:
+          "Stable project-local feature key, such as export-report. Reuse the same key across callers for the same work. Requires explicit projectId, message and clientRequestId. Defaults to a new worktree; root is refused. Closed owners are not reopened.",
+      }),
+    ),
     scratch: Schema.optional(
       Schema.Boolean.annotate({
         description:
@@ -176,6 +182,7 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     modelSelection: ModelSelection,
     runId: Schema.NullOr(RunId),
     status: Schema.NullOr(OrchestrationV2RunStatus),
+    reusedOwner: Schema.optional(Schema.Boolean),
   }),
   dependencies: [
     ...shared.dependencies,

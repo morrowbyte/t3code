@@ -415,6 +415,7 @@ export type OrchestratorMcpThreadPullRequest = typeof OrchestratorMcpThreadPullR
 
 export const OrchestratorMcpThreadListItem = Schema.Struct({
   threadId: ThreadId,
+  workKey: Schema.optional(Schema.String),
   projectId: ProjectId,
   title: Schema.String,
   link: Schema.optional(Schema.String),
@@ -485,6 +486,7 @@ export type OrchestratorMcpThreadReadInput = typeof OrchestratorMcpThreadReadInp
 
 export const OrchestratorMcpThreadDetail = Schema.Struct({
   threadId: ThreadId,
+  workKey: Schema.optional(Schema.String),
   projectId: ProjectId,
   title: Schema.String,
   link: Schema.optional(Schema.String),
@@ -720,6 +722,7 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
     cancellation: Schema.Boolean,
     batchThreadCreation: Schema.Boolean,
     threadManagement: Schema.Boolean,
+    projectWorkRouting: Schema.optional(Schema.Boolean),
     incrementalThreadRead: Schema.Boolean,
     scheduledTasks: Schema.Boolean,
     maxBatchThreads: Schema.Number,

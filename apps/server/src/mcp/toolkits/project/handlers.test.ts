@@ -49,6 +49,7 @@ const clientLaunchHarness = (input: {
   readonly workspaceRoot?: string;
   readonly checkWorktreeBase?: ThreadLaunch.ThreadLaunchService["Service"]["checkWorktreeBase"];
   readonly webOrigin?: string;
+  readonly linked?: boolean;
 }) => {
   const projectId = ProjectId.make("project:client-target");
   const modelSelection = {
@@ -86,6 +87,7 @@ const clientLaunchHarness = (input: {
         sessionId: "session-1",
         label: "Claude Code",
         access: input.runtimeModeCeiling,
+        ...(input.linked ? { linked: true } : {}),
         webOrigin: input.webOrigin,
       },
       issuedAt: 0,
@@ -103,6 +105,7 @@ const clientLaunchHarness = (input: {
                 projectId: launch.projectId,
                 modelSelection: launch.modelSelection,
                 deletedAt: null,
+                linkOrigin: launch.linkOrigin,
               } as unknown as OrchestrationV2ThreadShell),
         );
       },
@@ -153,6 +156,106 @@ const clientLaunchHarness = (input: {
   );
   return { projectId, modelSelection, projectDefaults, dependencies: layerDependencies };
 };
+
+it.effect("routes independent work to an explicit project and a new workspace", () =>
+  Effect.gen(function* () {
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const { projectId, dependencies } = clientLaunchHarness({
+      runtimeModeCeiling: "full-access",
+      launched,
+    });
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
+      ),
+    );
+    yield* toolkit
+      .handle("t3_thread_launch", {
+        projectId,
+        workKey: "billing-report",
+        clientRequestId: "intake-report-1",
+        title: "Billing report",
+        message: "Implement the billing report",
+      })
+      .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+    expect(launched).toHaveLength(1);
+    expect(launched[0]).toMatchObject({
+      projectId,
+      workKey: "billing-report",
+      workspaceStrategy: { type: "worktree", baseRef: "HEAD", startFromOrigin: false },
+    });
+    expect(launched[0]?.threadId).toMatch(/^work-owner:/);
+  }),
+);
+
+it.effect("does not infer a feature target or accept an unrepeatable intake", () =>
+  Effect.gen(function* () {
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const { projectId, dependencies } = clientLaunchHarness({
+      runtimeModeCeiling: "full-access",
+      launched,
+    });
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
+      ),
+    );
+    for (const input of [
+      { workKey: "billing-report", clientRequestId: "intake-report-1" },
+      { projectId, workKey: "billing-report" },
+      {
+        projectId,
+        workKey: "billing-report",
+        clientRequestId: "intake-root",
+        workspaceStrategy: {
+          type: "existing_worktree" as const,
+          worktreePath: "/projects/client-target",
+        },
+      },
+    ]) {
+      const result = yield* toolkit
+        .handle("t3_thread_launch", {
+          ...input,
+          title: "Billing report",
+          message: "Implement the billing report",
+        })
+        .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+      expect(result.at(-1)?.result).toMatchObject({ code: "invalid_request" });
+    }
+    expect(launched).toHaveLength(0);
+  }),
+);
+
+it.effect("does not route a fenced linked caller into a local work owner", () =>
+  Effect.gen(function* () {
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const request = {
+      workKey: "billing-report",
+      clientRequestId: "intake-1",
+      title: "Report",
+      message: "Build report",
+    };
+    for (const linked of [false, true]) {
+      const { projectId, dependencies } = clientLaunchHarness({
+        runtimeModeCeiling: "auto",
+        launched,
+        linked,
+      });
+      const toolkit = yield* ProjectToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
+      const result = yield* toolkit
+        .handle("t3_thread_launch", { ...request, projectId })
+        .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+      if (linked) expect(result.at(-1)?.result).toMatchObject({ code: "capability_denied" });
+    }
+    expect(launched).toHaveLength(1);
+  }),
+);
 
 it.effect(
   "a client launches with the project's default model and mode, capped at its ceiling",

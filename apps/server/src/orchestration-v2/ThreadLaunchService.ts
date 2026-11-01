@@ -4,8 +4,9 @@ import * as TerminalManager from "../terminal/Manager.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   CommandId,
+  linkOriginIsFenced,
   type ChatAttachment,
-  type MessageId,
+  MessageId,
   type ModelSelection,
   type OrchestrationV2Actor,
   type OrchestrationV2CreationSource,
@@ -23,14 +24,19 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
+import * as Hex from "effect/encoding/Hex";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import {
   buildTemporaryWorktreeBranchName,
@@ -53,6 +59,9 @@ import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
 import { DispatchModeLimit } from "./DispatchModeLimit.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
+import { isSnoozed } from "./ThreadSettlementService.ts";
+import * as DateTime from "effect/DateTime";
+import { BoatService } from "../boat/BoatService.ts";
 
 export type ThreadLaunchWorkspaceStrategy =
   | { readonly type: "root"; readonly branch?: string | undefined }
@@ -79,6 +88,7 @@ export interface ThreadLaunchInitialMessage {
 
 export interface ThreadLaunchInput {
   readonly commandId: CommandId;
+  readonly workKey?: string;
   readonly threadId?: ThreadId;
   readonly reuseExistingThread?: boolean;
   readonly projectId: ProjectId;
@@ -192,6 +202,21 @@ export class ThreadLaunchService extends Context.Service<
 
 const isThreadLaunchError = Schema.is(ThreadLaunchError);
 
+export const workOwnerThreadId = Effect.fn("ThreadLaunchService.workOwnerThreadId")(function* (
+  projectId: ProjectId,
+  key: string,
+) {
+  const crypto = yield* Crypto.Crypto;
+  const digest = yield* crypto.digest(
+    "SHA-256",
+    new TextEncoder().encode(`${projectId}\n${key.trim().toLowerCase()}`),
+  );
+  return ThreadId.make(`work-owner:${Hex.encode(digest)}:${key.trim().toLowerCase()}`);
+});
+
+export const workOwnerKey = (threadId: ThreadId) =>
+  /^work-owner:[a-f0-9]{64}:([a-z0-9][a-z0-9._-]{0,127})$/.exec(threadId)?.[1];
+
 function failureDetail(error: unknown): string {
   if (isThreadLaunchError(error)) {
     const cause = error.cause;
@@ -215,6 +240,13 @@ const make = Effect.gen(function* () {
   const ids = yield* IdAllocator.IdAllocatorV2;
   const threads = yield* ThreadManagement.ThreadManagementService;
   const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
+  const boat = yield* BoatService;
+  const crypto = yield* Crypto.Crypto;
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const canonicalPath = (value: string) =>
+    fs.realPath(value).pipe(Effect.orElseSucceed(() => path.resolve(value)));
+  const workOwnerLock = yield* Semaphore.make(1);
   const preparationScope = yield* Scope.make("sequential");
   const scheduledLaunches = yield* Ref.make<ReadonlySet<CommandId>>(new Set());
   yield* Effect.addFinalizer(() => Scope.close(preparationScope, Exit.void));
@@ -566,8 +598,61 @@ const make = Effect.gen(function* () {
           .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
       }
       yield* setupTracker.stageStatus(threadId, "setup-script", "running");
+      let boatSetup = false;
+      const preparingThread = threadId.startsWith("work-owner:")
+        ? yield* threads
+            .getThreadShell(threadId)
+            .pipe(Effect.mapError(mapError(input, "update-thread", threadId)))
+        : null;
+      if (
+        preparingThread &&
+        (preparingThread.linkOrigin === undefined ||
+          !linkOriginIsFenced(preparingThread.linkOrigin)) &&
+        (yield* boat.isEnabled(input.projectId))
+      ) {
+        const state = yield* boat
+          .read(input.projectId)
+          .pipe(Effect.mapError(mapError(input, "run-setup-script", threadId)));
+        if (state.projects[input.projectId]?.enabled) {
+          const target = {
+            projectId: input.projectId,
+            requestId: `work-${threadId.split(":")[1]}`,
+          };
+          let prepared = yield* boat
+            .operate({ ...target, action: "start" }, threadId)
+            .pipe(Effect.mapError(mapError(input, "run-setup-script", threadId)));
+          const instance = () =>
+            prepared.instances.find((item) => item.requestId === target.requestId);
+          if (["archived", "stopped"].includes(instance()?.state ?? "")) {
+            prepared = yield* boat
+              .operate({ ...target, action: "resume" }, threadId)
+              .pipe(Effect.mapError(mapError(input, "run-setup-script", threadId)));
+          }
+          for (
+            let attempt = 0;
+            attempt < 60 && !["idle", "ready"].includes(instance()?.state ?? "");
+            attempt++
+          ) {
+            if (["error", "deleted", "deleting"].includes(instance()?.state ?? "")) break;
+            yield* Effect.sleep("1 second");
+            prepared = yield* boat
+              .read(input.projectId)
+              .pipe(Effect.mapError(mapError(input, "run-setup-script", threadId)));
+          }
+          if (!["idle", "ready"].includes(instance()?.state ?? ""))
+            return yield* mapError(
+              input,
+              "run-setup-script",
+              threadId,
+            )("Boat did not become ready within the preparation limit.");
+          yield* boat
+            .operate({ ...target, action: "prepare" }, threadId)
+            .pipe(Effect.mapError(mapError(input, "run-setup-script", threadId)));
+          boatSetup = true;
+        }
+      }
       const setup =
-        worktreePath === null
+        worktreePath === null || boatSetup
           ? ({ status: "no-script" } as const)
           : yield* setupScripts
               .runForThread({
@@ -631,6 +716,11 @@ const make = Effect.gen(function* () {
         } else {
           yield* setupTracker.stageStatus(threadId, "setup-script", "done");
         }
+      } else if (boatSetup) {
+        yield* setupTracker.stage(threadId, "setup-script", {
+          status: "done",
+          detail: "Boat setup started in the owner's workspace",
+        });
       } else {
         yield* setupTracker.stageStatus(threadId, "setup-script", "skipped");
       }
@@ -804,7 +894,7 @@ const make = Effect.gen(function* () {
     );
   });
 
-  const launch: ThreadLaunchService["Service"]["launch"] = Effect.fn("ThreadLaunchService.launch")(
+  const start: ThreadLaunchService["Service"]["launch"] = Effect.fn("ThreadLaunchService.launch")(
     function* (request) {
       // Scratch has no Git repository. Normalize before folder allocation so
       // durable preparation and retries use the thread's own Scratch folder.
@@ -1120,7 +1210,12 @@ const make = Effect.gen(function* () {
         commandId: input.commandId,
         projectId: thread.projectId,
         workspaceStrategy: reuse?.strategy ?? workspacePreparation,
-        ...(reuse === null ? {} : { reusedWorktree: reuse.reusedWorktree }),
+        ...(reuse !== null
+          ? { reusedWorktree: reuse.reusedWorktree }
+          : workOwnerKey(input.threadId) !== undefined &&
+              workspacePreparation.type === "existing_worktree"
+            ? { reusedWorktree: { baseRef: thread.branch ?? "HEAD" } }
+            : {}),
         ...(message === undefined
           ? {}
           : {
@@ -1133,6 +1228,203 @@ const make = Effect.gen(function* () {
       },
       input.threadId,
       run.id,
+    );
+  });
+
+  const launch: ThreadLaunchService["Service"]["launch"] = Effect.fn(
+    "ThreadLaunchService.routeWork",
+  )(function* (input) {
+    if (input.workKey === undefined) return yield* start(input);
+    const key = input.workKey.trim().toLowerCase();
+    return yield* workOwnerLock.withPermits(1)(
+      Effect.gen(function* () {
+        if (!/^[a-z0-9][a-z0-9._-]{0,127}$/.test(key) || input.initialMessage === undefined)
+          return yield* mapError(
+            input,
+            "create-thread",
+          )("A work owner requires a stable workKey and a message.");
+        const threadId = yield* workOwnerThreadId(input.projectId, key).pipe(
+          Effect.provideService(Crypto.Crypto, crypto),
+          Effect.mapError(mapError(input, "create-thread")),
+        );
+        const owner = yield* threads
+          .getThreadShell(threadId)
+          .pipe(Effect.mapError(mapError(input, "create-thread", threadId)));
+        if (
+          owner !== null &&
+          input.linkOrigin !== undefined &&
+          linkOriginIsFenced(input.linkOrigin) &&
+          owner.linkOrigin?.sessionId !== input.linkOrigin.sessionId
+        )
+          return yield* mapError(
+            input,
+            "update-thread",
+            threadId,
+          )("A linked caller may reuse only work owned by the same link.");
+        if (owner === null && input.workspaceStrategy.type === "root")
+          return yield* mapError(
+            input,
+            "provision-worktree",
+            threadId,
+          )("An independent work owner needs its own worktree.");
+        if (owner === null && input.workspaceStrategy.type === "existing_worktree") {
+          const targetPath = yield* canonicalPath(input.workspaceStrategy.worktreePath);
+          const project = yield* projects
+            .getById(input.projectId)
+            .pipe(Effect.mapError(mapError(input, "resolve-project")));
+          if (
+            Option.isSome(project) &&
+            targetPath === (yield* canonicalPath(project.value.workspaceRoot))
+          )
+            return yield* mapError(
+              input,
+              "provision-worktree",
+              threadId,
+            )("An independent work owner needs a separate worktree, not the project root.");
+          const sharing = yield* threads
+            .getShellSnapshot({ projectId: input.projectId, unsettledOnly: true })
+            .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
+          const occupied = yield* Effect.forEach(sharing.threads, (thread) =>
+            thread.id !== threadId && thread.worktreePath !== null
+              ? canonicalPath(thread.worktreePath).pipe(Effect.map((value) => value === targetPath))
+              : Effect.succeed(false),
+          );
+          if (occupied.some(Boolean))
+            return yield* mapError(
+              input,
+              "provision-worktree",
+              threadId,
+            )("This worktree already has an active owner.");
+        }
+        if (owner === null || Option.isSome(yield* readReceipt(input, input.commandId)))
+          return yield* start({ ...input, threadId });
+        if (
+          owner.projectId !== input.projectId ||
+          owner.deletedAt !== null ||
+          owner.archivedAt !== null ||
+          owner.settledAt !== null ||
+          isSnoozed(owner, DateTime.toEpochMillis(yield* DateTime.now)) ||
+          owner.lineage.parentThreadId !== null
+        )
+          return yield* mapError(
+            input,
+            "update-thread",
+            threadId,
+          )(
+            "The work owner is closed or unavailable. Select an existing active owner or a new workKey.",
+          );
+        const message = {
+          commandId: CommandId.make(`${input.commandId}:initial-message`),
+          messageId: input.initialMessage.messageId ?? MessageId.make(`${input.commandId}:message`),
+          threadId,
+          text: input.initialMessage.text,
+          attachments: input.initialMessage.attachments,
+          ...(input.initialMessage.senderThreadId === undefined
+            ? {}
+            : {
+                senderThreadId: input.initialMessage.senderThreadId,
+              }),
+          createdBy: input.createdBy,
+          creationSource: input.creationSource,
+        };
+        const messageReceipt = yield* readReceipt(input, message.commandId);
+        if (Option.isSome(messageReceipt)) {
+          const prior = yield* threads
+            .getThreadRecords(threadId, ["messages", "runs"])
+            .pipe(Effect.mapError(mapError(input, "read-receipt", threadId)));
+          const accepted = prior.messages.find((item) => item.id === message.messageId);
+          yield* threads
+            .sendToThread({
+              ...message,
+              projectId: input.projectId,
+              mode: accepted?.sendRequest?.mode === "queue" ? "queue" : "auto",
+            })
+            .pipe(
+              Effect.provideService(DispatchModeLimit, {
+                runtimeMode: input.runtimeMode,
+                interactionMode: input.interactionMode,
+              }),
+              Effect.mapError(mapError(input, "dispatch-message", threadId)),
+            );
+          const preparing = prior.runs.find(
+            (run) => run.userMessageId === message.messageId && run.status === "preparing",
+          );
+          if (preparing !== undefined)
+            yield* prepareRun({ commandId: input.commandId, threadId, runId: preparing.id });
+          const projection = yield* threads
+            .getThreadProjection(threadId)
+            .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
+          return { threadId, projection, resumed: true };
+        }
+        if (
+          owner.activeRunId === null &&
+          owner.activityRunStatus == null &&
+          owner.worktreePath === null
+        )
+          return yield* mapError(
+            input,
+            "provision-worktree",
+            threadId,
+          )("The work owner's workspace is not ready; retry its preparation.");
+        const resumedWorkspace: ThreadLaunchWorkspaceStrategy | null =
+          owner.activeRunId === null && owner.activityRunStatus == null
+            ? owner.worktreePath === null
+              ? null
+              : {
+                  type: "existing_worktree",
+                  worktreePath: owner.worktreePath,
+                  ...(owner.branch === null ? {} : { branch: owner.branch }),
+                }
+            : null;
+        const send =
+          resumedWorkspace === null
+            ? threads
+                .sendToThread(
+                  {
+                    ...message,
+                    projectId: input.projectId,
+                    mode: owner.status === "preparing" ? "queue" : "auto",
+                  },
+                  { requireAvailableWorkOwner: true },
+                )
+                .pipe(Effect.asVoid)
+            : Effect.gen(function* () {
+                const dispatched = yield* threads.dispatch(
+                  {
+                    type: "message.dispatch",
+                    ...message,
+                    sendRequest: { text: message.text, mode: "auto" },
+                    dispatchMode: { type: "defer_start", workspaceStrategy: resumedWorkspace },
+                  },
+                  { requireAvailableWorkOwner: true },
+                );
+                const event = dispatched.storedEvents.find(
+                  (stored) => stored.event.type === "run.created",
+                )?.event;
+                if (event?.type === "run.created" && (yield* reservePreparation(input.commandId)))
+                  yield* schedulePreparation(
+                    {
+                      commandId: input.commandId,
+                      projectId: input.projectId,
+                      workspaceStrategy: resumedWorkspace,
+                      reusedWorktree: { baseRef: owner.branch ?? "HEAD" },
+                    },
+                    threadId,
+                    event.payload.id,
+                  );
+              });
+        yield* send.pipe(
+          Effect.provideService(DispatchModeLimit, {
+            runtimeMode: input.runtimeMode,
+            interactionMode: input.interactionMode,
+          }),
+          Effect.mapError(mapError(input, "dispatch-message", threadId)),
+        );
+        const projection = yield* threads
+          .getThreadProjection(threadId)
+          .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
+        return { threadId, projection, resumed: true };
+      }),
     );
   });
 
