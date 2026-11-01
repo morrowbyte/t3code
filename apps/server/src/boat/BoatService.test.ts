@@ -1721,6 +1721,10 @@ it.effect("shares an owner's VM with its child without replacing the bound sourc
       .operate({ action: "prepare", projectId, requestId: "shared-source" }, childThreadId)
       .pipe(Effect.flip);
     assert.equal(denied.category, "conflict");
+    const renewalDenied = yield* boat
+      .operate({ action: "renew", projectId, requestId: "shared-source" }, childThreadId)
+      .pipe(Effect.flip);
+    assert.equal(renewalDenied.category, "conflict");
     test.setOwnerActive(false);
     yield* boat.reconcile();
     assert.deepEqual((yield* boat.read(projectId)).instances[0]?.leases, [childThreadId]);

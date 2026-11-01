@@ -1037,7 +1037,6 @@ export const layer: Layer.Layer<
         });
         if (!(yield* waitForComputeReadiness())) return undefined;
         if (
-          ownerThreadId !== thread.id ||
           placement.action !== "renew" ||
           previous?.state === "idle" ||
           selected()?.state === "idle"
