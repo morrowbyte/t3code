@@ -1119,7 +1119,7 @@ jobs:
           set -euo pipefail
           if [[ '${{ inputs.runner_backend }}' != self-hosted ]]; then
             sudo apt-get update
-            sudo apt-get install -y libsecret-1-dev pkg-config imagemagick
+            sudo apt-get install -y libsecret-1-dev pkg-config imagemagick xvfb dbus-x11 libgtk-3-0 libnss3 libgbm1 libasound2t64
           fi
 
       - name: Setup Rust
@@ -1163,6 +1163,35 @@ jobs:
           IFS=/ read -r expected_owner expected_repo <<<"${T3CODE_DESKTOP_UPDATE_REPOSITORY}"
           grep -Fq "owner: $expected_owner" "$update_config"
           grep -Fq "repo: $expected_repo" "$update_config"
+
+      - name: Launch the exact Linux AppImage with its bundled server
+        if: inputs.windows_candidate_only != true
+        env:
+          EXPECT_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/linux-desktop-launch"
+          mkdir -p "$evidence_dir/extracted"
+          appimage="$GITHUB_WORKSPACE/release-linux/T3-Code-$EXPECT_VERSION-x86_64.AppImage"
+          sha256sum "$appimage" > "$evidence_dir/appimage.sha256"
+          (cd "$evidence_dir/extracted" && "$appimage" --appimage-extract > "$evidence_dir/extraction.log")
+          dbus-run-session -- xvfb-run -a node scripts/smoke-desktop-app.ts \
+            --executable "$evidence_dir/extracted/squashfs-root/AppRun" \
+            --expect-version "$EXPECT_VERSION" --artifacts-dir "$evidence_dir"
+          sha256sum --check "$evidence_dir/appimage.sha256"
+
+      - name: Preserve Linux desktop startup evidence
+        if: ${{ always() && inputs.windows_candidate_only != true }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: morrowbyte-linux-startup-${{ needs.preflight.outputs.source_sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/linux-desktop-launch/*.json
+            ${{ runner.temp }}/linux-desktop-launch/*.sha256
+            ${{ runner.temp }}/linux-desktop-launch/*.png
+            ${{ runner.temp }}/linux-desktop-launch/logs/
+          if-no-files-found: ignore
+          retention-days: 1
 
       - name: Prepare NixOS download bundle
         if: inputs.windows_candidate_only != true

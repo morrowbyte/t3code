@@ -100,6 +100,13 @@ try {
       .catch(() => {});
     throw error;
   }
+  NodeFS.mkdirSync(artifactsDir, { recursive: true });
+  await page.screenshot({ path: NodePath.join(artifactsDir, "window.png"), timeout: 10_000 });
+  const version = await app.evaluate(({ app }) => app.getVersion());
+  NodeFS.writeFileSync(
+    NodePath.join(artifactsDir, "startup.json"),
+    JSON.stringify({ status: "passed", platform, version, seededThreadVisible: true }) + "\n",
+  );
   console.log("Desktop launch check passed: the app opened and showed the seeded thread.");
 } catch (error) {
   console.error(`Desktop launch check failed while ${step}.`);

@@ -4,7 +4,12 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodeCrypto from "node:crypto";
 import * as NodeModule from "node:module";
-import { cuaRuntimeDependencies, stageCuaRuntime } from "../packages/cua-driver/runtime.mjs";
+import * as NodePath from "node:path";
+import {
+  cuaRelease,
+  cuaRuntimeDependencies,
+  stageCuaRuntime,
+} from "../packages/cua-driver/runtime.mjs";
 // plist is CommonJS; Node cannot load its named exports from an ES module.
 import Plist from "plist";
 
@@ -1441,12 +1446,23 @@ export function resolveMergedStageDependencies(input: {
   readonly desktopDependencies: Record<string, string>;
   readonly arch: typeof BuildArch.Type;
   readonly fffNodeVersion: string;
+  readonly stagedCua?: { readonly root: string; readonly appDir: string };
 }) {
-  return cuaRuntimeDependencies({
+  const dependencies = cuaRuntimeDependencies({
     ...selectCliRuntimeExternalDependencies(input.serverDependencies),
     ...input.desktopDependencies,
     ...resolveFffNativeDependencies(input.platform, input.arch, input.fffNodeVersion),
   });
+  if (!input.stagedCua) return dependencies;
+  const release = cuaRelease(input.platform, input.arch);
+  if (!release) throw new Error(`No pinned Cua runtime for ${input.platform}-${input.arch}`);
+  for (const name of ["@trycua/cua-driver", `@trycua/cua-driver-${release.triple}`]) {
+    dependencies[name] = `file:${NodePath.relative(
+      input.stagedCua.appDir,
+      NodePath.join(input.stagedCua.root, "node_modules", name),
+    )}`;
+  }
+  return dependencies;
 }
 
 /** Cursor's helper lookup falls through the archive to this real resources tree. */
@@ -3966,6 +3982,15 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     );
   }
 
+  const stagedCua =
+    options.platform === "linux"
+      ? { root: path.join(stageRoot, "cua-runtime"), appDir: stageAppDir }
+      : undefined;
+  if (stagedCua) {
+    yield* Effect.tryPromise(() =>
+      stageCuaRuntime({ destination: stagedCua.root, platform: "linux", arch: options.arch }),
+    );
+  }
   const stageDependencies =
     options.platform === "win"
       ? { ...resolvedDesktopRuntimeDependencies }
@@ -3975,6 +4000,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
           desktopDependencies: resolvedDesktopRuntimeDependencies,
           arch: options.arch,
           fffNodeVersion: serverPackageJson.dependencies["@ff-labs/fff-node"],
+          stagedCua,
         });
   const stagePatchedDependencies = createStagePatchedDependencies(
     workspacePatchedDependencies,
@@ -4051,12 +4077,6 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   );
   yield* stageClerkPasskeyNativeBinaries(stageAppDir, options.platform, options.arch);
   yield* stageKeyringNativeBinaries(stageAppDir, options.platform, options.arch);
-  if (options.platform === "linux") {
-    yield* Effect.tryPromise(() =>
-      stageCuaRuntime({ destination: stageAppDir, platform: "linux", arch: options.arch }),
-    );
-  }
-
   if (options.platform === "win" && windowsServerAsarPath) {
     yield* stageWindowsServerSidecar({
       stageRoot,
