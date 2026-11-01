@@ -3,6 +3,7 @@ import {
   sessionGrantsScope,
   type AuthSessionState,
   type EnvironmentId,
+  type OrchestrationV2ThreadShell,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -25,10 +26,12 @@ import {
 } from "../state/threads.ts";
 import type { ObservatoryEnvironment } from "./native.ts";
 import { createObservatoryViewAtoms } from "./state.ts";
+import { createThreadFamilyAtoms } from "../state/threadFamilies.ts";
 
 interface ProjectionScope {
   readonly shell: (environmentId: EnvironmentId) => Atom.Atom<EnvironmentShellState | null>;
   readonly detail: (ref: ScopedThreadRef) => Atom.Atom<EnvironmentThreadState | null>;
+  readonly family?: (ref: ScopedThreadRef) => Atom.Atom<readonly OrchestrationV2ThreadShell[]>;
 }
 /** Captured supervisor facts; the production adapter below supplies the actual session identity. */
 export interface ObservatoryConnection {
@@ -110,6 +113,14 @@ export function createObservatoryProjectionBridge(input: {
       }),
     ),
   );
+  const families = Atom.family((environmentId: EnvironmentId) =>
+    Atom.family((threadId: ScopedThreadRef["threadId"]) =>
+      Atom.make((get) => {
+        const host = get(hostAtom(environmentId));
+        return host.scope?.family ? get(host.scope.family({ environmentId, threadId })) : [];
+      }),
+    ),
+  );
   return createObservatoryViewAtoms({
     taskCards: input.taskCards === true,
     catalogReadyAtom: Atom.make((get) => get(input.catalogAtom).isReady),
@@ -118,6 +129,7 @@ export function createObservatoryProjectionBridge(input: {
     ),
     selectedAtom: Atom.make<ScopedThreadRef | null>(null),
     detailAtom: (ref) => details(ref.environmentId)(ref.threadId),
+    familyAtom: (ref) => families(ref.environmentId)(ref.threadId),
   });
 }
 
@@ -180,6 +192,7 @@ export function createLiveObservatory<R, E>(
     createScope: () => {
       const shells = createEnvironmentShellAtoms(runtime);
       const details = createEnvironmentThreadStateAtoms(runtime);
+      const families = createThreadFamilyAtoms(runtime, shells.stateAtom);
       const shellAtoms = Atom.family((id: EnvironmentId) =>
         Atom.make((get) => {
           const result = get(shells.stateAtom(id));
@@ -194,7 +207,19 @@ export function createLiveObservatory<R, E>(
           }),
         ),
       );
-      return { shell: shellAtoms, detail: (ref) => detailAtoms(ref.environmentId)(ref.threadId) };
+      const familyAtoms = Atom.family((id: EnvironmentId) =>
+        Atom.family((threadId: ScopedThreadRef["threadId"]) =>
+          Atom.make((get) => {
+            const result = get(families.familyAtom(id, threadId));
+            return AsyncResult.isSuccess(result) ? result.value.threads : [];
+          }),
+        ),
+      );
+      return {
+        shell: shellAtoms,
+        detail: (ref) => detailAtoms(ref.environmentId)(ref.threadId),
+        family: (ref) => familyAtoms(ref.environmentId)(ref.threadId),
+      };
     },
   });
 }

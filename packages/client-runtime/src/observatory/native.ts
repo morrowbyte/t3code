@@ -31,6 +31,25 @@ export interface ObservatoryNode {
 export const observatoryKey = (ref: ScopedThreadRef) =>
   `${ref.environmentId.length}:${ref.environmentId}${ref.threadId}`;
 
+export function observatoryNode(
+  environmentId: EnvironmentId,
+  shell: OrchestrationV2ThreadShell,
+): ObservatoryNode {
+  const ref = { environmentId, threadId: shell.id };
+  return {
+    key: observatoryKey(ref),
+    ref,
+    title: shell.title,
+    nativeStatus: shell.status,
+    runId: shell.activeRunId ?? shell.latestRunId,
+    parentKey:
+      shell.lineage.parentThreadId === null
+        ? null
+        : observatoryKey({ environmentId, threadId: shell.lineage.parentThreadId }),
+    shell,
+  };
+}
+
 /** One derived node array feeds graph/list/dashboard; it is never a second native store. */
 export function projectObservatoryNative(environments: readonly ObservatoryEnvironment[]) {
   const nodes: ObservatoryNode[] = [];
@@ -52,22 +71,7 @@ export function projectObservatoryNative(environments: readonly ObservatoryEnvir
             ).values(),
           ].filter((thread) => thread.deletedAt === null);
     for (const shell of threads) {
-      const ref = { environmentId: source.environmentId, threadId: shell.id };
-      nodes.push({
-        key: observatoryKey(ref),
-        ref,
-        title: shell.title,
-        nativeStatus: shell.status,
-        runId: shell.activeRunId ?? shell.latestRunId,
-        parentKey:
-          shell.lineage.parentThreadId === null
-            ? null
-            : observatoryKey({
-                environmentId: source.environmentId,
-                threadId: shell.lineage.parentThreadId,
-              }),
-        shell,
-      });
+      nodes.push(observatoryNode(source.environmentId, shell));
     }
     return {
       environmentId: source.environmentId,

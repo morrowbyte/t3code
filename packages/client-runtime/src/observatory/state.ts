@@ -1,10 +1,11 @@
-import type { ScopedThreadRef } from "@t3tools/contracts";
+import type { OrchestrationV2ThreadShell, ScopedThreadRef } from "@t3tools/contracts";
 import { Atom, type AtomRegistry } from "effect/reactivity";
 import type { EnvironmentThreadState } from "../state/threads.ts";
 import { createObservatoryAuthoredProjector, observedObservatoryOwner } from "./authored.ts";
 import { projectObservatoryTask } from "./tasks.ts";
 import {
   observatoryKey,
+  observatoryNode,
   projectObservatoryDetails,
   projectObservatoryNative,
   projectObservatoryPage,
@@ -24,6 +25,7 @@ export function createObservatoryViewAtoms(input: {
   readonly sourcesAtom: Atom.Atom<readonly ObservatoryEnvironment[]>;
   readonly selectedAtom: Atom.Writable<ScopedThreadRef | null>;
   readonly detailAtom: (ref: ScopedThreadRef) => Atom.Atom<EnvironmentThreadState | null>;
+  readonly familyAtom?: (ref: ScopedThreadRef) => Atom.Atom<readonly OrchestrationV2ThreadShell[]>;
   readonly authoredAtom?: (ref: ScopedThreadRef) => Atom.Atom<ObservatoryAuthoredSource | null>;
   readonly taskCards?: boolean;
 }) {
@@ -58,6 +60,20 @@ export function createObservatoryViewAtoms(input: {
       return null;
     }
     const detail = projectObservatoryDetails(node, source, get(input.detailAtom(node.ref)));
+    const family = input.familyAtom ? get(input.familyAtom(node.ref)) : [];
+    const related = [
+      ...graph.nodes,
+      ...family
+        .filter(
+          (thread) =>
+            !graph.nodes.some(
+              (candidate) =>
+                candidate.ref.environmentId === node.ref.environmentId &&
+                candidate.ref.threadId === thread.id,
+            ),
+        )
+        .map((thread) => observatoryNode(node.ref.environmentId, thread)),
+    ];
     let context = authored.get(get.registry);
     if (!context || context.key !== node.key || context.generation !== source.generation) {
       context = {
@@ -81,7 +97,7 @@ export function createObservatoryViewAtoms(input: {
       source,
       detail,
       visual,
-      task: projectObservatoryTask(node, graph.nodes, detail),
+      task: projectObservatoryTask(node, related, detail),
     };
   });
   const snapshotAtom = Atom.make((get) => {
@@ -103,6 +119,15 @@ export function createObservatoryViewAtoms(input: {
       input.taskCards ? 12 : undefined,
       input.taskCards,
     );
+    const related = new Map(graph.nodes.map((node) => [node.key, node]));
+    if (input.familyAtom) {
+      for (const node of page.nodes) {
+        for (const thread of get(input.familyAtom(node.ref))) {
+          const relative = observatoryNode(node.ref.environmentId, thread);
+          if (!related.has(relative.key)) related.set(relative.key, relative);
+        }
+      }
+    }
     return {
       ...page,
       nodes: page.nodes.map((node) => {
@@ -112,7 +137,7 @@ export function createObservatoryViewAtoms(input: {
           : selection?.node.key === node.key
             ? selection.detail
             : null;
-        return { ...node, task: projectObservatoryTask(node, graph.nodes, detail) };
+        return { ...node, task: projectObservatoryTask(node, [...related.values()], detail) };
       }),
       catalogReady: get(input.catalogReadyAtom),
       selection,

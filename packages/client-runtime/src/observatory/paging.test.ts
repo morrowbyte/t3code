@@ -93,6 +93,51 @@ describe("shell-only observatory pages", () => {
   it("bounds live task detail reads to the visible page and keeps other pages reachable", () => {
     const registry = AtomRegistry.make();
     const reads = new Set<string>();
+    const familyReads = new Set<string>();
+    const parentId = ThreadId.make("parent-outside-page");
+    const firstId = ThreadId.make("thread-0000");
+    const source = environment(first, 25);
+    const withParent = {
+      ...source,
+      shell: {
+        ...source.shell!,
+        snapshot: Option.map(source.shell!.snapshot, (snapshot) => ({
+          ...snapshot,
+          threads: snapshot.threads.map((thread) =>
+            thread.id === firstId
+              ? {
+                  ...thread,
+                  lineage: {
+                    ...thread.lineage,
+                    parentThreadId: parentId,
+                    relationshipToParent: "subagent" as const,
+                  },
+                }
+              : thread,
+          ),
+        })),
+      },
+    };
+    const family = Atom.family((threadId: ThreadId) =>
+      Atom.make(() => {
+        familyReads.add(threadId);
+        return threadId === firstId
+          ? [
+              { ...v2ThreadShell, id: parentId, title: "Responsible parent" },
+              {
+                ...v2ThreadShell,
+                id: ThreadId.make("child-outside-page"),
+                title: "Dependent child",
+                lineage: {
+                  ...v2ThreadShell.lineage,
+                  parentThreadId: firstId,
+                  relationshipToParent: "subagent" as const,
+                },
+              },
+            ]
+          : [];
+      }),
+    );
     const detailFamily = Atom.family((threadId: ThreadId) =>
       Atom.make(() => {
         reads.add(threadId);
@@ -101,9 +146,10 @@ describe("shell-only observatory pages", () => {
     );
     const view = createObservatoryViewAtoms({
       catalogReadyAtom: Atom.make(true),
-      sourcesAtom: Atom.make([environment(first, 25)]),
+      sourcesAtom: Atom.make([withParent]),
       selectedAtom: Atom.make<typeof lastRef | null>(null),
       detailAtom: (ref) => detailFamily(ref.threadId),
+      familyAtom: (ref) => family(ref.threadId),
       taskCards: true,
     });
     const unmount = registry.mount(view.snapshotAtom);
@@ -111,6 +157,11 @@ describe("shell-only observatory pages", () => {
       const page = registry.get(view.snapshotAtom);
       expect(page.nodes).toHaveLength(12);
       expect(reads.size).toBe(12);
+      expect(familyReads.size).toBe(12);
+      expect(page.nodes[0]?.task.parent?.title).toBe("Responsible parent");
+      expect(page.nodes[0]?.task.dependencies.map((dependency) => dependency.title)).toEqual([
+        "Dependent child",
+      ]);
       registry.set(view.queryAtom, { ...page.page.query, anchorKey: page.page.nextKey });
       expect(registry.get(view.snapshotAtom).nodes).toHaveLength(12);
       expect(reads.size).toBe(24);
