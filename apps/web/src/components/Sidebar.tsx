@@ -6,7 +6,11 @@ import { SidebarThreadFamily } from "./sidebar/SidebarThreadRow";
 import { liveShellEnvironmentIdsAtom } from "../state/shell";
 import { attachSidebarTree, SIDEBAR_TREE_PROPS } from "../lib/sidebarTree";
 import { type EnvironmentId, type ScopedProjectRef } from "@t3tools/contracts";
-import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
+import {
+  AVAILABLE_CONNECTION_STATE,
+  type EnvironmentServerConfig,
+} from "@t3tools/client-runtime/connection";
+import { environmentCatalog } from "../connection/catalog";
 import { ThreadContextDragGhost } from "./chat/ThreadContextDragGhost";
 import {
   dropThreadContext,
@@ -17,7 +21,7 @@ import { discardComposerDraft } from "../lib/discardComposerDraft";
 import { requestCustomSnooze } from "./CustomSnoozeDialog";
 import { useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
-import { Atom } from "effect/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import * as Schema from "effect/Schema";
 import {
   DndContext,
@@ -193,9 +197,11 @@ import {
   buildBulkUnpinContextMenuItem,
   deleteSelectedThreadEntries,
   filterSidebarProjectScopeItems,
+  filterSidebarConnectedThreads,
   firstValidTimestampMs,
   belongsInSidebarWorkingShelf,
   isSidebarEnvironmentDisconnected,
+  isSidebarEnvironmentOffline,
   isSidebarNestedLinkClick,
   workingThreadKeys,
   isTrailingDoubleClick,
@@ -333,12 +339,30 @@ const sidebarProviderEntriesAtom = Atom.make((get) => {
 
 const EMPTY_PROVIDER_ENTRIES: ReadonlyMap<string, SidebarProviderEntry> = new Map();
 const EMPTY_THREADS: readonly EnvironmentThreadShell[] = [];
+const NO_HIDDEN_ENVIRONMENTS: ReadonlySet<EnvironmentId> = new Set();
+const sidebarOfflineEnvironmentIdsAtom = Atom.make((get) => {
+  const offline = new Set<EnvironmentId>();
+  for (const environmentId of get(environmentCatalog.catalogValueAtom).entries.keys()) {
+    const state = AsyncResult.getOrElse(
+      get(environmentCatalog.stateAtom(environmentId)),
+      () => AVAILABLE_CONNECTION_STATE,
+    );
+    if (isSidebarEnvironmentOffline(state)) offline.add(environmentId);
+  }
+  const previous = Option.getOrNull(get.self<ReadonlySet<EnvironmentId>>());
+  return previous !== null &&
+    previous.size === offline.size &&
+    [...offline].every((environmentId) => previous.has(environmentId))
+    ? previous
+    : offline;
+}).pipe(Atom.withLabel("sidebar-offline-environment-ids"));
 
 const SETTLED_TAIL_INITIAL_COUNT = 10;
 const SETTLED_TAIL_PAGE_COUNT = 25;
 const SETTLED_SHELF_EXPANDED_KEY = "t3code:sidebar:settled-expanded";
 const SNOOZED_SHELF_EXPANDED_KEY = "t3code:sidebar:snoozed-expanded";
 const WORKING_SHELF_EXPANDED_KEY = "t3code:sidebar:working-expanded";
+const SHOW_DISCONNECTED_KEY = "t3code:sidebar:show-disconnected";
 
 const inboxReturns = createInboxReturnTracker();
 
@@ -428,6 +452,7 @@ function useSidebarThreads(input: {
   readonly connectedEnvironmentIds: readonly EnvironmentId[];
   readonly optimisticDrop: SidebarOptimisticDrop | null;
   readonly threads: readonly EnvironmentThreadShell[];
+  readonly hiddenEnvironmentIds: ReadonlySet<EnvironmentId>;
   readonly delegatedUnderParent: ReadonlySet<string>;
   readonly routeRowThreadKey: string | null;
   readonly routeThreadKey: string | null;
@@ -443,6 +468,7 @@ function useSidebarThreads(input: {
     connectedEnvironmentIds,
     optimisticDrop,
     threads,
+    hiddenEnvironmentIds,
     delegatedUnderParent,
     routeRowThreadKey,
     routeThreadKey,
@@ -521,7 +547,10 @@ function useSidebarThreads(input: {
     partition;
   // Older settled threads load in pages; the shelf lists them only as far as they are loaded.
   const olderSettledShelf = useOlderSettledShelf({
-    scopes: olderSettledScopes([...serverConfigs.keys()], scopedProjectKeys),
+    scopes: olderSettledScopes(
+      [...serverConfigs.keys()].filter((id) => !hiddenEnvironmentIds.has(id)),
+      scopedProjectKeys,
+    ),
     expanded: settledShelfExpanded,
     visibleCount: settledVisibleCount,
   });
@@ -1141,6 +1170,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const [threadSearchQuery, setThreadSearchQuery] = useState("");
   const [searchHighlightKey, setSearchHighlightKey] = useState<string | null>(null);
   const connectedEnvironmentIds = useConnectedEnvironmentIds();
+  const offlineEnvironmentIds = useAtomValue(sidebarOfflineEnvironmentIdsAtom);
+  const [showDisconnected, setShowDisconnected] = useLocalStorage(
+    SHOW_DISCONNECTED_KEY,
+    false,
+    Schema.Boolean,
+  );
+  const hiddenEnvironmentIds = showDisconnected ? NO_HIDDEN_ENVIRONMENTS : offlineEnvironmentIds;
   const queuePendingFileDrop = useSidebarPendingFileDropStore((s) => s.queuePendingFileDrop);
   const clearPendingFileDrop = useSidebarPendingFileDropStore((s) => s.clearPendingFileDrop);
   const [renamingThreadRef, setRenamingThreadRef] = useState<ScopedThreadRef | null>(null);
@@ -1447,7 +1483,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     serverConfigs,
     connectedEnvironmentIds,
     optimisticDrop,
-    threads,
+    threads: filterSidebarConnectedThreads(threads, hiddenEnvironmentIds),
+    hiddenEnvironmentIds,
     delegatedUnderParent,
     routeRowThreadKey,
     routeThreadKey,
@@ -3087,6 +3124,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           <SidebarGroup className="z-[1]">
             <SidebarThreadHeader
               searchFieldRef={headerSearchRef}
+              showDisconnected={showDisconnected}
+              onShowDisconnectedChange={setShowDisconnected}
               hasProjects={projectGroups.length > 0}
               projectScope={
                 <Combobox
@@ -3822,6 +3861,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                     Add project
                   </button>
                 </>
+              ) : hiddenEnvironmentIds.size > 0 ? (
+                "No threads match these filters"
               ) : scopedProjectGroups.length > 1 ? (
                 "No threads in these projects yet"
               ) : scopedProjectGroups[0] ? (

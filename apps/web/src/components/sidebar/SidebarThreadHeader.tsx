@@ -1,4 +1,4 @@
-import { FolderPlusIcon, SearchIcon, SquarePenIcon, XIcon } from "lucide-react";
+import { FolderPlusIcon, SearchIcon, SquarePenIcon, WifiOffIcon, XIcon } from "lucide-react";
 import {
   type ComponentProps,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -16,6 +16,8 @@ export interface SidebarThreadHeaderProps {
   searchFieldRef?: RefObject<HTMLDivElement | null>;
   hasProjects: boolean;
   projectScope: ReactNode;
+  showDisconnected: boolean;
+  onShowDisconnectedChange: (show: boolean) => void;
   onNewProject: () => void;
   onNewThread: (event: ReactMouseEvent) => void;
   newThreadDisabled: boolean;
@@ -36,6 +38,8 @@ export function SidebarThreadHeader({
   searchFieldRef,
   hasProjects,
   projectScope,
+  showDisconnected,
+  onShowDisconnectedChange,
   onNewProject,
   onNewThread,
   newThreadDisabled,
@@ -102,6 +106,14 @@ export function SidebarThreadHeader({
         ) : null}
       </div>
       <div className="flex shrink-0 items-center">
+        <SidebarHeaderIconButton
+          label="Show disconnected"
+          aria-pressed={showDisconnected}
+          isActive={showDisconnected}
+          onClick={() => onShowDisconnectedChange(!showDisconnected)}
+        >
+          <WifiOffIcon />
+        </SidebarHeaderIconButton>
         {hasProjects ? (
           <>
             {projectScope}
@@ -148,7 +160,7 @@ export function SidebarHeaderIconButton({
   children?: ReactNode;
 } & Omit<
   ComponentProps<typeof SidebarMenuButton>,
-  "children" | "className" | "tooltip" | "isActive" | "aria-label"
+  "children" | "className" | "tooltip" | "aria-label"
 >) {
   return (
     <Tooltip>

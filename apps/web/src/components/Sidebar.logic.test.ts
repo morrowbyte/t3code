@@ -1,4 +1,10 @@
 import { threadKey } from "@t3tools/client-runtime/state/entities";
+import {
+  AVAILABLE_CONNECTION_STATE,
+  ConnectionBlockedError,
+  ConnectionTransientError,
+  type SupervisorConnectionState,
+} from "@t3tools/client-runtime/connection";
 import { presentThreadShell } from "@t3tools/client-runtime/state/models";
 import { isThreadWorking as isSidebarThreadWorking } from "@t3tools/client-runtime/state/thread-inbox";
 import * as DateTime from "effect/DateTime";
@@ -19,6 +25,7 @@ import {
   createThreadJumpHintVisibilityController,
   deleteSelectedThreadEntries,
   filterSidebarProjectScopeItems,
+  filterSidebarConnectedThreads,
   filterSidebarV2VisibleThreads,
   filterSidebarFamilyThreads,
   getFallbackThreadIdAfterDelete,
@@ -32,6 +39,7 @@ import {
   isTrailingDoubleClick,
   belongsInSidebarWorkingShelf,
   isSidebarEnvironmentDisconnected,
+  isSidebarEnvironmentOffline,
   orderItemsByPreferredIds,
   pinOrderKeyBetween,
   reduceSidebarProjectScopeMenuState,
@@ -92,6 +100,78 @@ import {
 } from "./sidebar/routeReveal";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
+
+describe("offline sidebar filter", () => {
+  const unreachable = new ConnectionTransientError({
+    reason: "network",
+    detail: "Host did not answer on any saved route.",
+  });
+
+  it.each([
+    { phase: "available", lastFailure: null, expected: false },
+    { phase: "connecting", lastFailure: null, expected: false },
+    { phase: "backoff", lastFailure: null, expected: false },
+    { phase: "offline", lastFailure: null, expected: true },
+    { phase: "backoff", lastFailure: unreachable, expected: true },
+    { phase: "connecting", lastFailure: unreachable, expected: true },
+    { phase: "connected", lastFailure: unreachable, expected: false },
+    {
+      phase: "backoff",
+      lastFailure: new ConnectionTransientError({
+        reason: "endpoint-unavailable",
+        detail: "Host did not answer on any saved route.",
+      }),
+      expected: true,
+    },
+    {
+      phase: "backoff",
+      lastFailure: new ConnectionTransientError({ reason: "session-pending", detail: "Starting" }),
+      expected: false,
+    },
+    {
+      phase: "blocked",
+      lastFailure: new ConnectionBlockedError({ reason: "authentication", detail: "Sign in" }),
+      expected: false,
+    },
+    {
+      phase: "blocked",
+      lastFailure: new ConnectionBlockedError({ reason: "unsupported", detail: "Update" }),
+      expected: false,
+    },
+  ] satisfies Array<Pick<SupervisorConnectionState, "phase" | "lastFailure"> & { expected: boolean }>)(
+    "classifies $phase with $lastFailure as offline=$expected",
+    ({ phase, lastFailure, expected }) => {
+      expect(
+        isSidebarEnvironmentOffline({ ...AVAILABLE_CONNECTION_STATE, phase, lastFailure }),
+      ).toBe(expected);
+    },
+  );
+
+  it("filters cached states together and restores the same rows on toggle or reconnect", () => {
+    const offline = EnvironmentId.make("environment-offline");
+    const unknown = EnvironmentId.make("environment-unknown");
+    const rows = [
+      { environmentId: localEnvironmentId, status: "Input" },
+      { environmentId: localEnvironmentId, status: "Working" },
+      { environmentId: unknown, status: "Woke" },
+      { environmentId: offline, status: "Woke" },
+      { environmentId: offline, status: "Failed" },
+      { environmentId: offline, status: "Attention" },
+    ];
+    const visible = filterSidebarConnectedThreads(rows, new Set([offline]));
+    expect(visible).toEqual(rows.slice(0, 3));
+    expect(visible[0]).toBe(rows[0]);
+    expect(filterSidebarConnectedThreads(rows, new Set())).toBe(rows);
+    expect(rows.map((row) => row.status)).toEqual([
+      "Input",
+      "Working",
+      "Woke",
+      "Woke",
+      "Failed",
+      "Attention",
+    ]);
+  });
+});
 
 describe("resolveSidebarRowAccessibility", () => {
   it.each([
@@ -1487,6 +1567,21 @@ describe("searchSidebarThreads", () => {
       titleMatches: [threads[0], threads[2], threads[3]],
       contentMatches: [],
     });
+    const remote = EnvironmentId.make("environment-offline");
+    const cached = { ...threads[0]!, environmentId: remote, id: ThreadId.make("cached") };
+    const allThreads = [...threads, cached];
+    expect(
+      searchSidebarThreads(
+        filterSidebarConnectedThreads(allThreads, new Set([remote])),
+        "work",
+        new Set([threadSearchMatchKey({ environmentId: remote, threadId: cached.id })]),
+        now,
+      ),
+    ).toEqual({ titleMatches: [threads[0], threads[2], threads[3]], contentMatches: [] });
+    expect(
+      searchSidebarThreads(filterSidebarConnectedThreads(allThreads, new Set()), "work", undefined, now)
+        .titleMatches,
+    ).toContain(cached);
   });
 
   it("does not match project metadata", () => {

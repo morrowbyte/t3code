@@ -17,7 +17,10 @@ import {
   type ThreadSearchShell,
 } from "@t3tools/client-runtime/state/thread-search";
 import { foldSearchQuery, rankSearchItems, scoreThreadSearch } from "@t3tools/shared/paletteSearch";
-import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
+import type {
+  EnvironmentConnectionPhase,
+  SupervisorConnectionState,
+} from "@t3tools/client-runtime/connection";
 import {
   isListedThreadLineage,
   type ContextMenuItem,
@@ -194,6 +197,24 @@ export function isSidebarEnvironmentDisconnected(
   shellIsLive: boolean,
 ): boolean {
   return phase !== "connecting" && (phase !== "connected" || !shellIsLive);
+}
+
+export function isSidebarEnvironmentOffline(state: SupervisorConnectionState): boolean {
+  if (state.phase === "offline") return true;
+  if (state.phase !== "backoff" && state.phase !== "connecting") return false;
+  return (
+    state.lastFailure?._tag === "ConnectionTransientError" &&
+    state.lastFailure.reason !== "session-pending"
+  );
+}
+
+export function filterSidebarConnectedThreads<T extends { readonly environmentId: EnvironmentId }>(
+  threads: readonly T[],
+  hiddenEnvironmentIds: ReadonlySet<EnvironmentId>,
+): readonly T[] {
+  return hiddenEnvironmentIds.size === 0
+    ? threads
+    : threads.filter((thread) => !hiddenEnvironmentIds.has(thread.environmentId));
 }
 
 export function belongsInSidebarWorkingShelf<T extends { readonly environmentId: EnvironmentId }>(
