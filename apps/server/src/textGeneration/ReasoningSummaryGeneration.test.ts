@@ -24,6 +24,7 @@ import { vi } from "vite-plus/test";
 import * as TextGeneration from "./TextGeneration.ts";
 import * as ServerSettingsService from "../serverSettings.ts";
 import * as Service from "./ReasoningSummaryGeneration.ts";
+import { EventStoreReadEventsError } from "../orchestration-v2/EventStore.ts";
 
 const item: Extract<OrchestrationV2TurnItem, { type: "reasoning" }> = {
   id: TurnItemId.make("public-summary"),
@@ -178,7 +179,7 @@ describe("completed public reasoning summaries", () => {
         const readNext = () =>
           Effect.gen(function* () {
             if (++reads === 2) yield* Deferred.succeed(attempted, undefined);
-            return yield* Effect.fail("temporarily unavailable");
+            return yield* new EventStoreReadEventsError({ afterSequence: 0 });
           });
         yield* h.service.observeStored({ sequence: 1, readNext });
         yield* Deferred.await(attempted);

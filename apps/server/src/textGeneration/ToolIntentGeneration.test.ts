@@ -27,6 +27,7 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as TextGeneration from "./TextGeneration.ts";
 import * as Service from "./ToolIntentGeneration.ts";
 import { toolActivitySourceTitle } from "@t3tools/shared/toolActivity";
+import { EventStoreReadEventsError } from "../orchestration-v2/EventStore.ts";
 
 const item = {
   id: TurnItemId.make("new-runtime-tool"),
@@ -81,7 +82,7 @@ describe("tool intent generation", () => {
           readNext: () =>
             Effect.gen(function* () {
               if (++reads === 2) yield* Deferred.succeed(attempted, undefined);
-              return yield* Effect.fail("temporarily unavailable");
+              return yield* new EventStoreReadEventsError({ afterSequence: 0 });
             }),
         });
         yield* Deferred.await(attempted);

@@ -19,6 +19,8 @@ import * as Scope from "effect/Scope";
 import * as Queue from "effect/Queue";
 import * as Option from "effect/Option";
 import * as Semaphore from "effect/Semaphore";
+import type { EventStoreV2Error } from "../orchestration-v2/EventStore.ts";
+import type { ProjectionStoreV2Error } from "../orchestration-v2/ProjectionStore.ts";
 import * as TextGeneration from "./TextGeneration.ts";
 import * as ActivityTextGeneration from "./ActivityTextGeneration.ts";
 
@@ -88,7 +90,7 @@ type StoredObservation = {
     throughSequence: number,
   ) => Effect.Effect<
     { readonly sequence: number; readonly observation: Observation | null } | undefined,
-    unknown
+    EventStoreV2Error | ProjectionStoreV2Error
   >;
 };
 
@@ -253,7 +255,6 @@ export const make = Effect.gen(function* () {
         const after = pending.after;
         const through = pending.through;
         const next = yield* pending.readNext(after, through).pipe(
-          Effect.mapError((cause) => new Error("Stored title work read failed", { cause })),
           Effect.retry({ times: 1 }),
           Effect.catchCause(() =>
             Effect.logWarning("Stored title work could not be read", {
