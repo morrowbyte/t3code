@@ -595,6 +595,26 @@ export const make = Effect.gen(function* () {
       // Recheck after closing and worktree I/O; re-engaged threads must not be cleaned up.
       const thread = yield* projections.getThread(threadId);
       if (thread.settledOverride !== "settled") return;
+      const worktreeThreads = yield* projections.getThreadWorktreePaths({ includeArchived: true });
+      const peers = new Set([
+        threadId,
+        ...worktreeThreads
+          .filter((peer) => peer.worktreePath === worktreePath)
+          .map((peer) => peer.threadId),
+      ]);
+      for (const peerId of peers) {
+        const current = yield* projections.getThreadShell(peerId);
+        if (
+          current === null ||
+          current.settledAt === null ||
+          current.activeRunId !== null ||
+          (current.pendingBackgroundTasks?.length ?? 0) > 0 ||
+          !["idle", "completed", "interrupted", "failed", "cancelled", "rolled_back"].includes(
+            current.status,
+          )
+        )
+          return;
+      }
       const settledAtMs = toMillis(thread.settledAt);
       if (settledAtMs === null || settleActionRunAt.get(threadId) === settledAtMs) return;
       const run = yield* projectScripts.runForThread({
@@ -622,24 +642,28 @@ export const make = Effect.gen(function* () {
       ),
   );
 
+  const retryCleanup = (threadId: ThreadId) =>
+    cleanUpSettledThread(threadId).pipe(Effect.andThen(enqueueThread(threadId)));
+
   const processEvent = (event: OrchestrationV2DomainEvent) => {
     switch (event.type) {
       case "thread.settled":
         return cleanUpSettledThread(event.threadId);
       case "thread.pull-request-link-updated":
       case "thread.pull-request-synced":
+        return enqueueThread(event.threadId);
       case "provider-session.detached":
       case "run.background-work-cancelled":
-        return enqueueThread(event.threadId);
+        return retryCleanup(event.threadId);
       // Sweep only when the work can have ended: progress updates cannot settle anything.
       case "subagent.updated":
         return isOrchestrationV2WorkActive(event.payload.status)
           ? Effect.void
-          : enqueueThread(event.threadId);
+          : retryCleanup(event.threadId);
       case "provider-thread.updated":
         return backgroundWorkHoldsCompletion(event.payload.pendingBackgroundTasks ?? [])
           ? Effect.void
-          : enqueueThread(event.threadId);
+          : retryCleanup(event.threadId);
       case "turn-item.updated": {
         const item = event.payload;
         if (
@@ -652,18 +676,18 @@ export const make = Effect.gen(function* () {
           shellClosedThreads.add(event.threadId);
         }
         return turnItemUpdateCanEndBackgroundWork(item)
-          ? enqueueThread(event.threadId)
+          ? retryCleanup(event.threadId)
           : Effect.void;
       }
       case "provider-session.updated":
         return event.payload.status !== "starting" && event.payload.status !== "running"
-          ? enqueueThread(event.threadId)
+          ? retryCleanup(event.threadId)
           : Effect.void;
       case "run.updated":
         return ["completed", "interrupted", "failed", "cancelled", "rolled_back"].includes(
           event.payload.status,
         )
-          ? enqueueThread(event.threadId)
+          ? retryCleanup(event.threadId)
           : Effect.void;
       default:
         return Effect.void;

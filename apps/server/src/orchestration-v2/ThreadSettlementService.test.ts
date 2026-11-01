@@ -4,6 +4,7 @@ import * as DateTime from "effect/DateTime";
 import {
   DEFAULT_SERVER_SETTINGS,
   ProjectId,
+  MessageId,
   EventId,
   ProviderInstanceId,
   RunId,
@@ -696,6 +697,23 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
               ? snapshot.threads
               : snapshot.threads.filter((thread) => thread.id === threadId),
           ),
+        ),
+      getThreadWorktreePaths: () =>
+        Effect.succeed(
+          (options.currentThreads ?? []).flatMap((thread) =>
+            thread.worktreePath === null
+              ? []
+              : [{ threadId: thread.id, worktreePath: thread.worktreePath }],
+          ),
+        ),
+      getThreadShell: (threadId) =>
+        Ref.get(snapshots).pipe(
+          Effect.map((snapshot) => {
+            const live = snapshot.threads.find((thread) => thread.id === threadId);
+            if (live) return live;
+            const current = options.currentThreads?.find((thread) => thread.id === threadId);
+            return current ? { ...shell(), ...current } : null;
+          }),
         ),
       getThread: (threadId) => {
         const thread = options.currentThreads?.find((candidate) => candidate.id === threadId);
@@ -1412,6 +1430,104 @@ describe("ThreadSettlementServiceV2 terminals", () => {
           assert.strictEqual(run.threadId, worktree.id);
           assert.strictEqual(run.worktreePath, "/worktrees/thread");
           assert.strictEqual(run.trigger, "settle");
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+
+  it.effect.each(["own run", "shared thread", "background command"] as const)(
+    "does not run cleanup scripts while %s still uses the worktree",
+    (kind) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const worktree = appThread("cleanup-owner", "settled", "/worktrees/busy");
+          const peer = appThread("busy-peer", "active", "/worktrees/busy");
+          const marker = appThread("marker-thread", "settled", "/worktrees/marker");
+          const active = shell({
+            id: kind === "shared thread" ? peer.id : worktree.id,
+            worktreePath: "/worktrees/busy",
+            settledAt: worktree.settledAt,
+            settledOverride: "settled",
+            status: kind === "background command" ? "completed" : "running",
+            activeRunId: kind === "background command" ? null : RunId.make("active-run"),
+            pendingBackgroundTasks:
+              kind === "background command"
+                ? [{ taskId: "preview", kind: "command", description: "dev server" }]
+                : [],
+          });
+          const fixture = yield* makeHarness({
+            snapshot: makeSnapshot([active]),
+            currentThreads:
+              kind === "shared thread" ? [worktree, peer, marker] : [worktree, marker],
+            existingWorktreePaths: ["/worktrees/busy", "/worktrees/marker"],
+          });
+          yield* Effect.gen(function* () {
+            const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+            yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+            yield* fixture.publishEvent(settledEvent(worktree));
+            yield* fixture.publishEvent(settledEvent(marker));
+            assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, marker.id);
+          }).pipe(Effect.provide(fixture.layer));
+        }),
+      ),
+  );
+
+  it.effect("retries deferred cleanup when the settled thread's active run finishes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const owner = appThread("deferred-owner", "settled", "/worktrees/deferred");
+        const marker = appThread("marker-one", "settled", "/worktrees/marker-one");
+        const markerTwo = appThread("marker-two", "settled", "/worktrees/marker-two");
+        const active = shell({
+          id: owner.id,
+          worktreePath: owner.worktreePath,
+          settledAt: owner.settledAt,
+          settledOverride: "settled",
+          status: "running",
+          activeRunId: RunId.make("active-run"),
+        });
+        const fixture = yield* makeHarness({
+          snapshot: makeSnapshot([active]),
+          currentThreads: [owner, marker, markerTwo],
+          existingWorktreePaths: [
+            "/worktrees/deferred",
+            "/worktrees/marker-one",
+            "/worktrees/marker-two",
+          ],
+        });
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+          yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+          yield* fixture.publishEvent(settledEvent(owner));
+          yield* fixture.publishEvent(settledEvent(marker));
+          assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, marker.id);
+          yield* Ref.set(fixture.snapshots, makeSnapshot([]));
+          yield* fixture.publishEvent({
+            type: "run.updated",
+            id: EventId.make("completed-for-cleanup"),
+            threadId: owner.id,
+            occurredAt: DateTime.makeUnsafe(NOW),
+            payload: {
+              id: RunId.make("active-run"),
+              threadId: owner.id,
+              ordinal: 1,
+              providerInstanceId: owner.providerInstanceId,
+              modelSelection: owner.modelSelection,
+              providerThreadId: null,
+              userMessageId: MessageId.make("message"),
+              rootNodeId: null,
+              activeAttemptId: null,
+              status: "completed",
+              requestedAt: DateTime.makeUnsafe(NOW),
+              startedAt: DateTime.makeUnsafe(NOW),
+              completedAt: DateTime.makeUnsafe(NOW),
+              checkpointId: null,
+              contextHandoffId: null,
+            },
+          });
+          yield* fixture.publishEvent(settledEvent(markerTwo));
+          assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, owner.id);
+          assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, markerTwo.id);
         }).pipe(Effect.provide(fixture.layer));
       }),
     ),
