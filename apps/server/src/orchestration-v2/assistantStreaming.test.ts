@@ -112,23 +112,32 @@ describe("V2 assistant streaming", () => {
   });
 
   it.each(["assistant_message", "reasoning"] as const)(
-    "buffers %s at paragraph boundaries and flushes the final item",
+    "buffers assistant responses while preserving live provider reasoning (%s)",
     (type) => {
       const item = (text: string, streaming = true) => turnItem(text, streaming, type);
       const filter = makeAssistantStreamingFilter("paragraph");
-      expect(filter(item("First"), 0)).toBeNull();
-      expect(filter(item("First\n\nSec"), 10)).toMatchObject({
-        turnItem: { text: "First\n\n", streaming: true, type },
+      const first = item("First");
+      expect(filter(first, 0)).toBe(type === "reasoning" ? first : null);
+      expect(filter(item("First\n\nSec"), 410)).toMatchObject({
+        turnItem: {
+          text: type === "reasoning" ? "First\n\nSec" : "First\n\n",
+          streaming: true,
+          type,
+        },
       });
-      expect(filter(item("First\n\nSecond\n\nThi"), 100)).toBeNull();
-      expect(filter(item("First\n\nSecond\n\nThi"), 410)).toMatchObject({
-        turnItem: { text: "First\n\nSecond\n\n", streaming: true },
+      expect(filter(item("First\n\nSecond\n\nThi"), 510)).toBeNull();
+      expect(filter(item("First\n\nSecond\n\nThi"), 810)).toMatchObject({
+        turnItem: {
+          text: type === "reasoning" ? "First\n\nSecond\n\nThi" : "First\n\nSecond\n\n",
+          streaming: true,
+        },
       });
       const final = item("First\n\nSecond\n\nThird", false);
-      expect(filter(final, 420)).toBe(final);
+      expect(filter(final, 820)).toBe(final);
 
       const buffered = makeAssistantStreamingFilter("turn");
-      expect(buffered(item("First\n\nSecond"), 0)).toBeNull();
+      const partial = item("First\n\nSecond");
+      expect(buffered(partial, 0)).toBe(type === "reasoning" ? partial : null);
       expect(buffered(final, 1)).toBe(final);
     },
   );

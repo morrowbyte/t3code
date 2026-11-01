@@ -1775,6 +1775,7 @@ it.each([
     const summary = "Der Shell-Wrapper wird geprüft, bevor die Ausführung geändert wird.";
     const original = "Inspect the existing shell wrapper before choosing an executor change.";
     const prefix = "Inspect the existing shell wrapper";
+    const delayedTitle = source === "shallow" && streaming;
     const at = (second: number) =>
       DateTime.makeUnsafe(new Date(Date.UTC(2026, 2, 17, 19, 12, 0, second * 1_000)).toISOString());
     const item = (
@@ -1785,7 +1786,7 @@ it.each([
       v2Item("reasoning", {
         id: "original-reasoning",
         runId,
-        title: summary,
+        title: delayedTitle && live && second < 29 ? null : summary,
         text,
         status: live ? "running" : "completed",
         streaming: live,
@@ -1852,14 +1853,14 @@ it.each([
       </RegistryContext.Provider>
     );
     await using screen = await renderElement(draw(initialText, streaming, 28));
-    const openOriginal = async () => {
+    const openOriginal = async (label = summary) => {
       const fold = screen.buttons(/Worked for/)[0];
       if (fold?.getAttribute("aria-expanded") === "false") await click(fold);
-      const toggle = screen.getByRole("button", { name: new RegExp(summary) });
+      const toggle = screen.getByRole("button", { name: new RegExp(label) });
       await expect.element(toggle).toBeVisible();
       if (toggle.element().getAttribute("aria-expanded") !== "true") await toggle.click();
     };
-    await openOriginal();
+    await openOriginal(delayedTitle ? "Thinking" : summary);
     await vi.waitFor(() => expect(screen.text()).toContain(initialText));
     if (source === "shallow") {
       expect(detail).toHaveBeenCalledWith({

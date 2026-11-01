@@ -101,18 +101,17 @@ export function makeAssistantStreamingFilter(mode: ResponseStreamingMode) {
       delivered.delete(key);
       return event;
     }
-    if (mode === "turn") return null;
+    const reasoning = event.type === "turn_item.updated" && event.turnItem.type === "reasoning";
+    if (mode === "turn" && !reasoning) return null;
     const previous = delivered.get(key);
     if (previous && now - previous.at < 400) return null;
-    const { ready } = splitBufferedAssistantText(message.text);
+    const ready = reasoning ? message.text : splitBufferedAssistantText(message.text).ready;
     if (!ready || ready === previous?.text) return null;
     delivered.set(key, { text: ready, at: now });
+    if (reasoning) return event;
     if (event.type === "message.updated")
       return { ...event, message: { ...event.message, text: ready } };
-    if (
-      event.type === "turn_item.updated" &&
-      (event.turnItem.type === "assistant_message" || event.turnItem.type === "reasoning")
-    )
+    if (event.type === "turn_item.updated" && event.turnItem.type === "assistant_message")
       return { ...event, turnItem: { ...event.turnItem, text: ready } };
     return event;
   };

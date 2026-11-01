@@ -140,7 +140,7 @@ export function turnItemDetailRevision(item: OrchestrationV2TurnItem): string {
 export function turnItemNeedsDetailFetch(item: OrchestrationV2TurnItem): boolean {
   switch (item.type) {
     case "reasoning":
-      return !item.text.trim() && Boolean(item.title?.trim());
+      return !item.text.trim();
     case "command_execution":
       return item.outputOmitted === true;
     case "dynamic_tool":
