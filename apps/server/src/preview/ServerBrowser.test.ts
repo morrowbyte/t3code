@@ -2074,8 +2074,15 @@ it.effect(
         // The read on attach never answers and gives up with no size to send.
         const blocked = yield* Queue.take(reads);
         yield* TestClock.adjust("1 second");
-        // The next page load measures again.
         desktopSizeAnswer = null;
+        yield* Effect.promise(() =>
+          cdp.emitAsync("Page.frameNavigated", { frame: { id: "child", parentId: "main" } }),
+        );
+        expect(viewportSizes(yield* Queue.clear(viewer.output))).toEqual([]);
+        yield* Effect.promise(() =>
+          cdp.emitAsync("Page.frameNavigated", { frame: { id: "main" } }),
+        );
+        expect(viewportSizes(yield* Queue.clear(viewer.output))).toEqual(["1920x1080"]);
         yield* Effect.promise(() => cdp.emitAsync("Page.loadEventFired"));
         expect(viewportSizes(yield* Queue.takeAll(viewer.output))).toEqual(["1920x1080"]);
         // While a dialog is open nothing reads. The host closing it clears it, and since
