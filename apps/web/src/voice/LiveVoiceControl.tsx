@@ -25,7 +25,8 @@ import {
   VolumeXIcon,
 } from "lucide-react";
 import { useAtomMount, useAtomSubscribe } from "@effect/atom-react";
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import type {
   EnvironmentId,
   ProjectId,
@@ -62,7 +63,10 @@ import { projectComposerContextForProvider } from "@t3tools/shared/composerConte
 import { formatInlineContextReference } from "~/lib/composerContextReferences";
 import { VoiceBubbleViewToggle, useVoiceBubbleView } from "./VoiceBubbleViewToggle";
 import { VoiceActivityBubbles } from "./VoiceActivityBubbles";
-import { useVoiceConversationPresentation } from "./VoiceConversation";
+import { useWebLiveVoiceSession } from "./sessionContext";
+import { Link } from "@tanstack/react-router";
+import { useThreadShell } from "~/state/entities";
+import { useEnvironment } from "~/state/environments";
 import { unwrapLiveVoiceCommand } from "./LiveVoiceCommands";
 import { useKeyboardCommands } from "~/components/keyboard/keyboardCommands";
 import { providerInstanceEntriesFor, type ProviderInstanceEntry } from "../providerInstances";
@@ -266,6 +270,7 @@ export function resolveLiveVoiceControlGate(input: {
   readonly availability: LiveVoiceAvailability;
   readonly eligible: boolean;
   readonly phase: LiveVoiceState["phase"];
+  readonly sessionBusy?: boolean;
   readonly RTCPeerConnection?: unknown;
   readonly getUserMedia?: unknown;
   readonly prepareFailure?: LiveVoiceErrorCode | "unclassified" | null;
@@ -288,24 +293,28 @@ export function resolveLiveVoiceControlGate(input: {
   const active =
     input.phase === "live" || input.phase === "playback-blocked" || input.phase === "reconnecting";
   const busy =
+    input.sessionBusy === true ||
     input.phase === "preparing" ||
     input.phase === "prepared" ||
     input.phase === "connecting" ||
     input.phase === "stopping";
   const eligible = input.eligible && input.availability.reason === null;
   const canStart = eligible && targetPresent && supported && !busy && !active;
-  const reason = !availabilityMatchesTarget
-    ? "Waiting for this environment's voice availability to update."
-    : !webRtcAvailable
-      ? "This browser does not provide WebRTC. Use a browser with WebRTC support."
-      : !microphoneApiAvailable
-        ? "Microphone access is unavailable in this browser context. Open the app in a trusted secure context."
-        : (input.availability.reason ??
-          (!targetPresent
-            ? "Open a thread for a voice call"
-            : !input.eligible
-              ? "Live voice is unavailable for this thread. Check the selected provider and permissions."
-              : null));
+  const reason =
+    input.sessionBusy && !active
+      ? "A voice call is already open. Use the call controls to end it."
+      : !availabilityMatchesTarget
+        ? "Waiting for this environment's voice availability to update."
+        : !webRtcAvailable
+          ? "This browser does not provide WebRTC. Use a browser with WebRTC support."
+          : !microphoneApiAvailable
+            ? "Microphone access is unavailable in this browser context. Open the app in a trusted secure context."
+            : (input.availability.reason ??
+              (!targetPresent
+                ? "Open a thread for a voice call"
+                : !input.eligible
+                  ? "Live voice is unavailable for this thread. Check the selected provider and permissions."
+                  : null));
   return Object.freeze({
     environmentId: input.environmentId,
     threadId: input.threadId,
@@ -549,7 +558,7 @@ function leaseKey(lease: Pick<LiveVoiceLease, "leaseId" | "generation">): string
   return `${lease.leaseId}:${lease.generation}`;
 }
 
-function createVoiceEventBridge(): VoiceEventBridge {
+export function createVoiceEventBridge(): VoiceEventBridge {
   const listeners = new Map<string, Set<(event: LiveVoiceSignalEvent) => void>>();
   return {
     subscribe: (lease, listener, signal) => {
@@ -598,7 +607,7 @@ function createVoiceEventBridge(): VoiceEventBridge {
   };
 }
 
-function LiveVoiceEventFeed(props: {
+export function LiveVoiceEventFeed(props: {
   readonly environmentId: EnvironmentId;
   readonly lease: LiveVoiceLease;
   readonly bridge: VoiceEventBridge;
@@ -622,36 +631,14 @@ function LiveVoiceEventFeed(props: {
   return null;
 }
 
-class LiveVoiceStateObserver {
-  active = true;
-  private errorNotified = false;
-
-  setActive(active: boolean) {
-    this.active = active;
-  }
-
-  resetError() {
-    this.errorNotified = false;
-  }
-
-  takeErrorNotification() {
-    if (this.errorNotified) return false;
-    this.errorNotified = true;
-    return true;
-  }
-}
-
 function createLiveVoiceBinding(
   signaling: LiveVoiceSignalingAdapter,
   beforePrepare: LiveVoiceControllerDependencies["beforePrepare"] | undefined,
-  onPhaseChange: ((phase: LiveVoiceState["phase"]) => void) | undefined,
-  setState: (state: LiveVoiceState) => void,
+  onStateChange: (state: LiveVoiceState) => void,
   setRecordingState: (state: CallRecordingState) => void,
 ) {
-  const stateObserver = new LiveVoiceStateObserver();
-  const recording = createBrowserCallRecording((state) => {
-    if (stateObserver.active) setRecordingState(state);
-  });
+  const recording = createBrowserCallRecording(setRecordingState);
+  let errorNotified = false;
   const dependencies: LiveVoiceControllerDependencies = {
     signaling,
     recording,
@@ -659,7 +646,7 @@ function createLiveVoiceBinding(
       const timer = window.setInterval(callback, 2000);
       return () => window.clearInterval(timer);
     },
-    ...(beforePrepare ? { beforePrepare: beforePrepare } : {}),
+    ...(beforePrepare ? { beforePrepare } : {}),
     getUserMedia: () => navigator.mediaDevices.getUserMedia({ audio: true }),
     createPeer: () => new RTCPeerConnection() as unknown as LiveVoicePeer,
     createRemoteStream: (track) => new MediaStream([track]),
@@ -673,28 +660,23 @@ function createLiveVoiceBinding(
       const handle = window.setTimeout(callback, delayMs);
       return () => window.clearTimeout(handle);
     },
-    onStateChange: (next) => {
-      if (!stateObserver.active) return;
-      setState(next);
-      onPhaseChange?.(next.phase);
-      if (next.phase !== "error") stateObserver.resetError();
-      else if (stateObserver.takeErrorNotification()) {
+    onStateChange: (state) => {
+      onStateChange(state);
+      if (state.phase !== "error") errorNotified = false;
+      else if (!errorNotified) {
+        errorNotified = true;
         toastManager.add({
           type: "error",
           title: "Live voice couldn't continue",
           description:
-            next.error === liveVoicePublicErrorMessage("dispatch_conflict")
+            state.error === liveVoicePublicErrorMessage("dispatch_conflict")
               ? "Another voice request is still being handled. Wait a moment, then start the call again. Your draft is still here."
-              : `${next.error ?? "Could not connect to Live voice."} Try starting the call again. Your draft is still here.`,
+              : `${state.error ?? "Could not connect to Live voice."} Try starting the call again. Your draft is still here.`,
         });
       }
     },
   };
-  return {
-    stateObserver,
-    recording,
-    controller: new LiveVoiceController(dependencies),
-  };
+  return { recording, controller: new LiveVoiceController(dependencies) };
 }
 
 export function LiveVoiceControl(props: {
@@ -707,6 +689,8 @@ export function LiveVoiceControl(props: {
   readonly onPhaseChange?: (phase: LiveVoiceState["phase"]) => void;
 }) {
   const { beforePrepare, onPhaseChange } = props;
+  const session = useWebLiveVoiceSession();
+  const { owner, state, controller, busy, setRecordingState } = session;
   const hintId = useId();
   const prepare = useAtomCommand(liveVoiceEnvironment.prepare, {
     reportFailure: false,
@@ -724,35 +708,6 @@ export function LiveVoiceControl(props: {
     reportFailure: false,
     reportDefect: false,
   });
-  const contextRpc = useAtomCommand(liveVoiceEnvironment.context, {
-    reportFailure: false,
-    reportDefect: false,
-  });
-  const contextRevision = useRef(0);
-  const sentContext = useRef<{
-    environmentId: EnvironmentId;
-    leaseId: string;
-    generation: number;
-    context: string | null;
-  } | null>(null);
-  const selection = useThreadPreviewSelection(
-    props.threadId ? { environmentId: props.environmentId, threadId: props.threadId } : null,
-  );
-  const selectedContext = selection
-    ? projectComposerContextForProvider({
-        text: formatInlineContextReference(previewAnnotationContextReference(selection)),
-        records: [previewAnnotationContextRecord(selection)],
-      }).slice(0, 24_000)
-    : null;
-  const [state, setState] = useState<LiveVoiceState>({
-    phase: "idle",
-    localMuted: false,
-    outputMuted: false,
-    transcript: [],
-    sessionStatus: null,
-    lease: null,
-    error: null,
-  });
   const [prepareFailure, setPrepareFailure] = useState<{
     readonly environmentId: EnvironmentId;
     readonly threadId: ThreadId;
@@ -765,7 +720,13 @@ export function LiveVoiceControl(props: {
     providerInstanceId: props.providerInstanceId,
     availability: props.availability,
     eligible: props.eligible,
-    phase: state.phase,
+    phase:
+      session.target?.environmentId === props.environmentId &&
+      session.target.threadId === props.threadId &&
+      session.target.providerInstanceId === props.providerInstanceId
+        ? state.phase
+        : "idle",
+    sessionBusy: busy,
     RTCPeerConnection: typeof RTCPeerConnection === "undefined" ? undefined : RTCPeerConnection,
     getUserMedia:
       typeof navigator === "undefined" ? undefined : navigator.mediaDevices?.getUserMedia,
@@ -777,7 +738,11 @@ export function LiveVoiceControl(props: {
         ? prepareFailure.code
         : null,
   });
-  const { active, busy, canStart, reason: unavailableNotice, targetPresent } = gate;
+  const { active, canStart: gateCanStart, reason, targetPresent } = gate;
+  const canStart = gateCanStart && !busy;
+  const unavailableNotice = busy
+    ? "A voice call is already open. Use the call controls to end it."
+    : reason;
   const diagnosticProducer = useRef<ReturnType<typeof createLiveVoiceDiagnosticProducer>>(null);
   const committedGate = useRef(gate);
   const diagnosticBridge = typeof window === "undefined" ? undefined : window.desktopBridge;
@@ -812,7 +777,6 @@ export function LiveVoiceControl(props: {
       providerInstanceId: props.providerInstanceId,
     };
   })();
-  const [recordingState, setRecordingState] = useState<CallRecordingState>({ status: "off" });
   const [bridge] = useState(createVoiceEventBridge);
   const signaling: LiveVoiceSignalingAdapter = {
     subscribe: bridge.subscribe,
@@ -837,59 +801,11 @@ export function LiveVoiceControl(props: {
     status: async (input) =>
       unwrapLiveVoiceCommand(await statusRpc({ environmentId: props.environmentId, input })),
   };
-  // A controller owns a session until its signaling destination or owner callbacks change.
-  const bindingKey = [
-    bridge,
-    prepare,
-    props.environmentId,
-    props.providerInstanceId,
-    startRpc,
-    statusRpc,
-    stopRpc,
-    beforePrepare,
-    onPhaseChange,
-  ];
-  const [binding, setBinding] = useState(() => ({
-    key: bindingKey,
-    ...createLiveVoiceBinding(signaling, beforePrepare, onPhaseChange, setState, setRecordingState),
-  }));
-  if (binding.key.some((value, index) => value !== bindingKey[index])) {
-    setBinding({
-      key: bindingKey,
-      ...createLiveVoiceBinding(
-        signaling,
-        beforePrepare,
-        onPhaseChange,
-        setState,
-        setRecordingState,
-      ),
-    });
-  }
-  const { controller, stateObserver, recording } = binding;
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Applies external recording opt-out events to the active voice recording.
-  useEffect(
-    () => observeRecordingOptOut(props.environmentId, recording),
-    [props.environmentId, recording],
-  );
-  const [stateController, setStateController] = useState(controller);
-  if (stateController !== controller) {
-    setStateController(controller);
-    setState(controller.currentState);
-  }
-
-  useVoiceConversationPresentation(state);
-  const [bubbles] = useVoiceBubbleView();
-
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Owns the live audio controller and stops media resources on unmount.
-  useLayoutEffect(() => {
-    stateObserver.setActive(true);
-    onPhaseChange?.(controller.currentState.phase);
-    return () => {
-      // Cleanup must not report "stopping" to an owner that just collapsed this footer.
-      stateObserver.setActive(false);
-      void controller.end();
-    };
-  }, [controller, stateObserver, onPhaseChange]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Reflects app-owned microphone activity in the mounted composer's dictation gate.
+  useEffect(() => {
+    onPhaseChange?.(busy && !active ? "preparing" : state.phase);
+    return () => onPhaseChange?.("idle");
+  }, [active, busy, onPhaseChange, state.phase]);
   const prepareContextKey = JSON.stringify([
     props.environmentId,
     props.threadId,
@@ -900,18 +816,110 @@ export function LiveVoiceControl(props: {
     setPrepareContext(prepareContextKey);
     setPrepareFailure(null);
   }
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Rebinds the external voice session when its environment or thread target changes.
-  useEffect(() => {
-    void controller.contextChanged(target);
-  }, [controller, target]);
+  const onStart = () => {
+    if (!canStart || !target) return;
+    setPrepareFailure(null);
+    setRecordingState({ status: "off" });
+    void owner.start(target, (onStateChange) => {
+      let controller: LiveVoiceController;
+      const binding = createLiveVoiceBinding(signaling, beforePrepare, onStateChange, (next) => {
+        if (owner.getSnapshot().controller === controller) setRecordingState(next);
+      });
+      controller = binding.controller;
+      return { controller, value: { bridge, recording: binding.recording } };
+    });
+  };
+  useKeyboardCommands({
+    "voice.call": () => {
+      if (busy) void owner.end();
+      else if (canStart) onStart();
+      else if (unavailableNotice) toastManager.add({ type: "info", title: unavailableNotice });
+      return true;
+    },
+    "voice.mute": () => {
+      controller?.setLocalMuted(!state.localMuted);
+      return true;
+    },
+  });
 
+  return (
+    <div
+      className="flex min-w-0 max-w-full flex-wrap items-center gap-1"
+      data-live-voice-phase={state.phase}
+    >
+      {!busy ? (
+        <Tooltip>
+          <TooltipTrigger
+            aria-describedby={hintId}
+            render={<span className="inline-flex" tabIndex={!canStart ? 0 : undefined} />}
+          >
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              disabled={!canStart}
+              onPointerDown={(event) => event.preventDefault()}
+              onClick={onStart}
+              aria-label="Start voice call"
+            >
+              <PhoneCallIcon />
+            </Button>
+          </TooltipTrigger>
+          <TooltipPopup id={hintId} role="tooltip">
+            {unavailableNotice ?? "Start voice call"}
+          </TooltipPopup>
+        </Tooltip>
+      ) : null}
+      {!active && !busy && gate.prepareFailure === "managed_account_required" ? (
+        <Button
+          variant="outline"
+          size="sm"
+          render={
+            <a
+              href={`/settings/providers?machine=${encodeURIComponent(props.environmentId)}&instanceId=${encodeURIComponent(props.providerInstanceId ?? "")}`}
+            />
+          }
+        >
+          Set up Codex sign-in
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+export function LiveVoiceContextFeed(props: {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
+  readonly providerInstanceId: string;
+  readonly state: LiveVoiceState;
+}) {
+  const contextRpc = useAtomCommand(liveVoiceEnvironment.context, {
+    reportFailure: false,
+    reportDefect: false,
+  });
+  const contextRevision = useRef(0);
+  const sentContext = useRef<{
+    environmentId: EnvironmentId;
+    leaseId: string;
+    generation: number;
+    context: string | null;
+  } | null>(null);
+  const selection = useThreadPreviewSelection(
+    props.threadId ? { environmentId: props.environmentId, threadId: props.threadId } : null,
+  );
+  const selectedContext = selection
+    ? projectComposerContextForProvider({
+        text: formatInlineContextReference(previewAnnotationContextReference(selection)),
+        records: [previewAnnotationContextRecord(selection)],
+      }).slice(0, 24_000)
+    : null;
+  const { state } = props;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps the active voice transport in step with preview selection and lease identity
   useEffect(() => {
     const lease = state.lease;
     // WebRTC can be ready before the active status reaches the renderer. The
     // context RPC also accepts prepared/starting leases and validates identity.
     if (
-      !targetPresent ||
       (state.phase !== "live" && state.phase !== "playback-blocked") ||
       !lease ||
       !["prepared", "starting", "active"].includes(lease.status) ||
@@ -955,14 +963,17 @@ export function LiveVoiceControl(props: {
       if (cancelled) return;
       if (result._tag === "Success") {
         sentContext.current = currentContext;
-      } else if (++attempts < 6) {
-        retry = setTimeout(() => void send(), 250 * 2 ** (attempts - 1));
       } else {
-        toastManager.add({
-          type: "error",
-          title: "Selection could not be shared with Live voice",
-          description: "Select the element again after the connection recovers.",
-        });
+        attempts += 1;
+        if (attempts < 6) {
+          retry = setTimeout(() => void send(), 250 * 2 ** (attempts - 1));
+        } else {
+          toastManager.add({
+            type: "error",
+            title: "Selection could not be shared with Live voice",
+            description: "Select the element again after the connection recovers.",
+          });
+        }
       }
     };
     void send();
@@ -978,189 +989,165 @@ export function LiveVoiceControl(props: {
     selectedContext,
     state.lease,
     state.phase,
-    targetPresent,
   ]);
 
-  const statusText =
-    active && state.inputIssue
-      ? state.inputIssue === "ended"
-        ? "Microphone ended. Restart the call to speak."
-        : state.inputIssue === "sender-missing"
-          ? "Microphone is no longer being sent. Restart the call to speak."
-          : "Microphone input is interrupted."
-      : state.phase === "preparing"
-        ? "Preparing restricted voice session…"
-        : state.phase === "prepared" || state.phase === "connecting"
-          ? "Connecting to Live…"
-          : state.phase === "playback-blocked"
-            ? "Live connected. Audio playback needs permission."
-            : state.phase === "reconnecting"
-              ? "Live connection interrupted. Reconnecting…"
-              : state.phase === "live"
-                ? "Live connected"
-                : state.phase === "stopping"
-                  ? "Ending Live…"
-                  : null;
+  return null;
+}
 
-  const toggleMicrophone = () => void controller.setLocalMuted(!state.localMuted);
-  const toggleOutput = () => void controller.setOutputMuted(!state.outputMuted);
-  const onStart = () => {
-    if (canStart && target) {
-      setPrepareFailure(null);
-      stateObserver.resetError();
-      void controller.start(target);
-    }
-  };
+function VoiceControlsPortal({
+  container,
+  children,
+}: {
+  readonly container: HTMLElement | null;
+  readonly children: ReactNode;
+}) {
+  return container ? createPortal(children, container) : children;
+}
 
+export function GlobalLiveVoiceControl() {
+  const { owner, state, controller, target, value, busy, recordingState, controlsContainer } =
+    useWebLiveVoiceSession();
+  const threadRef = target
+    ? {
+        environmentId: target.environmentId as EnvironmentId,
+        threadId: target.threadId as ThreadId,
+      }
+    : null;
+  const thread = useThreadShell(threadRef);
+  const environment = useEnvironment(threadRef?.environmentId ?? null);
+  const [bubbles] = useVoiceBubbleView();
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- The app root owns media cleanup, independent of route and composer lifetimes.
+  useEffect(
+    () => () => {
+      void owner.end();
+    },
+    [owner],
+  );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Recording opt-out belongs to the call's original environment until cleanup completes.
+  useEffect(
+    () =>
+      target && value ? observeRecordingOptOut(target.environmentId, value.recording) : undefined,
+    [target, value],
+  );
   useKeyboardCommands({
     "voice.call": () => {
-      const phase = controller.currentState.phase;
-      if (phase === "stopping") return true;
-      if (active || busy || ["preparing", "prepared", "connecting"].includes(phase)) {
-        void controller.end();
-      } else if (canStart && target) {
-        setPrepareFailure(null);
-        stateObserver.resetError();
-        void controller.start(target);
-      } else if (unavailableNotice) {
-        toastManager.add({ type: "info", title: unavailableNotice });
-      }
+      if (!busy) return false;
+      void owner.end();
       return true;
     },
     "voice.mute": () => {
-      if (active) toggleMicrophone();
+      if (!busy) return false;
+      controller?.setLocalMuted(!state.localMuted);
       return true;
     },
   });
-
+  if (!target || !value || !controller) return null;
+  const active = ["live", "reconnecting", "playback-blocked"].includes(state.phase);
+  const statusText = state.inputIssue
+    ? "Microphone interrupted"
+    : {
+        idle: "Voice",
+        preparing: "Preparing…",
+        prepared: "Connecting…",
+        connecting: "Connecting…",
+        live: "Connected",
+        reconnecting: "Reconnecting…",
+        "playback-blocked": "Enable audio",
+        stopping: "Ending…",
+        ended: "Call ended",
+        error: "Call failed",
+      }[state.phase];
   return (
-    <div
-      className="flex min-w-0 max-w-full flex-wrap items-center gap-1"
-      data-live-voice-phase={state.phase}
-    >
-      {state.lease && state.phase !== "ended" ? (
+    <>
+      {state.lease && busy ? (
         <LiveVoiceEventFeed
-          environmentId={props.environmentId}
+          environmentId={target.environmentId as EnvironmentId}
           lease={state.lease}
-          bridge={bridge}
+          bridge={value.bridge}
         />
       ) : null}
-      {!active && !busy ? (
-        <>
-          <Tooltip>
-            <TooltipTrigger
-              aria-describedby={hintId}
-              render={<span className="inline-flex" tabIndex={!canStart ? 0 : undefined} />}
+      <LiveVoiceContextFeed
+        environmentId={target.environmentId as EnvironmentId}
+        threadId={target.threadId as ThreadId}
+        providerInstanceId={target.providerInstanceId}
+        state={state}
+      />
+      <VoiceControlsPortal container={controlsContainer}>
+        {busy ? (
+          <section
+            aria-label="Voice call"
+            data-live-voice-phase={state.phase}
+            className="fixed right-3 bottom-3 z-50 flex max-w-[calc(100vw-1.5rem)] flex-wrap items-center gap-1 rounded-xl border border-border bg-popover p-2 shadow-lg"
+          >
+            <Link
+              to="/$environmentId/$threadId"
+              params={{ environmentId: target.environmentId, threadId: target.threadId }}
+              className="min-w-0 max-w-52 px-2 text-sm"
+              aria-label="Open original voice thread"
             >
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                disabled={!canStart}
-                onPointerDown={(event) => event.preventDefault()}
-                onClick={onStart}
-                aria-label="Start voice call"
-              >
-                <PhoneCallIcon />
+              <span className="block truncate font-medium">{thread?.title || target.threadId}</span>
+              <span role="status" className="block truncate text-xs text-muted-foreground">
+                {environment?.label || target.environmentId} · {statusText}
+              </span>
+            </Link>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              disabled={!active}
+              onClick={() => controller.setLocalMuted(!state.localMuted)}
+              aria-label={state.localMuted ? "Unmute microphone" : "Mute microphone"}
+            >
+              {state.localMuted ? <MicOffIcon /> : <MicIcon />}
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              disabled={!active}
+              onClick={() => void controller.setOutputMuted(!state.outputMuted)}
+              aria-label={state.outputMuted ? "Unmute Live audio" : "Mute Live audio"}
+            >
+              {state.outputMuted ? <VolumeXIcon /> : <Volume2Icon />}
+            </Button>
+            {state.phase === "playback-blocked" ? (
+              <Button variant="secondary" size="sm" onClick={() => void controller.retryPlayback()}>
+                Enable audio
               </Button>
-            </TooltipTrigger>
-            <TooltipPopup id={hintId} role="tooltip">
-              {unavailableNotice ?? "Start voice call"}
-            </TooltipPopup>
-          </Tooltip>
-        </>
-      ) : (
-        <>
-          <span
-            role="status"
-            className="min-w-0 max-w-full wrap-break-word text-xs text-muted-foreground"
-          >
-            {statusText}
-          </span>
-          {active ? (
-            <>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                onClick={toggleMicrophone}
-                aria-label={state.localMuted ? "Unmute microphone" : "Mute microphone"}
-                title={state.localMuted ? "Unmute microphone" : "Mute microphone"}
-              >
-                {state.localMuted ? <MicOffIcon /> : <MicIcon />}
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                onClick={toggleOutput}
-                aria-label={state.outputMuted ? "Unmute Live audio" : "Mute Live audio"}
-                title={state.outputMuted ? "Unmute Live audio" : "Mute Live audio"}
-              >
-                {state.outputMuted ? <VolumeXIcon /> : <Volume2Icon />}
-              </Button>
-              {state.phase === "playback-blocked" ? (
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => void controller.retryPlayback()}
-                >
-                  Enable audio
-                </Button>
-              ) : null}
-            </>
-          ) : null}
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            onClick={() => void controller.end()}
-            aria-label="End Live voice"
-            title="End Live voice"
-          >
-            <PhoneOffIcon />
-          </Button>
-        </>
-      )}
-      {state.lease && (busy || (state.activities?.length ?? 0) > 0) ? (
-        <>
-          <VoiceBubbleViewToggle />
-          {bubbles ? (
-            <VoiceActivityBubbles threadRef={state.lease} liveActivities={state.activities ?? []} />
-          ) : null}
-        </>
-      ) : null}
-      {!active && !busy && gate.prepareFailure === "managed_account_required" ? (
-        <Button
-          variant="outline"
-          size="sm"
-          render={
-            <a
-              href={`/settings/providers?machine=${encodeURIComponent(props.environmentId)}&instanceId=${encodeURIComponent(props.providerInstanceId ?? "")}`}
-            />
-          }
-        >
-          Set up Codex sign-in
-        </Button>
-      ) : null}
-      {recordingState.status !== "off" ? (
-        <span role="status" className="min-w-0 text-xs text-muted-foreground">
-          {recordingState.status === "error"
-            ? recordingState.error
-            : {
-                starting: "Starting recording…",
-                recording: "Recording to host",
-                paused: "Recording paused",
-                saving: "Saving recording…",
-                saved: "Recording saved",
-              }[recordingState.status]}
-          {" · "}
-          <a href={`/settings/voice?machine=${encodeURIComponent(props.environmentId)}`}>
-            Recordings
-          </a>
-        </span>
-      ) : null}
-    </div>
+            ) : null}
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              disabled={state.phase === "stopping"}
+              onClick={() => void owner.end()}
+              aria-label="End Live voice"
+            >
+              <PhoneOffIcon />
+            </Button>
+            {state.error ? (
+              <span role="alert" className="basis-full px-2 text-xs text-destructive">
+                {state.error}
+              </span>
+            ) : null}
+            {recordingState.status !== "off" ? (
+              <span role="status" className="basis-full px-2 text-xs text-muted-foreground">
+                {recordingState.status === "error"
+                  ? recordingState.error
+                  : `Recording: ${recordingState.status}`}
+              </span>
+            ) : null}
+            {state.lease ? (
+              <>
+                <VoiceBubbleViewToggle />
+                {bubbles ? (
+                  <VoiceActivityBubbles
+                    threadRef={state.lease}
+                    liveActivities={state.activities ?? []}
+                  />
+                ) : null}
+              </>
+            ) : null}
+          </section>
+        ) : null}
+      </VoiceControlsPortal>
+    </>
   );
 }

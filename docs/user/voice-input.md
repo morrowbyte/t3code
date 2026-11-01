@@ -40,8 +40,19 @@ appear in the thread alongside agent results. Ending releases the microphone;
 saved conversations remain available across calls and app reloads. You can load
 earlier calls and copy individual contributions. Incomplete transcripts are marked.
 Voice contributions stay in the conversation without automatically becoming new
-agent prompts. Leaving the thread ends its call; already submitted agent work
-continues independently.
+agent prompts. Already submitted agent work continues independently when the
+call ends.
+
+A call stays connected when you switch threads, environments, or open Settings.
+The compact call controls show its original thread and environment. Select the
+thread there to return, mute your microphone or the response audio, or end the
+call. Speech, tool activity, and results stay in that original thread. Only one
+call can prepare, connect, or stop at a time; ending it releases the microphone
+without cancelling work already started by the agent.
+
+On Android, the existing foreground call notification also ends the call.
+iOS calls currently end when the app enters the background; navigating inside
+the app does not end them.
 
 **Speech bubbles · Experimental** is off by default. Enable it in the call
 controls or voice transcript for a live bubble view with the agent's avatar and a

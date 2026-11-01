@@ -1,6 +1,9 @@
-import { act, useMemo, type ComponentType, type ReactNode } from "react";
+import { act, type ComponentType, type ReactNode } from "react";
 import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
-import { voiceConversationItems } from "@t3tools/client-runtime/live-voice";
+import {
+  observeVoiceConversation,
+  voiceConversationItems,
+} from "@t3tools/client-runtime/live-voice";
 import type { LiveVoiceController, LiveVoiceState } from "@t3tools/client-runtime/live-voice";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
@@ -11,8 +14,43 @@ import type { NativeMarkdownTextStyle } from "./SelectableMarkdownText.types";
 const native = vi.hoisted(() => ({
   copyCsv: vi.fn<(_text: string) => Promise<void>>().mockResolvedValue(undefined),
   timing: vi.fn(),
+  endVoice: vi.fn(),
+  voiceSnapshot: null as ReturnType<
+    typeof import("../state/liveVoice").useNativeLiveVoiceSession
+  > | null,
 }));
 
+vi.mock("../state/liveVoice", () => ({
+  nativeLiveVoiceSession: { end: native.endVoice },
+  useNativeLiveVoiceSession: () => {
+    if (!native.voiceSnapshot) throw new Error("Missing voice fixture");
+    return native.voiceSnapshot;
+  },
+}));
+vi.mock("../state/threads", async () => {
+  const { Atom } = await import("effect/reactivity");
+  const thread = Atom.make(null);
+  return { environmentThreadShells: { threadShellAtom: () => thread } };
+});
+vi.mock("../state/presentation", () => ({
+  useEnvironmentPresentation: () => ({ presentation: null }),
+}));
+vi.mock("react-native-safe-area-context", () => ({
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
+vi.mock("react-native-screens", () => ({
+  FullWindowOverlay: ({ children }: { children: ReactNode }) => children,
+}));
+vi.mock("../features/live-voice/NativeVoiceBubbleViewToggle", () => ({
+  NativeVoiceBubbleViewToggle: () => null,
+  useNativeVoiceBubbleView: () => ({ enabled: false }),
+}));
+vi.mock("../features/live-voice/NativeVoiceActivityBubbles", () => ({
+  NativeVoiceActivityBubbles: () => null,
+}));
+vi.mock("../features/agent-identity/AgentIdentityLabel", () => ({
+  AgentIdentityLabel: () => null,
+}));
 vi.mock("../components/ui/AppSymbol", () => ({ SymbolView: () => null }));
 vi.mock("../components/ui/Sheet", () => ({
   Sheet: ({ children, onClose }: { children: ReactNode; onClose: () => void }) => (
@@ -33,6 +71,7 @@ vi.mock("../lib/copyTextWithHaptic", () => ({
   },
 }));
 vi.mock("react-native", () => ({
+  Platform: { OS: "android" },
   ActivityIndicator: () => null,
   useWindowDimensions: () => ({ width: 390, height: 844, scale: 1, fontScale: 1 }),
   processColor: () => null,
@@ -179,9 +218,8 @@ vi.mock("./SelectableMarkdownText", () => ({
 
 import { StreamableAssistantMarkdown } from "./StreamableAssistantMarkdown";
 import {
+  GlobalNativeVoiceControls,
   NativeVoiceConversationProvider,
-  NativeVoiceConversationHeader,
-  useNativeVoicePresentation,
   useNativeVoiceObserved,
 } from "../features/live-voice/NativeVoiceConversation";
 
@@ -478,7 +516,7 @@ describe("native assistant streaming visuals", () => {
 });
 
 it("keeps voice speech and streamed results together while call controls remain available", () => {
-  const end = vi.fn();
+  const end = native.endVoice.mockReset();
   const mute = vi.fn();
   const output = vi.fn();
   const controller = {
@@ -512,14 +550,25 @@ it("keeps voice speech and streamed results together while call controls remain 
     },
     error: null,
   };
+  native.voiceSnapshot = {
+    target: {
+      provider: "codex",
+      environmentId: EnvironmentId.make("env"),
+      threadId: ThreadId.make("thread"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+    },
+    controller,
+    state,
+    value: null,
+    busy: true,
+    calls: observeVoiceConversation([], state, "2026-11-01T10:00:00.000Z"),
+  };
   function Conversation({ markdown }: { markdown: string }) {
-    const presentation = useMemo(() => ({ controller, state, eligible: true }), []);
-    useNativeVoicePresentation(presentation);
     const observed = useNativeVoiceObserved();
     const voiceItems = voiceConversationItems([], new Map(), observed);
     return (
       <>
-        <NativeVoiceConversationHeader />
+        <GlobalNativeVoiceControls onOpenThread={() => {}} />
         {voiceItems.map((item) => (
           <NativeVoiceConversationRow key={item.id} item={item} />
         ))}

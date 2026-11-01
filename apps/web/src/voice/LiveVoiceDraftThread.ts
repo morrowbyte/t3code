@@ -50,22 +50,16 @@ export function createLiveVoiceThreadPreparer(dependencies: {
     { readonly fingerprint: string; accepted: boolean; pending: Promise<void> | null }
   >();
   return async (target: LiveVoiceTarget, signal: AbortSignal): Promise<void> => {
-    const readCurrent = () => {
-      const context = dependencies.readContext();
-      if (signal.aborted || !context || !matchesTarget(context.target, target))
-        throw new Error(LIVE_VOICE_THREAD_CHANGED);
-      if (context.unavailableReason) throw new Error(context.unavailableReason);
-      return context;
-    };
-    const context = readCurrent();
+    const context = dependencies.readContext();
+    if (signal.aborted || !context || !matchesTarget(context.target, target))
+      throw new Error(LIVE_VOICE_THREAD_CHANGED);
+    if (context.unavailableReason) throw new Error(context.unavailableReason);
     if (context.persisted) {
-      const selection = JSON.stringify(context.thread.modelSelection);
       await dependencies.updateModelSelection({
         threadId: context.thread.threadId,
         modelSelection: context.thread.modelSelection,
       });
-      if (JSON.stringify(readCurrent().thread.modelSelection) !== selection)
-        throw new Error(LIVE_VOICE_THREAD_CHANGED);
+      if (signal.aborted) throw new Error(LIVE_VOICE_THREAD_CHANGED);
       return;
     }
     const key = JSON.stringify([target.environmentId, target.threadId]);
@@ -90,7 +84,6 @@ export function createLiveVoiceThreadPreparer(dependencies: {
         });
     }
     if (captured.pending) await captured.pending;
-    const current = readCurrent();
-    if (JSON.stringify(current.thread) !== fingerprint) throw new Error(LIVE_VOICE_THREAD_CHANGED);
+    if (signal.aborted) throw new Error(LIVE_VOICE_THREAD_CHANGED);
   };
 }

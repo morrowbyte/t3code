@@ -1,3 +1,4 @@
+import { useEffect, useState, type ReactNode } from "react";
 import { act, fakeTimers, render as renderUi, stubGlobal } from "../../test/render";
 import {
   EnvironmentId,
@@ -19,6 +20,8 @@ import type {
 import type { PreviewAnnotationPayload } from "@t3tools/contracts";
 import { usePreviewSelectionStore } from "~/previewSelectionStore";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { page } from "vite-plus/test/browser";
+import { AppRouteModal } from "../components/AppRouteModal";
 import { dispatchKeyboardCommand } from "~/components/keyboard/keyboardCommands";
 
 const showToast = vi.hoisted(() => vi.fn());
@@ -66,12 +69,15 @@ import {
   classifyLiveVoicePrepareFailure,
   advanceLiveVoiceDiagnosticModel,
   LiveVoiceControl,
+  GlobalLiveVoiceControl,
+  LiveVoiceContextFeed,
   resolveLiveVoiceAvailability,
   resolveLiveVoiceConfigState,
   resolveLiveVoiceInstanceSettings,
   resolveLiveVoiceControlGate,
   createLiveVoiceDiagnosticProducer,
 } from "./LiveVoiceControl";
+import { WebLiveVoiceSessionProvider } from "./sessionContext";
 import { TooltipProvider } from "~/components/ui/tooltip";
 import { unwrapLiveVoiceCommand } from "./LiveVoiceCommands";
 import type {
@@ -495,25 +501,64 @@ describe("explicit main renderer diagnostic requests", () => {
   });
 });
 
-async function setupControl() {
+function ContextFixture({ input }: { input: AvailabilityInput }) {
+  const [state, setState] = useState<LiveVoiceState>({
+    phase: "idle",
+    localMuted: false,
+    outputMuted: false,
+    transcript: [],
+    lease: null,
+    sessionStatus: null,
+    error: null,
+  });
+  useEffect(() => {
+    voiceFixture.publish = setState;
+    return () => {
+      voiceFixture.publish = null;
+    };
+  }, []);
+  return input.threadId ? (
+    <LiveVoiceContextFeed
+      environmentId={input.environmentId}
+      threadId={input.threadId}
+      providerInstanceId={input.providerInstanceId ?? "codex"}
+      state={state}
+    />
+  ) : null;
+}
+
+async function setupControl(contextOnly = false) {
   await using cleanup = new AsyncDisposableStack();
-  const screen = cleanup.use(await renderUi(null, { router: false }));
+  const wrap = (children: ReactNode) => (
+    <WebLiveVoiceSessionProvider>
+      <TooltipProvider delay={0}>
+        {children}
+        <GlobalLiveVoiceControl />
+      </TooltipProvider>
+    </WebLiveVoiceSessionProvider>
+  );
+  const screen = cleanup.use(await renderUi(wrap(null)));
+  const rerender = (children: ReactNode) => screen.rerender(wrap(children));
   const { container } = screen;
   async function render(
     input: AvailabilityInput,
     targetEnvironment = input.environmentId,
     callbacks: Pick<Parameters<typeof LiveVoiceControl>[0], "beforePrepare" | "onPhaseChange"> = {},
   ) {
-    await screen.rerender(
+    await rerender(
       <TooltipProvider delay={0}>
-        <LiveVoiceControl
-          environmentId={targetEnvironment}
-          threadId={input.threadId}
-          providerInstanceId={input.providerInstanceId}
-          eligible={true}
-          availability={resolveLiveVoiceAvailability(input)}
-          {...callbacks}
-        />
+        {contextOnly ? (
+          <ContextFixture input={input} />
+        ) : (
+          <LiveVoiceControl
+            environmentId={targetEnvironment}
+            threadId={input.threadId}
+            providerInstanceId={input.providerInstanceId}
+            eligible={true}
+            availability={resolveLiveVoiceAvailability(input)}
+            {...callbacks}
+          />
+        )}
       </TooltipProvider>,
     );
   }
@@ -540,7 +585,7 @@ async function setupControl() {
     startButton,
     startHint,
     container,
-    rerender: screen.rerender,
+    rerender,
     unmount: screen.unmount,
     [Symbol.asyncDispose]: () => environment.disposeAsync(),
   };
@@ -589,7 +634,7 @@ describe("selected preview context during a call", () => {
 
   it("sends existing selection, replacement and clear with increasing revisions on the same call", async () => {
     using _environment = setupEnvironment();
-    await using control = await setupControl();
+    await using control = await setupControl(true);
     const ref = { environmentId: environmentA, threadId: thread };
     usePreviewSelectionStore.getState().replaceSelection(ref, selection("first"));
     await control.render(loaded);
@@ -634,7 +679,7 @@ describe("selected preview context during a call", () => {
 
   it("sends a newer clear while selection delivery is still pending", async () => {
     using _environment = setupEnvironment();
-    await using control = await setupControl();
+    await using control = await setupControl(true);
     const ref = { environmentId: environmentA, threadId: thread };
     await control.render(loaded);
     await act(async () => voiceFixture.publish?.(activeState()));
@@ -664,7 +709,7 @@ describe("selected preview context during a call", () => {
 
   it("retries transient context delivery and cancels retries for a replaced selection", async () => {
     using _environment = setupEnvironment();
-    await using control = await setupControl();
+    await using control = await setupControl(true);
     const ref = { environmentId: environmentA, threadId: thread };
     usePreviewSelectionStore.getState().replaceSelection(ref, selection("old", "Old target"));
     await control.render(loaded);
@@ -703,7 +748,7 @@ describe("selected preview context during a call", () => {
     "shares selected context once transport is live while the last lease status is %s",
     async (status) => {
       using _environment = setupEnvironment();
-      await using control = await setupControl();
+      await using control = await setupControl(true);
       const ref = { environmentId: environmentA, threadId: thread };
       usePreviewSelectionStore.getState().replaceSelection(ref, selection("connected", "Target"));
       await control.render(loaded);
@@ -728,7 +773,7 @@ describe("selected preview context during a call", () => {
 
   it("rejects foreign and inactive leases and resends bounded context for a new generation", async () => {
     using _environment = setupEnvironment();
-    await using control = await setupControl();
+    await using control = await setupControl(true);
     const ref = { environmentId: environmentA, threadId: thread };
     usePreviewSelectionStore
       .getState()
@@ -763,7 +808,7 @@ describe("selected preview context during a call", () => {
 
   it("supports an absent thread without selecting or sending context", async () => {
     using _environment = setupEnvironment();
-    await using control = await setupControl();
+    await using control = await setupControl(true);
     await control.render({ ...loaded, threadId: null });
     await act(async () => voiceFixture.publish?.(activeState()));
     expect(commands.context).not.toHaveBeenCalled();
@@ -1177,7 +1222,7 @@ describe("LiveVoiceControl passive availability", () => {
     expect(getUserMedia).not.toHaveBeenCalled();
     expect(peer).not.toHaveBeenCalled();
   });
-  it("uses the replacement controller's actual state after changing thread during a draft save", async () => {
+  it("keeps the original call through thread navigation and Settings during a draft save", async () => {
     using _environment = setupEnvironment();
     await using control = await setupControl();
     const { render, startButton, container } = control;
@@ -1196,17 +1241,32 @@ describe("LiveVoiceControl passive availability", () => {
       beforePrepare,
       onPhaseChange: nextPhase,
     });
-    expect(container.querySelector('[data-live-voice-phase="idle"]')).not.toBeNull();
-    expect(container.querySelector('[aria-label="End Live voice"]')).toBeNull();
-    expect(startButton().disabled).toBe(false);
-    expect(nextPhase).toHaveBeenLastCalledWith("idle");
-    expect(firstPhase).toHaveBeenLastCalledWith("preparing");
+    expect(container.querySelector('[data-live-voice-phase="preparing"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="End Live voice"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Start voice call"]')).toBeNull();
+    expect(nextPhase).toHaveBeenLastCalledWith("preparing");
+    await control.rerender(
+      <AppRouteModal label="Settings">
+        <main>Settings</main>
+      </AppRouteModal>,
+    );
+    await expect.element(page.getByRole("button", { name: "End Live voice" })).toBeVisible();
+    const originalLink = document.querySelector<HTMLAnchorElement>(
+      '[aria-label="Open original voice thread"]',
+    );
+    expect(originalLink?.getAttribute("href")).toBe(`/${environmentA}/${thread}`);
+    expect(document.querySelector('[role="dialog"]')?.contains(originalLink)).toBe(true);
     await act(async () => {
       finishSaving();
       await saving;
     });
-    expect(startButton().disabled).toBe(false);
-    expectPassive();
+    expect(beforePrepare).toHaveBeenCalledOnce();
+    expect(commands.prepare).toHaveBeenCalledExactlyOnceWith({
+      environmentId: environmentA,
+      input: expect.objectContaining({ threadId: thread }),
+    });
+    expect(commands.stop).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Settings");
   });
   it.each([
     "unsupported_provider",
@@ -1279,7 +1339,7 @@ describe("LiveVoiceControl passive availability", () => {
     expectPassive();
   });
 
-  it("ignores a late prepare failure from an aborted A context after A to B to A", async () => {
+  it("ignores a late prepare failure after End and A to B to A navigation", async () => {
     using _environment = setupEnvironment();
     await using control = await setupControl();
     const { render, startButton, container } = control;
@@ -1293,6 +1353,9 @@ describe("LiveVoiceControl passive availability", () => {
     await act(async () => startButton().click());
     await render({ ...loaded, environmentId: environmentB, catalogEnvironmentId: environmentB });
     await render(loaded);
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[aria-label="End Live voice"]')!.click(),
+    );
     await act(async () =>
       finish(
         AsyncResult.failure(Cause.fail(new LiveVoiceError({ code: "managed_account_required" }))),

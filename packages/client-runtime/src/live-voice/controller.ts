@@ -99,6 +99,7 @@ export type LiveVoiceState = {
   readonly sessionStatus: LiveVoiceSession["status"] | null;
   readonly lease: LiveVoiceLease | null;
   readonly error: string | null;
+  readonly cleanupPending?: boolean;
   readonly inputIssue?: "ended" | "source-muted" | "disabled" | "sender-missing" | null;
 };
 
@@ -242,6 +243,7 @@ export class LiveVoiceController {
   private rejectRtcReady: ((error: Error) => void) | null = null;
   private rtcReady: Promise<void> | null = null;
   private microphoneOwnership: MicrophoneOwnership | null = null;
+  private failureCleanup: Promise<void> | null = null;
   private readonly stopRequestIds = new Map<string, string>();
   private readonly stopRequests = new Map<string, Promise<void>>();
   private readonly transcriptSegments = new Map<string, LiveVoiceTranscript>();
@@ -615,6 +617,7 @@ export class LiveVoiceController {
     this.rejectRtcReady?.(new Error("Live session ended."));
     await this.release(lease, microphoneOwnership);
     if (lease) await this.stopLease(lease);
+    await this.failureCleanup;
     if (operation === this.operation)
       this.setState({
         ...IDLE_STATE,
@@ -848,11 +851,12 @@ export class LiveVoiceController {
   private async failAndStop(operation: number, lease: LiveVoiceLease, error: Error): Promise<void> {
     if (!this.isCurrentLease(operation, lease)) return;
     const activities = this.interruptActivities();
-    ++this.operation;
+    const cleanupOperation = ++this.operation;
     this.setState({
       ...this.state,
       phase: "error",
       error: error.message,
+      cleanupPending: true,
       ...(activities ? { activities } : {}),
     });
     this.abortController?.abort();
@@ -860,8 +864,12 @@ export class LiveVoiceController {
     this.rejectPrepared?.(error);
     this.rejectSubscriptionReady?.(error);
     this.rejectRtcReady?.(error);
-    await this.release(lease, this.microphoneOwnership);
-    await this.stopLease(lease);
+    const cleanup = this.release(lease, this.microphoneOwnership).then(() => this.stopLease(lease));
+    this.failureCleanup = cleanup;
+    await cleanup;
+    if (this.failureCleanup === cleanup) this.failureCleanup = null;
+    if (this.operation === cleanupOperation)
+      this.setState({ ...this.state, cleanupPending: false });
   }
 
   private isCurrentTarget(operation: number, target: LiveVoiceTarget): boolean {

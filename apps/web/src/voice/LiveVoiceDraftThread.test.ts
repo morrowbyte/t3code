@@ -98,7 +98,7 @@ describe("Live voice draft persistence", () => {
     expect(readyForLease).toBe(true);
   });
 
-  it("does not prepare a lease after the selected model changes during persistence", async () => {
+  it("keeps the starting model when the visible selection changes during persistence", async () => {
     const context = { ...draftContext(), persisted: true };
     const h = harness(context);
     const saved = deferred();
@@ -112,7 +112,11 @@ describe("Live voice draft persistence", () => {
       },
     });
     saved.resolve();
-    await expect(preparing).rejects.toThrow(LIVE_VOICE_THREAD_CHANGED);
+    await preparing;
+    expect(h.updateModelSelection).toHaveBeenCalledExactlyOnceWith({
+      threadId: context.thread.threadId,
+      modelSelection: context.thread.modelSelection,
+    });
   });
 
   it("waits for the empty thread receipt and preserves its destination and settings", async () => {
@@ -182,14 +186,13 @@ describe("Live voice draft persistence", () => {
   });
 
   it.each(["route", "provider", "project", "workspace", "runtime", "interaction"] as const)(
-    "rejects a changed %s after persistence before allowing lease preparation",
+    "keeps the captured draft after the visible %s changes during persistence",
     async (changed) => {
       const context = draftContext();
       const saved = deferred();
       const h = harness(context);
       h.createThread.mockImplementation(() => saved.promise);
       const preparing = h.prepare(context.target, new AbortController().signal);
-      const rejected = expect(preparing).rejects.toThrow(LIVE_VOICE_THREAD_CHANGED);
       h.setContext(
         changed === "route"
           ? null
@@ -207,7 +210,9 @@ describe("Live voice draft persistence", () => {
               },
       );
       saved.resolve();
-      await rejected;
+      await preparing;
+      expect(h.createThread).toHaveBeenCalledExactlyOnceWith(context.thread);
+      expect(h.onCreated).toHaveBeenCalledExactlyOnceWith(context);
     },
   );
 

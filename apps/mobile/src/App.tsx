@@ -74,6 +74,7 @@ import { useMobileNavigationTheme } from "./lib/useMobileNavigationTheme";
 import { installUiRuntimeMemoryWarningGc } from "./lib/useUiRuntimeMemoryWarningGc";
 import { SubscriptionUsageCoordinator } from "./widgets/SubscriptionUsageCoordinator";
 import { installSubscriptionUsageRefresh } from "./widgets/useSubscriptionUsage";
+import { GlobalNativeLiveVoice } from "./features/live-voice/NativeLiveVoiceControl";
 import { GlobalVoiceInputControl } from "./features/voice-input/GlobalVoiceInputControl";
 import { restoreSettingsLinkState } from "./features/settings/settings-navigation";
 import {
@@ -247,6 +248,13 @@ function AppContent() {
                   onReady={handleNavigationReady}
                   theme={navigationTheme}
                   onStateChange={handleNavigationStateChange}
+                />
+                <GlobalNativeLiveVoice
+                  onOpenThread={(environmentId, threadId) =>
+                    linkToAppPath(
+                      `/threads/${encodeURIComponent(environmentId)}/${encodeURIComponent(threadId)}`,
+                    )
+                  }
                 />
                 <Dialog.Host />
                 <ThreadArrangementHost />

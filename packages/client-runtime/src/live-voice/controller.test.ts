@@ -11,6 +11,7 @@ import {
   type LiveVoiceSignalEvent,
   type LiveVoiceSignalingAdapter,
 } from "./controller.ts";
+import { LiveVoiceSessionOwner } from "./session.ts";
 import { acquireMicrophoneOwnership } from "./microphoneOwnership.ts";
 
 function deferred<T>() {
@@ -220,6 +221,7 @@ function createHarness(
   const controller = new LiveVoiceController(dependencies);
   return {
     controller,
+    dependencies,
     signaling,
     peer,
     channel,
@@ -1233,4 +1235,127 @@ it("distinguishes deliberate mute from interrupted input and detects sender loss
   expect(cancel).toHaveBeenCalledOnce();
   track.dispatchEvent(new Event("mute"));
   expect(h.controller.currentState.phase).toBe("ended");
+});
+
+describe("app-owned live voice", () => {
+  function binding(harness: ReturnType<typeof createHarness>) {
+    return vi.fn((onStateChange: LiveVoiceControllerDependencies["onStateChange"]) => {
+      harness.controller = new LiveVoiceController({ ...harness.dependencies, onStateChange });
+      return { controller: harness.controller, value: null };
+    });
+  }
+
+  it("retains the original destination and transcripts when route observers navigate away", async () => {
+    const owner = new LiveVoiceSessionOwner<null>();
+    const h = createHarness();
+    const create = binding(h);
+    const origin = { ...target };
+    const starting = owner.start(origin, create);
+    const detachThreadA = owner.subscribe(() => {});
+    detachThreadA();
+    const detachSettings = owner.subscribe(() => {});
+    origin.threadId = "navigated-thread";
+    await owner.start({ ...target, threadId: "thread-b", environmentId: "env-b" }, create);
+    expect(create).toHaveBeenCalledOnce();
+    expect(owner.getSnapshot().target).toEqual(target);
+    await connectFirst(h, starting);
+    h.emit({
+      type: "transcript",
+      leaseId: lease.leaseId,
+      generation: lease.generation,
+      role: "user",
+      text: "original thread speech",
+    });
+    expect(owner.getSnapshot().calls[0]).toMatchObject({
+      environmentId: target.environmentId,
+      call: { threadId: target.threadId },
+    });
+    expect(owner.getSnapshot().state.transcript[0]?.text).toBe("original thread speech");
+    await owner.end();
+    expect(h.signaling.stop).toHaveBeenCalledOnce();
+    expect(h.stoppedTracks).toBe(1);
+    expect(owner.getSnapshot().busy).toBe(false);
+    detachSettings();
+  });
+
+  it("reserves the app until a prepare reply arriving after End has released its lease", async () => {
+    const prepared = deferred<LiveVoiceLease>();
+    const remoteStopped = deferred<LiveVoiceLease>();
+    const h = createHarness({ prepare: () => prepared.promise, stop: () => remoteStopped.promise });
+    const owner = new LiveVoiceSessionOwner<null>();
+    const create = binding(h);
+    const starting = owner.start(target, create);
+    const ending = owner.end();
+    await owner.start({ ...target, threadId: "thread-b" }, create);
+    expect(create).toHaveBeenCalledOnce();
+    prepared.resolve(lease);
+    await h.stopRequested;
+    expect(owner.getSnapshot().busy).toBe(true);
+    expect(h.calls).not.toContain("media-request");
+    await owner.start({ ...target, threadId: "thread-b" }, create);
+    expect(create).toHaveBeenCalledOnce();
+    remoteStopped.resolve({ ...lease, status: "closed" });
+    await Promise.all([starting, ending]);
+    expect(owner.getSnapshot().busy).toBe(false);
+    const oldObserver = create.mock.calls[0]![0];
+    const next = createHarness({
+      beforePrepare: async () => {
+        throw new Error("fixture stop");
+      },
+    });
+    await owner.start({ ...target, threadId: "thread-b" }, binding(next));
+    const current = owner.getSnapshot();
+    oldObserver({
+      ...h.controller.currentState,
+      phase: "live",
+      lease,
+      transcript: [{ speaker: "user", text: "late old speech", final: true }],
+    });
+    expect(owner.getSnapshot()).toBe(current);
+    expect(owner.getSnapshot().target?.threadId).toBe("thread-b");
+  });
+
+  it("blocks another call until failed-transport cleanup finishes", async () => {
+    vi.useFakeTimers();
+    using _timers = { [Symbol.dispose]: () => vi.useRealTimers() };
+    const stopped = deferred<LiveVoiceLease>();
+    const h = createHarness({ stop: () => stopped.promise });
+    const owner = new LiveVoiceSessionOwner<null>();
+    const create = binding(h);
+    await connectFirst(h, owner.start(target, create));
+    const cleanup = new Promise<void>((resolve) => {
+      const unsubscribe = owner.subscribe(() => {
+        if (!owner.getSnapshot().busy) {
+          unsubscribe();
+          resolve();
+        }
+      });
+    });
+    h.emit({
+      type: "error",
+      leaseId: lease.leaseId,
+      generation: lease.generation,
+      code: "runtime_unavailable",
+    });
+    await h.stopRequested;
+    expect(owner.getSnapshot().state.cleanupPending).toBe(true);
+    await owner.start({ ...target, threadId: "thread-b" }, create);
+    expect(create).toHaveBeenCalledOnce();
+    const ending = owner.end();
+    await vi.runAllTimersAsync();
+    expect(owner.getSnapshot().state.phase).toBe("stopping");
+    expect(owner.getSnapshot().state.cleanupPending).toBe(true);
+    expect(owner.getSnapshot().busy).toBe(true);
+    expect(h.stoppedTracks).toBe(1);
+    expect(h.signaling.stop).toHaveBeenCalledOnce();
+    await owner.start({ ...target, threadId: "thread-b" }, create);
+    expect(create).toHaveBeenCalledOnce();
+    stopped.resolve({ ...lease, status: "closed" });
+    await Promise.all([cleanup, ending]);
+    expect(h.stoppedTracks).toBe(1);
+    expect(h.signaling.stop).toHaveBeenCalledOnce();
+    expect(owner.getSnapshot().state.phase).toBe("ended");
+    expect(owner.getSnapshot().state.cleanupPending).not.toBe(true);
+    expect(owner.getSnapshot().busy).toBe(false);
+  });
 });

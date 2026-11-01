@@ -5,15 +5,18 @@ import {
   type ObservedVoiceCall,
 } from "@t3tools/client-runtime/live-voice";
 
+import { useOptionalWebLiveVoiceSession } from "./sessionContext";
+import { useStableCallback } from "../hooks/useStableCallback";
+
 const ConversationContext = createContext<ReadonlyArray<ObservedVoiceCall>>([]);
 const RegistrationContext = createContext<((state: LiveVoiceState) => void) | null>(null);
 
 export function VoiceConversationProvider({ children }: { readonly children: ReactNode }) {
   const [calls, setCalls] = useState<ReadonlyArray<ObservedVoiceCall>>([]);
-  const register = (state: LiveVoiceState) => {
+  const register = useStableCallback((state: LiveVoiceState) => {
     const receivedAt = new Date().toISOString();
     setCalls((previous) => observeVoiceConversation(previous, state, receivedAt));
-  };
+  });
   return (
     <RegistrationContext value={register}>
       <ConversationContext value={calls}>{children}</ConversationContext>
@@ -30,11 +33,10 @@ export function useVoiceConversationPresentation(state: LiveVoiceState) {
 }
 
 export function useObservedVoiceConversation(environmentId: string, threadId: string) {
-  const calls = useContext(ConversationContext);
+  const localCalls = useContext(ConversationContext);
+  const calls = useOptionalWebLiveVoiceSession()?.calls ?? localCalls;
   return calls.filter(
     ({ call, environmentId: callEnvironmentId }) =>
-      // The provider is keyed to the route, and these receipts also guard a
-      // draft becoming a server thread while its controller is still mounted.
       call.threadId === threadId && callEnvironmentId === environmentId,
   );
 }

@@ -13,6 +13,9 @@ import {
 import { Check, Copy } from "lucide";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 
+import { WebLiveVoiceSessionProvider } from "../voice/sessionContext";
+import { GlobalLiveVoiceControl } from "../voice/LiveVoiceControl";
+
 import { APP_DISPLAY_NAME, APP_VERSION } from "../branding";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
 import { CommandPalette } from "../components/CommandPalette";
@@ -135,7 +138,10 @@ function RootRouteView() {
   return (
     <ToastProvider>
       <AnchoredToastProvider>
-        <RootRouteBranch />
+        <WebLiveVoiceSessionProvider>
+          <RootRouteBranch />
+          <GlobalLiveVoiceControl />
+        </WebLiveVoiceSessionProvider>
       </AnchoredToastProvider>
     </ToastProvider>
   );
