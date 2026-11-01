@@ -126,6 +126,7 @@ const layerProviderEventIngestorProvided = ProviderEventIngestor.layer.pipe(
         Layer.provide(TextGeneration.layer),
         Layer.provide(ProjectionStore.layer),
       ),
+      layerEventStoreProvided,
       layerEventSink,
       IdAllocator.layer,
       ProjectionStore.layer,

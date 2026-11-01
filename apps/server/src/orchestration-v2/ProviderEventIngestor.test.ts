@@ -18,6 +18,7 @@ import {
   type OrchestrationV2TurnItem,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
   RunAttemptId,
@@ -41,6 +42,7 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlError from "effect/sql/SqlError";
 import * as Stream from "effect/Stream";
+import { TestClock } from "effect/testing";
 
 import { toolOutputImages } from "@t3tools/shared/toolOutput";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -2726,6 +2728,161 @@ it.effect.each([
     );
     assert.isEmpty(persisted);
   }).pipe(Effect.provide(layerFailingWrites(errors))),
+);
+
+it.effect.each(["reasoning", "command_execution"] as const)(
+  "keeps terminal ingestion moving when the %s title queue is full and reloads stored work",
+  (kind) =>
+    Effect.gen(function* () {
+      const firstReply = yield* Deferred.make<{ title: string }>();
+      const started = yield* Deferred.make<void>();
+      let calls = 0;
+      const overflowInputs: string[] = [];
+      const generation = Layer.mock(TextGeneration.TextGeneration)({
+        generateThreadTitle: (input) =>
+          Effect.gen(function* () {
+            calls += 1;
+            if (calls > 512) overflowInputs.push(input.message);
+            if (calls === 1) {
+              yield* Deferred.succeed(started, undefined);
+              return yield* Deferred.await(firstReply);
+            }
+            return { title: `Generated activity ${calls}` };
+          }),
+      });
+      yield* Effect.gen(function* () {
+        const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const summaries = yield* ReasoningSummaryGeneration.ReasoningSummaryGeneration;
+        const tools = yield* ToolIntentGeneration.ToolIntentGeneration;
+        const now = yield* DateTime.now;
+        const thread = yield* threadCreatedEvent(now);
+        yield* sink.write({ events: [thread] });
+        const makeItem = (index: number): OrchestrationV2TurnItem => {
+          const common = {
+            id: TurnItemId.make(`stored-overflow-${kind}-${index}`),
+            threadId: thread.threadId,
+            runId: null,
+            nodeId: null,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: index,
+            status: "completed" as const,
+            title: null,
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+          };
+          return kind === "reasoning"
+            ? { ...common, type: "reasoning", text: `Public summary ${index}`, streaming: false }
+            : { ...common, type: "command_execution", input: `printf item-${index}` };
+        };
+        for (let index = 0; index < 512; index++) {
+          const item = makeItem(index);
+          const observation = {
+            providerInstanceId: modelSelection.instanceId,
+            driverKind: CODEX_DRIVER,
+            commitTitle: () => Effect.void,
+          };
+          if (item.type === "reasoning") yield* summaries.observe({ ...observation, item });
+          if (item.type === "command_execution") yield* tools.observe({ ...observation, item });
+        }
+        yield* Deferred.await(started);
+        const overflow = makeItem(512);
+        const terminalSeen = yield* Deferred.make<void>();
+        const sequence = yield* sink.latestSequence();
+        const persisted = yield* sink.stream({ afterSequence: sequence }).pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "turn-item.updated" && stored.event.payload.id === overflow.id,
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkChild,
+        );
+        const ingesting = yield* ingestor
+          .ingestNormalized({
+            providerSessionId: ProviderSessionId.make("full-title-queue"),
+            providerInstanceId: modelSelection.instanceId,
+            threadId: thread.threadId,
+            event: { type: "turn_item.updated", driver: CODEX_DRIVER, turnItem: overflow },
+          })
+          .pipe(
+            Effect.andThen(
+              ingestor.ingestNormalized({
+                providerSessionId: ProviderSessionId.make("full-title-queue"),
+                providerInstanceId: modelSelection.instanceId,
+                threadId: thread.threadId,
+                event: {
+                  type: "turn.terminal",
+                  driver: CODEX_DRIVER,
+                  providerThreadId: ProviderThreadId.make("full-title-queue"),
+                  providerTurnId: ProviderTurnId.make("full-title-queue"),
+                  runOrdinal: 1,
+                  status: "completed",
+                  failure: null,
+                  threadDisposition: "reusable",
+                },
+              }),
+            ),
+            Effect.andThen(Deferred.succeed(terminalSeen, undefined)),
+            Effect.forkChild,
+          );
+        yield* Fiber.join(persisted);
+        yield* TestClock.adjust(0);
+        assert.isTrue(yield* Deferred.isDone(terminalSeen));
+        assert.equal(calls, 1);
+        const updated =
+          overflow.type === "reasoning"
+            ? { ...overflow, text: "Current stored summary" }
+            : { ...overflow, input: "printf current-stored-command" };
+        const second = makeItem(513);
+        for (const turnItem of [updated, second]) {
+          yield* ingestor.ingestNormalized({
+            providerSessionId: ProviderSessionId.make("full-title-queue"),
+            providerInstanceId: modelSelection.instanceId,
+            threadId: thread.threadId,
+            event: { type: "turn_item.updated", driver: CODEX_DRIVER, turnItem },
+          });
+        }
+        const titled = yield* sink.stream({ afterSequence: sequence }).pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "turn-item.updated" &&
+              [overflow.id, second.id].includes(stored.event.payload.id) &&
+              stored.event.payload.title !== null,
+          ),
+          Stream.take(2),
+          Stream.runDrain,
+          Effect.forkChild,
+        );
+        yield* Deferred.succeed(firstReply, { title: "First generated activity" });
+        yield* Fiber.join(ingesting);
+        yield* Fiber.join(titled);
+        assert.equal(calls, 514);
+        assert.lengthOf(overflowInputs, 2);
+        assert.include(
+          overflowInputs[0],
+          kind === "reasoning" ? "Current stored summary" : "current-stored-command",
+        );
+        assert.isNotNull(
+          (yield* projections.getTurnItem({ threadId: thread.threadId, itemId: overflow.id }))
+            ?.title,
+        );
+      }).pipe(
+        Effect.provide(
+          layerTest.pipe(
+            Layer.provideMerge(ReasoningSummaryGeneration.layer.pipe(Layer.provide(generation))),
+            Layer.provideMerge(ToolIntentGeneration.layer.pipe(Layer.provide(generation))),
+            Layer.provide(NodeServices.layer),
+            Layer.fresh,
+          ),
+        ),
+      );
+    }).pipe(Effect.scoped),
 );
 
 it.effect(

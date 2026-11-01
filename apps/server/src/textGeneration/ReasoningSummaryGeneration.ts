@@ -26,12 +26,28 @@ type Observation = {
   readonly commitTitle: (title: string) => Effect.Effect<void>;
 };
 
+type StoredObservation = {
+  readonly sequence: number;
+  readonly readNext: (
+    afterSequence: number,
+    throughSequence: number,
+  ) => Effect.Effect<
+    { readonly sequence: number; readonly observation: Observation | null } | undefined,
+    unknown
+  >;
+};
+
 // A missing optional enrichment must never stop provider ingestion.
 export class ReasoningSummaryGeneration extends Context.Reference<{
   readonly retainedTitle: (item: ReasoningItem) => string | undefined;
   readonly observe: (input: Observation) => Effect.Effect<void>;
+  readonly observeStored: (input: StoredObservation) => Effect.Effect<void>;
 }>("t3/textGeneration/ReasoningSummaryGeneration", {
-  defaultValue: () => ({ retainedTitle: () => undefined, observe: () => Effect.void }),
+  defaultValue: () => ({
+    retainedTitle: () => undefined,
+    observe: () => Effect.void,
+    observeStored: () => Effect.void,
+  }),
 }) {}
 
 export const make = Effect.gen(function* () {
@@ -44,6 +60,9 @@ export const make = Effect.gen(function* () {
   const scope = yield* Scope.Scope;
   const wake = yield* Queue.sliding<void>(1);
   const capacity = yield* Semaphore.make(512);
+  let storedWork:
+    | { after: number; through: number; readNext: StoredObservation["readNext"] }
+    | undefined;
   const pendingItems = new Set<string>();
   const admissions = new Map<string, Deferred.Deferred<void>>();
   const latest = new Map<string, { input: Observation; revision: number }>();
@@ -124,7 +143,28 @@ export const make = Effect.gen(function* () {
   });
   yield* Effect.gen(function* () {
     yield* Queue.take(wake);
-    while (queued.size > 0) {
+    while (queued.size > 0 || storedWork !== undefined) {
+      if (queued.size === 0 && storedWork !== undefined) {
+        const pending = storedWork;
+        const after = pending.after;
+        const through = pending.through;
+        const next = yield* pending.readNext(after, through).pipe(
+          Effect.retry({ times: 1 }),
+          Effect.catchCause(() =>
+            Effect.logWarning("Stored title work could not be read", {
+              afterSequence: after,
+              throughSequence: through,
+            }).pipe(Effect.as(null)),
+          ),
+        );
+        if (next === null) break;
+        if (next?.observation && (yield* observe(next.observation, false)) === false) continue;
+        if (storedWork === pending && pending.after === after) {
+          pending.after = next?.sequence ?? through;
+          if (pending.after >= pending.through) storedWork = undefined;
+        }
+        continue;
+      }
       const [id, work] = queued.entries().next().value!;
       queued.delete(id);
       activeItem = id;
@@ -144,65 +184,84 @@ export const make = Effect.gen(function* () {
       );
     }
   }).pipe(Effect.forever, Effect.forkIn(scope));
-  const observe = Effect.fn("ReasoningSummaryGeneration.observe")((input: Observation) =>
-    Effect.uninterruptibleMask((restore) =>
-      Effect.gen(function* () {
-        const id = itemKey(input.item);
-        const previousAdmission = admissions.get(id);
-        admissions.delete(id);
-        if (previousAdmission) Deferred.doneUnsafe(previousAdmission, Effect.void);
-        if (input.item.streaming || input.item.status !== "completed" || !input.item.text.trim()) {
-          latest.delete(id);
-          queued.delete(id);
-          retained.delete(id);
-          yield* release(id);
-          return;
-        }
-        const previous = latest.get(id)?.input;
-        if (
-          previous?.item.text === input.item.text &&
-          previous.item.title === input.item.title &&
-          previous.providerInstanceId === input.providerInstanceId &&
-          previous.driverKind === input.driverKind
-        )
-          return;
-        const token = Deferred.makeUnsafe<void>();
-        admissions.set(id, token);
-        const work = { input, revision: ++revision };
-        let acquired = false;
-        yield* Effect.gen(function* () {
-          if (!pendingItems.has(id)) {
-            while (admissions.get(id) === token) {
-              acquired = yield* capacity.takeIfAvailable(1);
-              if (acquired) break;
-              yield* restore(
-                Effect.raceFirst(capacity.withPermits(1)(Effect.void), Deferred.await(token)),
-              );
-            }
-            if (admissions.get(id) !== token) return;
+  const observe = Effect.fn("ReasoningSummaryGeneration.observe")(
+    (input: Observation, waitForCapacity = true) =>
+      Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          const id = itemKey(input.item);
+          const previousAdmission = admissions.get(id);
+          admissions.delete(id);
+          if (previousAdmission) Deferred.doneUnsafe(previousAdmission, Effect.void);
+          if (
+            input.item.streaming ||
+            input.item.status !== "completed" ||
+            !input.item.text.trim()
+          ) {
+            latest.delete(id);
+            queued.delete(id);
+            retained.delete(id);
+            yield* release(id);
+            return;
+          }
+          const previous = latest.get(id)?.input;
+          if (
+            previous?.item.text === input.item.text &&
+            previous.item.title === input.item.title &&
+            previous.providerInstanceId === input.providerInstanceId &&
+            previous.driverKind === input.driverKind
+          )
+            return;
+          const token = Deferred.makeUnsafe<void>();
+          admissions.set(id, token);
+          const work = { input, revision: ++revision };
+          let acquired = false;
+          return yield* Effect.gen(function* () {
             if (!pendingItems.has(id)) {
-              pendingItems.add(id);
-              acquired = false;
+              while (admissions.get(id) === token) {
+                acquired = yield* capacity.takeIfAvailable(1);
+                if (acquired) break;
+                if (!waitForCapacity) return false;
+                yield* restore(
+                  Effect.raceFirst(capacity.withPermits(1)(Effect.void), Deferred.await(token)),
+                );
+              }
+              if (admissions.get(id) !== token) return;
+              if (!pendingItems.has(id)) {
+                pendingItems.add(id);
+                acquired = false;
+              }
             }
-          }
-          if (admissions.get(id) === token && (latest.get(id)?.revision ?? 0) <= work.revision) {
-            latest.set(id, work);
-            queued.set(id, work);
-            yield* Queue.offer(wake, undefined);
-          }
-        }).pipe(
-          Effect.ensuring(
-            Effect.gen(function* () {
-              if (admissions.get(id) === token) admissions.delete(id);
-              if (acquired) yield* capacity.release(1);
-            }),
-          ),
-        );
-      }),
-    ),
+            if (admissions.get(id) === token && (latest.get(id)?.revision ?? 0) <= work.revision) {
+              latest.set(id, work);
+              queued.set(id, work);
+              yield* Queue.offer(wake, undefined);
+            }
+          }).pipe(
+            Effect.ensuring(
+              Effect.gen(function* () {
+                if (admissions.get(id) === token) admissions.delete(id);
+                if (acquired) yield* capacity.release(1);
+              }),
+            ),
+          );
+        }),
+      ),
   );
+  const observeStored = Effect.fn("ReasoningSummaryGeneration.observeStored")(function* (
+    input: StoredObservation,
+  ) {
+    if (storedWork === undefined) {
+      storedWork = { after: input.sequence - 1, through: input.sequence, readNext: input.readNext };
+    } else {
+      storedWork.after = Math.min(storedWork.after, input.sequence - 1);
+      storedWork.through = Math.max(storedWork.through, input.sequence);
+      storedWork.readNext = input.readNext;
+    }
+    yield* Queue.offer(wake, undefined);
+  });
   return {
-    observe,
+    observe: (input: Observation) => observe(input).pipe(Effect.asVoid),
+    observeStored,
     retainedTitle: (item: ReasoningItem) => {
       const entry = retained.get(itemKey(item));
       return !item.streaming &&

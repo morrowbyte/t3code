@@ -129,6 +129,81 @@ const setup = (
   });
 
 describe("completed public reasoning summaries", () => {
+  it.effect("keeps a newer stored notification while the worker reads its previous range", () =>
+    Effect.gen(function* () {
+      const h = yield* setup({ automaticReplies: true });
+      const reading = yield* Deferred.make<void>();
+      const continueReading = yield* Deferred.make<void>();
+      const ranges: Array<readonly [number, number]> = [];
+      const readNext = (after: number, through: number) =>
+        Effect.gen(function* () {
+          ranges.push([after, through]);
+          if (after === 0) {
+            yield* Deferred.succeed(reading, undefined);
+            yield* Deferred.await(continueReading);
+          }
+          return {
+            sequence: after + 1,
+            observation: {
+              ...identity,
+              item: { ...item, id: TurnItemId.make(`stored-${after + 1}`) },
+              commitTitle: (title: string) => Queue.offer(h.commits, title).pipe(Effect.asVoid),
+            },
+          };
+        });
+      yield* h.service.observeStored({ sequence: 1, readNext });
+      yield* Deferred.await(reading);
+      yield* h.service.observeStored({ sequence: 2, readNext });
+      yield* Deferred.succeed(continueReading, undefined);
+      const first = yield* Queue.take(h.requests);
+      yield* Deferred.succeed(first.reply, { title: "Erste gespeicherte Aufgabe" });
+      yield* Queue.take(h.commits);
+      yield* Queue.take(h.commits);
+      expect(h.calls).toHaveLength(2);
+      expect(h.maximumActive()).toBe(1);
+      expect(ranges).toEqual([
+        [0, 1],
+        [1, 2],
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect(
+    "retains stored work after bounded read failures and resumes on the next notification",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* setup();
+        const attempted = yield* Deferred.make<void>();
+        let reads = 0;
+        const readNext = () =>
+          Effect.gen(function* () {
+            if (++reads === 2) yield* Deferred.succeed(attempted, undefined);
+            return yield* Effect.fail("temporarily unavailable");
+          });
+        yield* h.service.observeStored({ sequence: 1, readNext });
+        yield* Deferred.await(attempted);
+        yield* TestClock.adjust(0);
+        expect(reads).toBe(2);
+        expect(h.calls).toHaveLength(0);
+        yield* h.service.observeStored({
+          sequence: 1,
+          readNext: () =>
+            Effect.succeed({
+              sequence: 1,
+              observation: {
+                ...identity,
+                item,
+                commitTitle: (title: string) => Queue.offer(h.commits, title).pipe(Effect.asVoid),
+              },
+            }),
+        });
+        const request = yield* Queue.take(h.requests);
+        yield* Deferred.succeed(request.reply, { title: "Gespeicherte Aufgabe prüfen" });
+        expect(yield* Queue.take(h.commits)).toBe("Gespeicherte Aufgabe prüfen");
+        expect(h.calls).toHaveLength(1);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect(
     "does not lose capacity when admission is interrupted just after acquiring a permit",
     () =>

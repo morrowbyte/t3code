@@ -81,10 +81,22 @@ type Observation = {
   ) => Effect.Effect<void>;
 };
 
+type StoredObservation = {
+  readonly sequence: number;
+  readonly readNext: (
+    afterSequence: number,
+    throughSequence: number,
+  ) => Effect.Effect<
+    { readonly sequence: number; readonly observation: Observation | null } | undefined,
+    unknown
+  >;
+};
+
 interface ToolIntentGenerationShape {
   readonly retainedTitle: (item: ToolItem) => string | undefined;
   readonly retainedPresentation: (item: ToolItem) => ActivityPresentation | undefined;
   readonly observe: (input: Observation) => Effect.Effect<void>;
+  readonly observeStored: (input: StoredObservation) => Effect.Effect<void>;
 }
 
 export class ToolIntentGeneration extends Context.Reference<ToolIntentGenerationShape>(
@@ -94,6 +106,7 @@ export class ToolIntentGeneration extends Context.Reference<ToolIntentGeneration
       retainedTitle: () => undefined,
       retainedPresentation: () => undefined,
       observe: () => Effect.void,
+      observeStored: () => Effect.void,
     }),
   },
 ) {}
@@ -107,6 +120,9 @@ export const make = Effect.gen(function* () {
   const scope = yield* Scope.Scope;
   const wake = yield* Queue.sliding<void>(1);
   const capacity = yield* Semaphore.make(512);
+  let storedWork:
+    | { after: number; through: number; readNext: StoredObservation["readNext"] }
+    | undefined;
   const pendingItems = new Set<string>();
   const admissions = new Map<string, Deferred.Deferred<void>>();
   type Work = { input: Observation; revision: number; source: string };
@@ -231,7 +247,28 @@ export const make = Effect.gen(function* () {
   });
   yield* Effect.gen(function* () {
     yield* Queue.take(wake);
-    while (queued.size > 0) {
+    while (queued.size > 0 || storedWork !== undefined) {
+      if (queued.size === 0 && storedWork !== undefined) {
+        const pending = storedWork;
+        const after = pending.after;
+        const through = pending.through;
+        const next = yield* pending.readNext(after, through).pipe(
+          Effect.retry({ times: 1 }),
+          Effect.catchCause(() =>
+            Effect.logWarning("Stored title work could not be read", {
+              afterSequence: after,
+              throughSequence: through,
+            }).pipe(Effect.as(null)),
+          ),
+        );
+        if (next === null) break;
+        if (next?.observation && (yield* observe(next.observation, false)) === false) continue;
+        if (storedWork === pending && pending.after === after) {
+          pending.after = next?.sequence ?? through;
+          if (pending.after >= pending.through) storedWork = undefined;
+        }
+        continue;
+      }
       const [id, work] = queued.entries().next().value!;
       queued.delete(id);
       activeItem = id;
@@ -251,73 +288,87 @@ export const make = Effect.gen(function* () {
       );
     }
   }).pipe(Effect.forever, Effect.forkIn(scope));
-  const observe = Effect.fn("ToolIntentGeneration.observe")((input: Observation) =>
-    Effect.uninterruptibleMask((restore) =>
-      Effect.gen(function* () {
-        const id = itemKey(input.item);
-        const source = toolIntentInput(input.item);
-        if (retainedInputs.has(id) && retainedInputs.get(id) !== source) {
-          retained.delete(id);
-          authored.delete(id);
-          retainedInputs.delete(id);
-          presentations.delete(id);
-        }
-        const sourceTitle = toolActivitySourceTitle(input.item);
-        if (sourceTitle) remember(input.item, sourceTitle, true);
-        if (!sourceTitle && (authored.has(id) || !isToolIntentMissing(input.item))) {
+  const observe = Effect.fn("ToolIntentGeneration.observe")(
+    (input: Observation, waitForCapacity = true) =>
+      Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          const id = itemKey(input.item);
+          const source = toolIntentInput(input.item);
+          if (retainedInputs.has(id) && retainedInputs.get(id) !== source) {
+            retained.delete(id);
+            authored.delete(id);
+            retainedInputs.delete(id);
+            presentations.delete(id);
+          }
+          const sourceTitle = toolActivitySourceTitle(input.item);
+          if (sourceTitle) remember(input.item, sourceTitle, true);
+          if (!sourceTitle && (authored.has(id) || !isToolIntentMissing(input.item))) {
+            const waiting = admissions.get(id);
+            admissions.delete(id);
+            if (waiting) Deferred.doneUnsafe(waiting, Effect.void);
+            latest.delete(id);
+            queued.delete(id);
+            yield* release(id);
+            return;
+          }
+          const previous = latest.get(id);
+          if (
+            previous?.source === source &&
+            toolActivitySourceTitle(previous.input.item) === sourceTitle &&
+            previous.input.item.title === input.item.title &&
+            previous.input.providerInstanceId === input.providerInstanceId &&
+            previous.input.driverKind === input.driverKind
+          )
+            return;
+          const work = { input, revision: ++revision, source };
+          const admission = Deferred.makeUnsafe<void>();
           const waiting = admissions.get(id);
-          admissions.delete(id);
+          admissions.set(id, admission);
           if (waiting) Deferred.doneUnsafe(waiting, Effect.void);
-          latest.delete(id);
-          queued.delete(id);
-          yield* release(id);
-          return;
-        }
-        const previous = latest.get(id);
-        if (
-          previous?.source === source &&
-          toolActivitySourceTitle(previous.input.item) === sourceTitle &&
-          previous.input.item.title === input.item.title &&
-          previous.input.providerInstanceId === input.providerInstanceId &&
-          previous.input.driverKind === input.driverKind
-        )
-          return;
-        const work = { input, revision: ++revision, source };
-        const admission = Deferred.makeUnsafe<void>();
-        const waiting = admissions.get(id);
-        admissions.set(id, admission);
-        if (waiting) Deferred.doneUnsafe(waiting, Effect.void);
-        let acquired = false;
-        yield* Effect.gen(function* () {
-          if (!pendingItems.has(id)) {
-            while (admissions.get(id) === admission) {
-              acquired = yield* capacity.takeIfAvailable(1);
-              if (acquired) break;
-              yield* restore(
-                Effect.raceFirst(capacity.withPermits(1)(Effect.void), Deferred.await(admission)),
-              );
+          let acquired = false;
+          return yield* Effect.gen(function* () {
+            if (!pendingItems.has(id)) {
+              while (admissions.get(id) === admission) {
+                acquired = yield* capacity.takeIfAvailable(1);
+                if (acquired) break;
+                if (!waitForCapacity) return false;
+                yield* restore(
+                  Effect.raceFirst(capacity.withPermits(1)(Effect.void), Deferred.await(admission)),
+                );
+              }
+              if (admissions.get(id) !== admission) return;
+              if (!pendingItems.has(id)) {
+                pendingItems.add(id);
+                acquired = false;
+              }
             }
             if (admissions.get(id) !== admission) return;
-            if (!pendingItems.has(id)) {
-              pendingItems.add(id);
-              acquired = false;
-            }
-          }
-          if (admissions.get(id) !== admission) return;
-          latest.set(id, work);
-          queued.set(id, work);
-          yield* Queue.offer(wake, undefined);
-        }).pipe(
-          Effect.ensuring(
-            Effect.gen(function* () {
-              if (admissions.get(id) === admission) admissions.delete(id);
-              if (acquired) yield* capacity.release(1);
-            }),
-          ),
-        );
-      }),
-    ),
+            latest.set(id, work);
+            queued.set(id, work);
+            yield* Queue.offer(wake, undefined);
+          }).pipe(
+            Effect.ensuring(
+              Effect.gen(function* () {
+                if (admissions.get(id) === admission) admissions.delete(id);
+                if (acquired) yield* capacity.release(1);
+              }),
+            ),
+          );
+        }),
+      ),
   );
+  const observeStored = Effect.fn("ToolIntentGeneration.observeStored")(function* (
+    input: StoredObservation,
+  ) {
+    if (storedWork === undefined) {
+      storedWork = { after: input.sequence - 1, through: input.sequence, readNext: input.readNext };
+    } else {
+      storedWork.after = Math.min(storedWork.after, input.sequence - 1);
+      storedWork.through = Math.max(storedWork.through, input.sequence);
+      storedWork.readNext = input.readNext;
+    }
+    yield* Queue.offer(wake, undefined);
+  });
   return {
     retainedTitle: (item: ToolItem) =>
       isToolIntentMissing(item) && retainedInputs.get(itemKey(item)) === toolIntentInput(item)
@@ -327,7 +378,8 @@ export const make = Effect.gen(function* () {
       const presentation = presentations.get(itemKey(item));
       return presentation?.sourceTitle === toolActivitySourceTitle(item) ? presentation : undefined;
     },
-    observe,
+    observe: (input: Observation) => observe(input).pipe(Effect.asVoid),
+    observeStored,
   } satisfies ToolIntentGenerationShape;
 });
 

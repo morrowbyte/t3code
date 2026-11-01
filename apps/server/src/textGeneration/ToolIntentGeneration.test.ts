@@ -58,6 +58,54 @@ const identity = {
 };
 
 describe("tool intent generation", () => {
+  it.effect(
+    "retains stored work after bounded read failures and resumes on the next notification",
+    () =>
+      Effect.gen(function* () {
+        const attempted = yield* Deferred.make<void>();
+        const committed = yield* Deferred.make<string>();
+        let reads = 0;
+        let calls = 0;
+        const service = yield* Service.make.pipe(
+          Effect.provide(
+            Layer.mock(TextGeneration.TextGeneration)({
+              generateThreadTitle: () => {
+                calls += 1;
+                return Effect.succeed({ title: "Compare shipments" });
+              },
+            }),
+          ),
+        );
+        yield* service.observeStored({
+          sequence: 1,
+          readNext: () =>
+            Effect.gen(function* () {
+              if (++reads === 2) yield* Deferred.succeed(attempted, undefined);
+              return yield* Effect.fail("temporarily unavailable");
+            }),
+        });
+        yield* Deferred.await(attempted);
+        yield* TestClock.adjust(0);
+        expect(reads).toBe(2);
+        expect(calls).toBe(0);
+        yield* service.observeStored({
+          sequence: 1,
+          readNext: () =>
+            Effect.succeed({
+              sequence: 1,
+              observation: {
+                ...identity,
+                item,
+                commitTitle: (title: string) =>
+                  Deferred.succeed(committed, title).pipe(Effect.asVoid),
+              },
+            }),
+        });
+        expect(yield* Deferred.await(committed)).toBe("Compare shipments");
+        expect(calls).toBe(1);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("keeps capacity when interrupted immediately after acquiring a slot", () =>
     Effect.gen(function* () {
       const prototype = Object.getPrototypeOf(Semaphore.makeUnsafe(1)) as Semaphore.Semaphore;

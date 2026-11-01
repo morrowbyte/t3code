@@ -5,6 +5,8 @@ import {
   OrchestrationV2DomainEvent,
   OrchestrationV2StoredEvent,
   type OrchestrationV2PlanArtifact,
+  type OrchestrationV2TurnItem,
+  type ProviderDriverKind,
   type OrchestrationV2Run,
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2Subagent,
@@ -29,6 +31,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as SqlError from "effect/sql/SqlError";
 
 import * as ToolIntentGeneration from "../textGeneration/ToolIntentGeneration.ts";
@@ -40,6 +43,7 @@ import * as AnalyticsService from "../telemetry/AnalyticsService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as EventSink from "./EventSink.ts";
+import * as EventStore from "./EventStore.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as UsageService from "../usage/UsageService.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -328,6 +332,7 @@ export const layer: Layer.Layer<
   ProviderEventIngestorV2,
   never,
   | EventSink.EventSinkV2
+  | EventStore.EventStoreV2
   | GitVcsDriver.GitVcsDriver
   | IdAllocator.IdAllocatorV2
   | ProjectionStore.ProjectionStoreV2
@@ -338,6 +343,7 @@ export const layer: Layer.Layer<
   ProviderEventIngestorV2,
   Effect.gen(function* () {
     const eventSink = yield* EventSink.EventSinkV2;
+    const eventStore = yield* EventStore.EventStoreV2;
     const toolIntents = yield* ToolIntentGeneration.ToolIntentGeneration;
     const reasoningSummaries = yield* ReasoningSummaryGeneration.ReasoningSummaryGeneration;
     const git = yield* GitVcsDriver.GitVcsDriver;
@@ -385,6 +391,128 @@ export const layer: Layer.Layer<
           }),
         );
       });
+
+    type TitleIdentity = { providerInstanceId: ProviderInstanceId; driverKind: ProviderDriverKind };
+    const makeTitleEvent = Effect.fn("ProviderEventIngestor.makeTitleEvent")(function* (
+      item: OrchestrationV2TurnItem,
+      identity: TitleIdentity,
+    ) {
+      return yield* decodeDomainEvent({
+        id: yield* idAllocator.allocate.event({ threadId: item.threadId }),
+        type: "turn-item.updated",
+        threadId: item.threadId,
+        ...(item.runId === null ? {} : { runId: item.runId }),
+        ...(item.nodeId === null ? {} : { nodeId: item.nodeId }),
+        driver: identity.driverKind,
+        providerInstanceId: identity.providerInstanceId,
+        occurredAt: yield* DateTime.now,
+        payload: item,
+      });
+    });
+    const reasoningObservation = (
+      item: Extract<OrchestrationV2TurnItem, { type: "reasoning" }>,
+      identity: TitleIdentity,
+    ) => {
+      const expectedTitle = reasoningSummaries.retainedTitle(item) ?? item.title;
+      return {
+        item,
+        ...identity,
+        commitTitle: Effect.fn("ProviderEventIngestor.commitReasoningSummary")(function* (
+          title: string,
+        ) {
+          const event = yield* makeTitleEvent({ ...item, title }, identity);
+          yield* eventSink.write({
+            events: [event],
+            updateReasoningTitleOnly: { expectedTitle, expectedText: item.text },
+          });
+        }, Effect.ignoreCause()),
+      };
+    };
+    const toolObservation = (
+      item: Extract<OrchestrationV2TurnItem, { type: "command_execution" | "dynamic_tool" }>,
+      identity: TitleIdentity,
+    ) => {
+      const expectedTitle = toolIntents.retainedTitle(item) ?? item.title;
+      return {
+        item,
+        ...identity,
+        commitPresentation: Effect.fn("ProviderEventIngestor.commitToolPresentation")(function* (
+          activityPresentation: NonNullable<typeof item.activityPresentation> | undefined,
+        ) {
+          const sourceTitle = toolActivitySourceTitle(item);
+          if (!sourceTitle) return;
+          const event = yield* makeTitleEvent({ ...item, activityPresentation }, identity);
+          yield* eventSink.write({
+            events: [event],
+            updateToolPresentationOnly: { expectedTitle, sourceTitle },
+          });
+        }, Effect.ignoreCause()),
+        commitTitle: Effect.fn("ProviderEventIngestor.commitToolIntent")(function* (title: string) {
+          const current = yield* projections.getTurnItem({
+            threadId: item.threadId,
+            itemId: item.id,
+          });
+          if (!current) return;
+          const event = yield* makeTitleEvent({ ...current, title }, identity);
+          yield* eventSink.write({ events: [event], updateToolTitleOnly: { expectedTitle } });
+        }, Effect.ignoreCause()),
+      };
+    };
+    const readStoredTitleItem = Effect.fn("ProviderEventIngestor.readStoredTitleItem")(function* (
+      afterSequence: number,
+      throughSequence: number,
+      kind: "reasoning" | "tool",
+    ) {
+      const page = yield* eventStore
+        .read({ afterSequence, throughSequence, limit: 64 })
+        .pipe(Stream.runCollect);
+      for (const stored of page) {
+        const event = stored.event;
+        if (event.type !== "turn-item.updated" || !event.driver || !event.providerInstanceId)
+          continue;
+        const item = event.payload;
+        if (
+          kind === "reasoning"
+            ? item.type !== "reasoning"
+            : item.type !== "command_execution" && item.type !== "dynamic_tool"
+        )
+          continue;
+        return {
+          sequence: stored.sequence,
+          item: yield* projections.getTurnItem({ threadId: item.threadId, itemId: item.id }),
+          identity: { providerInstanceId: event.providerInstanceId, driverKind: event.driver },
+        };
+      }
+      const last = page.at(-1);
+      return last ? { sequence: last.sequence, item: undefined, identity: undefined } : undefined;
+    });
+    const readStoredReasoning = (after: number, through: number) =>
+      readStoredTitleItem(after, through, "reasoning").pipe(
+        Effect.map(
+          (next) =>
+            next && {
+              sequence: next.sequence,
+              observation:
+                next.item?.type === "reasoning" && next.identity
+                  ? reasoningObservation(next.item, next.identity)
+                  : null,
+            },
+        ),
+      );
+    const readStoredTool = (after: number, through: number) =>
+      readStoredTitleItem(after, through, "tool").pipe(
+        Effect.map(
+          (next) =>
+            next && {
+              sequence: next.sequence,
+              observation:
+                (next.item?.type === "command_execution" || next.item?.type === "dynamic_tool") &&
+                next.identity
+                  ? toolObservation(next.item, next.identity)
+                  : null,
+            },
+        ),
+      );
 
     const dismissNativeUserInputs = Effect.fn("ProviderEventIngestor.dismissNativeUserInputs")(
       function* (
@@ -970,71 +1098,23 @@ export const layer: Layer.Layer<
                 Effect.gen(function* () {
                   if (input.event.type !== "turn_item.updated" || storedEvents.length === 0) return;
                   const item = input.event.turnItem;
+                  const stored = storedEvents.findLast(
+                    (entry) =>
+                      entry.event.type === "turn-item.updated" &&
+                      entry.event.payload.id === item.id,
+                  );
+                  if (!stored) return;
                   if (item.type === "reasoning") {
-                    const expectedTitle = reasoningSummaries.retainedTitle(item) ?? item.title;
-                    yield* reasoningSummaries.observe({
-                      item,
-                      providerInstanceId: input.providerInstanceId,
-                      driverKind: input.event.driver,
-                      commitTitle: Effect.fn("ProviderEventIngestor.commitReasoningSummary")(
-                        function* (title) {
-                          const event = yield* makeDomainEvent(input, {
-                            type: "turn-item.updated",
-                            threadId: item.threadId,
-                            runId: item.runId,
-                            payload: { ...item, title },
-                          });
-                          yield* eventSink.write({
-                            events: [event],
-                            updateReasoningTitleOnly: { expectedTitle, expectedText: item.text },
-                          });
-                        },
-                        Effect.ignoreCause(),
-                      ),
+                    yield* reasoningSummaries.observeStored({
+                      sequence: stored.sequence,
+                      readNext: readStoredReasoning,
                     });
-                    return;
+                  } else if (item.type === "command_execution" || item.type === "dynamic_tool") {
+                    yield* toolIntents.observeStored({
+                      sequence: stored.sequence,
+                      readNext: readStoredTool,
+                    });
                   }
-                  if (item.type !== "command_execution" && item.type !== "dynamic_tool") return;
-                  const { id: itemId, threadId, runId } = item;
-                  const expectedTitle = toolIntents.retainedTitle(item) ?? item.title;
-                  yield* toolIntents.observe({
-                    item,
-                    providerInstanceId: input.providerInstanceId,
-                    driverKind: input.event.driver,
-                    commitPresentation: Effect.fn("ProviderEventIngestor.commitToolPresentation")(
-                      function* (activityPresentation) {
-                        const sourceTitle = toolActivitySourceTitle(item);
-                        if (!sourceTitle) return;
-                        const event = yield* makeDomainEvent(input, {
-                          type: "turn-item.updated",
-                          threadId,
-                          runId,
-                          payload: { ...item, activityPresentation },
-                        });
-                        yield* eventSink.write({
-                          events: [event],
-                          updateToolPresentationOnly: { expectedTitle, sourceTitle },
-                        });
-                      },
-                      Effect.ignoreCause(),
-                    ),
-                    commitTitle: Effect.fn("ProviderEventIngestor.commitToolIntent")(function* (
-                      title,
-                    ) {
-                      const current = yield* projections.getTurnItem({ threadId, itemId });
-                      if (!current) return;
-                      const event = yield* makeDomainEvent(input, {
-                        type: "turn-item.updated",
-                        threadId,
-                        runId,
-                        payload: { ...current, title },
-                      });
-                      yield* eventSink.write({
-                        events: [event],
-                        updateToolTitleOnly: { expectedTitle },
-                      });
-                    }, Effect.ignoreCause()),
-                  });
                 }),
               ),
               Effect.tap((storedEvents) =>
