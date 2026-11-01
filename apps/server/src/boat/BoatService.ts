@@ -605,7 +605,7 @@ export const make = Effect.gen(function* () {
             caller &&
             path.resolve(caller.worktreePath ?? root.workspaceRoot) !== source.workspaceRoot;
           if (caller && (source.threadId !== null || moved)) {
-            if (moved && action.action === "prepare")
+            if (moved && (action.action === "prepare" || action.action === "renew"))
               return yield* new BoatError({ category: "conflict" });
             let ancestor = caller;
             const visited = new Set<ThreadId>();

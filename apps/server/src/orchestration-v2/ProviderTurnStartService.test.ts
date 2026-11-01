@@ -1664,7 +1664,7 @@ effectIt.effect.each(["/goal Finish the current task", "/compact"])(
 );
 
 effectIt.effect.each(["ready", "running"] as const)(
-  "revalidates a reused parent Boat source through prepare when %s",
+  "revalidates a reused parent Boat source through renewal when %s",
   (state) =>
     Effect.gen(function* () {
       const parentId = ThreadId.make("compute-parent");
@@ -1690,7 +1690,7 @@ effectIt.effect.each(["ready", "running"] as const)(
           boat,
           // The persisted Boat source is A; the current parent and child both point at B.
           operate: (action) =>
-            action.action === "prepare"
+            action.action === "renew"
               ? Effect.fail(new BoatError({ category: "conflict" }))
               : Effect.succeed(boat),
         },
@@ -1718,27 +1718,28 @@ effectIt.effect.each(["ready", "running"] as const)(
       const target = { projectId: computeProjectId, requestId: instance.requestId };
       expect(harness.operateBoat.mock.calls).toEqual([
         [{ ...target, action: "renew" }, computeThreadId],
-        [{ ...target, action: "prepare" }, computeThreadId],
       ]);
-      expect(check).toHaveBeenCalledTimes(2);
-      expect(check).toHaveBeenLastCalledWith([
-        "/tmp/t3-data",
-        "/tmp/current-source-b",
-        NodeOS.tmpdir(),
-      ]);
+      expect(check).toHaveBeenCalledTimes(1);
+      expect(check).toHaveBeenLastCalledWith(["/tmp/t3-data", "/tmp/current-source-b"]);
     }),
 );
 
-effectIt.effect.each([true, false])(
-  "reuses authentic subagent owner compute only for the same source: %s",
-  (sameSource) =>
+effectIt.effect.each([
+  { sameSource: true, state: "ready" },
+  { sameSource: true, state: "running" },
+  { sameSource: false, state: "ready" },
+] as const)(
+  "reuses authentic subagent owner compute only for the same source: $sameSource/$state",
+  ({ sameSource, state }) =>
     Effect.gen(function* () {
       const parentId = ThreadId.make("compute-parent");
       const ancestors: Array<OrchestrationV2ThreadShell> = [];
       const parentInstance = computeInstance({
         requestId: computeRequestId(computeProjectId, parentId),
         threadId: parentId,
+        state,
       });
+      let parentRemoteFile = "unpublished parent edit";
       const harness = makeLocalCommandHarness({
         text: "Run checks for this subagent",
         worktreePath: sameSource ? "/tmp/shared-compute" : "/tmp/isolated-compute",
@@ -1746,15 +1747,18 @@ effectIt.effect.each([true, false])(
           ancestors,
           resources: pressuredHostResources,
           boat: computeBoat([parentInstance]),
-          operate: (action) =>
-            Effect.succeed(
+          operate: (action) => {
+            if (action.action === "prepare" && action.requestId === parentInstance.requestId)
+              parentRemoteFile = "older local source";
+            return Effect.succeed(
               computeBoat([
                 parentInstance,
                 ...(action.requestId === parentInstance.requestId
                   ? []
                   : [computeInstance({ requestId: action.requestId })]),
               ]),
-            ),
+            );
+          },
         },
       });
       const projection = harness.projection();
@@ -1778,12 +1782,15 @@ effectIt.effect.each([true, false])(
       yield* harness.start;
       const owner = sameSource ? parentId : computeThreadId;
       const requestId = computeRequestId(computeProjectId, owner);
+      expect(parentRemoteFile).toBe("unpublished parent edit");
       expect(harness.operateBoat.mock.calls).toEqual([
         [
           { projectId: computeProjectId, requestId, action: sameSource ? "renew" : "start" },
           computeThreadId,
         ],
-        [{ projectId: computeProjectId, requestId, action: "prepare" }, computeThreadId],
+        ...(sameSource
+          ? []
+          : [[{ projectId: computeProjectId, requestId, action: "prepare" }, computeThreadId]]),
       ]);
       const text = harness.startTurn.mock.calls[0]?.[0].message.text;
       expect(text).toContain(owner);
