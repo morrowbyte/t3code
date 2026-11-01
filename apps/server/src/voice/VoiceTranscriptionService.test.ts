@@ -519,7 +519,13 @@ function recoveryServiceLayer(
         managedDirectory: "/fixture-unused-managed-runtime",
         resolve: () => unexpected,
         acquire: options.acquire ?? (() => unexpected),
-        compatibility: () => Effect.void,
+        compatibility: () =>
+          Effect.succeed({
+            status: "supported" as const,
+            message: null,
+            recommendedVersion: null,
+            recommendedRange: null,
+          }),
         start: unexpected,
         cancel: () => unexpected,
         state: unexpected,
