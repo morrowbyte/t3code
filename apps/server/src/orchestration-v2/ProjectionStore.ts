@@ -760,6 +760,17 @@ function upsertProviderTurn(
   const current = turns.find((turn) => turn.id === next.id);
   return upsertById(turns, {
     ...next,
+    // Late usage notifications must not reopen a turn that has already settled.
+    ...(current !== undefined &&
+    current.status !== "pending" &&
+    current.status !== "running" &&
+    (next.status === "pending" || next.status === "running")
+      ? {
+          status: current.status,
+          startedAt: current.startedAt,
+          completedAt: current.completedAt,
+        }
+      : {}),
     ...((next.tokenUsage ?? current?.tokenUsage) === undefined
       ? {}
       : { tokenUsage: next.tokenUsage ?? current?.tokenUsage }),
