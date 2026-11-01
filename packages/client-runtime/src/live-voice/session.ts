@@ -2,7 +2,7 @@ import * as DateTime from "effect/DateTime";
 import type { LiveVoiceController, LiveVoiceState, LiveVoiceTarget } from "./controller.ts";
 import { observeVoiceConversation, type ObservedVoiceCall } from "./conversation.ts";
 
-export function liveVoiceIsBusy(state: LiveVoiceState): boolean {
+function liveVoiceIsBusy(state: LiveVoiceState): boolean {
   return state.cleanupPending === true || !["idle", "ended", "error"].includes(state.phase);
 }
 

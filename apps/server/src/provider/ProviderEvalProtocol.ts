@@ -2,7 +2,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { ProviderEvalRequest, ProviderEvalResponse } from "./ProviderEvalSession.ts";
 
-export const CREW_STDIO_PREFIX = "@@CREW_PROVIDER_EVAL_V1@@";
+const CREW_STDIO_PREFIX = "@@CREW_PROVIDER_EVAL_V1@@";
 export const CREW_MAX_LINE_LENGTH = 262_144;
 export const CREW_MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
 export const CREW_MAX_REQUESTS = 512;
