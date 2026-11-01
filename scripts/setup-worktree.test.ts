@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- the setup script must run without installed dependencies.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
+import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
@@ -8,9 +9,10 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "@effect/vitest";
 
-async function fixture(message: string | null, platform: NodeJS.Platform) {
+async function fixture(message: string | null, platform: NodeJS.Platform, snapshotRoot = false) {
   const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-setup-admission-"));
   const worktree = NodePath.join(directory, "worktree");
+  if (snapshotRoot) NodeChildProcess.execFileSync("btrfs", ["subvolume", "create", worktree]);
   const scripts = NodePath.join(worktree, "scripts");
   const shared = NodePath.join(worktree, "packages/shared/src/node");
   const bin = NodePath.join(directory, "bin");
@@ -56,6 +58,7 @@ async function fixture(message: string | null, platform: NodeJS.Platform) {
     { mode: 0o755 },
   );
   return {
+    directory,
     worktree,
     run: (args: string[] = [], entry = "setup-worktree.ts") =>
       new Promise<{ code: number | null; stderr: string }>((resolve, reject) => {
@@ -189,3 +192,24 @@ describe("worktree installer storage admission", () => {
     }),
   );
 });
+
+// oxlint-disable-next-line t3code/no-global-process-runtime -- Native filesystem fixture selection runs during test collection.
+it.skipIf(NodeOS.platform() !== "linux" || NodeFS.statfsSync(NodeOS.tmpdir()).type !== 0x9123683e)(
+  "keeps newly installed dependencies out of enclosing Home snapshots while retaining source",
+  async () => {
+    await using test = await fixture(null, "linux", true);
+    expect((await test.run(["--install"])).code).toBe(0);
+    expect((await NodeFSP.stat(NodePath.join(test.worktree, "node_modules"))).ino).toBe(256);
+    const snapshot = NodePath.join(test.directory, "snapshot");
+    NodeChildProcess.execFileSync("btrfs", ["subvolume", "snapshot", test.worktree, snapshot]);
+    expect(await NodeFSP.readFile(NodePath.join(snapshot, "package.json"), "utf8")).toBe(
+      '{"type":"module"}',
+    );
+    expect(
+      (await NodeFSP.stat(NodePath.join(test.worktree, "node_modules/.modules.yaml"))).isFile(),
+    ).toBe(true);
+    await expect(
+      NodeFSP.stat(NodePath.join(snapshot, "node_modules/.modules.yaml")),
+    ).rejects.toHaveProperty("code", "ENOENT");
+  },
+);
