@@ -20,7 +20,7 @@ import {
   CrewSummary,
   decodeCrewFrame,
   encodeCrewFrame,
-} from "../../../../evals/shared/crewProviderProtocol.ts";
+} from "./ProviderEvalProtocol.ts";
 import * as BoatService from "../boat/BoatService.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as ServerSettings from "../serverSettings.ts";
