@@ -8,6 +8,8 @@ import * as NodePath from "node:path";
 import * as NodeTimersPromises from "node:timers/promises";
 import * as NodeUtil from "node:util";
 import { _electron, type ElectronApplication } from "playwright-core";
+import * as Effect from "effect/Effect";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 // A snapshot from an older build on purpose: the packaged server must migrate it forward, as it
 // does for every upgrading user. It holds one project and two threads, nothing else.
@@ -19,6 +21,7 @@ const STEP_TIMEOUT_MS = 60_000;
 const { values } = NodeUtil.parseArgs({
   options: {
     executable: { type: "string" },
+    "expect-version": { type: "string" },
     "artifacts-dir": { type: "string" },
   },
 });
@@ -26,6 +29,7 @@ const executable = values.executable;
 if (!executable)
   throw new Error("Usage: smoke-desktop-app.ts --executable <app> [--artifacts-dir <dir>]");
 const artifactsDir = NodePath.resolve(values["artifacts-dir"] ?? "desktop-launch-check");
+const platform = Effect.runSync(HostProcess.Platform);
 
 const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-desktop-launch-"));
 const t3Home = NodePath.join(home, "t3");
@@ -38,11 +42,20 @@ try {
   app = await _electron.launch({
     executablePath: executable,
     // Linux CI runners do not allow the Chromium sandbox's user namespaces.
-    args: ["--no-sandbox"],
+    args: [
+      "--no-sandbox",
+      ...(platform === "win32" ? [`--user-data-dir=${NodePath.join(home, "electron")}`] : []),
+    ],
     // HOME stays real: on macOS a fake HOME has no login keychain, and safeStorage blocks the
     // main process on a keychain dialog. macOS keeps its Electron profile in the runner's HOME.
     env: {
       ...process.env,
+      ...(platform === "win32"
+        ? {
+            APPDATA: NodePath.join(home, "AppData", "Roaming"),
+            LOCALAPPDATA: NodePath.join(home, "AppData", "Local"),
+          }
+        : {}),
       XDG_CONFIG_HOME: NodePath.join(home, ".config"),
       XDG_DATA_HOME: NodePath.join(home, ".local/share"),
       T3CODE_HOME: t3Home,
@@ -51,6 +64,24 @@ try {
     },
     timeout: STEP_TIMEOUT_MS,
   });
+  if (platform === "win32" || values["expect-version"]) {
+    step = "checking the packaged version and isolated profile";
+    const launched = await app.evaluate(({ app }) => ({
+      version: app.getVersion(),
+      userData: app.getPath("userData"),
+    }));
+    if (values["expect-version"] && launched.version !== values["expect-version"])
+      throw new Error(`Expected version ${values["expect-version"]}, got ${launched.version}.`);
+    if (platform === "win32") {
+      const relative = NodePath.relative(home, launched.userData);
+      if (
+        relative === ".." ||
+        relative.startsWith(`..${NodePath.sep}`) ||
+        NodePath.isAbsolute(relative)
+      )
+        throw new Error("The Windows app did not use the isolated Electron profile.");
+    }
+  }
   // A backend that never starts leaves no window, or only the "could not start" window, so the
   // thread wait below fails either way and its screenshot shows the startup error.
   step = "waiting for the first window";

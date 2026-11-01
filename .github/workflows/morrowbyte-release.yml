@@ -16,6 +16,13 @@ on:
         description: Publish the built release (false keeps artifacts only)
         type: boolean
         default: true
+      windows_runner_backend:
+        description: Windows runner override for this release only
+        type: choice
+        default: configured
+        options:
+          - configured
+          - blacksmith
       source_sha:
         description: Exact source commit (fork main for publishing, dispatched branch for artifacts only)
         required: true
@@ -1195,7 +1202,7 @@ jobs:
            (inputs.recover_windows_run_id == '39182028263' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'skipped') ||
            (inputs.continue_release68_run_id == '40291055865' && inputs.recover_windows_run_id == '' && needs.build_bundle.result == 'skipped' && needs.build_linux.result == 'success')) }}
     needs: [preflight, build_bundle, build_linux]
-    runs-on: ${{ (inputs.runner_backend == 'blacksmith' || vars.MORROWBYTE_WINDOWS_RELEASE_BACKEND == 'blacksmith') && 'blacksmith-8vcpu-windows-2025' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_WINDOWS_RUNNER || 'morrowbyte-windows')) }}
+    runs-on: ${{ (inputs.windows_runner_backend == 'blacksmith' || inputs.runner_backend == 'blacksmith' || vars.MORROWBYTE_WINDOWS_RELEASE_BACKEND == 'blacksmith') && 'blacksmith-8vcpu-windows-2025' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_WINDOWS_RUNNER || 'morrowbyte-windows')) }}
     timeout-minutes: 50
     steps:
       - name: Checkout source
@@ -1328,6 +1335,43 @@ jobs:
             cp native/resource-monitor/target/x86_64-pc-windows-msvc/release/t3-resource-monitor.exe "$monitor_dir/"
             node scripts/build-cli-archive.ts --platform win --arch x64 --version "${{ needs.preflight.outputs.version }}" --resource-monitor-dir "$RUNNER_TEMP/cli-resource-monitor" --output-dir release-cli
             node scripts/smoke-cli-archive.ts --archive release-cli/* --expect-version "${{ needs.preflight.outputs.version }}"
+
+      # Run the payload extracted from the exact installer that will be published.
+      - name: Launch packaged Windows desktop
+        shell: powershell
+        env:
+          EXPECT_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installers = @(Get-ChildItem -LiteralPath release-windows -Filter '*.exe' -File)
+          if ($installers.Count -ne 1) { throw 'Expected one Windows installer.' }
+          $scratch = Join-Path $env:RUNNER_TEMP 'crew-desktop-launch-payload'
+          $payload = Join-Path $scratch 'app'
+          New-Item -ItemType Directory -Force -Path $scratch | Out-Null
+          try {
+            & 7z x $installers[0].FullName "-o$scratch" '$PLUGINSDIR/app-64.7z' -y
+            if ($LASTEXITCODE -ne 0) { throw 'Could not extract the installer payload.' }
+            $archive = Join-Path $scratch '$PLUGINSDIR/app-64.7z'
+            if (-not (Test-Path -LiteralPath $archive)) { throw 'Installer app payload is missing.' }
+            & 7z x $archive "-o$payload" -y
+            if ($LASTEXITCODE -ne 0) { throw 'Could not unpack the desktop application.' }
+            $executable = Join-Path $payload 'Morrowbyte.exe'
+            if (-not (Test-Path -LiteralPath $executable)) { throw 'Packaged desktop executable is missing.' }
+            Get-FileHash -Algorithm SHA256 -LiteralPath $installers[0].FullName, $executable
+            & node scripts/smoke-desktop-app.ts --executable $executable --expect-version $env:EXPECT_VERSION --artifacts-dir "$env:RUNNER_TEMP/desktop-launch-check"
+            if ($LASTEXITCODE -ne 0) { throw 'Packaged desktop launch check failed.' }
+          } finally {
+            Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Retain Windows desktop launch diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-desktop-launch-check
+          path: ${{ runner.temp }}/desktop-launch-check
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload Windows release assets
         uses: actions/upload-artifact@v4
