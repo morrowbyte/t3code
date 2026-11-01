@@ -19,6 +19,8 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Semaphore from "effect/Semaphore";
+import { vi } from "vite-plus/test";
 import { TestClock } from "effect/testing";
 import * as ServerSettingsService from "../serverSettings.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
@@ -56,6 +58,69 @@ const identity = {
 };
 
 describe("tool intent generation", () => {
+  it.effect("keeps capacity when interrupted immediately after acquiring a slot", () =>
+    Effect.gen(function* () {
+      const prototype = Object.getPrototypeOf(Semaphore.makeUnsafe(1)) as Semaphore.Semaphore;
+      const take = prototype.take;
+      const takeIfAvailable = prototype.takeIfAvailable;
+      let armed = false;
+      let acquired: Semaphore.Semaphore | undefined;
+      const interruptAfterAcquire = <A>(
+        semaphore: Semaphore.Semaphore,
+        effect: Effect.Effect<A>,
+        succeeded: (value: A) => boolean,
+      ) =>
+        Effect.flatMap(effect, (value) =>
+          Effect.withFiber((fiber) => {
+            if (armed && succeeded(value)) {
+              armed = false;
+              acquired = semaphore;
+              fiber.interruptUnsafe();
+            }
+            return Effect.succeed(value);
+          }),
+        );
+      using _take = vi.spyOn(prototype, "take").mockImplementation(function (
+        this: Semaphore.Semaphore,
+        permits,
+      ) {
+        return interruptAfterAcquire(this, take.call(this, permits), () => true);
+      });
+      using _takeIfAvailable = vi.spyOn(prototype, "takeIfAvailable").mockImplementation(function (
+        this: Semaphore.Semaphore,
+        permits,
+      ) {
+        return interruptAfterAcquire(this, takeIfAvailable.call(this, permits), Boolean);
+      });
+      let commits = 0;
+      const service = yield* Service.make.pipe(
+        Effect.provide(
+          Layer.mock(TextGeneration.TextGeneration)({
+            generateThreadTitle: () => Effect.succeed({ title: "Inspect pending request" }),
+          }),
+        ),
+      );
+      armed = true;
+      const observing = yield* service
+        .observe({
+          ...identity,
+          item,
+          commitTitle: () =>
+            Effect.sync(() => {
+              commits++;
+            }),
+        })
+        .pipe(Effect.forkChild);
+      yield* Fiber.await(observing);
+      yield* TestClock.adjust(0);
+      expect(acquired).toBeDefined();
+      const allAvailable = yield* acquired!.takeIfAvailable(512);
+      expect(allAvailable).toBe(true);
+      if (allAvailable) yield* acquired!.release(512);
+      expect(commits).toBe(1);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("preserves every completion with backpressure after 512 pending items", () =>
     Effect.gen(function* () {
       const started = yield* Deferred.make<void>();

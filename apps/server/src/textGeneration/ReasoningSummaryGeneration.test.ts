@@ -18,7 +18,9 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Semaphore from "effect/Semaphore";
 import { TestClock } from "effect/testing";
+import { vi } from "vite-plus/test";
 import * as TextGeneration from "./TextGeneration.ts";
 import * as ServerSettingsService from "../serverSettings.ts";
 import * as Service from "./ReasoningSummaryGeneration.ts";
@@ -127,6 +129,70 @@ const setup = (
   });
 
 describe("completed public reasoning summaries", () => {
+  it.effect(
+    "does not lose capacity when admission is interrupted just after acquiring a permit",
+    () =>
+      Effect.gen(function* () {
+        const prototype: Semaphore.Semaphore = Object.getPrototypeOf(Semaphore.makeUnsafe(1));
+        const take = prototype.take;
+        const takeIfAvailable = prototype.takeIfAvailable;
+        let armed = false;
+        const acquired: { semaphore?: Semaphore.Semaphore } = {};
+        using _take = vi.spyOn(prototype, "take").mockImplementation(function (
+          this: Semaphore.Semaphore,
+          permits: number,
+        ) {
+          return take.call(this, permits).pipe(
+            Effect.flatMap((value) =>
+              Effect.withFiber((fiber) => {
+                if (armed) {
+                  armed = false;
+                  acquired.semaphore = this;
+                  fiber.interruptUnsafe();
+                }
+                return Effect.succeed(value);
+              }),
+            ),
+          );
+        });
+        using _takeIfAvailable = vi
+          .spyOn(prototype, "takeIfAvailable")
+          .mockImplementation(function (this: Semaphore.Semaphore, permits: number) {
+            return takeIfAvailable.call(this, permits).pipe(
+              Effect.flatMap((value) =>
+                Effect.withFiber((fiber) => {
+                  if (armed && value) {
+                    armed = false;
+                    acquired.semaphore = this;
+                    fiber.interruptUnsafe();
+                  }
+                  return Effect.succeed(value);
+                }),
+              ),
+            );
+          });
+        const h = yield* setup({ automaticReplies: true });
+        yield* h.observe();
+        const first = yield* Queue.take(h.requests);
+        yield* Deferred.succeed(first.reply, { title: "Initiale Zusammenfassung" });
+        yield* Queue.take(h.commits);
+        yield* TestClock.adjust(0);
+
+        armed = true;
+        const admission = yield* h
+          .observe({ ...item, id: TurnItemId.make("interrupted-admission") })
+          .pipe(Effect.forkChild);
+        expect((yield* Fiber.await(admission))._tag).toBe("Failure");
+        yield* TestClock.adjust(0);
+        expect(acquired.semaphore).toBeDefined();
+        const available = yield* acquired.semaphore!.takeIfAvailable(512);
+        if (available) yield* acquired.semaphore!.release(512);
+        expect(available).toBe(true);
+        expect(h.calls).toHaveLength(2);
+        expect(yield* Queue.size(h.commits)).toBe(1);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("continues all 17 distinct completions without observing them again", () =>
     Effect.gen(function* () {
       const h = yield* setup({ automaticReplies: true });

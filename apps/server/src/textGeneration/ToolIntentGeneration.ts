@@ -279,7 +279,9 @@ export const make = Effect.gen(function* () {
       Effect.gen(function* () {
         let releaseExtra = false;
         if (!pendingItems.has(id)) {
-          yield* restore(capacity.take(1));
+          while (!(yield* capacity.takeIfAvailable(1))) {
+            yield* restore(capacity.withPermits(1)(Effect.void));
+          }
           if (pendingItems.has(id)) releaseExtra = true;
           else pendingItems.add(id);
         }
