@@ -132,8 +132,19 @@ delete it like other inline context. Copying, reloading, and restoring a
 with its quote, and sending tells the agent which words were quoted and which comment you wrote.
 The quoted text and comment count toward the message limit.
 
+Use the comment editor's microphone to dictate a comment. The transcript is added to your
+existing text for review; it does not send the quote automatically. Image annotation comments
+support the same dictation flow. Closing the editor cancels its pending dictation.
+
 Mobile displays saved quotes and comments, but does not create citations or
 navigate to their sources.
+
+## Answer an agent's form
+
+An agent can ask for several related answers in one form, using text, numbers, choices, or
+checkboxes. Complete the required fields and submit them together, or cancel the request.
+Pre-filled values are not submitted automatically. Passwords and other secrets use separate
+private input requests.
 
 ## Recall a sent prompt
 

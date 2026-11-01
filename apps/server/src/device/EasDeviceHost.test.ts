@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { type EasDeviceHostConfig, ThreadId } from "@t3tools/contracts";
+import { type EasDeviceHostConfig, ProjectId, ThreadId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -590,11 +590,20 @@ describe("EAS Simulator host", () => {
       let agentFails = false;
       const expo = fakeExpo({ failAgent: () => agentFails });
       const host = yield* makeHost(expo, config(), yield* Scope.make());
-      const service = yield* DeviceService.makeWithHosts(new Map([["eas", host]]), undefined, () =>
-        Effect.succeed("/eas-agent.json"),
-      );
       const first = ThreadId.make("first");
       const second = ThreadId.make("second");
+      const service = yield* DeviceService.makeWithHosts(
+        new Map([["eas", host]]),
+        undefined,
+        () => Effect.succeed("/eas-agent.json"),
+        undefined,
+        undefined,
+        (threadId) =>
+          Effect.succeed(
+            threadId === first || threadId === second ? ProjectId.make("eas-project") : null,
+          ),
+      );
+      expect(yield* service.agentReadinessIfSupported("eas", ThreadId.make("unmapped"))).toBeNull();
       const opened = yield* service.open({
         threadId: first,
         hostId: "eas",

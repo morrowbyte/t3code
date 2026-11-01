@@ -19,6 +19,67 @@ const singleSelectQuestion = {
   multiSelect: false,
 } as const;
 
+it("preserves mixed-form defaults, false, empty optional selections and edited values", () => {
+  const questions = [
+    {
+      id: "name",
+      options: [],
+      allowCustomAnswer: false,
+      field: { id: "name", type: "text" as const, label: "Name", default: "Ada" },
+    },
+    {
+      id: "count",
+      options: [],
+      allowCustomAnswer: false,
+      field: { id: "count", type: "number" as const, label: "Count", min: 0, default: 0 },
+    },
+    {
+      id: "notify",
+      options: [],
+      allowCustomAnswer: false,
+      field: { id: "notify", type: "boolean" as const, label: "Notify", default: false },
+    },
+    {
+      id: "extras",
+      options: [
+        { value: "a", label: "A" },
+        { value: "b", label: "B" },
+      ],
+      multiSelect: true,
+      allowCustomAnswer: false,
+      field: {
+        id: "extras",
+        type: "multiselect" as const,
+        label: "Extras",
+        required: false,
+        default: ["a"],
+        options: [
+          { value: "a", label: "A" },
+          { value: "b", label: "B" },
+        ],
+      },
+    },
+  ];
+  expect(buildPendingUserInputAnswers(questions, {})).toEqual({
+    name: "Ada",
+    count: "0",
+    notify: "false",
+    extras: ["a"],
+  });
+  const edited = setPendingUserInputCustomAnswer(questions[0]!, undefined, "Grace");
+  const cleared = togglePendingUserInputOptionSelection(questions[3]!, undefined, "a");
+  expect(buildPendingUserInputAnswers(questions, { name: edited, extras: cleared })).toEqual({
+    name: "Grace",
+    count: "0",
+    notify: "false",
+    extras: [],
+  });
+  const selectedAfterClearing = togglePendingUserInputOptionSelection(questions[3]!, cleared, "b");
+  expect(resolvePendingUserInputAnswer(questions[3]!, selectedAfterClearing)).toEqual(["b"]);
+  expect(buildPendingUserInputAnswers(questions, { count: { customAnswer: "-1" } })).toBeNull();
+  expect(isPendingUserInputOptionSelected(questions[3]!, undefined, "a")).toBe(true);
+});
+
 const nativeChoiceQuestion = {
   id: "result",
   header: "Result",

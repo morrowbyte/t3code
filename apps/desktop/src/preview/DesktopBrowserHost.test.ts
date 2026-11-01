@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - Stands in for an Electron debugger.
 import { describe, expect, it, vi } from "@effect/vitest";
-import { DesktopBrowserEvent } from "@t3tools/contracts";
+import { DesktopBrowserEvent, type DesktopBrowserPrivateEntryAttachment } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
@@ -1261,6 +1261,7 @@ describe("DesktopBrowserHost", () => {
       const tabs = [makeDebuggee({ deferFocus: true }), makeDebuggee()];
       const send = vi.spyOn(tabs[0]!.tab.debugger, "sendCommand");
       const keys = [key, { threadId: "thread-2", tabId: "tab-2" }];
+      const attachments: DesktopBrowserPrivateEntryAttachment[] = [];
       const events = yield* Queue.unbounded<DesktopBrowserEvent>();
       yield* host.events.pipe(
         Stream.runForEach((line) =>
@@ -1270,7 +1271,19 @@ describe("DesktopBrowserHost", () => {
       );
       for (const [index, tabKey] of keys.entries()) {
         host.attach(tabKey, tabs[index]!.tab);
-        expect(yield* Queue.take(events)).toEqual({ type: "attached", ...tabKey });
+        const attached = yield* Queue.take(events);
+        expect(attached).toEqual({
+          type: "attached",
+          ...tabKey,
+          privateEntry: {
+            channelEpoch: expect.stringMatching(/\S/),
+            attachmentId: expect.stringMatching(/\S/),
+          },
+        });
+        if (attached.type !== "attached" || attached.privateEntry === undefined) {
+          throw new Error("Expected a private-entry attachment");
+        }
+        attachments.push(attached.privateEntry);
         yield* host.handleCommandLine(
           encodeJson({
             type: "cdp",
@@ -1281,6 +1294,8 @@ describe("DesktopBrowserHost", () => {
         // The command's reply and the page announcement.
         yield* Queue.takeN(events, 2);
       }
+      expect(attachments[1]!.channelEpoch).toBe(attachments[0]!.channelEpoch);
+      expect(attachments[1]!.attachmentId).not.toBe(attachments[0]!.attachmentId);
 
       yield* host.handleCommandLine(
         encodeJson({
@@ -1301,8 +1316,7 @@ describe("DesktopBrowserHost", () => {
       tabs[1]!.emit("Page.loadEventFired", { timestamp: 1 });
       const [detached, next] = yield* Queue.takeN(events, 2);
 
-      const { type, threadId, tabId } = detached!;
-      expect({ type, threadId, tabId }).toEqual({ type: "detached", ...key });
+      expect(detached).toEqual({ type: "detached", ...key, privateEntry: attachments[0] });
       expect(send).toHaveBeenCalledWith("Target.setAutoAttach", {
         autoAttach: false,
         waitForDebuggerOnStart: false,

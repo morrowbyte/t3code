@@ -44,6 +44,7 @@ const FIXTURES = "../src/orchestration-v2/testkit/fixtures";
 // Use acpRegistry transcripts: vendor transcripts carry state in frames this agent drops.
 export const SCENARIOS = [
   { id: "showcase", name: "Showcase", file: "./dev-replay/showcase_transcript.ndjson" },
+  { id: "form", name: "Mixed form", file: "./dev-replay/form_transcript.ndjson" },
   {
     id: "todo-list",
     name: "Plan and reads",
@@ -234,6 +235,22 @@ function runAgent(): void {
         // The client answers "cancelled" when the user stops the turn mid-request.
         const outcome = (answer as { outcome?: { outcome?: string } } | undefined)?.outcome;
         if (signal.aborted || outcome?.outcome === "cancelled") return "cancelled";
+        if (
+          frame.method === "elicitation/create" &&
+          (answer as { action?: string } | undefined)?.action !== "accept"
+        ) {
+          send({
+            method: "session/update",
+            params: {
+              sessionId,
+              update: {
+                sessionUpdate: "agent_message_chunk",
+                content: { type: "text", text: "Form cancelled." },
+              },
+            },
+          });
+          return;
+        }
         const toolCallId = permissionRejectedToolCallId(frame, answer);
         if (toolCallId === undefined) continue;
         // The recording only has the approved path, so a rejection ends the turn here.

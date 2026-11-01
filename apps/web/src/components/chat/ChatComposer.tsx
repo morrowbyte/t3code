@@ -1468,6 +1468,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const composerSuggestionsVisible = composerMenuOpen;
   const composerSuggestionListVisible = composerSuggestionsVisible && composerMenuItems.length > 0;
   const activePendingUserInput = pendingUserInputs[0] ?? null;
+  const isPendingForm =
+    activePendingUserInput?.questions.some((question) => question.field) ?? false;
   const isChoiceOnlyPendingQuestion =
     activePendingProgress?.activeQuestion?.allowCustomAnswer === false;
   const showComposerTopDrawer =
@@ -3631,6 +3633,28 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         onDraftActiveChange={onVoiceDraftActiveChange}
       />
     ) : null;
+  const pendingUserInputPanel =
+    pendingUserInputs.length > 0 ? (
+      <ComposerPendingUserInputPanel
+        pendingUserInputs={pendingUserInputs}
+        cwd={gitCwd ?? undefined}
+        threadRef={routeThreadRef}
+        disabled={!canOperateThread}
+        respondingRequestIds={
+          activePendingIsResponding && activePendingUserInput
+            ? [...respondingRequestIds, activePendingUserInput.requestId]
+            : respondingRequestIds
+        }
+        answers={activePendingDraftAnswers}
+        questionIndex={activePendingQuestionIndex}
+        onToggleOption={onSelectActivePendingUserInputOption}
+        onChangeFormValue={(id, value) =>
+          onChangeActivePendingUserInputCustomAnswer(id, value, value.length, value.length, false)
+        }
+        onAdvance={onAdvanceActivePendingUserInput}
+        onDismiss={onDismissActivePendingUserInput}
+      />
+    ) : null;
   const composer = (
     <form
       ref={composerFormRef}
@@ -3716,26 +3740,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       <ComposerBanner.Dock>
         <ComposerBanner.Column>
           <ComposerBannerStack items={shelfItems} />
-          {showComposerTopDrawer ? (
+          {showComposerTopDrawer && !isPendingForm ? (
             <ComposerBanner.Attachment>
               <ComposerBanner.Root data-chat-composer-top-drawer="true" variant="info">
                 {pendingUserInputs.length > 0 ? (
-                  <ComposerPendingUserInputPanel
-                    pendingUserInputs={pendingUserInputs}
-                    cwd={gitCwd ?? undefined}
-                    threadRef={routeThreadRef}
-                    disabled={!canOperateThread}
-                    respondingRequestIds={
-                      activePendingIsResponding && activePendingUserInput
-                        ? [...respondingRequestIds, activePendingUserInput.requestId]
-                        : respondingRequestIds
-                    }
-                    answers={activePendingDraftAnswers}
-                    questionIndex={activePendingQuestionIndex}
-                    onToggleOption={onSelectActivePendingUserInputOption}
-                    onAdvance={onAdvanceActivePendingUserInput}
-                    onDismiss={onDismissActivePendingUserInput}
-                  />
+                  pendingUserInputPanel
                 ) : !isComposerCollapsedMobile && showPlanFollowUpPrompt && activeProposedPlan ? (
                   <ComposerPlanFollowUpBanner
                     key={activeProposedPlan.id}
@@ -3753,7 +3762,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           onToggleMenu={toggleStashMenuStable}
         />
       </ComposerBanner.Dock>
-      <div className="relative">
+      {isPendingForm ? (
+        <ComposerBanner.Surface detached>{pendingUserInputPanel}</ComposerBanner.Surface>
+      ) : null}
+      <div className="relative" hidden={isPendingForm}>
         <ComposerSurface.Main
           ref={composerMainSurfaceRef}
           data-inline-resting-controls="true"

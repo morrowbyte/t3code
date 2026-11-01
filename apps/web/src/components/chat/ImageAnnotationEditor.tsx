@@ -2,6 +2,9 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { MinusIcon, PlusIcon, RotateCcwIcon, Trash2Icon, Undo2Icon } from "lucide-react";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
+import type { EnvironmentId } from "@t3tools/contracts";
+import { CommentDictationControl } from "~/voice/CommentDictationControl";
+import { useCommentDictation } from "~/voice/useCommentDictation";
 import {
   annotationPoint,
   drawAnnotationStrokes,
@@ -32,6 +35,10 @@ export interface ImageAnnotationEditorProps {
   readonly onFit: () => void;
   readonly onCancel: () => void;
   readonly onSend: (file: File, text: string, signal: AbortSignal) => Promise<boolean>;
+  readonly dictationTarget?: {
+    readonly environmentId: EnvironmentId | null;
+    readonly targetKey: string;
+  };
 }
 
 async function withAnnotationSendCleanup(send: () => Promise<void>, cleanup: () => void) {
@@ -50,6 +57,7 @@ export function ImageAnnotationEditor({
   onFit,
   onCancel,
   onSend,
+  dictationTarget,
 }: ImageAnnotationEditorProps) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const decoded = useRef<AnnotationImage | null>(null);
@@ -69,7 +77,19 @@ export function ImageAnnotationEditor({
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const dictation = useCommentDictation({
+    environmentId: dictationTarget?.environmentId ?? null,
+    targetKey: JSON.stringify([dictationTarget?.targetKey, src]),
+    value: message,
+    onChange: setMessage,
+    disabled: sending,
+  });
+  const cancel = () => {
+    dictation.cancel();
+    onCancel();
+  };
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Owns the decoded browser image and aborts image work when its source changes.
   useEffect(() => {
     const controller = new AbortController();
     let loaded: AnnotationImage | null = null;
@@ -103,6 +123,7 @@ export function ImageAnnotationEditor({
     context.clearRect(0, 0, size.width, size.height);
     drawAnnotationStrokes(context, size, strokes);
   };
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Paints the current strokes into the external canvas bitmap.
   useEffect(redraw, [strokes, size]);
   const undo = () => {
     if (active.current) {
@@ -112,7 +133,15 @@ export function ImageAnnotationEditor({
     } else setStrokes((current) => current.slice(0, -1));
   };
   const send = async () => {
-    if (locked.current || !decoded.current || !strokes.length || active.current) return;
+    if (
+      locked.current ||
+      dictation.blocksSubmission() ||
+      !decoded.current ||
+      !strokes.length ||
+      active.current
+    )
+      return;
+    dictation.cancel();
     const image = decoded.current.image;
     locked.current = true;
     setSending(true);
@@ -317,13 +346,16 @@ export function ImageAnnotationEditor({
             {error}
           </p>
         ) : null}
-        <div className="flex justify-end gap-2">
-          <Button variant="outline" size="sm" disabled={sending} onClick={onCancel}>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <div className="mr-auto min-w-0">
+            <CommentDictationControl dictation={dictation} />
+          </div>
+          <Button variant="outline" size="sm" disabled={sending} onClick={cancel}>
             Cancel
           </Button>
           <Button
             size="sm"
-            disabled={sending || !size.width || !strokes.length || drawing}
+            disabled={sending || dictation.isBusy || !size.width || !strokes.length || drawing}
             onClick={() => {
               void send();
             }}

@@ -1,3 +1,5 @@
+import { userFormDefault, userFormFieldError, type UserFormField } from "@t3tools/contracts";
+
 /** The question fields answer handling reads. Web and mobile question types both fit it. */
 export interface PendingUserInputQuestion {
   readonly id: string;
@@ -5,6 +7,7 @@ export interface PendingUserInputQuestion {
   readonly multiSelect?: boolean | undefined;
   readonly allowCustomAnswer?: boolean | undefined;
   readonly initialAnswer?: string | undefined;
+  readonly field?: UserFormField | undefined;
 }
 
 export interface PendingUserInputDraftAnswer {
@@ -62,6 +65,16 @@ export function resolvePendingUserInputAnswer(
   draft: PendingUserInputDraftAnswer | undefined,
 ): PendingUserInputAnswer | null {
   if (draft?.attachmentsBlocked) return null;
+  if (question.field) {
+    const value =
+      question.field.type === "multiselect"
+        ? (draft?.selectedOptionValues ??
+          (draft?.customAnswer === undefined ? userFormDefault(question.field) : []))
+        : (draft?.customAnswer ??
+          draft?.selectedOptionValues?.[0] ??
+          userFormDefault(question.field));
+    return userFormFieldError(question.field, value) === null ? value : null;
+  }
   const customAnswer =
     question.allowCustomAnswer === false
       ? null
@@ -91,7 +104,7 @@ export function setPendingUserInputCustomAnswer(
   draft: PendingUserInputDraftAnswer | undefined,
   customAnswer: string,
 ): PendingUserInputDraftAnswer {
-  if (question.allowCustomAnswer === false) {
+  if (question.allowCustomAnswer === false && !question.field) {
     return draft ?? {};
   }
 
@@ -110,6 +123,10 @@ export function isPendingUserInputOptionSelected(
   draft: PendingUserInputDraftAnswer | undefined,
   optionValue: string,
 ): boolean {
+  if (question.field) {
+    const value = resolvePendingUserInputAnswer(question, draft);
+    return Array.isArray(value) ? value.includes(optionValue) : value === optionValue;
+  }
   if (question.allowCustomAnswer !== false && normalizeDraftAnswer(draft?.customAnswer)) {
     return false;
   }
@@ -137,7 +154,8 @@ export function togglePendingUserInputOptionSelection(
   if (question.multiSelect) {
     const selectedOptionValues = normalizeSelectedOptionValues(
       question,
-      draft?.selectedOptionValues,
+      draft?.selectedOptionValues ??
+        (question.field?.type === "multiselect" ? question.field.default : undefined),
     );
     const nextSelectedOptionValues = selectedOptionValues.includes(resolvedOptionValue)
       ? selectedOptionValues.filter((value) => value !== resolvedOptionValue)
@@ -145,9 +163,7 @@ export function togglePendingUserInputOptionSelection(
 
     return {
       customAnswer: "",
-      ...(nextSelectedOptionValues.length > 0
-        ? { selectedOptionValues: nextSelectedOptionValues }
-        : {}),
+      selectedOptionValues: nextSelectedOptionValues,
     };
   }
 

@@ -505,9 +505,14 @@ it.effect("stopping an old run cancels only its privileged outbox request", () =
   }).pipe(Effect.provide(layerExternalRecovery)),
 );
 
-it.effect.each(["approved", "claimed"] as const)(
-  "marks a %s privileged command unknown after restart without re-executing it",
-  (state) =>
+it.effect.each([
+  ["approved", "waiting"],
+  ["approved", "completed"],
+  ["claimed", "waiting"],
+  ["claimed", "completed"],
+] as const)(
+  "marks a %s privileged command with a %s item unknown after restart without re-executing it",
+  ([state, itemStatus]) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const events = yield* EventSink.EventSinkV2;
@@ -582,10 +587,10 @@ it.effect.each(["approved", "claimed"] as const)(
               nativeItemRef: null,
               parentItemId: null,
               ordinal: 1,
-              status: "waiting",
+              status: itemStatus,
               title: "Run one privileged script",
               startedAt: now,
-              completedAt: null,
+              completedAt: itemStatus === "completed" ? now : null,
               updatedAt: now,
               type: "approval_request",
               requestId,
@@ -600,6 +605,15 @@ it.effect.each(["approved", "claimed"] as const)(
           },
         ],
       });
+      const before = yield* projections.getRuntimeRecoveryProjection(threadId);
+      assert.include(
+        before.runtimeRequests.map((request) => request.id),
+        requestId,
+      );
+      assert.include(
+        before.turnItems.map((item) => item.id),
+        TurnItemId.make("item:privileged-recovery"),
+      );
       yield* recovery.reconcile("startup");
       const request = yield* projections.getRuntimeRequest(threadId, requestId);
       assert.equal(request?.privilegedCommand?.state, "unknown");

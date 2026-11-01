@@ -94,10 +94,10 @@ function makePendingCustomAnswerSetter(input: {
       return;
     }
     const question = activePendingUserInput.questions.find((entry) => entry.id === questionId);
-    if (!question || question.allowCustomAnswer === false) {
+    if (!question || (question.allowCustomAnswer === false && !question.field)) {
       return;
     }
-    input.writePrompt(value);
+    if (!question.field) input.writePrompt(value);
     input.setPendingUserInputAnswersByRequestId((existing) => ({
       ...existing,
       [activePendingRequestKey]: {
@@ -481,7 +481,10 @@ export function usePendingThreadRequests(input: {
     ) {
       return;
     }
-    if (activePendingProgress.isLastQuestion) {
+    if (
+      activePendingProgress.isLastQuestion ||
+      activePendingUserInput.questions.some((question) => question.field)
+    ) {
       if (activePendingResolvedAnswers) {
         void onRespondToUserInput(activePendingUserInput.requestId, activePendingResolvedAnswers);
       }

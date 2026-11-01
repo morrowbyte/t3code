@@ -22,6 +22,8 @@ import {
   OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpRequestSecretInput,
   OrchestratorMcpRequestSecretResult,
+  RequestFormInput,
+  RequestFormResult,
   OrchestratorMcpFailure,
   OrchestratorMcpListScheduledTasksInput,
   OrchestratorMcpListScheduledTasksResult,
@@ -264,6 +266,18 @@ const RequestSecretTool = Tool.make("request_secret", {
   .annotate(Tool.Title, "Request a secret from the user")
   .annotate(Tool.Destructive, false);
 
+const RequestFormTool = Tool.make("request_form", {
+  description:
+    "Ask the user to fill out one form in the thread and wait for submit or cancel. Use text, multiline, number, select, multiselect and boolean fields with concise labels, optional descriptions, defaults and bounds. Required by default. Returns typed answers keyed by field id. Use a stable clientRequestId when retrying the same request. Ordinary form answers are stored in the thread; use request_secret for passwords, tokens and other secrets. Forms are not approvals and cannot authorize privileged actions.",
+  parameters: RequestFormInput,
+  success: RequestFormResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies,
+})
+  .annotate(Tool.Title, "Request a form")
+  .annotate(Tool.Destructive, false);
+
 const CreateThreadsTool = Tool.make("create_threads", {
   description:
     "Create new top-level threads in this checkout. Not delegation. One thread or its own worktree: `t3_thread_launch`. Project, branch, and worktree inherit.",
@@ -420,6 +434,7 @@ export const OrchestratorToolkit = Toolkit.make(
   ListScheduledTasksTool,
   DeleteScheduledTaskTool,
   RequestSecretTool,
+  RequestFormTool,
   CreateThreadsTool,
   ThreadListTool,
   ThreadReadTool,

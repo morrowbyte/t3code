@@ -535,6 +535,71 @@ describe("UsageService", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live(
+    "snapshots turn prices without scanning transcripts and keeps earlier costs after rate changes",
+    () =>
+      Effect.gen(function* () {
+        const { settings, home } = yield* setup;
+        let rateFetches = 0;
+        yield* Effect.gen(function* () {
+          const settingsService = yield* ServerSettings.ServerSettingsService;
+          const service = yield* UsageService.make;
+          const input = {
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "example-model",
+              options: [{ id: "serviceTier", value: "priority" }],
+            },
+            usage: {
+              usageScope: "main_agent" as const,
+              usageStatus: "complete" as const,
+              inputTokens: 1000,
+              cachedInputTokens: 600,
+              outputTokens: 200,
+              hasSubagents: false,
+            },
+          };
+          const missing = yield* service.priceTurn({ modelSelection: input.modelSelection });
+          assert.equal(missing.status, "unavailable");
+          assert.isUndefined(missing.amountUsd);
+          assert.equal(rateFetches, 0);
+          const first = yield* service.priceTurn(input);
+          assert.closeTo(first.amountUsd ?? -1, 0.00504, 1e-12);
+          assert.equal(first.source, "litellm");
+          yield* settingsService.updateSettings({
+            usagePriceOverrides: {
+              "example-model": { inputCostPerMillionTokens: 1, outputCostPerMillionTokens: 1 },
+            },
+          });
+          const second = yield* service.priceTurn(input);
+          assert.closeTo(second.amountUsd ?? -1, 0.0012, 1e-12);
+          assert.equal(second.source, "custom");
+          assert.closeTo(first.amountUsd ?? -1, 0.00504, 1e-12);
+          assert.equal(rateFetches, 1);
+        }).pipe(
+          Effect.provide(
+            layerService({
+              prefix: "usage-turn-snapshot",
+              home,
+              settings,
+              onRatesFetch: () => {
+                rateFetches += 1;
+              },
+              ratesDocument: {
+                "example-model": {
+                  input_cost_per_token: 0.000002,
+                  output_cost_per_token: 0.000008,
+                  cache_read_input_token_cost: 0.0000002,
+                  input_cost_per_token_priority: 0.000004,
+                  output_cost_per_token_priority: 0.000016,
+                },
+              },
+            }),
+          ),
+        );
+      }).pipe(Effect.scoped),
+  );
+
   it.live("keeps the first host identity across recreation and explicit override removal", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;

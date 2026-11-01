@@ -10,6 +10,7 @@ import {
   useEffectEvent,
   useRef,
   useState,
+  type ComponentProps,
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import {
@@ -32,6 +33,7 @@ import { observeAssistantCitationCommentSource } from "./AssistantCitationSource
 import { composerFloatingLayerProps } from "./composerEventScope";
 import { observeResize } from "~/lib/observeResize";
 import { textDirection } from "~/textDirection";
+import { useCommentDictationTarget } from "~/voice/useCommentDictationTarget";
 
 export function AssistantCitationChip({
   citation,
@@ -213,7 +215,7 @@ export function AssistantCitationChip({
               padding="compact"
               onPointerDown={(event) => event.stopPropagation()}
             >
-              <AssistantCitationCommentEditor
+              <ScopedCitationCommentEditor
                 key={serializeAssistantCitation(citation)}
                 citation={citation}
                 inputRef={commentInputRef}
@@ -249,6 +251,11 @@ export function AssistantCitationChip({
       ) : null}
     </ContextChip>
   );
+}
+
+function ScopedCitationCommentEditor(props: ComponentProps<typeof AssistantCitationCommentEditor>) {
+  const dictationTarget = useCommentDictationTarget();
+  return <AssistantCitationCommentEditor {...props} dictationTarget={dictationTarget} />;
 }
 
 function AssistantCitationQuote({ citation }: { citation: AssistantCitation }) {

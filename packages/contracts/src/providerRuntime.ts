@@ -1,6 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { UserFormField } from "./userForm.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 
@@ -77,6 +78,45 @@ export const TurnTokenUsage = Schema.Union([
 ]);
 export type TurnTokenUsage = typeof TurnTokenUsage.Type;
 
+const CostAmount = Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0));
+export const TurnCostSnapshot = Schema.Struct({
+  status: Schema.Literals(["complete", "partial", "unavailable"]),
+  reason: Schema.optional(
+    Schema.Literals([
+      "usage_unavailable",
+      "incomplete_usage",
+      "model_unavailable",
+      "rates_unavailable",
+      "tier_unavailable",
+      "invalid_usage",
+    ]),
+  ),
+  model: Schema.NullOr(Schema.String),
+  serviceTier: Schema.Literals(["standard", "fast", "ultrafast"]),
+  source: Schema.NullOr(Schema.Literals(["litellm", "custom"])),
+  pricedAt: Schema.String,
+  ratesFetchedAt: Schema.NullOr(Schema.String),
+  usage: Schema.optional(TurnTokenUsage),
+  amountUsd: Schema.optional(CostAmount),
+  categoryUsd: Schema.optional(
+    Schema.Struct({
+      input: CostAmount,
+      cacheRead: CostAmount,
+      cacheWrite: CostAmount,
+      output: CostAmount,
+    }),
+  ),
+  rates: Schema.optional(
+    Schema.Struct({
+      inputCostPerToken: CostAmount,
+      outputCostPerToken: CostAmount,
+      cacheReadCostPerToken: CostAmount,
+      cacheCreationCostPerToken: CostAmount,
+    }),
+  ),
+});
+export type TurnCostSnapshot = typeof TurnCostSnapshot.Type;
+
 export const ToolActivitySurface = Schema.Literals(["browser", "computer"]);
 export type ToolActivitySurface = typeof ToolActivitySurface.Type;
 
@@ -124,6 +164,7 @@ const UserInputQuestionOption = Schema.Struct({
 });
 
 export const UserInputQuestion = Schema.Struct({
+  field: Schema.optional(UserFormField),
   id: TrimmedNonEmptyStringSchema,
   header: TrimmedNonEmptyStringSchema,
   question: TrimmedNonEmptyStringSchema,

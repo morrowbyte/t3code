@@ -60,6 +60,7 @@ import { useEnvironment } from "../../state/environments";
 import { randomUUID } from "../../lib/utils";
 import { useProject, useThreadShell } from "../../state/entities";
 import ChatMarkdown from "../ChatMarkdown";
+import { UserFormFields, UserFormActions } from "./UserFormFields";
 import {
   classifyComposerAttachmentFile,
   fileAttachmentStagingLimit,
@@ -650,6 +651,55 @@ function ChildQuestionForm({
       void onSubmit(resolved, attachments.size ? Object.fromEntries(attachments) : undefined);
     }
   };
+
+  const fields = request.questions.flatMap((entry) => (entry.field ? [entry.field] : []));
+  if (fields.length > 0)
+    return (
+      <div className="min-w-0 space-y-3" data-user-form={request.requestId}>
+        <h3 className="text-sm font-semibold">{request.questions[0]?.header}</h3>
+        <UserFormFields
+          fields={fields}
+          drafts={answers}
+          disabled={disabled}
+          onChange={(id, value) => {
+            const fieldQuestion = request.questions.find((entry) => entry.id === id);
+            if (fieldQuestion)
+              onChange((previous) => ({
+                ...previous,
+                answers: {
+                  ...previous.answers,
+                  [id]: setPendingUserInputCustomAnswer(fieldQuestion, previous.answers[id], value),
+                },
+              }));
+          }}
+          onToggle={(id, value) => {
+            const fieldQuestion = request.questions.find((entry) => entry.id === id);
+            if (fieldQuestion)
+              onChange((previous) => ({
+                ...previous,
+                answers: {
+                  ...previous.answers,
+                  [id]: togglePendingUserInputOptionSelection(
+                    fieldQuestion,
+                    previous.answers[id],
+                    value,
+                  ),
+                },
+              }));
+          }}
+        />
+        <UserFormActions
+          disabled={disabled}
+          busy={false}
+          complete={buildPendingUserInputAnswers(request.questions, answers) !== null}
+          onSubmit={() => {
+            const resolved = buildPendingUserInputAnswers(request.questions, answers);
+            if (resolved) void onSubmit(resolved);
+          }}
+          onCancel={() => void onDismiss()}
+        />
+      </div>
+    );
 
   return (
     <div className="space-y-3">

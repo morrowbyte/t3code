@@ -29,6 +29,7 @@ import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../times
 import { useV2ItemSupport } from "../../state/v2ItemSupport";
 import { TimelineRowCtx, TimelineRowActivityCtx, type TimelineRow } from "./timelineRowContext";
 import { MESSAGE_HEADING_LEVEL } from "./TimelineRowParts";
+import { AssistantCost } from "./AssistantCost";
 
 export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
@@ -185,6 +186,12 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
             showCopyButton={row.showAssistantCopyButton}
             copyStreaming={row.assistantCopyStreaming}
           />
+        ) : !row.message.streaming && row.projectedItem ? (
+          <AssistantCost
+            environmentId={ctx.activeThreadEnvironmentId}
+            projectedItem={row.projectedItem}
+            onlyBound
+          />
         ) : null}
       </div>
     </>
@@ -277,7 +284,7 @@ function AssistantMessageMeta({
   return (
     <div
       className={cn(
-        "flex items-center gap-2 text-xs tabular-nums transition-opacity duration-200",
+        "flex flex-wrap items-center gap-2 text-xs tabular-nums transition-opacity duration-200",
         alwaysVisible
           ? "opacity-100"
           : "opacity-0 pointer-coarse:opacity-100 focus-within:opacity-100 group-hover/assistant:opacity-100",
@@ -307,6 +314,12 @@ function AssistantMessageMeta({
           </TooltipPopup>
         </Tooltip>
       )}
+      {!message.streaming && projectedItem?.item.type === "assistant_message" ? (
+        <AssistantCost
+          environmentId={ctx.activeThreadEnvironmentId}
+          projectedItem={projectedItem}
+        />
+      ) : null}
     </div>
   );
 }

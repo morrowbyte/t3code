@@ -22,6 +22,7 @@ import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as UsageService from "../usage/UsageService.ts";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
@@ -546,6 +547,20 @@ function layerTest(input: {
       ? layerTestMcpRegistry
       : layerPausingMcpRegistry(input.pauseResolve);
   const layerProviderEventIngestorTest = ProviderEventIngestor.layer.pipe(
+    Layer.provide(
+      Layer.mock(UsageService.UsageService)({
+        priceTurn: () =>
+          Effect.succeed({
+            status: "unavailable",
+            reason: "usage_unavailable",
+            model: null,
+            serviceTier: "standard",
+            source: null,
+            pricedAt: "2026-11-01T00:00:00Z",
+            ratesFetchedAt: null,
+          }),
+      }),
+    ),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
@@ -1426,6 +1441,7 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const state = yield* Ref.make(emptyState);
+      const starts = yield* Ref.make(0);
       yield* Effect.gen(function* () {
         const eventSink = yield* EventSink.EventSinkV2;
         const idAllocator = yield* IdAllocator.IdAllocatorV2;
@@ -1520,7 +1536,14 @@ it.effect(
             }),
           );
         });
-        assert.equal((yield* startOnReleasedRuntime)._tag, "ProviderAdapterTurnStartError");
+        const releasedError = yield* startOnReleasedRuntime;
+        assert.equal(releasedError._tag, "ProviderAdapterProtocolError");
+        assert.equal(releasedError.driver, CODEX_DRIVER);
+        assert.propertyVal(
+          releasedError,
+          "detail",
+          "Provider runtime or MCP credential is no longer current",
+        );
 
         // Nor may it leave its turn busy on a replacement opened under the same id.
         yield* manager.open({
@@ -1529,9 +1552,25 @@ it.effect(
           modelSelection,
           runtimePolicy,
         });
-        assert.equal((yield* startOnReleasedRuntime)._tag, "ProviderAdapterTurnStartError");
+        const replacedError = yield* startOnReleasedRuntime;
+        assert.equal(replacedError._tag, "ProviderAdapterProtocolError");
+        assert.equal(replacedError.driver, CODEX_DRIVER);
+        assert.propertyVal(
+          replacedError,
+          "detail",
+          "Provider runtime or MCP credential is no longer current",
+        );
+        assert.equal(yield* Ref.get(starts), 1);
         assert.isTrue(yield* release(sibling));
-      }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60 * 60_000 })));
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60 * 60_000,
+            startTurn: Ref.update(starts, (count) => count + 1),
+          }),
+        ),
+      );
     }),
 );
 

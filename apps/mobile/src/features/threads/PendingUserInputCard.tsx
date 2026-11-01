@@ -1,5 +1,6 @@
 import { Button } from "../../components/ui/Button";
 import { QuestionAttachments } from "./QuestionAttachments";
+import { UserFormField } from "./UserFormField";
 import {
   questionDictationBlocksSubmission,
   questionDictationOwnerKey,
@@ -246,7 +247,11 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
           <Text className="font-t3-bold text-2xs uppercase tracking-[1.1px] text-foreground-secondary">
             User input needed
           </Text>
-          <Text className="font-t3-bold text-lg text-foreground">Fill in the pending answers</Text>
+          <Text className="font-t3-bold text-lg text-foreground">
+            {props.pendingUserInput.questions.some((question) => question.field)
+              ? props.pendingUserInput.questions[0]?.header
+              : "Fill in the pending answers"}
+          </Text>
         </View>
         <View className="h-8 w-8 items-center justify-center rounded-full bg-subtle-strong">
           <SymbolView
@@ -274,6 +279,22 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
         ) : null}
         {props.pendingUserInput.questions.map((question) => {
           const draft = props.drafts[question.id];
+          if (question.field)
+            return (
+              <UserFormField
+                key={question.id}
+                field={question.field}
+                draft={draft}
+                disabled={responseDisabled || !props.canOperateThread}
+                onChange={(value) =>
+                  props.onChangeCustomAnswer(props.pendingUserInput.requestId, question.id, value)
+                }
+                onToggle={(value) =>
+                  props.onSelectOption(props.pendingUserInput.requestId, question, value)
+                }
+                onInputFocusChange={props.onInputFocusChange}
+              />
+            );
           return (
             <View key={question.id} className="gap-2 pt-1">
               <Text
@@ -385,7 +406,11 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
       />
       {props.pendingUserInput.dismissible ? (
         <Button
-          label="Dismiss without answering"
+          label={
+            props.pendingUserInput.questions.some((question) => question.field)
+              ? "Cancel"
+              : "Dismiss without answering"
+          }
           tone="text"
           disabled={isResponding || !props.canOperateThread}
           onPress={() => {

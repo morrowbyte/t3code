@@ -9,6 +9,7 @@ import {
   type UsageSummary,
   type UsageSummaryInput,
   UsageReadError,
+  type TurnCostSnapshot,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Cause from "effect/Cause";
@@ -41,6 +42,7 @@ import type {
 } from "@t3tools/provider-core/server/usage";
 import { resolveModelAliases, UsageAggregator } from "./usageAggregation.ts";
 import { createOverrideRateTable, parseRateTable, type RateTable } from "./usagePricing.ts";
+import { priceTurnUsage, type TurnCostInput } from "./turnCost.ts";
 import {
   listTranscriptFiles,
   readDirectoryVolumeId,
@@ -144,6 +146,7 @@ export class UsageService extends Context.Service<
   {
     readonly readSummary: (input: UsageSummaryInput) => Effect.Effect<UsageSummary, UsageReadError>;
     readonly refreshRates: Effect.Effect<UsagePricing>;
+    readonly priceTurn: (input: TurnCostInput) => Effect.Effect<TurnCostSnapshot>;
   }
 >()("t3/usage/UsageService") {}
 
@@ -295,6 +298,26 @@ export const make = Effect.gen(function* () {
         }),
     ),
   );
+
+  const priceTurn = Effect.fn("UsageService.priceTurn")(function* (input: TurnCostInput) {
+    const settings = yield* settingsService.getSettings.pipe(Effect.option);
+    const snapshotInput = {
+      rates,
+      overrides: createOverrideRateTable(
+        Option.getOrUndefined(settings)?.usagePriceOverrides ?? {},
+      ),
+      pricedAt: DateTime.formatIso(yield* DateTime.now),
+      ratesFetchedAt: pricing().fetchedAt,
+    };
+    const initial = priceTurnUsage(input, { ...snapshotInput, rates: new Map() });
+    if (initial.reason !== "rates_unavailable") return initial;
+    yield* ensureRates(false);
+    return priceTurnUsage(input, {
+      ...snapshotInput,
+      rates,
+      ratesFetchedAt: pricing().fetchedAt,
+    });
+  });
 
   const usageInstances = Effect.fn("UsageService.usageInstances")(function* <Config>(
     driver: ProviderDriver<Config, unknown, unknown>,
@@ -927,7 +950,7 @@ export const make = Effect.gen(function* () {
     return yield* Deferred.await(deferred);
   });
 
-  return { readSummary, refreshRates, awaitPersisted } as const;
+  return { readSummary, refreshRates, priceTurn, awaitPersisted } as const;
 });
 
 export const layer = Layer.effect(UsageService, make);

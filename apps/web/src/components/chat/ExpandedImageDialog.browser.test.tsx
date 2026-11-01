@@ -173,8 +173,6 @@ describe("ExpandedImageDialog", () => {
         preview={{ images: [{ src: PIXEL, name: "shot.png", source: snapShotSource }], index: 0 }}
         onClose={onClose}
       />,
-      // The dialog renders no links and reads no route.
-      { router: false },
     );
 
     await userEvent.click(screen.getByRole("button", { name: "No accessibility data" }));

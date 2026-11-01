@@ -15,6 +15,12 @@ cost, split by token type and by speed. These estimates are not your subscriptio
 split, such as a provider-reported cost for a model without public rates, shows as **Other**.
 Select a model under **Breakdown** to see its trend, cache hit rate, and cost per million tokens.
 
+Completed agent turns show their estimated API cost below the final response. Select the
+amount for the model, speed tier, token breakdown, and pricing date. The estimate includes
+the main agent's work during that turn; delegated agents report their own costs. Prices are
+saved with the response, so later price changes do not rewrite it. Partial measurements are
+marked, and responses without recorded usage or a known price show **Cost unavailable**.
+
 Totals depend on the history available on each server. Grok turns without a saved completed-turn
 record are missing from the totals.
 
@@ -68,8 +74,9 @@ without public pricing. When a model on **Usage** has no known price, select it 
 **Breakdown** and choose **Set price** to open this table with that model added.
 
 Cache read and cache write rates are optional and use the input rate when blank. Enter `0` for
-tokens that are free. Saved prices replace automatic pricing for all of that environment's
-history and are shared with clients connected to it. When environments have different prices,
+tokens that are free. Saved prices replace automatic pricing for that environment's Usage
+history and are shared with clients connected to it. Saved per-response estimates keep their
+original prices. When environments have different prices,
 cells show **Mixed**. Edit rates directly in the table, then choose **Save changes** to apply all
 edited rows. Untouched cells keep each environment's rate. Select one environment to inspect its
 prices. **Reset to automatic** marks a model's override for removal when you save; you can undo

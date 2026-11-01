@@ -16,6 +16,8 @@ import {
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 import * as ResetCreditCoordinator from "../provider/resetCreditCoordinator.ts";
 import { FetchHttpClient } from "effect/http";
 import { describe } from "vite-plus/test";
@@ -42,14 +44,10 @@ import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderTurnStartServiceTestkit from "./ProviderTurnStartService.testkit.ts";
 import * as RuntimeLayer from "./runtimeLayer.ts";
+import * as TestUsageService from "./testkit/TestUsageService.ts";
 import * as McpSessionRegistryTestkit from "../mcp/McpSessionRegistry.testkit.ts";
 
-// The Antigravity switch is a durable, named conformance fixture for Google's
-// official Registry distribution. It uses credentials already owned by the
-// Antigravity agent and never stores them in the test database.
-//
-// T3_ACP_ANTIGRAVITY_LIVE=1 ../../node_modules/.bin/vp test run \
-//   src/orchestration-v2/AcpRegistryOrchestratorV2.live.test.ts
+// The opt-in Registry fixture reuses the agent's credentials without storing them in the database.
 const fixtureEnvironmentId = EnvironmentId.make("00000000-0000-4000-8000-000000000001");
 const layerPlatformTest = Layer.mergeAll(
   NodeServices.layer,
@@ -145,6 +143,7 @@ const layerProviderInstanceRegistry = ProviderInstanceRegistryHydration.layer.pi
 );
 
 const layerLive = RuntimeLayer.layer.pipe(
+  Layer.provide(TestUsageService.layer),
   Layer.provide(McpSessionRegistryTestkit.layer),
   Layer.provide(SqlitePersistence.layerMemory),
   Layer.provide(layerCheckpointStore),
@@ -163,19 +162,23 @@ const waitForIdle = Effect.fn("AcpRegistryOrchestratorV2Live.waitForIdle")(funct
   expectedRunCount: number,
 ) {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
-  for (let attempt = 0; attempt < 900; attempt += 1) {
-    const projection = yield* orchestrator.getThreadProjection(threadId);
-    if (
-      projection.runs.length >= expectedRunCount &&
-      projection.runs.every(
-        (run) => !["queued", "starting", "running", "waiting"].includes(run.status),
-      )
-    ) {
-      return projection;
-    }
-    yield* Effect.sleep("500 millis");
-  }
-  return yield* Effect.die(new Error(`Timed out waiting for ACP Registry thread ${threadId}.`));
+  const afterSequence = yield* orchestrator.getThreadEventSequence(threadId);
+  return yield* Stream.concat(
+    Stream.fromEffect(orchestrator.getThreadProjection(threadId)),
+    orchestrator
+      .streamStoredEventsFrom({ threadId, afterSequence })
+      .pipe(Stream.mapEffect(() => orchestrator.getThreadProjection(threadId))),
+  ).pipe(
+    Stream.filter(
+      (projection) =>
+        projection.runs.length >= expectedRunCount &&
+        projection.runs.every(
+          (run) => !["queued", "starting", "running", "waiting"].includes(run.status),
+        ),
+    ),
+    Stream.runHead,
+    Effect.map(Option.getOrThrow),
+  );
 });
 
 describe.runIf(runAntigravityFixture || process.env.T3_ACP_REGISTRY_LIVE_ORCHESTRATOR === "1")(

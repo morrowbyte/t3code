@@ -1,5 +1,6 @@
 import type { DispatchRuntimeOptions } from "./DispatchRuntimeOptions.ts";
-import { ApprovalReviewError } from "@t3tools/contracts";
+import { ApprovalReviewError, validateUserFormAnswers } from "@t3tools/contracts";
+import * as FormRequestCommands from "./FormRequestCommands.ts";
 import * as ApprovalReviewCommands from "./ApprovalReviewCommands.ts";
 import * as PrivilegedCommandCommands from "./PrivilegedCommandCommands.ts";
 import * as ApprovalReviewOrderPolicy from "./ApprovalReviewOrderPolicy.ts";
@@ -574,6 +575,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "privileged-command.unconfirmed":
     case "privileged-command.cleanup-visible":
     case "runtime-request.respond":
+    case "user-form.submit":
     case "runtime-request.delivery.fail":
     case "thread.user-input.dismiss":
     case "checkpoint.rollback":
@@ -9285,6 +9287,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
 
       const approvalTurnItem = context.item;
+      const isFormRequest =
+        runtimeRequest.kind === "user_input" &&
+        approvalTurnItem?.type === "user_input_request" &&
+        approvalTurnItem.questions.some((question) => question.field !== undefined);
+      if (command.decision !== "cancel" && command.decision !== "decline" && isFormRequest) {
+        const validated = validateUserFormAnswers(approvalTurnItem.questions, answers ?? {});
+        if (Object.keys(validated.errors).length > 0) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "Correct the form fields before submitting.",
+          });
+        }
+      }
       const resolvedNodeStatus =
         command.decision === "decline" || command.decision === "cancel"
           ? ("cancelled" as const)
@@ -9365,7 +9381,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       const approvalReview =
         runtimeRequest.responseCapability.type === "external" &&
-        runtimeRequest.privilegedCommand === undefined
+        runtimeRequest.privilegedCommand === undefined &&
+        !isFormRequest
           ? yield* ApprovalReviewCommands.resolve(runtimeRequest, command, now).pipe(
               Effect.provideService(
                 ApprovalReviewOrderPolicy.ApprovalReviewOrderPolicy,
@@ -9685,7 +9702,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: "This question has already been answered.",
         });
       }
-      if (request.kind !== "user_input" || request.responseCapability.type !== "message") {
+      const formContext =
+        request.responseCapability.type !== "message"
+          ? yield* projectionStore
+              .getRuntimeResponseContext(command.threadId, command.requestId)
+              .pipe(
+                Effect.mapError(
+                  () => new OrchestratorProjectionError({ threadId: command.threadId }),
+                ),
+              )
+          : undefined;
+      const isForm =
+        formContext?.item?.type === "user_input_request" &&
+        formContext.item.questions.some((question) => question.field !== undefined);
+      if (
+        request.kind !== "user_input" ||
+        (request.responseCapability.type !== "message" && !isForm)
+      ) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
@@ -13700,6 +13733,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }
         break;
       }
+      case "user-form.submit": {
+        const planned = yield* FormRequestCommands.plan(command).pipe(
+          Effect.provideService(ProjectionStoreV2, projectionStore),
+          Effect.mapError(
+            (cause) =>
+              new OrchestratorDispatchError({
+                commandId: command.commandId,
+                commandType: command.type,
+                cause,
+              }),
+          ),
+        );
+        for (const event of planned) yield* emit(events, command)(event);
+        break;
+      }
       case "runtime-request.respond":
         yield* dispatchRuntimeRequestRespond(command, events, effects);
         break;
@@ -14117,6 +14165,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           command.type === "thread.interrupt.unresponsive" ||
           command.type === "thread.stop" ||
           command.type === "subagent.stop" ||
+          command.type === "user-form.submit" ||
           // Closing a share again, or after it ended, is not an error.
           command.type === "thread.guest-share.close" ||
           (command.type === "thread.delete" && command.onlyIfUnused === true),
