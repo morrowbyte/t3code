@@ -12849,6 +12849,101 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       assert.isNull(CodexAdapterV2.parseCodexGoalCommand("set a /goal"));
     });
 
+    it.effect("reserves root ordinals while a goal continuation consumer is delayed", () =>
+      Effect.gen(function* () {
+        const prompt = "Keep going";
+        const nextPrompt = "Follow up";
+        const releaseConsumer = yield* Deferred.make<void>();
+        const continuationObserved = yield* Deferred.make<void>();
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({
+            scenario: "goal-delayed-consumer-ordinals",
+            entries: [
+              ...codexReplayPreamble({ nativeThreadId, nativeTurnId: "old-turn", prompt }),
+              notification("goal active", "thread/goal/updated", {
+                threadId: nativeThreadId,
+                turnId: "old-turn",
+                goal: codexGoal("active", 0),
+              }),
+              notification("old turn done", "turn/completed", {
+                threadId: nativeThreadId,
+                turn: makeCodexReplayTurn({ id: "old-turn", status: "completed" }),
+              }),
+              notification("continuation", "turn/started", {
+                threadId: nativeThreadId,
+                turn: makeCodexReplayTurn({ id: "continuation-turn", status: "inProgress" }),
+              }),
+              notification("goal complete", "thread/goal/updated", {
+                threadId: nativeThreadId,
+                turnId: "continuation-turn",
+                goal: codexGoal("complete", 1200),
+              }),
+              notification("continuation done", "turn/completed", {
+                threadId: nativeThreadId,
+                turn: makeCodexReplayTurn({ id: "continuation-turn", status: "completed" }),
+              }),
+              ...withReplayRequestId(
+                codexReplayPreamble({
+                  nativeThreadId,
+                  nativeTurnId: "new-run-turn",
+                  prompt: nextPrompt,
+                }).slice(5),
+                4,
+              ),
+              notification("new run done", "turn/completed", {
+                threadId: nativeThreadId,
+                turn: makeCodexReplayTurn({ id: "new-run-turn", status: "completed" }),
+              }),
+            ],
+          }),
+          (event) =>
+            event.type === "provider_turn.updated" &&
+            event.providerTurn.ordinal === 107 &&
+            event.providerTurn.status === "running"
+              ? Deferred.succeed(continuationObserved, undefined).pipe(
+                  Effect.andThen(Deferred.await(releaseConsumer)),
+                )
+              : Effect.void,
+        );
+        const first = {
+          ...makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("old-attempt"),
+            text: prompt,
+          }),
+          providerTurnOrdinal: 106,
+        };
+        yield* harness.runtime.startTurn(first);
+        yield* Deferred.await(continuationObserved);
+        yield* harness.runtime.startTurn({
+          ...first,
+          runId: RunId.make("new-run"),
+          attemptId: RunAttemptId.make("new-attempt"),
+          rootNodeId: NodeId.make("new-root"),
+          runOrdinal: 2,
+          providerTurnOrdinal: 107,
+          message: { ...first.message, messageId: MessageId.make("new-message"), text: nextPrompt },
+        });
+        yield* Deferred.succeed(releaseConsumer, undefined);
+        yield* harness.awaitTerminal(2);
+        assert.deepEqual(
+          harness.events.flatMap((event) =>
+            event.type === "provider_turn.updated" && event.providerTurn.status === "running"
+              ? [event.providerTurn.ordinal]
+              : [],
+          ),
+          [106, 107, 108],
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    );
+
     it.effect("keeps a /goal run open across the turns Codex continues on its own", () =>
       Effect.gen(function* () {
         const transcript = makeCodexReplayTranscript({

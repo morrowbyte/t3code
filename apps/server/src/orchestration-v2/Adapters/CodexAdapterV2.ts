@@ -2669,6 +2669,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             driver: CODEX_PROVIDER,
             nativeTurnId: input.nativeTurnId,
           });
+          // Native goal turns can advance before their queued events reach the projection.
+          const providerTurnOrdinal = yield* nextProviderTurnOrdinal(
+            input.turnInput.providerThread.id,
+            input.turnInput.providerTurnOrdinal,
+          );
           const context: ActiveCodexTurnContext = {
             ...(input.waitForNativeStart ? { nativeStartReady: yield* Deferred.make<void>() } : {}),
             input: input.turnInput,
@@ -2678,7 +2683,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             nativeTurnId: input.nativeTurnId,
             providerThread: input.turnInput.providerThread,
             providerTurnId,
-            providerTurnOrdinal: input.turnInput.providerTurnOrdinal,
+            providerTurnOrdinal,
             providerNodeId: input.turnInput.rootNodeId,
             providerNodeKind: "root_turn",
             providerNodeStartedAt: input.startedAt,
@@ -2737,7 +2742,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 nativeId: input.nativeTurnId,
                 strength: "strong",
               },
-              ordinal: input.turnInput.providerTurnOrdinal,
+              ordinal: providerTurnOrdinal,
               status: "running",
               startedAt: input.startedAt,
               completedAt: null,
@@ -7218,7 +7223,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               driver: CODEX_PROVIDER,
               nativeTurnId: nativeId,
             }),
-            providerTurnOrdinal: turnInput.providerTurnOrdinal,
+            providerTurnOrdinal: yield* nextProviderTurnOrdinal(
+              turnInput.providerThread.id,
+              turnInput.providerTurnOrdinal,
+            ),
             providerNodeId: turnInput.rootNodeId,
             providerNodeKind: "root_turn",
             providerNodeStartedAt: now,
@@ -7236,7 +7244,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             nodeId: turnInput.rootNodeId,
             runAttemptId: turnInput.attemptId,
             nativeTurnRef: null,
-            ordinal: turnInput.providerTurnOrdinal,
+            ordinal: context.providerTurnOrdinal,
             status: "running",
             startedAt: now,
             completedAt: null,
