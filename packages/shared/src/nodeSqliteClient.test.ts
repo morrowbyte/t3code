@@ -367,7 +367,7 @@ it.effect("uses the writer when the reader cannot open the database", () =>
       yield* Effect.gen(function* () {
         assert.equal(yield* sql.withTransaction(countEntries(sql)).pipe(SqliteClient.readOnly), 1);
         assert.equal(yield* sql.withTransaction(countEntries(sql)).pipe(SqliteClient.readOnly), 1);
-  
+
         // A read beside an open read transaction must not start a worker on the next slot.
         const held = yield* Deferred.make<void>();
         const release = yield* Deferred.make<void>();

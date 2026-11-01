@@ -153,9 +153,12 @@ export const comparisonBase = Effect.fn("checkChanged.comparisonBase")(function*
 ) {
   if (exact) {
     const ref = Option.getOrElse(explicitRef, () => "origin/main");
-    const base = yield* git(root, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`]).pipe(
-      Effect.map((stdout) => stdout.toString().trim()),
-    );
+    const base = yield* git(root, [
+      "rev-parse",
+      "--verify",
+      "--end-of-options",
+      `${ref}^{commit}`,
+    ]).pipe(Effect.map((stdout) => stdout.toString().trim()));
     return { ref, base };
   }
   const candidates = Option.isSome(explicitRef)
@@ -245,7 +248,8 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
 
   const lines = (...args: Array<string>) => gitLines(root, args);
 
-  const requestedRef = input.quick && Option.isNone(input.ref) ? Option.some("origin/main") : input.ref;
+  const requestedRef =
+    input.quick && Option.isNone(input.ref) ? Option.some("origin/main") : input.ref;
   const { ref, base } = yield* comparisonBase(root, requestedRef, input.exactBase);
   // --no-renames lists a rename as its old and new path, as CI does.
   const changedFiles = lines("diff", "--name-only", "--no-renames", base, "--");
@@ -308,7 +312,9 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     return hash.digest("hex");
   });
   const key = yield* inputKey;
-  const cachePath = inRoot(`node_modules/.cache/check-${input.quick ? "integration" : "changed"}.json`);
+  const cachePath = inRoot(
+    `node_modules/.cache/check-${input.quick ? "integration" : "changed"}.json`,
+  );
   // A missing or unreadable cache is a miss, never a failure.
   const cached = yield* fs
     .readFileString(cachePath)
@@ -333,7 +339,8 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     const dir = path.dirname(file);
     const prefix = `${path.basename(file).replace(CODE, "")}.`;
     for (const entry of yield* fs.readDirectory(inRoot(dir))) {
-      if (entry.startsWith(prefix) && TEST.test(entry)) tests.add(path.join(dir, entry).replaceAll(path.sep, "/"));
+      if (entry.startsWith(prefix) && TEST.test(entry))
+        tests.add(path.join(dir, entry).replaceAll(path.sep, "/"));
     }
   }
   for (const test of docReaderTests(files)) tests.add(test);
@@ -376,9 +383,11 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   // knip:check cannot be scoped to a package. Any code change can leave a file,
   // export, or dependency unused (removing the last import of a helper does), so
   // it runs whenever code or a manifest changes.
-  const runKnip = !input.quick && files.some(
-    (file) => CODE.test(file) || path.basename(file) === "package.json" || file === "knip.jsonc",
-  );
+  const runKnip =
+    !input.quick &&
+    files.some(
+      (file) => CODE.test(file) || path.basename(file) === "package.json" || file === "knip.jsonc",
+    );
   // CI runs knip:check as one script of `knip ... && knip ...` passes. The passes
   // do not depend on each other, so they run side by side here.
   const rootPackage = yield* fs
@@ -396,15 +405,17 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
 
   // A version bump can leave a patch unused, causing pnpm to reject the install
   // with ERR_PNPM_UNUSED_PATCH. Check it here as Release Smoke does in CI.
-  const runPatchCheck = !input.quick && files.some(
-    (file) =>
-      file === "pnpm-workspace.yaml" ||
-      file === "pnpm-lock.yaml" ||
-      file === ".pnpmfile.cjs" ||
-      file.startsWith("patches/") ||
-      file.startsWith("apps/mobile/deps/") ||
-      path.basename(file) === "package.json",
-  );
+  const runPatchCheck =
+    !input.quick &&
+    files.some(
+      (file) =>
+        file === "pnpm-workspace.yaml" ||
+        file === "pnpm-lock.yaml" ||
+        file === ".pnpmfile.cjs" ||
+        file.startsWith("patches/") ||
+        file.startsWith("apps/mobile/deps/") ||
+        path.basename(file) === "package.json",
+    );
 
   // Output is piped, so keep the colors a terminal would get.
   const env = process.stdout.isTTY ? { FORCE_COLOR: "1" } : {};
@@ -412,7 +423,12 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     Effect.scoped(
       Effect.gen(function* () {
         const handle = yield* spawner.spawn(
-          ChildProcess.make(process.execPath, [vpEntry, ...args], { cwd, env, extendEnv: true, forceKillAfter: "5 seconds" }),
+          ChildProcess.make(process.execPath, [vpEntry, ...args], {
+            cwd,
+            env,
+            extendEnv: true,
+            forceKillAfter: "5 seconds",
+          }),
         );
         const [output, exitCode] = yield* Effect.all(
           [Stream.mkString(Stream.decodeText(handle.all)), handle.exitCode],
@@ -460,8 +476,8 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   ).pipe(Effect.catch((error) => Effect.succeed({ ok: false, output: error.message })));
 
   // CI's Lint job checks that generated GraphQL operations match their sources.
-  const graphql = (input.quick ? [] : ["apps/server", "packages/source-control-github"]).filter((dir) =>
-    files.some((file) => file.startsWith(`${dir}/`)),
+  const graphql = (input.quick ? [] : ["apps/server", "packages/source-control-github"]).filter(
+    (dir) => files.some((file) => file.startsWith(`${dir}/`)),
   );
   const filters = (names: ReadonlyArray<string>) => names.flatMap((name) => ["--filter", name]);
   const typecheckWorkers = Math.min(concurrency, affected.length);
@@ -471,16 +487,23 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     fileArgs?: ReadonlyArray<string>,
   ) => ({
     name,
-    run: fileArgs === undefined
-      ? vp(args)
-      : Effect.forEach(
-          batchCheckArguments(args, fileArgs, platform === "win32" && args[0] === "test" ? 50 : undefined),
-          (batch) => vp(batch),
-          { concurrency: 1 },
-        ).pipe(Effect.map((results) => ({
-          ok: results.every((result) => result.ok),
-          output: results.map((result) => result.output).join("\n"),
-        }))),
+    run:
+      fileArgs === undefined
+        ? vp(args)
+        : Effect.forEach(
+            batchCheckArguments(
+              args,
+              fileArgs,
+              platform === "win32" && args[0] === "test" ? 50 : undefined,
+            ),
+            (batch) => vp(batch),
+            { concurrency: 1 },
+          ).pipe(
+            Effect.map((results) => ({
+              ok: results.every((result) => result.ok),
+              output: results.map((result) => result.output).join("\n"),
+            })),
+          ),
   });
   const compilerFiles = compilerApps.reduce((count, app) => count + app.names.length, 0);
 
@@ -518,12 +541,16 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     ...(tests.size > 0
       ? [
           {
-            ...command(`test (${tests.size} files)`, [
-              "test",
-              "run",
-              "--passWithNoTests",
-              ...(platform === "win32" ? ["--maxWorkers", "2"] : []),
-            ], [...tests]),
+            ...command(
+              `test (${tests.size} files)`,
+              [
+                "test",
+                "run",
+                "--passWithNoTests",
+                ...(platform === "win32" ? ["--maxWorkers", "2"] : []),
+              ],
+              [...tests],
+            ),
             serial: true,
           },
         ]
@@ -564,7 +591,9 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     "release smoke": outputs.release_smoke,
   }).flatMap(([job, runs]) => (runs ? [job] : []));
   if (input.quick) {
-    summary.push("  Before release: typecheck, knip, generated operations, dependency patches and broader regressions.");
+    summary.push(
+      "  Before release: typecheck, knip, generated operations, dependency patches and broader regressions.",
+    );
   } else if (ciOnly.length > 0) summary.push(`  CI also runs: ${ciOnly.join(", ")}`);
   if (!runPatchCheck) summary.push("  unused patch check skipped: no dependency files changed");
   if (!runKnip) summary.push("  knip skipped: no code or manifest changed");
@@ -596,7 +625,9 @@ export const checkChangedCommand = Command.make(
       Flag.withDescription("Run changed-file format, lint and adjacent regressions."),
     ),
     exactBase: Flag.Boolean("exact-base").pipe(
-      Flag.withDescription("Compare directly with the given commit, including in a shallow CI checkout."),
+      Flag.withDescription(
+        "Compare directly with the given commit, including in a shallow CI checkout.",
+      ),
     ),
     concurrency: Flag.Int("concurrency").pipe(
       Flag.withDescription(

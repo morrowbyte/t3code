@@ -24,6 +24,7 @@ import * as CodexInstallation from "../provider/CodexInstallation.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { resolveCodexLaunchArgs } from "../provider/codexLaunchArgs.ts";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
+import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import { makeCodexManagedRuntime } from "../provider/CodexManagedRuntime.ts";
 import { makeVoiceSettings } from "./VoiceSettings.ts";
@@ -438,6 +439,7 @@ export const layer = Layer.effect(
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const registry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
     const installation = yield* CodexInstallation.CodexInstallation;
+    const secretResolver = yield* SecretResolver.SecretResolver;
     const preferences = yield* makeVoiceSettings;
     const runtimeContext =
       yield* Effect.context<Effect.Services<ReturnType<typeof makeCodexManagedRuntime>>>();
@@ -571,7 +573,25 @@ export const layer = Layer.effect(
                   detail: "The selected Codex instance has no executable.",
                 });
               }
-              const environment = yield* mergeProviderInstanceEnvironment(envelope.environment);
+              const variables = envelope.environment ?? [];
+              const references = variables.flatMap((variable) =>
+                typeof variable.value === "string" ? [] : [variable.value],
+              );
+              const secrets = references.length > 0 ? yield* secretResolver.read(references) : [];
+              let secretIndex = 0;
+              const resolvedVariables = yield* Effect.forEach(variables, (variable) => {
+                const value =
+                  typeof variable.value === "string" ? variable.value : secrets[secretIndex++];
+                return value === undefined
+                  ? Effect.fail(
+                      new VoiceTranscriptionError({
+                        reason: "provider_unavailable",
+                        detail: `The selected Codex environment variable ${variable.name} could not be read.`,
+                      }),
+                    )
+                  : Effect.succeed({ ...variable, value });
+              });
+              const environment = yield* mergeProviderInstanceEnvironment(resolvedVariables);
               if (config.setupMode === "managed") {
                 const runtime = yield* makeCodexManagedRuntime({
                   instanceId: selected[0] as import("@t3tools/contracts").ProviderInstanceId,
@@ -594,7 +614,7 @@ export const layer = Layer.effect(
                   ),
                 );
               }
-              const instancePath = envelope.environment?.findLast(
+              const instancePath = resolvedVariables.findLast(
                 (variable) => variable.name.toUpperCase() === "PATH",
               );
               const binaryPath =

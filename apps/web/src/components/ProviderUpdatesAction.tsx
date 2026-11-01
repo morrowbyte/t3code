@@ -16,15 +16,6 @@ import { Button } from "./ui/button";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
-/**
- * Every outdated provider with a one-click update on every connected machine,
- * plus a function that updates them all and reports the results in one toast.
- * Each server queues updates that share an installer, so sending them all
- * together is safe. The server still checks permissions: a session that
- * cannot operate a machine gets a failure line for it. The returned promise
- * settles with every result when every update has finished. `quiet` skips the
- * toast, for a caller that reports the results itself.
- */
 export function useProviderUpdates() {
   const { environments } = useEnvironments();
   const manageableIds = useEnvironmentsWithScope(environments, AuthProvidersManageScope);

@@ -955,7 +955,9 @@ export const make = Effect.gen(function* () {
             }
             return driver.preflight(entry, route).pipe(
               Effect.timeoutOption("5 seconds"),
-              Effect.map((result) => (Option.isSome(result) && result.value === "ready" ? route : null)),
+              Effect.map((result) =>
+                Option.isSome(result) && result.value === "ready" ? route : null,
+              ),
             );
           },
           { concurrency: 4 },

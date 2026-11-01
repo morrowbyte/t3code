@@ -267,14 +267,23 @@ it("compares against an explicit ref instead of the closest remote main", async 
 
 it("uses the exact requested commit when it is not an ancestor", async () => {
   using project = fixture({ origin: "A" });
-  const branch = NodeChildProcess.execFileSync(
-    "git", ["symbolic-ref", "--short", "HEAD"], { cwd: project.root, encoding: "utf8", env },
-  ).trim();
-  NodeChildProcess.execFileSync("git", ["checkout", "-b", "other", project.commits.A!], { cwd: project.root, env });
+  const branch = NodeChildProcess.execFileSync("git", ["symbolic-ref", "--short", "HEAD"], {
+    cwd: project.root,
+    encoding: "utf8",
+    env,
+  }).trim();
+  NodeChildProcess.execFileSync("git", ["checkout", "-b", "other", project.commits.A!], {
+    cwd: project.root,
+    env,
+  });
   NodeFS.writeFileSync(NodePath.join(project.root, "other.txt"), "other");
   NodeChildProcess.execFileSync("git", ["add", "."], { cwd: project.root, env });
   NodeChildProcess.execFileSync("git", ["commit", "-m", "Other"], { cwd: project.root, env });
-  const other = NodeChildProcess.execFileSync("git", ["rev-parse", "HEAD"], { cwd: project.root, encoding: "utf8", env }).trim();
+  const other = NodeChildProcess.execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: project.root,
+    encoding: "utf8",
+    env,
+  }).trim();
   NodeChildProcess.execFileSync("git", ["checkout", branch], { cwd: project.root, env });
   const exact = await compare(project.root, Option.some(other), true);
   const merged = await compare(project.root, Option.some(other));

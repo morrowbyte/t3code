@@ -3413,8 +3413,11 @@ describe("groupSidebarThreadsByProject", () => {
     ]);
     const delegated = thread("delegated", remoteEnvironmentId, fleet);
     expect(
-      groupSidebarThreadsByProject(groups, [...threads, delegated], () => false, (entry) =>
-        entry === delegated ? threads[0]! : entry,
+      groupSidebarThreadsByProject(
+        groups,
+        [...threads, delegated],
+        () => false,
+        (entry) => (entry === delegated ? threads[0]! : entry),
       ).map((folder) => ({
         projectKey: folder.group.projectKey,
         threads: folder.threads.map((entry) => entry.id),

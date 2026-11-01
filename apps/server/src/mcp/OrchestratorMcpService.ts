@@ -1255,17 +1255,21 @@ const make = Effect.gen(function* () {
             ),
           );
 
-  const requireTargetThreadShell = Effect.fn(
-    "OrchestratorMcpService.requireTargetThreadShell",
-  )(function* (threadId: ThreadId) {
-    const shell = yield* threadManagement
-      .getThreadShell(threadId)
-      .pipe(Effect.mapError(threadManagementFailure));
-    if (shell === null || shell.deletedAt !== null) {
-      return yield* threadNotFound(threadManagement, threadId, `Thread ${threadId} was not found.`);
-    }
-    return shell;
-  });
+  const requireTargetThreadShell = Effect.fn("OrchestratorMcpService.requireTargetThreadShell")(
+    function* (threadId: ThreadId) {
+      const shell = yield* threadManagement
+        .getThreadShell(threadId)
+        .pipe(Effect.mapError(threadManagementFailure));
+      if (shell === null || shell.deletedAt !== null) {
+        return yield* threadNotFound(
+          threadManagement,
+          threadId,
+          `Thread ${threadId} was not found.`,
+        );
+      }
+      return shell;
+    },
+  );
 
   const loadTargetThread = Effect.fn("OrchestratorMcpService.loadTargetThread")(function* (
     threadId: ThreadId,

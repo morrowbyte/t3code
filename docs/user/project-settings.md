@@ -74,6 +74,7 @@ The project's budget limits new compute reservations. **Usage** shows the accoun
 remaining included compute, wallet balance and recorded machine costs. Enable project CI
 to write its GitHub workflow, then review and commit that workflow. GitHub must also be
 connected to Boat and allowed to run the repository's jobs.
+
 ## Pin and archive projects
 
 Pinned projects come first in the project pickers: the project picker on a new thread, the

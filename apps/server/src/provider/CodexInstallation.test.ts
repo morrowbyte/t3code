@@ -1,4 +1,5 @@
 import * as CodexInstallationTestHost from "./testing/CodexInstallationTestHost.ts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ModelManifest from "./ModelManifest.ts";
 import { expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -19,7 +20,6 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as CodexInstallation from "./CodexInstallation.ts";
 import * as Clock from "effect/Clock";
 import * as Sink from "effect/Sink";
-import * as TestClock from "effect/testing/TestClock";
 import * as Path from "effect/Path";
 
 const archive = Buffer.from(

@@ -988,8 +988,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
               key={file.id}
               file={file}
               copyMarkdown={
-                attachmentReferences.find((reference) => reference.attachmentId === file.id)
-                  ?.source
+                attachmentReferences.find((reference) => reference.attachmentId === file.id)?.source
               }
             />
           ))}
@@ -1002,11 +1001,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
             const label = userMessageFileLabel(file);
             const fileIdentity = (
               <>
-                <PierreEntryIcon
-                  pathValue={file.name}
-                  kind="file"
-                  theme={ctx.resolvedTheme}
-                />
+                <PierreEntryIcon pathValue={file.name} kind="file" theme={ctx.resolvedTheme} />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate">{label}</span>
                   {file.downloadable === false || pastedText ? (
@@ -1056,11 +1051,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
           })}
           {unknownAttachments.map((attachment) => (
             <div key={attachment.id} className="flex min-w-0 items-center gap-2 py-1 text-sm">
-              <PierreEntryIcon
-                pathValue={attachment.name}
-                kind="file"
-                theme={ctx.resolvedTheme}
-              />
+              <PierreEntryIcon pathValue={attachment.name} kind="file" theme={ctx.resolvedTheme} />
               <span className="min-w-0 flex-1 truncate">{attachment.name}</span>
             </div>
           ))}
@@ -1205,7 +1196,10 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
             {messageAttachments}
             {fileCardsOnly || audioOnly ? null : (
               <div onCopyCapture={onBodyCopyCapture}>
-                <p aria-hidden className="mb-1 text-xs font-medium text-muted-foreground select-none">
+                <p
+                  aria-hidden
+                  className="mb-1 text-xs font-medium text-muted-foreground select-none"
+                >
                   Du
                 </p>
                 <CollapsibleUserMessageBody

@@ -5431,7 +5431,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           command.senderThreadId !== caller.threadId ||
           run === undefined ||
           run.providerInstanceId !== caller.providerInstanceId ||
-          (!isBlockingRun(run) && !nativeWork) ||
+          (!isActiveRun(run) && !nativeWork) ||
           (yield* stopReachedRun(command, caller.threadId, caller.runId))
         )
           return yield* new OrchestratorDispatchError({
