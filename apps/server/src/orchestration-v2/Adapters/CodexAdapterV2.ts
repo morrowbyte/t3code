@@ -8359,6 +8359,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               ];
               if (interruptTargetContexts.length === 0) {
                 if (turnInput.requestRuntimeRestart === true) return;
+                const terminalized = yield* Ref.get(terminalizedNonCompletedNativeTurns);
+                for (const nativeTurnId of terminalized) {
+                  if (
+                    idAllocator.derive.providerTurn({ driver: CODEX_PROVIDER, nativeTurnId }) ===
+                    turnInput.providerTurnId
+                  ) {
+                    return;
+                  }
+                }
                 return yield* toProtocolError(
                   `Provider turn ${turnInput.providerTurnId} is not active and cannot be interrupted.`,
                 );

@@ -4224,6 +4224,99 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("accepts a repeated confirmed interrupt but rejects an unknown turn", () =>
+    Effect.gen(function* () {
+      const nativeThreadId = "repeat-interrupt-thread";
+      const nativeTurnId = "repeat-interrupt-turn";
+      const prompt = "Wait for interruption.";
+      let interruptRequests = 0;
+      const harness = yield* makeCodexReplayHarness(
+        makeCodexReplayTranscript({
+          scenario: "repeat-confirmed-interrupt",
+          entries: [
+            ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt }),
+            {
+              type: "expect_outbound",
+              label: "turn/interrupt",
+              frame: {
+                id: 4,
+                method: "turn/interrupt",
+                params: { threadId: nativeThreadId, turnId: nativeTurnId },
+              },
+            },
+            { type: "emit_inbound", label: "turn/interrupt", frame: { id: 4, result: {} } },
+            {
+              type: "emit_inbound",
+              label: "turn/interrupted",
+              frame: {
+                method: "turn/completed",
+                params: {
+                  threadId: nativeThreadId,
+                  turn: makeCodexReplayTurn({ id: nativeTurnId, status: "interrupted" }),
+                },
+              },
+            },
+          ],
+        }),
+        () => Effect.void,
+        (method) =>
+          Effect.sync(() => {
+            if (method === "turn/interrupt") interruptRequests++;
+          }),
+      );
+      yield* harness.runtime.startTurn(
+        makeCodexTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("repeat-interrupt-attempt"),
+          text: prompt,
+        }),
+      );
+      const ids = yield* IdAllocator.IdAllocatorV2;
+      const providerTurnId = ids.derive.providerTurn({
+        driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+        nativeTurnId,
+      });
+      yield* harness.runtime.interruptTurn({
+        providerThread: harness.providerThread,
+        providerTurnId,
+      });
+      yield* harness.firstTerminal;
+      yield* harness.runtime.interruptTurn({
+        providerThread: harness.providerThread,
+        providerTurnId,
+      });
+      const unknown = yield* harness.runtime
+        .interruptTurn({
+          providerThread: harness.providerThread,
+          providerTurnId: ids.derive.providerTurn({
+            driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+            nativeTurnId: "unknown-native-turn",
+          }),
+        })
+        .pipe(Effect.result);
+      assert.equal(unknown._tag, "Failure");
+      if (unknown._tag === "Failure") {
+        assert.instanceOf(unknown.failure, ProviderAdapter.ProviderAdapterInterruptError);
+        assert.include(
+          errorCauseChainText(unknown.failure),
+          "is not active and cannot be interrupted",
+        );
+      }
+      assert.equal(interruptRequests, 1);
+      assert.deepEqual(
+        harness.terminalEvents().map((event) => event.status),
+        ["interrupted"],
+      );
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
   it.effect("waits for native start before interrupting an acknowledged queued turn", () =>
     Effect.gen(function* () {
       const nativeThreadId = "early-stop-thread";
