@@ -51,8 +51,37 @@ export interface CuaStatus {
   readonly supported: boolean;
   readonly enabled: boolean;
   readonly phase: "disabled" | "idle" | "starting" | "ready" | "stopping" | "failed";
+  readonly inputPhase?: WindowsCuaStatus["inputPhase"];
   readonly owner: CuaCaller | null;
 }
+
+interface CuaInputBinding {
+  readonly generation: string;
+  readonly connected: boolean;
+  readonly last: CuaDriverHost.CuaInputPhaseEvent | null;
+  readonly highest: CuaDriverHost.CuaInputPhaseEvent | null;
+  readonly snapshotRequired: boolean;
+}
+
+interface CuaControlState extends CuaStatus {
+  readonly inputPhase: WindowsCuaStatus["inputPhase"];
+  readonly inputBinding: CuaInputBinding | null;
+}
+
+const publicStatus = (state: CuaControlState): CuaStatus => ({
+  environmentId: state.environmentId,
+  supported: state.supported,
+  enabled: state.enabled,
+  phase: state.phase,
+  inputPhase: state.inputPhase,
+  owner: state.owner,
+});
+
+const invalidateInput = (state: CuaControlState): CuaControlState => ({
+  ...state,
+  inputPhase: state.inputPhase === "active" ? "active" : "unknown",
+  inputBinding: null,
+});
 
 export class CuaControl extends Context.Service<
   CuaControl,
@@ -99,11 +128,13 @@ const make = Effect.gen(function* () {
     (platform !== "linux" || (yield* HostProcess.Libc) === "glibc");
   const scope = yield* Effect.scope;
   const gate = yield* Semaphore.make(1);
-  const state = yield* SubscriptionRef.make<CuaStatus>({
+  const state = yield* SubscriptionRef.make<CuaControlState>({
     environmentId,
     supported,
     enabled: false,
     phase: "disabled",
+    inputPhase: "unknown",
+    inputBinding: null,
     owner: null,
   });
   let connection: CuaDriverHost.CuaConnection | undefined;
@@ -114,18 +145,101 @@ const make = Effect.gen(function* () {
       ? Effect.void
       : Effect.fail(new CuaUnavailableError({ reason: "targetMismatch" }));
 
+  const acceptInputPhase = Effect.fn("CuaControl.acceptInputPhase")(function* (
+    input: CuaDriverHost.CuaInputPhaseEvent,
+    snapshot: boolean,
+  ) {
+    const event = { ...input };
+    const result = yield* SubscriptionRef.modify(
+      state,
+      (
+        current,
+      ): readonly [
+        Exit.Exit<CuaDriverHost.CuaInputPhaseReceipt, CuaDriverHost.CuaInputPhaseError>,
+        CuaControlState,
+      ] => {
+        const reject = (reason: CuaDriverHost.CuaInputPhaseError["reason"], next = current) =>
+          [Exit.fail(new CuaDriverHost.CuaInputPhaseError({ reason })), next] as const;
+        const binding = current.inputBinding;
+        if (!binding || !binding.connected || current.phase !== "ready")
+          return reject("unavailable");
+        if (event.generation !== binding.generation) return reject("staleGeneration");
+
+        const validSequence = event.sequence >= 0n && event.sequence <= 18_446_744_073_709_551_615n;
+        const highest =
+          validSequence && (!binding.highest || event.sequence > binding.highest.sequence)
+            ? event
+            : binding.highest;
+        const uncertain: CuaControlState = {
+          ...current,
+          inputPhase: current.inputPhase === "active" ? "active" : "unknown",
+          inputBinding: { ...binding, highest, snapshotRequired: true },
+        };
+        if (
+          !validSequence ||
+          (binding.highest &&
+            (event.sequence < binding.highest.sequence ||
+              (event.sequence === binding.highest.sequence &&
+                event.phase !== binding.highest.phase)))
+        )
+          return reject("staleSequence", uncertain);
+        if (!snapshot) {
+          if (binding.snapshotRequired || !binding.last)
+            return reject("snapshotRequired", uncertain);
+          if (event.sequence === binding.last.sequence && event.phase === binding.last.phase)
+            return [
+              Exit.succeed({ generation: event.generation, sequence: event.sequence }),
+              current,
+            ];
+          if (event.sequence !== binding.last.sequence + 1n)
+            return reject("sequenceGap", uncertain);
+        }
+        return [
+          Exit.succeed({ generation: event.generation, sequence: event.sequence }),
+          {
+            ...current,
+            inputPhase: event.phase,
+            inputBinding: {
+              ...binding,
+              last: event,
+              highest,
+              snapshotRequired: false,
+            },
+          },
+        ];
+      },
+    );
+    return yield* result;
+  });
+
+  if (host.observeInputPhase)
+    yield* host.observeInputPhase({
+      onEvent: (event) => acceptInputPhase(event, false),
+      onSnapshot: (snapshot) => acceptInputPhase(snapshot, true),
+      onDisconnect: (generation) =>
+        SubscriptionRef.update(state, (current): CuaControlState =>
+          current.inputBinding?.generation === generation
+            ? {
+                ...current,
+                inputPhase: current.inputPhase === "active" ? "active" : "unknown",
+                inputBinding: { ...current.inputBinding, connected: false },
+              }
+            : current,
+        ),
+    });
+
   const halt = Effect.fn("CuaControl.halt")(function* (disable: boolean) {
     const ticket = ++revision;
     connection = undefined;
-    yield* SubscriptionRef.update(state, (s): CuaStatus => ({
-      ...s,
+    yield* SubscriptionRef.update(state, (s): CuaControlState => ({
+      ...invalidateInput(s),
       enabled: disable ? false : s.enabled,
       phase: "stopping",
     }));
     // Do not queue behind start: the SDK must be allowed to cancel its in-flight startup.
     const stopped = yield* Effect.exit(host.stop);
     yield* gate.withPermits(1)(
-      SubscriptionRef.update(state, (s): CuaStatus =>
+      SubscriptionRef.update(state, (s): CuaControlState =>
         revision !== ticket
           ? s
           : {
@@ -152,9 +266,11 @@ const make = Effect.gen(function* () {
         if (connection && sameCaller(current.owner, caller)) return connection;
         if (current.owner) return yield* new CuaUnavailableError({ reason: "busy" });
         const ticket = ++revision;
-        yield* SubscriptionRef.update(state, (s): CuaStatus => ({
+        yield* SubscriptionRef.update(state, (s): CuaControlState => ({
           ...s,
           phase: "starting",
+          inputPhase: "unknown",
+          inputBinding: null,
           owner: caller,
         }));
         return yield* Effect.gen(function* () {
@@ -170,7 +286,20 @@ const make = Effect.gen(function* () {
           )
             return yield* new CuaUnavailableError({ reason: "incompatibleDriver" });
           connection = started;
-          yield* SubscriptionRef.update(state, (s): CuaStatus => ({ ...s, phase: "ready" }));
+          yield* SubscriptionRef.update(state, (s): CuaControlState => ({
+            ...s,
+            phase: "ready",
+            inputBinding:
+              started.inputPhaseProtocol === 1 && host.observeInputPhase
+                ? {
+                    generation: started.generation,
+                    connected: true,
+                    last: null,
+                    highest: null,
+                    snapshotRequired: true,
+                  }
+                : null,
+          }));
           yield* host.waitForExit(started.generation).pipe(
             Effect.exit,
             Effect.flatMap((exit) =>
@@ -178,8 +307,8 @@ const make = Effect.gen(function* () {
                 if (revision === ticket) {
                   connection = undefined;
                   revision++;
-                  yield* SubscriptionRef.update(state, (s): CuaStatus => ({
-                    ...s,
+                  yield* SubscriptionRef.update(state, (s): CuaControlState => ({
+                    ...invalidateInput(s),
                     phase: "failed",
                     owner: Exit.isSuccess(exit) ? null : s.owner,
                   }));
@@ -196,8 +325,8 @@ const make = Effect.gen(function* () {
               : Effect.gen(function* () {
                   connection = undefined;
                   const stopped = yield* Effect.exit(host.stop);
-                  yield* SubscriptionRef.update(state, (s): CuaStatus => ({
-                    ...s,
+                  yield* SubscriptionRef.update(state, (s): CuaControlState => ({
+                    ...invalidateInput(s),
                     phase: "failed",
                     owner: Exit.isSuccess(stopped) ? null : s.owner,
                   }));
@@ -212,8 +341,8 @@ const make = Effect.gen(function* () {
     halt(true).pipe(Effect.catch((cause) => Effect.logError("Cua Driver stop failed", cause))),
   );
   return CuaControl.of({
-    status: SubscriptionRef.get(state),
-    changes: SubscriptionRef.changes(state),
+    status: SubscriptionRef.get(state).pipe(Effect.map(publicStatus)),
+    changes: SubscriptionRef.changes(state).pipe(Stream.map(publicStatus)),
     subscribe: (target) =>
       Stream.unwrap(
         requireTarget(target).pipe(
@@ -224,6 +353,7 @@ const make = Effect.gen(function* () {
                 supported: s.supported,
                 enabled: s.enabled,
                 phase: s.phase,
+                inputPhase: s.inputPhase,
                 ownerThreadId: s.owner?.threadId ?? null,
               })),
             ),
@@ -245,7 +375,7 @@ const make = Effect.gen(function* () {
           const current = yield* SubscriptionRef.get(state);
           if (current.phase === "failed" || current.phase === "stopping")
             return yield* new CuaUnavailableError({ reason: "stopped" });
-          yield* SubscriptionRef.update(state, (s): CuaStatus => ({
+          yield* SubscriptionRef.update(state, (s): CuaControlState => ({
             ...s,
             enabled: true,
             phase: s.enabled ? s.phase : "idle",

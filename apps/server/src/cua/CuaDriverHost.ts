@@ -3,9 +3,46 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import type * as Scope from "effect/Scope";
+
+export interface CuaInputPhaseEvent {
+  readonly generation: string;
+  readonly sequence: bigint;
+  readonly phase: "active" | "released";
+}
+
+export type CuaInputPhaseReceipt = Pick<CuaInputPhaseEvent, "generation" | "sequence">;
+
+export class CuaInputPhaseError extends Schema.TaggedError<CuaInputPhaseError>()(
+  "CuaInputPhaseError",
+  {
+    reason: Schema.Literals([
+      "unavailable",
+      "staleGeneration",
+      "staleSequence",
+      "sequenceGap",
+      "snapshotRequired",
+    ]),
+  },
+) {
+  override get message() {
+    return `Cua input phase cannot be acknowledged: ${this.reason}.`;
+  }
+}
+
+export interface CuaInputPhaseObserver {
+  readonly onEvent: (
+    event: CuaInputPhaseEvent,
+  ) => Effect.Effect<CuaInputPhaseReceipt, CuaInputPhaseError>;
+  readonly onSnapshot: (
+    snapshot: CuaInputPhaseEvent,
+  ) => Effect.Effect<CuaInputPhaseReceipt, CuaInputPhaseError>;
+  readonly onDisconnect: (generation: string) => Effect.Effect<void>;
+}
 
 export interface CuaConnection {
   readonly generation: string;
+  readonly inputPhaseProtocol?: 1;
   readonly driverVersion: string;
   readonly contractVersion: string;
   readonly mcpProtocolVersion: string;
@@ -31,6 +68,9 @@ export class CuaDriverHost extends Context.Service<
     readonly start: Effect.Effect<CuaConnection, CuaDriverError>;
     readonly stop: Effect.Effect<void, CuaDriverError>;
     readonly waitForExit: (generation: string) => Effect.Effect<void, CuaDriverError>;
+    readonly observeInputPhase?: (
+      observer: CuaInputPhaseObserver,
+    ) => Effect.Effect<void, never, Scope.Scope>;
   }
 >()("t3/cua/CuaDriverHost") {}
 

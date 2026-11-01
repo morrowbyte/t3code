@@ -1629,23 +1629,32 @@ function ComputerUseSetting() {
   const enabled = (settings?.enableComputerUse ?? settings?.enableWindowsCua) === true;
   const status = useWindowsCuaStatus(environmentId);
   const phase = status.data?.phase;
+  const inputPhase = status.data?.inputPhase ?? "unknown";
   const statusText =
     status.error ??
-    (phase === "failed"
-      ? status.data?.ownerThreadId
-        ? "Stop failed; control may still be active."
-        : "Driver unavailable. Turn off before retrying."
-      : phase === "stopping"
-        ? "Stopping…"
-        : phase === "starting"
-          ? "Starting…"
-          : phase === "ready"
-            ? "Connected"
-            : phase === "idle"
-              ? "Waiting for Codex"
-              : phase === "disabled"
-                ? "Off"
-                : null);
+    (!connected && enabled
+      ? "Input state unknown"
+      : inputPhase === "active"
+        ? phase === "ready"
+          ? "Controlling input"
+          : "Input release unconfirmed"
+        : phase === "failed"
+          ? status.data?.ownerThreadId
+            ? "Stop failed; control may still be active."
+            : "Driver unavailable. Turn off before retrying."
+          : phase === "stopping"
+            ? "Stopping…"
+            : phase === "starting"
+              ? "Starting…"
+              : phase === "ready"
+                ? inputPhase === "released"
+                  ? "Input released"
+                  : "Input state unknown"
+                : phase === "idle"
+                  ? "Waiting for Codex"
+                  : phase === "disabled"
+                    ? "Off"
+                    : null);
 
   return (
     <SettingsSection id="computer-control" title="Computer control">
