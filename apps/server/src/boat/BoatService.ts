@@ -1,6 +1,14 @@
 import { parse as parseYaml, stringify as yaml } from "yaml";
 import {
   BoatAction,
+  BoatTransferInput,
+  BoatTransferProposal,
+  type BoatTransferReceipt,
+  AuthSessionId,
+  AuthEnvironmentMaintainScope,
+  AuthOrchestrationOperateScope,
+  EnvironmentAuthorizationError,
+  authScopeRequiredResponse,
   type BoatAnalytics,
   type BoatAnalyticsInput,
   type BoatUsagePoint,
@@ -38,6 +46,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Scope from "effect/Scope";
 import * as ServerConfig from "../config.ts";
 import * as Secrets from "../auth/ServerSecretStore.ts";
+import type { AuthenticatedSession } from "../auth/EnvironmentAuth.ts";
 import * as Git from "../vcs/GitVcsDriver.ts";
 import * as Projects from "../project/ProjectService.ts";
 import { PreviewManager } from "../preview/Manager.ts";
@@ -166,6 +175,14 @@ const StoredInstance = Schema.Struct({
     }),
   ).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
   revision: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
+  sourceBinding: Schema.NullOr(
+    Schema.Struct({
+      revision: Schema.Number,
+      proposal: BoatTransferProposal,
+      sessionId: AuthSessionId,
+      committedAt: Schema.String,
+    }),
+  ).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   resumeOperation: Schema.NullOr(
     Schema.Struct({
       id: Schema.String,
@@ -258,9 +275,11 @@ const Work = Schema.Record(
       }),
     ),
     sourceTree: Schema.optionalKey(Schema.String),
+    bindingRevision: Schema.optionalKey(Schema.Number),
   }),
 );
 const encodeWork = Schema.encodeEffect(Schema.fromJsonString(Work));
+const decodeTransferInput = Schema.decodeEffect(BoatTransferInput);
 const Desktop = Schema.Struct({ desktopUrl: Schema.NullOr(Schema.String) });
 const Hosted = Schema.Struct({ url: Schema.String });
 const inactive = new Set(["archived", "stopped", "deleted", "error"]);
@@ -319,6 +338,10 @@ export interface BoatDesktopViewer {
 export class BoatService extends Context.Service<
   BoatService,
   {
+    readonly transfer: (
+      input: BoatTransferInput,
+      session: AuthenticatedSession,
+    ) => Effect.Effect<BoatTransferReceipt, BoatError | EnvironmentAuthorizationError>;
     readonly reconcile: () => Effect.Effect<void, BoatError>;
     readonly configureDefaults: (defaults: BoatDefaults) => Effect.Effect<BoatState, BoatError>;
     readonly read: (
@@ -406,6 +429,8 @@ export const make = Effect.gen(function* () {
   let leaseGeneration = 0;
   const resumeInFlight = new Set<string>();
   const prepareInFlight = new Set<string>();
+  const transfersInFlight = new Set<string>();
+  const operationsInFlight = new Map<string, number>();
   const filename = path.join(config.stateDir, "boat.json");
   const workFilename = path.join(config.stateDir, "boat-work.json");
   const workLock = yield* Semaphore.make(1);
@@ -443,6 +468,30 @@ export const make = Effect.gen(function* () {
     ),
     Effect.mapError(storageError),
   );
+  // The ledger is the atomic authority for owner and source changes, including recovery.
+  const applySourceBindings = (state: typeof Ledger.Type, current: typeof Work.Type) => {
+    const next = { ...current };
+    for (const instance of state.instances) {
+      const binding = instance.sourceBinding;
+      if (!binding) continue;
+      const source = {
+        projectId: instance.projectId,
+        threadId: binding.proposal.target.threadId,
+        workspaceRoot: binding.proposal.target.workspaceRoot,
+      };
+      const previous = next[instance.requestId];
+      if (
+        previous?.bindingRevision === binding.revision &&
+        previous.source.projectId === source.projectId &&
+        previous.source.threadId === source.threadId &&
+        previous.source.workspaceRoot === source.workspaceRoot
+      )
+        continue;
+      next[instance.requestId] = { source, commands: [], bindingRevision: binding.revision };
+    }
+    return next;
+  };
+  work = applySourceBindings(ledger, work);
   const save = Effect.fn("BoatService.save")(function* (next: typeof Ledger.Type) {
     yield* fs.makeDirectory(config.stateDir, { recursive: true });
     const json = yield* encodeLedger(next);
@@ -450,6 +499,7 @@ export const make = Effect.gen(function* () {
     yield* fs.writeFileString(temp, json, { mode: 0o600 });
     yield* fs.rename(temp, filename);
     ledger = next;
+    work = applySourceBindings(ledger, work);
     yield* PubSub.publish(leaseChanges, { ledger, work, generation: leaseGeneration });
   }, Effect.mapError(storageError));
   const updateInstance = Effect.fn("BoatService.updateInstance")(
@@ -498,6 +548,7 @@ export const make = Effect.gen(function* () {
       .map(
         ({
           revision: _revision,
+          sourceBinding: _sourceBinding,
           resumeOperation: _resumeOperation,
           usageThreadIds: _usageThreadIds,
           usageHistoryKnownSince: _usageHistoryKnownSince,
@@ -1705,7 +1756,7 @@ export const make = Effect.gen(function* () {
     yield* lock.withPermits(1)(Effect.suspend(() => save({ ...ledger, defaults })));
     return yield* read();
   });
-  const operate = Effect.fn("BoatService.operate")(function* (
+  const executeOperation = Effect.fn("BoatService.operate")(function* (
     action: BoatAction,
     threadId?: ThreadId,
   ) {
@@ -1777,6 +1828,7 @@ export const make = Effect.gen(function* () {
         requestId: action.requestId,
         projectId: action.projectId,
         revision: 0,
+        sourceBinding: null,
         resumeOperation: null,
         savedSnapshot: null,
         sandboxId: null,
@@ -2365,6 +2417,247 @@ ${action.command}`,
       instances: result.instances.filter((item) => item.projectId === action.projectId),
     };
   });
+  const operate = (action: BoatAction, threadId?: ThreadId) =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => {
+        if (transfersInFlight.has(action.requestId)) return false;
+        operationsInFlight.set(
+          action.requestId,
+          (operationsInFlight.get(action.requestId) ?? 0) + 1,
+        );
+        return true;
+      }),
+      (acquired) =>
+        acquired
+          ? executeOperation(action, threadId)
+          : Effect.fail(new BoatError({ category: "conflict" })),
+      (acquired) =>
+        Effect.sync(() => {
+          if (!acquired) return;
+          const remaining = (operationsInFlight.get(action.requestId) ?? 1) - 1;
+          if (remaining) operationsInFlight.set(action.requestId, remaining);
+          else operationsInFlight.delete(action.requestId);
+        }),
+    );
+
+  const inspectTransfer = Effect.fn("BoatService.inspectTransfer")(function* (
+    input: Extract<BoatTransferInput, { action: "inspect" }>,
+  ) {
+    const root = yield* project(input.projectId);
+    const instance = ledger.instances.find(
+      (item) =>
+        item.requestId === input.requestId &&
+        item.projectId === input.projectId &&
+        item.sandboxId === input.sandboxId,
+    );
+    if (!instance || root.id !== input.projectId || !instance.threadId)
+      return yield* new BoatError({ category: "not_found" });
+    const previous = work[input.requestId];
+    const now = yield* Clock.currentTimeMillis;
+    if (
+      !["archived", "stopped"].includes(instance.state) ||
+      instance.leases.length > 0 ||
+      instance.resumeOperation ||
+      instance.deletionOperationId ||
+      resumeInFlight.has(input.requestId) ||
+      prepareInFlight.has(input.requestId) ||
+      operationsInFlight.has(input.requestId) ||
+      work[input.requestId]?.commands.some(
+        (command) =>
+          !Number.isFinite(Date.parse(command.expiresAt)) || Date.parse(command.expiresAt) > now,
+      )
+    )
+      return yield* new BoatError({ category: "conflict" });
+    const thread = yield* projections
+      .getThreadShell(input.targetThreadId)
+      .pipe(Effect.mapError(storageError));
+    if (!thread || thread.deletedAt !== null || thread.projectId !== input.projectId)
+      return yield* new BoatError({ category: "not_found" });
+    const workspaceRoot = yield* fs
+      .realPath(thread.worktreePath ?? root.workspaceRoot)
+      .pipe(Effect.mapError(storageError));
+    const head = yield* git
+      .execute({
+        operation: "boat-transfer",
+        cwd: workspaceRoot,
+        args: ["rev-parse", "--verify", "HEAD"],
+      })
+      .pipe(Effect.mapError(storageError));
+    if (head.exitCode !== 0 || !/^[a-f0-9]{40,64}$/.test(head.stdout.trim()))
+      return yield* new BoatError({ category: "conflict" });
+    if (new Set(input.receiptPaths).size !== input.receiptPaths.length)
+      return yield* new BoatError({ category: "conflict" });
+    const files = [];
+    let totalBytes = 0;
+    for (const name of [...input.receiptPaths].sort()) {
+      if (
+        path.isAbsolute(name) ||
+        name.split(/[\\/]/).some((part) => !part || part === ".." || part.startsWith("."))
+      )
+        return yield* new BoatError({ category: "conflict" });
+      const file = yield* fs
+        .realPath(path.join(workspaceRoot, name))
+        .pipe(Effect.mapError(storageError));
+      const relative = path.relative(workspaceRoot, file);
+      if (
+        relative.split(path.sep).some((part) => part.startsWith(".")) ||
+        path.isAbsolute(relative)
+      )
+        return yield* new BoatError({ category: "conflict" });
+      const stat = yield* fs.stat(file).pipe(Effect.mapError(storageError));
+      totalBytes += Number(stat.size);
+      if (stat.type !== "File" || stat.size > 2_097_152n || totalBytes > 16_777_216)
+        return yield* new BoatError({ category: "conflict" });
+      const content = yield* fs.readFile(file).pipe(Effect.mapError(storageError));
+      if (content.length !== Number(stat.size) || content.length > 2_097_152)
+        return yield* new BoatError({ category: "conflict" });
+      const digest = yield* crypto.digest("SHA-256", content).pipe(Effect.mapError(storageError));
+      files.push({
+        path: name,
+        sha256: Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join(""),
+      });
+    }
+    const latestThread = yield* projections
+      .getThreadShell(input.targetThreadId)
+      .pipe(Effect.mapError(storageError));
+    const latestProject = yield* project(input.projectId);
+    if (
+      !latestThread ||
+      latestThread.deletedAt !== null ||
+      latestThread.projectId !== input.projectId
+    )
+      return yield* new BoatError({ category: "conflict" });
+    const latestWorkspace = yield* fs
+      .realPath(latestThread.worktreePath ?? latestProject.workspaceRoot)
+      .pipe(Effect.mapError(storageError));
+    if (latestWorkspace !== workspaceRoot) return yield* new BoatError({ category: "conflict" });
+    const current = ledger.instances.find((item) => item.requestId === input.requestId);
+    if (
+      !current ||
+      current.threadId !== instance.threadId ||
+      current.sandboxId !== instance.sandboxId ||
+      !["archived", "stopped"].includes(current.state) ||
+      current.leases.length > 0 ||
+      current.resumeOperation ||
+      current.deletionOperationId ||
+      work[input.requestId] !== previous
+    )
+      return yield* new BoatError({ category: "conflict" });
+    return {
+      projectId: input.projectId,
+      requestId: input.requestId,
+      sandboxId: input.sandboxId,
+      expected: {
+        revision: current.revision,
+        ownerThreadId: current.threadId!,
+        source: previous ? { ...previous.source, sourceTree: previous.sourceTree ?? null } : null,
+      },
+      target: { threadId: thread.id, workspaceRoot, head: head.stdout.trim(), files },
+    } satisfies BoatTransferProposal;
+  });
+
+  const transfer = Effect.fn("BoatService.transfer")(function* (
+    input: BoatTransferInput,
+    session: AuthenticatedSession,
+  ) {
+    for (const scope of [AuthEnvironmentMaintainScope, AuthOrchestrationOperateScope]) {
+      if (!session.scopes.includes(scope))
+        return yield* new EnvironmentAuthorizationError({
+          message: `The authenticated session is missing required scope: ${scope}.`,
+          ...authScopeRequiredResponse(scope),
+        });
+    }
+    const decoded = yield* decodeTransferInput(input).pipe(
+      Effect.mapError(() => new BoatError({ category: "conflict" })),
+    );
+    if (decoded.action === "inspect")
+      return { proposal: yield* inspectTransfer(decoded), committed: false };
+    const expected = decoded.proposal;
+    return yield* Effect.acquireUseRelease(
+      Effect.sync(() => {
+        if (transfersInFlight.has(expected.requestId) || operationsInFlight.has(expected.requestId))
+          return false;
+        transfersInFlight.add(expected.requestId);
+        return true;
+      }),
+      (acquired) =>
+        acquired
+          ? Effect.gen(function* () {
+              const inspection = {
+                action: "inspect" as const,
+                projectId: expected.projectId,
+                requestId: expected.requestId,
+                sandboxId: expected.sandboxId,
+                targetThreadId: expected.target.threadId,
+                receiptPaths: expected.target.files.map((file) => file.path),
+              };
+              const current = yield* inspectTransfer(inspection);
+              if (encodeCacheKey(current) !== encodeCacheKey(expected))
+                return yield* new BoatError({ category: "conflict" });
+              yield* previewLock.withPermits(1)(
+                workLock.withPermits(1)(
+                  lock.withPermits(1)(
+                    Effect.gen(function* () {
+                      const checked = yield* inspectTransfer(inspection);
+                      if (encodeCacheKey(checked) !== encodeCacheKey(expected))
+                        return yield* new BoatError({ category: "conflict" });
+                      const committedAt = DateTime.formatIso(yield* DateTime.now);
+                      yield* Effect.uninterruptible(
+                        Effect.gen(function* () {
+                          yield* save({
+                            ...ledger,
+                            instances: ledger.instances.map((item) =>
+                              item.requestId !== expected.requestId
+                                ? item
+                                : {
+                                    ...item,
+                                    threadId: expected.target.threadId,
+                                    revision: item.revision + 1,
+                                    sourceBinding: {
+                                      revision: item.revision + 1,
+                                      proposal: expected,
+                                      sessionId: session.sessionId,
+                                      committedAt,
+                                    },
+                                    leases: [],
+                                    processId: null,
+                                    previewTabId: null,
+                                    previewUrl: null,
+                                  },
+                            ),
+                          });
+                          yield* saveWork(work).pipe(
+                            Effect.catchTags({
+                              BoatError: () =>
+                                Effect.logWarning(
+                                  "Boat transfer committed; derived source cache could not be saved.",
+                                ),
+                            }),
+                          );
+                          const desktop = privateDesktopPreviews.get(expected.requestId);
+                          if (desktop) yield* Deferred.succeed(desktop.ended, undefined);
+                        }),
+                      );
+                    }),
+                  ),
+                ),
+              );
+              for (const entry of [
+                privatePreviews.get(expected.requestId),
+                privateAndroidPreviews.get(expected.requestId),
+                privateDesktopPreviews.get(expected.requestId),
+              ])
+                if (entry) yield* Scope.close(entry.scope, Exit.void);
+              return { proposal: expected, committed: true };
+            })
+          : Effect.fail(new BoatError({ category: "conflict" })),
+      (acquired) =>
+        Effect.sync(() => {
+          if (acquired) transfersInFlight.delete(expected.requestId);
+        }),
+    );
+  });
+
   const activeLeaseOwners = Effect.fn("BoatService.activeLeaseOwners")(function* (
     threadId: ThreadId,
     projectId: ProjectId,
@@ -2456,12 +2749,14 @@ ${action.command}`,
     });
     const instance = yield* validate;
     const sourceTree = work[target.requestId]?.sourceTree ?? null;
+    const bindingRevision = work[target.requestId]?.bindingRevision;
     const deadline = Date.parse(instance.expiresAt);
     const check = Effect.gen(function* () {
       if (
         (yield* Deferred.isDone(ended)) ||
         (yield* Clock.currentTimeMillis) >= deadline ||
-        (work[target.requestId]?.sourceTree ?? null) !== sourceTree
+        (work[target.requestId]?.sourceTree ?? null) !== sourceTree ||
+        work[target.requestId]?.bindingRevision !== bindingRevision
       )
         return yield* new BoatError({ category: "conflict" });
       yield* validate;
@@ -2483,7 +2778,8 @@ ${action.command}`,
           !changed.ledger.projects[instance.projectId]?.enabled ||
           nextSource?.threadId !== source?.threadId ||
           nextSource?.workspaceRoot !== source?.workspaceRoot ||
-          (changed.work[target.requestId]?.sourceTree ?? null) !== sourceTree
+          (changed.work[target.requestId]?.sourceTree ?? null) !== sourceTree ||
+          changed.work[target.requestId]?.bindingRevision !== bindingRevision
         )
           return yield* new BoatError({ category: "conflict" });
         yield* check;
@@ -2620,6 +2916,7 @@ ${action.command}`,
     openDesktopAccess,
     getDesktopAccess,
     registerDesktopViewer,
+    transfer,
     isEnabled: (projectId: ProjectId) => Effect.sync(() => projectSettings(projectId).enabled),
     connect,
     disconnect,

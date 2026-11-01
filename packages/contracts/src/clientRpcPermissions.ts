@@ -24,6 +24,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.boatConfigure]: AuthSettingsWriteScope,
   [WS_METHODS.boatSetup]: AuthOrchestrationOperateScope,
   [WS_METHODS.boatOperate]: AuthOrchestrationOperateScope,
+  [WS_METHODS.boatTransfer]: AuthEnvironmentMaintainScope,
   [WS_METHODS.connectedEnvironmentSubscribe]: AuthOrchestrationReadScope,
   [WS_METHODS.connectedEnvironmentRespond]: AuthOrchestrationReadScope,
   [WS_METHODS.connectedEnvironmentRead]: AuthOrchestrationReadScope,
@@ -119,6 +120,8 @@ export function clientRpcRequiredScopes(
   method: string,
   input: unknown,
 ): readonly AuthEnvironmentScope[] {
+  if (method === WS_METHODS.boatTransfer)
+    return [AuthEnvironmentMaintainScope, AuthOrchestrationOperateScope];
   if (
     method === WS_METHODS.boatOperate &&
     typeof input === "object" &&

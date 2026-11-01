@@ -7,6 +7,8 @@ import {
   BoatConnectInput,
   BoatProjectInput,
   BoatAction,
+  BoatTransferInput,
+  BoatTransferReceipt,
   BoatState,
   BoatError,
 } from "./boat.ts";
@@ -664,6 +666,7 @@ export const WS_METHODS = {
   boatDisconnect: "boat.disconnect",
   boatConfigure: "boat.configure",
   boatOperate: "boat.operate",
+  boatTransfer: "boat.transfer",
   boatSetup: "boat.setup",
   serverGetUsageSummary: "server.getUsageSummary",
   serverRefreshUsageRates: "server.refreshUsageRates",
@@ -1147,6 +1150,11 @@ const BoatSetupRpc = Rpc.make(WS_METHODS.boatSetup, {
 const BoatOperateRpc = Rpc.make(WS_METHODS.boatOperate, {
   payload: BoatAction,
   success: BoatState,
+  error: Schema.Union([EnvironmentAuthorizationError, BoatError]),
+});
+const BoatTransferRpc = Rpc.make(WS_METHODS.boatTransfer, {
+  payload: BoatTransferInput,
+  success: BoatTransferReceipt,
   error: Schema.Union([EnvironmentAuthorizationError, BoatError]),
 });
 
@@ -2478,6 +2486,7 @@ export const WsRpcGroup = RpcGroup.make(
   BoatDisconnectRpc,
   BoatConfigureRpc,
   BoatOperateRpc,
+  BoatTransferRpc,
   BoatSetupRpc,
   WsServerGetUsageSummaryRpc,
   WsServerRefreshUsageRatesRpc,

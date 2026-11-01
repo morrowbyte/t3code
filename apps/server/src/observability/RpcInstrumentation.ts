@@ -253,6 +253,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.boatConfigure]: "server",
   [WS_METHODS.boatSetup]: "server",
   [WS_METHODS.boatOperate]: "server",
+  [WS_METHODS.boatTransfer]: "server",
   [WS_METHODS.yaziPickerOpen]: "attachments",
   [WS_METHODS.yaziPickerPoll]: "attachments",
   [WS_METHODS.yaziPickerWrite]: "attachments",

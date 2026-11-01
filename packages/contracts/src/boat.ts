@@ -196,6 +196,55 @@ export const BoatAction = Schema.Union([
 ]);
 export type BoatAction = typeof BoatAction.Type;
 
+const BoatTransferFile = Schema.Struct({
+  path: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1024)),
+  sha256: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+});
+export const BoatTransferProposal = Schema.Struct({
+  projectId: ProjectId,
+  requestId: instanceFields.requestId,
+  sandboxId: Schema.String.check(Schema.isMinLength(1)),
+  expected: Schema.Struct({
+    revision: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+    ownerThreadId: ThreadId,
+    source: Schema.NullOr(
+      Schema.Struct({
+        projectId: ProjectId,
+        threadId: Schema.NullOr(ThreadId),
+        workspaceRoot: Schema.String,
+        sourceTree: Schema.NullOr(Schema.String),
+      }),
+    ),
+  }),
+  target: Schema.Struct({
+    threadId: ThreadId,
+    workspaceRoot: Schema.String,
+    head: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40,64}$/)),
+    files: Schema.Array(BoatTransferFile).check(Schema.isMinLength(1), Schema.isMaxLength(64)),
+  }),
+});
+export type BoatTransferProposal = typeof BoatTransferProposal.Type;
+export const BoatTransferInput = Schema.Union([
+  Schema.Struct({
+    action: Schema.Literal("inspect"),
+    projectId: ProjectId,
+    requestId: instanceFields.requestId,
+    sandboxId: Schema.String.check(Schema.isMinLength(1)),
+    targetThreadId: ThreadId,
+    receiptPaths: Schema.Array(BoatTransferFile.fields.path).check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(64),
+    ),
+  }),
+  Schema.Struct({ action: Schema.Literal("commit"), proposal: BoatTransferProposal }),
+]);
+export type BoatTransferInput = typeof BoatTransferInput.Type;
+export const BoatTransferReceipt = Schema.Struct({
+  proposal: BoatTransferProposal,
+  committed: Schema.Boolean,
+});
+export type BoatTransferReceipt = typeof BoatTransferReceipt.Type;
+
 export class BoatError extends Schema.TaggedError<BoatError>()("BoatError", {
   category: Schema.Literals([
     "not_configured",

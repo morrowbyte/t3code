@@ -142,6 +142,13 @@ it("keeps Boat credentials behind settings authority and CI file writes behind f
   ]);
 });
 
+it("requires both environment maintenance and orchestration authority for Boat transfers", () => {
+  expect(clientRpcRequiredScopes(WS_METHODS.boatTransfer, {})).toEqual([
+    AuthEnvironmentMaintainScope,
+    AuthOrchestrationOperateScope,
+  ]);
+});
+
 it("requires preview authority when a Boat action attaches to a thread", () => {
   expect(clientRpcRequiredScopes(WS_METHODS.boatOperate, { threadId: "thread-cloud" })).toEqual([
     AuthOrchestrationOperateScope,

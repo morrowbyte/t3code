@@ -1,6 +1,9 @@
 import { assert, it } from "@effect/vitest";
 import {
   DEFAULT_BOAT_PROJECT,
+  AuthSessionId,
+  AuthEnvironmentMaintainScope,
+  AuthOrchestrationOperateScope,
   type DeviceError,
   type DeviceOpenInput,
   type DeviceSession,
@@ -20,6 +23,7 @@ import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Exit from "effect/Exit";
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
@@ -33,6 +37,7 @@ import * as Stream from "effect/Stream";
 import * as Scope from "effect/Scope";
 import * as ServerConfig from "../config.ts";
 import * as Secrets from "../auth/ServerSecretStore.ts";
+import type { AuthenticatedSession } from "../auth/EnvironmentAuth.ts";
 import * as Projects from "../project/ProjectService.ts";
 import * as Git from "../vcs/GitVcsDriver.ts";
 import { PreviewManager } from "../preview/Manager.ts";
@@ -87,6 +92,7 @@ function setup(
   const threads = new Map<ThreadId, Partial<OrchestrationV2ThreadShell>>();
   const subagents = new Map<ThreadId, OrchestrationV2Subagent[]>();
   const gitCwds: string[] = [];
+  let onGitRead = () => {};
   let commandResult: { processId: number; exitCode?: number } = { processId: 123, exitCode: 0 };
   let commandFinished = false;
   const api = Layer.succeed(BoatApi, {
@@ -270,12 +276,13 @@ function setup(
           execute: ({ args, cwd }) =>
             Effect.gen(function* () {
               gitCwds.push(cwd);
+              onGitRead();
               if (args[0] === "archive") {
                 yield* fs.writeFile(args[args.indexOf("--output") + 1]!, archiveBytes);
               }
               return {
                 exitCode: ChildProcessSpawner.ExitCode(0),
-                stdout: args[0] === "write-tree" ? sourceTree : "tree",
+                stdout: ["write-tree", "rev-parse"].includes(args[0]!) ? sourceTree : "tree",
                 stderr: "",
                 stdoutTruncated: false,
                 stderrTruncated: false,
@@ -298,6 +305,9 @@ function setup(
     closedForwardCount: () => closedForwards,
     forwardClosed: Deferred.await(forwardClosed),
     gitCwds,
+    setOnGitRead: (callback: () => void) => {
+      onGitRead = callback;
+    },
     services,
     setThread: (id: ThreadId, thread: Partial<OrchestrationV2ThreadShell>) => {
       threads.set(id, thread);
@@ -759,7 +769,8 @@ it.effect(
 );
 
 it.effect.each(["passive", "release", "disconnect", "scope"] as const)(
-  "does not retain a desktop viewer after %s", (end) => {
+  "does not retain a desktop viewer after %s",
+  (end) => {
     const test = setup();
     return Effect.gen(function* () {
       const boat = yield* make;
@@ -1717,6 +1728,242 @@ it.effect("shares an owner's VM with its child without replacing the bound sourc
     test.setThread(childThreadId, { worktreePath: "/work/child", activeRunId: null });
     yield* boat.reconcile();
     assert.include(test.calls, "POST /sandboxes/bx_23456789/stop");
+  }).pipe(Effect.scoped, Effect.provide(test.services));
+});
+
+const transferSession: AuthenticatedSession = {
+  sessionId: AuthSessionId.make("boat-transfer-session"),
+  subject: "maintainer",
+  method: "browser-session-cookie",
+  scopes: [AuthEnvironmentMaintainScope, AuthOrchestrationOperateScope],
+};
+
+const transferFixture = Effect.fn("transferFixture")(function* (
+  test: ReturnType<typeof setup>,
+  legacy = false,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const config = yield* ServerConfig.ServerConfig;
+  const root = yield* fs.makeTempDirectoryScoped({ prefix: "boat-transfer-" });
+  const oldRoot = `${root}/old`;
+  const targetRoot = `${root}/target`;
+  yield* fs.makeDirectory(oldRoot);
+  yield* fs.makeDirectory(targetRoot);
+  yield* fs.writeFileString(`${targetRoot}/source.ts`, "current source");
+  test.setProjectRoot(root);
+  test.setThread(ownerThreadId, { worktreePath: oldRoot, activeRunId: null });
+  const boat = yield* make;
+  yield* boat.connect(Redacted.make("boat_fixture_private"));
+  yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: true });
+  yield* boat.operate({ action: "start", projectId, requestId: "transfer" }, ownerThreadId);
+  yield* boat.operate({ action: "stop", projectId, requestId: "transfer" }, ownerThreadId);
+  if (legacy) yield* fs.remove(`${config.stateDir}/boat-work.json`);
+  const reopened = yield* make;
+  yield* reopened.reconcile();
+  return { boat: reopened, fs, config, oldRoot, targetRoot };
+});
+
+it.effect.each(["other-owner", "same-owner", "legacy"] as const)(
+  "explicitly transfers an inactive Boat with %s source and survives reload",
+  (kind) => {
+    const test = setup();
+    return Effect.gen(function* () {
+      const { boat, targetRoot, fs, config } = yield* transferFixture(test, kind === "legacy");
+      const targetThreadId =
+        kind === "other-owner" ? ThreadId.make("new-boat-owner") : ownerThreadId;
+      test.setThread(targetThreadId, { worktreePath: targetRoot, activeRunId: null });
+      const before = test.calls.filter((call) => !call.startsWith("GET ")).length;
+      const oldCache = yield* fs
+        .readFileString(`${config.stateDir}/boat-work.json`)
+        .pipe(Effect.orElseSucceed(() => "{}"));
+      const inspected = yield* boat.transfer(
+        {
+          action: "inspect",
+          projectId,
+          requestId: "transfer",
+          sandboxId: "bx_23456789",
+          targetThreadId,
+          receiptPaths: ["source.ts"],
+        },
+        transferSession,
+      );
+      assert.equal(inspected.committed, false);
+      assert.equal(inspected.proposal.expected.ownerThreadId, ownerThreadId);
+      assert.equal(inspected.proposal.expected.source === null, kind === "legacy");
+      assert.equal(inspected.proposal.target.files[0]?.sha256.length, 64);
+      const receipt = yield* boat.transfer(
+        { action: "commit", proposal: inspected.proposal },
+        transferSession,
+      );
+      assert.equal(receipt.committed, true);
+      assert.equal(test.calls.filter((call) => !call.startsWith("GET ")).length, before);
+      const persisted = JSON.parse(yield* fs.readFileString(`${config.stateDir}/boat.json`));
+      assert.equal(persisted.instances[0].threadId, targetThreadId);
+      assert.deepEqual(persisted.instances[0].leases, []);
+      const stale = yield* boat
+        .transfer({ action: "commit", proposal: inspected.proposal }, transferSession)
+        .pipe(Effect.flip);
+      assert.equal("category" in stale ? stale.category : stale._tag, "conflict");
+      yield* fs.writeFileString(`${config.stateDir}/boat-work.json`, oldCache);
+      const reloaded = yield* make;
+      const recovered = yield* reloaded.transfer(
+        {
+          action: "inspect",
+          projectId,
+          requestId: "transfer",
+          sandboxId: "bx_23456789",
+          targetThreadId,
+          receiptPaths: ["source.ts"],
+        },
+        transferSession,
+      );
+      assert.equal(recovered.proposal.expected.source?.workspaceRoot, targetRoot);
+      assert.isNull(recovered.proposal.expected.source?.sourceTree);
+      yield* reloaded.operate(
+        { action: "resume", projectId, requestId: "transfer" },
+        targetThreadId,
+      );
+      const state = yield* reloaded.read(projectId);
+      assert.equal(state.instances[0]?.threadId, targetThreadId);
+
+      if (kind === "other-owner") {
+        const denied = yield* reloaded
+          .operate({ action: "renew", projectId, requestId: "transfer" }, ownerThreadId)
+          .pipe(Effect.flip);
+        assert.equal(denied.category, "conflict");
+      }
+    }).pipe(Effect.scoped, Effect.provide(test.services));
+  },
+);
+
+it.effect("rejects a source handoff during the final transfer inspection", () => {
+  const test = setup();
+  return Effect.gen(function* () {
+    const { boat, targetRoot, fs, config } = yield* transferFixture(test);
+    const targetThreadId = ThreadId.make("transfer-target");
+    test.setThread(targetThreadId, { worktreePath: targetRoot, activeRunId: null });
+    const { proposal } = yield* boat.transfer(
+      {
+        action: "inspect",
+        projectId,
+        requestId: "transfer",
+        sandboxId: "bx_23456789",
+        targetThreadId,
+        receiptPaths: ["source.ts"],
+      },
+      transferSession,
+    );
+    let reads = 0;
+    test.setOnGitRead(() => {
+      if (++reads === 2)
+        test.setThread(targetThreadId, {
+          worktreePath: `${targetRoot}/changed`,
+          activeRunId: null,
+        });
+    });
+    const result = yield* boat
+      .transfer({ action: "commit", proposal }, transferSession)
+      .pipe(Effect.exit);
+    assert.isTrue(Exit.isFailure(result));
+    assert.equal(reads, 2);
+    const stored = JSON.parse(yield* fs.readFileString(`${config.stateDir}/boat.json`));
+    assert.equal(stored.instances[0].threadId, ownerThreadId);
+  }).pipe(Effect.scoped, Effect.provide(test.services));
+});
+
+it.effect.each([[], [AuthEnvironmentMaintainScope], [AuthOrchestrationOperateScope]] as const)(
+  "requires both authenticated transfer scopes: %j",
+  (scopes) => {
+    const test = setup();
+    return Effect.gen(function* () {
+      const { boat } = yield* transferFixture(test);
+      const denied = yield* boat
+        .transfer(
+          {
+            action: "inspect",
+            projectId,
+            requestId: "transfer",
+            sandboxId: "bx_23456789",
+            targetThreadId: ownerThreadId,
+            receiptPaths: ["source.ts"],
+          },
+          { ...transferSession, scopes },
+        )
+        .pipe(Effect.flip);
+      assert.equal(denied._tag, "EnvironmentAuthorizationError");
+    }).pipe(Effect.scoped, Effect.provide(test.services));
+  },
+);
+
+it.effect.each([
+  "project",
+  "vm",
+  "target-project",
+  "deleted-target",
+  "target-path",
+  "target-file",
+  "revision",
+  "owner",
+  "source",
+  "active-lease",
+  "pending-operation",
+] as const)("rejects a mismatched Boat transfer claim: %s", (kind) => {
+  const test = setup();
+  return Effect.gen(function* () {
+    const { boat, targetRoot, fs, config } = yield* transferFixture(test);
+    test.setThread(ownerThreadId, { worktreePath: targetRoot, activeRunId: null });
+    const input = {
+      action: "inspect" as const,
+      projectId,
+      requestId: "transfer",
+      sandboxId: "bx_23456789",
+      targetThreadId: ownerThreadId,
+      receiptPaths: ["source.ts"],
+    };
+    const inspected = yield* boat.transfer(input, transferSession);
+    const proposal = {
+      ...inspected.proposal,
+      expected: { ...inspected.proposal.expected },
+      target: { ...inspected.proposal.target },
+    };
+    if (kind === "project") proposal.projectId = ProjectId.make("wrong-project");
+    if (kind === "vm") proposal.sandboxId = "bx_different";
+    if (kind === "target-project")
+      test.setThread(ownerThreadId, {
+        worktreePath: targetRoot,
+        projectId: ProjectId.make("wrong-project"),
+      });
+    if (kind === "deleted-target")
+      test.setThread(ownerThreadId, {
+        worktreePath: targetRoot,
+        deletedAt: DateTime.makeUnsafe("2026-11-01T00:00:00.000Z"),
+      });
+    if (kind === "target-path")
+      test.setThread(ownerThreadId, { worktreePath: `${targetRoot}/changed` });
+    if (kind === "target-file") yield* fs.writeFileString(`${targetRoot}/source.ts`, "changed");
+    if (kind === "revision") proposal.expected.revision++;
+    if (kind === "owner") proposal.expected.ownerThreadId = ThreadId.make("different-owner");
+    if (kind === "source" && proposal.expected.source)
+      proposal.expected.source = {
+        ...proposal.expected.source,
+        workspaceRoot: "/different-source",
+      };
+    let selected = boat;
+    if (kind === "active-lease" || kind === "pending-operation") {
+      const stored = JSON.parse(yield* fs.readFileString(`${config.stateDir}/boat.json`));
+      if (kind === "active-lease") stored.instances[0].leases = [ThreadId.make("active-neighbor")];
+      else stored.instances[0].resumeOperation = { id: "pending", ttlSeconds: 60 };
+      yield* fs.writeFileString(`${config.stateDir}/boat.json`, JSON.stringify(stored));
+      selected = yield* make;
+    }
+    const before = test.calls.filter((call) => !call.startsWith("GET ")).length;
+    const denied = yield* selected
+      .transfer({ action: "commit", proposal }, transferSession)
+      .pipe(Effect.flip);
+    assert.equal(denied._tag, "BoatError");
+    assert.equal(test.calls.filter((call) => !call.startsWith("GET ")).length, before);
+    const stored = JSON.parse(yield* fs.readFileString(`${config.stateDir}/boat.json`));
+    assert.equal(stored.instances[0].threadId, ownerThreadId);
   }).pipe(Effect.scoped, Effect.provide(test.services));
 });
 

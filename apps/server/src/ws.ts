@@ -3009,6 +3009,7 @@ const layerCoreWsRpc = (
           ),
         [WS_METHODS.boatConfigure]: (input) => boat.configure(input.projectId, input.config),
         [WS_METHODS.boatOperate]: (input) => boat.operate(input),
+        [WS_METHODS.boatTransfer]: (input) => boat.transfer(input, currentSession),
         [WS_METHODS.serverGetUsageSummary]: (input) => usage.readSummary(input),
         [WS_METHODS.serverRefreshUsageRates]: (_input) => usage.refreshRates,
         [WS_METHODS.serverRetryResourceTelemetry]: (_input) => resourceTelemetry.retry,
