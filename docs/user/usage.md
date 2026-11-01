@@ -74,8 +74,9 @@ without public pricing. When a model on **Usage** has no known price, select it 
 **Breakdown** and choose **Set price** to open this table with that model added.
 
 Cache read and cache write rates are optional and use the input rate when blank. Enter `0` for
-tokens that are free. Saved prices replace automatic pricing for all of that environment's
-history and are shared with clients connected to it. When environments have different prices,
+tokens that are free. Saved prices replace automatic pricing for that environment's Usage
+history and are shared with clients connected to it. Saved per-response estimates keep their
+original prices. When environments have different prices,
 cells show **Mixed**. Edit rates directly in the table, then choose **Save changes** to apply all
 edited rows. Untouched cells keep each environment's rate. Select one environment to inspect its
 prices. **Reset to automatic** marks a model's override for removal when you save; you can undo
