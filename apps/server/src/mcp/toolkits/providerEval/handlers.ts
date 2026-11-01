@@ -6,19 +6,23 @@ import * as McpToolAccess from "../../McpToolAccess.ts";
 import { ProviderEvalToolkit } from "./tools.ts";
 
 export const layer = McpToolAccess.toLayer(ProviderEvalToolkit, {
-  provider_eval: McpToolAccess.writes((request) =>
+  provider_eval: McpToolAccess.writes(({ request }) =>
     Effect.gen(function* () {
       const service = yield* ProviderEvalSession.ProviderEvalSession;
       return yield* service.run(request).pipe(
         Effect.mapError(
-          (error) => new OrchestratorMcpFailure({
-            code: error.code === "unsupported" || error.code === "unavailable"
-              ? "provider_unavailable"
-              : error.code === "call_mismatch" || error.code === "payload_too_large" || error.code === "busy"
-                ? "invalid_request"
-                : "orchestration_error",
-            message: error.message,
-          }),
+          (error) =>
+            new OrchestratorMcpFailure({
+              code:
+                error.code === "unsupported" || error.code === "unavailable"
+                  ? "provider_unavailable"
+                  : error.code === "call_mismatch" ||
+                      error.code === "payload_too_large" ||
+                      error.code === "busy"
+                    ? "invalid_request"
+                    : "orchestration_error",
+              message: error.message,
+            }),
         ),
       );
     }),
@@ -28,10 +32,11 @@ export const layer = McpToolAccess.toLayer(ProviderEvalToolkit, {
       const service = yield* ProviderEvalBoat.ProviderEvalBoat;
       return yield* service.run(input).pipe(
         Effect.mapError(
-          (error) => new OrchestratorMcpFailure({
-            code: "orchestration_error",
-            message: error.message,
-          }),
+          (error) =>
+            new OrchestratorMcpFailure({
+              code: "orchestration_error",
+              message: error.message,
+            }),
         ),
       );
     }),

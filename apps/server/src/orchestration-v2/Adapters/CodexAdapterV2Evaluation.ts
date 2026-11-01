@@ -158,7 +158,10 @@ export const runCodexEvaluation = Effect.fn("CodexAdapterV2.runEvaluation")(func
     completed = true;
     return Deferred.succeed(stopped, undefined).pipe(
       Effect.andThen(
-        payload.turn.status !== "completed" || finalText === undefined || pending.size > 0 || toolFailure
+        payload.turn.status !== "completed" ||
+          finalText === undefined ||
+          pending.size > 0 ||
+          toolFailure
           ? Deferred.fail(answer, toolFailure ?? refused)
           : Deferred.succeed(answer, { text: finalText, visibleText }),
       ),
@@ -193,7 +196,8 @@ export const runCodexEvaluation = Effect.fn("CodexAdapterV2.runEvaluation")(func
       selected.model !== input.modelSelection.model ||
       (effort !== undefined && selected.reasoningEffort !== effort) ||
       (serviceTier !== undefined && selected.serviceTier !== serviceTier)
-    ) return yield* refused;
+    )
+      return yield* refused;
     const inventory = yield* client.raw.request("mcpServerStatus/list", {
       threadId: nativeThreadId,
       limit: 256,

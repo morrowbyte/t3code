@@ -1,4 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
 import { CodexSettings } from "@t3tools/contracts";
 import * as CodexClient from "effect-codex-app-server/client";
@@ -120,9 +121,16 @@ const makeHarness = Effect.fn("CodexEvaluationTest.makeHarness")(function* (
                         break;
                       case "mcpServerStatus/list":
                         yield* reply({
-                          data: isolation === "empty" ? [] : [{
-                            tools: { inherited_tool: {} }, resources: [], resourceTemplates: [],
-                          }],
+                          data:
+                            isolation === "empty"
+                              ? []
+                              : [
+                                  {
+                                    tools: { inherited_tool: {} },
+                                    resources: [],
+                                    resourceTemplates: [],
+                                  },
+                                ],
                           nextCursor: null,
                         });
                         break;
@@ -150,10 +158,23 @@ const makeHarness = Effect.fn("CodexEvaluationTest.makeHarness")(function* (
     crypto: yield* Crypto.Crypto,
     fileSystem: yield* FileSystem.FileSystem,
     idAllocator: yield* IdAllocator.IdAllocatorV2,
-    serverConfig: yield* ProviderReplayHarness.makeReplayServerConfig("evaluation").pipe(Effect.orDie),
+    serverConfig: yield* ProviderReplayHarness.makeReplayServerConfig("evaluation").pipe(
+      Effect.orDie,
+    ),
   });
-  return { adapter, emit, inbound, responses, replies, started, closed, methods,
-    cwd: () => cwd, threadStart: () => threadStart, turnStart: () => turnStart };
+  return {
+    adapter,
+    emit,
+    inbound,
+    responses,
+    replies,
+    started,
+    closed,
+    methods,
+    cwd: () => cwd,
+    threadStart: () => threadStart,
+    turnStart: () => turnStart,
+  };
 });
 
 it.effect("routes an isolated native eval tool call only after its callback resolves", () =>
@@ -162,105 +183,217 @@ it.effect("routes an isolated native eval tool call only after its callback reso
     const callback = yield* Deferred.make<ProviderAdapter.ProviderAdapterV2EvaluationToolCall>();
     const release = yield* Deferred.make<typeof output>();
     const evaluation = yield* harness.adapter.evaluate!({
-      modelSelection: selection, instructions: "Evaluate using Boat.", input: "Run the task.", tools: [tool],
-      onToolCall: (call) => Deferred.succeed(callback, call).pipe(Effect.andThen(Deferred.await(release))),
+      modelSelection: selection,
+      instructions: "Evaluate using Boat.",
+      input: "Run the task.",
+      tools: [tool],
+      onToolCall: (call) =>
+        Deferred.succeed(callback, call).pipe(Effect.andThen(Deferred.await(release))),
     }).pipe(Effect.forkChild);
-    yield* Deferred.await(harness.started);
+    yield* Deferred.await(harness.started).pipe(Effect.raceFirst(Fiber.join(evaluation)));
     assert.deepInclude(harness.threadStart(), {
-      model: selection.model, serviceTier: "ultrafast", ephemeral: true,
-      environments: [], runtimeWorkspaceRoots: [],
-      baseInstructions: "Evaluate using Boat.", dynamicTools: [{ ...tool, type: "function" }],
+      model: selection.model,
+      serviceTier: "ultrafast",
+      ephemeral: true,
+      environments: [],
+      runtimeWorkspaceRoots: [],
+      baseInstructions: "Evaluate using Boat.",
+      dynamicTools: [{ ...tool, type: "function" }],
     });
     const start = harness.threadStart() as { config: Record<string, unknown> };
     assert.deepInclude(start.config, {
-      mcp_servers: { inherited: { enabled: false } }, model_reasoning_effort: "high", web_search: "disabled",
+      mcp_servers: { inherited: { enabled: false } },
+      model_reasoning_effort: "high",
+      web_search: "disabled",
     });
-    assert.deepInclude(harness.turnStart(), { model: selection.model, effort: "high", serviceTier: "ultrafast" });
-    yield* harness.emit({ id: "foreign-rpc", method: "item/tool/call", params: {
-      threadId: "other-thread", turnId: "eval-turn", callId: "foreign", tool: tool.name, arguments: {},
-    } });
+    assert.deepInclude(harness.turnStart(), {
+      model: selection.model,
+      effort: "high",
+      serviceTier: "ultrafast",
+    });
+    yield* harness.emit({
+      id: "foreign-rpc",
+      method: "item/tool/call",
+      params: {
+        threadId: "other-thread",
+        turnId: "eval-turn",
+        callId: "foreign",
+        tool: tool.name,
+        arguments: {},
+      },
+    });
     const foreign = yield* Queue.take(harness.responses);
     assert.equal(foreign.id, "foreign-rpc");
     assert.deepInclude(foreign.result, { success: false });
-    yield* harness.emit({ method: "item/completed", params: {
-      threadId: "private-eval", turnId: "eval-turn", completedAtMs: 0,
-      item: { type: "agentMessage", id: "commentary", phase: "commentary", text: "Checking the fixture." },
-    } });
-    yield* harness.emit({ id: "original-rpc-id", method: "item/tool/call", params: {
-      threadId: "private-eval", turnId: "eval-turn", callId: "call-1", namespace: "functions",
-      tool: tool.name, arguments: { command: "pwd" },
-    } });
-    assert.deepEqual(yield* Deferred.await(callback), {
-      callId: "call-1", namespace: "functions", name: "boat_command", arguments: { command: "pwd" },
-      visibleText: "Checking the fixture.",
+    yield* harness.emit({
+      method: "item/completed",
+      params: {
+        threadId: "private-eval",
+        turnId: "eval-turn",
+        completedAtMs: 0,
+        item: {
+          type: "agentMessage",
+          id: "commentary",
+          phase: "commentary",
+          text: "Checking the fixture.",
+        },
+      },
     });
+    yield* harness.emit({
+      id: "original-rpc-id",
+      method: "item/tool/call",
+      params: {
+        threadId: "private-eval",
+        turnId: "eval-turn",
+        callId: "call-1",
+        namespace: "functions",
+        tool: tool.name,
+        arguments: { command: "pwd" },
+      },
+    });
+    assert.deepEqual(
+      yield* Deferred.await(callback).pipe(Effect.raceFirst(Fiber.join(evaluation))),
+      {
+        callId: "call-1",
+        namespace: "functions",
+        name: "boat_command",
+        arguments: { command: "pwd" },
+        visibleText: "Checking the fixture.",
+      },
+    );
     assert.lengthOf(harness.replies, 1);
     yield* Deferred.succeed(release, output);
-    assert.deepEqual(yield* Queue.take(harness.responses), { id: "original-rpc-id", result: output });
-    yield* harness.emit({ method: "item/completed", params: {
-      threadId: "private-eval", turnId: "eval-turn", completedAtMs: 0,
-      item: { type: "agentMessage", id: "answer", phase: "final_answer", text: "Evaluated." },
-    } });
-    yield* harness.emit({ method: "turn/completed", params: {
-      threadId: "private-eval", turn: { id: "eval-turn", items: [], status: "completed" },
-    } });
+    assert.deepEqual(yield* Queue.take(harness.responses), {
+      id: "original-rpc-id",
+      result: output,
+    });
+    yield* harness.emit({
+      method: "item/completed",
+      params: {
+        threadId: "private-eval",
+        turnId: "eval-turn",
+        completedAtMs: 0,
+        item: { type: "agentMessage", id: "answer", phase: "final_answer", text: "Evaluated." },
+      },
+    });
+    yield* harness.emit({
+      method: "turn/completed",
+      params: {
+        threadId: "private-eval",
+        turn: { id: "eval-turn", items: [], status: "completed" },
+      },
+    });
     assert.deepEqual(yield* Fiber.join(evaluation), {
-      text: "Evaluated.", visibleText: "Checking the fixture.\n\nEvaluated.",
+      text: "Evaluated.",
+      visibleText: "Checking the fixture.\n\nEvaluated.",
     });
     yield* Deferred.await(harness.closed);
     assert.include(harness.methods, "thread/archive");
     assert.include(harness.methods, "thread/unsubscribe");
     assert.notInclude(harness.methods, "turn/interrupt");
     assert.isFalse(yield* (yield* FileSystem.FileSystem).exists(harness.cwd()));
-  }).pipe(Effect.scoped, Effect.provide([NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer])),
+  }).pipe(
+    Effect.scoped,
+    Effect.provide([
+      NodeServices.layer,
+      NodeCrypto.layer,
+      IdAllocator.layer,
+      McpProviderSessions.layer,
+    ]),
+  ),
 );
 
 it.effect.each(["interrupt", "completed", "native-error", "transport-end"] as const)(
   "releases the native eval and its pending callback on %s",
-  (ending) => Effect.gen(function* () {
-    const harness = yield* makeHarness();
-    const entered = yield* Deferred.make<void>();
-    const stopped = yield* Deferred.make<void>();
-    const evaluation = yield* harness.adapter.evaluate!({
-      modelSelection: selection, instructions: "Evaluate.", input: "Run.", tools: [tool],
-      onToolCall: () => Deferred.succeed(entered, undefined).pipe(
-        Effect.andThen(Effect.never), Effect.ensuring(Deferred.succeed(stopped, undefined)),
-      ),
-    }).pipe(Effect.forkChild);
-    yield* Deferred.await(harness.started);
-    yield* harness.emit({ id: "pending-rpc", method: "item/tool/call", params: {
-      threadId: "private-eval", turnId: "eval-turn", callId: "pending", tool: tool.name, arguments: {},
-    } });
-    yield* Deferred.await(entered);
-    if (ending === "interrupt") yield* Fiber.interrupt(evaluation);
-    else if (ending === "transport-end") yield* Queue.end(harness.inbound);
-    else if (ending === "native-error") yield* harness.emit({ method: "error", params: {
-      threadId: "private-eval", turnId: "eval-turn", willRetry: false, error: { message: "failed" },
-    } });
-    else yield* harness.emit({ method: "turn/completed", params: {
-      threadId: "private-eval", turn: { id: "eval-turn", items: [], status: "completed" },
-    } });
-    assert.isTrue(Exit.isFailure(yield* Fiber.await(evaluation)));
-    yield* Deferred.await(stopped);
-    yield* Deferred.await(harness.closed);
-    if (ending !== "transport-end") {
-      assert.include(harness.methods, "thread/archive");
-      assert.include(harness.methods, "thread/unsubscribe");
-    }
-    assert.isFalse(yield* (yield* FileSystem.FileSystem).exists(harness.cwd()));
-  }).pipe(Effect.scoped, Effect.provide([NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer])),
+  (ending) =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const entered = yield* Deferred.make<void>();
+      const stopped = yield* Deferred.make<void>();
+      const evaluation = yield* harness.adapter.evaluate!({
+        modelSelection: selection,
+        instructions: "Evaluate.",
+        input: "Run.",
+        tools: [tool],
+        onToolCall: () =>
+          Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Effect.never),
+            Effect.ensuring(Deferred.succeed(stopped, undefined)),
+          ),
+      }).pipe(Effect.forkChild);
+      yield* Deferred.await(harness.started).pipe(Effect.raceFirst(Fiber.join(evaluation)));
+      yield* harness.emit({
+        id: "pending-rpc",
+        method: "item/tool/call",
+        params: {
+          threadId: "private-eval",
+          turnId: "eval-turn",
+          callId: "pending",
+          tool: tool.name,
+          arguments: {},
+        },
+      });
+      yield* Deferred.await(entered).pipe(Effect.raceFirst(Fiber.join(evaluation)));
+      if (ending === "interrupt") yield* Fiber.interrupt(evaluation);
+      else if (ending === "transport-end") yield* Queue.end(harness.inbound);
+      else if (ending === "native-error")
+        yield* harness.emit({
+          method: "error",
+          params: {
+            threadId: "private-eval",
+            turnId: "eval-turn",
+            willRetry: false,
+            error: { message: "failed" },
+          },
+        });
+      else
+        yield* harness.emit({
+          method: "turn/completed",
+          params: {
+            threadId: "private-eval",
+            turn: { id: "eval-turn", items: [], status: "completed" },
+          },
+        });
+      assert.isTrue(Exit.isFailure(yield* Fiber.await(evaluation)));
+      yield* Deferred.await(stopped);
+      yield* Deferred.await(harness.closed);
+      if (ending !== "transport-end") {
+        assert.include(harness.methods, "thread/archive");
+        assert.include(harness.methods, "thread/unsubscribe");
+      }
+      assert.isFalse(yield* (yield* FileSystem.FileSystem).exists(harness.cwd()));
+    }).pipe(
+      Effect.scoped,
+      Effect.provide([
+        NodeServices.layer,
+        NodeCrypto.layer,
+        IdAllocator.layer,
+        McpProviderSessions.layer,
+      ]),
+    ),
 );
 
 it.effect("refuses inherited MCP capabilities before starting an evaluation turn", () =>
   Effect.gen(function* () {
     const harness = yield* makeHarness("inherited");
     const error = yield* harness.adapter.evaluate!({
-      modelSelection: selection, instructions: "Evaluate.", input: "Run.", tools: [tool],
+      modelSelection: selection,
+      instructions: "Evaluate.",
+      input: "Run.",
+      tools: [tool],
       onToolCall: () => Effect.die("No tool may run before isolation passes."),
     }).pipe(Effect.flip);
     assert.instanceOf(error, ProviderAdapter.ProviderAdapterEvaluationError);
     assert.notInclude(harness.methods, "turn/start");
     assert.include(harness.methods, "thread/archive");
     assert.include(harness.methods, "thread/unsubscribe");
-  }).pipe(Effect.scoped, Effect.provide([NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer])),
+  }).pipe(
+    Effect.scoped,
+    Effect.provide([
+      NodeServices.layer,
+      NodeCrypto.layer,
+      IdAllocator.layer,
+      McpProviderSessions.layer,
+    ]),
+  ),
 );

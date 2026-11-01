@@ -87,7 +87,6 @@ import type {
   ProviderTurnId,
   ProviderInstanceId,
   RuntimeMode,
-  ThreadId,
 } from "@t3tools/contracts";
 import * as CodexClient from "effect-codex-app-server/client";
 import * as CodexErrors from "effect-codex-app-server/errors";
@@ -165,7 +164,7 @@ import {
 } from "@t3tools/provider-core/server/subagentProjection";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
-import { ProviderSessionId } from "@t3tools/contracts";
+import { ProviderSessionId, ThreadId } from "@t3tools/contracts";
 import { runCodexVoiceIntakeDecision } from "./CodexAdapterV2VoiceIntake.ts";
 import { runCodexEvaluation } from "./CodexAdapterV2Evaluation.ts";
 import {
@@ -2104,7 +2103,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 driver: CODEX_PROVIDER,
               });
             }
-            const resolvedRuntime = yield* (adapterOptions.resolveRuntime ?? Effect.succeed(undefined));
+            const resolvedRuntime = yield* (
+              adapterOptions.resolveRuntime ?? Effect.succeed(undefined)
+            );
             const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-evaluation-" });
             const id = yield* crypto.randomUUIDv4();
             const client = yield* clientFactory.open({
@@ -2120,7 +2121,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           }),
         ),
       Effect.mapError(
-        (cause) => new ProviderAdapter.ProviderAdapterEvaluationError({ driver: CODEX_PROVIDER, cause }),
+        (cause) =>
+          new ProviderAdapter.ProviderAdapterEvaluationError({ driver: CODEX_PROVIDER, cause }),
       ),
     ),
     openSession: Effect.fn("CodexAdapterV2.openSession")(

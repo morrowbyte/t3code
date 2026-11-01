@@ -33,9 +33,9 @@ const Respond = Schema.Struct({
   action: Schema.Literal("respond"),
   evaluationId: identifier,
   callId: identifier,
-  contentItems: Schema.Array(
-    Schema.Struct({ type: Schema.Literal("inputText"), text }),
-  ).check(Schema.isMaxLength(16)),
+  contentItems: Schema.Array(Schema.Struct({ type: Schema.Literal("inputText"), text })).check(
+    Schema.isMaxLength(16),
+  ),
   success: Schema.Boolean,
 });
 const Cancel = Schema.Struct({ action: Schema.Literal("cancel"), evaluationId: identifier });
@@ -122,7 +122,9 @@ interface Session {
 export class ProviderEvalSession extends Context.Service<
   ProviderEvalSession,
   {
-    readonly run: (request: ProviderEvalRequest) => Effect.Effect<
+    readonly run: (
+      request: ProviderEvalRequest,
+    ) => Effect.Effect<
       ProviderEvalResponse,
       ProviderEvalSessionError,
       McpInvocationContext.McpInvocationContext
@@ -167,21 +169,21 @@ const make = Effect.gen(function* () {
     session.pending.clear();
   });
 
-  const dispose = Effect.fn("ProviderEvalSession.dispose")(
-    function* (session: Session, reason: "expired" | "cancelled") {
-      if (session.closing) return yield* Deferred.await(session.closed);
-      session.closing = true;
-      const error = new ProviderEvalSessionError({ code: reason });
-      session.terminal = Exit.fail(error);
-      yield* Scope.close(session.scope, Exit.void);
-      session.pending.clear();
-      sessions.delete(session.id);
-      yield* Deferred.fail(session.first, error);
-      yield* Queue.fail(session.events, error);
-      yield* Deferred.succeed(session.closed, undefined);
-    },
-    Effect.uninterruptible,
-  );
+  const dispose = Effect.fn("ProviderEvalSession.dispose")(function* (
+    session: Session,
+    reason: "expired" | "cancelled",
+  ) {
+    if (session.closing) return yield* Deferred.await(session.closed);
+    session.closing = true;
+    const error = new ProviderEvalSessionError({ code: reason });
+    session.terminal = Exit.fail(error);
+    yield* Scope.close(session.scope, Exit.void);
+    session.pending.clear();
+    sessions.delete(session.id);
+    yield* Deferred.fail(session.first, error);
+    yield* Queue.fail(session.events, error);
+    yield* Deferred.succeed(session.closed, undefined);
+  }, Effect.uninterruptible);
 
   const start = Effect.fn("ProviderEvalSession.start")(function* (
     owner: string,
@@ -202,9 +204,13 @@ const make = Effect.gen(function* () {
           if (!retired) return yield* new ProviderEvalSessionError({ code: "capacity" });
           yield* dispose(retired, "expired");
         }
-        const adapter = yield* registry.get(request.modelSelection.instanceId).pipe(
-          Effect.mapError((cause) => new ProviderEvalSessionError({ code: "unavailable", cause })),
-        );
+        const adapter = yield* registry
+          .get(request.modelSelection.instanceId)
+          .pipe(
+            Effect.mapError(
+              (cause) => new ProviderEvalSessionError({ code: "unavailable", cause }),
+            ),
+          );
         const evaluate = adapter.evaluate;
         if (!evaluate) return yield* new ProviderEvalSessionError({ code: "unsupported" });
         const session: Session = {
@@ -231,36 +237,41 @@ const make = Effect.gen(function* () {
               ...call,
             }).pipe(
               Effect.mapError(
-                (cause) => new ProviderAdapter.ProviderAdapterProtocolError({
-                  driver: adapter.driver,
-                  detail: "Invalid evaluation tool call",
-                  cause,
-                }),
+                (cause) =>
+                  new ProviderAdapter.ProviderAdapterProtocolError({
+                    driver: adapter.driver,
+                    detail: "Invalid evaluation tool call",
+                    cause,
+                  }),
               ),
             );
-            const reply = yield* admission.withPermits(1)(Effect.gen(function* () {
-              if (
-                session.closing ||
-                session.seen.has(event.callId) ||
-                session.seen.size >= 128 ||
-                session.pending.size >= 32 ||
-                JSON.stringify(event).length > maximumPayloadLength
-              ) {
-                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
-                  driver: adapter.driver,
-                  detail: "Evaluation tool call is duplicated or exceeds session limits",
-                });
-              }
-              const reply = yield* Deferred.make<Reply>();
-              session.seen.add(event.callId);
-              session.pending.set(event.callId, reply);
-              return reply;
-            }));
+            const reply = yield* admission.withPermits(1)(
+              Effect.gen(function* () {
+                if (
+                  session.closing ||
+                  session.seen.has(event.callId) ||
+                  session.seen.size >= 128 ||
+                  session.pending.size >= 32 ||
+                  JSON.stringify(event).length > maximumPayloadLength
+                ) {
+                  return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                    driver: adapter.driver,
+                    detail: "Evaluation tool call is duplicated or exceeds session limits",
+                  });
+                }
+                const reply = yield* Deferred.make<Reply>();
+                session.seen.add(event.callId);
+                session.pending.set(event.callId, reply);
+                return reply;
+              }),
+            );
             return yield* publish(session, event).pipe(
               Effect.andThen(Deferred.await(reply)),
-              Effect.ensuring(Effect.sync(() => {
-                session.pending.delete(event.callId);
-              })),
+              Effect.ensuring(
+                Effect.sync(() => {
+                  session.pending.delete(event.callId);
+                }),
+              ),
             );
           });
         yield* Effect.suspend(() =>
@@ -277,7 +288,9 @@ const make = Effect.gen(function* () {
               ? Effect.fail(new ProviderEvalSessionError({ code: "payload_too_large" }))
               : Effect.succeed(result),
           ),
-          Effect.mapError((cause) => new ProviderEvalSessionError({ code: "provider_failed", cause })),
+          Effect.mapError(
+            (cause) => new ProviderEvalSessionError({ code: "provider_failed", cause }),
+          ),
           Effect.onExit((result) => finish(session, result)),
           Effect.ignoreCause,
           Effect.interruptible,
@@ -312,9 +325,11 @@ const make = Effect.gen(function* () {
     }).pipe(
       Effect.andThen(Effect.suspend(() => session.terminal ?? Queue.take(session.events))),
       Effect.onInterrupt(() => dispose(session, "cancelled")),
-      Effect.ensuring(Effect.sync(() => {
-        session.reading = false;
-      })),
+      Effect.ensuring(
+        Effect.sync(() => {
+          session.reading = false;
+        }),
+      ),
     );
   });
 

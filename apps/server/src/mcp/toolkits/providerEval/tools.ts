@@ -1,5 +1,6 @@
 import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import { Tool, Toolkit } from "effect/ai";
+import * as Schema from "effect/Schema";
 import * as ProviderEvalSession from "../../../provider/ProviderEvalSession.ts";
 import * as ProviderEvalBoat from "../../../provider/ProviderEvalBoat.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -9,7 +10,7 @@ export const ProviderEvalToolkit = Toolkit.make(
   Tool.make("provider_eval", {
     description:
       "Run an isolated provider evaluation using Crew's existing provider sign-in. Start supplies modelSelection, instructions, input and JSON tools; reuse clientRequestId after an uncertain start. Returns one tool_call or complete text. Respond with its evaluationId and exact callId, contentItems and success, then await the next event. Cancel closes the native session before returning. Sessions belong to this calling thread and provider session, expire after ten minutes, and have no project access. The caller runs tools and supplies their results.",
-    parameters: ProviderEvalSession.ProviderEvalRequest,
+    parameters: Schema.Struct({ request: ProviderEvalSession.ProviderEvalRequest }),
     success: ProviderEvalSession.ProviderEvalResponse,
     failure: OrchestratorMcpFailure,
     failureMode: "return",

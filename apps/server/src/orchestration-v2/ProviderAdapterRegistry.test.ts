@@ -132,7 +132,9 @@ it.effect(
       assert.instanceOf(error.cause, ProviderSetupError);
       const evaluationError = yield* adapter.evaluate!({
         modelSelection: { instanceId: personalId, model: "test-model" },
-        instructions: "Evaluate.", input: "Task.", tools: [],
+        instructions: "Evaluate.",
+        input: "Task.",
+        tools: [],
         onToolCall: () => Effect.die("Tools must not run during sign-in changes."),
       }).pipe(Effect.flip);
       assert.instanceOf(evaluationError, ProviderAdapter.ProviderAdapterEvaluationError);
@@ -141,78 +143,84 @@ it.effect(
 );
 
 it.effect.each(["session", "evaluation"] as const)(
-  "interrupts admitted %s when a shared peer signs out", (operation) =>
-  Effect.gen(function* () {
-    const entered = yield* Deferred.make<void>();
-    const stopped = yield* Deferred.make<void>();
-    const binding = { owner: "provider" as const, key: "shared-cli" };
-    const auth = yield* ProviderAuthFlow.make({
-      instanceId: personalId,
-      credentialBinding: binding,
-      methods: Effect.succeed([]),
-      authenticate: () => Effect.void,
-      logout: Effect.void,
-    });
-    const peerAuth = yield* ProviderAuthFlow.make({
-      instanceId: workId,
-      credentialBinding: binding,
-      methods: Effect.succeed([]),
-      authenticate: () => Effect.void,
-      logout: Effect.void,
-    });
-    const adapter: ProviderAdapter.ProviderAdapterV2["Service"] = {
-      ...workAdapter,
-      openSession: () =>
-        Effect.gen(function* () {
-          yield* Deferred.succeed(entered, undefined);
-          return yield* Effect.never;
-        }).pipe(Effect.ensuring(Deferred.succeed(stopped, undefined))),
-      evaluate: () =>
-        Effect.gen(function* () {
-          yield* Deferred.succeed(entered, undefined);
-          return yield* Effect.never;
-        }).pipe(Effect.ensuring(Deferred.succeed(stopped, undefined))),
-    };
-    const related = [
-      { ...instances[0], auth },
-      { ...instances[1], auth: peerAuth, orchestrationAdapter: adapter },
-    ];
-    const registry = yield* Effect.service(ProviderAdapterRegistry.ProviderAdapterRegistryV2).pipe(
-      Effect.provide(
-        ProviderAdapterRegistry.layerFromProviderInstanceRegistry.pipe(
-          Layer.provide(
-            Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
-              getInstance: (id) =>
-                Effect.succeed(related.find((instance) => instance.instanceId === id)),
-              listInstances: Effect.succeed(related),
-            }),
+  "interrupts admitted %s when a shared peer signs out",
+  (operation) =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const stopped = yield* Deferred.make<void>();
+      const binding = { owner: "provider" as const, key: "shared-cli" };
+      const auth = yield* ProviderAuthFlow.make({
+        instanceId: personalId,
+        credentialBinding: binding,
+        methods: Effect.succeed([]),
+        authenticate: () => Effect.void,
+        logout: Effect.void,
+      });
+      const peerAuth = yield* ProviderAuthFlow.make({
+        instanceId: workId,
+        credentialBinding: binding,
+        methods: Effect.succeed([]),
+        authenticate: () => Effect.void,
+        logout: Effect.void,
+      });
+      const adapter: ProviderAdapter.ProviderAdapterV2["Service"] = {
+        ...workAdapter,
+        openSession: () =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(entered, undefined);
+            return yield* Effect.never;
+          }).pipe(Effect.ensuring(Deferred.succeed(stopped, undefined))),
+        evaluate: () =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(entered, undefined);
+            return yield* Effect.never;
+          }).pipe(Effect.ensuring(Deferred.succeed(stopped, undefined))),
+      };
+      const related = [
+        { ...instances[0], auth },
+        { ...instances[1], auth: peerAuth, orchestrationAdapter: adapter },
+      ];
+      const registry = yield* Effect.service(
+        ProviderAdapterRegistry.ProviderAdapterRegistryV2,
+      ).pipe(
+        Effect.provide(
+          ProviderAdapterRegistry.layerFromProviderInstanceRegistry.pipe(
+            Layer.provide(
+              Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+                getInstance: (id) =>
+                  Effect.succeed(related.find((instance) => instance.instanceId === id)),
+                listInstances: Effect.succeed(related),
+              }),
+            ),
           ),
         ),
-      ),
-    );
-    const guarded = yield* registry.get(workId);
-    const work = operation === "session"
-      ? guarded.openSession({
-          threadId: ThreadId.make("shared-startup"),
-          providerSessionId: ProviderSessionId.make("shared-session"),
-          modelSelection: { instanceId: workId, model: "test-model" },
-          runtimePolicy: {
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            cwd: "/workspace",
-          },
-        }).pipe(Effect.asVoid)
-      : guarded.evaluate!({
-          modelSelection: { instanceId: workId, model: "test-model" },
-          instructions: "Evaluate.",
-          input: "Task.",
-          tools: [],
-          onToolCall: () => Effect.die("No tool call expected."),
-        }).pipe(Effect.asVoid);
-    const startup = yield* work.pipe(Effect.forkChild);
-    yield* Deferred.await(entered);
-    yield* auth.logout(Effect.void);
-    yield* Deferred.await(stopped);
-    assert.isTrue(Exit.isFailure(yield* Fiber.await(startup)));
-  }).pipe(Effect.provide(NodeServices.layer)),
+      );
+      const guarded = yield* registry.get(workId);
+      const work =
+        operation === "session"
+          ? guarded
+              .openSession({
+                threadId: ThreadId.make("shared-startup"),
+                providerSessionId: ProviderSessionId.make("shared-session"),
+                modelSelection: { instanceId: workId, model: "test-model" },
+                runtimePolicy: {
+                  runtimeMode: "full-access",
+                  interactionMode: "default",
+                  cwd: "/workspace",
+                },
+              })
+              .pipe(Effect.asVoid)
+          : guarded.evaluate!({
+              modelSelection: { instanceId: workId, model: "test-model" },
+              instructions: "Evaluate.",
+              input: "Task.",
+              tools: [],
+              onToolCall: () => Effect.die("No tool call expected."),
+            }).pipe(Effect.asVoid);
+      const startup = yield* work.pipe(Effect.forkChild);
+      yield* Deferred.await(entered);
+      yield* auth.logout(Effect.void);
+      yield* Deferred.await(stopped);
+      assert.isTrue(Exit.isFailure(yield* Fiber.await(startup)));
+    }).pipe(Effect.provide(NodeServices.layer)),
 );

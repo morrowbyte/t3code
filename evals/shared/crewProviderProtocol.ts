@@ -34,7 +34,15 @@ export const CrewHostFrame = Schema.Union([
 
 export class CrewProtocolError extends Schema.TaggedError<CrewProtocolError>()(
   "CrewProtocolError",
-  { code: Schema.Literals(["missing_bridge", "invalid_frame", "response_mismatch", "provider_failed", "limit"]) },
+  {
+    code: Schema.Literals([
+      "missing_bridge",
+      "invalid_frame",
+      "response_mismatch",
+      "provider_failed",
+      "limit",
+    ]),
+  },
 ) {
   override get message(): string {
     return `Crew stdio bridge failed (${this.code}). Use provider_eval_boat with the matching runner.`;
@@ -57,7 +65,9 @@ export const decodeCrewFrame = <S extends Schema.Top>(schema: S, line: string) =
 };
 
 export interface CrewProviderClient {
-  readonly run: (request: ProviderEvalRequest) => Effect.Effect<ProviderEvalResponse, CrewProtocolError>;
+  readonly run: (
+    request: ProviderEvalRequest,
+  ) => Effect.Effect<ProviderEvalResponse, CrewProtocolError>;
 }
 
 export const makeCrewProviderClient = (
@@ -67,23 +77,38 @@ export const makeCrewProviderClient = (
   let sequence = 0;
   let closed = false;
   return {
-    run: Effect.fn("CrewProviderClient.run")(function* (request: ProviderEvalRequest) {
-      if (closed) return yield* new CrewProtocolError({ code: "missing_bridge" });
-      if (++sequence > CREW_MAX_REQUESTS) return yield* new CrewProtocolError({ code: "limit" });
-      const id = `request-${sequence}`;
-      const line = encodeCrewFrame({ type: "request", id, request });
-      if (line.length > CREW_MAX_LINE_LENGTH) return yield* new CrewProtocolError({ code: "limit" });
-      yield* writeLine(line);
-      const incoming = yield* readLine.pipe(Effect.timeoutOrElse({
-        duration: "11 minutes",
-        orElse: () => Effect.fail(new CrewProtocolError({ code: "missing_bridge" })),
-      }));
-      if (incoming === undefined) return yield* new CrewProtocolError({ code: "missing_bridge" });
-      const frame = yield* decodeCrewFrame(CrewHostFrame, incoming);
-      if (frame.id !== id) return yield* new CrewProtocolError({ code: "response_mismatch" });
-      if (frame.type === "error") return yield* new CrewProtocolError({ code: "provider_failed" });
-      return frame.response;
-    }, Effect.tapError(() => Effect.sync(() => { closed = true; })),
-    Effect.onInterrupt(() => Effect.sync(() => { closed = true; }))),
+    run: Effect.fn("CrewProviderClient.run")(
+      function* (request: ProviderEvalRequest) {
+        if (closed) return yield* new CrewProtocolError({ code: "missing_bridge" });
+        if (++sequence > CREW_MAX_REQUESTS) return yield* new CrewProtocolError({ code: "limit" });
+        const id = `request-${sequence}`;
+        const line = encodeCrewFrame({ type: "request", id, request });
+        if (line.length > CREW_MAX_LINE_LENGTH)
+          return yield* new CrewProtocolError({ code: "limit" });
+        yield* writeLine(line);
+        const incoming = yield* readLine.pipe(
+          Effect.timeoutOrElse({
+            duration: "11 minutes",
+            orElse: () => Effect.fail(new CrewProtocolError({ code: "missing_bridge" })),
+          }),
+        );
+        if (incoming === undefined) return yield* new CrewProtocolError({ code: "missing_bridge" });
+        const frame = yield* decodeCrewFrame(CrewHostFrame, incoming);
+        if (frame.id !== id) return yield* new CrewProtocolError({ code: "response_mismatch" });
+        if (frame.type === "error")
+          return yield* new CrewProtocolError({ code: "provider_failed" });
+        return frame.response;
+      },
+      Effect.tapError(() =>
+        Effect.sync(() => {
+          closed = true;
+        }),
+      ),
+      Effect.onInterrupt(() =>
+        Effect.sync(() => {
+          closed = true;
+        }),
+      ),
+    ),
   };
 };

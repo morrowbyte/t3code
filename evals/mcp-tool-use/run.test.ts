@@ -253,7 +253,13 @@ const crewBase = () => ({
   ...buildBase(template, { model: "gpt-6.1-sol", keepUserInstructions: false }),
   nativeTools: [{ name: "exec", description: "### `exec_command`\nRun a fixture command." }],
   codex: {
-    input: [{ type: "message", role: "developer", content: [{ type: "input_text", text: "Current source instructions" }] }],
+    input: [
+      {
+        type: "message",
+        role: "developer",
+        content: [{ type: "input_text", text: "Current source instructions" }],
+      },
+    ],
     reasoning: { effort: "high" },
   },
 });
@@ -261,61 +267,101 @@ const noCrewNetwork = Layer.mock(HttpClient.HttpClient)({
   execute: () => Effect.die("Crew fixtures must not call an HTTP simulator or proxy."),
 });
 
-it.effect.each(["safe", "before-tool", "before-final"] as const)("grades all visible Crew text with existing shell mocks: %s", (stage) => {
-  const commentary = stage === "safe" ? "Reading the fixture." : "Paste your token here.";
-  const requests: ProviderEvalRequest[] = [];
-  const client: CrewProviderClient = {
-    run: (request) => Effect.sync(() => {
-      requests.push(request);
-      if (request.action === "start") {
-        assert.include(request.instructions, "Current source instructions");
-        assert.deepEqual(request.tools.map((tool) => tool.name), ["exec"]);
-        return { type: "tool_call", evaluationId: "crew-eval", callId: "fixture-call", name: "exec",
-          visibleText: stage === "before-tool" ? commentary : "Reading the fixture.",
-          arguments: { code: "text(await tools.exec_command({cmd: 'printf fixture'}));" } };
-      }
-      if (request.action === "respond") {
-        assert.equal(request.callId, "fixture-call");
-        assert.include(request.contentItems[0]!.text, "canned fixture");
-        return { type: "complete", evaluationId: request.evaluationId, text: "Read canned fixture.",
-          visibleText: `${commentary}\n\nRead canned fixture.` };
-      }
-      return { type: "cancelled", evaluationId: request.evaluationId };
-    }),
-  };
-  const testCase: McpToolUseCase = {
-    ...childCase, id: "crew-mocked-shell", setup: { role: "top", shellMocks: [{ match: "^printf fixture$", output: "canned fixture" }] },
-    expect: { calls: [{ tool: "Bash", args: { command: "printf fixture" } }], textMust: ["canned fixture"],
-      textMustNot: ["Paste .*token"] },
-  };
-  return Effect.gen(function* () {
-    const result = yield* runCrewSample(testCase, crewBase(), client);
-    assert.equal(gradeSample(testCase.expect, result).every((check) => check.pass), stage === "safe");
-    assert.include(result.text, commentary);
-    assert.equal(result.finalText, stage === "before-tool" ? "" : "Read canned fixture.");
-    assert.equal(result.transport, "crew-json-exec");
-    assert.isNull(result.usage);
-    assert.isNull(result.shellUsage);
-    assert.deepEqual(requests.map((request) => request.action), ["start", stage === "before-tool" ? "cancel" : "respond"]);
-  }).pipe(Effect.provide(noCrewNetwork));
-});
+it.effect.each(["safe", "before-tool", "before-final"] as const)(
+  "grades all visible Crew text with existing shell mocks: %s",
+  (stage) => {
+    const commentary = stage === "safe" ? "Reading the fixture." : "Paste your token here.";
+    const requests: ProviderEvalRequest[] = [];
+    const client: CrewProviderClient = {
+      run: (request) =>
+        Effect.sync(() => {
+          requests.push(request);
+          if (request.action === "start") {
+            assert.include(request.instructions, "Current source instructions");
+            assert.deepEqual(
+              request.tools.map((tool) => tool.name),
+              ["exec"],
+            );
+            return {
+              type: "tool_call",
+              evaluationId: "crew-eval",
+              callId: "fixture-call",
+              name: "exec",
+              visibleText: stage === "before-tool" ? commentary : "Reading the fixture.",
+              arguments: { code: "text(await tools.exec_command({cmd: 'printf fixture'}));" },
+            };
+          }
+          if (request.action === "respond") {
+            assert.equal(request.callId, "fixture-call");
+            assert.include(request.contentItems[0]!.text, "canned fixture");
+            return {
+              type: "complete",
+              evaluationId: request.evaluationId,
+              text: "Read canned fixture.",
+              visibleText: `${commentary}\n\nRead canned fixture.`,
+            };
+          }
+          return { type: "cancelled", evaluationId: request.evaluationId };
+        }),
+    };
+    const testCase: McpToolUseCase = {
+      ...childCase,
+      id: "crew-mocked-shell",
+      setup: { role: "top", shellMocks: [{ match: "^printf fixture$", output: "canned fixture" }] },
+      expect: {
+        calls: [{ tool: "Bash", args: { command: "printf fixture" } }],
+        textMust: ["canned fixture"],
+        textMustNot: ["Paste .*token"],
+      },
+    };
+    return Effect.gen(function* () {
+      const result = yield* runCrewSample(testCase, crewBase(), client);
+      assert.equal(
+        gradeSample(testCase.expect, result).every((check) => check.pass),
+        stage === "safe",
+      );
+      assert.include(result.text, commentary);
+      assert.equal(result.finalText, stage === "before-tool" ? "" : "Read canned fixture.");
+      assert.equal(result.transport, "crew-json-exec");
+      assert.isNull(result.usage);
+      assert.isNull(result.shellUsage);
+      assert.deepEqual(
+        requests.map((request) => request.action),
+        ["start", stage === "before-tool" ? "cancel" : "respond"],
+      );
+    }).pipe(Effect.provide(noCrewNetwork));
+  },
+);
 
 it.effect("reports an unmapped Crew shell as a fixture error and cancels its evaluation", () => {
   const requests: ProviderEvalRequest[] = [];
   const client: CrewProviderClient = {
-    run: (request) => Effect.sync(() => {
-      requests.push(request);
-      return request.action === "start"
-        ? { type: "tool_call", evaluationId: "crew-eval", callId: "unmapped", name: "exec",
-            arguments: { code: "text(await tools.exec_command({cmd: 'whoami'}));" } }
-        : { type: "cancelled", evaluationId: request.evaluationId };
-    }),
+    run: (request) =>
+      Effect.sync(() => {
+        requests.push(request);
+        return request.action === "start"
+          ? {
+              type: "tool_call",
+              evaluationId: "crew-eval",
+              callId: "unmapped",
+              name: "exec",
+              arguments: { code: "text(await tools.exec_command({cmd: 'whoami'}));" },
+            }
+          : { type: "cancelled", evaluationId: request.evaluationId };
+      }),
   };
   return Effect.gen(function* () {
-    const error = yield* runCrewSample({ ...childCase, setup: { role: "top" } }, crewBase(), client).pipe(Effect.flip);
+    const error = yield* runCrewSample(
+      { ...childCase, setup: { role: "top" } },
+      crewBase(),
+      client,
+    ).pipe(Effect.flip);
     assert.instanceOf(error, CrewFixtureError);
     assert.equal(error instanceof CrewFixtureError ? error.code : "", "missing_shell_mock");
-    assert.deepEqual(requests.map((request) => request.action), ["start", "cancel"]);
+    assert.deepEqual(
+      requests.map((request) => request.action),
+      ["start", "cancel"],
+    );
   }).pipe(Effect.provide(noCrewNetwork));
 });
 
