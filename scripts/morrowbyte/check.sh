@@ -232,6 +232,21 @@ for server_continuation_test in "${server_continuation_tests[@]}"; do
   fi
   focused_tests+=("$server_continuation_test")
 done
+resource_lifecycle_tests=(
+  scripts/setup-worktree.test.ts
+  scripts/prune-worktree-dependencies.test.ts
+  apps/server/src/orchestration-v2/ThreadSettlementService.test.ts
+  apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts
+  apps/server/src/textGeneration/ReasoningSummaryGeneration.test.ts
+  apps/server/src/textGeneration/ToolIntentGeneration.test.ts
+)
+for resource_lifecycle_test in "${resource_lifecycle_tests[@]}"; do
+  if [[ ! -f "$resource_lifecycle_test" ]]; then
+    echo "Required resource lifecycle gate is missing: $resource_lifecycle_test" >&2
+    exit 1
+  fi
+  focused_tests+=("$resource_lifecycle_test")
+done
 automatic_update_tests=(
   apps/desktop/src/backend/DesktopBackendManager.test.ts
   apps/desktop/src/backend/DesktopBackendPool.test.ts
