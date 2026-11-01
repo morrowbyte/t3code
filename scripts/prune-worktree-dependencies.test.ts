@@ -87,6 +87,34 @@ it("keeps dependencies shared through a package-local link or a package entry", 
   ).toBe("kept: shared dependencies");
 });
 
+it("checks all direct shared links before scanning source and keeps an incomplete scan", async () => {
+  await using f = await fixture();
+  const consumer = NodePath.join(f.main, "consumer");
+  await NodeFSP.mkdir(consumer);
+  await NodeFSP.symlink(
+    NodePath.join(f.root, "node_modules"),
+    NodePath.join(consumer, "node_modules"),
+    "junction",
+  );
+  expect(
+    await pruneWorktreeDependencies(f.root, {
+      platform: "linux",
+      worktrees: [f.main, consumer],
+      inspectionTimeoutMs: 0,
+      inUse: async () => false,
+    }),
+  ).toBe("kept: shared dependencies");
+  await NodeFSP.unlink(NodePath.join(consumer, "node_modules"));
+  await expect(
+    pruneWorktreeDependencies(f.root, {
+      platform: "linux",
+      inspectionTimeoutMs: 0,
+      inUse: async () => false,
+    }),
+  ).rejects.toThrow("Dependency ownership scan limit reached");
+  expect((await NodeFSP.stat(NodePath.join(f.root, "node_modules"))).isDirectory()).toBe(true);
+});
+
 it("retains tracked dependencies and an active install", async () => {
   await using f = await fixture();
   const marker = NodePath.join(f.root, ".t3/setup-running");
@@ -100,6 +128,44 @@ it("retains tracked dependencies and an active install", async () => {
   expect(
     await pruneWorktreeDependencies(f.root, { platform: "linux", inUse: async () => false }),
   ).toBe("kept: tracked dependencies");
+});
+
+it("resumes its interrupted deletion after the old process exits", async () => {
+  await using f = await fixture();
+  const modules = NodePath.join(f.root, "node_modules");
+  await NodeFSP.writeFile(
+    NodePath.join(f.root, ".t3/dependency-prune.json"),
+    JSON.stringify({ version: 1, modules }),
+  );
+  await NodeFSP.writeFile(NodePath.join(f.root, ".t3/setup-running"), "2147483647");
+  await NodeFSP.rm(NodePath.join(modules, ".modules.yaml"));
+  await NodeFSP.rm(NodePath.join(modules, ".pnpm"), { recursive: true });
+  await NodeFSP.writeFile(
+    NodePath.join(modules, "remaining-generated-package"),
+    "partial deletion",
+  );
+  expect(
+    await pruneWorktreeDependencies(f.root, { platform: "linux", inUse: async () => false }),
+  ).toMatch(/^removed:/);
+  await expect(NodeFSP.stat(modules)).rejects.toHaveProperty("code", "ENOENT");
+  await expect(
+    NodeFSP.stat(NodePath.join(f.root, ".t3/dependency-prune.json")),
+  ).rejects.toHaveProperty("code", "ENOENT");
+  expect(await NodeFSP.readFile(NodePath.join(f.root, "source.ts"), "utf8")).toBe(
+    "uncommitted edit",
+  );
+});
+
+it("does not trust an invalid interrupted-deletion receipt", async () => {
+  await using f = await fixture();
+  await NodeFSP.writeFile(
+    NodePath.join(f.root, ".t3/dependency-prune.json"),
+    JSON.stringify({ version: 1, modules: f.main }),
+  );
+  await expect(
+    pruneWorktreeDependencies(f.root, { platform: "linux", inUse: async () => false }),
+  ).rejects.toThrow("Invalid dependency cleanup receipt");
+  expect((await NodeFSP.stat(NodePath.join(f.root, "node_modules"))).isDirectory()).toBe(true);
 });
 
 it("does not clean a main checkout or a platform without a process probe", async () => {

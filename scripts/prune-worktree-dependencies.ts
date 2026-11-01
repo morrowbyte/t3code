@@ -81,22 +81,31 @@ async function referencedByProcess(root: string) {
 
 // Inspect source links and public dependency links, including package-local installs.
 // A pnpm store's real directories belong to that store; its consumers are public links.
-async function hasSharedDependencies(worktree: string, modules: string) {
+async function hasSharedDependencies(worktree: string, modules: string, deadline: number) {
   const pending = [worktree];
   let inspected = 0;
   while (pending.length > 0) {
-    const directory = pending.pop()!;
-    for (const entry of await NodeFSP.readdir(directory, { withFileTypes: true })) {
-      if (++inspected > 100_000) throw new Error("Dependency ownership scan limit reached");
-      const path = NodePath.join(directory, entry.name);
-      if (entry.isSymbolicLink()) {
-        try {
-          if (inside(modules, await NodeFSP.realpath(path))) return true;
-        } catch (error) {
-          if (!missing(error)) throw error;
+    const directories = pending.splice(-8);
+    const batches = await Promise.all(
+      directories.map(async (directory) => ({
+        directory,
+        entries: await NodeFSP.readdir(directory, { withFileTypes: true }),
+      })),
+    );
+    for (const { directory, entries } of batches) {
+      for (const entry of entries) {
+        if (++inspected > 100_000 || Date.now() >= deadline)
+          throw new Error("Dependency ownership scan limit reached; retained for a later pass");
+        const path = NodePath.join(directory, entry.name);
+        if (entry.isSymbolicLink()) {
+          try {
+            if (inside(modules, await NodeFSP.realpath(path))) return true;
+          } catch (error) {
+            if (!missing(error)) throw error;
+          }
+        } else if (entry.isDirectory() && entry.name !== ".git" && entry.name !== ".pnpm") {
+          pending.push(path);
         }
-      } else if (entry.isDirectory() && entry.name !== ".git" && entry.name !== ".pnpm") {
-        pending.push(path);
       }
     }
   }
@@ -109,6 +118,7 @@ export async function pruneWorktreeDependencies(
     platform?: NodeJS.Platform;
     worktrees?: readonly string[];
     inUse?: (root: string) => Promise<boolean>;
+    inspectionTimeoutMs?: number;
   } = {},
 ) {
   // Other platforms retain artifacts until they have an equivalent process-ownership probe.
@@ -117,12 +127,22 @@ export async function pruneWorktreeDependencies(
     return "kept: process inspection unavailable";
   root = await NodeFSP.realpath(root);
   const modules = NodePath.join(root, "node_modules");
+  const receipt = NodePath.join(root, ".t3", "dependency-prune.json");
+  let resuming = false;
+  try {
+    const saved = JSON.parse(await NodeFSP.readFile(receipt, "utf8"));
+    if (saved.version !== 1 || saved.modules !== modules)
+      throw new Error("Invalid dependency cleanup receipt");
+    resuming = true;
+  } catch (error) {
+    if (!missing(error)) throw error;
+  }
   try {
     if (!(await NodeFSP.lstat(NodePath.join(root, ".git"))).isFile()) return "kept: main checkout";
     if (!(await NodeFSP.lstat(modules)).isDirectory()) return "kept: shared dependencies";
-    if (!(await NodeFSP.lstat(NodePath.join(modules, ".pnpm"))).isDirectory())
+    if (!resuming && !(await NodeFSP.lstat(NodePath.join(modules, ".pnpm"))).isDirectory())
       return "kept: shared or unknown store";
-    if (!(await NodeFSP.lstat(NodePath.join(modules, ".modules.yaml"))).isFile())
+    if (!resuming && !(await NodeFSP.lstat(NodePath.join(modules, ".modules.yaml"))).isFile())
       return "kept: unknown dependencies";
   } catch (error) {
     if (missing(error)) return "kept: no managed dependencies";
@@ -145,9 +165,22 @@ export async function pruneWorktreeDependencies(
       .split("\0")
       .filter((row) => row.startsWith("worktree "))
       .map((row) => row.slice(9));
-  for (const worktree of worktrees) {
-    if (worktree === root) continue;
-    if (await hasSharedDependencies(worktree, modules)) return "kept: shared dependencies";
+  const peers = worktrees.filter((worktree) => worktree !== root);
+  // Most shared installs are root links. Check every peer before walking any source tree.
+  for (const worktree of peers) {
+    try {
+      if (inside(modules, await NodeFSP.realpath(NodePath.join(worktree, "node_modules"))))
+        return "kept: shared dependencies";
+    } catch (error) {
+      if (!missing(error)) throw error;
+    }
+  }
+  // Do not turn a safe cleanup into unbounded disk I/O on a large worktree fleet.
+  // An incomplete inspection always retains the dependencies.
+  const deadline = Date.now() + (options.inspectionTimeoutMs ?? 10_000);
+  for (const worktree of peers) {
+    if (await hasSharedDependencies(worktree, modules, deadline))
+      return "kept: shared dependencies";
   }
 
   const marker = NodePath.join(root, ".t3", "setup-running");
@@ -155,14 +188,27 @@ export async function pruneWorktreeDependencies(
   try {
     await NodeFSP.writeFile(marker, `${process.pid}\n`, { flag: "wx" });
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "EEXIST")
+    if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+    const owner = Number((await NodeFSP.readFile(marker, "utf8")).trim());
+    if (!Number.isSafeInteger(owner) || owner <= 0) return "kept: dependency operation active";
+    try {
+      process.kill(owner, 0);
       return "kept: dependency operation active";
-    throw error;
+    } catch (ownerError) {
+      if (!(ownerError instanceof Error && "code" in ownerError && ownerError.code === "ESRCH"))
+        throw ownerError;
+    }
+    await NodeFSP.unlink(marker);
+    await NodeFSP.writeFile(marker, `${process.pid}\n`, { flag: "wx" });
   }
   try {
     if (await (options.inUse ?? referencedByProcess)(root))
       return "kept: process still uses worktree";
+    await NodeFSP.writeFile(receipt, JSON.stringify({ version: 1, modules }), {
+      flag: resuming ? "w" : "wx",
+    });
     await NodeFSP.rm(modules, { recursive: true });
+    await NodeFSP.unlink(receipt);
     return "removed: regenerable dependencies; source and state retained";
   } finally {
     await NodeFSP.unlink(marker);
