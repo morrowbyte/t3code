@@ -450,6 +450,16 @@ const localChild = (childThreadId: ThreadId | null): ThreadId => {
 
 const parentThreadId = ThreadId.make("thread:mcp-orchestrator-parent");
 const projectId = ProjectId.make("project:mcp-orchestrator");
+const layerFixtureProject = (cwd: string) =>
+  Layer.mock(ProjectService.ProjectService)({
+    getById: (id) =>
+      Effect.succeed(
+        id === projectId
+          ? Option.some({ id, workspaceRoot: cwd, defaultModelSelection: null } as never)
+          : Option.none(),
+      ),
+  });
+
 const codexInstanceId = ProviderInstanceId.make("codex");
 const codexModel = "gpt-5.4";
 const parentPrompt = "Keep this parent turn active while orchestration tools are tested.";
@@ -606,12 +616,25 @@ describe("orchestrator MCP toolkit", () => {
               response: () => "No result has completed.",
             }),
           ]);
+          const layerProjects = Layer.mock(ProjectService.ProjectService)({
+            getById: (id) =>
+              Effect.succeed(
+                id === projectId || id === destinationId
+                  ? Option.some({
+                      id,
+                      workspaceRoot: id === destinationId ? `${cwd}/destination` : cwd,
+                      defaultModelSelection: null,
+                    } as never)
+                  : Option.none(),
+              ),
+          });
           const runtime = ProviderReplayHarness.layerWithRegistry(
             {
               name: "conversation-work-admission",
               runtimePolicyOverride: { cwd, approvalPolicy: "never" },
             },
             registry,
+            { projectServiceLayer: layerProjects },
           );
           const domain = Layer.mergeAll(
             runtime,
@@ -672,20 +695,7 @@ describe("orchestrator MCP toolkit", () => {
             Layer.provide(ServerSettings.layerTest()),
             Layer.provide(layerUnusedScheduledTaskStub),
             Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
-            Layer.provide(
-              Layer.mock(ProjectService.ProjectService)({
-                getById: (id) =>
-                  Effect.succeed(
-                    id === projectId || id === destinationId
-                      ? Option.some({
-                          id,
-                          workspaceRoot: id === destinationId ? `${cwd}/destination` : cwd,
-                          defaultModelSelection: null,
-                        } as never)
-                      : Option.none(),
-                  ),
-              }),
-            ),
+            Layer.provide(layerProjects),
             Layer.provideMerge(
               SecretRequests.layer.pipe(
                 Layer.provide(layerMemorySecretStore),
@@ -1183,7 +1193,7 @@ describe("orchestrator MCP toolkit", () => {
               },
             },
             registry,
-            { runEffectWorker: false },
+            { runEffectWorker: false, projectServiceLayer: layerFixtureProject(cwd) },
           );
           const domain = Layer.mergeAll(
             runtime,
@@ -1267,11 +1277,7 @@ describe("orchestrator MCP toolkit", () => {
             Layer.provide(ServerSettings.layerTest()),
             Layer.provide(layerUnusedScheduledTaskStub),
             Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
-            Layer.provide(
-              Layer.mock(ProjectService.ProjectService)({
-                getById: () => Effect.succeedSome({ id: projectId, workspaceRoot: cwd } as never),
-              }),
-            ),
+            Layer.provide(layerFixtureProject(cwd)),
             Layer.provideMerge(
               SecretRequests.layer.pipe(
                 Layer.provide(layerMemorySecretStore),
@@ -1809,6 +1815,7 @@ describe("orchestrator MCP toolkit", () => {
               },
             },
             layerRegistry,
+            { projectServiceLayer: layerFixtureProject(cwd) },
           ).pipe(Layer.provide(layerContinuationProbe));
           const layerOrchestration = Layer.merge(
             layerOrchestrator,
@@ -1890,16 +1897,7 @@ describe("orchestrator MCP toolkit", () => {
             Layer.provide(ServerSettings.layerTest()),
             Layer.provide(layerScheduledTaskStub),
             Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
-            Layer.provide(
-              Layer.mock(ProjectService.ProjectService)({
-                getById: (id) =>
-                  Effect.succeed(
-                    id === projectId
-                      ? Option.some({ id, defaultModelSelection: null } as never)
-                      : Option.none(),
-                  ),
-              }),
-            ),
+            Layer.provide(layerFixtureProject(cwd)),
             Layer.provideMerge(
               SecretRequests.layer.pipe(
                 Layer.provide(layerMemorySecretStore),
@@ -5283,6 +5281,7 @@ describe("orchestrator MCP toolkit", () => {
             runtimePolicyOverride: { cwd },
           },
           CodexOrchestratorReplayHarness,
+          { projectServiceLayer: layerFixtureProject(cwd) },
         );
         const layerOrchestration = Layer.merge(
           layerOrchestrator,
@@ -5315,7 +5314,7 @@ describe("orchestrator MCP toolkit", () => {
           Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
           Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
           Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
-          Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
+          Layer.provide(layerFixtureProject(cwd)),
           Layer.provideMerge(
             SecretRequests.layer.pipe(
               Layer.provide(layerMemorySecretStore),

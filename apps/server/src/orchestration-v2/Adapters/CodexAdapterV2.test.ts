@@ -74,6 +74,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import packageJson from "../../../package.json" with { type: "json" };
 import * as ServerConfig from "../../config.ts";
+import * as ProjectService from "../../project/ProjectService.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -2164,6 +2165,14 @@ describe("CodexAdapterV2 background command detail", () => {
 });
 
 const DEFAULT_CODEX_SETTINGS = Schema.decodeSync(CodexSettings)({});
+const layerReplayProject = (projectId: ProjectId, cwd: string) =>
+  Layer.mock(ProjectService.ProjectService)({
+    getById: (id) =>
+      id === projectId
+        ? Effect.succeedSome({ id, workspaceRoot: cwd, defaultModelSelection: null } as never)
+        : Effect.succeedNone,
+  });
+
 const CODEX_TEST_MODEL_SELECTION = {
   instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
   model: "gpt-5.4",
@@ -6045,7 +6054,13 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               ProviderReplayHarness.layerWithRegistry(
                 { name: "codex-capacity-retry", runtimePolicyOverride: { cwd } },
                 CodexAdapterV2Testkit.layer({ transcript: localTranscript, driver }),
-                { runEffectWorker: false },
+                {
+                  runEffectWorker: false,
+                  projectServiceLayer: layerReplayProject(
+                    ProjectId.make("project:capacity-retry"),
+                    cwd,
+                  ),
+                },
               ),
             ),
           );
@@ -8018,7 +8033,13 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 transcript: localTranscript,
                 driver: replayDriver,
               }),
-              { runEffectWorker: false },
+              {
+                runEffectWorker: false,
+                projectServiceLayer: layerReplayProject(
+                  ProjectId.make("project:background-stop"),
+                  cwd,
+                ),
+              },
             ),
           ),
         );
@@ -8134,7 +8155,13 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             ProviderReplayHarness.layerWithRegistry(
               { name: "codex-background-stop-untracked", runtimePolicyOverride: { cwd } },
               CodexAdapterV2Testkit.layer({ transcript: localTranscript }),
-              { runEffectWorker: false },
+              {
+                runEffectWorker: false,
+                projectServiceLayer: layerReplayProject(
+                  ProjectId.make("project:background-stop-untracked"),
+                  cwd,
+                ),
+              },
             ),
           ),
         );
