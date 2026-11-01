@@ -256,7 +256,7 @@ export function AssistantMetaTimelineRow({
         className="mt-0.5"
         projectedItem={row.projectedItem}
         message={row.message}
-        showCopyButton={row.showAssistantMeta && row.showAssistantCopyButton}
+        showCopyButton={row.showAssistantCopyButton}
         copyStreaming={row.assistantCopyStreaming}
         alwaysVisible
       />

@@ -27,7 +27,7 @@ it("moves through device controls and activates the selected hardware control by
         error: null,
         disabled: true,
         foregroundApp: null,
-        act: async () => {},
+        act: async () => true,
       }}
       screenshotPending={false}
       onScreenshot={noop}
