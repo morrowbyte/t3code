@@ -98,6 +98,7 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
 import { ExpandableText } from "./ExpandableText";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
+import { useSecretSources } from "./SecretSourceInput";
 import { UsageProviderSettings } from "./UsageProviderSettings";
 import { ProviderSetupSection, readAntigravityAuthMethod } from "./ProviderSetupSection";
 import { ProviderAuthenticationSection } from "./ProviderAuthenticationSection";
@@ -635,7 +636,7 @@ export function EnvironmentProviderSettings({
     void (async () => {
       const result = await refreshServerProviders({
         environmentId,
-        input: { refreshModels: true },
+        input: { refreshModels: true, reloadSecrets: true },
       });
       refreshingRef.current = false;
       setIsRefreshingProviders(false);
@@ -1243,6 +1244,7 @@ function ProviderInstanceRow({
   readonly actions: ProviderInstanceRowActions;
 }) {
   const allProjects = useProjects();
+  const secretSources = useSecretSources(environmentId);
   const acpProjects =
     mode === "editor" && liveProvider?.driver === "acpRegistry"
       ? allProjects.filter((project) => project.environmentId === environmentId)
@@ -1281,6 +1283,7 @@ function ProviderInstanceRow({
   return (
     <ProviderInstanceCard
       environmentId={environmentId}
+      secretSources={secretSources}
       acpProjects={acpProjects}
       projectOverride={projectOverride}
       onAcceptUrlAuth={

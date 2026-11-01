@@ -49,6 +49,8 @@ export interface HomeProjectScope {
   readonly representative: EnvironmentProject;
   readonly projects: ReadonlyArray<EnvironmentProject>;
   readonly projectRefs: ReadonlyArray<ScopedProjectRef>;
+  readonly pinned: boolean;
+  readonly archived: boolean;
 }
 
 function getProjectSortTimestamp(
@@ -84,6 +86,8 @@ export function buildHomeProjectScopes(input: {
       representative: group.representative,
       projects: group.members.map((member) => member.project),
       projectRefs: group.memberProjectRefs,
+      pinned: group.pinned,
+      archived: group.archived,
     };
   });
 }

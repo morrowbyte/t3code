@@ -80,7 +80,7 @@ export const T3_CODE_BROWSER_TOOL_INSTRUCTIONS = `
 
 ## T3 Code browser
 
-When browser work was asked, \`preview_*\` is the browser you share with the user: \`preview_status\` first, then \`preview_open\` if no tab can be automated. Prefer snapshot locators over coordinates. Switch browsers only if the tools are absent or \`preview_open\` says unsupported, the user asks, or two preview calls fail on one step. Then quote the error and switch.
+When browser work was asked (including recording edits), \`preview_*\` is the browser you share with the user: \`preview_status\` first, then \`preview_open\` if no tab can be automated. Prefer snapshot locators over coordinates. Switch browsers only if the tools are absent or \`preview_open\` says unsupported, the user asks, or two preview calls fail on one step. Then quote the error and switch.
 
 For live web development, keep the user's existing development server and preview tab. Let the project's hot updates apply edits without refreshing or replacing the page unless the change requires it, so interactive state can survive. Treat selected preview elements as reference context for the user's spoken or written request; selection alone does not authorize a change. If the selected snapshot is insufficient, inspect the current page with the preview tools.
 `;

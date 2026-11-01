@@ -24,6 +24,7 @@ import {
   menuControlDirection,
   shouldShowThreadJumpHintsForModifiers,
   shortcutLabelForCommand,
+  terminalNavigationShortcutData,
   type ShortcutEventLike,
 } from "./keybindings";
 
@@ -78,6 +79,31 @@ describe("leader navigation boundaries", () => {
     assert.equal(menuControlDirection(event({ key: "p", ctrlKey: true, altKey: true })), null);
     assert.equal(menuControlDirection(event({ key: "p", ctrlKey: true, shiftKey: true })), null);
   });
+});
+
+describe("terminal word navigation", () => {
+  it.each(["Win32", "Linux x86_64"])(
+    "leaves Ctrl+Arrow to the terminal encoder on %s",
+    (platform) => {
+      for (const key of ["ArrowLeft", "ArrowRight"]) {
+        assert.equal(terminalNavigationShortcutData(event({ key, ctrlKey: true }), platform), null);
+      }
+    },
+  );
+
+  it.each(["Win32", "Linux x86_64", "MacIntel"])(
+    "preserves Alt+Arrow word navigation on %s",
+    (platform) => {
+      assert.equal(
+        terminalNavigationShortcutData(event({ key: "ArrowLeft", altKey: true }), platform),
+        "\u001bb",
+      );
+      assert.equal(
+        terminalNavigationShortcutData(event({ key: "ArrowRight", altKey: true }), platform),
+        "\u001bf",
+      );
+    },
+  );
 });
 
 function modShortcut(

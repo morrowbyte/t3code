@@ -7,6 +7,7 @@ import {
   AuthSettingsWriteScope,
   DEFAULT_SERVER_SETTINGS,
   ORCHESTRATION_V2_WS_METHODS,
+  ProviderDriverKind,
   ProviderInstanceId,
   ProjectId,
   SecretProviderId,
@@ -197,13 +198,34 @@ describe("settings mutation authorization", () => {
       );
       yield* client[WS_METHODS.serverUpdateSettings]({ patch: {}, providerInstanceMutation });
       expect(handled).toBe(1);
+      yield* client[WS_METHODS.serverUpdateSettings]({
+        patch: {},
+        providerInstanceMutation: {
+          operation: "upsert",
+          instanceId: ProviderInstanceId.make("codex_work"),
+          instance: {
+            driver: ProviderDriverKind.make("codex"),
+            environment: [
+              {
+                name: "OPENAI_API_KEY",
+                sensitive: true,
+                value: {
+                  provider: SecretProviderId.make("personal"),
+                  reference: "op://Private/OpenAI/credential",
+                },
+              },
+            ],
+          },
+        },
+      });
+      expect(handled).toBe(2);
       expect(
         yield* client[WS_METHODS.serverUpdateSettings]({
           patch: { defaultRuntimeMode: "full-access" },
           providerInstanceMutation,
         }).pipe(Effect.flip),
       ).toMatchObject({ requiredPermission: AuthSettingsWriteScope });
-      expect(handled).toBe(1);
+      expect(handled).toBe(2);
     }).pipe(Effect.scoped),
   );
 

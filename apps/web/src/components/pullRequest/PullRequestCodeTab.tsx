@@ -84,6 +84,7 @@ import { DiffPanelLoadingState } from "../DiffPanelShell";
 import { useDiffWorkerPool } from "../DiffWorkerPoolProvider";
 import { DiffCommentAnnotation } from "../diffs/DiffCommentAnnotation";
 import { DiffFileTree } from "../diffs/DiffFileTree";
+import { FileExplorerPane } from "../files/FileExplorerPane";
 import { useCodeViewFileReveal } from "../diffs/useCodeViewFileReveal";
 import { useHideTestFiles } from "../diffs/useHideTestFiles";
 import { diffFileTreeEntries, orderDiffFilesLikeTree } from "../diffs/diffFileTree.logic";
@@ -1603,7 +1604,14 @@ function PullRequestCodeTab({
           </FileViewedToggleContext>
         </div>
         {fileTreeOpen ? (
-          <aside className="flex w-[min(20rem,40%)] min-w-48 shrink-0 border-l border-border/60">
+          <FileExplorerPane
+            resizable
+            storageKey="t3code:diff-file-tree-width"
+            defaultWidth={320}
+            defaultWidthFraction={0.4}
+            minWidth={192}
+            resizeLabel="Resize PR Code files"
+          >
             <DiffFileTree
               ariaLabel={`${capitalizeTerm(term)} #${detail.number} files`}
               entries={fileTreeEntries}
@@ -1629,7 +1637,7 @@ function PullRequestCodeTab({
                 )
               }
             />
-          </aside>
+          </FileExplorerPane>
         ) : null}
       </div>
       {unstructured}

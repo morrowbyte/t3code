@@ -294,6 +294,7 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
   const creditSources = new Map<string, LimitAccount>();
   const balanceSources = new Map<string, LimitAccount>();
   const hubRedeems = new Map<string, LimitAccount>();
+  const planSources = new Map<string, LimitAccount>();
   const merge = (key: string, next: LimitAccount) => {
     // Prefer hub redemption to clear its routing cooldown too; displayed balance still follows the freshest read.
     const previousHub = hubRedeems.get(key);
@@ -323,6 +324,14 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
     ) {
       balanceSources.set(key, next);
     }
+    const previousPlan = planSources.get(key);
+    if (
+      next.plan &&
+      (!previousPlan ||
+        Date.parse(next.limits.checkedAt) > Date.parse(previousPlan.limits.checkedAt))
+    ) {
+      planSources.set(key, next);
+    }
     const previous = accounts.get(key);
     if (!previous) {
       accounts.set(key, next);
@@ -341,7 +350,7 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
     accounts.set(key, {
       ...previous,
       displayName: previous.displayName ?? next.displayName,
-      plan: previous.plan ?? next.plan,
+      plan: planSources.get(key)?.plan ?? previous.plan ?? next.plan,
       accentColor: previous.accentColor ?? next.accentColor,
       environments,
       sourceLabel: environments.length > 0 ? null : (previous.sourceLabel ?? next.sourceLabel),

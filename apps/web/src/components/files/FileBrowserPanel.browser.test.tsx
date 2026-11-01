@@ -2,6 +2,8 @@ import { EnvironmentId, type ProjectEntry } from "@t3tools/contracts";
 import type { ReactNode } from "react";
 import { act, render } from "../../../test/render";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { page, userEvent } from "vite-plus/test/browser";
+import { dismissContextMenu } from "~/contextMenuFallback";
 
 import FileBrowserPanel from "./FileBrowserPanel";
 import { COMPOSER_MENTION_DRAG_TYPE } from "~/components/chat/composerMentionDrag";
@@ -45,7 +47,6 @@ vi.mock("~/composerHandleContext", () => ({
 vi.mock("~/fileContextMenu", () => ({
   useFileContextMenu: () => ({ buildItems: () => [], activate: () => Promise.resolve() }),
 }));
-vi.mock("~/localApi", () => ({ readLocalApi: () => undefined }));
 vi.mock("~/components/ui/toast", () => ({ toastManager: { add: vi.fn() } }));
 vi.mock("~/components/MorphIcon", () => ({ MorphIcon: () => null }));
 vi.mock("~/components/ui/tooltip", () => ({
@@ -248,6 +249,38 @@ describe("Files panel search", () => {
     expect(hasMessage(container, "No matching files.")).toBe(false);
     expect(container.textContent).toContain("Workspace search failed.");
   });
+  it("copies with the pointer and returns to the row after keyboard dismissal", async () => {
+    const { props, container } = setup();
+    files.directoryEntries = [
+      { path: "src", kind: "directory" },
+      { path: "README.md", kind: "file" },
+    ];
+    await using _screen = await render(<FileBrowserPanel {...props} />, { container });
+    using _menu = { [Symbol.dispose]: () => dismissContextMenu() };
+    using clipboard = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
+    await vi.waitFor(() => expect(findTreeRow("README.md")).not.toBeNull());
+    findTreeRow("README.md")!.dispatchEvent(
+      new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        button: 2,
+      }),
+    );
+    const action = page.getByRole("menuitem", { name: "Copy mention", exact: true });
+    await expect.element(action).toBeVisible();
+    await userEvent.click(action);
+    await vi.waitFor(() => expect(clipboard).toHaveBeenCalledWith("[README.md](README.md)"));
+
+    const row = findTreeRow("README.md")!;
+    await userEvent.keyboard("{Tab}");
+    row.focus();
+    await userEvent.keyboard("{Shift>}{F10}{/Shift}");
+    await expect.element(action).toHaveFocus();
+    await userEvent.keyboard("{Escape}");
+    await vi.waitFor(() => expect((row.getRootNode() as ShadowRoot).activeElement).toBe(row));
+  });
+
   it("dragging a file row carries a composer mention without opening it, and dragend releases it", async () => {
     const { props, container } = setup();
     files.directoryEntries = [

@@ -267,6 +267,7 @@ describe("root reopen shortcut", () => {
   );
 
   it("forwards the chord to a focused desktop browser only while history exists", async () => {
+    setup();
     const forwardedCommands = () =>
       (state.setShortcuts.mock.lastCall as unknown as [Array<{ command: string }>])[0].map(
         ({ command }) => command,
@@ -284,6 +285,7 @@ describe("root reopen shortcut", () => {
   });
 
   it("always forwards layout toggles and history navigation out of a focused desktop browser", async () => {
+    setup();
     await using _view = await renderShortcut();
     expect(state.setShortcuts).toHaveBeenLastCalledWith([
       expect.objectContaining({ command: "navigation.activate" }),
@@ -295,6 +297,15 @@ describe("root reopen shortcut", () => {
       expect.objectContaining({ command: "rightPanel.toggle" }),
       expect.objectContaining({ command: "preview.back" }),
       expect.objectContaining({ command: "preview.forward" }),
+      expect.objectContaining({ command: "preview.focusUrl" }),
     ]);
+  });
+
+  it("forwards address-bar focus from a focused desktop page", async () => {
+    setup();
+    await using _shortcut = await renderShortcut();
+    expect(state.setShortcuts).toHaveBeenLastCalledWith(
+      expect.arrayContaining([expect.objectContaining({ command: "preview.focusUrl" })]),
+    );
   });
 });

@@ -32,7 +32,7 @@ hosting an environment runs its agents and owns its project files.
   [nightly releases](https://github.com/morrowbyte/t3code/releases).
 
 Crew also retains upstream support for providers including Codex, Claude
-Code, Cursor, Grok, OpenCode, and Antigravity. Availability depends on the provider
+Code, Cursor, Grok, OpenCode, Antigravity, and [fx](docs/user/providers-fx.md). Availability depends on the provider
 installation, authentication, and client version. Provider subscriptions and
 third-party services are separate from this project.
 

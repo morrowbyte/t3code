@@ -29,7 +29,7 @@ const v2TableCount = Effect.gen(function* () {
 });
 
 describe("runMigrations", () => {
-  it.effect.each([63, 64, 65, 68, 69, 70, 71, 72])(
+  it.effect.each([63, 64, 65, 68, 69, 70, 71, 72, 73, 74, 75, 76])(
     "appends upstream migrations after the shipped fork prefix %s",
     (id) =>
       Effect.gen(function* () {
@@ -43,7 +43,7 @@ describe("runMigrations", () => {
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
-  it.effect("preserves fork Voice and host authority data when appending migrations 73–76", () =>
+  it.effect("preserves fork Voice and host authority data when appending migrations 73–80", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations({ toMigrationInclusive: 72 });
@@ -90,6 +90,10 @@ describe("runMigrations", () => {
         [74, "PeerLinks"],
         [75, "PeerLinkFence"],
         [76, "WaitingLinkRequestIndex"],
+        [77, "ActiveTurnItemIndexes"],
+        [78, "ExcludeAttachmentPlaceholdersFromSearch"],
+        [79, "SubagentDeliveryState"],
+        [80, "ProjectionProjectsPinArchive"],
       ]);
       assert.deepStrictEqual(yield* retained, before);
       assert.deepStrictEqual(yield* runMigrations(), []);

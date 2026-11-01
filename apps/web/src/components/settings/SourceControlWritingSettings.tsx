@@ -498,7 +498,7 @@ export function SourceControlWritingSettingsSection() {
           serverScoped
           settingKeys={["sourceControlWriterModelSelection"]}
           {...searchableSetting("source-control-writer-model")}
-          description="Model for source control text and branch or bookmark names. Off uses the environment's text generation model."
+          description="Model for source control text and branch or bookmark names. When disabled, use the text generation model configured for this environment."
           control={
             !hasServerTargets ? (
               <span className="text-sm text-muted-foreground">

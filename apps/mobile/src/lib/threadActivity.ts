@@ -275,7 +275,7 @@ export function workEntryRowLabel(entry: WorkLogPresentationEntry, expanded = fa
   if (expanded && entry.itemType === "reasoning")
     return entry.toolLifecycleStatus === "inProgress" ? "Thinking" : "Thought";
   const explicitIntent = workEntryExplicitIntentLabel(entry);
-  if (explicitIntent) return explicitIntent;
+  if (explicitIntent) return compactWorkEntryText(explicitIntent);
   const presentation = resolveWorkEntryToolPresentation(entry);
   if (presentation) return presentation.displayName;
   const intent = workEntryIntentLabel(entry);
@@ -879,7 +879,7 @@ function singleToolCallLabel(activity: ThreadFeedActivity, expanded: boolean): s
       ? "Thought"
       : compactWorkEntryText(activity.workEntry.detail ?? "") || "Thought";
   const explicitIntent = workEntryExplicitIntentLabel(activity.workEntry);
-  if (explicitIntent) return explicitIntent;
+  if (explicitIntent) return compactWorkEntryText(explicitIntent);
   const presentation = resolveWorkEntryToolPresentation(activity.workEntry, "completed");
   if (presentation) return presentation.displayName;
   const command = activity.workEntry.command?.trim();
@@ -1821,8 +1821,8 @@ function appendToolGroupRows(
             (activity.workEntry.detail?.trim() ?? "") !== "",
         )?.workEntry.detail
       : undefined;
-  const thought = latestThought ? liveThoughtLine(latestThought) : "";
-  const groupIntent = live ? activityIntent : undefined;
+  const thought = latestThought ? compactWorkEntryText(liveThoughtLine(latestThought)) : "";
+  const groupIntent = live && activityIntent ? compactWorkEntryText(activityIntent) : undefined;
   const summary =
     groupIntent ??
     (live
@@ -1927,21 +1927,20 @@ function appendToolGroupRows(
 function liveToolActivitySummary(activity: ThreadFeedActivity, presentTense: boolean): string {
   const status = liveActivityToolStatus(activity.lifecycleStatus, presentTense);
   if (activity.workEntry.itemType === "reasoning") {
-    return (
-      activity.workEntry.detail?.trim().replace(/\s+/g, " ") ||
-      (status === "inProgress" ? "Thinking" : "Thought")
+    return compactWorkEntryText(
+      activity.workEntry.detail?.trim() || (status === "inProgress" ? "Thinking" : "Thought"),
     );
   }
   const explicitIntent = workEntryExplicitIntentLabel(activity.workEntry);
-  if (explicitIntent) return explicitIntent;
+  if (explicitIntent) return compactWorkEntryText(explicitIntent);
   const presentation = resolveWorkEntryToolPresentation({
     ...activity.workEntry,
     toolLifecycleStatus: status,
   });
   if (presentation) return presentation.displayName;
   const intent = workEntryIntentLabel(activity.workEntry);
-  if (intent) return intent;
-  return activity.detail ?? activity.summary;
+  if (intent) return compactWorkEntryText(intent);
+  return compactWorkEntryText(activity.detail ?? activity.summary);
 }
 
 interface ThreadFeedBuild {

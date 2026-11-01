@@ -9,6 +9,11 @@ import { useGlobalVoiceInput } from "../voice-input/VoiceInputProvider";
 import { useThreadSelection } from "../../state/use-thread-selection";
 import type { EnvironmentId, RuntimeRequestId, ScopedThreadRef } from "@t3tools/contracts";
 import type { ThreadUserInputQuestion } from "@t3tools/client-runtime/state/thread-requests";
+import {
+  markdownProseDirection,
+  textDirection,
+  type TextDirection,
+} from "@t3tools/shared/textDirection";
 import { useRef } from "react";
 import { Platform, Pressable, ScrollView, View, type LayoutChangeEvent } from "react-native";
 import Animated, {
@@ -70,10 +75,19 @@ export interface PendingUserInputCardProps {
 /** Android cannot hit-test overlays beyond their parent's bounds; render its expanded card in-flow. */
 const EXPANDED_CARD_IS_OVERLAY = Platform.OS === "ios";
 
+function proseDirectionStyle(text: string, setDirection: TextDirection | undefined) {
+  const direction = textDirection(text);
+  return {
+    ...(direction ? { direction, writingDirection: direction } : null),
+    textAlign: (direction === "rtl") === (setDirection === "rtl") ? "left" : "right",
+  } as const;
+}
+
 function QuestionText(props: {
   readonly markdown: string;
   readonly origin?: ScopedThreadRef;
   readonly environmentId: EnvironmentId;
+  readonly setDirection: TextDirection | undefined;
 }) {
   const styles = useMarkdownPreviewStyles();
   const markdown = useLiveThreadLinkLabels(props.markdown, props.environmentId);
@@ -87,6 +101,11 @@ function QuestionText(props: {
     <SelectableMarkdownText
       markdown={markdown}
       textStyle={styles.nativeTextStyle}
+      writingDirection={markdownProseDirection(markdown)}
+      // Android's renderer aligns relative to each paragraph's direction.
+      textAlign={
+        Platform.OS === "android" ? undefined : props.setDirection === "rtl" ? "right" : "left"
+      }
       onLinkPress={(href) => void openLink(href)}
     />
   );
@@ -110,6 +129,15 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
   const canRespond = props.pendingUserInput.responseCapability !== "not_resumable";
   const isResponding = props.respondingUserInputId === props.pendingUserInput.requestId;
   const responseDisabled = !canRespond || isResponding;
+  const setDirection = markdownProseDirection(
+    props.pendingUserInput.questions
+      .flatMap((question) => [
+        question.header,
+        question.question,
+        ...question.options.flatMap((option) => [option.label, option.description ?? ""]),
+      ])
+      .join(" "),
+  );
 
   const cardCoverage = props.cardCoverage;
   const barHeightRef = useRef(0);
@@ -248,13 +276,17 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
           const draft = props.drafts[question.id];
           return (
             <View key={question.id} className="gap-2 pt-1">
-              <Text className="font-t3-bold text-xs uppercase tracking-[1px] text-foreground-muted">
+              <Text
+                className="font-t3-bold text-xs uppercase tracking-[1px] text-foreground-muted"
+                style={proseDirectionStyle(question.header, setDirection)}
+              >
                 {question.header}
               </Text>
               <QuestionText
                 origin={origin ?? undefined}
                 markdown={question.question}
                 environmentId={props.environmentId}
+                setDirection={setDirection}
               />
               <View className="gap-2">
                 {question.options.map((option) => {
@@ -286,11 +318,15 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
                             "font-t3-bold text-sm",
                             selected ? "text-foreground" : "text-foreground-secondary",
                           )}
+                          style={proseDirectionStyle(option.label, setDirection)}
                         >
                           {option.label}
                         </Text>
                         {description ? (
-                          <Text className="font-sans text-sm leading-5 text-foreground-muted">
+                          <Text
+                            className="font-sans text-sm leading-5 text-foreground-muted"
+                            style={proseDirectionStyle(description, setDirection)}
+                          >
                             {description}
                           </Text>
                         ) : null}

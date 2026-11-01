@@ -9,6 +9,7 @@ it("moves through device controls and activates the selected hardware control by
   await using screen = await render(
     <DeviceControlsRail
       platform="android"
+      hostKind="local"
       handle={{ inputConnected: true, pressButton, rotate: noop }}
       view={{
         handle: null,

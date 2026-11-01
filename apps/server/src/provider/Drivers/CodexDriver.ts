@@ -152,6 +152,7 @@ export const CodexDriver: ProviderDriver<
     const pathService = yield* Path.Path;
     const httpClient = yield* HttpClient.HttpClient;
     const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
+    const installation = yield* CodexInstallation.CodexInstallation;
     const modelCatalog = yield* ModelCatalog.ModelCatalog;
     const currentCatalog = modelCatalog.current(DRIVER_KIND);
     const instancePath = environment?.findLast(
@@ -187,7 +188,6 @@ export const CodexDriver: ProviderDriver<
       binaryPath: expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory),
       homePath: homeLayout.effectiveHomePath ?? "",
     } satisfies CodexSettings;
-    const installation = yield* CodexInstallation.CodexInstallation;
     const defaultCommand = !config.binaryPath.trim() || config.binaryPath === "codex";
     const usesDefaultExecutable = defaultCommand && instancePath === undefined;
     const resolveNativeBinaryPath = Effect.gen(function* () {
@@ -336,7 +336,11 @@ export const CodexDriver: ProviderDriver<
         enabled,
         config,
       },
-      { onUsageLimits: (update) => snapshot.applyUsageLimits(update), resolveRuntime },
+      {
+        onUsageLimits: (update) => snapshot.applyUsageLimits(update),
+        resolveRuntime,
+        compatibility: installation.compatibility,
+      },
     ).pipe(
       Effect.mapError(
         (cause) =>

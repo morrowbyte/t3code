@@ -31,6 +31,7 @@ import { selectActiveRightPanelSurface, useRightPanelStore } from "../../rightPa
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { resolveThreadRouteTarget } from "../../threadRoutes";
 import { assetEnvironment } from "../../state/assets";
+import { readProject, readThreadShell } from "../../state/entities";
 import {
   useConnectedEnvironmentIds,
   useEnvironmentHttpBaseUrl,
@@ -174,6 +175,42 @@ export function DesktopWebLinkCoordinator() {
     return threadRef;
   };
 
+  const openInBrowser = useEffectEvent(async (url: string) => {
+    const routeParams = router.state.matches.at(-1)?.params ?? {};
+    const isFile = url.startsWith("file:");
+    // Only this machine's environment serves files, so fail before starting a thread.
+    if (isFile && httpBaseUrl === null) {
+      reportFailure(url);
+      return;
+    }
+    const threadRef =
+      threadShowingBrowser(
+        routeParams,
+        isFile ? (primaryEnvironment?.environmentId ?? null) : null,
+      ) ?? (await startThread(url));
+    if (threadRef === null) return;
+    const result = isFile
+      ? httpBaseUrl === null
+        ? null
+        : await openFileInPreview({
+            threadRef,
+            filePath: decodeURIComponent(new URL(url).pathname),
+            workspaceRoot: undefined,
+            httpBaseUrl,
+            createAssetUrl,
+            openPreview,
+          })
+      : await openUrlInPreview({ threadRef, url, openPreview });
+    if (result === null) {
+      reportFailure(url);
+      return;
+    }
+    if (result._tag === "Failure") {
+      const error = squashAtomCommandFailure(result);
+      reportFailure(url, error instanceof Error ? error.message : url);
+    }
+  });
+
   const openLink = useEffectEvent(async (url: string) => {
     const pairingUrl = readPairingAppLink(url);
     if (pairingUrl !== null) {
@@ -218,51 +255,38 @@ export function DesktopWebLinkCoordinator() {
       reportFailure(url, "This link is not a supported Crew or web link.");
       return;
     }
-    if (openChangeRequest(externalClick, url)) return;
-    const isFile = url.startsWith("file:");
-    // Only this machine's environment serves files, so fail before starting a thread.
-    if (isFile && httpBaseUrl === null) {
-      reportFailure(url);
-      return;
-    }
     const routeParams = router.state.matches.at(-1)?.params ?? {};
-    const threadRef =
-      threadShowingBrowser(
-        routeParams,
-        isFile ? (primaryEnvironment?.environmentId ?? null) : null,
-      ) ?? (await startThread(url));
-    if (threadRef === null) return;
-    const result = isFile
-      ? httpBaseUrl === null
-        ? null
-        : await openFileInPreview({
-            threadRef,
-            filePath: decodeURIComponent(new URL(url).pathname),
-            workspaceRoot: undefined,
-            httpBaseUrl,
-            createAssetUrl,
-            openPreview,
-          })
-      : await openUrlInPreview({ threadRef, url, openPreview });
-    if (result === null) {
-      reportFailure(url);
+    const routeTarget = resolveThreadRouteTarget(routeParams);
+    const activeThreadRef = routeTarget?.kind === "server" ? routeTarget.threadRef : undefined;
+    const activeThread = activeThreadRef ? readThreadShell(activeThreadRef) : null;
+    const activeProject =
+      activeThread && activeThreadRef
+        ? readProject(scopeProjectRef(activeThreadRef.environmentId, activeThread.projectId))
+        : null;
+    const commitThreadRef =
+      activeThread &&
+      sourceControlClients.parseCommitUrl(url, activeProject?.repositoryIdentity?.provider) !== null
+        ? activeThreadRef
+        : undefined;
+    // A commit the thread's workspace lacks continues here, after its lookup.
+    const openUnavailableCommit = () => {
+      queueRef.current = queueRef.current
+        .then(() => openInBrowser(url))
+        .catch(() => reportFailure(url));
+    };
+    if (openChangeRequest(externalClick, url, commitThreadRef, undefined, openUnavailableCommit))
       return;
-    }
-    if (result._tag === "Failure") {
-      const error = squashAtomCommandFailure(result);
-      reportFailure(url, error instanceof Error ? error.message : url);
-    }
+    await openInBrowser(url);
   });
 
   const receiveLink = useEffectEvent((url: string) => {
-    // A connected server publishes its config before its project snapshot, so a PR link
-    // delivered at launch would miss its project and fall through to the browser. Hold PR
-    // links, and only those, until discovery settles; an ordinary link never waits for it.
-    // Discovery never settles without the local environment, so those links do not wait.
+    // A connected server publishes its config before its project snapshot, so a source control
+    // link delivered at launch would miss its project and fall through to the browser. Hold
+    // those links until discovery settles; an ordinary link never waits for it.
     const hold =
       openPullRequestsInApp &&
-      !localEnvironmentDisabled &&
-      sourceControlClients.parseChangeRequestUrl(url) !== null
+      (sourceControlClients.parseChangeRequestUrl(url) !== null ||
+        sourceControlClients.parseCommitUrl(url) !== null)
         ? projectsSettled()
         : Promise.resolve();
     void hold.then(() => {

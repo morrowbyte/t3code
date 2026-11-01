@@ -69,7 +69,8 @@ export function useUpdateEverything(
   }));
   const { targets: servers, skipped } = channelSwitch
     ? collectChannelSwitchTargets(machines, channelSwitch)
-    : collectServerUpdateTargets(machines, targetVersion, localUpdateVersion !== null);
+    : collectServerUpdateTargets(machines, targetVersion);
+  // Track-only hosts save a setting and restart nothing, so they are neither listed nor counted.
   const moving = servers.filter((server) => server.trackOnly !== true);
   const restarts = collectRestartingMachines(machines, moving, localUpdateVersion !== null);
   const providerUpdates = useProviderUpdates();

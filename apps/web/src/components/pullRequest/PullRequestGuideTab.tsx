@@ -104,16 +104,25 @@ export function PullRequestGuideTab({
       );
     }
     return (
-      <div className="flex min-h-48 flex-col items-center justify-center gap-2 px-4 py-10 text-center">
+      <div className="scrollbar-gutter-both flex h-full flex-col items-center justify-center-safe gap-2 overflow-y-auto px-4 py-10 text-center">
         <p className="text-sm font-medium text-foreground">
-          {running ? "Writing a review guide" : "No review guide yet"}
+          {running
+            ? "Writing a review guide"
+            : failure === null
+              ? "No review guide yet"
+              : "Could not write a review guide"}
         </p>
-        {failure || query.error || running ? (
+        {running || failure !== null || query.error ? (
           <p className="max-w-md text-xs text-muted-foreground">
-            {failure ?? query.error ?? "You’ll be notified when it’s ready."}
+            {running
+              ? "You’ll be notified when it’s ready."
+              : failure === null
+                ? query.error
+                : FAILURE_HINT}
           </p>
         ) : null}
         {writeButton(failure === null ? "Write guide" : "Try again", "sm")}
+        {failure === null || running ? null : <FailureDetails detail={failure} />}
       </div>
     );
   }
@@ -123,7 +132,16 @@ export function PullRequestGuideTab({
       <Alert variant={running ? "info" : "warning"}>
         {running ? <Spinner /> : <TriangleAlertIcon />}
         <AlertDescription>
-          {running ? "Rewriting guide…" : (failure ?? "Written before the latest push.")}
+          {running ? (
+            "Rewriting guide…"
+          ) : failure === null ? (
+            "Written before the latest push."
+          ) : (
+            <>
+              {`Could not rewrite this guide. ${FAILURE_HINT}`}
+              <FailureDetails detail={failure} />
+            </>
+          )}
         </AlertDescription>
         {!running && canWrite ? <AlertAction>{writeButton("Rewrite", "xs")}</AlertAction> : null}
       </Alert>
@@ -150,5 +168,20 @@ export function PullRequestGuideTab({
         onOpenFile={onOpenFile}
       />
     </GuideProseContext>
+  );
+}
+
+const FAILURE_HINT = "Check the review guide model in Settings → Source control.";
+
+function FailureDetails({ detail }: { detail: string }) {
+  return (
+    <details className="w-full max-w-lg text-xs text-muted-foreground">
+      <summary className="cursor-pointer rounded-sm -outline-offset-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring">
+        Technical details
+      </summary>
+      <pre className="scrollbar-gutter-both mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-muted/40 p-3 text-left font-mono text-xs">
+        {detail}
+      </pre>
+    </details>
   );
 }

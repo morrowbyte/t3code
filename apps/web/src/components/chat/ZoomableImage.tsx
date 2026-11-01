@@ -87,8 +87,9 @@ export function ZoomableImage({
     1,
     Math.min(viewerSize.height * 0.86, viewerSize.height - reservedHeight),
   );
+  // A vector scales without loss, and an SVG without dimensions reports a tiny default size.
   const fit = Math.min(
-    1,
+    mimeType === "image/svg+xml" ? Infinity : 1,
     (viewerSize.width * 0.92 - (viewerSize.width >= 640 ? 96 : 0)) / (naturalSize.width || 1),
     maxHeight / (naturalSize.height || 1),
   );
