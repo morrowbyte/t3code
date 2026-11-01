@@ -2,7 +2,9 @@
 import * as NodeFS from "node:fs";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as HttpClient from "effect/http/HttpClient";
 import { assert, expect, it } from "@effect/vitest";
 import { ComposerContextId, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
@@ -10,11 +12,13 @@ import { projectComposerContextForProvider } from "@t3tools/shared/composerConte
 import {
   buildBase,
   buildMessages,
+  CrewFixtureError,
   failedEarly,
   executeCodex,
   gradeSample,
   makeSample,
   ranCalls,
+  runCrewSample,
   McpToolUseCase,
   mockOutput,
   normalizeToolInput,
@@ -27,6 +31,8 @@ import {
   t3SubagentContext,
   withDevices,
 } from "./run.ts";
+import type { CrewProviderClient } from "../shared/crewProviderProtocol.ts";
+import type { ProviderEvalRequest } from "../../apps/server/src/provider/ProviderEvalSession.ts";
 import { briefRoute, gradeDevice, shellInvocations } from "./device-grading.ts";
 import { taskPrompt } from "../../apps/server/src/mcp/delegatedTaskModes.ts";
 
@@ -242,6 +248,70 @@ const childCase: McpToolUseCase = {
   prompt: "Push the fix, open a PR against main, and report the PR URL.",
   expect: { calls: [{ tool: "link_pull_request" }], notCalls: ["watch_pull_request"] },
 };
+
+const crewBase = () => ({
+  ...buildBase(template, { model: "gpt-6.1-sol", keepUserInstructions: false }),
+  nativeTools: [{ name: "exec", description: "### `exec_command`\nRun a fixture command." }],
+  codex: {
+    input: [{ type: "message", role: "developer", content: [{ type: "input_text", text: "Current source instructions" }] }],
+    reasoning: { effort: "high" },
+  },
+});
+const noCrewNetwork = Layer.mock(HttpClient.HttpClient)({
+  execute: () => Effect.die("Crew fixtures must not call an HTTP simulator or proxy."),
+});
+
+it.effect("executes Crew JSON tool calls against existing shell mocks and the existing grader", () => {
+  const requests: ProviderEvalRequest[] = [];
+  const client: CrewProviderClient = {
+    run: (request) => Effect.sync(() => {
+      requests.push(request);
+      if (request.action === "start") {
+        assert.include(request.instructions, "Current source instructions");
+        assert.deepEqual(request.tools.map((tool) => tool.name), ["exec"]);
+        return { type: "tool_call", evaluationId: "crew-eval", callId: "fixture-call", name: "exec",
+          arguments: { code: "text(await tools.exec_command({cmd: 'printf fixture'}));" } };
+      }
+      if (request.action === "respond") {
+        assert.equal(request.callId, "fixture-call");
+        assert.include(request.contentItems[0]!.text, "canned fixture");
+        return { type: "complete", evaluationId: request.evaluationId, text: "Read canned fixture." };
+      }
+      return { type: "cancelled", evaluationId: request.evaluationId };
+    }),
+  };
+  const testCase: McpToolUseCase = {
+    ...childCase, id: "crew-mocked-shell", setup: { role: "top", shellMocks: [{ match: "^printf fixture$", output: "canned fixture" }] },
+    expect: { calls: [{ tool: "Bash", args: { command: "printf fixture" } }], textMust: ["canned fixture"] },
+  };
+  return Effect.gen(function* () {
+    const result = yield* runCrewSample(testCase, crewBase(), client);
+    assert.isTrue(gradeSample(testCase.expect, result).every((check) => check.pass));
+    assert.equal(result.transport, "crew-json-exec");
+    assert.isNull(result.usage);
+    assert.isNull(result.shellUsage);
+    assert.deepEqual(requests.map((request) => request.action), ["start", "respond"]);
+  }).pipe(Effect.provide(noCrewNetwork));
+});
+
+it.effect("reports an unmapped Crew shell as a fixture error and cancels its evaluation", () => {
+  const requests: ProviderEvalRequest[] = [];
+  const client: CrewProviderClient = {
+    run: (request) => Effect.sync(() => {
+      requests.push(request);
+      return request.action === "start"
+        ? { type: "tool_call", evaluationId: "crew-eval", callId: "unmapped", name: "exec",
+            arguments: { code: "text(await tools.exec_command({cmd: 'whoami'}));" } }
+        : { type: "cancelled", evaluationId: request.evaluationId };
+    }),
+  };
+  return Effect.gen(function* () {
+    const error = yield* runCrewSample({ ...childCase, setup: { role: "top" } }, crewBase(), client).pipe(Effect.flip);
+    assert.instanceOf(error, CrewFixtureError);
+    assert.equal(error instanceof CrewFixtureError ? error.code : "", "missing_shell_mock");
+    assert.deepEqual(requests.map((request) => request.action), ["start", "cancel"]);
+  }).pipe(Effect.provide(noCrewNetwork));
+});
 
 it("rebuilds the template from this checkout and sends a child T3's task prompt", () => {
   const base = buildBase(template, { model: "claude-sonnet-5-5", keepUserInstructions: false });

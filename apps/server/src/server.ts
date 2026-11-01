@@ -1,6 +1,8 @@
 import * as BoatSetupService from "./boat/BoatSetupService.ts";
 import * as BoatService from "./boat/BoatService.ts";
 import * as BoatApi from "./boat/BoatApi.ts";
+import * as ProviderEvalSession from "./provider/ProviderEvalSession.ts";
+import * as ProviderEvalBoat from "./provider/ProviderEvalBoat.ts";
 import * as ApprovalReviewHttp from "./orchestration-v2/ApprovalReviewHttp.ts";
 import * as ApprovalReviewService from "./orchestration-v2/ApprovalReviewService.ts";
 import * as ApprovalReviewHostOrders from "./orchestration-v2/ApprovalReviewHostOrders.ts";
@@ -825,6 +827,8 @@ const layerMakeRoutes = Layer.mergeAll(
   McpHttpServer.layerJarvisToolkit.pipe(
     Layer.provideMerge(McpHttpServer.layer),
     Layer.provide(JarvisClient.layer),
+    Layer.provide(ProviderEvalBoat.layer),
+    Layer.provide(ProviderEvalSession.layer),
     Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
     Layer.provide(McpOAuth.layerMcpClientAuthenticator),
   ),

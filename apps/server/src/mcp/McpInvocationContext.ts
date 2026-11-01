@@ -179,7 +179,7 @@ export const requireMcpCapability = <const C extends McpCapability>(
     Effect.withSpan("mcp.requireCapability"),
   );
 
-export const requireThreadMcpCapability = <const C extends "preview" | "device">(
+export const requireThreadMcpCapability = <const C extends "preview" | "device" | "orchestration">(
   capability: C,
 ): Effect.Effect<McpThreadInvocationScope, McpCapabilityError<C>, McpInvocationContext> =>
   McpInvocationContext.pipe(

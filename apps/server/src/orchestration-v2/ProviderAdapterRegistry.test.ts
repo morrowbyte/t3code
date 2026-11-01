@@ -34,6 +34,7 @@ const makeAdapter = (
     getCapabilities: () => Effect.die("capabilities are not used by this registry test"),
     planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
     openSession: () => Effect.die("sessions are not used by this registry test"),
+    evaluate: () => Effect.die("evaluations are not used by this registry test"),
   }) as ProviderAdapter.ProviderAdapterV2["Service"];
 
 const makeInstance = (
@@ -82,7 +83,7 @@ it.effect("routes two configured instances of the same driver independently", ()
 );
 
 it.effect(
-  "blocks a new session while another instance changes their shared provider credentials",
+  "blocks new sessions and evaluations while a peer changes their shared provider credentials",
   () =>
     Effect.gen(function* () {
       const unused = () => Effect.die("unused auth operation");
@@ -129,10 +130,18 @@ it.effect(
         .pipe(Effect.flip);
       assert.instanceOf(error, ProviderAdapter.ProviderAdapterOpenSessionError);
       assert.instanceOf(error.cause, ProviderSetupError);
+      const evaluationError = yield* adapter.evaluate!({
+        modelSelection: { instanceId: personalId, model: "test-model" },
+        instructions: "Evaluate.", input: "Task.", tools: [],
+        onToolCall: () => Effect.die("Tools must not run during sign-in changes."),
+      }).pipe(Effect.flip);
+      assert.instanceOf(evaluationError, ProviderAdapter.ProviderAdapterEvaluationError);
+      assert.instanceOf(evaluationError.cause, ProviderSetupError);
     }),
 );
 
-it.effect("interrupts admitted session startup when a shared peer signs out", () =>
+it.effect.each(["session", "evaluation"] as const)(
+  "interrupts admitted %s when a shared peer signs out", (operation) =>
   Effect.gen(function* () {
     const entered = yield* Deferred.make<void>();
     const stopped = yield* Deferred.make<void>();
@@ -158,6 +167,11 @@ it.effect("interrupts admitted session startup when a shared peer signs out", ()
           yield* Deferred.succeed(entered, undefined);
           return yield* Effect.never;
         }).pipe(Effect.ensuring(Deferred.succeed(stopped, undefined))),
+      evaluate: () =>
+        Effect.gen(function* () {
+          yield* Deferred.succeed(entered, undefined);
+          return yield* Effect.never;
+        }).pipe(Effect.ensuring(Deferred.succeed(stopped, undefined))),
     };
     const related = [
       { ...instances[0], auth },
@@ -177,18 +191,25 @@ it.effect("interrupts admitted session startup when a shared peer signs out", ()
       ),
     );
     const guarded = yield* registry.get(workId);
-    const startup = yield* guarded
-      .openSession({
-        threadId: ThreadId.make("shared-startup"),
-        providerSessionId: ProviderSessionId.make("shared-session"),
-        modelSelection: { instanceId: workId, model: "test-model" },
-        runtimePolicy: {
-          runtimeMode: "full-access",
-          interactionMode: "default",
-          cwd: "/workspace",
-        },
-      })
-      .pipe(Effect.forkChild);
+    const work = operation === "session"
+      ? guarded.openSession({
+          threadId: ThreadId.make("shared-startup"),
+          providerSessionId: ProviderSessionId.make("shared-session"),
+          modelSelection: { instanceId: workId, model: "test-model" },
+          runtimePolicy: {
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            cwd: "/workspace",
+          },
+        }).pipe(Effect.asVoid)
+      : guarded.evaluate!({
+          modelSelection: { instanceId: workId, model: "test-model" },
+          instructions: "Evaluate.",
+          input: "Task.",
+          tools: [],
+          onToolCall: () => Effect.die("No tool call expected."),
+        }).pipe(Effect.asVoid);
+    const startup = yield* work.pipe(Effect.forkChild);
     yield* Deferred.await(entered);
     yield* auth.logout(Effect.void);
     yield* Deferred.await(stopped);

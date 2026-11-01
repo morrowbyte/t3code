@@ -76,41 +76,39 @@ export const layerFromProviderInstanceRegistry: Layer.Layer<
             const adapter = instance.orchestrationAdapter;
             const auth = instance.auth;
             if (!auth) return Effect.succeed(adapter);
+            const withAccess = Effect.fn("ProviderAdapterRegistryV2.withAccess")(
+              function* <A, E, R>(operation: () => Effect.Effect<A, E, R>) {
+                const binding = auth.credentialBinding;
+                const related = binding
+                  ? (yield* instances.listInstances).filter(
+                      (instance) =>
+                        instance.auth?.credentialBinding?.key === binding.key &&
+                        instance.auth.credentialBinding.owner === binding.owner,
+                    )
+                  : [instance];
+                for (const instance of related) {
+                  if (
+                    instance.auth?.isChangingCredentials &&
+                    (yield* instance.auth.isChangingCredentials)
+                  )
+                    return yield* new ProviderSetupError({
+                      instanceId,
+                      operation: "session",
+                      detail: "This provider's sign-in is changing. Try again after it finishes.",
+                    });
+                }
+                let admitted: Effect.Effect<A, E | ProviderSetupError, R | Scope.Scope> = operation();
+                // Shared credential changes must interrupt a peer's operation too.
+                for (const peer of related) {
+                  if (peer.auth?.withAccess) admitted = peer.auth.withAccess(admitted);
+                }
+                return yield* admitted;
+              },
+            );
             return Effect.succeed({
               ...adapter,
               openSession: (input) => {
-                const open = Effect.gen(function* () {
-                  const binding = auth.credentialBinding;
-                  const related = binding
-                    ? (yield* instances.listInstances).filter(
-                        (instance) =>
-                          instance.auth?.credentialBinding?.key === binding.key &&
-                          instance.auth.credentialBinding.owner === binding.owner,
-                      )
-                    : [instance];
-                  for (const instance of related) {
-                    if (
-                      instance.auth?.isChangingCredentials &&
-                      (yield* instance.auth.isChangingCredentials)
-                    )
-                      return yield* new ProviderSetupError({
-                        instanceId,
-                        operation: "session",
-                        detail: "This provider's sign-in is changing. Try again after it finishes.",
-                      });
-                  }
-                  let admitted: Effect.Effect<
-                    ProviderAdapter.ProviderAdapterV2SessionRuntime,
-                    ProviderAdapter.ProviderAdapterV2Error | ProviderSetupError,
-                    Scope.Scope
-                  > = adapter.openSession(input);
-                  // Shared credential changes must interrupt a peer's startup too.
-                  for (const peer of related) {
-                    if (peer.auth?.withAccess) admitted = peer.auth.withAccess(admitted);
-                  }
-                  return yield* admitted;
-                });
-                return open.pipe(
+                return withAccess(() => adapter.openSession(input)).pipe(
                   Effect.mapError((cause) =>
                     isProviderSetupError(cause)
                       ? new ProviderAdapter.ProviderAdapterOpenSessionError({
@@ -122,6 +120,21 @@ export const layerFromProviderInstanceRegistry: Layer.Layer<
                   ),
                 );
               },
+              ...(adapter.evaluate
+                ? {
+                    evaluate: (input: ProviderAdapter.ProviderAdapterV2EvaluationInput) =>
+                      Effect.scoped(withAccess(() => adapter.evaluate!(input))).pipe(
+                        Effect.mapError((cause) =>
+                          isProviderSetupError(cause)
+                            ? new ProviderAdapter.ProviderAdapterEvaluationError({
+                                driver: adapter.driver,
+                                cause,
+                              })
+                            : cause,
+                        ),
+                      ),
+                  }
+                : {}),
             } satisfies ProviderAdapter.ProviderAdapterV2["Service"]);
           }),
         );

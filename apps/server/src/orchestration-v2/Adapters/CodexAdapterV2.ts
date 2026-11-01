@@ -167,6 +167,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { ProviderSessionId } from "@t3tools/contracts";
 import { runCodexVoiceIntakeDecision } from "./CodexAdapterV2VoiceIntake.ts";
+import { runCodexEvaluation } from "./CodexAdapterV2Evaluation.ts";
 import {
   assertCodexVoiceMcpIsolation,
   assertCodexVoiceThreadIsolation,
@@ -1732,6 +1733,7 @@ export interface CodexAppServerClientFactoryShape {
     readonly threadId: ThreadId;
     readonly providerSessionId: OrchestrationV2ProviderSession["id"];
     readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
+    readonly cwd?: string;
     readonly settings: CodexSettings;
     readonly environment: NodeJS.ProcessEnv;
     readonly appManagedThreadLifecycle?: boolean;
@@ -1954,6 +1956,7 @@ export const layerAppServerClientFactory: Layer.Layer<
           ],
           env: environment,
           threadId: input.threadId,
+          ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
         }).pipe(Effect.provideService(AgentScope, agentScope));
         const handle = yield* spawner.spawn(command).pipe(
           Effect.provideService(Scope.Scope, scope),
@@ -2092,6 +2095,34 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
     planSelectionTransition: Effect.fn("CodexAdapterV2.planSelectionTransition")(function () {
       return Effect.succeed(turnScopedSelectionTransition());
     }),
+    evaluate: Effect.fn("CodexAdapterV2.evaluate")(
+      (input) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            if (input.modelSelection.instanceId !== adapterOptions.instanceId) {
+              return yield* new ProviderAdapter.ProviderAdapterEvaluationError({
+                driver: CODEX_PROVIDER,
+              });
+            }
+            const resolvedRuntime = yield* (adapterOptions.resolveRuntime ?? Effect.succeed(undefined));
+            const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-evaluation-" });
+            const id = yield* crypto.randomUUIDv4();
+            const client = yield* clientFactory.open({
+              instanceId: adapterOptions.instanceId,
+              threadId: ThreadId.make(`evaluation:${id}`),
+              providerSessionId: ProviderSessionId.make(`evaluation:${id}`),
+              runtimePolicy: { runtimeMode: "approval-required", interactionMode: "default", cwd },
+              cwd,
+              settings: resolvedRuntime?.config ?? adapterOptions.settings,
+              environment: resolvedRuntime?.environment ?? adapterOptions.environment,
+            });
+            return yield* runCodexEvaluation(client, { ...input, cwd });
+          }),
+        ),
+      Effect.mapError(
+        (cause) => new ProviderAdapter.ProviderAdapterEvaluationError({ driver: CODEX_PROVIDER, cause }),
+      ),
+    ),
     openSession: Effect.fn("CodexAdapterV2.openSession")(
       function* (input) {
         const scope = yield* Scope.Scope;

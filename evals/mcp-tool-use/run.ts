@@ -9,6 +9,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeUtil from "node:util";
 import * as NodeVM from "node:vm";
 import * as NodeZlib from "node:zlib";
+import * as NodeReadline from "node:readline";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -24,6 +25,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schedule from "effect/Schedule";
@@ -56,6 +58,7 @@ import { OrchestratorToolkit } from "../../apps/server/src/mcp/toolkits/orchestr
 import { PreviewToolkit } from "../../apps/server/src/mcp/toolkits/preview/tools.ts";
 import { PreviewControlsToolkit } from "../../apps/server/src/mcp/toolkits/previewControls/tools.ts";
 import { BoatToolkit } from "../../apps/server/src/mcp/toolkits/boat/tools.ts";
+import { ProviderEvalToolkit } from "../../apps/server/src/mcp/toolkits/providerEval/tools.ts";
 import { ProjectToolkit } from "../../apps/server/src/mcp/toolkits/project/tools.ts";
 import {
   CHILD_PULL_REQUEST_REPORT_NEXT,
@@ -68,6 +71,15 @@ import {
   makeClaudeQueryOptions,
 } from "../../apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { proxyConfig } from "../shared/proxy.ts";
+import {
+  CREW_MAX_CAPTURE_BYTES,
+  CrewProtocolError,
+  type CrewProviderClient,
+  type CrewSummary,
+  encodeCrewFrame,
+  makeCrewProviderClient,
+} from "../shared/crewProviderProtocol.ts";
+import type { ProviderEvalResponse } from "../../apps/server/src/provider/ProviderEvalSession.ts";
 import { changeRequestsCreatedBy } from "../../apps/server/src/orchestration-v2/PullRequestSyncReactor.ts";
 import { DeviceExpect, gradeDevice } from "./device-grading.ts";
 import {
@@ -384,6 +396,7 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   AttachmentToolkit,
   ProjectToolkit,
   BoatToolkit,
+  ProviderEvalToolkit,
   EnvironmentToolkit,
   PreviewControlsToolkit,
   WorktreeToolkit,
@@ -1316,7 +1329,16 @@ type Config = {
   readonly effort: string;
   readonly maxSteps: number;
   readonly shellModel: PricedModel;
+  readonly transport?: "crew";
 };
+
+export class CrewFixtureError extends Schema.TaggedError<CrewFixtureError>()("CrewFixtureError", {
+  code: Schema.Literals(["missing_shell_mock", "invalid_native_call", "unsupported_harness"]),
+}) {
+  override get message(): string {
+    return `Crew eval fixture failed (${this.code}); no shell simulator or credential fallback is enabled.`;
+  }
+}
 
 /**
  * Output for a command that needs no simulator: a matching shell mock, else, for a plain command
@@ -1336,6 +1358,9 @@ const simulate = Effect.fn("evaluateMcpToolUse.simulate")(function* (
   const command = call.tool === "Bash" && isRecord(call.input) ? call.input.command : undefined;
   let output = typeof command === "string" ? cannedOutput(sample, command) : undefined;
   if (output === undefined) {
+    if (config.transport === "crew") {
+      return yield* new CrewFixtureError({ code: "missing_shell_mock" });
+    }
     const body = shellRequest(sample, call, config.shellModel);
     const response = yield* callModel(
       config.apiKey,
@@ -1856,6 +1881,176 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   };
 }, Effect.scoped);
 
+/** Native JSON exec is a distinct transport; it does not reproduce custom Lark calls. */
+export const runCrewSample = Effect.fn("evaluateMcpToolUse.runCrewSample")(function* (
+  testCase: McpToolUseCase,
+  base: Base,
+  client: CrewProviderClient,
+  maxSteps = 10,
+) {
+  if (!base.codex) return yield* new CrewFixtureError({ code: "unsupported_harness" });
+  const sample = makeSample(testCase, base);
+  yield* withDevices(sample);
+  const config: Config = {
+    transport: "crew", apiKey: "", model: base.model, effort: "high", maxSteps,
+    shellModel: "claude-haiku-5-5",
+  };
+  const instructions = [
+    ...(typeof base.codex.instructions === "string" ? [base.codex.instructions] : []),
+    ...base.codex.input.filter((item) => item.type === "message" && item.role !== "user")
+      .map((item) => Array.isArray(item.content)
+      ? item.content.map((block: Block) => valueText(block.text)).join("\n")
+      : valueText(item.content)),
+  ].join("\n\n");
+  const calls: Array<Call> = [];
+  const transcript: Array<ProviderEvalResponse> = [];
+  const runPromise = Effect.runPromiseWith(yield* Effect.context<HttpClient.HttpClient>());
+  let evaluationId: string | undefined;
+  let finalText = "";
+  let stopReason = "max_steps";
+  const limit = Math.min(maxSteps, testCase.maxSteps === undefined ? maxSteps : testCase.maxSteps + 4);
+  yield* Effect.addFinalizer(() => evaluationId === undefined ? Effect.void :
+    client.run({ action: "cancel", evaluationId }).pipe(Effect.ignore));
+  let response = yield* client.run({
+    action: "start",
+    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: base.model },
+    instructions,
+    input: `Replay this fixture conversation and continue its final user request:\n${JSON.stringify([
+      ...base.codex.input.filter((item) => item.type === "message" && item.role === "user"),
+      ...buildMessages(sample),
+    ])}`,
+    tools: [{
+      name: "exec",
+      description: "Execute JavaScript in the fixture. Supply JSON {code: string}. This native JSON transport replaces the custom Lark envelope. Use text(value) for output, tools[name](arguments) for simulated tools, and ALL_TOOLS (name/description entries) to discover their current schemas. No real shell or project operations run on the provider host.",
+      inputSchema: {
+        type: "object", properties: { code: { type: "string" } }, required: ["code"], additionalProperties: false,
+      },
+    }],
+  });
+  for (let step = 0; step <= limit; step++) {
+    transcript.push(response);
+    if (response.type === "complete") {
+      finalText = response.text;
+      stopReason = "end_turn";
+      evaluationId = undefined;
+      break;
+    }
+    if (response.type === "cancelled") {
+      evaluationId = undefined;
+      return yield* new CrewProtocolError({ code: "provider_failed" });
+    }
+    evaluationId = response.evaluationId;
+    if (step === limit) break;
+    if (response.name !== "exec" || !isRecord(response.arguments) ||
+      typeof response.arguments.code !== "string") {
+      return yield* new CrewFixtureError({ code: "invalid_native_call" });
+    }
+    const callId = response.callId;
+    const answer = (name: string, args: unknown) => {
+      const input = normalizeToolInput(name, args);
+      const recorded: Call = { step, tool: normalizeToolName(name), input };
+      calls.push(recorded);
+      return answerToolCall(sample, config, { type: "tool_use", id: callId, name, input }).pipe(
+        Effect.map((result) => {
+          settle(recorded, result);
+          const output = valueText(result.content);
+          if (isT3Name(name)) return {
+            content: [text(output)],
+            ...(result.is_error ? { isError: true } : {
+              structuredContent: Option.getOrElse(decodeJson(output), () => output),
+            }),
+          };
+          return recorded.tool === "Bash" ? {
+            output, exit_code: /^Exit code [1-9]/.test(output) ? 1 : 0, wall_time_seconds: 0,
+          } : output;
+        }),
+        runPromise,
+      );
+    };
+    const code = response.arguments.code;
+    const output = yield* Effect.tryPromise({
+      try: () => executeCodex(code, codexCatalog(base), answer, sample.codeStore),
+      catch: (cause) => cause instanceof CrewFixtureError ? cause :
+        new CrewFixtureError({ code: "invalid_native_call" }),
+    });
+    if (failedEarly(testCase.expect, { calls, text: finalText, stopReason })) {
+      stopReason = "failed_early";
+      break;
+    }
+    response = yield* client.run({
+      action: "respond", evaluationId, callId, contentItems: [{ type: "inputText", text: output }], success: true,
+    });
+  }
+  return {
+    calls, text: finalText, finalText, stopReason, linked: [...sample.linked],
+    ...(sample.devices ? { launchers: [...sample.devices.launchers] } : {}),
+    transcript, transport: "crew-json-exec" as const, usage: null, shellUsage: null,
+  };
+}, Effect.scoped);
+
+const runCrewBatch = Effect.fn("evaluateMcpToolUse.runCrewBatch")(function* (
+  selected: ReadonlyArray<McpToolUseCase>,
+  baseFor: (testCase: McpToolUseCase) => Base,
+  out: string,
+  samples: number,
+  maxSteps: number,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  if (process.stdin.isTTY) return yield* new CrewProtocolError({ code: "missing_bridge" });
+  const lines = yield* Effect.acquireRelease(
+    Effect.sync(() => NodeReadline.createInterface({ input: process.stdin, crlfDelay: Infinity })),
+    (reader) => Effect.sync(() => reader.close()),
+  );
+  const iterator = lines[Symbol.asyncIterator]();
+  const writeLine = (line: string) => Effect.tryPromise({
+    try: () => new Promise<void>((resolve, reject) => {
+      process.stdout.write(line, (error) => error ? reject(error) : resolve());
+    }),
+    catch: () => new CrewProtocolError({ code: "missing_bridge" }),
+  });
+  const client = makeCrewProviderClient(Effect.tryPromise({
+    try: async () => { const line = await iterator.next(); return line.done ? undefined : line.value; },
+    catch: () => new CrewProtocolError({ code: "missing_bridge" }),
+  }), writeLine);
+  yield* fs.makeDirectory(out, { recursive: true, mode: 0o700 });
+  const resultsPath = path.join(out, "results.jsonl");
+  const results = yield* fs.open(resultsPath, { flag: "wx", mode: 0o600 });
+  let written = 0;
+  const summary = { cases: selected.length, samples: selected.length * samples, passed: 0, failed: 0, errors: 0, usage: "unknown" } satisfies CrewSummary;
+  yield* writeLine(encodeCrewFrame({ type: "ready", version: 1 }));
+  for (const testCase of selected) {
+    for (let index = 0; index < samples; index++) {
+      const row = yield* runCrewSample(testCase, baseFor(testCase), client, maxSteps).pipe(
+        Effect.matchEffect({
+          onFailure: (error) => error instanceof CrewProtocolError ? Effect.fail(error) : Effect.succeed({ id: testCase.id, sample: index + 1, pass: false,
+            error: error instanceof CrewFixtureError ? error.code : "crew_transport_failed",
+            transport: "crew-json-exec", usage: null, shellUsage: null }),
+          onSuccess: (run) => {
+            const checks = gradeSample(testCase.expect, run);
+            return Effect.succeed({ id: testCase.id, sample: index + 1, ...run, checks,
+              pass: checks.every((check) => check.pass) });
+          },
+        }),
+      );
+      if ("error" in row) summary.errors++;
+      else if (row.pass) summary.passed++;
+      else summary.failed++;
+      const bytes = new TextEncoder().encode(`${JSON.stringify(row)}\n`);
+      written += bytes.length;
+      if (written > CREW_MAX_CAPTURE_BYTES) return yield* new CrewProtocolError({ code: "limit" });
+      yield* results.writeAll(bytes);
+    }
+  }
+  yield* fs.writeFileString(path.join(out, "summary.md"), [
+    "# Crew MCP tool-use eval", "", "Transport: native JSON exec (no custom Lark parity).",
+    `Samples: ${summary.samples}; passed: ${summary.passed}; failed: ${summary.failed}; fixture/transport errors: ${summary.errors}.`,
+    "Provider usage and cost: unknown. Shells use fixture mocks only; no shell model was called.",
+  ].join("\n"), { mode: 0o600 });
+  yield* writeLine(encodeCrewFrame({ type: "result", summary }));
+  if (summary.failed > 0 || summary.errors > 0) process.exitCode = 1;
+}, Effect.scoped);
+
 type ResultRow = Pick<McpToolUseCase, "id" | "kind" | "pattern"> & {
   readonly role: string;
   readonly pass: boolean;
@@ -1956,6 +2151,8 @@ const PositiveIntOrZero = Schema.FiniteFromString.check(
   Schema.isGreaterThanOrEqualTo(0),
 );
 const Flags = Schema.Struct({
+  transport: Schema.Literals(["legacy", "crew"]),
+  "crew-stdio": Schema.Boolean,
   model: Schema.Literals(Object.keys(MODELS) as Array<Model>),
   template: Schema.String,
   cases: Schema.optional(Schema.Array(Schema.String)),
@@ -1992,6 +2189,8 @@ const string = { type: "string" } as const;
 const main = Effect.gen(function* () {
   const { values } = NodeUtil.parseArgs({
     options: {
+      transport: { ...string, default: "legacy" },
+      "crew-stdio": { type: "boolean", default: false },
       model: { ...string, default: "claude-sonnet-5-5" },
       template: string,
       cases: { ...string, multiple: true },
@@ -2016,6 +2215,15 @@ const main = Effect.gen(function* () {
     },
   });
   const flags = yield* decodeFlags({ template: "", ...values });
+  if ((flags.transport === "crew") !== flags["crew-stdio"]) {
+    return yield* new CrewProtocolError({ code: "missing_bridge" });
+  }
+  if (flags.transport === "crew" && (!isCodex(flags.model) || flags.out === undefined ||
+    !/^\/home\/user\/\.cache\/crew-evals\/[a-f0-9-]{36}$/.test(flags.out) ||
+    !flags.case || flags.samples === undefined || flags.samples > 3 || flags.concurrency !== 1 ||
+    (flags["max-steps"] ?? 10) > 10 || flags["dry-run"] || flags.context || flags.cases || flags.template || flags.baseline)) {
+    return yield* new CrewProtocolError({ code: "invalid_frame" });
+  }
   if (flags.context) {
     process.stdout.write(`${t3ContextReport(flags.model)}\n`);
     return;
@@ -2047,6 +2255,10 @@ const main = Effect.gen(function* () {
       (setup.harness === undefined || setup.harness === harness),
   );
   if (selected.length === 0) return yield* Effect.die(new Error("No case matches --case."));
+  if (flags.transport === "crew" && (wanted === undefined || selected.length > 12 || selected.length !== wanted.length ||
+    new Set(wanted).size !== wanted.length)) {
+    return yield* new CrewProtocolError({ code: "invalid_frame" });
+  }
   // Trimmed captures without user data ship beside the cases. `--template` also takes a raw
   // CLIProxyAPI capture.
   const templatePath =
@@ -2109,6 +2321,10 @@ const main = Effect.gen(function* () {
   }
   const baseFor = (testCase: McpToolUseCase) => bases.get(baseKey(testCase)) ?? base;
   const effort = flags.effort ?? base.codex?.reasoning.effort ?? "high";
+  if (flags.transport === "crew") {
+    yield* runCrewBatch(selected, baseFor, flags.out!, flags.samples!, flags["max-steps"] ?? 10);
+    return;
+  }
   if (flags["dry-run"]) {
     // One JSON line per case. Without --case this also checks that every case builds.
     for (const testCase of selected) {
@@ -2242,8 +2458,15 @@ const main = Effect.gen(function* () {
 });
 
 if (import.meta.main) {
-  main.pipe(
-    Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)),
-    NodeRuntime.runMain,
+  const crewStdio = process.argv.includes("--crew-stdio");
+  const program = main.pipe(
+    Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer,
+      ...(crewStdio ? [Logger.layer([])] : []))),
   );
+  (crewStdio ? program.pipe(
+    Effect.catchCause(() => Effect.sync(() => {
+      process.stderr.write("Crew eval runner failed: missing or invalid stdio bridge, fixture, or output.\n");
+      process.exitCode = 1;
+    })),
+  ) : program).pipe(NodeRuntime.runMain);
 }

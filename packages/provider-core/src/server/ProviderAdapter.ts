@@ -209,6 +209,18 @@ export class ProviderAdapterOpenSessionError extends Schema.TaggedError<Provider
   }
 }
 
+export class ProviderAdapterEvaluationError extends Schema.TaggedError<ProviderAdapterEvaluationError>()(
+  "ProviderAdapterEvaluationError",
+  {
+    driver: ProviderDriverKind,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Failed to evaluate with ${this.driver} provider.`;
+  }
+}
+
 export class ProviderAdapterCloseSessionError extends Schema.TaggedError<ProviderAdapterCloseSessionError>()(
   "ProviderAdapterCloseSessionError",
   {
@@ -410,6 +422,7 @@ export class ProviderAdapterProtocolError extends Schema.TaggedError<ProviderAda
 export const ProviderAdapterV2Error = Schema.Union([
   ProviderAdapterCapabilitiesError,
   ProviderAdapterOpenSessionError,
+  ProviderAdapterEvaluationError,
   ProviderAdapterCloseSessionError,
   ProviderAdapterResumeThreadError,
   ProviderAdapterEnsureThreadError,
@@ -426,6 +439,35 @@ export const ProviderAdapterV2Error = Schema.Union([
   ProviderAdapterProtocolError,
 ]);
 export type ProviderAdapterV2Error = typeof ProviderAdapterV2Error.Type;
+
+export interface ProviderAdapterV2EvaluationToolCall {
+  readonly callId: string;
+  readonly name: string;
+  readonly namespace?: string;
+  readonly arguments: unknown;
+}
+
+export interface ProviderAdapterV2EvaluationInput {
+  readonly modelSelection: ModelSelection;
+  readonly instructions: string;
+  readonly input: string;
+  readonly tools: ReadonlyArray<{
+    readonly name: string;
+    readonly description: string;
+    readonly inputSchema: Schema.Json;
+  }>;
+  readonly onToolCall: (call: ProviderAdapterV2EvaluationToolCall) => Effect.Effect<
+    {
+      readonly contentItems: ReadonlyArray<{ readonly type: "inputText"; readonly text: string }>;
+      readonly success: boolean;
+    },
+    ProviderAdapterV2Error
+  >;
+}
+
+export interface ProviderAdapterV2EvaluationResult {
+  readonly text: string;
+}
 
 export interface ProviderAdapterV2OpenSessionInput {
   readonly threadId: ThreadId;
@@ -770,5 +812,8 @@ export class ProviderAdapterV2 extends Context.Service<
     readonly openSession: (
       input: ProviderAdapterV2OpenSessionInput,
     ) => Effect.Effect<ProviderAdapterV2SessionRuntime, ProviderAdapterV2Error, Scope.Scope>;
+    readonly evaluate?: (
+      input: ProviderAdapterV2EvaluationInput,
+    ) => Effect.Effect<ProviderAdapterV2EvaluationResult, ProviderAdapterV2Error>;
   }
 >()("@t3tools/provider-core/server/ProviderAdapter/ProviderAdapterV2") {}

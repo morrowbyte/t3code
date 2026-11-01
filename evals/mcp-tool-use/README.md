@@ -19,6 +19,31 @@ pnpm mcp-tool-use --model claude-opus-5-5 --out runs/opus
 - Cost: the existing non-device suite costs about $9 on Sonnet and $17 on Opus. The 16 device cases at 3 samples each cost about $5.70–5.90 on Opus and $2.90–3.40 on Sonnet (main's text–#25661), including the Haiku shell simulator; dry runs cost $0. Results record token costs for the agent and shell simulator. Codex proxy charges are outside that total; only its shell simulator is priced here, about $0.60–0.70 for the device cases.
 - A rate limit or overload (429, 529 or another 5xx) is retried with backoff for up to about 4 minutes. A sample that still fails gets an `error` in `results.jsonl`, is left out of every pass rate, and is listed in the summary; the tokens it spent still count toward the cost.
 
+## Crew on an existing Boat
+
+Call the authenticated Crew MCP tool `provider_eval_boat` on the provider host:
+
+```json
+{
+  "projectId": "your-project-id",
+  "requestId": "existing-boat-request-id",
+  "hostId": "registered-boat-ssh-host-id",
+  "modelSelection": { "instanceId": "codex", "model": "gpt-6.1-sol" },
+  "caseIds": ["BOAT-02"],
+  "samples": 1
+}
+```
+
+The project/request must already identify a ready or running Boat. Its registered SSH host's id or label must be `boat-<sandboxId>`. The service reuses that host's target, port and identity file with strict host-key checking. It does not create, resume or configure a VM. `/home/user/crew` must already contain this source and its dependencies.
+
+SSH starts `node evals/mcp-tool-use/run.ts --transport crew --crew-stdio` in that checkout. Prefixed JSON request/response IDs travel over the SSH process's stdout/stdin; model turns stay on the provider host through `ProviderEvalSession`. There is no credential transfer, new proxy or daemon, and the runner does not load an env file. A missing/mismatched stdio bridge fails explicitly.
+
+This initial transport supports the runner's Codex models. It uses a native JSON `exec` tool with `{ "code": "..." }`, **not custom Lark format parity**. It reuses the same selected cases, current-source T3 instructions, templates, mock tool handlers and grader as the legacy run. Model code and mock operations run on the Boat. Shell calls require an existing explicit mock or canned output; an unmapped call is `missing_shell_mock`, never a request for an API key or login. No secondary model simulates the shell.
+
+Limits: 1–12 unique cases, 1–3 samples each, sequential samples, at most 10 tool steps per sample and 512 bridge requests. The SSH command has a 15-minute limit (16 minutes for host cleanup). A frame is limited to 262,144 characters. Results and each SSH capture are capped at 8 MiB. Active evaluations and the captured process scope close on failure/cancellation.
+
+The result contains the exit code, counts and private paths. Boat results are under `/home/user/.cache/crew-evals/<jobId>`; host SSH captures are under `~/.cache/agent-tasks/crew-backlog-finish-20261101/<jobId>`. Files are private, bounded and retained until the task owner removes them; there is no automatic retention guarantee. Result rows label `transport: "crew-json-exec"` and `usage: null`; provider token usage and cost are unknown, not measured zero. A nonzero exit also covers failed checks or fixture errors; inspect the private results for their distinction.
+
 ## Add a case
 
 Cases are JSON lines in `cases/`, one file per area. The case schema in `run.ts` (`McpToolUseCase`) documents every field.
