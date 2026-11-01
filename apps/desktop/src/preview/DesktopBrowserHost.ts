@@ -590,9 +590,7 @@ export const make = Effect.gen(function* () {
     const send = (method: string, params: Record<string, unknown>, sessionId?: string) => {
       if (privateContents.has(webContents) || tab.relay !== relay)
         return Promise.reject(new Error("Private credential entry"));
-      return sessionId === undefined
-        ? sendPageCommand(webContents, debuggee, method, params)
-        : debuggee.sendCommand(method, params, sessionId);
+      return sendPageCommand(webContents, debuggee, method, params, sessionId);
     };
     const detachedOwners = new Set<string>();
     /** Viewers and recordings stream; the agent's own sessions never do. */
