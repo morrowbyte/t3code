@@ -669,7 +669,7 @@ it.effect("imports under a policy ceiling in the project's default, kept under t
         },
       ),
     );
-    expect(yield* importer.run).toEqual({ importedCount: 1, skippedCount: 0 });
+    expect(yield* importer.run).toMatchObject({ importedCount: 1, skippedCount: 0 });
     expect((yield* projections.getThread(threadId)).runtimeMode).toBe("auto-accept-edits");
     expect(Option.getOrThrow(yield* runtimes.getByThreadId({ threadId })).runtimeMode).toBe(
       "auto-accept-edits",

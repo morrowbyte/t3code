@@ -74,7 +74,9 @@ vi.mock(import("../../state/environments"), async (original) => {
     label: environmentId,
     connection: { phase: "connected" },
     entry: {
-      enabled: environmentId === state.selectedEnvironment,
+      enabled:
+        environmentId === state.selectedEnvironment ||
+        state.addedEnvironments.includes(environmentId),
       target: { _tag: "DirectConnectionTarget" },
     },
     serverConfig: {

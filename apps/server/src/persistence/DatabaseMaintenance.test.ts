@@ -74,7 +74,6 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
         const removed: Array<string> = [];
         let refuseUnlink = true;
         const guardedMaintenance = Layer.fresh(DatabaseMaintenance.layer).pipe(
-          Layer.provide(Layer.succeed(HostProcess.Platform, "win32")),
           Layer.provide(
             Layer.succeed(FileSystem.FileSystem, {
               ...fs,
@@ -112,7 +111,10 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
         );
         const removeLegacy = Effect.flatMap(DatabaseMaintenance.DatabaseMaintenance, (service) =>
           service.removeLegacyDatabase(dbPath),
-        ).pipe(Effect.provide(guardedMaintenance));
+        ).pipe(
+          Effect.provide(guardedMaintenance),
+          Effect.provideService(HostProcess.Platform, "win32"),
+        );
         const unlinkFailure = yield* Effect.flip(removeLegacy);
         assert.equal(unlinkFailure._tag, "LegacyDatabaseRemoveError");
         assert.deepEqual(removed, [legacy]);

@@ -638,9 +638,11 @@ export const checkChangedCommand = Command.make(
       Argument.optional,
     ),
     quick: Flag.Boolean("quick").pipe(
+      Flag.withDefault(false),
       Flag.withDescription("Run changed-file format, lint and adjacent regressions."),
     ),
     exactBase: Flag.Boolean("exact-base").pipe(
+      Flag.withDefault(false),
       Flag.withDescription(
         "Compare directly with the given commit, including in a shallow CI checkout.",
       ),
