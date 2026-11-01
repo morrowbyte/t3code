@@ -78,11 +78,21 @@ const artifact = () => ({
 });
 
 test("full successful source evidence binds identity, complete coverage and toolchain", () => {
+  assert.equal(
+    expected().files["scripts/morrowbyte/nightly-dispatch-client.cjs"],
+    sha256(bytes("scripts/morrowbyte/nightly-dispatch-client.cjs")),
+  );
   assert.equal(validateReceipt(receipt(), expected(), producerRun()).sourceSha, source);
   validateProvenance(producerRun(), jobs(), artifact(), source);
 });
 
 const invalidReceipts = [
+  [
+    "another dispatch client",
+    (proof) => {
+      proof.files["scripts/morrowbyte/nightly-dispatch-client.cjs"] = "d".repeat(64);
+    },
+  ],
   [
     "another SHA",
     (proof) => {

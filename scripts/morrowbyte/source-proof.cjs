@@ -29,6 +29,7 @@ const FILES = [
   "scripts/morrowbyte/test.sh",
   "scripts/morrowbyte/source-proof.cjs",
   "scripts/morrowbyte/nightly-after-ci.cjs",
+  "scripts/morrowbyte/nightly-dispatch-client.cjs",
   WORKFLOW,
   ".github/workflows/morrowbyte-main-nightly.yml",
   ".github/actions/setup-ci-deps/action.yml",

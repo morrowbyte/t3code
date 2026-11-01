@@ -759,28 +759,41 @@ jobs:
               output.write(f'android_source_sha={source}\nandroid_lock_sha256={lock}\nsource_ci_run_id=40582582053\n')
           PYRESTORE
 
+      - name: Prepare pinned Node for source proof verification
+        if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && !inputs.continue_release75_run_id
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
+        with:
+          version: 1.4.0
+          node-version-file: package.json
+          cache: false
+          run-install: false
+
       - id: source_proof
         name: Verify full source qualification before packaging
         if: inputs.recover_desktop_run_id == '' && inputs.recover_windows_run_id == '' && inputs.continue_release68_run_id == '' && !inputs.continue_release75_run_id
-        uses: actions/github-script@v7
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ inputs.source_sha }}
           SOURCE_PROOF_RUN_ID: ${{ inputs.source_proof_run_id }}
           SOURCE_PROOF_ARTIFACT_ID: ${{ inputs.source_proof_artifact_id }}
           SOURCE_PROOF_DIGEST: ${{ inputs.source_proof_digest }}
-        with:
-          script: |
+        run: |
+          node <<'SOURCE_PROOF'
+          (async () => {
             const fs = require('node:fs');
             const path = require('node:path');
             const { execFileSync } = require('node:child_process');
             const { sourceIdentity, verifySourceProof } = require(path.resolve('scripts/morrowbyte/source-proof.cjs'));
+            const { createGitHubClient } = require(path.resolve('scripts/morrowbyte/nightly-dispatch-client.cjs'));
+            const github = createGitHubClient({token: process.env.GITHUB_TOKEN});
+            const [owner, repo] = process.env.GITHUB_REPOSITORY.split('/');
             const source = process.env.SOURCE_SHA;
             if (!/^[1-9][0-9]*$/.test(process.env.SOURCE_PROOF_RUN_ID) ||
                 !/^[1-9][0-9]*$/.test(process.env.SOURCE_PROOF_ARTIFACT_ID) ||
                 !/^sha256:[0-9a-f]{64}$/.test(process.env.SOURCE_PROOF_DIGEST)) throw Error('Exact full source proof is required');
             const base = execFileSync('git', ['rev-parse', 'HEAD^1'], {encoding: 'utf8'}).trim();
             const expected = sourceIdentity(file => fs.readFileSync(file), source, base);
-            const verified = await verifySourceProof({github, repo: context.repo, source,
+            const verified = await verifySourceProof({github, repo: {owner, repo}, source,
               runId: process.env.SOURCE_PROOF_RUN_ID, artifactId: process.env.SOURCE_PROOF_ARTIFACT_ID,
               artifactDigest: process.env.SOURCE_PROOF_DIGEST, expected});
             const directory = path.join(process.env.RUNNER_TEMP, 'source-qualification');
@@ -796,9 +809,16 @@ jobs:
                 fs.writeFileSync(path.join(route, file), verified.files[file]);
               fs.writeFileSync('apps/web/src/routeTree.gen.ts', verified.files['routeTree.gen.ts']);
             }
-            core.setOutput('run_id', String(verified.runId));
-            core.setOutput('attempt', String(verified.proof.producer.attempt));
-            core.setOutput('workflow_ref', verified.proof.producer.workflowRef);
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, [
+              'run_id=' + verified.runId,
+              'attempt=' + verified.proof.producer.attempt,
+              'workflow_ref=' + verified.proof.producer.workflowRef,
+            ].join('\n') + '\n');
+          })().catch(error => {
+            console.error(error.message);
+            process.exitCode = 1;
+          });
+          SOURCE_PROOF
 
       - name: Retain verified source qualification provenance
         if: steps.source_proof.outcome == 'success'
