@@ -130,22 +130,33 @@ describe("preview guest input", () => {
       press: "mousePressed",
       release: "mouseReleased",
       failPress: false,
+      revoke: false,
     },
     {
       method: "Input.dispatchTouchEvent",
       press: "touchStart",
       release: "touchEnd",
       failPress: false,
+      revoke: false,
     },
     {
       method: "Input.dispatchMouseEvent",
       press: "mousePressed",
       release: "mouseReleased",
       failPress: true,
+      revoke: false,
+    },
+    {
+      method: "Input.dispatchMouseEvent",
+      press: "mousePressed",
+      release: "mouseReleased",
+      failPress: false,
+      revoke: true,
     },
   ])(
-    "keeps $method releases behind presses waiting for host focus, failed press: $failPress",
-    async ({ method, press, release, failPress }) => {
+    "keeps $method releases behind presses waiting for host focus, failed press: $failPress, revoked: $revoke",
+    async ({ method, press, release, failPress, revoke }) => {
+      let current = true;
       const captureStarted = Promise.withResolvers<void>();
       const finishCapture = Promise.withResolvers<void>();
       const events: Array<unknown> = [];
@@ -173,17 +184,22 @@ describe("preview guest input", () => {
           debuggee as unknown as Electron.Debugger,
           method,
           { type },
+          undefined,
+          () => {
+            if (!current) throw new Error("Private credential entry");
+          },
         );
       const pressed = send(press);
       await captureStarted.promise;
       const released = send(release);
+      if (revoke) current = false;
       finishCapture.resolve();
       const results = await Promise.allSettled([pressed, released]);
       expect(results.map((result) => result.status)).toEqual([
-        failPress ? "rejected" : "fulfilled",
-        "fulfilled",
+        failPress || revoke ? "rejected" : "fulfilled",
+        revoke ? "rejected" : "fulfilled",
       ]);
-      expect(events).toEqual([press, release]);
+      expect(events).toEqual(revoke ? [] : [press, release]);
     },
   );
 
