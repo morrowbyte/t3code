@@ -63,7 +63,7 @@ it("reads a mostly Hebrew question set right to left", async () => {
     .toHaveStyle({ direction: "rtl" });
   await expect.element(text("מסך אחד בכל פעם")).toHaveStyle({ direction: "rtl" });
   await expect
-    .element(screen.getByRole("button", { name: /React Server/ }))
+    .element(screen.getByRole("radio", { name: /React Server/ }))
     .toHaveStyle({ direction: "rtl" });
   await expect.element(text("Keep it on React 18")).toHaveStyle({ direction: "ltr" });
 
@@ -92,7 +92,7 @@ it("keeps one direction for the whole set when a single question is Hebrew", asy
   );
 
   await expect
-    .element(screen.getByRole("button", { name: /גרסה 3/ }))
+    .element(screen.getByRole("radio", { name: /גרסה 3/ }))
     .toHaveStyle({ direction: "ltr" });
   await expect
     .element(screen.getByText("גרסה 3 (חדשה!)", { exact: true }))

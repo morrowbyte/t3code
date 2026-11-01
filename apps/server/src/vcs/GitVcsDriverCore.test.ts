@@ -475,7 +475,7 @@ it.effect.each(["branch", "detached", "nested", "aliased-root", "aliased-nested"
           newRefName: "feature/cold",
         });
 
-        assert.equal(spawnedArgs.filter((args) => args.includes("--git-common-dir")).length, 1);
+        assert.equal(spawnedArgs.filter((args) => args.includes("--git-common-dir")).length, 2);
         assert.isFalse(spawnedArgs.some((args) => args.includes("--show-toplevel")));
         assert.isFalse(spawnedArgs.some((args) => args.includes("symbolic-ref")));
         spawnedArgs.length = 0;
@@ -537,7 +537,7 @@ it.effect.each(["bare", "unborn"] as const)(
           assert.equal(result.failure.operation, "GitVcsDriver.createWorktree.createBranch");
           assert.equal(result.failure.detail, "git worktree add failed");
         }
-        assert.equal(spawnedArgs.filter((args) => args.includes("--git-common-dir")).length, 1);
+        assert.equal(spawnedArgs.filter((args) => args.includes("--git-common-dir")).length, 2);
         assert.isFalse(spawnedArgs.some((args) => args[0] === "symbolic-ref"));
         spawnedArgs.length = 0;
         const refs = yield* driver.listRefs({ cwd });

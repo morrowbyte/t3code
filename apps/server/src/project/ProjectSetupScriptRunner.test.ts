@@ -256,6 +256,7 @@ const runner = Effect.fn(function* () {
             ),
           ),
         ),
+      getShell: () => Effect.succeed("/bin/zsh"),
       subscribe: (listener) =>
         Effect.sync(() => {
           listeners.add(listener);

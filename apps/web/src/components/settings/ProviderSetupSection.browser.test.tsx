@@ -13,6 +13,8 @@ import * as Schema from "effect/Schema";
 import { userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 
+import "../../index.css";
+
 import { act, render } from "../../../test/render";
 
 const setup = vi.hoisted(() => ({

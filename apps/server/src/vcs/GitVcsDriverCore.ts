@@ -4136,7 +4136,22 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       }
       worktreePath = path.join(parentDir, repoName, directoryName);
     }
-    const gitCommonDir = yield* resolveGitCommonDir(input.cwd);
+    const cachedPaths = yield* Cache.getOption(
+      repositoryPathsCache,
+      normalizeRepositoryPathsCacheKey(input.cwd),
+    );
+    const gitCommonDir =
+      Option.getOrNull(cachedPaths)?.gitCommonDir ?? (yield* readGitCommonDir(input.cwd));
+    if (gitCommonDir === null) {
+      return yield* new GitCommandError({
+        ...gitCommandContext({
+          operation: "GitVcsDriver.resolveGitCommonDir",
+          cwd: input.cwd,
+          args: ["rev-parse", "--git-common-dir"],
+        }),
+        detail: "Cannot resolve a Git common directory outside a repository.",
+      });
+    }
     const storagePaths = [input.cwd, path.resolve(input.cwd, worktreePath), gitCommonDir];
     const storageMessage = yield* Effect.tryPromise({
       try: () => checkStorageAdmission(storagePaths),

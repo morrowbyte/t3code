@@ -43,7 +43,7 @@ describe("runMigrations", () => {
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
-  it.effect("preserves fork Voice and host authority data when appending migrations 73–80", () =>
+  it.effect("preserves fork Voice and host authority data when appending migrations 73–81", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations({ toMigrationInclusive: 72 });
@@ -94,6 +94,7 @@ describe("runMigrations", () => {
         [78, "ExcludeAttachmentPlaceholdersFromSearch"],
         [79, "SubagentDeliveryState"],
         [80, "ProjectionProjectsPinArchive"],
+        [81, "PrivilegedRecoveryIndexes"],
       ]);
       assert.deepStrictEqual(yield* retained, before);
       assert.deepStrictEqual(yield* runMigrations(), []);
