@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off -- Cleanup must run without installed dependencies.
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off globalConsole:off -- Cleanup must run without installed dependencies.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
