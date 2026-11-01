@@ -1964,6 +1964,79 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
     }),
   );
 
+  it.effect.each(["completed", "interrupted", "failed", "cancelled"] as const)(
+    "keeps %s provider turns terminal after late usage updates",
+    (status) =>
+      Effect.gen(function* () {
+        const store = yield* ProjectionStore.ProjectionStoreV2;
+        const threadId = yield* addRolledBackRecoveryCandidate(`late-provider-usage-${status}`);
+        const now = yield* DateTime.now;
+        const turn = {
+          id: ProviderTurnId.make(`provider-turn:late-usage:${status}`),
+          providerThreadId: ProviderThreadId.make(`provider-thread:late-usage:${status}`),
+          nodeId: NodeId.make(`node:late-usage:${status}`),
+          runAttemptId: null,
+          nativeTurnRef: null,
+          ordinal: 1,
+          status,
+          startedAt: now,
+          completedAt: now,
+        };
+        yield* store.apply({
+          id: EventId.make(`event:late-usage:${status}:terminal`),
+          type: "provider-turn.updated",
+          threadId,
+          driver,
+          occurredAt: now,
+          payload: turn,
+        });
+        let projection = yield* store.getThreadProjection(threadId);
+        for (const lateStatus of ["pending", "running"] as const) {
+          const usage = { usedTokens: 42, maxTokens: 200_000, updatedAt: DateTime.formatIso(now) };
+          const lateEvent = {
+            id: EventId.make(`event:late-usage:${status}:${lateStatus}`),
+            type: "provider-turn.updated" as const,
+            threadId,
+            driver,
+            occurredAt: now,
+            payload: {
+              ...turn,
+              status: lateStatus,
+              startedAt: null,
+              completedAt: null,
+              tokenUsage: usage,
+            },
+          };
+          projection = ProjectionStore.applyToProjection(projection, lateEvent);
+          yield* store.apply(lateEvent);
+          const persisted = (yield* store.getThreadProjection(threadId)).providerTurns[0]!;
+          for (const actual of [projection.providerTurns[0]!, persisted]) {
+            assert.equal(actual.status, status);
+            assert.deepEqual(actual.startedAt, now);
+            assert.deepEqual(actual.completedAt, now);
+            assert.deepEqual(actual.tokenUsage, usage);
+          }
+        }
+        if (status === "interrupted") {
+          const correctedEvent = {
+            id: EventId.make("event:late-usage:interrupted:completed"),
+            type: "provider-turn.updated" as const,
+            threadId,
+            driver,
+            occurredAt: now,
+            payload: { ...turn, status: "completed" as const },
+          };
+          projection = ProjectionStore.applyToProjection(projection, correctedEvent);
+          yield* store.apply(correctedEvent);
+          const persisted = (yield* store.getThreadProjection(threadId)).providerTurns[0]!;
+          for (const actual of [projection.providerTurns[0]!, persisted]) {
+            assert.equal(actual.status, "completed");
+            assert.equal(actual.tokenUsage?.usedTokens, 42);
+          }
+        }
+      }),
+  );
+
   it.effect("reads a fixed SQL turn-item window for long histories and repeated clients", () =>
     Effect.gen(function* () {
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
