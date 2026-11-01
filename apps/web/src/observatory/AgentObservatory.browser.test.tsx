@@ -45,6 +45,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
   return { ...actual, useNavigate: () => openThread };
 });
 vi.mock("../components/chat/V2ItemInspector", () => ({ V2ItemInspector: () => inspect() }));
+vi.mock("../components/PinnedWorkTabs", () => ({ PinnedWorkTabs: () => null }));
 const now = DateTime.makeUnsafe("2026-10-16T00:00:00.000Z");
 const environmentId = EnvironmentId.make("one");
 const runId = RunId.make("run");

@@ -1,5 +1,6 @@
 import type {
   EnvironmentId,
+  NodeId,
   OrchestrationV2ProjectedTurnItem,
   OrchestrationV2ThreadShell,
   RunId,
@@ -207,13 +208,27 @@ export function projectObservatoryDetails(
     (row) => row.sourceThreadId === node.ref.threadId && row.item.runId === node.runId,
   );
   const rootIds = new Set(
-    projection.runs.flatMap((run) => (run.rootNodeId ? [run.rootNodeId] : [])),
+    projection.runs.flatMap((run) =>
+      run.threadId === node.ref.threadId && run.rootNodeId ? [run.rootNodeId] : [],
+    ),
   );
+  const children = new Map<NodeId, NodeId[]>();
+  for (const item of projection.nodes) {
+    if (item.threadId !== node.ref.threadId || item.kind === "subagent" || !item.parentNodeId)
+      continue;
+    const siblings = children.get(item.parentNodeId) ?? [];
+    siblings.push(item.id);
+    children.set(item.parentNodeId, siblings);
+  }
+  const ownedNodeIds = new Set(rootIds);
+  for (const id of ownedNodeIds) {
+    for (const childId of children.get(id) ?? []) ownedNodeIds.add(childId);
+  }
   const plans = projection.plans
     .filter(
       (plan) =>
         plan.threadId === node.ref.threadId &&
-        rootIds.has(plan.nodeId) &&
+        ownedNodeIds.has(plan.nodeId) &&
         plan.status !== "superseded",
     )
     .map((plan) => {
@@ -240,6 +255,7 @@ export function projectObservatoryDetails(
   const compactions = projection.visibleTurnItems.filter((row) => row.item.type === "compaction");
   return {
     projection,
+    ownedNodeIds,
     plans: plans.slice(-8),
     steps,
     currentStep: steps.find((step) => step.status === "running") ?? null,

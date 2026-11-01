@@ -92,7 +92,7 @@ describe("agent task status", () => {
   it("distinguishes asynchronous questions, blocking input and internal tool requests", () => {
     const request = {
       id: RuntimeRequestId.make("input"),
-      nodeId: NodeId.make("root"),
+      nodeId: NodeId.make("input-node"),
       providerTurnId: null,
       nativeRequestRef: null,
       kind: "user_input" as const,
@@ -104,7 +104,7 @@ describe("agent task status", () => {
     // Only the fields consumed by task projection vary in this focused fixture.
     const detail = {
       projection: {
-        runs: [{ id: RunId.make("run"), rootNodeId: request.nodeId }],
+        runs: [{ id: RunId.make("run"), rootNodeId: NodeId.make("root") }],
         runtimeRequests: [request],
         turnItems: [],
         messages: [],
@@ -115,6 +115,7 @@ describe("agent task status", () => {
       nextSteps: [],
       currentStep: null,
       subagents: [],
+      ownedNodeIds: new Set([NodeId.make("root"), request.nodeId]),
     } as unknown as ObservatoryNativeDetails;
     const working = { ...node, shell: { ...node.shell, status: "running" as const } };
     const task = projectObservatoryTask(working, [working], detail);

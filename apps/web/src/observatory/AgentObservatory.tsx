@@ -16,6 +16,8 @@ import {
   SelectItem,
 } from "../components/ui/select";
 import { ObservatoryGraph } from "./ObservatoryGraph";
+import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
+import { SidebarInset } from "../components/ui/sidebar";
 
 export function AgentObservatory({
   view,
@@ -33,12 +35,12 @@ export function AgentObservatory({
   const [mode, setMode] = useState<"graph" | "list">("list");
   const selection = view.selection;
   return (
-    <main className="flex h-full min-h-0 flex-col bg-background text-foreground">
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4">
-        <div>
-          <h1 className="text-lg font-semibold">Agent observatory</h1>
+    <SidebarInset className="h-dvh min-h-0 min-w-0">
+      <WorkspacePageHeader className="border-b">
+        <div className="min-w-0 flex-1">
+          <h1 className="truncate text-lg font-semibold">Agent observatory</h1>
         </div>
-        <div className="flex gap-2">
+        <div className="flex shrink-0 gap-2">
           {selection && (
             <Button variant="outline" onClick={() => onSelect(null)}>
               All threads
@@ -48,7 +50,7 @@ export function AgentObservatory({
             {mode === "graph" ? "Show list" : "Show graph"}
           </Button>
         </div>
-      </header>
+      </WorkspacePageHeader>
       <details aria-label="Environment coverage" className="border-b px-5 py-3 text-sm">
         <summary className="cursor-pointer text-muted-foreground">
           Environments · {view.sources.length}
@@ -131,7 +133,7 @@ export function AgentObservatory({
           </>
         )}
       </div>
-    </main>
+    </SidebarInset>
   );
 }
 

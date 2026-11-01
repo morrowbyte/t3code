@@ -58,12 +58,11 @@ export function projectObservatoryTask(
 ) {
   const shell = node.shell;
   const projection = detail?.projection;
-  const roots = new Set(
-    projection?.runs.flatMap((run) => (run.rootNodeId ? [run.rootNodeId] : [])),
-  );
   const requests = projection?.runtimeRequests.filter(
     (request) =>
-      request.status === "pending" && roots.has(request.nodeId) && userRequest(request.kind),
+      request.status === "pending" &&
+      detail?.ownedNodeIds.has(request.nodeId) &&
+      userRequest(request.kind),
   );
   const pending = requests?.filter(
     (request) => request.responseCapability.type !== "not_resumable",

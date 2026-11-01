@@ -108,7 +108,7 @@ describe("observatory canonical projection view", () => {
           id: "owner-plan",
           threadId: ref.threadId,
           runId: "run:1",
-          nodeId: "root:1",
+          nodeId: "own-plan-node",
           status: "active",
           kind: "todo_list",
           steps: [
@@ -127,6 +127,29 @@ describe("observatory canonical projection view", () => {
           steps: [{ id: "child", text: "Unrelated child step", status: "running" }],
         },
       ],
+      nodes: [
+        { id: "own-plan-node", parentNodeId: "root:1", kind: "todo_list" as const, runId: "run:1" },
+        { id: "child-agent", parentNodeId: "root:2", kind: "subagent" as const, runId: "run:2" },
+        {
+          id: "child-node",
+          parentNodeId: "child-agent",
+          kind: "todo_list" as const,
+          runId: "run:2",
+        },
+      ].map((entry) => ({
+        ...entry,
+        threadId: ref.threadId,
+        rootNodeId: entry.runId === "run:1" ? "root:1" : "root:2",
+        status: "completed",
+        countsForRun: true,
+        providerThreadId: "native-thread",
+        providerTurnId: null,
+        nativeItemRef: null,
+        runtimeRequestId: null,
+        checkpointScopeId: null,
+        startedAt: v2Now,
+        completedAt: v2Now,
+      })),
     });
     const original = projectObservatoryNative([source]).nodes[0]!;
     const node = { ...original, runId: RunId.make("run:2") };
