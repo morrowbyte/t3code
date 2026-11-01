@@ -2,6 +2,7 @@ import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
+  BoatError,
   DEFAULT_BOAT_DEFAULTS,
   EnvironmentId,
   ProjectId,
@@ -85,7 +86,17 @@ const boatState: BoatState = {
 };
 
 const makeHarness = (
-  mode: "complete" | "foreign" | "interrupt" | "wrong-host" | "exit-start" | "exit-respond",
+  mode:
+    | "complete"
+    | "foreign"
+    | "interrupt"
+    | "wrong-host"
+    | "exit-start"
+    | "exit-respond"
+    | "denied-lease"
+    | "wrong-project"
+    | "revoke-start"
+    | "revoke-respond",
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -96,6 +107,8 @@ const makeHarness = (
     const providerWaiting = yield* Deferred.make<void>();
     const cleaned = yield* Deferred.make<void>();
     const stopped = yield* Deferred.make<void>();
+    const revoked = yield* Deferred.make<void>();
+    let leaseValid = true;
     const commands: Array<ChildProcess.StandardCommand> = [];
     const replies: Array<typeof CrewHostFrame.Type> = [];
     const send = (frame: Parameters<typeof encodeCrewFrame>[0]) =>
@@ -144,7 +157,13 @@ const makeHarness = (
                     stdout,
                     new TextEncoder().encode("AUTH_REQUIRED use a token\n"),
                   );
-                } else if (mode === "complete" || mode === "exit-respond") {
+                } else if (
+                  mode === "complete" ||
+                  mode === "exit-respond" ||
+                  mode === "revoke-respond" ||
+                  mode === "denied-lease" ||
+                  mode === "wrong-project"
+                ) {
                   yield* send({
                     type: "request",
                     id: "request-2",
@@ -192,7 +211,7 @@ const makeHarness = (
         evaluate: (request) =>
           Effect.gen(function* () {
             expect(request.modelSelection).toEqual(input.modelSelection);
-            if (mode === "exit-start") {
+            if (mode === "exit-start" || mode === "revoke-start") {
               yield* Deferred.succeed(providerWaiting, undefined);
               return yield* Effect.never;
             }
@@ -205,7 +224,7 @@ const makeHarness = (
               contentItems: [{ type: "inputText", text: "fixture result" }],
               success: true,
             });
-            if (mode === "exit-respond") {
+            if (mode === "exit-respond" || mode === "revoke-respond") {
               yield* Deferred.succeed(providerWaiting, undefined);
               return yield* Effect.never;
             }
@@ -224,7 +243,27 @@ const makeHarness = (
             }),
           ),
         ),
-        Layer.mock(BoatService.BoatService)({ read: () => Effect.succeed(boatState) }),
+        Layer.mock(BoatService.BoatService)({
+          read: () => Effect.succeed(boatState),
+          assertActiveLease: (target, threadId) => {
+            expect(target).toEqual({ requestId: input.requestId, sandboxId: "test-sandbox" });
+            expect(threadId).toBe(owner.thread!.threadId);
+            return mode === "denied-lease"
+              ? Effect.fail(new BoatError({ category: "conflict" }))
+              : Effect.succeed({
+                  projectId:
+                    mode === "wrong-project" ? ProjectId.make("other-project") : input.projectId,
+                  threadId,
+                  requestId: input.requestId,
+                  sandboxId: "test-sandbox",
+                  expiresAt: "2026-11-02T00:00:00Z",
+                  check: Effect.suspend(() =>
+                    leaseValid ? Effect.void : Effect.fail(new BoatError({ category: "conflict" })),
+                  ),
+                  revoked: Deferred.await(revoked),
+                });
+          },
+        }),
         ServerSettings.ServerSettingsService.layerTest({
           deviceHosts: [
             {
@@ -249,6 +288,9 @@ const makeHarness = (
       received,
       providerWaiting,
       disconnect,
+      revoke: Effect.sync(() => {
+        leaseValid = false;
+      }).pipe(Effect.andThen(Deferred.succeed(revoked, undefined))),
       cleaned,
       stopped,
       replies,
@@ -343,4 +385,40 @@ it.effect("refuses an unrelated registered SSH host before spawning", () =>
       Effect.provideService(McpInvocationContext.McpInvocationContext, owner),
     );
   }).pipe(Effect.scoped, Effect.provide([NodeServices.layer, NodeCrypto.layer])),
+);
+
+it.effect.each(["denied-lease", "wrong-project"] as const)(
+  "rejects %s before starting SSH or the provider",
+  (mode) =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness(mode);
+      yield* Effect.gen(function* () {
+        const service = yield* ProviderEvalBoat.ProviderEvalBoat;
+        expect((yield* service.run(input).pipe(Effect.flip)).code).toBe("boat_unavailable");
+        expect(h.commands).toHaveLength(0);
+      }).pipe(
+        Effect.provide(h.layer),
+        Effect.provideService(McpInvocationContext.McpInvocationContext, owner),
+      );
+    }).pipe(Effect.scoped, Effect.provide([NodeServices.layer, NodeCrypto.layer])),
+);
+
+it.effect.each(["revoke-start", "revoke-respond"] as const)(
+  "closes SSH and the pending provider call on %s",
+  (mode) =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness(mode);
+      yield* Effect.gen(function* () {
+        const service = yield* ProviderEvalBoat.ProviderEvalBoat;
+        const run = yield* service.run(input).pipe(Effect.flip, Effect.forkChild);
+        yield* Deferred.await(h.providerWaiting);
+        yield* h.revoke;
+        expect((yield* Fiber.join(run)).code).toBe("boat_unavailable");
+        expect(yield* Deferred.isDone(h.cleaned)).toBe(true);
+        expect(yield* Deferred.isDone(h.stopped)).toBe(true);
+      }).pipe(
+        Effect.provide(h.layer),
+        Effect.provideService(McpInvocationContext.McpInvocationContext, owner),
+      );
+    }).pipe(Effect.scoped, Effect.provide([NodeServices.layer, NodeCrypto.layer])),
 );
