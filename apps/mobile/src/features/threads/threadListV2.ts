@@ -519,7 +519,12 @@ export function buildThreadListV2FamilyRows(input: {
             ? "working"
             : "active";
   const groups = [...families].flatMap(([root, family]) => {
-    const visible = family.filter((key) => input.visibleKeys.has(key));
+    const rootItem = byKey.get(root)!;
+    const visible = family.filter(
+      (key) =>
+        input.visibleKeys.has(key) &&
+        (rootItem.variant !== "slim" || key === root || relevant.has(key)),
+    );
     if (visible.length === 0) return [];
     const anchor = visible[0]!;
     const displaySection: ThreadListV2FamilySection = family.some((key) => workingKeys.has(key))

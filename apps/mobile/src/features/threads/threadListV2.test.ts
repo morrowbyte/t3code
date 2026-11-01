@@ -284,6 +284,27 @@ describe("native thread families", () => {
         disclosure: { ...input.disclosure, closedKeys: new Set([parentKey]) },
       }).map((row) => row.key),
     ).toEqual([parentKey]);
+
+    const settledParent = makeThread({ ...parent, settledOverride: "settled", settledAt: NOW });
+    const settledThreads = [settledParent, child, inactive, previous];
+    for (const settledShelfExpanded of [false, true]) {
+      const visible = buildThreadListV2Items({
+        threads: settledThreads,
+        environmentId: null,
+        searchQuery: "",
+        now: NOW,
+        includeSubagents: true,
+        settledShelfExpanded,
+      });
+      const rows = buildThreadListV2FamilyRows({
+        items: itemsFor(settledThreads),
+        visibleKeys: new Set(visible.items.map((item) => keyOf(item.thread))),
+        disclosure: { routeKey: null, expandedKeys: new Set(), closedKeys: new Set() },
+      });
+      expect(rows.map((row) => [row.key, row.displaySection])).toEqual(
+        settledShelfExpanded ? [[parentKey, "settled"]] : [],
+      );
+    }
   });
 
   it("shows only active work and the required intermediate parents on root expansion", () => {
