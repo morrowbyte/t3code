@@ -10,6 +10,7 @@ import {
   type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Net from "@t3tools/shared/Net";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
@@ -23,6 +24,8 @@ import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
+import * as Sink from "effect/Sink";
+import * as Stream from "effect/Stream";
 import * as ServerConfig from "../config.ts";
 import * as Secrets from "../auth/ServerSecretStore.ts";
 import * as Projects from "../project/ProjectService.ts";
@@ -49,6 +52,11 @@ function setup(
   threadId = ownerThreadId,
 ) {
   const calls: string[] = [];
+  const privateForwards: string[][] = [];
+  const closedPreviews: string[] = [];
+  const openedPreviews: string[] = [];
+  const forwardClosed = Deferred.makeUnsafe<void>();
+  let closedForwards = 0;
   let machineState = "ready";
   let canStart = true;
   let costUsd = 0.01;
@@ -85,6 +93,12 @@ function setup(
         }
         if (/\/commands\/\d+$/.test(path)) return commandFinished ? { exitCode: 0 } : {};
         if (path.endsWith("/host")) return { url: "https://preview.example.test/web" };
+        if (path.endsWith("/sshkey"))
+          return {
+            sshUser: "user",
+            machineIp: "192.0.2.1",
+            hostKey: "ssh-ed25519 Zml4dHVyZQ==",
+          };
         if (path.endsWith("/desktop?vnc=1"))
           return { desktopUrl: "https://preview.example.test/android" };
         if (path.includes("/usage")) {
@@ -115,10 +129,55 @@ function setup(
   );
   const services = Layer.mergeAll(
     api,
+    Layer.mock(Net.NetService)({ reserveLoopbackPort: () => Effect.succeed(39123) }),
+    Layer.effect(
+      ChildProcessSpawner.ChildProcessSpawner,
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        return ChildProcessSpawner.make((command) =>
+          Effect.gen(function* () {
+            if (command._tag !== "StandardCommand") return yield* Effect.die("Unexpected pipeline");
+            const forwarding = command.args.includes("-L");
+            if (forwarding) {
+              privateForwards.push([...command.args]);
+              yield* Effect.addFinalizer(() =>
+                Effect.sync(() => {
+                  closedForwards++;
+                }).pipe(Effect.andThen(Deferred.succeed(forwardClosed, undefined))),
+              );
+            } else {
+              const identity = command.args[command.args.indexOf("-f") + 1]!;
+              yield* fs.writeFileString(`${identity}.pub`, "ssh-ed25519 Zml4dHVyZQ==");
+            }
+            return ChildProcessSpawner.makeHandle({
+              pid: ChildProcessSpawner.ProcessId(123),
+              stdout: forwarding ? Stream.make(new TextEncoder().encode("READY\n")) : Stream.empty,
+              stderr: Stream.empty,
+              all: Stream.empty,
+              exitCode: forwarding ? Effect.never : Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+              isRunning: Effect.succeed(forwarding),
+              kill: () => Effect.void,
+              stdin: Sink.drain,
+              getInputFd: () => Sink.drain,
+              getOutputFd: () => Stream.empty,
+              unref: Effect.succeed(Effect.void),
+            });
+          }).pipe(Effect.orDie),
+        );
+      }),
+    ),
     Layer.mock(PreviewManager)({
       list: () => Effect.succeed({ sessions: [] } as never),
-      open: () => Effect.succeed({ tabId: "setup-preview" } as never),
-      close: () => Effect.void,
+      open: (input) =>
+        Effect.sync(() => {
+          if (input.url) openedPreviews.push(input.url);
+          return { tabId: "setup-preview" } as never;
+        }),
+      close: (input) =>
+        Effect.sync(() => {
+          if (input.tabId) closedPreviews.push(input.tabId);
+        }),
+      requestReveal: () => Effect.void,
     }),
     Layer.mock(ProjectionStoreV2)({
       getThreadShell: (id) =>
@@ -172,6 +231,11 @@ function setup(
   ).pipe(Layer.provideMerge(base));
   return {
     calls,
+    privateForwards,
+    closedPreviews,
+    openedPreviews,
+    closedForwardCount: () => closedForwards,
+    forwardClosed: Deferred.await(forwardClosed),
     gitCwds,
     services,
     setThread: (id: ThreadId, thread: Partial<OrchestrationV2ThreadShell>) => {
@@ -254,6 +318,225 @@ it("leaves unrecorded thread history unassigned and preserves saved measurement 
   assert.closeTo(partial.dollars!, 0.02, 0.000001);
   assert.equal(partial.attribution, "unknown");
   assert.equal(partial.status, "stale");
+});
+
+it.effect("binds access to the caller's project, sandbox and authoritative lease", () => {
+  const test = setup();
+  return Effect.gen(function* () {
+    const boat = yield* make;
+    yield* boat.connect(Redacted.make("boat_fixture_private"));
+    yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: true });
+    yield* boat.operate({ action: "start", projectId, requestId: "lease" }, ownerThreadId);
+    const target = { requestId: "lease", sandboxId: "bx_23456789" };
+    const access = yield* boat.assertActiveLease(target, ownerThreadId);
+    assert.equal(access.projectId, projectId);
+    yield* access.check;
+    const foreign = ThreadId.make("foreign-project");
+    const unleased = ThreadId.make("unleased-agent");
+    const forged = ThreadId.make("unregistered-child");
+    test.setThread(foreign, { projectId: ProjectId.make("other-project") });
+    test.setThread(unleased, { activeRunId: RunId.make("unleased-run") });
+    test.setThread(forged, {
+      activeRunId: RunId.make("forged-run"),
+      lineage: {
+        parentThreadId: ownerThreadId,
+        relationshipToParent: "subagent",
+        rootThreadId: ownerThreadId,
+      },
+    });
+    yield* boat.operate({ action: "exec", projectId, requestId: "lease", command: "true" }, forged);
+    for (const [candidate, caller] of [
+      [target, foreign],
+      [target, unleased],
+      [target, forged],
+      [{ ...target, requestId: "other-request" }, ownerThreadId],
+      [{ ...target, sandboxId: "bx_other_vm" }, ownerThreadId],
+    ] as const) {
+      assert.isTrue(
+        Exit.isFailure(yield* boat.assertActiveLease(candidate, caller).pipe(Effect.exit)),
+      );
+    }
+    test.setSubagents(ownerThreadId, [
+      {
+        threadId: ownerThreadId,
+        childThreadId: forged,
+        status: "running",
+      } as OrchestrationV2Subagent,
+    ]);
+    const childAccess = yield* boat.assertActiveLease(target, forged);
+    yield* childAccess.check;
+    test.setThread(forged, { activeRunId: null });
+    yield* boat.reconcile();
+    yield* childAccess.revoked;
+    assert.isTrue(Exit.isFailure(yield* childAccess.check.pipe(Effect.exit)));
+  }).pipe(Effect.scoped, Effect.provide(test.services));
+});
+
+it.effect("never extends an issued access deadline when the VM is renewed", () => {
+  const test = setup();
+  return Effect.gen(function* () {
+    const boat = yield* make;
+    yield* boat.connect(Redacted.make("boat_fixture_private"));
+    yield* boat.configure(projectId, {
+      ...DEFAULT_BOAT_PROJECT,
+      enabled: true,
+      inheritDefaults: false,
+      ttlMinutes: 1,
+    });
+    yield* boat.operate({ action: "start", projectId, requestId: "expiring" }, ownerThreadId);
+    const target = { requestId: "expiring", sandboxId: "bx_23456789" };
+    const access = yield* boat.assertActiveLease(target, ownerThreadId);
+    yield* TestClock.adjust("30 seconds");
+    yield* boat.operate({ action: "renew", projectId, requestId: "expiring" }, ownerThreadId);
+    yield* TestClock.adjust("30 seconds");
+    yield* access.revoked;
+    assert.isTrue(Exit.isFailure(yield* access.check.pipe(Effect.exit)));
+    const fresh = yield* boat.assertActiveLease(target, ownerThreadId);
+    yield* fresh.check;
+    yield* boat.operate({ action: "stop", projectId, requestId: "expiring" });
+    yield* fresh.revoked;
+    yield* boat.disconnect;
+    assert.isTrue(
+      Exit.isFailure(yield* boat.assertActiveLease(target, ownerThreadId).pipe(Effect.exit)),
+    );
+  }).pipe(Effect.scoped, Effect.provide(test.services));
+});
+
+it.effect.each(["stop", "delete", "lease removed"] as const)(
+  "opens private web access only through SSH and closes it on %s",
+  (end) => {
+    const test = setup();
+    return Effect.gen(function* () {
+      const boat = yield* make;
+      yield* boat.connect(Redacted.make("boat_fixture_private"));
+      yield* boat.configure(projectId, {
+        ...DEFAULT_BOAT_PROJECT,
+        enabled: true,
+        webAccess: "private",
+        devCommand: "npm run dev",
+      });
+      yield* boat.operate({ action: "start", projectId, requestId: "private-web" }, ownerThreadId);
+      yield* boat.operate(
+        { action: "prepare", projectId, requestId: "private-web" },
+        ownerThreadId,
+      );
+      assert.lengthOf(test.privateForwards, 1);
+      const args = test.privateForwards[0]!;
+      assert.include(args, "127.0.0.1:39123:127.0.0.1:3000");
+      assert.include(args, "StrictHostKeyChecking=yes");
+      assert.include(args, "ForwardAgent=no");
+      assert.notInclude(args, "-R");
+      assert.deepEqual(test.openedPreviews, ["http://127.0.0.1:39123/"]);
+      const state = yield* boat.read(projectId);
+      assert.equal(state.instances[0]?.previewUrl, null);
+      assert.isTrue(test.calls.every((call) => !call.includes("/host")));
+      if (end === "stop") {
+        const stranger = ThreadId.make("unregistered-preview-child");
+        test.setThread(stranger, {
+          activeRunId: RunId.make("stranger-run"),
+          lineage: {
+            parentThreadId: ownerThreadId,
+            relationshipToParent: "subagent",
+            rootThreadId: ownerThreadId,
+          },
+        });
+        assert.isTrue(
+          Exit.isFailure(
+            yield* boat
+              .operate(
+                {
+                  action: "preview",
+                  projectId,
+                  requestId: "private-web",
+                  threadId: stranger,
+                },
+                stranger,
+              )
+              .pipe(Effect.exit),
+          ),
+        );
+        assert.equal(test.closedForwardCount(), 0);
+        assert.lengthOf(test.closedPreviews, 0);
+        assert.equal((yield* boat.read(projectId)).instances[0]?.threadId, ownerThreadId);
+      }
+      if (end === "lease removed") {
+        test.setOwnerActive(false);
+        yield* boat.reconcile();
+      } else {
+        yield* boat.operate({ action: end, projectId, requestId: "private-web" });
+      }
+      yield* test.forwardClosed;
+      assert.equal(test.closedForwardCount(), 1);
+      assert.include(test.closedPreviews, "setup-preview");
+    }).pipe(Effect.scoped, Effect.provide(test.services));
+  },
+);
+
+it.effect("cancels an in-flight SSH grant on lease removal without public fallback", () => {
+  return Effect.gen(function* () {
+    const entered = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const test = setup((path) =>
+      path.endsWith("/sshkey")
+        ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))
+        : Effect.void,
+    );
+    yield* Effect.gen(function* () {
+      const boat = yield* make;
+      yield* boat.connect(Redacted.make("boat_fixture_private"));
+      yield* boat.configure(projectId, {
+        ...DEFAULT_BOAT_PROJECT,
+        enabled: true,
+        webAccess: "private",
+        devCommand: "npm run dev",
+      });
+      yield* boat.operate({ action: "start", projectId, requestId: "pending" }, ownerThreadId);
+      const pending = yield* boat
+        .operate({ action: "prepare", projectId, requestId: "pending" }, ownerThreadId)
+        .pipe(Effect.exit, Effect.forkChild);
+      yield* Deferred.await(entered);
+      test.setOwnerActive(false);
+      yield* boat.reconcile();
+      assert.isTrue(Exit.isFailure(yield* Fiber.join(pending)));
+      assert.lengthOf(test.privateForwards, 0);
+      assert.lengthOf(test.openedPreviews, 0);
+      assert.isTrue(test.calls.every((call) => !call.includes("/host")));
+    }).pipe(Effect.scoped, Effect.provide(test.services));
+  });
+});
+
+it.effect("rejects private Android and changing a retained hosted VM to private", () => {
+  const test = setup();
+  return Effect.gen(function* () {
+    const boat = yield* make;
+    yield* boat.connect(Redacted.make("boat_fixture_private"));
+    assert.isTrue(
+      Exit.isFailure(
+        yield* boat
+          .configure(projectId, {
+            ...DEFAULT_BOAT_PROJECT,
+            enabled: true,
+            webAccess: "private",
+            previewKind: "android",
+          })
+          .pipe(Effect.exit),
+      ),
+    );
+    yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: true });
+    yield* boat.operate({ action: "start", projectId, requestId: "retained" }, ownerThreadId);
+    yield* boat.operate({ action: "stop", projectId, requestId: "retained" });
+    assert.isTrue(
+      Exit.isFailure(
+        yield* boat
+          .configure(projectId, {
+            ...DEFAULT_BOAT_PROJECT,
+            enabled: true,
+            webAccess: "private",
+          })
+          .pipe(Effect.exit),
+      ),
+    );
+  }).pipe(Effect.scoped, Effect.provide(test.services));
 });
 
 it.effect("reads bounded measured history without preview work and retains stale samples", () => {

@@ -79,12 +79,36 @@ function ProjectForm({
         }
       />
       <SettingsRow
+        title="Web access"
+        control={
+          <Select
+            value={draft.webAccess}
+            onValueChange={(value) => {
+              if (value === "hosted" || value === "private")
+                setDraft({ ...draft, webAccess: value, previewKind: "web" });
+            }}
+          >
+            <SelectTrigger size="sm" className="w-full sm:w-56" aria-label="Boat web access">
+              <SelectValue>
+                {draft.webAccess === "private"
+                  ? "Private · Crew browser"
+                  : "Hosted · token protected"}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectPopup>
+              <SelectItem value="hosted">Hosted · token protected</SelectItem>
+              <SelectItem value="private">Private · Crew browser</SelectItem>
+            </SelectPopup>
+          </Select>
+        }
+      />
+      <SettingsRow
         title="Preview"
         control={
           <Select
             value={draft.previewKind}
             onValueChange={(value) => {
-              if (value === "web" || value === "android")
+              if (value === "web" || (value === "android" && draft.webAccess !== "private"))
                 setDraft({ ...draft, previewKind: value });
             }}
           >
@@ -95,7 +119,9 @@ function ProjectForm({
             </SelectTrigger>
             <SelectPopup>
               <SelectItem value="web">Web</SelectItem>
-              <SelectItem value="android">Android emulator</SelectItem>
+              <SelectItem value="android" disabled={draft.webAccess === "private"}>
+                Android emulator
+              </SelectItem>
             </SelectPopup>
           </Select>
         }

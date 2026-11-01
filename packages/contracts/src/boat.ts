@@ -16,6 +16,9 @@ export const BoatProjectConfig = Schema.Struct({
   previewKind: Schema.Literals(["web", "android"]).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed("web" as const)),
   ),
+  webAccess: Schema.Literals(["hosted", "private"]).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed("hosted" as const)),
+  ),
   size: BoatSize,
   ttlMinutes: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 1440 })),
   inheritDefaults: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
@@ -38,6 +41,7 @@ export const DEFAULT_BOAT_PROJECT: BoatProjectConfig = {
   enabled: false,
   autoSetup: false,
   previewKind: "web",
+  webAccess: "hosted",
   size: "default",
   ttlMinutes: 60,
   inheritDefaults: true,

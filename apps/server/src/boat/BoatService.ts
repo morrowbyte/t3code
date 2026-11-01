@@ -21,15 +21,19 @@ import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2Pe
 import * as Crypto from "effect/Crypto";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as PubSub from "effect/PubSub";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import * as Scope from "effect/Scope";
 import * as ServerConfig from "../config.ts";
 import * as Secrets from "../auth/ServerSecretStore.ts";
 import * as Git from "../vcs/GitVcsDriver.ts";
@@ -37,6 +41,7 @@ import * as Projects from "../project/ProjectService.ts";
 import { PreviewManager } from "../preview/Manager.ts";
 import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
 import { BoatApi } from "./BoatApi.ts";
+import * as BoatSshTunnel from "./BoatSshTunnel.ts";
 import {
   boatLifecycleCounts,
   boatThreadIds,
@@ -263,6 +268,16 @@ const decode =
       Effect.mapError(() => new BoatError({ category: "provider" })),
     );
 
+export interface BoatLeaseAccess {
+  readonly projectId: ProjectId;
+  readonly threadId: ThreadId;
+  readonly requestId: string;
+  readonly sandboxId: string;
+  readonly expiresAt: string;
+  readonly check: Effect.Effect<void, BoatError>;
+  readonly revoked: Effect.Effect<void>;
+}
+
 export class BoatService extends Context.Service<
   BoatService,
   {
@@ -273,6 +288,10 @@ export class BoatService extends Context.Service<
       analytics?: BoatAnalyticsInput,
     ) => Effect.Effect<BoatState, BoatError>;
     readonly isEnabled: (projectId: ProjectId) => Effect.Effect<boolean>;
+    readonly assertActiveLease: (
+      target: { readonly requestId: string; readonly sandboxId: string },
+      callerThreadId: ThreadId,
+    ) => Effect.Effect<BoatLeaseAccess, BoatError, Scope.Scope>;
     readonly connect: (apiKey: Redacted.Redacted<string>) => Effect.Effect<BoatState, BoatError>;
     readonly disconnect: Effect.Effect<void, BoatError>;
     readonly configure: (
@@ -297,7 +316,23 @@ export const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const previews = yield* PreviewManager;
   const projections = yield* ProjectionStoreV2;
+  const tunnels = yield* BoatSshTunnel.make;
+  const serviceScope = yield* Effect.scope;
+  const privatePreviews = new Map<
+    string,
+    {
+      scope: Scope.Closeable;
+      lease: BoatLeaseAccess;
+      tabId: string | null;
+    }
+  >();
   const lock = yield* Semaphore.make(1);
+  const leaseChanges = yield* PubSub.unbounded<{
+    ledger: typeof Ledger.Type;
+    work: typeof Work.Type;
+    generation: number;
+  }>();
+  let leaseGeneration = 0;
   const resumeInFlight = new Set<string>();
   const filename = path.join(config.stateDir, "boat.json");
   const workFilename = path.join(config.stateDir, "boat-work.json");
@@ -317,6 +352,7 @@ export const make = Effect.gen(function* () {
     yield* fs.writeFileString(`${workFilename}.tmp`, yield* encodeWork(next), { mode: 0o600 });
     yield* fs.rename(`${workFilename}.tmp`, workFilename);
     work = next;
+    yield* PubSub.publish(leaseChanges, { ledger, work, generation: leaseGeneration });
   }, Effect.mapError(storageError));
   const initialPeriod = DateTime.formatIso(yield* DateTime.now).slice(0, 7);
   let ledger: typeof Ledger.Type = yield* fs.exists(filename).pipe(
@@ -342,6 +378,7 @@ export const make = Effect.gen(function* () {
     yield* fs.writeFileString(temp, json, { mode: 0o600 });
     yield* fs.rename(temp, filename);
     ledger = next;
+    yield* PubSub.publish(leaseChanges, { ledger, work, generation: leaseGeneration });
   }, Effect.mapError(storageError));
   const updateInstance = Effect.fn("BoatService.updateInstance")(
     (
@@ -479,71 +516,189 @@ export const make = Effect.gen(function* () {
     return value.inheritDefaults ? { ...value, ...ledger.defaults } : value;
   };
   const previewLock = yield* Semaphore.make(1);
-  const attachPreview = Effect.fn("BoatService.attachPreview")(
-    (item: StoredInstance, token: Redacted.Redacted<string>, reveal = false) =>
-      previewLock.withPermits(1)(
+  const attachPrivatePreview = Effect.fn("BoatService.attachPrivatePreview")(function* (
+    current: StoredInstance,
+    token: Redacted.Redacted<string>,
+    callerThreadId?: ThreadId,
+  ) {
+    if (callerThreadId && current.sandboxId)
+      yield* Effect.scoped(
+        assertActiveLease(
+          { requestId: current.requestId, sandboxId: current.sandboxId },
+          callerThreadId,
+        ),
+      );
+    const previous = privatePreviews.get(current.requestId);
+    if (previous) {
+      const valid = yield* previous.lease.check.pipe(Effect.isSuccess);
+      if (valid && (!callerThreadId || previous.lease.threadId === callerThreadId)) {
+        if (previous.tabId)
+          yield* previews
+            .requestReveal({
+              threadId: previous.lease.threadId,
+              tabId: previous.tabId,
+              force: true,
+            })
+            .pipe(Effect.mapError(() => new BoatError({ category: "provider" })));
+        return current;
+      }
+      yield* Scope.close(previous.scope, Exit.void);
+    }
+    if (!callerThreadId || !current.sandboxId)
+      return yield* new BoatError({ category: "conflict" });
+    const scope = yield* Scope.fork(serviceScope, "sequential");
+    return yield* Effect.gen(function* () {
+      const lease = yield* assertActiveLease(
+        {
+          requestId: current.requestId,
+          sandboxId: current.sandboxId!,
+        },
+        callerThreadId,
+      );
+      const entry = { scope, lease, tabId: null as string | null };
+      privatePreviews.set(current.requestId, entry);
+      yield* Effect.addFinalizer(() =>
         Effect.gen(function* () {
-          const current =
-            ledger.instances.find(
-              (candidate) =>
-                candidate.requestId === item.requestId && candidate.projectId === item.projectId,
-            ) ?? item;
-          if (!current.sandboxId || inactive.has(current.state) || current.state === "deleting")
-            return current;
-          const settings = projectSettings(current.projectId);
-          let previewUrl = current.previewUrl;
-          if (!previewUrl || (reveal && settings.previewKind === "web")) {
-            const sandboxPath = `/sandboxes/${encodeURIComponent(current.sandboxId)}`;
-            if (settings.previewKind === "android") {
-              const desktop = yield* api
-                .request(token, `${sandboxPath}/desktop?vnc=1`, "POST")
-                .pipe(Effect.flatMap(decode(Desktop)));
-              if (!desktop.desktopUrl) return current;
-              previewUrl = desktop.desktopUrl;
-            } else {
-              const hosted = yield* api
-                .request(token, `${sandboxPath}/host`, "POST", {
-                  port: settings.port,
-                  public: false,
-                })
-                .pipe(Effect.flatMap(decode(Hosted)));
-              const credential = yield* secrets
-                .get(`boat-dev-${current.requestId}`)
-                .pipe(Effect.mapError(storageError));
-              const url = new URL(hosted.url);
-              if (Option.isSome(credential)) {
-                url.pathname = "/pair";
-                url.hash = `token=${Buffer.from(credential.value).toString("hex")}`;
-              }
-              previewUrl = url.toString();
-            }
-          }
-          let previewTabId = current.previewTabId;
-          if (current.threadId) {
-            const listed = yield* previews.list({ threadId: current.threadId });
-            const existing = listed.sessions.find((session) => session.tabId === previewTabId);
-            if (!existing) {
-              const opened = yield* previews
-                .open({
-                  threadId: current.threadId,
-                  url: previewUrl,
-                  runtime: "server",
-                  reveal: true,
-                })
-                .pipe(Effect.mapError(() => new BoatError({ category: "provider" })));
-              previewTabId = opened.tabId;
-            } else if (reveal)
-              yield* previews
-                .requestReveal({ threadId: current.threadId, tabId: existing.tabId, force: true })
-                .pipe(Effect.mapError(() => new BoatError({ category: "provider" })));
-          }
-          return yield* updateInstance(current, (latest) =>
-            latest.revision === current.revision && latest.sandboxId === current.sandboxId
-              ? { previewUrl, previewTabId }
-              : {},
-          );
+          if (privatePreviews.get(current.requestId) !== entry) return;
+          privatePreviews.delete(current.requestId);
+          if (entry.tabId)
+            yield* previews
+              .close({
+                threadId: lease.threadId,
+                tabId: PreviewTabId.make(entry.tabId),
+              })
+              .pipe(Effect.orElseSucceed(() => undefined));
+          yield* updateInstance(current, (latest) =>
+            latest.sandboxId === lease.sandboxId ? { previewUrl: null, previewTabId: null } : {},
+          ).pipe(Effect.orElseSucceed(() => undefined));
         }),
-      ),
+      );
+      yield* lease.revoked.pipe(
+        Effect.andThen(Scope.close(scope, Exit.void)),
+        Effect.forkIn(serviceScope),
+      );
+      const tunnel = yield* Effect.raceFirst(
+        tunnels.open(lease, token, projectSettings(current.projectId).port),
+        lease.revoked.pipe(Effect.andThen(Effect.fail(new BoatError({ category: "conflict" })))),
+      );
+      yield* tunnel.exited.pipe(
+        Effect.orElseSucceed(() => undefined),
+        Effect.andThen(Scope.close(scope, Exit.void)),
+        Effect.forkIn(serviceScope),
+      );
+      const credential = yield* secrets
+        .get(`boat-dev-${current.requestId}`)
+        .pipe(Effect.mapError(storageError));
+      const url = new URL(tunnel.url);
+      if (Option.isSome(credential)) {
+        url.pathname = "/pair";
+        url.hash = `token=${Buffer.from(credential.value).toString("hex")}`;
+      }
+      yield* lease.check;
+      const opened = yield* previews
+        .open({
+          threadId: lease.threadId,
+          url: url.toString(),
+          runtime: "server",
+          reveal: true,
+        })
+        .pipe(Effect.mapError(() => new BoatError({ category: "provider" })));
+      entry.tabId = opened.tabId;
+      yield* lease.check;
+      return yield* updateInstance(current, {
+        threadId: lease.threadId,
+        previewUrl: null,
+        previewTabId: opened.tabId,
+      });
+    }).pipe(
+      Effect.provideService(Scope.Scope, scope),
+      Effect.onError(() => Scope.close(scope, Exit.void)),
+    );
+  });
+  const attachPreview = Effect.fn("BoatService.attachPreview")(
+    (
+      item: StoredInstance,
+      token: Redacted.Redacted<string>,
+      reveal = false,
+      callerThreadId?: ThreadId,
+    ) =>
+      !reveal && projectSettings(item.projectId).webAccess === "private"
+        ? Effect.succeed(item)
+        : previewLock.withPermits(1)(
+            Effect.gen(function* () {
+              const current =
+                ledger.instances.find(
+                  (candidate) =>
+                    candidate.requestId === item.requestId &&
+                    candidate.projectId === item.projectId,
+                ) ?? item;
+              if (!current.sandboxId || inactive.has(current.state) || current.state === "deleting")
+                return current;
+              const settings = projectSettings(current.projectId);
+              if (settings.webAccess === "private") {
+                if (settings.previewKind !== "web")
+                  return yield* new BoatError({ category: "conflict" });
+                return reveal
+                  ? yield* attachPrivatePreview(current, token, callerThreadId)
+                  : current;
+              }
+              let previewUrl = current.previewUrl;
+              if (!previewUrl || (reveal && settings.previewKind === "web")) {
+                const sandboxPath = `/sandboxes/${encodeURIComponent(current.sandboxId)}`;
+                if (settings.previewKind === "android") {
+                  const desktop = yield* api
+                    .request(token, `${sandboxPath}/desktop?vnc=1`, "POST")
+                    .pipe(Effect.flatMap(decode(Desktop)));
+                  if (!desktop.desktopUrl) return current;
+                  previewUrl = desktop.desktopUrl;
+                } else {
+                  const hosted = yield* api
+                    .request(token, `${sandboxPath}/host`, "POST", {
+                      port: settings.port,
+                      public: false,
+                    })
+                    .pipe(Effect.flatMap(decode(Hosted)));
+                  const credential = yield* secrets
+                    .get(`boat-dev-${current.requestId}`)
+                    .pipe(Effect.mapError(storageError));
+                  const url = new URL(hosted.url);
+                  if (Option.isSome(credential)) {
+                    url.pathname = "/pair";
+                    url.hash = `token=${Buffer.from(credential.value).toString("hex")}`;
+                  }
+                  previewUrl = url.toString();
+                }
+              }
+              let previewTabId = current.previewTabId;
+              if (current.threadId) {
+                const listed = yield* previews.list({ threadId: current.threadId });
+                const existing = listed.sessions.find((session) => session.tabId === previewTabId);
+                if (!existing) {
+                  const opened = yield* previews
+                    .open({
+                      threadId: current.threadId,
+                      url: previewUrl,
+                      runtime: "server",
+                      reveal: true,
+                    })
+                    .pipe(Effect.mapError(() => new BoatError({ category: "provider" })));
+                  previewTabId = opened.tabId;
+                } else if (reveal)
+                  yield* previews
+                    .requestReveal({
+                      threadId: current.threadId,
+                      tabId: existing.tabId,
+                      force: true,
+                    })
+                    .pipe(Effect.mapError(() => new BoatError({ category: "provider" })));
+              }
+              return yield* updateInstance(current, (latest) =>
+                latest.revision === current.revision && latest.sandboxId === current.sandboxId
+                  ? { previewUrl, previewTabId }
+                  : {},
+              );
+            }),
+          ),
   );
   const analyticsLock = yield* Semaphore.make(1);
   const analyticsCache = new Map<string, { at: number; state: BoatState }>();
@@ -945,6 +1100,8 @@ export const make = Effect.gen(function* () {
       .pipe(Effect.mapError(storageError));
     analyticsCache.clear();
     analyticsGeneration++;
+    leaseGeneration++;
+    yield* PubSub.publish(leaseChanges, { ledger, work, generation: leaseGeneration });
     return yield* read();
   });
   const disconnect = Effect.gen(function* () {
@@ -953,11 +1110,21 @@ export const make = Effect.gen(function* () {
     yield* secrets.remove(KEY).pipe(Effect.mapError(storageError));
     analyticsCache.clear();
     analyticsGeneration++;
+    leaseGeneration++;
+    yield* PubSub.publish(leaseChanges, { ledger, work, generation: leaseGeneration });
   });
   const configure = Effect.fn("BoatService.configure")(function* (
     projectId: ProjectId,
     settings: BoatProjectConfig,
   ) {
+    if (
+      (settings.webAccess === "private" && settings.previewKind !== "web") ||
+      (settings.webAccess !== projectSettings(projectId).webAccess &&
+        ledger.instances.some(
+          (item) => item.projectId === projectId && item.sandboxId && item.state !== "deleted",
+        ))
+    )
+      return yield* new BoatError({ category: "conflict" });
     const source = yield* project(projectId);
     if (
       settings.enabled &&
@@ -1113,6 +1280,8 @@ export const make = Effect.gen(function* () {
       return yield* new BoatError({ category: "not_found" });
     const token = yield* key;
     const settings = projectSettings(action.projectId);
+    if (settings.webAccess === "private" && settings.previewKind !== "web")
+      return yield* new BoatError({ category: "conflict" });
     if (
       ledger.instances.some(
         (item) => item.requestId === action.requestId && item.projectId !== action.projectId,
@@ -1329,6 +1498,18 @@ export const make = Effect.gen(function* () {
         previewUrl: null,
       });
     } else if (action.action === "prepare") {
+      if (settings.webAccess === "private") {
+        if (!agentThreadId) return yield* new BoatError({ category: "conflict" });
+        yield* Effect.scoped(
+          assertActiveLease(
+            {
+              requestId: action.requestId,
+              sandboxId: instance.sandboxId,
+            },
+            agentThreadId,
+          ),
+        );
+      }
       const process =
         instance.processId === null
           ? null
@@ -1393,13 +1574,17 @@ export const make = Effect.gen(function* () {
           if (Option.isNone(existing))
             yield* secrets.set(secretName, bytes).pipe(Effect.mapError(storageError));
           const credential = Buffer.from(bytes).toString("hex");
-          const hosted = yield* api
-            .request(token, `${sandboxPath}/host`, "POST", {
-              port: settings.port,
-              public: false,
-            })
-            .pipe(Effect.flatMap(decode(Hosted)));
-          devAuth = `export T3CODE_DEV_AUTH_TOKEN=${credential}\nexport T3CODE_DEV_ALLOWED_ORIGINS=${new URL(hosted.url).origin}\nexport T3CODE_DEV_ALLOWED_HOSTS=${new URL(hosted.url).hostname}\nexport T3CODE_DEV_WEB_HOST=0.0.0.0\nexport NODE_OPTIONS="--dns-result-order=ipv4first \${NODE_OPTIONS:-}"\n`;
+          if (settings.webAccess === "private") {
+            devAuth = `export T3CODE_DEV_AUTH_TOKEN=${credential}\nexport T3CODE_DEV_WEB_HOST=127.0.0.1\nexport NODE_OPTIONS="--dns-result-order=ipv4first \${NODE_OPTIONS:-}"\n`;
+          } else {
+            const hosted = yield* api
+              .request(token, `${sandboxPath}/host`, "POST", {
+                port: settings.port,
+                public: false,
+              })
+              .pipe(Effect.flatMap(decode(Hosted)));
+            devAuth = `export T3CODE_DEV_AUTH_TOKEN=${credential}\nexport T3CODE_DEV_ALLOWED_ORIGINS=${new URL(hosted.url).origin}\nexport T3CODE_DEV_ALLOWED_HOSTS=${new URL(hosted.url).hostname}\nexport T3CODE_DEV_WEB_HOST=0.0.0.0\nexport NODE_OPTIONS="--dns-result-order=ipv4first \${NODE_OPTIONS:-}"\n`;
+          }
         }
         const androidSetup = settings.previewKind === "android" ? ANDROID_SETUP : "";
         const sync = `set -eu\ncat ${chunks.join(" ")} > ${remoteArchive}\nrm ${chunks.join(" ")}\nset -- ${remoteArchive} /home/user/crew /home/user/.crew-source-files.json\n${sourceSyncScript}`;
@@ -1521,8 +1706,13 @@ ${action.command}`,
         yield* api.request(token, `${sandboxPath}/commands/${instance.processId}`, "DELETE");
       yield* updateInstance(action, { processId: null });
     } else if (action.action === "preview") {
-      if (threadId) yield* updateInstance(action, { threadId });
-      yield* attachPreview({ ...instance, threadId: threadId ?? instance.threadId }, token, true);
+      if (threadId && settings.webAccess !== "private") yield* updateInstance(action, { threadId });
+      yield* attachPreview(
+        { ...instance, threadId: threadId ?? instance.threadId },
+        token,
+        true,
+        agentThreadId,
+      );
     } else {
       if (action.action === "resume") {
         const fresh = yield* read(action.projectId);
@@ -1674,6 +1864,8 @@ ${action.command}`,
         }),
       );
     }
+    if (action.action === "prepare" && settings.webAccess === "private")
+      yield* attachPreview(instance, token, true, agentThreadId);
     const result = yield* read(
       action.action === "stop" || action.action === "delete" ? undefined : action.projectId,
     );
@@ -1713,6 +1905,100 @@ ${action.command}`,
     if (pending.length > 0) active.add(threadId);
     return active;
   }, Effect.mapError(storageError));
+  const assertActiveLease: BoatService["Service"]["assertActiveLease"] = Effect.fn(
+    "BoatService.assertActiveLease",
+  )(function* (target, callerThreadId) {
+    const changes = yield* PubSub.subscribe(leaseChanges);
+    const generation = leaseGeneration;
+    const ended = yield* Deferred.make<void>();
+    const validate = Effect.gen(function* () {
+      yield* key;
+      const caller = yield* projections
+        .getThreadShell(callerThreadId)
+        .pipe(Effect.mapError(storageError));
+      if (!caller || caller.deletedAt !== null)
+        return yield* new BoatError({ category: "not_found" });
+      const instance = ledger.instances.find(
+        (item) =>
+          item.requestId === target.requestId &&
+          item.projectId === caller.projectId &&
+          item.sandboxId === target.sandboxId,
+      );
+      const source = work[target.requestId]?.source;
+      if (
+        !instance ||
+        !source?.threadId ||
+        source.projectId !== caller.projectId ||
+        !["ready", "idle", "running"].includes(instance.state) ||
+        !instance.leases.includes(callerThreadId) ||
+        !projectSettings(caller.projectId).enabled ||
+        generation !== leaseGeneration
+      )
+        return yield* new BoatError({ category: "conflict" });
+      yield* project(caller.projectId);
+      const now = yield* Clock.currentTimeMillis;
+      if (!Number.isFinite(Date.parse(instance.expiresAt)) || Date.parse(instance.expiresAt) <= now)
+        return yield* new BoatError({ category: "conflict" });
+      const owners = yield* activeLeaseOwners(source.threadId, caller.projectId);
+      if (!owners.has(callerThreadId)) return yield* new BoatError({ category: "conflict" });
+      const latest = ledger.instances.find((item) => item.requestId === target.requestId);
+      if (
+        latest?.sandboxId !== target.sandboxId ||
+        latest.projectId !== caller.projectId ||
+        !["ready", "idle", "running"].includes(latest.state) ||
+        !latest.leases.includes(callerThreadId) ||
+        generation !== leaseGeneration ||
+        Date.parse(latest.expiresAt) <= (yield* Clock.currentTimeMillis)
+      )
+        return yield* new BoatError({ category: "conflict" });
+      return instance;
+    });
+    const instance = yield* validate;
+    const deadline = Date.parse(instance.expiresAt);
+    const check = Effect.gen(function* () {
+      if ((yield* Deferred.isDone(ended)) || (yield* Clock.currentTimeMillis) >= deadline)
+        return yield* new BoatError({ category: "conflict" });
+      yield* validate;
+    }).pipe(Effect.tapError(() => Deferred.succeed(ended, undefined)));
+    const revoke = Deferred.succeed(ended, undefined);
+    const source = work[target.requestId]?.source;
+    yield* Effect.addFinalizer(() => revoke);
+    yield* Effect.forever(
+      Effect.gen(function* () {
+        const changed = yield* PubSub.take(changes);
+        const next = changed.ledger.instances.find((item) => item.requestId === target.requestId);
+        const nextSource = changed.work[target.requestId]?.source;
+        if (
+          changed.generation !== generation ||
+          next?.sandboxId !== target.sandboxId ||
+          next.projectId !== instance.projectId ||
+          !["ready", "idle", "running"].includes(next.state) ||
+          !next.leases.includes(callerThreadId) ||
+          !changed.ledger.projects[instance.projectId]?.enabled ||
+          nextSource?.threadId !== source?.threadId ||
+          nextSource?.workspaceRoot !== source?.workspaceRoot
+        )
+          return yield* new BoatError({ category: "conflict" });
+        yield* check;
+      }),
+    ).pipe(
+      Effect.catch(() => revoke),
+      Effect.forkScoped,
+    );
+    yield* Effect.sleep(Math.max(0, deadline - (yield* Clock.currentTimeMillis))).pipe(
+      Effect.andThen(revoke),
+      Effect.forkScoped,
+    );
+    return {
+      projectId: instance.projectId,
+      threadId: callerThreadId,
+      requestId: target.requestId,
+      sandboxId: target.sandboxId,
+      expiresAt: instance.expiresAt,
+      check,
+      revoked: Deferred.await(ended),
+    };
+  });
   const reconcile = Effect.fn("BoatService.reconcile")(function* () {
     const owned = ledger.instances.filter(
       (item) => item.sandboxId && item.state !== "deleted" && item.state !== "error",
@@ -1822,6 +2108,7 @@ ${action.command}`,
   ).pipe(Effect.forkScoped);
   return {
     read,
+    assertActiveLease,
     isEnabled: (projectId: ProjectId) => Effect.sync(() => projectSettings(projectId).enabled),
     connect,
     disconnect,
