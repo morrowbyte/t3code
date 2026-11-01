@@ -57,6 +57,7 @@ function setup(
   ) => Effect.Effect<unknown, BoatError> = () => Effect.void,
   threadId = ownerThreadId,
   onDeviceOpen: () => Effect.Effect<void, DeviceError> = () => Effect.void,
+  onForwardClose: () => Effect.Effect<void> = () => Effect.void,
 ) {
   const calls: string[] = [];
   const privateForwards: string[][] = [];
@@ -81,6 +82,7 @@ function setup(
   let ownerActive = true;
   let projectExists = true;
   let archiveBytes = new Uint8Array();
+  let sourceTree = "a".repeat(40);
   const threads = new Map<ThreadId, Partial<OrchestrationV2ThreadShell>>();
   const subagents = new Map<ThreadId, OrchestrationV2Subagent[]>();
   const gitCwds: string[] = [];
@@ -189,7 +191,10 @@ function setup(
               yield* Effect.addFinalizer(() =>
                 Effect.sync(() => {
                   closedForwards++;
-                }).pipe(Effect.andThen(Deferred.succeed(forwardClosed, undefined))),
+                }).pipe(
+                  Effect.andThen(Effect.suspend(onForwardClose)),
+                  Effect.andThen(Deferred.succeed(forwardClosed, undefined)),
+                ),
               );
             } else {
               const identity = command.args[command.args.indexOf("-f") + 1]!;
@@ -269,7 +274,7 @@ function setup(
               }
               return {
                 exitCode: ChildProcessSpawner.ExitCode(0),
-                stdout: "tree",
+                stdout: args[0] === "write-tree" ? sourceTree : "tree",
                 stderr: "",
                 stdoutTruncated: false,
                 stderrTruncated: false,
@@ -319,6 +324,9 @@ function setup(
     },
     setArchive: (bytes: Uint8Array) => {
       archiveBytes = new Uint8Array(bytes);
+    },
+    setSourceTree: (tree: string) => {
+      sourceTree = tree;
     },
     removeProject: () => {
       projectExists = false;
@@ -525,6 +533,237 @@ it.effect.each(["stop", "delete", "lease removed"] as const)(
       assert.include(test.closedPreviews, "setup-preview");
     }).pipe(Effect.scoped, Effect.provide(test.services));
   },
+);
+
+it.effect("retains only a successfully prepared source tree for desktop access", () => {
+  let failSync = false;
+  const test = setup((path, _method, body) =>
+    failSync && path.endsWith("/commands") && JSON.stringify(body).includes("source-files.json")
+      ? Effect.fail(new BoatError({ category: "provider" }))
+      : Effect.void,
+  );
+  return Effect.gen(function* () {
+    const boat = yield* make;
+    yield* boat.connect(Redacted.make("boat_fixture_private"));
+    yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: true });
+    const target = { requestId: "desktop-tree", sandboxId: "bx_23456789" };
+    yield* boat.operate({ action: "start", projectId, requestId: target.requestId }, ownerThreadId);
+    assert.isNull((yield* boat.assertActiveLease(target, ownerThreadId)).sourceTree);
+    yield* boat.operate(
+      { action: "prepare", projectId, requestId: target.requestId },
+      ownerThreadId,
+    );
+    assert.equal((yield* boat.assertActiveLease(target, ownerThreadId)).sourceTree, "a".repeat(40));
+    const reopened = yield* make;
+    assert.equal(
+      (yield* reopened.assertActiveLease(target, ownerThreadId)).sourceTree,
+      "a".repeat(40),
+    );
+    test.setSourceTree("b".repeat(40));
+    failSync = true;
+    assert.isTrue(
+      Exit.isFailure(
+        yield* boat
+          .operate({ action: "prepare", projectId, requestId: target.requestId }, ownerThreadId)
+          .pipe(Effect.exit),
+      ),
+    );
+    assert.isNull((yield* boat.assertActiveLease(target, ownerThreadId)).sourceTree);
+  }).pipe(Effect.scoped, Effect.provide(test.services));
+});
+
+it.effect("rejects overlapping source prepares instead of certifying an ambiguous tree", () =>
+  Effect.gen(function* () {
+    const entered = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const secondEntered = yield* Deferred.make<void>();
+    let syncs = 0;
+    const test = setup((path, _method, body) =>
+      path.endsWith("/commands") && JSON.stringify(body).includes("source-files.json")
+        ? Effect.gen(function* () {
+            syncs++;
+            yield* Deferred.succeed(syncs === 1 ? entered : secondEntered, undefined);
+            yield* Deferred.await(release);
+          })
+        : Effect.void,
+    );
+    yield* Effect.gen(function* () {
+      const boat = yield* make;
+      yield* boat.connect(Redacted.make("boat_fixture_private"));
+      yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: true });
+      const target = { action: "prepare", projectId, requestId: "overlap-tree" } as const;
+      yield* boat.operate({ ...target, action: "start" }, ownerThreadId);
+      const first = yield* boat.operate(target, ownerThreadId).pipe(Effect.forkChild);
+      yield* Effect.raceFirst(Deferred.await(entered), Fiber.join(first));
+      const second = yield* boat.operate(target, ownerThreadId).pipe(Effect.exit, Effect.forkChild);
+      const secondResult = yield* Effect.raceFirst(
+        Fiber.join(second),
+        Deferred.await(secondEntered).pipe(Effect.as(Exit.succeed(undefined))),
+      );
+      yield* Effect.sync(() => {
+        assert.isTrue(Exit.isFailure(secondResult));
+        assert.equal(syncs, 1);
+      }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)));
+      yield* Fiber.join(first);
+    }).pipe(Effect.scoped, Effect.provide(test.services));
+  }),
+);
+
+it.effect("shares one authorized SSH identity across private forwards", () => {
+  const test = setup();
+  return Effect.gen(function* () {
+    const boat = yield* make;
+    yield* boat.connect(Redacted.make("boat_fixture_private"));
+    yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: true });
+    const target = { requestId: "desktop-forward", sandboxId: "bx_23456789" };
+    yield* boat.operate({ action: "start", projectId, requestId: target.requestId }, ownerThreadId);
+    const lease = yield* boat.assertActiveLease(target, ownerThreadId);
+    const tunnels = yield* BoatSshTunnel.make;
+    const binding = yield* tunnels.authorize(lease, Redacted.make("boat_fixture_private"));
+    yield* tunnels.openAuthorized(binding, 6080);
+    yield* tunnels.openAuthorized(binding, 6081);
+    assert.equal(test.calls.filter((call) => call.endsWith("/sshkey")).length, 1);
+    assert.lengthOf(test.privateForwards, 2);
+    for (const forward of test.privateForwards) {
+      assert.equal(forward[forward.indexOf("-i") + 1], binding.identityFile);
+      assert.include(forward, `UserKnownHostsFile=${binding.knownHostsFile}`);
+    }
+    test.setOwnerActive(false);
+    yield* boat.reconcile();
+    assert.isTrue(Exit.isFailure(yield* tunnels.openAuthorized(binding, 6082).pipe(Effect.exit)));
+    assert.lengthOf(test.privateForwards, 2);
+  }).pipe(Effect.scoped, Effect.provide(test.services));
+});
+
+const desktopDescriptor = {
+  viewer: { remotePort: 6080, path: "/vnc.html" },
+  actor: {
+    commandPath: "/home/user/.local/bin/weasel-computer-use",
+    sha256: "c".repeat(64),
+    expectedServerName: "weasel-computer-use",
+    protocolRevision: 2,
+  },
+} as const;
+
+it.effect("keeps borrowed desktop access alive until its source generation is replaced", () => {
+  const test = setup();
+  return Effect.gen(function* () {
+    const boat = yield* make;
+    yield* boat.connect(Redacted.make("boat_fixture_private"));
+    yield* boat.configure(projectId, {
+      ...DEFAULT_BOAT_PROJECT,
+      enabled: true,
+      webAccess: "private",
+      devCommand: "npm run dev",
+    });
+    const target = { requestId: "desktop-session", sandboxId: "bx_23456789" };
+    yield* boat.operate({ action: "start", projectId, requestId: target.requestId }, ownerThreadId);
+    assert.isTrue(
+      Exit.isFailure(
+        yield* boat.openDesktopAccess(target, ownerThreadId, desktopDescriptor).pipe(Effect.exit),
+      ),
+    );
+    yield* boat.operate(
+      { action: "prepare", projectId, requestId: target.requestId },
+      ownerThreadId,
+    );
+    const access = yield* boat.openDesktopAccess(target, ownerThreadId, desktopDescriptor);
+    const calls = test.calls.length;
+    const borrowed = yield* boat
+      .getDesktopAccess(access.binding, ownerThreadId)
+      .pipe(Effect.scoped);
+    assert.strictEqual(borrowed, access);
+    assert.isTrue(
+      Exit.isFailure(
+        yield* boat.getDesktopAccess({ ...access.binding }, ownerThreadId).pipe(Effect.exit),
+      ),
+    );
+    assert.strictEqual(
+      yield* boat.openDesktopAccess(target, ownerThreadId, desktopDescriptor),
+      access,
+    );
+    assert.equal(test.calls.length, calls);
+    assert.equal(access.binding.sourceTree, "a".repeat(40));
+    assert.equal(access.viewer.tabId, "setup-preview");
+    yield* access.lease.check;
+    test.setSourceTree("b".repeat(40));
+    yield* boat.operate(
+      { action: "prepare", projectId, requestId: target.requestId },
+      ownerThreadId,
+    );
+    yield* access.lease.revoked;
+    assert.isTrue(Exit.isFailure(yield* access.lease.check.pipe(Effect.exit)));
+    assert.isTrue(
+      Exit.isFailure(yield* boat.getDesktopAccess(access.binding, ownerThreadId).pipe(Effect.exit)),
+    );
+    const next = yield* boat.openDesktopAccess(target, ownerThreadId, desktopDescriptor);
+    assert.equal(next.binding.sourceTree, "b".repeat(40));
+    assert.notEqual(next.binding.leaseGeneration, access.binding.leaseGeneration);
+    test.setOwnerActive(false);
+    yield* boat.reconcile();
+    yield* next.lease.revoked;
+    assert.isTrue(
+      Exit.isFailure(yield* boat.getDesktopAccess(access.binding, ownerThreadId).pipe(Effect.exit)),
+    );
+    assert.isTrue(
+      test.calls.every((call) => !call.includes("/desktop") && !call.includes("/host")),
+    );
+  }).pipe(Effect.scoped, Effect.provide(test.services));
+});
+
+it.effect("revokes desktop access before waiting for its forward to close", () =>
+  Effect.gen(function* () {
+    const closing = yield* Deferred.make<void>();
+    const allowClose = yield* Deferred.make<void>();
+    let holdClose = false;
+    const test = setup(undefined, ownerThreadId, undefined, () =>
+      holdClose
+        ? Deferred.succeed(closing, undefined).pipe(Effect.andThen(Deferred.await(allowClose)))
+        : Effect.void,
+    );
+    yield* Effect.gen(function* () {
+      const boat = yield* make;
+      const previews = yield* PreviewManager;
+      yield* boat.connect(Redacted.make("boat_fixture_private"));
+      yield* boat.configure(projectId, {
+        ...DEFAULT_BOAT_PROJECT,
+        enabled: true,
+        webAccess: "private",
+        devCommand: "npm run dev",
+      });
+      const target = { requestId: "desktop-close", sandboxId: "bx_23456789" };
+      yield* boat.operate(
+        { action: "start", projectId, requestId: target.requestId },
+        ownerThreadId,
+      );
+      yield* boat.operate(
+        { action: "prepare", projectId, requestId: target.requestId },
+        ownerThreadId,
+      );
+      const access = yield* boat.openDesktopAccess(target, ownerThreadId, desktopDescriptor);
+      const revoked = yield* Deferred.make<void>();
+      yield* access.lease.revoked.pipe(
+        Effect.andThen(Deferred.succeed(revoked, undefined)),
+        Effect.forkChild,
+      );
+      holdClose = true;
+      yield* previews.close({
+        threadId: ownerThreadId,
+        tabId: PreviewTabId.make(access.viewer.tabId),
+      });
+      const reopening = yield* boat
+        .openDesktopAccess(target, ownerThreadId, desktopDescriptor)
+        .pipe(Effect.forkChild);
+      yield* Effect.raceFirst(Deferred.await(closing), Fiber.join(reopening));
+      yield* TestClock.adjust(0);
+      yield* Effect.gen(function* () {
+        assert.isTrue(yield* Deferred.isDone(revoked));
+        assert.isTrue(Exit.isFailure(yield* access.lease.check.pipe(Effect.exit)));
+      }).pipe(Effect.ensuring(Deferred.succeed(allowClose, undefined)));
+      const next = yield* Fiber.join(reopening);
+      assert.notStrictEqual(next.binding, access.binding);
+    }).pipe(Effect.scoped, Effect.provide(test.services));
+  }),
 );
 
 it.effect("authorizes a pinned SSH binding without opening a web forward", () => {

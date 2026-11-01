@@ -23,6 +23,17 @@ const SshAccess = Schema.Struct({
 const isBoatError = Schema.is(BoatError);
 const decodeSshAccess = Schema.decodeUnknownEffect(SshAccess);
 
+export interface BoatSshAuthorization {
+  readonly hostname: string;
+  readonly port: number;
+  readonly username: "user";
+  readonly identityFile: string;
+  readonly knownHostsFile: string;
+  readonly hostKeyAlias: string;
+  readonly check: Effect.Effect<void, BoatError>;
+  readonly revoked: Effect.Effect<void>;
+}
+
 export const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -83,14 +94,13 @@ export const make = Effect.gen(function* () {
       isBoatError(error) ? error : new BoatError({ category: "provider" }),
     ),
   );
-  const open = Effect.fn("BoatSshTunnel.open")(
-    function* (lease: BoatLeaseAccess, token: Redacted.Redacted<string>, remotePort: number) {
-      yield* lease.check;
+  const openAuthorized = Effect.fn("BoatSshTunnel.openAuthorized")(
+    function* (binding: BoatSshAuthorization, remotePort: number) {
+      yield* binding.check;
       if (!Number.isInteger(remotePort) || remotePort < 1 || remotePort > 65535)
         return yield* new BoatError({ category: "conflict" });
-      const binding = yield* authorize(lease, token);
       const localPort = yield* net.reserveLoopbackPort("127.0.0.1");
-      yield* lease.check;
+      yield* binding.check;
       const child = yield* spawner.spawn(
         ChildProcess.make(
           ssh,
@@ -157,12 +167,22 @@ export const make = Effect.gen(function* () {
         Effect.timeout("15 seconds"),
       );
       if (ready !== "READY") return yield* new BoatError({ category: "provider" });
-      yield* lease.check;
+      yield* binding.check;
       return { url: `http://127.0.0.1:${localPort}`, exited: child.exitCode.pipe(Effect.asVoid) };
     },
     Effect.mapError((error) =>
       isBoatError(error) ? error : new BoatError({ category: "provider" }),
     ),
   );
-  return { authorize, open };
+  const open = Effect.fn("BoatSshTunnel.open")(function* (
+    lease: BoatLeaseAccess,
+    token: Redacted.Redacted<string>,
+    remotePort: number,
+  ) {
+    yield* lease.check;
+    if (!Number.isInteger(remotePort) || remotePort < 1 || remotePort > 65535)
+      return yield* new BoatError({ category: "conflict" });
+    return yield* openAuthorized(yield* authorize(lease, token), remotePort);
+  });
+  return { authorize, openAuthorized, open };
 });

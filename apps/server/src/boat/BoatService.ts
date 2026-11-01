@@ -257,6 +257,7 @@ const Work = Schema.Record(
         expiresAt: Schema.String,
       }),
     ),
+    sourceTree: Schema.optionalKey(Schema.String),
   }),
 );
 const encodeWork = Schema.encodeEffect(Schema.fromJsonString(Work));
@@ -277,8 +278,35 @@ export interface BoatLeaseAccess {
   readonly requestId: string;
   readonly sandboxId: string;
   readonly expiresAt: string;
+  readonly sourceTree?: string | null;
   readonly check: Effect.Effect<void, BoatError>;
   readonly revoked: Effect.Effect<void>;
+}
+
+// Descriptors come from the verified server-side Actor/Viewer inventory, never model arguments.
+export interface BoatDesktopDescriptor {
+  readonly viewer: { readonly remotePort: number; readonly path: string };
+  readonly actor: {
+    readonly commandPath: string;
+    readonly sha256: string;
+    readonly expectedServerName: string;
+    readonly protocolRevision: number;
+  };
+}
+
+export interface BoatDesktopAccess {
+  readonly binding: {
+    readonly projectId: ProjectId;
+    readonly threadId: ThreadId;
+    readonly requestId: string;
+    readonly sandboxId: string;
+    readonly sourceTree: string;
+    readonly leaseGeneration: string;
+  };
+  readonly lease: BoatLeaseAccess;
+  readonly ssh: BoatSshTunnel.BoatSshAuthorization;
+  readonly viewer: BoatDesktopDescriptor["viewer"] & { readonly tabId: string };
+  readonly actor: BoatDesktopDescriptor["actor"];
 }
 
 export class BoatService extends Context.Service<
@@ -295,6 +323,15 @@ export class BoatService extends Context.Service<
       target: { readonly requestId: string; readonly sandboxId: string },
       callerThreadId: ThreadId,
     ) => Effect.Effect<BoatLeaseAccess, BoatError, Scope.Scope>;
+    readonly openDesktopAccess: (
+      target: { readonly requestId: string; readonly sandboxId: string },
+      callerThreadId: ThreadId,
+      descriptor: BoatDesktopDescriptor,
+    ) => Effect.Effect<BoatDesktopAccess, BoatError>;
+    readonly getDesktopAccess: (
+      binding: BoatDesktopAccess["binding"],
+      callerThreadId: ThreadId,
+    ) => Effect.Effect<BoatDesktopAccess, BoatError>;
     readonly connect: (apiKey: Redacted.Redacted<string>) => Effect.Effect<BoatState, BoatError>;
     readonly disconnect: Effect.Effect<void, BoatError>;
     readonly configure: (
@@ -330,6 +367,14 @@ export const make = Effect.gen(function* () {
       tabId: string | null;
     }
   >();
+  const privateDesktopPreviews = new Map<
+    string,
+    {
+      readonly scope: Scope.Closeable;
+      readonly ended: Deferred.Deferred<void>;
+      access: BoatDesktopAccess | null;
+    }
+  >();
   const privateAndroidPreviews = new Map<
     string,
     {
@@ -347,6 +392,7 @@ export const make = Effect.gen(function* () {
   }>();
   let leaseGeneration = 0;
   const resumeInFlight = new Set<string>();
+  const prepareInFlight = new Set<string>();
   const filename = path.join(config.stateDir, "boat.json");
   const workFilename = path.join(config.stateDir, "boat-work.json");
   const workLock = yield* Semaphore.make(1);
@@ -637,6 +683,8 @@ export const make = Effect.gen(function* () {
           callerThreadId,
         ),
       );
+    const desktop = privateDesktopPreviews.get(current.requestId);
+    if (desktop) yield* closeDesktopAccess(desktop);
     const android = privateAndroidPreviews.get(current.requestId);
     if (android) {
       if (!callerThreadId) return yield* new BoatError({ category: "conflict" });
@@ -731,6 +779,194 @@ export const make = Effect.gen(function* () {
       Effect.onError(() => Scope.close(scope, Exit.void)),
     );
   });
+  const closeDesktopAccess = Effect.fn("BoatService.closeDesktopAccess")(
+    (entry: { readonly scope: Scope.Closeable; readonly ended: Deferred.Deferred<void> }) =>
+      Deferred.succeed(entry.ended, undefined).pipe(
+        Effect.andThen(Scope.close(entry.scope, Exit.void)),
+      ),
+  );
+  const getDesktopAccess = Effect.fn("BoatService.getDesktopAccess")(function* (
+    binding: BoatDesktopAccess["binding"],
+    callerThreadId: ThreadId,
+  ) {
+    const access = privateDesktopPreviews.get(binding.requestId)?.access;
+    if (!access || access.binding !== binding || binding.threadId !== callerThreadId)
+      return yield* new BoatError({ category: "conflict" });
+    yield* access.lease.check;
+    const listed = yield* previews.list({ threadId: callerThreadId });
+    if (!listed.sessions.some((session) => session.tabId === access.viewer.tabId))
+      return yield* new BoatError({ category: "conflict" });
+    yield* access.lease.check;
+    if (privateDesktopPreviews.get(binding.requestId)?.access !== access)
+      return yield* new BoatError({ category: "conflict" });
+    return access;
+  });
+  const openDesktopAccess = Effect.fn("BoatService.openDesktopAccess")(
+    (
+      target: { readonly requestId: string; readonly sandboxId: string },
+      callerThreadId: ThreadId,
+      descriptor: BoatDesktopDescriptor,
+    ) =>
+      previewLock.withPermits(1)(
+        Effect.gen(function* () {
+          if (
+            !Number.isInteger(descriptor.viewer.remotePort) ||
+            descriptor.viewer.remotePort < 1 ||
+            descriptor.viewer.remotePort > 65535 ||
+            !descriptor.viewer.path.startsWith("/") ||
+            descriptor.viewer.path.startsWith("//") ||
+            descriptor.viewer.path.includes("\\") ||
+            descriptor.viewer.path.length > 2048 ||
+            !descriptor.actor.commandPath.startsWith("/") ||
+            /[\r\n\0]/.test(descriptor.actor.commandPath) ||
+            !/^[a-f0-9]{64}$/.test(descriptor.actor.sha256) ||
+            !descriptor.actor.expectedServerName ||
+            !Number.isInteger(descriptor.actor.protocolRevision) ||
+            descriptor.actor.protocolRevision < 1
+          )
+            return yield* new BoatError({ category: "conflict" });
+          const previous = privateDesktopPreviews.get(target.requestId);
+          if (previous?.access) {
+            const access = previous.access;
+            if (yield* access.lease.check.pipe(Effect.isSuccess)) {
+              if (
+                access.binding.threadId !== callerThreadId ||
+                access.binding.sandboxId !== target.sandboxId
+              )
+                return yield* new BoatError({ category: "conflict" });
+              const listed = yield* previews.list({ threadId: callerThreadId });
+              if (
+                access.viewer.remotePort === descriptor.viewer.remotePort &&
+                access.viewer.path === descriptor.viewer.path &&
+                access.actor.commandPath === descriptor.actor.commandPath &&
+                access.actor.sha256 === descriptor.actor.sha256 &&
+                access.actor.expectedServerName === descriptor.actor.expectedServerName &&
+                access.actor.protocolRevision === descriptor.actor.protocolRevision &&
+                listed.sessions.some((session) => session.tabId === access.viewer.tabId)
+              ) {
+                yield* previews
+                  .requestReveal({
+                    threadId: callerThreadId,
+                    tabId: access.viewer.tabId,
+                    force: true,
+                  })
+                  .pipe(Effect.mapError(() => new BoatError({ category: "provider" })));
+                yield* access.lease.check;
+                return access;
+              }
+            }
+          }
+          const scope = yield* Scope.fork(serviceScope, "sequential");
+          const ended = yield* Deferred.make<void>();
+          const lifecycle = { scope, ended };
+          return yield* Effect.gen(function* () {
+            const underlying = yield* assertActiveLease(target, callerThreadId);
+            const lease: BoatLeaseAccess = {
+              ...underlying,
+              check: Effect.gen(function* () {
+                if (yield* Deferred.isDone(ended))
+                  return yield* new BoatError({ category: "conflict" });
+                yield* underlying.check;
+              }),
+              revoked: Effect.raceFirst(underlying.revoked, Deferred.await(ended)),
+            };
+            if (!lease.sourceTree || projectSettings(lease.projectId).webAccess !== "private")
+              return yield* new BoatError({ category: "conflict" });
+            const token = yield* key;
+            if (previous) yield* closeDesktopAccess(previous);
+            const web = privatePreviews.get(target.requestId);
+            if (web) yield* Scope.close(web.scope, Exit.void);
+            const android = privateAndroidPreviews.get(target.requestId);
+            if (android) yield* Scope.close(android.scope, Exit.void);
+            const entry = { ...lifecycle, access: null as BoatDesktopAccess | null };
+            let tabId: string | null = null;
+            privateDesktopPreviews.set(target.requestId, entry);
+            yield* Effect.addFinalizer(() =>
+              Effect.gen(function* () {
+                if (privateDesktopPreviews.get(target.requestId) !== entry) return;
+                privateDesktopPreviews.delete(target.requestId);
+                if (tabId)
+                  yield* previews
+                    .close({ threadId: callerThreadId, tabId: PreviewTabId.make(tabId) })
+                    .pipe(Effect.orElseSucceed(() => undefined));
+                yield* updateInstance(
+                  { projectId: lease.projectId, requestId: target.requestId },
+                  (current) =>
+                    current.sandboxId === target.sandboxId && current.previewTabId === tabId
+                      ? { previewTabId: null, previewUrl: null }
+                      : {},
+                ).pipe(Effect.orElseSucceed(() => undefined));
+              }),
+            );
+            yield* lease.revoked.pipe(
+              Effect.andThen(closeDesktopAccess(lifecycle)),
+              Effect.forkIn(serviceScope),
+            );
+            const ssh = yield* Effect.raceFirst(
+              tunnels.authorize(lease, token),
+              lease.revoked.pipe(
+                Effect.andThen(Effect.fail(new BoatError({ category: "conflict" }))),
+              ),
+            );
+            const tunnel = yield* Effect.raceFirst(
+              tunnels.openAuthorized(ssh, descriptor.viewer.remotePort),
+              lease.revoked.pipe(
+                Effect.andThen(Effect.fail(new BoatError({ category: "conflict" }))),
+              ),
+            );
+            yield* tunnel.exited.pipe(
+              Effect.orElseSucceed(() => undefined),
+              Effect.andThen(closeDesktopAccess(lifecycle)),
+              Effect.forkIn(serviceScope),
+            );
+            const generation = Buffer.from(
+              yield* crypto.randomBytes(16).pipe(Effect.mapError(storageError)),
+            ).toString("hex");
+            const url = new URL(descriptor.viewer.path, tunnel.url);
+            if (url.origin !== new URL(tunnel.url).origin)
+              return yield* new BoatError({ category: "conflict" });
+            yield* lease.check;
+            const opened = yield* previews
+              .open({
+                threadId: callerThreadId,
+                url: url.toString(),
+                runtime: "server",
+                reveal: true,
+                automationOwner: generation,
+              })
+              .pipe(Effect.mapError(() => new BoatError({ category: "provider" })));
+            tabId = opened.tabId;
+            const binding = Object.freeze({
+              projectId: lease.projectId,
+              threadId: callerThreadId,
+              requestId: target.requestId,
+              sandboxId: target.sandboxId,
+              sourceTree: lease.sourceTree,
+              leaseGeneration: generation,
+            });
+            const access: BoatDesktopAccess = Object.freeze({
+              binding,
+              lease,
+              ssh,
+              viewer: Object.freeze({ ...descriptor.viewer, tabId }),
+              actor: Object.freeze({ ...descriptor.actor }),
+            });
+            entry.access = access;
+            yield* lease.check;
+            yield* updateInstance(
+              { projectId: lease.projectId, requestId: target.requestId },
+              { previewTabId: tabId, previewUrl: null },
+            );
+            yield* Effect.addFinalizer(() => Deferred.succeed(ended, undefined));
+            yield* lease.check;
+            return access;
+          }).pipe(
+            Effect.provideService(Scope.Scope, scope),
+            Effect.onError(() => closeDesktopAccess(lifecycle)),
+          );
+        }),
+      ),
+  );
   const attachPreview = Effect.fn("BoatService.attachPreview")(
     (
       item: StoredInstance,
@@ -1622,121 +1858,165 @@ export const make = Effect.gen(function* () {
         previewUrl: null,
       });
     } else if (action.action === "prepare") {
-      if (settings.webAccess === "private") {
-        if (!agentThreadId) return yield* new BoatError({ category: "conflict" });
-        yield* Effect.scoped(
-          assertActiveLease(
-            {
-              requestId: action.requestId,
-              sandboxId: instance.sandboxId,
-            },
-            agentThreadId,
-          ),
-        );
-      }
-      const process =
-        instance.processId === null
-          ? null
-          : yield* api
-              .request(token, `${sandboxPath}/commands/${instance.processId}`)
-              .pipe(Effect.flatMap(decode(ProcessStatus)));
-      const running = process !== null && process.exitCode === undefined;
-      if (!settings.enabled || !settings.devCommand.trim())
-        return yield* new BoatError({ category: "disabled" });
-      if (settings.previewKind === "android" && settings.webAccess !== "private")
-        yield* api.request(token, `${sandboxPath}/desktop?vnc=1`, "POST");
-      const archive = yield* fs
-        .makeTempFile({ prefix: "crew-boat-", suffix: ".tar.gz" })
-        .pipe(Effect.mapError(storageError));
-      yield* Effect.gen(function* () {
-        const indexPath = `${archive}.index`;
-        const env = { GIT_INDEX_FILE: indexPath };
-        const execute = (args: ReadonlyArray<string>) =>
-          git
-            .execute({ operation: "boat-archive", cwd: source!.workspaceRoot, args, env })
-            .pipe(Effect.mapError(() => new BoatError({ category: "storage" })));
-        yield* Effect.gen(function* () {
-          yield* execute(["read-tree", "HEAD"]);
-          yield* execute(["add", "-A", "--", ".", ":(exclude).repos"]);
-          const tree = yield* execute(["write-tree"]);
-          yield* execute([
-            "archive",
-            "--format=tar.gz",
-            "--output",
-            archive,
-            tree.stdout.trim(),
-            "--",
-            ".",
-            ":(exclude).repos",
-          ]);
-        }).pipe(Effect.ensuring(fs.remove(indexPath).pipe(Effect.orElseSucceed(() => undefined))));
-        const bytes = yield* fs.readFile(archive).pipe(Effect.mapError(storageError));
-        if (bytes.byteLength > 256 * 1024 * 1024)
-          return yield* new BoatError({ category: "capacity" });
-        const remoteArchive = `/home/user/${path.basename(archive)}`;
-        const chunkSize = 4 * 1024 * 1024;
-        const chunks: string[] = [];
-        for (let offset = 0; offset < bytes.byteLength; offset += chunkSize) {
-          const name = `${path.basename(archive)}.part-${chunks.length}`;
-          yield* api.request(token, `${sandboxPath}/files`, "PUT", {
-            path: name,
-            content: Buffer.from(bytes.subarray(offset, offset + chunkSize)).toString("base64"),
-            encoding: "base64",
-          });
-          chunks.push(`/home/user/${name}`);
-        }
-        let devAuth = "";
-        if (
-          settings.devCommand.includes("scripts/dev-runner") ||
-          settings.devCommand.includes("vp run dev --no-seed")
-        ) {
-          const secretName = `boat-dev-${action.requestId}`;
-          const existing = yield* secrets.get(secretName).pipe(Effect.mapError(storageError));
-          const bytes = Option.isSome(existing)
-            ? existing.value
-            : yield* crypto.randomBytes(32).pipe(Effect.mapError(storageError));
-          if (Option.isNone(existing))
-            yield* secrets.set(secretName, bytes).pipe(Effect.mapError(storageError));
-          const credential = Buffer.from(bytes).toString("hex");
-          if (settings.webAccess === "private") {
-            devAuth = `export T3CODE_DEV_AUTH_TOKEN=${credential}\nexport T3CODE_DEV_WEB_HOST=127.0.0.1\nexport NODE_OPTIONS="--dns-result-order=ipv4first \${NODE_OPTIONS:-}"\n`;
-          } else {
-            const hosted = yield* api
-              .request(token, `${sandboxPath}/host`, "POST", {
-                port: settings.port,
-                public: false,
-              })
-              .pipe(Effect.flatMap(decode(Hosted)));
-            devAuth = `export T3CODE_DEV_AUTH_TOKEN=${credential}\nexport T3CODE_DEV_ALLOWED_ORIGINS=${new URL(hosted.url).origin}\nexport T3CODE_DEV_ALLOWED_HOSTS=${new URL(hosted.url).hostname}\nexport T3CODE_DEV_WEB_HOST=0.0.0.0\nexport NODE_OPTIONS="--dns-result-order=ipv4first \${NODE_OPTIONS:-}"\n`;
-          }
-        }
-        const androidSetup =
-          settings.previewKind === "android" && settings.webAccess !== "private"
-            ? ANDROID_SETUP
-            : "";
-        const sync = `set -eu\ncat ${chunks.join(" ")} > ${remoteArchive}\nrm ${chunks.join(" ")}\nset -- ${remoteArchive} /home/user/crew /home/user/.crew-source-files.json\n${sourceSyncScript}`;
-        const result = yield* api
-          .request(token, `${sandboxPath}/commands`, "POST", {
-            command: sync,
-            timeoutSeconds: 20,
-          })
-          .pipe(Effect.flatMap(decode(ProcessStatus)));
-        if (result.exitCode !== 0) return yield* new BoatError({ category: "provider" });
-        if (running) {
-          yield* updateInstance(action, {
-            output: `${result.stdout ?? ""}\n${result.stderr ?? ""}`.slice(-12000),
-          });
-        } else {
-          const script = `set -eu\n${devAuth}${androidSetup}\ncd /home/user/crew\n${settings.setupCommand}\nexport PATH="$PWD/node_modules/.bin:$PATH"\n${settings.devCommand}`;
-          const started = yield* api
-            .request(token, `${sandboxPath}/commands`, "POST", {
-              command: script,
-              detached: true,
-            })
-            .pipe(Effect.flatMap(decode(Process)));
-          yield* updateInstance(action, { processId: started.processId });
-        }
-      }).pipe(Effect.ensuring(fs.remove(archive).pipe(Effect.orElseSucceed(() => undefined))));
+      const preparedInstance = instance;
+      yield* Effect.acquireUseRelease(
+        Effect.suspend(() => {
+          if (prepareInFlight.has(action.requestId))
+            return Effect.fail(new BoatError({ category: "conflict" }));
+          prepareInFlight.add(action.requestId);
+          return Effect.void;
+        }),
+        () =>
+          Effect.gen(function* () {
+            if (settings.webAccess === "private") {
+              if (!agentThreadId) return yield* new BoatError({ category: "conflict" });
+              yield* Effect.scoped(
+                assertActiveLease(
+                  {
+                    requestId: action.requestId,
+                    sandboxId: preparedInstance.sandboxId!,
+                  },
+                  agentThreadId,
+                ),
+              );
+            }
+            const process =
+              preparedInstance.processId === null
+                ? null
+                : yield* api
+                    .request(token, `${sandboxPath}/commands/${preparedInstance.processId}`)
+                    .pipe(Effect.flatMap(decode(ProcessStatus)));
+            const running = process !== null && process.exitCode === undefined;
+            if (!settings.enabled || !settings.devCommand.trim())
+              return yield* new BoatError({ category: "disabled" });
+            if (settings.previewKind === "android" && settings.webAccess !== "private")
+              yield* api.request(token, `${sandboxPath}/desktop?vnc=1`, "POST");
+            yield* workLock.withPermits(1)(
+              Effect.gen(function* () {
+                const current = work[action.requestId]!;
+                const { sourceTree: _sourceTree, ...unprepared } = current;
+                yield* saveWork({ ...work, [action.requestId]: unprepared });
+              }),
+            );
+            const archive = yield* fs
+              .makeTempFile({ prefix: "crew-boat-", suffix: ".tar.gz" })
+              .pipe(Effect.mapError(storageError));
+            yield* Effect.gen(function* () {
+              const indexPath = `${archive}.index`;
+              const env = { GIT_INDEX_FILE: indexPath };
+              const execute = (args: ReadonlyArray<string>) =>
+                git
+                  .execute({ operation: "boat-archive", cwd: source!.workspaceRoot, args, env })
+                  .pipe(Effect.mapError(() => new BoatError({ category: "storage" })));
+              const sourceTree = yield* Effect.gen(function* () {
+                yield* execute(["read-tree", "HEAD"]);
+                yield* execute(["add", "-A", "--", ".", ":(exclude).repos"]);
+                const tree = yield* execute(["write-tree"]);
+                const fingerprint = tree.stdout.trim();
+                if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(fingerprint))
+                  return yield* new BoatError({ category: "storage" });
+                yield* execute([
+                  "archive",
+                  "--format=tar.gz",
+                  "--output",
+                  archive,
+                  fingerprint,
+                  "--",
+                  ".",
+                  ":(exclude).repos",
+                ]);
+                return fingerprint;
+              }).pipe(
+                Effect.ensuring(fs.remove(indexPath).pipe(Effect.orElseSucceed(() => undefined))),
+              );
+              const bytes = yield* fs.readFile(archive).pipe(Effect.mapError(storageError));
+              if (bytes.byteLength > 256 * 1024 * 1024)
+                return yield* new BoatError({ category: "capacity" });
+              const remoteArchive = `/home/user/${path.basename(archive)}`;
+              const chunkSize = 4 * 1024 * 1024;
+              const chunks: string[] = [];
+              for (let offset = 0; offset < bytes.byteLength; offset += chunkSize) {
+                const name = `${path.basename(archive)}.part-${chunks.length}`;
+                yield* api.request(token, `${sandboxPath}/files`, "PUT", {
+                  path: name,
+                  content: Buffer.from(bytes.subarray(offset, offset + chunkSize)).toString(
+                    "base64",
+                  ),
+                  encoding: "base64",
+                });
+                chunks.push(`/home/user/${name}`);
+              }
+              let devAuth = "";
+              if (
+                settings.devCommand.includes("scripts/dev-runner") ||
+                settings.devCommand.includes("vp run dev --no-seed")
+              ) {
+                const secretName = `boat-dev-${action.requestId}`;
+                const existing = yield* secrets.get(secretName).pipe(Effect.mapError(storageError));
+                const bytes = Option.isSome(existing)
+                  ? existing.value
+                  : yield* crypto.randomBytes(32).pipe(Effect.mapError(storageError));
+                if (Option.isNone(existing))
+                  yield* secrets.set(secretName, bytes).pipe(Effect.mapError(storageError));
+                const credential = Buffer.from(bytes).toString("hex");
+                if (settings.webAccess === "private") {
+                  devAuth = `export T3CODE_DEV_AUTH_TOKEN=${credential}\nexport T3CODE_DEV_WEB_HOST=127.0.0.1\nexport NODE_OPTIONS="--dns-result-order=ipv4first \${NODE_OPTIONS:-}"\n`;
+                } else {
+                  const hosted = yield* api
+                    .request(token, `${sandboxPath}/host`, "POST", {
+                      port: settings.port,
+                      public: false,
+                    })
+                    .pipe(Effect.flatMap(decode(Hosted)));
+                  devAuth = `export T3CODE_DEV_AUTH_TOKEN=${credential}\nexport T3CODE_DEV_ALLOWED_ORIGINS=${new URL(hosted.url).origin}\nexport T3CODE_DEV_ALLOWED_HOSTS=${new URL(hosted.url).hostname}\nexport T3CODE_DEV_WEB_HOST=0.0.0.0\nexport NODE_OPTIONS="--dns-result-order=ipv4first \${NODE_OPTIONS:-}"\n`;
+                }
+              }
+              const androidSetup =
+                settings.previewKind === "android" && settings.webAccess !== "private"
+                  ? ANDROID_SETUP
+                  : "";
+              const sync = `set -eu\ncat ${chunks.join(" ")} > ${remoteArchive}\nrm ${chunks.join(" ")}\nset -- ${remoteArchive} /home/user/crew /home/user/.crew-source-files.json\n${sourceSyncScript}`;
+              const result = yield* api
+                .request(token, `${sandboxPath}/commands`, "POST", {
+                  command: sync,
+                  timeoutSeconds: 20,
+                })
+                .pipe(Effect.flatMap(decode(ProcessStatus)));
+              if (result.exitCode !== 0) return yield* new BoatError({ category: "provider" });
+              if (running) {
+                yield* updateInstance(action, {
+                  output: `${result.stdout ?? ""}\n${result.stderr ?? ""}`.slice(-12000),
+                });
+              } else {
+                const script = `set -eu\n${devAuth}${androidSetup}\ncd /home/user/crew\n${settings.setupCommand}\nexport PATH="$PWD/node_modules/.bin:$PATH"\n${settings.devCommand}`;
+                const started = yield* api
+                  .request(token, `${sandboxPath}/commands`, "POST", {
+                    command: script,
+                    detached: true,
+                  })
+                  .pipe(Effect.flatMap(decode(Process)));
+                yield* updateInstance(action, { processId: started.processId });
+              }
+              yield* workLock.withPermits(1)(
+                Effect.gen(function* () {
+                  const current = work[action.requestId]!;
+                  if (
+                    current.source.threadId !== source!.threadId ||
+                    current.source.workspaceRoot !== source!.workspaceRoot
+                  )
+                    return yield* new BoatError({ category: "conflict" });
+                  yield* saveWork({ ...work, [action.requestId]: { ...current, sourceTree } });
+                }),
+              );
+            }).pipe(
+              Effect.ensuring(fs.remove(archive).pipe(Effect.orElseSucceed(() => undefined))),
+            );
+          }),
+        () =>
+          Effect.sync(() => {
+            prepareInFlight.delete(action.requestId);
+          }),
+      );
     } else if (action.action === "exec") {
       if (agentThreadId)
         yield* updateInstance(action, (current) => ({
@@ -2081,9 +2361,14 @@ ${action.command}`,
       return instance;
     });
     const instance = yield* validate;
+    const sourceTree = work[target.requestId]?.sourceTree ?? null;
     const deadline = Date.parse(instance.expiresAt);
     const check = Effect.gen(function* () {
-      if ((yield* Deferred.isDone(ended)) || (yield* Clock.currentTimeMillis) >= deadline)
+      if (
+        (yield* Deferred.isDone(ended)) ||
+        (yield* Clock.currentTimeMillis) >= deadline ||
+        (work[target.requestId]?.sourceTree ?? null) !== sourceTree
+      )
         return yield* new BoatError({ category: "conflict" });
       yield* validate;
     }).pipe(Effect.tapError(() => Deferred.succeed(ended, undefined)));
@@ -2103,7 +2388,8 @@ ${action.command}`,
           !next.leases.includes(callerThreadId) ||
           !changed.ledger.projects[instance.projectId]?.enabled ||
           nextSource?.threadId !== source?.threadId ||
-          nextSource?.workspaceRoot !== source?.workspaceRoot
+          nextSource?.workspaceRoot !== source?.workspaceRoot ||
+          (changed.work[target.requestId]?.sourceTree ?? null) !== sourceTree
         )
           return yield* new BoatError({ category: "conflict" });
         yield* check;
@@ -2122,6 +2408,7 @@ ${action.command}`,
       requestId: target.requestId,
       sandboxId: target.sandboxId,
       expiresAt: instance.expiresAt,
+      sourceTree,
       check,
       revoked: Deferred.await(ended),
     };
@@ -2236,6 +2523,8 @@ ${action.command}`,
   return {
     read,
     assertActiveLease,
+    openDesktopAccess,
+    getDesktopAccess,
     isEnabled: (projectId: ProjectId) => Effect.sync(() => projectSettings(projectId).enabled),
     connect,
     disconnect,
