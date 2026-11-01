@@ -54,6 +54,7 @@ import {
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -82,6 +83,7 @@ import * as Exit from "effect/Exit";
 import * as LocalDeviceHost from "./LocalDeviceHost.ts";
 
 export const DEVICE_HUB_ROUTE_PREFIX = "/api/device-hub";
+export type { DeviceSshBinding } from "./DeviceHost.ts";
 
 const sshProbeFailureMessage = (error: DeviceHost.DeviceHostError): string => {
   const cause = error.cause;
@@ -195,6 +197,18 @@ export class DeviceService extends Context.Service<
       context?: DeviceHost.DeviceOpenContext,
     ) => Effect.Effect<DeviceSession, DeviceError>;
     readonly close: (input: DeviceCloseInput) => Effect.Effect<void, DeviceError>;
+    readonly openScopedSsh: (
+      input: DeviceOpenInput & { readonly hostId: DeviceHostId },
+      binding: DeviceHost.DeviceSshBinding,
+      context?: DeviceHost.DeviceOpenContext,
+    ) => Effect.Effect<
+      {
+        readonly session: DeviceSession;
+        readonly release: Effect.Effect<void, DeviceError>;
+      },
+      DeviceError,
+      Scope.Scope
+    >;
     readonly shutdown: (input: DeviceShutdownInput) => Effect.Effect<void, DeviceError>;
     readonly detail: (input: DeviceDetailInput) => Effect.Effect<DeviceDetail, DeviceError>;
     readonly action: (input: DeviceActionInput) => Effect.Effect<DeviceDetail, DeviceError>;
@@ -279,6 +293,15 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
   const settings = yield* ServerSettings.ServerSettingsService;
   const crypto = yield* Crypto.Crypto;
   const lifecycleLock = yield* Semaphore.make(1);
+  const privateClaims = new Map<
+    DeviceHostId,
+    {
+      readonly token: symbol;
+      session?: DeviceSession;
+      ready?: DeviceHost.DeviceHostReady;
+    }
+  >();
+  const openingHosts = new Map<symbol, DeviceHostId>();
   const readSettings = settings.getSettings.pipe(
     Effect.mapError(
       (cause) =>
@@ -750,9 +773,21 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     }
   });
 
-  const open: DeviceService["Service"]["open"] = Effect.fn("DeviceService.open")(
+  const openImpl: DeviceService["Service"]["open"] = Effect.fn("DeviceService.openImpl")(
     function* (input, context) {
       const host = yield* resolveHost(input.hostId);
+      const checkClaim = Effect.suspend(() => {
+        const claim = privateClaims.get(host.id);
+        return claim === undefined || claim.token === context?.privateSshClaim
+          ? Effect.void
+          : Effect.fail(
+              new DeviceHostUnavailableError({
+                hostId: host.id,
+                reason: "This host has a private development session.",
+              }),
+            );
+      });
+      yield* checkClaim;
       if (input.includeAgentTarget && !(yield* agentAccessFor(input.threadId)))
         return yield* new DeviceHostUnavailableError({
           hostId: host.id,
@@ -839,12 +874,18 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       };
       yield* lifecycleLock.withPermit(
         Effect.gen(function* () {
+          yield* checkClaim;
           if (!(yield* readDeviceSettings).enabled)
             return yield* new DeviceHostUnavailableError({
               hostId: host.id,
               hostLabel: host.label,
               reason: "Device support was turned off while the device was opening.",
             });
+          const claim = privateClaims.get(host.id);
+          if (claim && claim.token === context?.privateSshClaim) {
+            claim.session = session;
+            claim.ready = ready;
+          }
           yield* publish((current) => ({
             ...current,
             sessions: [
@@ -862,6 +903,18 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
         }),
       );
       return session;
+    },
+  );
+
+  const open: DeviceService["Service"]["open"] = Effect.fn("DeviceService.open")(
+    function* (input, context) {
+      const opening = Symbol("device-opening");
+      const hostId = input.hostId ?? LOCAL_DEVICE_HOST_ID;
+      return yield* Effect.acquireUseRelease(
+        Effect.sync(() => openingHosts.set(opening, hostId)),
+        () => openImpl(input, context),
+        () => Effect.sync(() => openingHosts.delete(opening)),
+      );
     },
   );
 
@@ -888,75 +941,200 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     }));
   });
 
-  const close: DeviceService["Service"]["close"] = Effect.fn("DeviceService.close")(
-    function* (input) {
-      // Open publishes under the same lock; an old close must not release a reopened claim.
-      const closing = yield* lifecycleLock.withPermit(
-        Effect.gen(function* () {
-          const { state } = yield* SynchronizedRef.get(stateRef);
-          const closing = state.sessions.filter(
-            (session) =>
-              session.threadId === input.threadId &&
-              (input.hostId === undefined || session.hostId === input.hostId) &&
-              (input.deviceId === undefined || session.deviceId === input.deviceId),
-          );
-          const ending = input.shutdown
-            ? state.sessions.filter((session) =>
-                closing.some(
-                  (closed) =>
-                    closed.hostId === session.hostId && closed.deviceId === session.deviceId,
-                ),
-              )
-            : closing;
-          for (const session of ending) {
-            const host = yield* resolveHost(session.hostId);
-            const ready = yield* host.current;
-            // A lost SSH tunnel does not establish that the remote daemon stopped.
-            if (!ready && (yield* host.summary).kind === "ssh")
+  const close = Effect.fn("DeviceService.close")(function* (
+    input: DeviceCloseInput,
+    expected?: {
+      readonly session: DeviceSession;
+      readonly ready: DeviceHost.DeviceHostReady | null;
+    },
+  ) {
+    // Open publishes under the same lock; an old close must not release a reopened claim.
+    const closing = yield* lifecycleLock.withPermit(
+      Effect.gen(function* () {
+        const { state } = yield* SynchronizedRef.get(stateRef);
+        const closing = state.sessions.filter(
+          (session) =>
+            session.threadId === input.threadId &&
+            (expected === undefined || session === expected.session) &&
+            (input.hostId === undefined || session.hostId === input.hostId) &&
+            (input.deviceId === undefined || session.deviceId === input.deviceId),
+        );
+        const ending = input.shutdown
+          ? state.sessions.filter((session) =>
+              closing.some(
+                (closed) =>
+                  closed.hostId === session.hostId && closed.deviceId === session.deviceId,
+              ),
+            )
+          : closing;
+        for (const session of ending) {
+          const host =
+            expected?.session === session ? undefined : yield* resolveHost(session.hostId);
+          const ready = expected?.session === session ? expected.ready : yield* host!.current;
+          // A lost SSH tunnel does not establish that the remote daemon stopped.
+          if (!ready && host && (yield* host.summary).kind === "ssh")
+            return yield* new DeviceHostUnavailableError({
+              hostId: session.hostId,
+              hostLabel: host.label,
+              reason: "Device host is reconnecting. Retry close after it reconnects.",
+            });
+          if (ready?.releaseAgentSession) {
+            const name = yield* agentDeviceSession(
+              session.threadId,
+              session.hostId,
+              session.deviceId,
+            ).pipe(Effect.provideService(Crypto.Crypto, crypto));
+            yield* ready.releaseAgentSession(name, session.deviceId);
+          }
+        }
+        if (input.shutdown) yield* releaseLaunchers(ending);
+        if (input.shutdown) {
+          for (const session of closing) {
+            const ready = yield* currentReadiness(session.hostId);
+            if (!ready)
               return yield* new DeviceHostUnavailableError({
                 hostId: session.hostId,
-                hostLabel: host.label,
-                reason: "Device host is reconnecting. Retry close after it reconnects.",
+                reason: "Device host is not running. Reconnect before retrying close.",
               });
-            if (ready?.releaseAgentSession) {
-              const name = yield* agentDeviceSession(
-                session.threadId,
-                session.hostId,
-                session.deviceId,
-              ).pipe(Effect.provideService(Crypto.Crypto, crypto));
-              yield* ready.releaseAgentSession(name, session.deviceId);
-            }
+            yield* shutdownDevice(ready, session.deviceId, session.platform);
           }
-          if (input.shutdown) yield* releaseLaunchers(ending);
-          if (input.shutdown) {
-            for (const session of closing) {
-              const ready = yield* currentReadiness(session.hostId);
-              if (!ready)
-                return yield* new DeviceHostUnavailableError({
-                  hostId: session.hostId,
-                  reason: "Device host is not running. Reconnect before retrying close.",
-                });
-              yield* shutdownDevice(ready, session.deviceId, session.platform);
-            }
-          }
-          yield* publish((current) => ({
-            ...current,
-            sessions: current.sessions.filter((session) => !ending.includes(session)),
-          }));
-          return closing;
-        }),
+        }
+        yield* publish((current) => ({
+          ...current,
+          sessions: current.sessions.filter((session) => !ending.includes(session)),
+        }));
+        return closing;
+      }),
+    );
+    if (input.shutdown)
+      yield* Effect.forEach(
+        closing,
+        (session) =>
+          currentReadiness(session.hostId).pipe(
+            Effect.flatMap((ready) => (ready ? refreshAfterShutdown(ready) : Effect.void)),
+          ),
+        { discard: true },
       );
-      if (input.shutdown)
-        yield* Effect.forEach(
-          closing,
-          (session) =>
-            currentReadiness(session.hostId).pipe(
-              Effect.flatMap((ready) => (ready ? refreshAfterShutdown(ready) : Effect.void)),
-            ),
-          { discard: true },
-        );
-    },
-  );
+  });
+
+  const openScopedSsh: DeviceService["Service"]["openScopedSsh"] = Effect.fn(
+    "DeviceService.openScopedSsh",
+  )(function* (input, binding, context) {
+    const unavailable = (reason: string) =>
+      new DeviceHostUnavailableError({ hostId: input.hostId, reason });
+    if (input.platform !== "android" || input.boot !== false || input.includeAgentTarget !== true)
+      return yield* unavailable(
+        "Private device sessions require an existing Android device and agent access.",
+      );
+    yield* binding.check;
+    const claim: {
+      readonly token: symbol;
+      session?: DeviceSession;
+      ready?: DeviceHost.DeviceHostReady;
+    } = {
+      token: Symbol("private-device-session"),
+    };
+    const forget = lifecycleLock.withPermit(
+      Effect.sync(() => {
+        if (privateClaims.get(input.hostId) === claim) privateClaims.delete(input.hostId);
+      }),
+    );
+    const host = yield* Effect.acquireRelease(
+      lifecycleLock.withPermit(
+        Effect.gen(function* () {
+          const host = yield* resolveHost(input.hostId);
+          const { state } = yield* SynchronizedRef.get(stateRef);
+          if (
+            !host.bindSsh ||
+            privateClaims.has(host.id) ||
+            state.sessions.some((entry) => entry.hostId === host.id) ||
+            [...openingHosts.values()].includes(host.id)
+          )
+            return yield* unavailable(
+              "The SSH host is unavailable or already has an active session.",
+            );
+          privateClaims.set(host.id, claim);
+          return host;
+        }),
+      ),
+      () => forget,
+    );
+    const ended = yield* Deferred.make<void>();
+    let released = false;
+    const check = Effect.gen(function* () {
+      yield* binding.check;
+      if (released || privateClaims.get(host.id) !== claim || hosts.get(host.id) !== host)
+        return yield* unavailable("The private device binding has ended or its host changed.");
+    });
+    const releaseTransport = yield* host.bindSsh!({
+      ...binding,
+      check,
+      revoked: Effect.raceFirst(binding.revoked, Deferred.await(ended)),
+    }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new DeviceHostUnavailableError({
+            hostId: host.id,
+            reason: "The private SSH target could not be bound.",
+            cause,
+          }),
+      ),
+      Effect.onError(() => forget),
+    );
+    const release = yield* Effect.cached(
+      Effect.gen(function* () {
+        released = true;
+        yield* Deferred.succeed(ended, undefined);
+        yield* (
+          claim.session
+            ? close(
+                {
+                  threadId: claim.session.threadId,
+                  hostId: claim.session.hostId,
+                  deviceId: claim.session.deviceId,
+                  shutdown: false,
+                },
+                { session: claim.session, ready: claim.ready ?? null },
+              )
+            : Effect.void
+        ).pipe(Effect.ensuring(releaseTransport), Effect.ensuring(forget));
+      }).pipe(Effect.uninterruptible),
+    );
+    yield* Effect.addFinalizer(() =>
+      release.pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("Private device session cleanup failed", { cause }),
+        ),
+      ),
+    );
+    return yield* Effect.gen(function* () {
+      const opened = yield* open(input, { ...context, privateSshClaim: claim.token }).pipe(
+        Effect.raceFirst(
+          binding.revoked.pipe(
+            Effect.andThen(Effect.fail(unavailable("The private device binding was revoked."))),
+          ),
+        ),
+      );
+      yield* check;
+      const changes = yield* PubSub.subscribe(statePubSub);
+      if (!(yield* SynchronizedRef.get(stateRef)).state.sessions.includes(opened))
+        return yield* unavailable("The private device session was replaced.");
+      const replaced = Effect.forever(
+        PubSub.take(changes).pipe(
+          Effect.flatMap((state) =>
+            hosts.get(host.id) === host && state.sessions.includes(opened)
+              ? Effect.void
+              : Effect.fail(unavailable("The private device session was replaced.")),
+          ),
+        ),
+      ).pipe(Effect.ignore);
+      yield* Effect.raceFirst(binding.revoked, replaced).pipe(
+        Effect.andThen(release),
+        Effect.forkScoped,
+      );
+      return { session: opened, release };
+    }).pipe(Effect.onError(() => release.pipe(Effect.ignore)));
+  });
 
   // Sessions retire before the power-off, while their agent-device sessions can still close the app;
   // agent-device keeps a claim whose app close fails.
@@ -1213,6 +1391,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       list,
       open,
       close,
+      openScopedSsh,
       shutdown,
       detail,
       action,
@@ -1655,6 +1834,34 @@ export const make = Effect.gen(function* () {
     Effect.provide(simlockContext),
   );
 
+  const attachAgentTarget = Effect.fn("DeviceService.attachAgentTarget")(function* (
+    session: DeviceSession,
+  ) {
+    const opened = {
+      threadId: session.threadId,
+      hostId: session.hostId,
+      deviceId: session.deviceId,
+    };
+    const target = yield* service.agentTarget(opened);
+    const targetArgs = [
+      ...(target.agentDeviceId === null
+        ? []
+        : [
+            "--platform",
+            session.platform,
+            session.platform === "ios" ? "--udid" : "--serial",
+            target.agentDeviceId,
+          ]),
+      ...target.args,
+    ];
+    const launcher = yield* service.agentLauncher({ ...opened, targetArgs });
+    if (Option.isNone(launcher))
+      return yield* new DeviceHostUnavailableError({
+        hostId: session.hostId,
+        reason: "The device was closed while its agent launcher was being prepared.",
+      });
+    return { ...session, agentDevice: { command: launcher.value, targetArgs } };
+  });
   return {
     ...service,
     easAccount,
@@ -1663,31 +1870,18 @@ export const make = Effect.gen(function* () {
       context?: DeviceHost.DeviceOpenContext,
     ) {
       const session = yield* service.open(input, context);
-      if (!input.includeAgentTarget) return session;
-      const opened = {
-        threadId: session.threadId,
-        hostId: session.hostId,
-        deviceId: session.deviceId,
-      };
-      const target = yield* service.agentTarget(opened);
-      const targetArgs = [
-        ...(target.agentDeviceId === null
-          ? []
-          : [
-              "--platform",
-              session.platform,
-              session.platform === "ios" ? "--udid" : "--serial",
-              target.agentDeviceId,
-            ]),
-        ...target.args,
-      ];
-      const launcher = yield* service.agentLauncher({ ...opened, targetArgs });
-      if (Option.isNone(launcher))
-        return yield* new DeviceHostUnavailableError({
-          hostId: session.hostId,
-          reason: "The device was closed while its agent launcher was being prepared.",
-        });
-      return { ...session, agentDevice: { command: launcher.value, targetArgs } };
+      return input.includeAgentTarget ? yield* attachAgentTarget(session) : session;
+    }),
+    openScopedSsh: Effect.fn("DeviceService.openScopedSshWithAgentTarget")(function* (
+      input: DeviceOpenInput & { readonly hostId: DeviceHostId },
+      binding: DeviceHost.DeviceSshBinding,
+      context?: DeviceHost.DeviceOpenContext,
+    ) {
+      const opened = yield* service.openScopedSsh(input, binding, context);
+      const session = yield* attachAgentTarget(opened.session).pipe(
+        Effect.onError(() => opened.release.pipe(Effect.ignore)),
+      );
+      return { ...opened, session };
     }),
     simlockIdentity,
   };

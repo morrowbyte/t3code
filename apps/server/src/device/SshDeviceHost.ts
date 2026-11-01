@@ -5,10 +5,16 @@ import {
   deviceToolInstallMessage,
   type SshDeviceHostConfig,
 } from "@t3tools/contracts";
-import { runSshCommand, baseSshArgs, resolveSshCommand } from "@t3tools/ssh/command";
+import {
+  runSshCommand,
+  baseSshArgs,
+  parseSshResolveOutput,
+  resolveSshCommand,
+} from "@t3tools/ssh/command";
 import * as NetService from "@t3tools/shared/Net";
 import { waitForHttpReady } from "@t3tools/shared/httpReadiness";
 import * as Crypto from "effect/Crypto";
+import * as Deferred from "effect/Deferred";
 import * as Exit from "effect/Exit";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -45,14 +51,43 @@ const Started = Schema.Struct({
 });
 const decodeProbe = Schema.decodeUnknownEffect(Schema.fromJsonString(Probe));
 const decodeStarted = Schema.decodeUnknownEffect(Schema.fromJsonString(Started));
-const targetFor = (config: SshDeviceHostConfig) => ({
-  alias: config.target,
-  hostname: config.target,
-  username: null,
-  port: config.port ?? null,
+const targetFor = (config: SshDeviceHostConfig, binding?: DeviceHost.DeviceSshBinding) => ({
+  alias: binding?.hostname ?? config.target,
+  hostname: binding?.hostname ?? config.target,
+  username: binding?.username ?? null,
+  port: binding?.port ?? config.port ?? null,
 });
-const identityArgs = (config: SshDeviceHostConfig) =>
-  config.identityFile ? ["-i", config.identityFile] : [];
+const identityArgs = (config: SshDeviceHostConfig, binding?: DeviceHost.DeviceSshBinding) =>
+  binding
+    ? [
+        "-F",
+        "none",
+        "-i",
+        binding.identityFile,
+        "-o",
+        "IdentitiesOnly=yes",
+        "-o",
+        "IdentityAgent=none",
+        "-o",
+        "ForwardAgent=no",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        `UserKnownHostsFile=${binding.knownHostsFile}`,
+        "-o",
+        "GlobalKnownHostsFile=none",
+        "-o",
+        `HostKeyAlias=${binding.hostKeyAlias}`,
+        "-o",
+        "ControlMaster=no",
+        "-o",
+        "ControlPath=none",
+        "-o",
+        "ControlPersist=no",
+      ]
+    : config.identityFile
+      ? ["-i", config.identityFile]
+      : [];
 const commandArgs = (script: string) => [
   "sh",
   "-c",
@@ -62,9 +97,10 @@ const bootstrap = (
   config: SshDeviceHostConfig,
   owner: string,
   mode: "probe" | "start" | "agent-start" | "stop-agent" | "stop",
+  binding?: DeviceHost.DeviceSshBinding,
 ) =>
-  runSshCommand(targetFor(config), {
-    preHostArgs: identityArgs(config),
+  runSshCommand(targetFor(config, binding), {
+    preHostArgs: identityArgs(config, binding),
     remoteCommandArgs: commandArgs(
       'command -v node >/dev/null 2>&1 || { echo "Node is missing from the non-interactive SSH PATH" >&2; exit 1; }; exec node',
     ),
@@ -92,8 +128,9 @@ const ownerFor = Effect.fn("SshDeviceHost.ownerFor")(function* (hostId: string) 
 export const probe = Effect.fn("SshDeviceHost.probe")(function* (
   config: SshDeviceHostConfig,
   owner?: string,
+  binding?: DeviceHost.DeviceSshBinding,
 ) {
-  const result = yield* bootstrap(config, owner ?? (yield* ownerFor(config.id)), "probe");
+  const result = yield* bootstrap(config, owner ?? (yield* ownerFor(config.id)), "probe", binding);
   const value = yield* decodeProbe(result.stdout.trim()).pipe(
     Effect.mapError(
       (cause) =>
@@ -161,6 +198,37 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
       })
     | null = null;
   let connectionScope: Scope.Closeable | null = null;
+  let bindingState:
+    | {
+        readonly binding: DeviceHost.DeviceSshBinding;
+        readonly released: Deferred.Deferred<void>;
+        closed: boolean;
+      }
+    | undefined;
+  const bindingError = (cause?: unknown) =>
+    new DeviceHost.DeviceHostError({
+      hostId: config.id,
+      step: "using private SSH binding",
+      cause,
+    });
+  const withTransport = Effect.fn("SshDeviceHost.withTransport")(function* <A, E, R>(
+    operation: (binding: DeviceHost.DeviceSshBinding | undefined) => Effect.Effect<A, E, R>,
+    expected?: { readonly state: typeof bindingState },
+  ): Effect.fn.Return<A, E | DeviceHost.DeviceHostError, R> {
+    if (expected && expected.state !== bindingState) return yield* bindingError();
+    const current = expected ? expected.state : bindingState;
+    if (!current) return yield* operation(undefined);
+    if (current.closed) return yield* bindingError();
+    return yield* Effect.raceFirst(
+      Effect.raceFirst(current.binding.revoked, Deferred.await(current.released)).pipe(
+        Effect.andThen(Effect.fail(bindingError())),
+      ),
+      current.binding.check.pipe(
+        Effect.mapError(bindingError),
+        Effect.andThen(Effect.suspend(() => operation(current.binding))),
+      ),
+    );
+  });
   let summary: DeviceHostSummary = {
     id: config.id,
     label: config.label,
@@ -170,33 +238,39 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
     platforms: [],
   };
 
-  const run: DeviceHost.DeviceHostReady["run"] = (command, args, options) =>
-    provide(
-      runSshCommand(targetFor(config), {
-        preHostArgs: identityArgs(config),
-        // Match the hub cwd so relative executables and PATH entries resolve identically.
-        remoteCommandArgs: commandArgs(
-          `cd "$HOME/.t3/device/hosts/${owner}" && exec ${[command, ...args].map(quoteRemoteArg).join(" ")}`,
+  const runOn =
+    (expected: { readonly state: typeof bindingState }): DeviceHost.DeviceHostReady["run"] =>
+    (command, args, options) =>
+      withTransport(
+        (binding) =>
+          provide(
+            runSshCommand(targetFor(config, binding), {
+              preHostArgs: identityArgs(config, binding),
+              // Match the hub cwd so relative executables and PATH entries resolve identically.
+              remoteCommandArgs: commandArgs(
+                `cd "$HOME/.t3/device/hosts/${owner}" && exec ${[command, ...args].map(quoteRemoteArg).join(" ")}`,
+              ),
+              keepErrorOutputTail: true,
+              ...(options?.stdin === undefined ? {} : { stdin: options.stdin }),
+              ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+            }),
+          ),
+        expected,
+      ).pipe(
+        Effect.map((result) => ({ ...result, code: 0 })),
+        Effect.catch((error) =>
+          Effect.succeed({
+            stdout: "stdout" in error ? (error.stdout ?? "") : "",
+            stderr: error.message,
+            code: "exitCode" in error ? (error.exitCode ?? 127) : 127,
+          }),
         ),
-        keepErrorOutputTail: true,
-        ...(options?.stdin === undefined ? {} : { stdin: options.stdin }),
-        ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
-      }),
-    ).pipe(
-      Effect.map((result) => ({ ...result, code: 0 })),
-      Effect.catch((error) =>
-        Effect.succeed({
-          stdout: "stdout" in error ? (error.stdout ?? "") : "",
-          stderr: error.message,
-          code: "exitCode" in error ? (error.exitCode ?? 127) : 127,
-        }),
-      ),
-    );
+      );
 
   const platformAvailability: DeviceHost.DeviceHost["Service"]["platformAvailability"] = (
     platform,
   ) =>
-    provide(probe(config, owner)).pipe(
+    withTransport((binding) => provide(probe(config, owner, binding))).pipe(
       Effect.map((value) => {
         summary = { ...summary, platforms: value.platforms };
         return value.platforms.find((p) => p.platform === platform)!;
@@ -212,8 +286,13 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
     DeviceHost.DeviceHostReady & { agentDevice?: DeviceHost.DeviceHostAgentReady["agentDevice"] },
     DeviceHost.DeviceHostError
   > {
+    yield* withTransport(() => Effect.void);
+    const binding = bindingState?.binding;
+    const run = runOn({ state: bindingState });
     activated = true;
-    const result = yield* provide(bootstrap(config, owner, wantsAgent ? "agent-start" : "start"));
+    const result = yield* withTransport((transport) =>
+      provide(bootstrap(config, owner, wantsAgent ? "agent-start" : "start", transport)),
+    );
     yield* onStatus("starting");
     const remote = yield* decodeStarted(result.stdout.trim()).pipe(
       Effect.mapError(
@@ -259,8 +338,8 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
         ChildProcess.make(
           ssh,
           [
-            ...baseSshArgs(targetFor(config), { batchMode: "yes" }),
-            ...identityArgs(config),
+            ...baseSshArgs(targetFor(config, binding), { batchMode: "yes" }),
+            ...identityArgs(config, binding),
             "-o",
             "ExitOnForwardFailure=yes",
             // Multiplexed clients exit after handing forwards to the master; own this connection.
@@ -280,7 +359,7 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
             ...(remote.daemonPort === undefined
               ? []
               : ["-L", `127.0.0.1:${daemonPort}:127.0.0.1:${remote.daemonPort}`]),
-            config.target,
+            binding ? `${binding.username}@${binding.hostname}` : config.target,
             // The server holds the only write end of this stdin, so when it exits for any
             // reason the remote `cat` sees EOF and ssh exits once its forwarded connections
             // close, instead of being orphaned.
@@ -408,7 +487,7 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
 
   const connect = Effect.fn("SshDeviceHost.connect")(function* () {
     for (let attempt = 0; ; attempt++) {
-      const result = yield* connectOnce().pipe(Effect.result);
+      const result = yield* withTransport(() => connectOnce()).pipe(Effect.result);
       if (result._tag === "Success") return result.success;
       const failedScope = connectionScope;
       connectionScope = null;
@@ -423,72 +502,138 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
   });
 
   const ensureReady: DeviceHost.DeviceHost["Service"]["ensureReady"] = (onPhase) =>
-    lock.withPermit(
-      Effect.gen(function* () {
-        stopped = false;
-        if (ready) return ready;
-        summary = yield* provide(probe(config, owner));
-        yield* onPhase(
-          summary.hubInstalled ? "starting" : "installing",
-          summary.hubInstalled
-            ? undefined
-            : deviceToolInstallMessage("device hub", summary.tools?.hub),
-        );
-        return yield* connect().pipe(
-          Effect.tapError(() =>
-            connectionScope ? Scope.close(connectionScope, Exit.void) : Effect.void,
-          ),
-        );
-      }),
+    withTransport((binding) =>
+      lock.withPermit(
+        Effect.gen(function* () {
+          stopped = false;
+          if (ready) return ready;
+          summary = yield* provide(probe(config, owner, binding));
+          yield* onPhase(
+            summary.hubInstalled ? "starting" : "installing",
+            summary.hubInstalled
+              ? undefined
+              : deviceToolInstallMessage("device hub", summary.tools?.hub),
+          );
+          return yield* connect().pipe(
+            Effect.tapError(() =>
+              connectionScope ? Scope.close(connectionScope, Exit.void) : Effect.void,
+            ),
+          );
+        }),
+      ),
     );
-  const stop = lock.withPermit(
-    Effect.gen(function* () {
-      stopped = true;
-      ready = null;
-      if (connectionScope) yield* Scope.close(connectionScope, Exit.void);
-      connectionScope = null;
-      if (activated) yield* provide(bootstrap(config, owner, "stop")).pipe(Effect.ignore);
-      activated = false;
-      wantsAgent = false;
-    }),
-  );
+  const stopUnlocked = Effect.gen(function* () {
+    stopped = true;
+    ready = null;
+    if (connectionScope) yield* Scope.close(connectionScope, Exit.void);
+    connectionScope = null;
+    if (activated)
+      yield* provide(bootstrap(config, owner, "stop", bindingState?.binding)).pipe(Effect.ignore);
+    activated = false;
+    wantsAgent = false;
+  });
+  const stop = lock.withPermit(stopUnlocked);
   const changeAgent = (enabled: boolean) =>
-    lock.withPermit(
-      Effect.gen(function* () {
-        wantsAgent = enabled;
-        if (enabled && ready?.agentDevice) return { ...ready, agentDevice: ready.agentDevice };
-        if (!enabled && !ready?.agentDevice) return null;
-        ready = null;
-        const previousScope = connectionScope;
-        connectionScope = null;
-        if (previousScope) yield* Scope.close(previousScope, Exit.void);
-        if (!enabled) yield* provide(bootstrap(config, owner, "stop-agent"));
-        return yield* connect().pipe(
-          Effect.onError(() =>
-            Effect.gen(function* () {
-              const failedScope = connectionScope;
-              connectionScope = null;
-              if (failedScope) yield* Scope.close(failedScope, Exit.void);
-              if (enabled)
-                yield* provide(bootstrap(config, owner, "stop-agent")).pipe(Effect.ignore);
-            }),
-          ),
-        );
-      }),
+    withTransport(() =>
+      lock.withPermit(
+        Effect.gen(function* () {
+          wantsAgent = enabled;
+          if (enabled && ready?.agentDevice) return { ...ready, agentDevice: ready.agentDevice };
+          if (!enabled && !ready?.agentDevice) return null;
+          ready = null;
+          const previousScope = connectionScope;
+          connectionScope = null;
+          if (previousScope) yield* Scope.close(previousScope, Exit.void);
+          if (!enabled)
+            yield* provide(bootstrap(config, owner, "stop-agent", bindingState?.binding));
+          return yield* connect().pipe(
+            Effect.onError(() =>
+              Effect.gen(function* () {
+                const failedScope = connectionScope;
+                connectionScope = null;
+                if (failedScope) yield* Scope.close(failedScope, Exit.void);
+                if (enabled)
+                  yield* provide(
+                    bootstrap(config, owner, "stop-agent", bindingState?.binding),
+                  ).pipe(Effect.ignore);
+              }),
+            ),
+          );
+        }),
+      ),
     );
+  const bindSsh = Effect.fn("SshDeviceHost.bindSsh")(function* (
+    binding: DeviceHost.DeviceSshBinding,
+  ) {
+    const releaseState = (current: NonNullable<typeof bindingState>) =>
+      lock.withPermit(
+        Effect.gen(function* () {
+          if (bindingState !== current) return;
+          current.closed = true;
+          yield* Deferred.succeed(current.released, undefined);
+          yield* stopUnlocked;
+          bindingState = undefined;
+        }),
+      );
+    yield* Effect.gen(function* () {
+      yield* binding.check.pipe(Effect.mapError(bindingError));
+      const resolved = yield* provide(
+        runSshCommand(targetFor(config), {
+          preHostArgs: [...identityArgs(config), "-G"],
+        }),
+      ).pipe(Effect.mapError(bindingError));
+      const fields = ["hostname", "user", "port"].map((name) =>
+        resolved.stdout
+          .split(/\r?\n/)
+          .filter((line) => line.startsWith(`${name} `))
+          .map((line) => line.slice(name.length + 1).trim()),
+      );
+      if (
+        fields.some((values) => values.length !== 1 || !values[0]) ||
+        !/^[0-9]+$/.test(fields[2]![0]!)
+      )
+        return yield* bindingError();
+      const port = Number(fields[2]![0]);
+      if (!Number.isSafeInteger(port) || port < 1 || port > 65535) return yield* bindingError();
+      const target = parseSshResolveOutput(config.target, resolved.stdout);
+      if (
+        target.hostname !== binding.hostname ||
+        target.username !== binding.username ||
+        port !== binding.port ||
+        binding.hostKeyAlias !== "crew-boat"
+      )
+        return yield* bindingError();
+    }).pipe(Effect.raceFirst(binding.revoked.pipe(Effect.andThen(Effect.fail(bindingError())))));
+    const current = yield* Effect.acquireRelease(
+      lock.withPermit(
+        Effect.gen(function* () {
+          if (bindingState) return yield* bindingError();
+          yield* binding.check.pipe(Effect.mapError(bindingError));
+          yield* stopUnlocked;
+          const state = { binding, released: yield* Deferred.make<void>(), closed: false };
+          bindingState = state;
+          return state;
+        }),
+      ),
+      releaseState,
+    );
+    return releaseState(current);
+  });
+
   yield* Effect.addFinalizer(() => stop);
   return {
     id: config.id,
     label: config.label,
+    bindSsh,
     summary: Effect.sync(() => summary),
-    inspect: provide(probe(config, owner)).pipe(
+    inspect: withTransport((binding) => provide(probe(config, owner, binding))).pipe(
       Effect.tap((value) =>
         Effect.sync(() => {
           summary = value;
         }),
       ),
     ),
-    current: Effect.sync(() => ready),
+    current: withTransport(() => Effect.sync(() => ready)).pipe(Effect.orElseSucceed(() => null)),
     ensureReady,
     ensureAgentReady: (onPhase) =>
       ensureReady(onPhase).pipe(

@@ -1,5 +1,6 @@
 import type {
   DeviceBootError,
+  DeviceError,
   DeviceHostId,
   DeviceHostUnavailableError,
   DeviceHostSummary,
@@ -11,6 +12,7 @@ import type {
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
 import type { NodeRuntimeUnavailableError } from "@t3tools/shared/nodeRuntime";
 
 export class DeviceHostError extends Schema.TaggedError<DeviceHostError>()("DeviceHostError", {
@@ -80,6 +82,18 @@ export type HostDevice = Omit<DeviceSummary, "hostId">;
 /** Where a device is being opened from, for hosts whose devices depend on the project. */
 export interface DeviceOpenContext {
   readonly workspaceRoot?: string | undefined;
+  readonly privateSshClaim?: symbol | undefined;
+}
+
+export interface DeviceSshBinding {
+  readonly hostname: string;
+  readonly port: number;
+  readonly username: "user";
+  readonly identityFile: string;
+  readonly knownHostsFile: string;
+  readonly hostKeyAlias: "crew-boat";
+  readonly check: Effect.Effect<void, DeviceError>;
+  readonly revoked: Effect.Effect<void>;
 }
 
 export type AgentDaemonEndpoint = Pick<AgentDeviceEndpoint, "baseUrl" | "token">;
@@ -184,6 +198,9 @@ export class DeviceHost extends Context.Service<
     readonly id: DeviceHostId;
     /** The name errors and the Device panel show for this host. */
     readonly label: string;
+    readonly bindSsh?: (
+      binding: DeviceSshBinding,
+    ) => Effect.Effect<Effect.Effect<void>, DeviceHostError, Scope.Scope>;
     readonly summary: Effect.Effect<DeviceHostSummary>;
     readonly inspect?: Effect.Effect<DeviceHostSummary, DeviceHostError>;
     readonly platformAvailability: (
