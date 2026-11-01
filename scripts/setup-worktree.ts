@@ -64,6 +64,20 @@ const projectRoot = process.env.T3CODE_PROJECT_ROOT ?? worktree;
 
 // Creating a source checkout must not materialize a dependency tree.
 if (process.argv.includes("--install")) {
+  // Reproducible dependencies must not be retained by future Home snapshots.
+  // Preserve existing directories and links; only new Btrfs installations get a subvolume.
+  const modules = NodePath.join(worktree, "node_modules");
+  if (
+    // oxlint-disable-next-line t3code/no-global-process-runtime -- Bootstrap must choose a filesystem operation before dependencies exist.
+    NodeOS.platform() === "linux" &&
+    !NodeFS.existsSync(modules) &&
+    NodeFS.statfsSync(worktree).type === 0x9123683e
+  ) {
+    NodeChildProcess.execFileSync("btrfs", ["subvolume", "create", modules], {
+      stdio: "pipe",
+      timeout: 5000,
+    });
+  }
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Bootstrap runs before workspace dependencies exist.
   const vpBinaryName = process.platform === "win32" ? "vp.exe" : "vp";
   const vpHomes = [
