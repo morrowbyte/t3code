@@ -107,6 +107,17 @@ export const acceptImmediateWebhookDedupe = Effect.fn(
   if (yield* hasReplayKey(task.id, replayKey, now)) return "duplicate" as const;
   yield* reserve;
   yield* claimReplayKey(task.id, replayKey, deliveryId, now);
+  const sql = yield* SqlClient.SqlClient;
+  const requestJson = yield* encodePendingRequest({
+    method: request.method,
+    path: request.path,
+    query: request.query,
+    headers: request.headers,
+    bodyText: request.bodyText,
+  });
+  yield* sql`INSERT INTO scheduled_task_webhook_pending
+    (delivery_id, task_id, coalesce_key, due_at, state, task_json, request_json, delivery_ids_json)
+    VALUES (${deliveryId}, ${task.id}, '', ${now}, 'dispatching', ${yield* encodePendingTask(task)}, ${requestJson}, json_array(${deliveryId}))`;
   return "run" as const;
 });
 
