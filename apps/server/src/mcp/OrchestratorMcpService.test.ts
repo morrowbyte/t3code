@@ -3598,12 +3598,23 @@ describe("OrchestratorMcpService thread stop", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const cwd = yield* checkpointWorkspace("mcp-thread-stop");
+        const projectId = ProjectId.make("project:mcp-stop");
+        const layerProjects = Layer.mock(ProjectService.ProjectService)({
+          getById: (id) =>
+            id === projectId
+              ? Effect.succeedSome({ id, workspaceRoot: cwd, defaultModelSelection: null } as never)
+              : Effect.succeedNone,
+        });
         const layerAdapters = ProviderAdapterRegistry.layerSingle(liveAdapter(cwd));
         const layerDatabase = SqlitePersistence.layerMemory;
         const layerOrchestrator = ProviderReplayHarness.layerWithRegistry(
-          { name: "mcp-thread-stop" },
+          { name: "mcp-thread-stop", runtimePolicyOverride: { cwd } },
           layerAdapters,
-          { databaseLayer: layerDatabase, runEffectWorker: false },
+          {
+            databaseLayer: layerDatabase,
+            runEffectWorker: false,
+            projectServiceLayer: layerProjects,
+          },
         );
         const layerThreads = ThreadManagementService.layer.pipe(
           Layer.provideMerge(layerOrchestrator),
@@ -3618,7 +3629,7 @@ describe("OrchestratorMcpService thread stop", () => {
               layerAdapters,
               ServerSettings.layerTest(),
               Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
-              Layer.mock(ProjectService.ProjectService)({}),
+              layerProjects,
               Layer.mock(SecretRequests.SecretRequests)({}),
               Layer.mock(RemoteDelegation.RemoteDelegation)({}),
               Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
@@ -3645,7 +3656,7 @@ describe("OrchestratorMcpService thread stop", () => {
             type: "thread.create",
             commandId: CommandId.make("create"),
             threadId,
-            projectId: ProjectId.make("project:mcp-stop"),
+            projectId,
             title: "Stop",
             modelSelection,
             runtimeMode: "full-access",

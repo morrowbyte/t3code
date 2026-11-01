@@ -30,6 +30,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { McpInvocationScope } from "../mcp/McpInvocationContext.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
+import * as ProjectService from "../project/ProjectService.ts";
 import * as Agent from "./ApprovalReviewOrderAgent.ts";
 import * as Forward from "./ApprovalReviewOrderForward.ts";
 import * as Policy from "./ApprovalReviewOrderPolicy.ts";
@@ -43,6 +44,7 @@ import * as Replay from "./testkit/ProviderReplayHarness.ts";
 import { canonical, hash } from "./ApprovalReviewPackage.ts";
 
 const threadId = ThreadId.make("agent-vm-thread");
+const projectId = ProjectId.make("agent-vm-project");
 const hostThreadId = ThreadId.make("agent-host-control");
 const environmentId = EnvironmentId.make("agent-vm-environment");
 const instanceId = ProviderInstanceId.make("codex");
@@ -161,13 +163,19 @@ const fixture = Effect.fn("ApprovalReviewOrderAgentTest.fixture")(function* () {
       }),
   });
   const database = Sqlite.layerMemory;
+  const layerProjects = Layer.mock(ProjectService.ProjectService)({
+    getById: (id) =>
+      id === projectId
+        ? Effect.succeedSome({ id, workspaceRoot: cwd, defaultModelSelection: null } as never)
+        : Effect.succeedNone,
+  });
   const runtime = Layer.mergeAll(
     database,
     Projections.layer.pipe(Layer.provide(database)),
     Replay.layerWithRegistry(
-      { name: "approval-order-agent" },
+      { name: "approval-order-agent", runtimePolicyOverride: { cwd } },
       ProviderAdapterRegistry.layerFromAdapters([adapter]),
-      { databaseLayer: database, runEffectWorker: false },
+      { databaseLayer: database, runEffectWorker: false, projectServiceLayer: layerProjects },
     ),
   );
   const policyValue = {
@@ -241,7 +249,7 @@ const receive = Effect.fn("ApprovalReviewOrderAgentTest.receive")(function* (cwd
     type: "thread.create",
     commandId: CommandId.make("create-agent-vm"),
     threadId,
-    projectId: ProjectId.make("agent-vm-project"),
+    projectId,
     title: "Synthetic agent order",
     modelSelection,
     runtimeMode: "full-access",
