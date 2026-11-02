@@ -23,17 +23,14 @@ describe("installFileEditorDismissal", () => {
       </>,
     );
     const shadowRoot = () => screen.container.querySelector("diffs-container")?.shadowRoot;
-    const content = await vi.waitFor(() => {
-      const element = shadowRoot()?.querySelector<HTMLElement>("[data-content]");
-      expect(element).toBeTruthy();
-      return element!;
-    });
+    const content = screen.getByRole("textbox");
+    await expect.element(content).toBeInTheDocument();
 
     editor!.setSelections([
       { start: { line: 0, character: 8 }, end: { line: 0, character: 8 }, direction: "none" },
     ]);
     const isMac = isMacPlatform(navigator.platform);
-    content.dispatchEvent(
+    content.element().dispatchEvent(
       new KeyboardEvent("keydown", {
         key: "f",
         code: "KeyF",

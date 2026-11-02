@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({ respond: vi.fn(), approvalsAtom: null as unkno
 
 vi.mock("../../state/session", () => ({ useEnvironmentScope: () => true }));
 vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => state.respond }));
+vi.mock("../approvalReview/ApprovalReview", () => ({ ApprovalReview: () => null }));
 vi.mock("../../state/threads", () => ({
   childThreadApprovalsAtom: () => state.approvalsAtom,
   threadEnvironment: { respondToApproval: {} },
@@ -39,7 +40,10 @@ function setup() {
       },
     },
   ]);
-  return thread;
+  return {
+    environmentId: EnvironmentId.make("parent-env"),
+    threadId: ThreadId.make("parent"),
+  };
 }
 
 it("shows a failed decision and clears the error when the user retries", async () => {
