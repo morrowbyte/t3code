@@ -62,6 +62,7 @@ function createHarness(
     readonly stop?: () => Promise<LiveVoiceLease>;
     readonly subscribeUntilStatus?: boolean;
     readonly beforePrepare?: LiveVoiceControllerDependencies["beforePrepare"];
+    readonly contextDelivered?: LiveVoiceSignalingAdapter["contextDelivered"];
   } = {},
 ) {
   const events = new Set<(event: LiveVoiceSignalEvent) => void>();
@@ -92,6 +93,7 @@ function createHarness(
   } as unknown as MediaStream;
   const channel = {
     readyState: "connecting" as RTCDataChannelState,
+    send: vi.fn(),
     close: vi.fn(() => {
       calls.push("channel-close");
     }),
@@ -123,7 +125,9 @@ function createHarness(
       onconnectionstatechange: null,
       ontrack: null,
     } as unknown as LiveVoicePeer);
+  const contextDelivered = vi.fn(options.contextDelivered ?? (async () => undefined));
   const signaling: LiveVoiceSignalingAdapter = {
+    contextDelivered,
     subscribe: vi.fn(
       (
         input: LiveVoiceLease,
@@ -222,6 +226,7 @@ function createHarness(
   return {
     controller,
     dependencies,
+    contextDelivered,
     signaling,
     peer,
     channel,
@@ -320,6 +325,235 @@ describe("isLiveVoiceSupported", () => {
 });
 
 describe("LiveVoiceController", () => {
+  it("sends background context on the quiet channel once and fences stale leases", async () => {
+    const harness = createHarness();
+    const starting = harness.controller.start(target);
+    await connectFirst(harness, starting);
+    const context: Extract<LiveVoiceSignalEvent, { type: "context" }> = {
+      type: "context",
+      leaseId: lease.leaseId,
+      generation: lease.generation,
+      deliveryId: "context-1",
+      text: "The background task found three open items.",
+    };
+    harness.emit({ ...context, leaseId: "stale" });
+    harness.emit({ ...context, generation: lease.generation + 1 });
+    expect(harness.channel.send).not.toHaveBeenCalled();
+    expect(harness.contextDelivered).not.toHaveBeenCalled();
+    harness.emit(context);
+    harness.emit(context);
+    expect(harness.channel.send).toHaveBeenCalledExactlyOnceWith(
+      JSON.stringify({
+        type: "session.context.append",
+        channel: "commentary",
+        content: [{ type: "input_text", text: "The background task found three open items." }],
+      }),
+    );
+    expect(harness.contextDelivered).toHaveBeenCalledWith({
+      leaseId: lease.leaseId,
+      generation: lease.generation,
+      deliveryId: "context-1",
+      accepted: true,
+    });
+    await harness.controller.end();
+    harness.emit(context);
+    expect(harness.channel.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds pending context and drains it once in order when the channel opens", async () => {
+    const harness = createHarness();
+    const starting = harness.controller.start(target);
+    await harness.subscribed;
+    harness.emit(statusEvent(lease));
+    await harness.signalingStarted;
+    const context: Extract<LiveVoiceSignalEvent, { type: "context" }> = {
+      type: "context",
+      leaseId: lease.leaseId,
+      generation: lease.generation,
+      deliveryId: "queued-0",
+      text: "  Context 0\n",
+    };
+    harness.emit({ ...context, generation: lease.generation + 1 });
+    for (let index = 0; index < 17; index++) {
+      const event = { ...context, deliveryId: `queued-${index}`, text: `  Context ${index}\n` };
+      harness.emit(event);
+      harness.emit(event);
+    }
+    expect(harness.channel.send).not.toHaveBeenCalled();
+    expect(harness.contextDelivered).toHaveBeenCalledTimes(2);
+    expect(harness.contextDelivered).toHaveBeenLastCalledWith({
+      leaseId: lease.leaseId,
+      generation: lease.generation,
+      deliveryId: "queued-16",
+      accepted: false,
+    });
+    harness.emit(answerEvent);
+    await harness.remoteDescriptionSet;
+    harness.channel.readyState = "open";
+    harness.channel.onopen?.();
+    harness.channel.onopen?.();
+    expect(harness.channel.send.mock.calls.map(([frame]) => JSON.parse(frame))).toEqual(
+      Array.from({ length: 16 }, (_, index) => ({
+        type: "session.context.append",
+        channel: "commentary",
+        content: [{ type: "input_text", text: `  Context ${index}\n` }],
+      })),
+    );
+    expect(harness.contextDelivered.mock.calls.slice(2).map(([input]) => input)).toEqual(
+      Array.from({ length: 16 }, (_, index) => ({
+        leaseId: lease.leaseId,
+        generation: lease.generation,
+        deliveryId: `queued-${index}`,
+        accepted: true,
+      })),
+    );
+    await harness.controller.end();
+    await starting;
+  });
+
+  it("discards queued context on End and fences old events and open callbacks from a new call", async () => {
+    const harness = createHarness();
+    const firstStart = harness.controller.start(target);
+    await harness.subscribed;
+    harness.emit(statusEvent(lease));
+    await harness.signalingStarted;
+    const oldListener = vi.mocked(harness.signaling.subscribe).mock.calls[0]![1];
+    const oldOpen = harness.channel.onopen!;
+    const context: Extract<LiveVoiceSignalEvent, { type: "context" }> = {
+      type: "context",
+      leaseId: lease.leaseId,
+      generation: lease.generation,
+      deliveryId: "old-call",
+      text: "Do not send after End.",
+    };
+    harness.emit(context);
+    await harness.controller.end();
+    await firstStart;
+    harness.calls.length = 0;
+    const secondStart = harness.controller.start(target);
+    await connect(harness, secondStart);
+    oldListener({ ...context, deliveryId: "late-old-call" });
+    oldOpen();
+    expect(harness.channel.send).not.toHaveBeenCalled();
+    expect(harness.contextDelivered).not.toHaveBeenCalled();
+    harness.emit({ ...context, text: "Current call context." });
+    expect(harness.channel.send).toHaveBeenCalledExactlyOnceWith(
+      JSON.stringify({
+        type: "session.context.append",
+        channel: "commentary",
+        content: [{ type: "input_text", text: "Current call context." }],
+      }),
+    );
+    await harness.controller.end();
+  });
+
+  it("preserves large original context in ordered bounded frames and bounds the delivery cache", async () => {
+    const harness = createHarness();
+    await connectFirst(harness, harness.controller.start(target));
+    const text = `  ${"a".repeat(381)}😀\n${"漢😀".repeat(4_000)} Türkis  `;
+    const context: Extract<LiveVoiceSignalEvent, { type: "context" }> = {
+      type: "context",
+      leaseId: lease.leaseId,
+      generation: lease.generation,
+      deliveryId: "large-context",
+      text,
+    };
+    const denseContext = {
+      ...context,
+      deliveryId: "dense-context",
+      text: JSON.stringify(
+        Array.from({ length: 128 }, (_, index) => ({
+          id: `00000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`,
+          leaseId: "12345678-1234-4234-8234-123456789abc",
+          type: "VoiceIntakeState",
+          state: "pending",
+        })),
+      ),
+    };
+    for (const largeContext of [context, denseContext]) {
+      harness.channel.send.mockClear();
+      harness.contextDelivered.mockClear();
+      harness.emit(largeContext);
+      const frames = harness.channel.send.mock.calls.map(([frame]) => JSON.parse(frame));
+      expect(frames.length).toBeGreaterThan(1);
+      expect(frames.map((frame) => frame.content[0].text).join("")).toBe(largeContext.text);
+      for (const frame of frames) {
+        expect(frame.type).toBe("session.context.append");
+        expect(frame.channel).toBe("commentary");
+        expect(frame.content[0].type).toBe("input_text");
+        expect(new TextEncoder().encode(frame.content[0].text).length).toBeLessThanOrEqual(384);
+        expect(frame.content[0].text.isWellFormed()).toBe(true);
+      }
+      expect(harness.contextDelivered).toHaveBeenCalledExactlyOnceWith({
+        leaseId: lease.leaseId,
+        generation: lease.generation,
+        deliveryId: largeContext.deliveryId,
+        accepted: true,
+      });
+    }
+    for (let index = 0; index < 64; index++)
+      harness.emit({ ...context, deliveryId: `recent-${index}`, text: "Context" });
+    const sent = harness.channel.send.mock.calls.length;
+    harness.emit({ ...context, deliveryId: "recent-0", text: "Context" });
+    expect(harness.channel.send).toHaveBeenCalledTimes(sent);
+    harness.emit({ ...context, text: "Evicted from the bounded cache." });
+    expect(harness.channel.send).toHaveBeenCalledTimes(sent + 1);
+    await harness.controller.end();
+  });
+
+  it("rejects failed or closed-channel delivery without retrying frames or aborting on ack failure", async () => {
+    const harness = createHarness({
+      contextDelivered: async () => {
+        throw new Error("RPC unavailable");
+      },
+    });
+    await connectFirst(harness, harness.controller.start(target));
+    const context: Extract<LiveVoiceSignalEvent, { type: "context" }> = {
+      type: "context",
+      leaseId: lease.leaseId,
+      generation: lease.generation,
+      deliveryId: "send-failed",
+      text: "x".repeat(4_001),
+    };
+    harness.channel.send
+      .mockImplementationOnce(() => undefined)
+      .mockImplementationOnce(() => {
+        throw new Error("Send failed");
+      });
+    harness.emit(context);
+    harness.emit(context);
+    expect(harness.channel.send).toHaveBeenCalledTimes(2);
+    expect(harness.contextDelivered).toHaveBeenLastCalledWith({
+      leaseId: lease.leaseId,
+      generation: lease.generation,
+      deliveryId: "send-failed",
+      accepted: false,
+    });
+    harness.channel.readyState = "closed";
+    harness.emit({ ...context, deliveryId: "channel-closed" });
+    expect(harness.channel.send).toHaveBeenCalledTimes(2);
+    expect(harness.contextDelivered).toHaveBeenLastCalledWith({
+      leaseId: lease.leaseId,
+      generation: lease.generation,
+      deliveryId: "channel-closed",
+      accepted: false,
+    });
+    harness.channel.readyState = "open";
+    harness.emit({ ...context, deliveryId: "ack-failed", text: "Queued successfully" });
+    await Promise.resolve();
+    expect(harness.channel.send).toHaveBeenCalledTimes(3);
+    expect(harness.contextDelivered).toHaveBeenCalledTimes(4);
+    expect(harness.contextDelivered).toHaveBeenLastCalledWith({
+      leaseId: lease.leaseId,
+      generation: lease.generation,
+      deliveryId: "ack-failed",
+      accepted: true,
+    });
+    expect(harness.controller.currentState.phase).toBe("live");
+    expect(harness.signaling.stop).not.toHaveBeenCalled();
+    await harness.controller.end();
+  });
+
   it("saves a draft before lease preparation and deduplicates repeated starts while saving", async () => {
     const saved = deferred<void>();
     const beforePrepare = vi.fn((_target: LiveVoiceTarget, _signal: AbortSignal) => saved.promise);

@@ -35,6 +35,7 @@ export const VoiceIntakeProvenance = Schema.Struct({
   stopId: Schema.NullOr(Id),
   provisional: Schema.Boolean,
   sources: Sources,
+  conversationContext: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(12_000))),
 });
 export type VoiceIntakeProvenance = typeof VoiceIntakeProvenance.Type;
 
@@ -47,6 +48,7 @@ const PendingSteer = Schema.Struct({
   previewContext: Schema.optionalKey(
     Schema.NullOr(Schema.String.check(Schema.isMaxLength(24_000))),
   ),
+  conversationContext: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(12_000))),
 });
 export const VoiceIntakeIntent = Schema.Struct({
   id: Id,
@@ -97,6 +99,22 @@ export const VoiceIntakeSnapshot = Schema.Struct({
   ),
   segments: Schema.Array(VoiceIntakeSegment).check(Schema.isMaxLength(24)),
   intents: Schema.Array(KnownIntent).check(Schema.isMaxLength(24)),
+  rejections: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        requestId: Id,
+        snapshotVersion: Revision,
+        actionIndex: Schema.NullOr(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+        anchorIndex: Schema.NullOr(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+        actionType: Schema.NullOr(Id),
+        code: Id,
+        disposition: Schema.Literal("not_applied"),
+        sources: Schema.Array(
+          Schema.Struct({ segmentId: Id, revision: Revision, quote: OriginalQuote }),
+        ).check(Schema.isMaxLength(8)),
+      }),
+    ).check(Schema.isMaxLength(8)),
+  ),
 });
 export type VoiceIntakeSnapshot = typeof VoiceIntakeSnapshot.Type;
 

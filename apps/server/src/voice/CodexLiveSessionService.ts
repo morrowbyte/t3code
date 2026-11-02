@@ -21,6 +21,7 @@ import {
   type LiveVoiceStopInput,
   type LiveVoiceSubscribeInput,
   type LiveVoiceContextInput,
+  type LiveVoiceContextDeliveredInput,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
@@ -63,7 +64,11 @@ import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { getCodexServiceTierOptionValue } from "../codexModelOptions.ts";
 import { isVoiceWorkActive, voiceRunStatus } from "./voiceWorkStatus.ts";
 import { voiceAnswerParagraphs } from "./voiceAnswerParagraphs.ts";
-import { voiceStartupHistory } from "./voiceStartupHistory.ts";
+import {
+  voiceHistoryMessages,
+  voiceOriginalSpeech,
+  voiceStartupHistory,
+} from "./voiceStartupHistory.ts";
 import { voiceIntakeInstruction } from "./voiceIntakeInstruction.ts";
 
 type LeaseRow = {
@@ -94,6 +99,7 @@ const encodeRuntimePolicy = Schema.encodeSync(
 );
 const encodeReceipt = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeReceipt = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodeOptionalReceipt = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const isLiveVoiceError = Schema.is(LiveVoiceError);
 const isDispatchError = Schema.is(OrchestratorDispatchError);
 const isTransientSteerError = Schema.is(OrchestratorSteerTemporarilyUnavailableError);
@@ -191,6 +197,10 @@ export class CodexLiveSessionService extends Context.Service<
       session: EnvironmentAuth.AuthenticatedSession,
       input: LiveVoiceContextInput,
     ) => Effect.Effect<void, LiveVoiceError>;
+    readonly contextDelivered: (
+      session: EnvironmentAuth.AuthenticatedSession,
+      input: LiveVoiceContextDeliveredInput,
+    ) => Effect.Effect<void, LiveVoiceError>;
   }
 >()("t3/voice/CodexLiveSessionService") {}
 
@@ -222,9 +232,18 @@ export const layer: Layer.Layer<
     const eventHub = yield* CodexLiveEventHub.CodexLiveEventHub;
     const crypto = yield* Crypto.Crypto;
     const serviceScope = yield* Effect.scope;
+    let closing = false;
     const leaseLocks = yield* KeyedLock.make<string>();
     // Native append acknowledgements must not hold admission, steering or End.
     const outputLocks = yield* KeyedLock.make<string>();
+    const contextDeliveries = new Map<
+      string,
+      {
+        readonly leaseId: string;
+        readonly generation: number;
+        readonly done: Deferred.Deferred<boolean>;
+      }
+    >();
     const intakes = new Map<string, ReturnType<typeof makeVoiceIntake>>();
     const intakeWakes = new Map<string, Queue.Queue<void>>();
     const intakeSourceStops = new WeakMap<LiveVoiceEvent, string | null>();
@@ -248,7 +267,99 @@ export const layer: Layer.Layer<
       Effect.orElseSucceed(() => undefined),
     );
     const readbackWorkers = new Map<string, Fiber.Fiber<void, never>>();
-    const nativeEventRuntimes = new Set<ProviderAdapter.ProviderAdapterV2SessionRuntime>();
+    const conversationHistory = Effect.fn("CodexLiveSessionService.conversationHistory")(function* (
+      principal: EnvironmentAuth.AuthenticatedSession,
+      row: LeaseRow,
+      projection: OrchestrationV2ThreadProjection,
+    ) {
+      const eligible = projection.messages.filter(
+        (message) =>
+          !message.streaming &&
+          (message.role === "user" || message.role === "assistant") &&
+          message.text.trim(),
+      );
+      const messages = eligible.slice(-20).filter((message) => message.role === "user");
+      if (!messages.length) return projection.messages;
+      const originals = new Map<string, VoiceIntakeProvenance["sources"]>();
+      const saved = yield* sql<{
+        message_id: string;
+        lease_id: string;
+        generation: number;
+        receipt_json: string;
+      }>`SELECT i.message_id, i.lease_id, i.generation, i.receipt_json
+          FROM codex_live_voice_intents i
+          JOIN codex_live_voice_leases l ON l.lease_id = i.lease_id AND l.generation = i.generation
+          WHERE l.thread_id = ${row.thread_id} AND l.environment_id = ${row.environment_id}
+            AND l.principal_session_id = ${principal.sessionId} AND l.principal_subject = ${principal.subject}
+            AND i.dispatch_state IN ('reserved', 'admitted') AND i.receipt_json IS NOT NULL
+            AND i.message_id IN ${sql.in(messages.map((message) => message.id))}`;
+      for (const record of saved) {
+        const decoded = decodeOptionalReceipt(record.receipt_json);
+        if (Option.isNone(decoded) || typeof decoded.value !== "object" || decoded.value === null)
+          continue;
+        const value = decoded.value as Record<string, unknown>;
+        const provenance = value.voiceIntake;
+        const message = messages.find((message) => message.id === record.message_id);
+        if (
+          !isIntakeProvenance(provenance) ||
+          provenance.leaseId !== record.lease_id ||
+          provenance.generation !== record.generation ||
+          !message ||
+          message.threadId !== row.thread_id ||
+          value.sourceInstruction !== message.text ||
+          !projection.runs.some(
+            (run) =>
+              run.id === message.runId &&
+              run.threadId === row.thread_id &&
+              (run.userMessageId === message.id ||
+                run.id === value.runId ||
+                run.id === value.admissionRunId),
+          )
+        )
+          continue;
+        originals.set(message.id, provenance.sources);
+      }
+      const admissions = projection.runs.flatMap((run) => {
+        const provenance = run.delegationAdmission?.voiceIntake;
+        const message = messages.find(
+          (message) =>
+            message.id === run.userMessageId &&
+            message.runId === run.id &&
+            message.threadId === row.thread_id,
+        );
+        return run.threadId === row.thread_id && message && isIntakeProvenance(provenance)
+          ? [{ message, provenance }]
+          : [];
+      });
+      if (admissions.length) {
+        const leases = yield* sql<{ lease_id: string; generation: number }>`
+            SELECT lease_id, generation FROM codex_live_voice_leases
+            WHERE thread_id = ${row.thread_id} AND environment_id = ${row.environment_id}
+              AND principal_session_id = ${principal.sessionId} AND principal_subject = ${principal.subject}
+              AND lease_id IN ${sql.in(admissions.map(({ provenance }) => provenance.leaseId))}`;
+        for (const { message, provenance } of admissions) {
+          if (
+            leases.some(
+              (lease) =>
+                lease.lease_id === provenance.leaseId && lease.generation === provenance.generation,
+            )
+          )
+            originals.set(message.id, provenance.sources);
+        }
+      }
+      return voiceHistoryMessages(projection.messages, originals);
+    });
+    const ownedRuntimes = new Map<
+      string,
+      {
+        readonly leaseId: string;
+        readonly generation: number;
+        readonly providerSessionId: ProviderSessionId;
+        readonly runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime;
+        nativeEventFiber?: Fiber.Fiber<void, never>;
+        nativeStopped?: boolean;
+      }
+    >();
     let transcriptSequence = 0;
     const active = new Map<
       string,
@@ -314,6 +425,12 @@ export const layer: Layer.Layer<
       ) =>
         Effect.gen(function* () {
           if (["stopping", "closed", "failed", "unknown"].includes(status)) {
+            for (const [deliveryId, delivery] of contextDeliveries) {
+              if (delivery.leaseId === row.lease_id && delivery.generation === row.generation) {
+                contextDeliveries.delete(deliveryId);
+                yield* Deferred.succeed(delivery.done, false);
+              }
+            }
             const lease = active.get(leaseKey(row.lease_id, row.generation));
             if (lease) {
               const invalidate = Effect.sync(() => {
@@ -327,18 +444,23 @@ export const layer: Layer.Layer<
           const now = DateTime.formatIso(yield* DateTime.now);
           const next = yield* sql.withTransaction(
             Effect.gen(function* () {
-              yield* sql`
+              const changed = yield* sql<LeaseRow>`
               UPDATE codex_live_voice_leases SET status = ${status}, updated_at = ${now}
               WHERE lease_id = ${row.lease_id} AND generation = ${row.generation}
+                AND (status <> 'closed' OR ${status} = 'closed')
+              RETURNING *
             `;
-              if (additionalSql !== undefined) yield* additionalSql(now);
-              return yield* getLease(row.lease_id, row.generation);
+              if (changed.length > 0 && additionalSql !== undefined) yield* additionalSql(now);
+              return {
+                row: yield* getLease(row.lease_id, row.generation),
+                changed: changed.length > 0,
+              };
             }),
           );
-          if (next === undefined) return yield* liveError("session_not_found");
-          const session = sessionFromRow(next);
-          yield* eventHub.publish({ type: "status", session });
-          return { row: next, session };
+          if (next.row === undefined) return yield* liveError("session_not_found");
+          const session = sessionFromRow(next.row);
+          if (next.changed) yield* eventHub.publish({ type: "status", session });
+          return { row: next.row, session };
         }),
     );
 
@@ -842,7 +964,7 @@ export const layer: Layer.Layer<
               input.kind === "final"
                 ? receipt.readback !== undefined
                 : Object.hasOwn(publicReadbacks, deliveryId) ||
-                  (input.kind === "context" && lease.runtime.liveVoice.appendContext === undefined)
+                  (input.kind !== "status" && lease.runtime.liveVoice.appendContext === undefined)
             )
               return;
             const receiptWithState = (state: "claimed" | "refused" | "sent" | "unknown") => {
@@ -1018,7 +1140,7 @@ export const layer: Layer.Layer<
               beforeDispatch.planner_native_thread_id !== input.plannerNativeThreadId ||
               currentLease?.plannerNativeThreadId !== input.plannerNativeThreadId ||
               currentLease.runtime.liveVoice === undefined ||
-              (input.kind === "context" &&
+              (input.kind !== "status" &&
                 currentLease.runtime.liveVoice.appendContext === undefined) ||
               currentLease.runtime.driver !== "codex" ||
               currentLease.runtime.instanceId !== beforeDispatch.provider_instance_id ||
@@ -1043,7 +1165,7 @@ export const layer: Layer.Layer<
               return;
             }
             const state = yield* Effect.exit(
-              (input.kind !== "context"
+              (input.kind === "status"
                 ? currentLease.runtime.liveVoice.appendSpeech
                 : currentLease.runtime.liveVoice.appendContext!)({
                 plannerNativeThreadId: input.plannerNativeThreadId,
@@ -1088,6 +1210,114 @@ export const layer: Layer.Layer<
         }),
     );
 
+    const releaseOwnedRuntime = Effect.fn("CodexLiveSessionService.releaseOwnedRuntime")(
+      function* (leaseId: string, generation: number) {
+        const key = leaseKey(leaseId, generation);
+        const owned = ownedRuntimes.get(key);
+        if (owned === undefined) {
+          const row = yield* getLease(leaseId, generation);
+          if (
+            row?.status === "unknown" &&
+            row.provider_session_id?.startsWith("provider-session-live-")
+          )
+            yield* providerSessions.release({
+              providerSessionId: ProviderSessionId.make(row.provider_session_id),
+              reason: "manual_shutdown",
+            });
+          return true;
+        }
+        if (owned.nativeEventFiber !== undefined) yield* Fiber.interrupt(owned.nativeEventFiber);
+        yield* providerSessions.release({
+          providerSessionId: owned.providerSessionId,
+          reason: "manual_shutdown",
+        });
+        ownedRuntimes.delete(key);
+        active.delete(key);
+        return true;
+      },
+      (effect, leaseId, generation) =>
+        effect.pipe(
+          Effect.catchCause(() =>
+            Effect.gen(function* () {
+              yield* markUnknown(leaseId, generation);
+              yield* Effect.logWarning("Voice runtime cleanup is unconfirmed.", {
+                leaseId,
+                generation,
+              });
+              return false;
+            }).pipe(Effect.catchCause(() => Effect.succeed(false))),
+          ),
+        ),
+    );
+    const scheduleRuntimeRelease = Effect.fn("CodexLiveSessionService.scheduleRuntimeRelease")(
+      (leaseId: string, generation: number) =>
+        leaseLocks
+          .withLock(leaseKey(leaseId, generation), releaseOwnedRuntime(leaseId, generation))
+          .pipe(Effect.forkIn(serviceScope), Effect.asVoid),
+    );
+    const stopFailedRuntime = Effect.fn("CodexLiveSessionService.stopFailedRuntime")(
+      (leaseId: string, generation: number) =>
+        leaseLocks
+          .withLock(
+            leaseKey(leaseId, generation),
+            Effect.gen(function* () {
+              const owned = ownedRuntimes.get(leaseKey(leaseId, generation));
+              const row = yield* getLease(leaseId, generation);
+              if (owned === undefined || row === undefined) return;
+              if (row.status !== "closed" && row.planner_native_thread_id !== null) {
+                const stopped = yield* owned.runtime
+                  .liveVoice!.stop(row.planner_native_thread_id)
+                  .pipe(Effect.exit);
+                if (Exit.isFailure(stopped)) {
+                  yield* markUnknown(leaseId, generation);
+                  return;
+                }
+                owned.nativeStopped = true;
+              }
+              if (yield* releaseOwnedRuntime(leaseId, generation)) {
+                const failed = yield* getLease(leaseId, generation);
+                if (failed !== undefined) yield* updateStatus(failed, "failed");
+              }
+            }),
+          )
+          .pipe(Effect.catchCause(() => markUnknown(leaseId, generation).pipe(Effect.ignore))),
+    );
+    yield* Effect.addFinalizer(() =>
+      Effect.gen(function* () {
+        closing = true;
+        yield* Effect.forEach(
+          [...ownedRuntimes.values()],
+          (owned) =>
+            leaseLocks.withLock(
+              leaseKey(owned.leaseId, owned.generation),
+              Effect.gen(function* () {
+                const row = yield* getLease(owned.leaseId, owned.generation);
+                if (row?.status === "unknown" && !owned.nativeStopped) return;
+                if (
+                  row !== undefined &&
+                  row.status !== "closed" &&
+                  row.start_client_request_id !== null &&
+                  row.planner_native_thread_id !== null
+                ) {
+                  if (!owned.nativeStopped) {
+                    const stopped = yield* owned.runtime
+                      .liveVoice!.stop(row.planner_native_thread_id)
+                      .pipe(Effect.exit);
+                    if (Exit.isFailure(stopped)) {
+                      yield* updateStatus(row, "unknown");
+                      return;
+                    }
+                  }
+                  yield* updateStatus(row, "unknown");
+                }
+                yield* releaseOwnedRuntime(owned.leaseId, owned.generation);
+              }),
+            ),
+          { concurrency: "unbounded", discard: true },
+        );
+      }).pipe(Effect.catchCause(() => Effect.logWarning("Voice runtime shutdown failed."))),
+    );
+
     const toLiveError = (error: unknown) =>
       isLiveVoiceError(error) ? error : liveError("runtime_unavailable");
 
@@ -1097,6 +1327,7 @@ export const layer: Layer.Layer<
           `request:${session.sessionId}:${input.clientRequestId}`,
           Effect.gen(function* () {
             yield* ensurePrincipal(session);
+            if (closing) return yield* liveError("runtime_unavailable");
             const environmentId = yield* environment.getEnvironmentId;
             const existing = yield* sql<LeaseRow>`
           SELECT * FROM codex_live_voice_leases
@@ -1254,210 +1485,210 @@ export const layer: Layer.Layer<
             };
             yield* eventHub.register(initial);
 
-            const providerThread = projection.providerThreads.find(
-              (candidate) => candidate.id === projection.thread.activeProviderThreadId,
-            );
-            const providerSession = projection.providerSessions.find(
-              (candidate) => candidate.providerInstanceId === projection.thread.providerInstanceId,
-            );
-            const candidateSessionId = providerSession?.id ?? null;
-            const fallbackSessionId = ProviderSessionId.make(
-              `provider-session-live-${yield* crypto.randomUUIDv4()}`,
-            );
-            // Claim inside one SQLite statement before any async runtime lookup.
-            // Forks sharing a text runtime must never reserve the same voice slot.
-            const bound = yield* sql<{ provider_session_id: string }>`
-              UPDATE codex_live_voice_leases SET provider_session_id = CASE
-                WHEN ${candidateSessionId} IS NOT NULL AND NOT EXISTS (
-                  SELECT 1 FROM codex_live_voice_leases
-                  WHERE provider_session_id = ${candidateSessionId}
-                    AND status IN ('preparing', 'prepared', 'starting', 'active', 'stopping', 'unknown')
-                ) THEN ${candidateSessionId} ELSE ${fallbackSessionId} END,
+            return yield* Effect.gen(function* () {
+              const providerSessionId = ProviderSessionId.make(
+                `provider-session-live-${yield* crypto.randomUUIDv4()}`,
+              );
+              yield* sql`
+              UPDATE codex_live_voice_leases SET provider_session_id = ${providerSessionId},
                 updated_at = ${DateTime.formatIso(yield* DateTime.now)}
               WHERE lease_id = ${leaseId} AND generation = ${generation}
-              RETURNING provider_session_id
             `.pipe(
-              Effect.catch((error) =>
-                markUnknown(leaseId, generation).pipe(Effect.andThen(Effect.fail(error))),
-              ),
-            );
-            const binding = bound[0];
-            if (binding === undefined) return yield* liveError("session_not_found");
-            const providerSessionId = ProviderSessionId.make(binding.provider_session_id);
-            const runtimeOption = yield* providerSessions.get(providerSessionId).pipe(
-              Effect.mapError(() => liveError("runtime_unavailable")),
-              Effect.catch((error) =>
-                markUnknown(leaseId, generation).pipe(Effect.andThen(Effect.fail(error))),
-              ),
-            );
-            const runtime = Option.isSome(runtimeOption)
-              ? runtimeOption.value
-              : yield* providerSessions
-                  .open({
+                Effect.catch((error) =>
+                  markUnknown(leaseId, generation).pipe(Effect.andThen(Effect.fail(error))),
+                ),
+              );
+              const runtime = yield* Effect.uninterruptibleMask((restore) =>
+                restore(
+                  providerSessions.open({
                     threadId: input.threadId,
                     providerSessionId,
                     modelSelection: projection.thread.modelSelection,
                     runtimePolicy,
-                    ...(providerSession === undefined
-                      ? {}
-                      : { resumeFromSession: providerSession }),
-                    ...(providerThread?.nativeThreadRef?.nativeId == null
-                      ? {}
-                      : { initialNativeThreadId: providerThread.nativeThreadRef.nativeId }),
-                  })
-                  .pipe(
-                    Effect.mapError(() => liveError("runtime_unavailable")),
-                    Effect.catch((error) =>
-                      markUnknown(leaseId, generation).pipe(Effect.andThen(Effect.fail(error))),
-                    ),
-                  );
-            if (
-              runtime.instanceId !== projection.thread.providerInstanceId ||
-              runtime.providerSessionId !== providerSessionId ||
-              runtime.driver !== "codex"
-            ) {
-              const lease = yield* getLease(leaseId, generation);
-              if (lease !== undefined) yield* updateStatus(lease, "failed");
-              return yield* liveError("unsupported_provider");
-            }
-            if (runtime.liveVoice === undefined) {
-              const lease = yield* getLease(leaseId, generation);
-              if (lease !== undefined) yield* updateStatus(lease, "failed");
-              return yield* liveError("unsupported_provider");
-            }
-
-            const exclusiveAdmission = runtime.liveVoice.decideIntake !== undefined;
-            const serviceTier = getCodexServiceTierOptionValue(projection.thread.modelSelection);
-            const reasoningEffort = getModelSelectionStringOptionValue(
-              projection.thread.modelSelection,
-              "reasoningEffort",
-            );
-            const prepared = yield* runtime.liveVoice
-              .preparePlanner({
-                ...(!exclusiveAdmission ? {} : { newTaskAdmission: "intake" as const }),
-                modelSelection: projection.thread.modelSelection,
-                ...(serviceTier == null ? {} : { serviceTier }),
-                ...(reasoningEffort == null ? {} : { reasoningEffort }),
-                onSubmitWork: (work) =>
-                  (!exclusiveAdmission
-                    ? submitWork({
-                        ...work,
-                        principalSessionId: session.sessionId,
+                    purpose: "live-voice",
+                  }),
+                ).pipe(
+                  Effect.tap((runtime) =>
+                    Effect.sync(() => {
+                      ownedRuntimes.set(leaseKey(leaseId, generation), {
                         leaseId,
                         generation,
-                      })
-                    : Effect.fail(liveError("invalid_state"))
-                  ).pipe(
-                    Effect.mapError(
-                      (cause) =>
-                        new ProviderAdapter.ProviderAdapterProtocolError({
-                          driver: ProviderDriverKind.make("codex"),
-                          detail: "Live work could not be submitted.",
-                          cause,
-                        }),
-                    ),
+                        providerSessionId,
+                        runtime,
+                      });
+                    }),
                   ),
-                onWorkControl: (input) =>
-                  (exclusiveAdmission && input.action !== "status"
-                    ? Effect.fail(liveError("invalid_state"))
-                    : controlWork({ ...input, principal: session, leaseId, generation })
-                  ).pipe(
-                    Effect.flatMap((json) =>
-                      Effect.gen(function* () {
-                        const intake = intakes.get(leaseKey(leaseId, generation));
-                        if (!intake || input.action !== "status") return json;
-                        const state = yield* intake.state;
-                        const value = decodeReceipt(json) as Record<string, unknown>;
-                        return encodeReceipt({
-                          ...value,
-                          intake: {
-                            enabled: state.enabled,
-                            deciding: state.running,
-                            reason: state.reason,
-                          },
-                        });
-                      }),
-                    ),
-                    Effect.mapError(
-                      (cause) =>
-                        new ProviderAdapter.ProviderAdapterProtocolError({
-                          driver: ProviderDriverKind.make("codex"),
-                          detail: "Live work control is not available.",
-                          cause,
-                        }),
-                    ),
+                  Effect.mapError(() => liveError("runtime_unavailable")),
+                  Effect.catch((error) =>
+                    markUnknown(leaseId, generation).pipe(Effect.andThen(Effect.fail(error))),
                   ),
-              })
-              .pipe(
-                Effect.mapError((error) =>
-                  isProviderAdapterProtocolError(error) &&
-                  error.detail === "Managed ChatGPT account is required for Codex Live."
-                    ? liveError("managed_account_required")
-                    : liveError("planner_restriction_failed"),
-                ),
-                Effect.catch((error) =>
-                  Effect.gen(function* () {
-                    const failed = yield* getLease(leaseId, generation);
-                    if (failed !== undefined) yield* updateStatus(failed, "failed");
-                    return yield* error;
-                  }),
                 ),
               );
-            const row = yield* getLease(leaseId, generation);
-            if (row === undefined) return yield* liveError("session_not_found");
-            yield* sql`
+              if (closing) return yield* liveError("runtime_unavailable");
+              if (
+                runtime.instanceId !== projection.thread.providerInstanceId ||
+                runtime.providerSessionId !== providerSessionId ||
+                runtime.driver !== "codex"
+              ) {
+                return yield* liveError("unsupported_provider");
+              }
+              if (runtime.liveVoice === undefined) return yield* liveError("unsupported_provider");
+
+              const exclusiveAdmission = runtime.liveVoice.decideIntake !== undefined;
+              const serviceTier = getCodexServiceTierOptionValue(projection.thread.modelSelection);
+              const reasoningEffort = getModelSelectionStringOptionValue(
+                projection.thread.modelSelection,
+                "reasoningEffort",
+              );
+              const prepared = yield* runtime.liveVoice
+                .preparePlanner({
+                  ...(!exclusiveAdmission ? {} : { newTaskAdmission: "intake" as const }),
+                  onContext: (input) => deliverContext(session, leaseId, generation, input),
+                  modelSelection: projection.thread.modelSelection,
+                  ...(serviceTier == null ? {} : { serviceTier }),
+                  ...(reasoningEffort == null ? {} : { reasoningEffort }),
+                  onSubmitWork: (work) =>
+                    (!exclusiveAdmission
+                      ? submitWork({
+                          ...work,
+                          principalSessionId: session.sessionId,
+                          leaseId,
+                          generation,
+                        })
+                      : Effect.fail(liveError("invalid_state"))
+                    ).pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new ProviderAdapter.ProviderAdapterProtocolError({
+                            driver: ProviderDriverKind.make("codex"),
+                            detail: "Live work could not be submitted.",
+                            cause,
+                          }),
+                      ),
+                    ),
+                  onWorkControl: (input) =>
+                    (exclusiveAdmission && input.action !== "status"
+                      ? Effect.fail(liveError("invalid_state"))
+                      : controlWork({ ...input, principal: session, leaseId, generation })
+                    ).pipe(
+                      Effect.flatMap((json) =>
+                        Effect.gen(function* () {
+                          const intake = intakes.get(leaseKey(leaseId, generation));
+                          if (!intake || input.action !== "status") return json;
+                          const state = yield* intake.state;
+                          const value = decodeReceipt(json) as Record<string, unknown>;
+                          return encodeReceipt({
+                            ...value,
+                            intake: {
+                              enabled: state.enabled,
+                              deciding: state.running,
+                              reason: state.reason,
+                            },
+                          });
+                        }),
+                      ),
+                      Effect.mapError(
+                        (cause) =>
+                          new ProviderAdapter.ProviderAdapterProtocolError({
+                            driver: ProviderDriverKind.make("codex"),
+                            detail: "Live work control is not available.",
+                            cause,
+                          }),
+                      ),
+                    ),
+                })
+                .pipe(
+                  Effect.mapError((error) =>
+                    isProviderAdapterProtocolError(error) &&
+                    error.detail === "Managed ChatGPT account is required for Codex Live."
+                      ? liveError("managed_account_required")
+                      : liveError("planner_restriction_failed"),
+                  ),
+                );
+              const row = yield* getLease(leaseId, generation);
+              if (row === undefined) return yield* liveError("session_not_found");
+              yield* sql`
           UPDATE codex_live_voice_leases SET provider_session_id = ${providerSessionId},
             planner_native_thread_id = ${prepared.plannerNativeThreadId}, status = 'prepared',
             updated_at = ${DateTime.formatIso(yield* DateTime.now)}
           WHERE lease_id = ${leaseId} AND generation = ${generation}
         `;
-            const ready = yield* getLease(leaseId, generation);
-            if (ready === undefined) return yield* liveError("session_not_found");
-            active.set(leaseKey(leaseId, generation), {
-              leaseId,
-              generation,
-              runtime,
-              plannerNativeThreadId: prepared.plannerNativeThreadId,
-            });
-            yield* eventHub.publish({ type: "status", session: sessionFromRow(ready) });
-            if (exclusiveAdmission)
-              yield* startIntake(session, ready, runtime).pipe(
-                Effect.catch((error) =>
-                  Effect.gen(function* () {
-                    active.delete(leaseKey(leaseId, generation));
-                    yield* updateStatus(ready, "failed");
-                    yield* runtime
-                      .liveVoice!.stop(prepared.plannerNativeThreadId)
-                      .pipe(Effect.ignore);
-                    return yield* error;
-                  }),
+              const ready = yield* getLease(leaseId, generation);
+              if (ready === undefined) return yield* liveError("session_not_found");
+              active.set(leaseKey(leaseId, generation), {
+                leaseId,
+                generation,
+                runtime,
+                plannerNativeThreadId: prepared.plannerNativeThreadId,
+              });
+              yield* eventHub.publish({ type: "status", session: sessionFromRow(ready) });
+              if (exclusiveAdmission) yield* startIntake(session, ready, runtime);
+              const consumerReady = yield* Deferred.make<void>();
+              const nativeEventFiber = yield* Deferred.await(consumerReady).pipe(
+                Effect.andThen(
+                  runtime.liveVoice.events.pipe(
+                    Stream.runForEach((event) => {
+                      if (event.plannerNativeThreadId !== prepared.plannerNativeThreadId)
+                        return Effect.void;
+                      const handling = handleNativeEvent(leaseId, generation, event);
+                      return event.type === "started" || event.type === "sdp"
+                        ? leaseLocks.withLock(leaseKey(leaseId, generation), handling)
+                        : handling;
+                    }),
+                  ),
                 ),
-              );
-            // The adapter exposes one consuming queue per runtime. A worker per
-            // lease would let an ended call steal a later call's notifications.
-            if (!nativeEventRuntimes.has(runtime)) {
-              nativeEventRuntimes.add(runtime);
-              yield* Effect.forkIn(
-                runtime.liveVoice.events.pipe(
-                  Stream.runForEach((event) => {
-                    const entry = [...active.values()].find(
-                      (candidate) =>
-                        candidate.runtime === runtime &&
-                        candidate.plannerNativeThreadId === event.plannerNativeThreadId,
-                    );
-                    if (entry === undefined) return Effect.void;
-                    const handling = handleNativeEvent(entry.leaseId, entry.generation, event);
-                    // Readiness cannot race Stop; failures must still invalidate
-                    // readback while its principal lookup is in flight.
-                    return event.type === "started" || event.type === "sdp"
-                      ? leaseLocks.withLock(leaseKey(entry.leaseId, entry.generation), handling)
-                      : handling;
-                  }),
+                Effect.catchCause((cause) =>
+                  Cause.hasInterruptsOnly(cause)
+                    ? Effect.void
+                    : markUnknown(leaseId, generation).pipe(Effect.ignore),
                 ),
-                serviceScope,
+                Effect.forkIn(serviceScope),
               );
-            }
-            return sessionFromRow(ready);
+              ownedRuntimes.get(leaseKey(leaseId, generation))!.nativeEventFiber = nativeEventFiber;
+              yield* Deferred.succeed(consumerReady, undefined);
+              if (closing) return yield* liveError("runtime_unavailable");
+              return sessionFromRow(ready);
+            }).pipe(
+              Effect.onError(() =>
+                Effect.gen(function* () {
+                  if (!ownedRuntimes.has(leaseKey(leaseId, generation))) return;
+                  yield* leaseLocks
+                    .withLock(
+                      leaseKey(leaseId, generation),
+                      Effect.gen(function* () {
+                        let released = false;
+                        yield* Effect.gen(function* () {
+                          const pending = yield* getLease(leaseId, generation);
+                          if (pending !== undefined) yield* updateStatus(pending, "unknown");
+                          yield* stopReadbackWorkers(leaseId, generation);
+                        }).pipe(
+                          Effect.ensuring(
+                            releaseOwnedRuntime(leaseId, generation).pipe(
+                              Effect.tap((confirmed) =>
+                                Effect.sync(() => {
+                                  released = confirmed;
+                                }),
+                              ),
+                            ),
+                          ),
+                        );
+                        if (released) {
+                          const failed = yield* getLease(leaseId, generation);
+                          if (failed !== undefined) yield* updateStatus(failed, "failed");
+                        }
+                      }),
+                    )
+                    .pipe(Effect.forkChild({ startImmediately: true }), Effect.flatMap(Fiber.join));
+                }).pipe(
+                  Effect.catchCause(() =>
+                    Effect.logWarning("Voice prepare cleanup is unconfirmed.", {
+                      leaseId,
+                      generation,
+                    }),
+                  ),
+                ),
+              ),
+            );
           }),
         )
         .pipe(Effect.mapError(toLiveError));
@@ -1494,6 +1725,7 @@ export const layer: Layer.Layer<
               encodeRuntimePolicy(runtimePolicy) !== row.runtime_policy_json
             ) {
               yield* updateStatus(row, "failed");
+              yield* scheduleRuntimeRelease(input.leaseId, input.generation);
               return yield* liveError("stale_lease");
             }
             const next = yield* updateStatus(
@@ -1506,6 +1738,7 @@ export const layer: Layer.Layer<
             WHERE lease_id = ${input.leaseId} AND generation = ${input.generation}
           `,
             );
+            if (next.row.status === "closed") return next.session;
             row = next.row;
             const lease = active.get(leaseKey(input.leaseId, input.generation));
             if (lease === undefined) {
@@ -1517,7 +1750,9 @@ export const layer: Layer.Layer<
                 plannerNativeThreadId,
                 realtimeSessionId: `${input.leaseId}:${input.generation}`,
                 offerSdp: input.offerSdp,
-                initialItems: voiceStartupHistory(projection.messages),
+                initialItems: voiceStartupHistory(
+                  yield* conversationHistory(session, row, projection),
+                ),
               })
               .pipe(
                 Effect.mapError(() => liveError("runtime_unavailable")),
@@ -1566,6 +1801,17 @@ export const layer: Layer.Layer<
             if (row.planner_native_thread_id === null || row.provider_session_id === null) {
               if (row.status === "unknown") {
                 if (row.planner_native_thread_id === null) {
+                  if (
+                    row.native_started !== 0 ||
+                    row.native_sdp_received !== 0 ||
+                    row.start_client_request_id !== null ||
+                    active.has(leaseKey(input.leaseId, input.generation))
+                  )
+                    return sessionFromRow(row);
+                  if (!(yield* releaseOwnedRuntime(input.leaseId, input.generation)))
+                    return sessionFromRow(
+                      (yield* getLease(input.leaseId, input.generation)) ?? row,
+                    );
                   return (yield* updateStatus(row, "failed")).session;
                 }
                 return sessionFromRow(row);
@@ -1582,6 +1828,7 @@ export const layer: Layer.Layer<
             WHERE lease_id = ${input.leaseId} AND generation = ${input.generation}
           `,
             );
+            if (next.row.status === "closed") return next.session;
             yield* stopReadbackWorkers(input.leaseId, input.generation);
             const lease = active.get(leaseKey(input.leaseId, input.generation));
             const runtime =
@@ -1596,9 +1843,15 @@ export const layer: Layer.Layer<
             yield* runtime.liveVoice.stop(row.planner_native_thread_id).pipe(
               Effect.mapError(() => liveError("runtime_unavailable")),
               Effect.catch((error) =>
-                updateStatus(next.row, "unknown").pipe(Effect.andThen(Effect.fail(error))),
+                Effect.gen(function* () {
+                  const current = yield* getLease(input.leaseId, input.generation);
+                  if (current?.status !== "closed") yield* updateStatus(next.row, "unknown");
+                  return yield* error;
+                }),
               ),
             );
+            const owned = ownedRuntimes.get(leaseKey(input.leaseId, input.generation));
+            if (owned !== undefined) owned.nativeStopped = true;
             return sessionFromRow((yield* getLease(input.leaseId, input.generation)) ?? next.row);
           }),
         )
@@ -1992,6 +2245,73 @@ export const layer: Layer.Layer<
         : leaseLocks.withLock(leaseKey(input.leaseId, input.generation), operation);
     });
 
+    const contextDelivered: CodexLiveSessionService["Service"]["contextDelivered"] = Effect.fn(
+      "CodexLiveSessionService.contextDelivered",
+    )(function* (session, input) {
+      yield* ensurePrincipal(session);
+      const row = yield* getOwnedLease(session.sessionId, input.leaseId, input.generation);
+      if (!["prepared", "starting", "active"].includes(row.status))
+        return yield* liveError("stale_lease");
+      const delivery = contextDeliveries.get(input.deliveryId);
+      if (!delivery) return;
+      if (delivery.leaseId !== input.leaseId || delivery.generation !== input.generation)
+        return yield* liveError("stale_lease");
+      yield* Deferred.succeed(delivery.done, input.accepted);
+    }, Effect.mapError(toLiveError));
+
+    const deliverContext = Effect.fn("CodexLiveSessionService.deliverContext")(
+      function* (
+        session: EnvironmentAuth.AuthenticatedSession,
+        leaseId: string,
+        generation: number,
+        input: { readonly plannerNativeThreadId: string; readonly text: string },
+      ) {
+        const done = yield* Deferred.make<boolean>();
+        const deliveryId = yield* crypto.randomUUIDv4();
+        yield* Effect.gen(function* () {
+          yield* leaseLocks.withLock(
+            leaseKey(leaseId, generation),
+            Effect.gen(function* () {
+              yield* ensurePrincipal(session);
+              const row = yield* getOwnedLease(session.sessionId, leaseId, generation);
+              const lease = active.get(leaseKey(leaseId, generation));
+              if (
+                !lease ||
+                lease.plannerNativeThreadId !== input.plannerNativeThreadId ||
+                !["prepared", "starting", "active"].includes(row.status)
+              )
+                return yield* liveError("stale_lease");
+              if (
+                input.text.length > 24_000 ||
+                [...contextDeliveries.values()].filter(
+                  (item) => item.leaseId === leaseId && item.generation === generation,
+                ).length >= 16
+              )
+                return yield* liveError("invalid_state");
+              contextDeliveries.set(deliveryId, { leaseId, generation, done });
+              yield* eventHub.publish({
+                type: "context",
+                leaseId,
+                generation,
+                deliveryId,
+                text: input.text,
+              });
+            }),
+          );
+          const accepted = yield* Deferred.await(done).pipe(Effect.timeout("5 seconds"));
+          if (!accepted) return yield* liveError("runtime_unavailable");
+        }).pipe(Effect.ensuring(Effect.sync(() => contextDeliveries.delete(deliveryId))));
+      },
+      Effect.mapError(
+        (cause) =>
+          new ProviderAdapter.ProviderAdapterProtocolError({
+            driver: ProviderDriverKind.make("codex"),
+            detail: "Quiet live context transport was not confirmed.",
+            cause,
+          }),
+      ),
+    );
+
     const context: CodexLiveSessionService["Service"]["context"] = (session, input) =>
       leaseLocks
         .withLock(
@@ -2223,13 +2543,19 @@ export const layer: Layer.Layer<
                         pending.sources,
                         pending.previewContext,
                         index === 0 ? transfer.completedSources : undefined,
+                        pending.conversationContext,
                       ),
                     );
                     return groups.every((group) => group !== undefined)
                       ? groups.join("\n\n")
                       : undefined;
                   })()
-                : voiceIntakeInstruction(input.voiceIntake.sources, frozenPreview);
+                : voiceIntakeInstruction(
+                    input.voiceIntake.sources,
+                    frozenPreview,
+                    undefined,
+                    input.voiceIntake.conversationContext,
+                  );
           if (input.voiceIntake && sourceInstruction === undefined)
             return yield* liveError("invalid_state");
           const priorIntents = yield* sql<{
@@ -2317,7 +2643,12 @@ export const layer: Layer.Layer<
           const executionText = input.voiceIntake
             ? typeof reserved?.sourceInstruction === "string"
               ? reserved.sourceInstruction
-              : voiceIntakeInstruction(input.voiceIntake.sources, previewContext)
+              : voiceIntakeInstruction(
+                  input.voiceIntake.sources,
+                  previewContext,
+                  undefined,
+                  input.voiceIntake.conversationContext,
+                )
             : withPreviewContext(input.message.trim(), previewContext);
           if (executionText === undefined) return yield* liveError("invalid_state");
           if (intent.dispatch_state === "admitted" && intent.receipt_json !== null) {
@@ -2526,7 +2857,7 @@ export const layer: Layer.Layer<
             );
           if (
             !model ||
-            !hasOption("reasoningEffort", "medium") ||
+            !hasOption("reasoningEffort", "low") ||
             !hasOption("serviceTier", "priority")
           )
             return yield* liveError("planner_restriction_failed");
@@ -2534,7 +2865,7 @@ export const layer: Layer.Layer<
             instanceId: runtime.instanceId,
             model: model.slug,
             options: [
-              { id: "reasoningEffort", value: "medium" },
+              { id: "reasoningEffort", value: "low" },
               { id: "serviceTier", value: "priority" },
             ],
           };
@@ -2547,16 +2878,23 @@ export const layer: Layer.Layer<
             ),
             Effect.orElseSucceed(() => false),
           );
-          const saved = yield* sql<{ receipt_json: string; message: string }>`
-          SELECT i.receipt_json, i.message FROM codex_live_voice_intents i
+          const saved = yield* sql<{ receipt_json: string }>`
+          SELECT i.receipt_json FROM codex_live_voice_intents i
           JOIN codex_live_voice_leases l ON l.lease_id = i.lease_id AND l.generation = i.generation
           WHERE l.thread_id = ${row.thread_id} AND l.principal_session_id = ${principal.sessionId}
+            AND l.environment_id = ${row.environment_id} AND l.principal_subject = ${principal.subject}
             AND i.dispatch_state = 'admitted' AND i.receipt_json IS NOT NULL
           ORDER BY i.updated_at DESC LIMIT 128
         `;
           const restored = saved.flatMap((record) => {
             const value = decodeReceipt(record.receipt_json) as Record<string, unknown>;
-            if (isIntakeIntent(value.intakeIntent)) return [value.intakeIntent];
+            if (isIntakeIntent(value.intakeIntent))
+              return [
+                {
+                  ...value.intakeIntent,
+                  request: voiceOriginalSpeech(value.intakeIntent.sources).slice(0, 8_000),
+                },
+              ];
             if (
               !isIntakeProvenance(value.voiceIntake) ||
               (typeof value.taskId !== "string" && value.threadId !== row.thread_id) ||
@@ -2567,7 +2905,7 @@ export const layer: Layer.Layer<
             return [
               {
                 id: value.voiceIntake.intentId,
-                request: record.message,
+                request: voiceOriginalSpeech(value.voiceIntake.sources).slice(0, 8_000),
                 sources: value.voiceIntake.sources,
                 claimedSources: value.voiceIntake.sources,
                 provisional: value.voiceIntake.provisional,
@@ -2623,7 +2961,12 @@ export const layer: Layer.Layer<
                           message.runId === intent.runId &&
                           message.threadId === projection.thread.id &&
                           (message.text ===
-                            voiceIntakeInstruction(pending.sources, pending.previewContext) ||
+                            voiceIntakeInstruction(
+                              pending.sources,
+                              pending.previewContext,
+                              undefined,
+                              pending.conversationContext,
+                            ) ||
                             // Recognize accepted pre-formatter commands after upgrading.
                             message.text ===
                               withPreviewContext(pending.message, pending.previewContext)),
@@ -2649,12 +2992,30 @@ export const layer: Layer.Layer<
             .slice(0, 24)
             .map((project) => ({ id: project.id, title: project.title }));
           const source = yield* threads.getThreadProjection(ThreadId.make(row.thread_id));
+          const history = yield* conversationHistory(principal, row, source);
+          const admissionLeases = yield* sql<{ lease_id: string; generation: number }>`
+            SELECT lease_id, generation FROM codex_live_voice_leases
+            WHERE thread_id = ${row.thread_id} AND environment_id = ${row.environment_id}
+              AND principal_session_id = ${principal.sessionId} AND principal_subject = ${principal.subject}
+              AND lease_id IN ${sql.in(source.runs.flatMap((run) => (run.delegationAdmission?.voiceIntake ? [run.delegationAdmission.voiceIntake.leaseId] : [])))}`;
+          const callContext = [
+            `Current project: ${projectCatalog.find((project) => project.id === source.thread.projectId)?.title ?? source.thread.projectId}`,
+            voiceStartupHistory(history)
+              .map((message) => `${message.role}: ${message.text}`)
+              .join("\n\n")
+              .slice(-6_500),
+          ].join("\n");
           // The admission commit is authoritative even if a later receipt update failed.
           for (const task of source.subagents) {
             const provenance = source.runs.find((run) => run.id === task.runId)?.delegationAdmission
               ?.voiceIntake;
             if (
               !provenance ||
+              !admissionLeases.some(
+                (lease) =>
+                  lease.lease_id === provenance.leaseId &&
+                  lease.generation === provenance.generation,
+              ) ||
               task.childThreadId === null ||
               restored.some((intent) => intent.id === provenance.intentId)
             )
@@ -2665,7 +3026,7 @@ export const layer: Layer.Layer<
             if (Option.isNone(observed)) continue;
             restored.push({
               id: provenance.intentId,
-              request: task.prompt,
+              request: voiceOriginalSpeech(provenance.sources).slice(0, 8_000),
               sources: provenance.sources,
               claimedSources: provenance.sources,
               provisional:
@@ -2706,6 +3067,7 @@ export const layer: Layer.Layer<
             restored,
             getPreviewContext: () =>
               active.get(leaseKey(row.lease_id, row.generation))?.previewContext ?? null,
+            getConversationContext: () => callContext,
             current,
             stopId: readIntakeStopId(row.thread_id),
             provisionalAllowed:
@@ -2813,7 +3175,12 @@ export const layer: Layer.Layer<
                   )
                     return yield* liveError("stale_lease");
                   const instruction = intent.pendingSteer
-                    ? voiceIntakeInstruction(intent.pendingSteer.sources, previewContext)
+                    ? voiceIntakeInstruction(
+                        intent.pendingSteer.sources,
+                        previewContext,
+                        undefined,
+                        intent.pendingSteer.conversationContext,
+                      )
                     : undefined;
                   if (instruction === undefined) return yield* liveError("invalid_state");
                   if (isMainIntent(intent)) {
@@ -3139,6 +3506,7 @@ export const layer: Layer.Layer<
         const row = yield* getLease(leaseId, generation);
         if (
           row === undefined ||
+          row.status === "closed" ||
           row.planner_native_thread_id === null ||
           row.planner_native_thread_id !== event.plannerNativeThreadId
         )
@@ -3201,12 +3569,14 @@ export const layer: Layer.Layer<
               generation,
               code: "runtime_unavailable",
             });
-            yield* updateStatus(row, "failed");
+            yield* updateStatus(row, "unknown");
+            yield* stopFailedRuntime(leaseId, generation).pipe(Effect.forkIn(serviceScope));
             return;
           case "closed":
             yield* updateStatus(row, "closed");
             yield* stopReadbackWorkers(leaseId, generation);
             active.delete(leaseKey(leaseId, generation));
+            yield* scheduleRuntimeRelease(leaseId, generation);
             return;
           case "transcript": {
             if (
@@ -3324,7 +3694,15 @@ export const layer: Layer.Layer<
       });
     });
 
-    return CodexLiveSessionService.of({ prepare, start, stop, status, subscribe, context });
+    return CodexLiveSessionService.of({
+      prepare,
+      start,
+      stop,
+      status,
+      subscribe,
+      context,
+      contextDelivered,
+    });
   }),
 ).pipe(
   Layer.provideMerge(CodexLiveEventHub.layer),

@@ -2,6 +2,7 @@ import {
   LiveVoiceError,
   liveVoicePublicErrorMessage,
   type LiveVoiceEvent,
+  type LiveVoiceContextDeliveredInput,
   type LiveVoiceActivity,
   type LiveVoicePrepareInput,
   type LiveVoiceSession,
@@ -44,6 +45,7 @@ export interface LiveVoiceSignalingAdapter {
   start(input: LiveVoiceStartInput, signal: AbortSignal): Promise<LiveVoiceSession>;
   status(input: LiveVoiceSubscribeInput): Promise<LiveVoiceSession>;
   stop(input: LiveVoiceStopInput): Promise<LiveVoiceSession>;
+  contextDelivered?(input: LiveVoiceContextDeliveredInput): Promise<void>;
 }
 
 export type LiveVoicePeer = Pick<
@@ -62,6 +64,7 @@ export type LiveVoicePeer = Pick<
 };
 
 export type LiveVoiceDataChannel = Pick<RTCDataChannel, "readyState" | "close"> & {
+  send(data: string): void;
   onopen: (() => void) | null;
   onclose: (() => void) | null;
 };
@@ -143,9 +146,31 @@ const IDLE_STATE: LiveVoiceState = {
   error: null,
 };
 const MAX_TRANSCRIPT_ENTRIES = 24;
+const MAX_CONTEXT_DELIVERIES = 64;
+const MAX_PENDING_CONTEXT = 16;
+// A conservative UTF-8 byte cap leaves headroom below the provider's 500-token limit.
+const MAX_CONTEXT_FRAME_BYTES = 384;
+type LiveVoiceContextEvent = Extract<LiveVoiceEvent, { type: "context" }>;
 const DEFAULT_START_TIMEOUT_MS = 30_000;
 const DEFAULT_RECONNECT_TIMEOUT_MS = 15_000;
 const isLiveVoiceError = Schema.is(LiveVoiceError);
+function* splitContextText(text: string) {
+  let frame = "";
+  let frameBytes = 0;
+  for (const point of text) {
+    const codePoint = point.codePointAt(0)!;
+    const pointBytes = codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+    if (frameBytes + pointBytes > MAX_CONTEXT_FRAME_BYTES) {
+      yield frame;
+      frame = "";
+      frameBytes = 0;
+    }
+    frame += point;
+    frameBytes += pointBytes;
+  }
+  yield frame;
+}
+
 function stopTracks(stream: LiveVoiceMediaStream | null): void {
   stream?.getTracks().forEach((track) => track.stop());
 }
@@ -247,6 +272,8 @@ export class LiveVoiceController {
   private readonly stopRequestIds = new Map<string, string>();
   private readonly stopRequests = new Map<string, Promise<void>>();
   private readonly transcriptSegments = new Map<string, LiveVoiceTranscript>();
+  private readonly contextDeliveries = new Map<string, boolean>();
+  private readonly pendingContext: LiveVoiceContextEvent[] = [];
   private readonly transcriptParts = new Map<
     string,
     {
@@ -305,6 +332,8 @@ export class LiveVoiceController {
     }
 
     const operation = ++this.operation;
+    this.pendingContext.length = 0;
+    this.contextDeliveries.clear();
     this.transcriptSegments.clear();
     this.transcriptParts.clear();
     const microphoneOwnership: MicrophoneOwnership = {
@@ -433,15 +462,21 @@ export class LiveVoiceController {
       const channel = peer.createDataChannel("oai-events") as unknown as LiveVoiceDataChannel;
       this.channel = channel;
       this.channelIsOpen = channel.readyState === "open";
+      if (this.channelIsOpen) this.drainContext(operation, activeLease);
       this.peerIsConnected = peer.connectionState === "connected";
       this.rtcReady = new Promise<void>((resolve, reject) => {
         this.resolveRtcReady = resolve;
         this.rejectRtcReady = reject;
         channel.onopen = () => {
+          if (!this.isCurrentLease(operation, activeLease) || this.channel !== channel) return;
           this.channelIsOpen = true;
+          this.drainContext(operation, activeLease);
           this.resolveRtcReadyIfReady();
         };
         channel.onclose = () => {
+          if (!this.isCurrentLease(operation, activeLease) || this.channel !== channel) return;
+          this.channelIsOpen = false;
+          for (const event of this.pendingContext.splice(0)) this.completeContext(event, false);
           const error = new Error("Live data channel closed.");
           reject(error);
           void this.failAndStop(operation, activeLease, error);
@@ -631,6 +666,7 @@ export class LiveVoiceController {
   private onSignal(operation: number, event: LiveVoiceSignalEvent): void {
     const identity = this.identity;
     if (!identity || operation !== this.operation || !eventMatchesLease(event, identity)) return;
+    if (event.type === "context") this.acceptContext(operation, identity, event);
     if (event.type === "status") {
       this.acceptSessionStatus(operation, identity, event.session);
       if (
@@ -663,6 +699,82 @@ export class LiveVoiceController {
       ].slice(-MAX_TRANSCRIPT_ENTRIES);
       this.setState({ ...this.state, transcript });
     }
+  }
+
+  private acceptContext(
+    operation: number,
+    lease: LiveVoiceLease,
+    event: LiveVoiceContextEvent,
+  ): void {
+    const accepted = this.contextDeliveries.get(event.deliveryId);
+    if (accepted !== undefined) {
+      this.acknowledgeContext(event, accepted);
+      return;
+    }
+    if (this.pendingContext.some((pending) => pending.deliveryId === event.deliveryId)) return;
+    if (
+      (!this.channel || this.channel.readyState === "connecting") &&
+      ["preparing", "prepared", "connecting"].includes(this.state.phase)
+    ) {
+      if (this.pendingContext.length < MAX_PENDING_CONTEXT) this.pendingContext.push(event);
+      else this.completeContext(event, false);
+      return;
+    }
+    this.sendContext(operation, lease, event);
+  }
+
+  private drainContext(operation: number, lease: LiveVoiceLease): void {
+    for (const event of this.pendingContext.splice(0)) {
+      if (this.isCurrentLease(operation, lease) && eventMatchesLease(event, lease))
+        this.sendContext(operation, lease, event);
+    }
+  }
+
+  private sendContext(
+    operation: number,
+    lease: LiveVoiceLease,
+    event: LiveVoiceContextEvent,
+  ): void {
+    if (!this.isCurrentLease(operation, lease)) return;
+    const channel = this.channel;
+    let accepted = false;
+    try {
+      if (channel?.readyState === "open") {
+        for (const text of splitContextText(event.text)) {
+          if (channel.readyState !== "open") throw new Error("Live data channel closed.");
+          channel.send(
+            JSON.stringify({
+              type: "session.context.append",
+              channel: "commentary",
+              content: [{ type: "input_text", text }],
+            }),
+          );
+        }
+        accepted = true;
+      }
+    } catch {
+      accepted = false;
+    }
+    this.completeContext(event, accepted);
+  }
+
+  private completeContext(event: LiveVoiceContextEvent, accepted: boolean): void {
+    this.contextDeliveries.set(event.deliveryId, accepted);
+    if (this.contextDeliveries.size > MAX_CONTEXT_DELIVERIES)
+      this.contextDeliveries.delete(this.contextDeliveries.keys().next().value!);
+    this.acknowledgeContext(event, accepted);
+  }
+
+  private acknowledgeContext(event: LiveVoiceContextEvent, accepted: boolean): void {
+    // Acceptance means queued transport frames; RPC failure leaves the server outcome unknown.
+    void this.dependencies.signaling
+      .contextDelivered?.({
+        leaseId: event.leaseId,
+        generation: event.generation,
+        deliveryId: event.deliveryId,
+        accepted,
+      })
+      .catch(() => undefined);
   }
 
   private acceptTranscriptSegment(event: Extract<LiveVoiceEvent, { type: "transcript" }>): void {
@@ -918,6 +1030,8 @@ export class LiveVoiceController {
     lease: LiveVoiceLease | null,
     microphoneOwnership: MicrophoneOwnership | null,
   ): Promise<void> {
+    this.pendingContext.length = 0;
+    this.contextDeliveries.clear();
     this.cancelInputCheck?.();
     this.cancelInputCheck = null;
     for (const remove of this.inputListeners) remove();

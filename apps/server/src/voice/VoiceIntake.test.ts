@@ -8,6 +8,7 @@ import type {
   LiveVoiceEvent,
   VoiceIntakeDecision,
   VoiceIntakeIntent,
+  VoiceIntakeSnapshot,
   VoiceIntakeSource,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
@@ -41,7 +42,7 @@ const transcript = (
   revision = 1,
   final = false,
   id = "segment-a",
-): LiveVoiceEvent => ({
+): Extract<LiveVoiceEvent, { type: "transcript" }> => ({
   type: "transcript",
   leaseId: "lease",
   generation: 1,
@@ -59,7 +60,10 @@ const setup = (
   const confirmed: string[] = [];
   const admittedContexts: Array<string | null | undefined> = [];
   const steeredContexts: Array<string | null | undefined> = [];
+  const admittedConversationContexts: Array<string | undefined> = [];
+  const steeredConversationContexts: Array<string | undefined> = [];
   let previewContext: string | null = null;
+  let conversationContext = "";
   const steerKeys = new Set<string>();
   const attemptedSteerKeys: string[] = [];
   let loseReply = loseFirstSteerReply;
@@ -74,12 +78,14 @@ const setup = (
     generation: 1,
     provisionalAllowed,
     getPreviewContext: () => previewContext,
+    getConversationContext: () => conversationContext,
     decide,
     current: Effect.sync(() => current),
     stopId: Effect.sync(() => stopId),
     admit: (provenance, request, _projectId, context) =>
       Effect.sync(() => {
         admittedContexts.push(context);
+        admittedConversationContexts.push(provenance.conversationContext);
         const intent: VoiceIntakeIntent = {
           id: provenance.intentId,
           request,
@@ -114,6 +120,7 @@ const setup = (
           steerKeys.add(requestId);
           steered.push(message);
           steeredContexts.push(context);
+          steeredConversationContexts.push(intent.pendingSteer?.conversationContext);
         }
         if (loseReply) {
           loseReply = false;
@@ -141,6 +148,11 @@ const setup = (
     admitted,
     admittedContexts,
     steeredContexts,
+    admittedConversationContexts,
+    steeredConversationContexts,
+    setConversationContext: (context: string) => {
+      conversationContext = context;
+    },
     setPreviewContext: (context: string | null) => {
       previewContext = context;
     },
@@ -384,26 +396,63 @@ it.effect(
     }),
 );
 
-it.effect(
-  "requires semantic final confirmation and keeps a late final from widening an in-flight partial",
-  () =>
+it.effect.each(["final", "constraint", "cancellation"] as const)(
+  "requires semantic redecision when an in-flight partial changes (%s)",
+  (scenario) =>
     Effect.gen(function* () {
       const started = yield* Deferred.make<void>();
       const release = yield* Deferred.make<void>();
-      const text = "Research runners.";
+      const text =
+        scenario === "final"
+          ? "Research runners."
+          : "Erstelle ein Balkendiagramm mit den Bauzeiten 8, 3 und 2 Minuten.";
+      const constraint =
+        scenario === "constraint"
+          ? "Keine Dateien erstellen; zeige das Diagramm hier."
+          : "Nein, erstelle das Diagramm nicht.";
+      const updated = `${text} ${constraint}`;
+      const snapshots: VoiceIntakeSnapshot[] = [];
       const test = setup((snapshot) =>
         Effect.gen(function* () {
-          yield* Deferred.succeed(started, undefined);
-          yield* Deferred.await(release);
+          snapshots.push(snapshot);
+          if (snapshots.length === 1) {
+            yield* Deferred.succeed(started, undefined);
+            yield* Deferred.await(release);
+          } else {
+            assert.deepEqual(snapshot.rejections, [
+              {
+                requestId: snapshots[0]!.requestId,
+                snapshotVersion: 1,
+                actionIndex: 0,
+                anchorIndex: null,
+                actionType: "new",
+                code: "snapshot_retracted",
+                disposition: "not_applied",
+                sources: [{ segmentId: "segment-a", revision: 1, quote: text }],
+              },
+            ]);
+            assert.equal(snapshot.segments[0]!.text, updated);
+            if (snapshot.intents.length)
+              return {
+                requestId: snapshot.requestId,
+                actions: [{ type: "reference" as const, intentId: snapshot.intents[0]!.id }],
+              };
+            if (scenario === "cancellation")
+              return {
+                requestId: snapshot.requestId,
+                actions: [{ type: "defer" as const, reason: "The goal was cancelled." }],
+              };
+          }
+          const request = snapshots.length === 1 ? text : updated;
           return {
             requestId: snapshot.requestId,
             actions: [
               {
                 type: "new" as const,
                 projectId: null,
-                sources: [source(text, "segment-a", snapshot.segments[0]!.revision)],
-                request: text,
-                readOnly: true,
+                sources: [source(request, "segment-a", snapshot.segments[0]!.revision)],
+                request,
+                readOnly: scenario === "final",
               },
             ],
           };
@@ -412,12 +461,78 @@ it.effect(
       yield* test.engine.observe(transcript(text));
       const pending = yield* test.engine.processLatest().pipe(Effect.forkChild);
       yield* Deferred.await(started);
-      yield* test.engine.observe(transcript(text, 2, true));
+      yield* test.engine.observe(
+        transcript(scenario === "final" ? text : updated, 2, scenario === "final"),
+      );
       yield* Deferred.succeed(release, undefined);
       yield* Fiber.join(pending);
-      assert.isTrue(test.admitted[0]!.provisional);
+      if (scenario === "final") {
+        assert.isTrue(test.admitted[0]!.provisional);
+      } else {
+        assert.equal(test.admitted.length, 0, "the old decision was never admitted");
+        yield* test.engine.processLatest();
+        assert.equal(snapshots.length, 2);
+        assert.deepEqual(snapshots[1]!.intents, []);
+        assert.deepEqual(
+          test.admitted.map((intent) => intent.request),
+          scenario === "constraint" ? [updated] : [],
+        );
+        if (scenario === "constraint") {
+          assert.deepEqual(test.admitted[0]!.sources, [source(updated, "segment-a", 2)]);
+          assert.isFalse(test.admitted[0]!.provisional);
+          yield* test.engine.observe(transcript(updated, 3, true));
+          yield* test.engine.processLatest();
+          assert.equal(test.admitted.length, 1);
+          assert.equal(snapshots[2]!.intents[0]!.id, test.admitted[0]!.id);
+        }
+      }
       assert.deepEqual(test.confirmed, []);
     }),
+);
+
+it.effect("retains only eight rejected actions with their original anchors across decisions", () =>
+  Effect.gen(function* () {
+    const snapshots: VoiceIntakeSnapshot[] = [];
+    const quote = "A source anchor that was never spoken.";
+    const test = setup((snapshot) => {
+      snapshots.push(snapshot);
+      return Effect.succeed({
+        requestId: snapshot.requestId,
+        actions: [
+          {
+            type: "new",
+            projectId: null,
+            request: "Create a chart.",
+            readOnly: false,
+            sources: [source(quote, "segment-a", snapshot.segments[0]!.revision)],
+          },
+        ],
+      });
+    });
+    for (let revision = 1; revision <= 10; revision++) {
+      yield* test.engine.observe(transcript("Create a chart.", revision, true));
+      yield* test.engine.processLatest();
+    }
+    assert.equal(test.admitted.length, 0);
+    assert.deepEqual(
+      snapshots.map((snapshot) => snapshot.rejections?.length),
+      [0, 1, 2, 3, 4, 5, 6, 7, 8, 8],
+    );
+    assert.deepEqual(
+      snapshots[9]!.rejections?.map((rejection) => ({
+        requestId: rejection.requestId,
+        snapshotVersion: rejection.snapshotVersion,
+        disposition: rejection.disposition,
+        sources: rejection.sources,
+      })),
+      Array.from({ length: 8 }, (_, index) => ({
+        requestId: `lease:1:intake:${index + 2}`,
+        snapshotVersion: index + 2,
+        disposition: "not_applied" as const,
+        sources: [{ segmentId: "segment-a", revision: index + 2, quote }],
+      })),
+    );
+  }),
 );
 
 it.effect("fails closed on transcript gaps, unknown intent IDs and explicit optout", () =>
@@ -846,6 +961,11 @@ it.effect(
         }),
       );
       test.setPreviewContext("button#original");
+      test.setConversationContext("Rustlings tutor: give hints, do not write the solution.");
+      yield* test.engine.observe({
+        ...transcript("Which part of ownership is unclear?", 1, true, "tutor-answer"),
+        role: "assistant",
+      });
       const firstClause = "Ähm, baue bitte ein Suchfeld in die Einstellungsseite.";
       let text = firstClause;
       yield* test.engine.observe(transcript(text));
@@ -863,6 +983,7 @@ it.effect(
         yield* test.engine.processLatest();
       }
       test.setPreviewContext("button#changed");
+      test.setConversationContext("Different discussion after the decision started.");
       yield* Deferred.succeed(first.answer, {
         requestId: first.snapshot.requestId,
         actions: [
@@ -883,6 +1004,10 @@ it.effect(
       );
       assert.isFalse(test.admitted[0]!.provisional);
       assert.equal(test.admittedContexts[0], "button#original");
+      assert.include(test.admittedConversationContexts[0], "do not write the solution");
+      assert.include(test.admittedConversationContexts[0], '"role":"assistant"');
+      assert.include(test.admittedConversationContexts[0], "Which part of ownership");
+      assert.notInclude(test.admittedConversationContexts[0], "Different discussion");
       const secondRun = yield* test.engine.processLatest().pipe(Effect.forkChild);
       const second = yield* Queue.take(pending);
       assert.equal(second.snapshot.version, 6, "intermediate revisions coalesce");
@@ -1354,10 +1479,12 @@ it.effect.each([null, "a", "b"] as const)(
       const original = test.admitted[0]!;
       test.setStatus("preparing");
       test.setPreviewContext("selection A");
+      test.setConversationContext("Tutor preference A");
       yield* test.engine.observe(transcript(constraints.a, 1, true, "a"));
       yield* test.engine.processLatest();
       test.setStatus("queued");
       test.setPreviewContext("selection B");
+      test.setConversationContext("Tutor preference B");
       yield* test.engine.observe(transcript(constraints.b, 1, true, "b"));
       yield* test.engine.processLatest();
       const intent = (yield* test.engine.state).intents[0]!;
@@ -1385,6 +1512,7 @@ it.effect.each([null, "a", "b"] as const)(
         );
       test.setStatus("running");
       test.setPreviewContext("new unrelated selection");
+      test.setConversationContext("Unrelated later conversation");
       yield* test.engine.processLatest();
       yield* test.engine.processLatest();
       const expected = ["a", "b"].filter((id) => id !== corrected) as Array<"a" | "b">;
@@ -1396,6 +1524,13 @@ it.effect.each([null, "a", "b"] as const)(
         test.steeredContexts,
         expected.map((id) => `selection ${id.toUpperCase()}`),
       );
+      for (const [index, id] of expected.entries()) {
+        assert.include(
+          test.steeredConversationContexts[index],
+          `Tutor preference ${id.toUpperCase()}`,
+        );
+        assert.notInclude(test.steeredConversationContexts[index], "Unrelated later conversation");
+      }
       assert.deepEqual(
         test.attemptedSteerKeys,
         queued

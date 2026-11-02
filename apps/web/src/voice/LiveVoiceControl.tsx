@@ -708,6 +708,10 @@ export function LiveVoiceControl(props: {
     reportFailure: false,
     reportDefect: false,
   });
+  const contextDeliveredRpc = useAtomCommand(liveVoiceEnvironment.contextDelivered, {
+    reportFailure: false,
+    reportDefect: false,
+  });
   const [prepareFailure, setPrepareFailure] = useState<{
     readonly environmentId: EnvironmentId;
     readonly threadId: ThreadId;
@@ -800,6 +804,10 @@ export function LiveVoiceControl(props: {
       unwrapLiveVoiceCommand(await stopRpc({ environmentId: props.environmentId, input })),
     status: async (input) =>
       unwrapLiveVoiceCommand(await statusRpc({ environmentId: props.environmentId, input })),
+    contextDelivered: async (input) =>
+      unwrapLiveVoiceCommand(
+        await contextDeliveredRpc({ environmentId: props.environmentId, input }),
+      ),
   };
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Reflects app-owned microphone activity in the mounted composer's dictation gate.
   useEffect(() => {

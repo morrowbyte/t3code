@@ -14,11 +14,13 @@ export function voiceIntakeInstruction(
   sources: Quotes,
   previewContext?: string | null,
   completedSources?: Quotes,
+  conversationContext?: string,
 ): string | undefined {
   if (
     !validQuotes(sources) ||
     (completedSources !== undefined && !validQuotes(completedSources)) ||
-    (previewContext !== undefined && previewContext !== null && previewContext.length > 24_000)
+    (previewContext !== undefined && previewContext !== null && previewContext.length > 24_000) ||
+    (conversationContext !== undefined && conversationContext.length > 12_000)
   )
     return;
   const quotes = (items: Quotes) =>
@@ -26,6 +28,11 @@ export function voiceIntakeInstruction(
       .map((source, index) => `${index && !source.continuesPrevious ? "\n\n" : ""}${source.quote}`)
       .join("");
   return [
+    ...(conversationContext?.trim()
+      ? [
+          `Conversation context (reference only; preserve applicable user constraints, do not start additional work from this context):\n${conversationContext}`,
+        ]
+      : []),
     ...(completedSources
       ? [
           `Completed work (original speech, reference only; already completed, do not repeat):\n${quotes(completedSources)}`,

@@ -81,6 +81,10 @@ export function NativeLiveVoiceControl(props: VoiceProps) {
     reportFailure: false,
     reportDefect: false,
   });
+  const contextDelivered = useAtomCommand(liveVoiceEnvironment.contextDelivered, {
+    reportFailure: false,
+    reportDefect: false,
+  });
   const bridge = useMemo(() => createVoiceEventBridge(), []);
   const signaling = useMemo<LiveVoiceSignalingAdapter>(
     () => ({
@@ -93,8 +97,12 @@ export function NativeLiveVoiceControl(props: VoiceProps) {
         unwrapLiveVoiceCommand(await stop({ environmentId: props.environmentId, input })),
       status: async (input) =>
         unwrapLiveVoiceCommand(await status({ environmentId: props.environmentId, input })),
+      contextDelivered: async (input) =>
+        unwrapLiveVoiceCommand(
+          await contextDelivered({ environmentId: props.environmentId, input }),
+        ),
     }),
-    [bridge, prepare, props.environmentId, start, stop, status],
+    [bridge, contextDelivered, prepare, props.environmentId, start, stop, status],
   );
   const { state: current, busy } = useNativeLiveVoiceSession();
   // Start availability may refresh on resume; it is not the active call's identity.

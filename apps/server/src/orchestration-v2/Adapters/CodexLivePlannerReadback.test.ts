@@ -10,10 +10,10 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const delivered = new Set<string>();
-      const spoken: string[] = [];
-      const append = (text: string) =>
+      const contexts: unknown[] = [];
+      const append = (context: { role: "assistant"; text: string }) =>
         Effect.sync(() => {
-          spoken.push(text);
+          contexts.push(context);
         });
       const answer = {
         turnId: "question",
@@ -49,7 +49,7 @@ it.effect(
       );
       assert.isTrue(yield* appendCodexLivePlannerAnswer(delivered, answer, append));
       assert.isFalse(yield* appendCodexLivePlannerAnswer(delivered, answer, append));
-      assert.deepEqual(spoken, ["Sales Guy and Web Dude."]);
+      assert.deepEqual(contexts, [{ role: "assistant", text: "Sales Guy and Web Dude." }]);
     }),
 );
 

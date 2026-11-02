@@ -12,17 +12,19 @@ import { CLIENT_GUARDED_RPC_SCOPES, clientRpcRequiredScopes } from "./clientRpcP
 import { WS_METHODS } from "./rpc.ts";
 
 it("guards selected Live voice context with operation authority on its destination", () => {
-  expect(CLIENT_GUARDED_RPC_SCOPES[WS_METHODS.liveVoiceContext]).toBe(
-    AuthOrchestrationOperateScope,
-  );
-  expect(
-    clientRpcRequiredScopes(WS_METHODS.liveVoiceContext, {
-      leaseId: "lease",
-      generation: 1,
-      revision: 1,
-      context: null,
-    }),
-  ).toEqual([AuthOrchestrationOperateScope]);
+  for (const method of [WS_METHODS.liveVoiceContext, WS_METHODS.liveVoiceContextDelivered]) {
+    expect(CLIENT_GUARDED_RPC_SCOPES[method]).toBe(AuthOrchestrationOperateScope);
+    expect(
+      clientRpcRequiredScopes(method, {
+        leaseId: "lease",
+        generation: 1,
+        revision: 1,
+        context: null,
+        deliveryId: "context-1",
+        accepted: true,
+      }),
+    ).toEqual([AuthOrchestrationOperateScope]);
+  }
 });
 
 it("separates avatar reads from subscription-consuming generation on the destination", () => {

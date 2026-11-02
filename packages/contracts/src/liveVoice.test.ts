@@ -11,7 +11,7 @@ import {
 import { WS_METHODS, WsRpcGroup } from "./rpc.ts";
 import { clientRpcRequiredScopes } from "./clientRpcPermissions.ts";
 import { AuthOrchestrationOperateScope } from "./auth.ts";
-import { LiveVoiceContextInput } from "./liveVoiceContext.ts";
+import { LiveVoiceContextDeliveredInput, LiveVoiceContextInput } from "./liveVoiceContext.ts";
 
 const decodeLiveVoiceStartInput = Schema.decodeSync(LiveVoiceStartInput);
 const decodeLiveVoiceGeneration = Schema.decodeSync(LiveVoiceGeneration);
@@ -22,13 +22,23 @@ const decodeLiveVoiceSubscribeInput = Schema.decodeSync(LiveVoiceSubscribeInput)
 
 describe("subscription Codex Live contracts", () => {
   it("registers selected context as a unary RPC with a void response", () => {
-    const rpc = WsRpcGroup.requests.get(WS_METHODS.liveVoiceContext);
-    if (!rpc) throw new Error("liveVoice.context is not registered");
-    const input = { leaseId: "lease", generation: 1, revision: 1, context: null };
-    const decodeInput = Schema.decodeUnknownSync(rpc.payloadSchema);
-    const decodeResponse = Schema.decodeUnknownSync(rpc.successSchema);
-    expect(decodeInput(input)).toEqual(input);
-    expect(decodeResponse(undefined)).toBeUndefined();
+    for (const [method, input] of [
+      [
+        WS_METHODS.liveVoiceContext,
+        { leaseId: "lease", generation: 1, revision: 1, context: null },
+      ],
+      [
+        WS_METHODS.liveVoiceContextDelivered,
+        { leaseId: "lease", generation: 1, deliveryId: "context-1", accepted: true },
+      ],
+    ] as const) {
+      const rpc = WsRpcGroup.requests.get(method);
+      if (!rpc) throw new Error(`${method} is not registered`);
+      const decodeInput = Schema.decodeUnknownSync(rpc.payloadSchema);
+      const decodeResponse = Schema.decodeUnknownSync(rpc.successSchema);
+      expect(decodeInput(input)).toEqual(input);
+      expect(decodeResponse(undefined)).toBeUndefined();
+    }
   });
 
   it("bounds selected context and requires positive safe lease revisions, including clear", () => {
@@ -45,6 +55,39 @@ describe("subscription Codex Live contracts", () => {
       { leaseId: "" },
     ])
       expect(() => decode({ ...input, ...invalid })).toThrow();
+    const delivered = { leaseId: "lease", generation: 1, deliveryId: "context-1", accepted: true };
+    const decodeDelivered = Schema.decodeUnknownSync(LiveVoiceContextDeliveredInput);
+    expect(decodeDelivered(delivered)).toEqual(delivered);
+    expect(decodeDelivered({ ...delivered, accepted: false }).accepted).toBe(false);
+    expect(decodeDelivered({ ...delivered, deliveryId: "x".repeat(256) }).deliveryId).toHaveLength(
+      256,
+    );
+    for (const invalid of [
+      { deliveryId: "" },
+      { deliveryId: "x".repeat(257) },
+      { accepted: "true" },
+      { generation: 0 },
+      { generation: Number.MAX_SAFE_INTEGER + 1 },
+      { leaseId: "" },
+    ])
+      expect(() => decodeDelivered({ ...delivered, ...invalid })).toThrow();
+    const contextEvent = {
+      type: "context",
+      leaseId: "lease",
+      generation: 1,
+      deliveryId: "context-1",
+      text: "  Original context\n",
+    };
+    const decodeEvent = Schema.decodeUnknownSync(LiveVoiceEvent);
+    expect(decodeEvent(contextEvent)).toEqual(contextEvent);
+    expect(decodeEvent({ ...contextEvent, text: "x".repeat(24_000) }).type).toBe("context");
+    for (const invalid of [
+      { deliveryId: "" },
+      { deliveryId: "x".repeat(257) },
+      { text: "x".repeat(24_001) },
+      { generation: 0 },
+    ])
+      expect(() => decodeEvent({ ...contextEvent, ...invalid })).toThrow();
   });
 
   it("preserves original transcript parts and validates revision correlation without changing legacy events", () => {

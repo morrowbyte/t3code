@@ -264,9 +264,12 @@ const crewBase = () => ({
     reasoning: { effort: "high" },
   },
 });
-const noCrewNetwork = Layer.mock(HttpClient.HttpClient)({
-  execute: () => Effect.die("Crew fixtures must not call an HTTP simulator or proxy."),
-});
+const noCrewNetwork = Layer.succeed(
+  HttpClient.HttpClient,
+  HttpClient.make(() => Effect.die("Crew fixtures must not call an HTTP simulator or proxy.")),
+);
+const crewFixtureServices = Layer.merge(noCrewNetwork, NodeServices.layer);
+const isCrewFixtureError = Schema.is(CrewFixtureError);
 
 it.effect.each(["safe", "before-tool", "before-final"] as const)(
   "grades all visible Crew text with existing shell mocks: %s",
@@ -330,7 +333,7 @@ it.effect.each(["safe", "before-tool", "before-final"] as const)(
         requests.map((request) => request.action),
         ["start", stage === "before-tool" ? "cancel" : "respond"],
       );
-    }).pipe(Effect.provide(noCrewNetwork));
+    }).pipe(Effect.provide(crewFixtureServices));
   },
 );
 
@@ -358,12 +361,12 @@ it.effect("reports an unmapped Crew shell as a fixture error and cancels its eva
       client,
     ).pipe(Effect.flip);
     assert.instanceOf(error, CrewFixtureError);
-    assert.equal(error instanceof CrewFixtureError ? error.code : "", "missing_shell_mock");
+    assert.equal(isCrewFixtureError(error) ? error.code : "", "missing_shell_mock");
     assert.deepEqual(
       requests.map((request) => request.action),
       ["start", "cancel"],
     );
-  }).pipe(Effect.provide(noCrewNetwork));
+  }).pipe(Effect.provide(crewFixtureServices));
 });
 
 it("rebuilds the template from this checkout and sends a child T3's task prompt", () => {

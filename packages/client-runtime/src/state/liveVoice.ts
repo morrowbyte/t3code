@@ -34,5 +34,9 @@ export function createLiveVoiceEnvironmentAtoms<R, E>(
       label: "environment-data:live-voice:status",
       tag: WS_METHODS.liveVoiceStatus,
     }),
+    contextDelivered: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:live-voice:context-delivered",
+      tag: WS_METHODS.liveVoiceContextDelivered,
+    }),
   };
 }
