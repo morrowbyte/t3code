@@ -295,7 +295,12 @@ import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useSoftwareKeyboardOpen } from "../../hooks/useSoftwareKeyboardOpen";
 import { useStableCallback } from "../../hooks/useStableCallback";
 import { usePanelAnimationSettings } from "../../panelAnimations";
-import { environmentSession, readEnvironmentScope, useEnvironmentScope } from "../../state/session";
+import {
+  environmentSession,
+  readEnvironmentScope,
+  readPreparedConnection,
+  useEnvironmentScope,
+} from "../../state/session";
 import { serverEnvironment } from "../../state/server";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
 import { useComposerRestingTransition } from "./useComposerRestingTransition";
@@ -2872,11 +2877,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       localEnvironmentDisabled: isLocalEnvironmentDisabled(),
       environmentId,
       primaryEnvironmentId,
+      connection: readPreparedConnection(environmentId),
+      isDesktopRenderer: window.desktopBridge !== undefined,
     });
     if (target === "remote") {
       toastManager.add({
         type: "error",
-        title: "Folders can only be referenced in the local desktop environment",
+        title: "Folders can only be referenced on a server running on this computer",
       });
       return;
     }

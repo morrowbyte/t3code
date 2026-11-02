@@ -528,14 +528,30 @@ describe("presentProviderGoal", () => {
 });
 
 describe("presentPendingBackgroundWork", () => {
-  it("names a command by its script, not the shell that wraps it", () => {
-    const presentation = presentPendingBackgroundWork([
-      {
-        taskId: "call_1",
-        kind: "command",
-        description: `/bin/zsh -lc "mv a.ts b.ts\ncat > b.ts <<'EOF'\nexport {};\nEOF"`,
-      },
-    ]);
+  it.each([false, true])("keeps a command's title and script when awaited is %s", (awaited) => {
+    const command = `/bin/zsh -lc "mv a.ts b.ts\ncat > b.ts <<'EOF'\nexport {};\nEOF"`;
+    const presentation = presentPendingBackgroundWork(
+      [
+        {
+          taskId: "call_1",
+          kind: "command",
+          description: command,
+          ...(awaited ? { awaited: true as const } : {}),
+        },
+      ],
+      [
+        {
+          id: TurnItemId.make("call_1"),
+          type: "command_execution",
+          nativeItemRef: null,
+          input: command,
+          title: "Move source file",
+          status: "running",
+        },
+      ],
+    );
     expect(presentation?.items[0]?.label).toBe("mv a.ts b.ts\ncat > b.ts <<'EOF'\nexport {};\nEOF");
+    expect(presentation?.items[0]?.commandLine).toBe(command);
+    expect(presentation?.title).toBe(`${awaited ? "Waiting" : "Running"} · Move source file`);
   });
 });
