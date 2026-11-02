@@ -473,6 +473,7 @@ renderer_tests=(
   apps/web/src/components/files/FileSelectionActions.browser.test.tsx
   apps/web/src/components/files/FileBrowserPanel.browser.test.tsx
   apps/web/src/components/device/DeviceControlsRail.browser.test.tsx
+  apps/web/src/components/device/DevicePanel.browser.test.tsx
   apps/web/src/components/device/DeviceStreamView.browser.test.tsx
   apps/web/src/components/RightPanelTabs.keyboard.browser.test.tsx
   apps/web/src/components/preview/PreviewView.browser.test.tsx
