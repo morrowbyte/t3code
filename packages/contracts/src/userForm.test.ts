@@ -105,6 +105,19 @@ describe("mixed user forms", () => {
     expect(userFormDefinitionError([{ ...text, minLength: 5, maxLength: 2 }])).toContain(
       "minimum length",
     );
+    const selection = {
+      id: "extras",
+      type: "multiselect" as const,
+      label: "Extras",
+      min: 0,
+      max: 0,
+      options: [{ value: "parking", label: "Parking" }],
+    };
+    expect(userFormDefinitionError([selection])).toContain("required selection");
+    expect(userFormDefinitionError([{ ...selection, required: true }])).toContain(
+      "required selection",
+    );
+    expect(userFormDefinitionError([{ ...selection, required: false }])).toBeNull();
     expect(
       userFormDefinitionError([
         { id: "count", label: "Count", type: "number", min: 5, default: 2 },

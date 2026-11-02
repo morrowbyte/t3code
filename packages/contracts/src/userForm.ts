@@ -183,6 +183,8 @@ export function userFormDefinitionError(fields: ReadonlyArray<UserFormField>): s
       return `${field.label}: option values must be unique.`;
     if (field.type === "multiselect" && field.min !== undefined && field.min > field.options.length)
       return `${field.label}: minimum exceeds the option count.`;
+    if (field.type === "multiselect" && field.required !== false && field.max === 0)
+      return `${field.label}: maximum must allow a required selection.`;
     if (field.default !== undefined) {
       const error = userFormFieldError(field, userFormDefault(field));
       if (error) return `${field.label}: invalid default. ${error}`;
