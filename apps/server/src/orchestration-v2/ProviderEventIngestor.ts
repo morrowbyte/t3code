@@ -755,9 +755,12 @@ export const layer: Layer.Layer<
                     ...(input.runId == null || foreignThread ? {} : { turnItemRunId: input.runId }),
                   },
                 );
-                const retained = projection.providerTurns.find(
+                const storedTurn = projection.providerTurns.find(
                   (turn) => turn.id === providerTurn.id,
-                )?.cost;
+                );
+                const usage = providerTurn.turnTokenUsage ?? storedTurn?.turnTokenUsage;
+                if (usage !== undefined) providerTurn = { ...providerTurn, turnTokenUsage: usage };
+                const retained = storedTurn?.cost;
                 if (retained) {
                   providerTurn = { ...providerTurn, cost: retained };
                 } else {
@@ -782,9 +785,7 @@ export const layer: Layer.Layer<
                     undefined,
                   );
                   const cost = yield* usageService.priceTurn({
-                    ...(providerTurn.turnTokenUsage === undefined
-                      ? {}
-                      : { usage: providerTurn.turnTokenUsage }),
+                    ...(usage === undefined ? {} : { usage }),
                     ...(modelSelection === undefined ? {} : { modelSelection }),
                   });
                   providerTurn = {
@@ -1121,7 +1122,11 @@ export const layer: Layer.Layer<
                 Effect.gen(function* () {
                   if (storedEvents.length === 0 || input.event.type !== "provider_turn.updated")
                     return;
-                  const providerTurn = input.event.providerTurn;
+                  const storedTurn = storedEvents.findLast(
+                    ({ event }) => event.type === "provider-turn.updated",
+                  )?.event;
+                  if (storedTurn?.type !== "provider-turn.updated") return;
+                  const providerTurn = storedTurn.payload;
                   if (
                     providerTurn.status !== "completed" &&
                     providerTurn.status !== "failed" &&

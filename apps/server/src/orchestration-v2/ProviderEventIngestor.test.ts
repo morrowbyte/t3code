@@ -510,7 +510,18 @@ it.effect(
           },
         });
       }
-      yield* ingestor.ingestNormalized(input);
+      const { turnTokenUsage, ...completedTurn } = providerTurn;
+      yield* ingestor.ingestNormalized({
+        ...input,
+        event: {
+          ...input.event,
+          providerTurn: { ...completedTurn, turnTokenUsage, status: "running", completedAt: null },
+        },
+      });
+      yield* ingestor.ingestNormalized({
+        ...input,
+        event: { ...input.event, providerTurn: completedTurn },
+      });
       yield* ingestor.ingestNormalized({
         ...input,
         analyticsContext: {
@@ -529,8 +540,9 @@ it.effect(
       const savedCosts = events.flatMap(({ event }) =>
         event.type === "provider-turn.updated" ? [event.payload.cost] : [],
       );
-      assert.lengthOf(savedCosts, 2);
-      assert.deepEqual(savedCosts[0], savedCosts[1]);
+      assert.lengthOf(savedCosts, 3);
+      assert.isUndefined(savedCosts[0]);
+      assert.deepEqual(savedCosts[1], savedCosts[2]);
       const ignored = yield* ingestor.ingestNormalized({
         ...input,
         event: {
