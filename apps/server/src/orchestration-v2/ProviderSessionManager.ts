@@ -170,6 +170,7 @@ export interface ProviderSessionManagerV2Shape {
     readonly providerSessionId: ProviderSessionId;
     readonly modelSelection: ModelSelection;
     readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
+    readonly purpose?: "live-voice";
     readonly resumeFromSession?: OrchestrationV2ProviderSession;
     readonly initialNativeThreadId?: string;
     readonly initialProviderItemIdentityVersion?: 2;
@@ -228,6 +229,7 @@ export class ProviderSessionManagerV2 extends Context.Service<
 >()("t3/orchestration-v2/ProviderSessionManager/ProviderSessionManagerV2") {}
 
 interface LiveSessionEntry {
+  readonly purpose?: "live-voice";
   readonly attachedThreadIds: ReadonlySet<ThreadId>;
   readonly loadedProviderThreadKeyByThread: ReadonlyMap<ThreadId, string>;
   /** Scope revocation to recorded credential ids so superseded sessions cannot revoke replacements opened before detach. */
@@ -1012,16 +1014,34 @@ export const layerWithOptions = (
         },
       );
 
+      const pendingVoiceCloses = new Map<ProviderSessionId, Fiber.Fiber<Exit.Exit<void>, never>>();
+      const confirmVoiceClose = Effect.fn("ProviderSessionManager.confirmVoiceClose")(function* (
+        providerSessionId: ProviderSessionId,
+        reason: ProviderSessionReleaseReason,
+      ) {
+        const pending = pendingVoiceCloses.get(providerSessionId);
+        if (pending === undefined) return;
+        const closed = yield* Fiber.join(pending).pipe(
+          Effect.timeoutOption(RELEASE_SCOPE_CLOSE_TIMEOUT_MS),
+        );
+        if (Option.isNone(closed))
+          return yield* new ProviderSessionReleaseError({ providerSessionId, reason });
+        if (Exit.isFailure(closed.value)) return yield* Effect.failCause(closed.value.cause);
+        pendingVoiceCloses.delete(providerSessionId);
+      });
+
       // Scope close can wedge on a misbehaving adapter finalizer (e.g. a
       // provider process that never yields its message stream).
       const closeScopeWithin = Effect.fn("ProviderSessionManager.closeScopeWithin")(function* (
         scope: Scope.Closeable,
         annotations: { readonly providerSessionId?: ProviderSessionId; readonly reason: string },
+        voiceSessionId?: ProviderSessionId,
       ) {
         const closeFiber = yield* Scope.close(scope, Exit.void).pipe(
           Effect.exit,
           Effect.forkDetach({ startImmediately: true }),
         );
+        if (voiceSessionId !== undefined) pendingVoiceCloses.set(voiceSessionId, closeFiber);
         const closeExit = yield* Fiber.join(closeFiber).pipe(
           Effect.timeoutOption(RELEASE_SCOPE_CLOSE_TIMEOUT_MS),
         );
@@ -1045,6 +1065,12 @@ export const layerWithOptions = (
             Effect.forkDetach,
           );
         }
+        if (
+          voiceSessionId !== undefined &&
+          Option.isSome(closeExit) &&
+          Exit.isSuccess(closeExit.value)
+        )
+          pendingVoiceCloses.delete(voiceSessionId);
         return closeExit;
       });
 
@@ -1062,7 +1088,7 @@ export const layerWithOptions = (
           removeLiveEntry(input),
           ([entry, releasedAt]) =>
             Option.match(entry, {
-              onNone: () => Effect.void,
+              onNone: () => confirmVoiceClose(input.providerSessionId, input.reason),
               onSome: (entry) =>
                 Effect.gen(function* () {
                   const releasedBackgroundTasks = yield* readReleasedBackgroundTasks({
@@ -1085,10 +1111,19 @@ export const layerWithOptions = (
                       input.detail ?? `Provider session released: ${input.reason}.`,
                     );
                   }
-                  const closeExit = yield* closeScopeWithin(entry.scope, {
-                    providerSessionId: input.providerSessionId,
-                    reason: input.reason,
-                  });
+                  const closeExit = yield* closeScopeWithin(
+                    entry.scope,
+                    {
+                      providerSessionId: input.providerSessionId,
+                      reason: input.reason,
+                    },
+                    entry.purpose === "live-voice" ? input.providerSessionId : undefined,
+                  );
+                  if (entry.purpose === "live-voice" && Option.isNone(closeExit))
+                    return yield* new ProviderSessionReleaseError({
+                      providerSessionId: input.providerSessionId,
+                      reason: input.reason,
+                    });
                   const records = {
                     entry,
                     reason: input.reason,
@@ -2313,7 +2348,19 @@ export const layerWithOptions = (
               }
               const key = sessionKey(input.providerSessionId);
               const existing = (yield* Ref.get(sessions)).get(key);
+              const liveVoice = input.purpose === "live-voice";
+              if (liveVoice && pendingVoiceCloses.has(input.providerSessionId))
+                return yield* new ProviderSessionOpenError({
+                  instanceId: input.modelSelection.instanceId,
+                  providerSessionId: input.providerSessionId,
+                });
               if (existing !== undefined) {
+                if (liveVoice) {
+                  return yield* new ProviderSessionOpenError({
+                    instanceId: input.modelSelection.instanceId,
+                    providerSessionId: input.providerSessionId,
+                  });
+                }
                 const attached = existing.attachedThreadIds.has(input.threadId);
                 if (!attached && !existing.supportsMultipleProviderThreads) {
                   return yield* new ProviderSessionOpenError({
@@ -2342,19 +2389,21 @@ export const layerWithOptions = (
                     }),
                 ),
               );
-              const prepared = yield* prepareMcpSession(
-                input.threadId,
-                input.modelSelection.instanceId,
-              ).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new ProviderSessionOpenError({
-                      instanceId: input.modelSelection.instanceId,
-                      providerSessionId: input.providerSessionId,
-                      cause,
-                    }),
-                ),
-              );
+              const processThreadId = liveVoice
+                ? ThreadId.make(`live-voice-runtime:${input.providerSessionId}`)
+                : input.threadId;
+              const prepared = liveVoice
+                ? { mcpCredentialId: undefined, config: undefined, issued: false }
+                : yield* prepareMcpSession(input.threadId, input.modelSelection.instanceId).pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new ProviderSessionOpenError({
+                          instanceId: input.modelSelection.instanceId,
+                          providerSessionId: input.providerSessionId,
+                          cause,
+                        }),
+                    ),
+                  );
               const mcpCredentialId = prepared.mcpCredentialId;
               let reservationDropped = mcpCredentialId === undefined;
               const dropReservation = Effect.sync(() => {
@@ -2364,20 +2413,20 @@ export const layerWithOptions = (
                 }
               });
               const sessionScope = yield* Scope.fork(sessionScopes);
-              yield* agentScope.clear(input.threadId);
+              if (!liveVoice) yield* agentScope.clear(input.threadId);
               const runtime = yield* adapter
                 .openSession({
-                  threadId: input.threadId,
+                  threadId: processThreadId,
                   providerSessionId: input.providerSessionId,
                   modelSelection: input.modelSelection,
                   runtimePolicy: input.runtimePolicy,
-                  ...(input.resumeFromSession === undefined
+                  ...(liveVoice || input.resumeFromSession === undefined
                     ? {}
                     : { resumeFromSession: input.resumeFromSession }),
-                  ...(input.initialNativeThreadId === undefined
+                  ...(liveVoice || input.initialNativeThreadId === undefined
                     ? {}
                     : { initialNativeThreadId: input.initialNativeThreadId }),
-                  ...(input.initialProviderItemIdentityVersion === undefined
+                  ...(liveVoice || input.initialProviderItemIdentityVersion === undefined
                     ? {}
                     : {
                         initialProviderItemIdentityVersion:
@@ -2387,7 +2436,7 @@ export const layerWithOptions = (
                 .pipe(
                   Effect.provideService(Scope.Scope, sessionScope),
                   Effect.provideService(McpProviderSessions.RuntimeMcpSessionSnapshot, {
-                    threadId: input.threadId,
+                    threadId: processThreadId,
                     config: prepared.config,
                   }),
                   // Bound scope close after cleanup; a wedged finalizer must not hold the open lock or interrupter.
@@ -2399,10 +2448,14 @@ export const layerWithOptions = (
                           : Effect.void,
                       ),
                       Effect.ensuring(
-                        closeScopeWithin(sessionScope, {
-                          providerSessionId: input.providerSessionId,
-                          reason: "open_failed",
-                        }),
+                        closeScopeWithin(
+                          sessionScope,
+                          {
+                            providerSessionId: input.providerSessionId,
+                            reason: "open_failed",
+                          },
+                          liveVoice ? input.providerSessionId : undefined,
+                        ),
                       ),
                     ),
                   ),
@@ -2424,7 +2477,8 @@ export const layerWithOptions = (
               >(new Map());
               const exposedRuntime = decorateRuntime(runtime, eventSubscribers);
               const entry: LiveSessionEntry = {
-                attachedThreadIds: new Set([input.threadId]),
+                ...(liveVoice ? { purpose: "live-voice" as const } : {}),
+                attachedThreadIds: new Set(liveVoice ? [] : [input.threadId]),
                 loadedProviderThreadKeyByThread: new Map(),
                 mcpCredentialIdByThread:
                   mcpCredentialId === undefined
@@ -2454,7 +2508,7 @@ export const layerWithOptions = (
                 input.providerSessionId,
                 writeProviderSessionEvents({
                   runtime,
-                  threadIds: [input.threadId],
+                  threadIds: entry.attachedThreadIds,
                   type: "provider-session.attached",
                   payload: runtime.providerSession,
                 }),

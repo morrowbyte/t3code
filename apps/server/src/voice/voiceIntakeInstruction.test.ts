@@ -7,12 +7,17 @@ it("keeps the full multipart original instruction and preview without a model pa
     "Announce Sent to screen readers. Do not reload or open a dialog.",
   ];
   const preview = "button#send, form#contact; selected before classification";
+  const conversation = "Rustlings tutoring: give hints; do not write the solution.";
   const text = voiceIntakeInstruction(
     parts.map((quote) => ({ quote })),
     preview,
+    undefined,
+    conversation,
   )!;
   for (const part of parts) assert.include(text, part);
   assert.include(text, preview);
+  assert.include(text, conversation);
+  assert.include(text, "reference only");
   assert.notInclude(text, "publicly available for everyone");
 });
 
@@ -45,6 +50,7 @@ it("rejects an out-of-contract input without silently cutting its authorization"
   assert.isUndefined(voiceIntakeInstruction(Array.from({ length: 9 }, () => ({ quote: "x" }))));
   assert.isUndefined(voiceIntakeInstruction([{ quote: "x" }], "p".repeat(24_001)));
   assert.isUndefined(voiceIntakeInstruction([{ quote: "x" }], null, []));
+  assert.isUndefined(voiceIntakeInstruction([{ quote: "x" }], null, undefined, "x".repeat(12_001)));
 });
 
 it("joins durable fragments of one original anchor without altering a literal selector", () => {

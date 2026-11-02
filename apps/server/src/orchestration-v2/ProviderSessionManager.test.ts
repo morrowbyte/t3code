@@ -331,10 +331,9 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly mcpConfigs?: Ref.Ref<
       ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
     >;
-    readonly beforeOpen?: (input: {
-      readonly providerSessionId: ProviderSessionId;
-      readonly initialProviderItemIdentityVersion?: 2;
-    }) => Effect.Effect<void>;
+    readonly beforeOpen?: (
+      input: ProviderAdapter.ProviderAdapterV2OpenSessionInput,
+    ) => Effect.Effect<void>;
     readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
     readonly liveVoice?: ProviderAdapter.ProviderAdapterV2LiveVoiceRuntime;
     readonly hasPendingBackgroundWorkForThread?: Effect.Effect<boolean>;
@@ -348,6 +347,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     /** Registers the process's closeCount finalizer before `beforeOpen` runs. */
     readonly spawnBeforeOpen?: boolean;
     readonly scopeCloseReached?: Deferred.Deferred<void>;
+    readonly scopeCloseGate?: Deferred.Deferred<void>;
   } = {},
 ) {
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
@@ -362,7 +362,13 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     (options.scopeCloseReached === undefined
       ? Effect.void
       : Deferred.succeed(options.scopeCloseReached, undefined)
-    ).pipe(Effect.andThen(Effect.never)),
+    ).pipe(
+      Effect.andThen(
+        options.scopeCloseGate === undefined
+          ? Effect.never
+          : Deferred.await(options.scopeCloseGate),
+      ),
+    ),
   );
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: ProviderInstanceId.make("codex"),
@@ -474,6 +480,11 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
 });
 
 function layerTest(input: {
+  readonly registryLayer?: Layer.Layer<
+    ProviderAdapterRegistry.ProviderAdapterRegistryV2,
+    never,
+    McpProviderSessions.McpProviderSessions
+  >;
   readonly ensureThread?: ProviderAdapter.ProviderAdapterV2SessionRuntime["ensureThread"];
   readonly observatoryLayer?: Layer.Layer<Observatory.AgentObservatoryService>;
   readonly state: Ref.Ref<TestProviderRuntimeState>;
@@ -507,6 +518,7 @@ function layerTest(input: {
   readonly beforeResume?: Effect.Effect<void>;
   readonly spawnBeforeOpen?: boolean;
   readonly scopeCloseReached?: Deferred.Deferred<void>;
+  readonly scopeCloseGate?: Deferred.Deferred<void>;
   readonly serverSettingsLayer?: ReturnType<typeof ServerSettings.layerTest>;
   readonly projectServiceLayer?: Layer.Layer<ProjectService.ProjectService>;
 }) {
@@ -520,36 +532,39 @@ function layerTest(input: {
           : input.failReleaseEventWrites
             ? layerFailingReleaseEventSink
             : layerTestEventSink;
-  const layerRegistry = Layer.unwrap(
-    makeProviderAdapter(input.state, {
-      failEventStream: input.failEventStream ?? false,
-      ...(input.ensureThread === undefined ? {} : { ensureThread: input.ensureThread }),
-      ...(input.capabilities === undefined ? {} : { capabilities: input.capabilities }),
-      ...(input.mcpConfigs === undefined ? {} : { mcpConfigs: input.mcpConfigs }),
-      ...(input.beforeOpen === undefined ? {} : { beforeOpen: input.beforeOpen }),
-      ...(input.hasPendingBackgroundWork === undefined
-        ? {}
-        : { hasPendingBackgroundWork: input.hasPendingBackgroundWork }),
-      ...(input.liveVoice === undefined ? {} : { liveVoice: input.liveVoice }),
-      ...(input.hasPendingBackgroundWorkForThread === undefined
-        ? {}
-        : { hasPendingBackgroundWorkForThread: input.hasPendingBackgroundWorkForThread }),
-      ...(input.backgroundTasksEndWithProcess === undefined
-        ? {}
-        : { backgroundTasksEndWithProcess: input.backgroundTasksEndWithProcess }),
-      ...(input.hangSessionScopeClose === undefined
-        ? {}
-        : { hangSessionScopeClose: input.hangSessionScopeClose }),
-      ...(input.startTurn === undefined ? {} : { startTurn: input.startTurn }),
-      ...(input.interruptTurn === undefined ? {} : { interruptTurn: input.interruptTurn }),
-      ...(input.beforeUnload === undefined ? {} : { beforeUnload: input.beforeUnload }),
-      ...(input.beforeResume === undefined ? {} : { beforeResume: input.beforeResume }),
-      ...(input.spawnBeforeOpen === undefined ? {} : { spawnBeforeOpen: input.spawnBeforeOpen }),
-      ...(input.scopeCloseReached === undefined
-        ? {}
-        : { scopeCloseReached: input.scopeCloseReached }),
-    }).pipe(Effect.map(ProviderAdapterRegistry.layerSingle)),
-  );
+  const layerRegistry =
+    input.registryLayer ??
+    Layer.unwrap(
+      makeProviderAdapter(input.state, {
+        failEventStream: input.failEventStream ?? false,
+        ...(input.ensureThread === undefined ? {} : { ensureThread: input.ensureThread }),
+        ...(input.capabilities === undefined ? {} : { capabilities: input.capabilities }),
+        ...(input.mcpConfigs === undefined ? {} : { mcpConfigs: input.mcpConfigs }),
+        ...(input.beforeOpen === undefined ? {} : { beforeOpen: input.beforeOpen }),
+        ...(input.hasPendingBackgroundWork === undefined
+          ? {}
+          : { hasPendingBackgroundWork: input.hasPendingBackgroundWork }),
+        ...(input.liveVoice === undefined ? {} : { liveVoice: input.liveVoice }),
+        ...(input.hasPendingBackgroundWorkForThread === undefined
+          ? {}
+          : { hasPendingBackgroundWorkForThread: input.hasPendingBackgroundWorkForThread }),
+        ...(input.backgroundTasksEndWithProcess === undefined
+          ? {}
+          : { backgroundTasksEndWithProcess: input.backgroundTasksEndWithProcess }),
+        ...(input.hangSessionScopeClose === undefined
+          ? {}
+          : { hangSessionScopeClose: input.hangSessionScopeClose }),
+        ...(input.startTurn === undefined ? {} : { startTurn: input.startTurn }),
+        ...(input.interruptTurn === undefined ? {} : { interruptTurn: input.interruptTurn }),
+        ...(input.beforeUnload === undefined ? {} : { beforeUnload: input.beforeUnload }),
+        ...(input.beforeResume === undefined ? {} : { beforeResume: input.beforeResume }),
+        ...(input.spawnBeforeOpen === undefined ? {} : { spawnBeforeOpen: input.spawnBeforeOpen }),
+        ...(input.scopeCloseReached === undefined
+          ? {}
+          : { scopeCloseReached: input.scopeCloseReached }),
+        ...(input.scopeCloseGate === undefined ? {} : { scopeCloseGate: input.scopeCloseGate }),
+      }).pipe(Effect.map(ProviderAdapterRegistry.layerSingle)),
+    );
   const layerConfiguredMcpRegistry =
     input.pauseResolve === undefined
       ? layerTestMcpRegistry
@@ -1875,6 +1890,46 @@ it.effect(
       const mcpConfigs = yield* Ref.make<
         ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
       >([]);
+      let revision = 1;
+      const voiceCloseReached = yield* Deferred.make<void>();
+      const voiceCloseGate = yield* Deferred.make<void>();
+      const opens: Array<{
+        revision: number;
+        input: ProviderAdapter.ProviderAdapterV2OpenSessionInput;
+      }> = [];
+      const processOwners = new Map<string, string>();
+      const agentScope = {
+        ...AgentScope.defaultValue(),
+        clear: (id: string) => Effect.sync(() => void processOwners.delete(id)),
+      };
+      const registryLayer = Layer.effect(
+        ProviderAdapterRegistry.ProviderAdapterRegistryV2,
+        Effect.gen(function* () {
+          const sessions = yield* McpProviderSessions.McpProviderSessions;
+          return ProviderAdapterRegistry.ProviderAdapterRegistryV2.of({
+            get: () => {
+              const selectedRevision = revision;
+              return makeProviderAdapter(state, {
+                mcpConfigs,
+                hasPendingBackgroundWork: Effect.succeed(selectedRevision === 1),
+                ...(selectedRevision === 3
+                  ? {
+                      hangSessionScopeClose: true,
+                      scopeCloseReached: voiceCloseReached,
+                      scopeCloseGate: voiceCloseGate,
+                    }
+                  : {}),
+                beforeOpen: (input) =>
+                  Effect.sync(() => {
+                    opens.push({ revision: selectedRevision, input });
+                    processOwners.set(input.threadId, input.providerSessionId);
+                  }),
+              }).pipe(Effect.provideService(McpProviderSessions.McpProviderSessions, sessions));
+            },
+            list: () => Effect.succeed([modelSelection.instanceId]),
+          });
+        }),
+      );
       const effect = Effect.gen(function* () {
         const eventSink = yield* EventSink.EventSinkV2;
         const idAllocator = yield* IdAllocator.IdAllocatorV2;
@@ -1911,6 +1966,74 @@ it.effect(
           resolved?.capabilities,
           new Set(["preview", "orchestration", "worktree", "pull-requests"]),
         );
+        const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+        const beforeVoice = yield* projectionStore.getThreadProjection(threadId);
+        for (const currentRevision of [2, 3]) {
+          revision = currentRevision;
+          const voiceId = ProviderSessionId.make(`provider-session-live-${currentRevision}`);
+          const voiceInput = {
+            threadId,
+            providerSessionId: voiceId,
+            modelSelection,
+            runtimePolicy,
+            purpose: "live-voice" as const,
+            resumeFromSession: beforeVoice.providerSessions[0]!,
+            initialNativeThreadId: "text-native-thread",
+          };
+          yield* manager.open(voiceInput);
+          assert.equal(
+            (yield* mcpSessions.read(threadId))?.providerSessionId,
+            captured!.providerSessionId,
+            "opening voice must preserve the text credential",
+          );
+          assert.isDefined(yield* registry.resolve(token!));
+          assert.equal(processOwners.get(threadId), providerSessionId);
+          const opened = opens.at(-1)!;
+          assert.equal(
+            opened.revision,
+            currentRevision,
+            "voice selects the current registry adapter",
+          );
+          assert.notEqual(opened.input.threadId, threadId);
+          assert.isUndefined(opened.input.resumeFromSession);
+          assert.isUndefined(opened.input.initialNativeThreadId);
+          assert.isUndefined((yield* Ref.get(mcpConfigs)).at(-1));
+          assert.deepEqual(yield* projectionStore.getThreadProjection(threadId), beforeVoice);
+          if (currentRevision === 3) {
+            try {
+              const closing = yield* manager
+                .close(voiceId)
+                .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
+              yield* Deferred.await(voiceCloseReached);
+              yield* TestClock.adjust("30 seconds");
+              assert.isTrue(
+                Exit.isFailure(yield* Fiber.join(closing)),
+                "voice release requires confirmed scope completion",
+              );
+              const stillClosing = yield* manager
+                .close(voiceId)
+                .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
+              yield* TestClock.adjust("30 seconds");
+              assert.isTrue(
+                Exit.isFailure(yield* Fiber.join(stillClosing)),
+                "repeated close cannot forget the pending process",
+              );
+            } finally {
+              yield* Deferred.succeed(voiceCloseGate, undefined);
+            }
+          }
+          yield* manager.close(voiceId);
+          assert.isTrue(yield* manager.isLive(providerSessionId));
+          assert.isFalse(yield* manager.isLive(voiceId));
+          assert.equal(processOwners.get(threadId), providerSessionId);
+          assert.equal(
+            (yield* mcpSessions.read(threadId))?.providerSessionId,
+            captured!.providerSessionId,
+          );
+          assert.isDefined(yield* registry.resolve(token!));
+          assert.deepEqual(yield* projectionStore.getThreadProjection(threadId), beforeVoice);
+        }
+        assert.notEqual(opens[1]!.input.threadId, opens[2]!.input.threadId);
         const replacementId = ProviderSessionId.make("provider-session:replacement-mcp");
         const locked = yield* Deferred.make<void>();
         const unlock = yield* Deferred.make<void>();
@@ -1974,8 +2097,10 @@ it.effect(
             state,
             idleTimeoutMs: 1_000,
             mcpConfigs,
+            registryLayer,
           }),
         ),
+        Effect.provideService(AgentScope, agentScope),
       );
     }),
 );

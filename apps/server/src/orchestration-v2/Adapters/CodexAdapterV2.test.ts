@@ -2434,6 +2434,143 @@ function withReplayRequestId(
     : entry;
 }
 
+describe("CodexAdapterV2 provisional thread start", () => {
+  it.effect.each([
+    "isolated",
+    "isolated-observatory",
+    "missing-runtime-roots",
+    "missing-thread-environments",
+    "null-runtime-roots",
+    "writable-sandbox",
+    "network-access",
+    "approval-required",
+    "mcp-tools",
+    "missing-model",
+  ] as const)("validates native isolation before SDK decoding (%s)", (scenario) =>
+    Effect.gen(function* () {
+      const nativeThreadId = `native-provisional-${scenario}`;
+      const preamble = codexReplayPreamble({
+        nativeThreadId,
+        nativeTurnId: "unused",
+        prompt: "unused",
+      });
+      const initializeEntry = preamble[1];
+      const startEntry = preamble[4];
+      if (
+        initializeEntry?.type !== "emit_inbound" ||
+        !Predicate.isObject(initializeEntry.frame) ||
+        startEntry?.type !== "emit_inbound" ||
+        !Predicate.isObject(startEntry.frame) ||
+        !Predicate.isObject(startEntry.frame.result) ||
+        !Predicate.isObject(startEntry.frame.result.thread)
+      )
+        return yield* Effect.die("Missing native thread/start fixture.");
+      const started: Record<string, unknown> = {
+        ...startEntry.frame.result,
+        thread: {
+          ...startEntry.frame.result.thread,
+          ...(scenario === "missing-thread-environments" ? {} : { environments: [] }),
+        },
+        approvalPolicy: scenario === "approval-required" ? "on-request" : "never",
+        sandbox:
+          scenario === "writable-sandbox"
+            ? { type: "workspaceWrite", writableRoots: [], networkAccess: false }
+            : { type: "readOnly", networkAccess: scenario === "network-access" },
+        ...(scenario === "missing-runtime-roots"
+          ? {}
+          : { runtimeWorkspaceRoots: scenario === "null-runtime-roots" ? null : [] }),
+      };
+      if (scenario === "missing-model") delete started.model;
+      const responses: Record<string, unknown> = {
+        initialize: initializeEntry.frame.result,
+        "config/read": { config: { mcp_servers: {} } },
+        "thread/start": started,
+        "mcpServerStatus/list": {
+          data:
+            scenario === "mcp-tools"
+              ? [{ tools: { mutate: {} }, resources: [], resourceTemplates: [] }]
+              : [],
+          nextCursor: null,
+        },
+      };
+      const requests: Array<{ method: string; params: unknown }> = [];
+      const input = yield* Queue.unbounded<Uint8Array, Cause.Done>();
+      const client = yield* CodexClient.make(
+        Stdio.make({
+          args: Effect.succeed([]),
+          stdin: Stream.fromQueue(input),
+          stdout: () =>
+            Sink.forEach((chunk: string | Uint8Array) =>
+              Effect.gen(function* () {
+                const frame = JSON.parse(
+                  typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk),
+                ) as { id?: number; method: string; params: unknown };
+                requests.push({ method: frame.method, params: frame.params });
+                if (frame.id !== undefined)
+                  yield* Queue.offer(
+                    input,
+                    new TextEncoder().encode(
+                      JSON.stringify({ id: frame.id, result: responses[frame.method] }) + "\n",
+                    ),
+                  );
+              }),
+            ),
+          stderr: () => Sink.drain,
+        }),
+      );
+      const fileSystem = yield* FileSystem.FileSystem;
+      const serverConfig = yield* Effect.acquireRelease(
+        ProviderReplayHarness.makeReplayServerConfig(`provisional-${scenario}`).pipe(Effect.orDie),
+        (config) => fileSystem.remove(config.baseDir, { recursive: true }).pipe(Effect.orDie),
+      );
+      const adapter = yield* CodexAdapterV2.makeCodexAdapterV2({
+        instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
+        settings: DEFAULT_CODEX_SETTINGS,
+        environment: {},
+        clientFactory: { open: () => Effect.succeed(client) },
+        crypto: yield* Crypto.Crypto,
+        fileSystem,
+        idAllocator: yield* IdAllocator.IdAllocatorV2,
+        serverConfig,
+      });
+      const threadId = ThreadId.make(`thread-provisional-${scenario}`);
+      const runtimePolicy = { ...CODEX_TEST_RUNTIME_POLICY, provisionalVoiceIntake: true as const };
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make(`session-provisional-${scenario}`),
+        modelSelection: CODEX_TEST_MODEL_SELECTION,
+        runtimePolicy,
+      });
+      const ensure = runtime.ensureThread({
+        threadId,
+        modelSelection: CODEX_TEST_MODEL_SELECTION,
+        runtimePolicy,
+        observatoryAvailable: scenario === "isolated-observatory",
+      });
+      const accepted = scenario === "isolated" || scenario === "isolated-observatory";
+      if (accepted) {
+        const providerThread = yield* ensure;
+        assert.equal(providerThread.nativeThreadRef?.nativeId, nativeThreadId);
+      } else {
+        assert.instanceOf(
+          yield* ensure.pipe(Effect.flip),
+          ProviderAdapter.ProviderAdapterEnsureThreadError,
+        );
+      }
+      assert.equal(
+        requests.some((request) => request.method === "mcpServerStatus/list"),
+        accepted || scenario === "mcp-tools" || scenario === "missing-model",
+      );
+      assert.isFalse(requests.some((request) => request.method === "turn/start"));
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+});
+
 describe("CodexAdapterV2 process exit", () => {
   it.effect.each([
     { exit: "numeric", active: false },
@@ -2847,6 +2984,9 @@ describe("CodexAdapterV2 LiveVoice planner preparation", () => {
     options: {
       readonly start?: Partial<CodexSchema.V2ThreadStartResponse>;
       readonly nativeThreadIds?: ReadonlyArray<string>;
+      readonly onContext?: Parameters<
+        ProviderAdapter.ProviderAdapterV2LiveVoiceRuntime["preparePlanner"]
+      >[0]["onContext"];
       readonly request?: (
         method: string,
         params: unknown,
@@ -3020,6 +3160,7 @@ describe("CodexAdapterV2 LiveVoice planner preparation", () => {
           modelSelection: CODEX_TEST_MODEL_SELECTION,
           serviceTier: "ultrafast",
           reasoningEffort: "low",
+          ...(options.onContext === undefined ? {} : { onContext: options.onContext }),
           onSubmitWork: () => Effect.succeed('{"accepted":false}'),
         }),
     };
@@ -3384,34 +3525,50 @@ describe("CodexAdapterV2 LiveVoice planner preparation", () => {
     }).pipe(Effect.scoped, Effect.provide(dependencies)),
   );
 
-  it.effect("a pending automatic planner readback keeps its cwd until the append returns", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const requested = yield* Deferred.make<void>();
-      const complete = yield* Deferred.make<void>();
-      const planner = yield* openPlanner({
-        request: (method) =>
-          method === "thread/realtime/appendSpeech"
-            ? Deferred.succeed(requested, undefined).pipe(
-                Effect.andThen(Deferred.await(complete)),
-                Effect.as({}),
-              )
-            : undefined,
-      });
-      yield* planner.prepare();
-      yield* planner.startCall();
-      yield* planner.emitNative("item/completed", {
-        threadId: "new-live-planner",
-        turnId: "answer-turn",
-        item: { id: "answer", type: "agentMessage", phase: "final_answer", text: "Result" },
-      });
-      yield* Deferred.await(requested);
-      yield* planner.stop("new-live-planner");
-      assert.isTrue(yield* fileSystem.exists(planner.directories[0]!));
-      yield* Deferred.succeed(complete, undefined);
-      assert.equal(yield* planner.removed, planner.directories[0]);
-      assert.isFalse(yield* fileSystem.exists(planner.directories[0]!));
-    }).pipe(Effect.scoped, Effect.provide(dependencies)),
+  it.effect.each([false, true])(
+    "a pending automatic planner readback keeps its cwd until the append returns (quiet: %s)",
+    (quiet) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const requested = yield* Deferred.make<void>();
+        const complete = yield* Deferred.make<void>();
+        const planner = yield* openPlanner({
+          ...(quiet
+            ? {
+                onContext: () =>
+                  Deferred.succeed(requested, undefined).pipe(
+                    Effect.andThen(Deferred.await(complete)),
+                  ),
+              }
+            : {}),
+          request: (method, params) =>
+            method === "thread/realtime/appendText" &&
+            Predicate.isObject(params) &&
+            params.role === "assistant"
+              ? Deferred.succeed(requested, undefined).pipe(
+                  Effect.andThen(Deferred.await(complete)),
+                  Effect.as({}),
+                )
+              : undefined,
+        });
+        yield* planner.prepare();
+        yield* planner.startCall();
+        yield* planner.emitNative("item/completed", {
+          threadId: "new-live-planner",
+          turnId: "answer-turn",
+          item: { id: "answer", type: "agentMessage", phase: "final_answer", text: "Result" },
+        });
+        yield* Deferred.await(requested);
+        assert.equal(
+          planner.requests.some((request) => request.method === "thread/realtime/appendText"),
+          !quiet,
+        );
+        yield* planner.stop("new-live-planner");
+        assert.isTrue(yield* fileSystem.exists(planner.directories[0]!));
+        yield* Deferred.succeed(complete, undefined);
+        assert.equal(yield* planner.removed, planner.directories[0]);
+        assert.isFalse(yield* fileSystem.exists(planner.directories[0]!));
+      }).pipe(Effect.scoped, Effect.provide(dependencies)),
   );
 
   it.effect(
@@ -3461,10 +3618,7 @@ describe("CodexAdapterV2 LiveVoice planner preparation", () => {
           ],
         });
         assert.isBelow(planner.requests.indexOf(injected), planner.requests.indexOf(realtime));
-        assert.deepEqual(
-          (realtime.params as { initialItems: unknown[] }).initialItems.slice(1),
-          history,
-        );
+        assert.deepEqual((realtime.params as { initialItems: unknown[] }).initialItems, history);
       }).pipe(Effect.scoped, Effect.provide(dependencies)),
   );
 
@@ -3484,11 +3638,7 @@ describe("CodexAdapterV2 LiveVoice planner preparation", () => {
       if (!prepared || !realtime) return yield* Effect.die("Missing voice setup requests.");
       const plannerInstructions = (prepared.params as { baseInstructions: string })
         .baseInstructions;
-      const liveInstructions = (
-        realtime.params as {
-          initialItems: Array<{ role: string; text: string }>;
-        }
-      ).initialItems.find((item) => item.role === "developer")?.text;
+      const liveInstructions = (realtime.params as { prompt: string }).prompt;
       for (const instructions of [liveInstructions, plannerInstructions]) {
         assert.isString(instructions);
         assert.include(

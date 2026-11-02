@@ -740,6 +740,10 @@ export interface ProviderAdapterV2LiveVoiceRuntime {
     readonly modelSelection: ModelSelection;
     readonly serviceTier?: string | null;
     readonly reasoningEffort?: string | null;
+    readonly onContext?: (input: {
+      readonly plannerNativeThreadId: string;
+      readonly text: string;
+    }) => Effect.Effect<void, ProviderAdapterV2Error>;
     readonly onSubmitWork: (input: {
       readonly plannerNativeThreadId: string;
       readonly plannerTurnId: string;

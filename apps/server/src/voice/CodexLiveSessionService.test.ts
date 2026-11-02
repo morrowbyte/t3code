@@ -12,7 +12,7 @@ import {
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import type { DispatchRuntimeOptions } from "../orchestration-v2/DispatchRuntimeOptions.ts";
-import type { LiveVoiceEvent, LiveVoiceSession } from "@t3tools/contracts";
+import type { LiveVoiceError, LiveVoiceEvent, LiveVoiceSession } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -28,6 +28,7 @@ import { TestClock } from "effect/testing";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -41,6 +42,7 @@ import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as CodexLiveSessionService from "./CodexLiveSessionService.ts";
+import { voiceIntakeInstruction } from "./voiceIntakeInstruction.ts";
 
 const decodeJson = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeWorkStatus = Schema.decodeSync(
@@ -96,14 +98,13 @@ const readbackState = (json: string) => {
 };
 
 it.effect.each([false, true])(
-  "uses the native planner, gates active, and queues durable work (reuse runtime: %s)",
+  "uses the native planner, gates active, and queues durable work (projected text runtime reused: %s)",
   (reuseRuntime) =>
     Effect.gen(function* () {
       const nativeEvents =
         yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2LiveVoiceEvent>();
-      const secondNativeEvents = reuseRuntime
-        ? nativeEvents
-        : yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2LiveVoiceEvent>();
+      const secondNativeEvents =
+        yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2LiveVoiceEvent>();
       const secondProviderSessionId = ProviderSessionId.make(
         reuseRuntime ? "provider-session-test" : "provider-session-test-2",
       );
@@ -119,6 +120,12 @@ it.effect.each([false, true])(
         | undefined;
       let plannerOptions:
         | { serviceTier?: string | null; reasoningEffort?: string | null }
+        | undefined;
+      let backgroundContext:
+        | ((input: {
+            plannerNativeThreadId: string;
+            text: string;
+          }) => Effect.Effect<void, ProviderAdapter.ProviderAdapterV2Error>)
         | undefined;
       let controlWork: Parameters<
         ProviderAdapter.ProviderAdapterV2LiveVoiceRuntime["preparePlanner"]
@@ -178,14 +185,27 @@ it.effect.each([false, true])(
           : effect;
       };
       let stops = 0;
+      let stopFailure = false;
+      let stopTransactionGate:
+        | { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> }
+        | undefined;
+      let nextTransaction: typeof stopTransactionGate;
+      let stopGate:
+        | { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> }
+        | undefined;
       const spoken: Array<{ plannerNativeThreadId: string; text: string }> = [];
       const contexts: Array<{ plannerNativeThreadId: string; text: string }> = [];
+      const finalTexts = new Set<string>();
       const contextSignals = new Map<string, Deferred.Deferred<void>>();
       let contextAppendGate: Deferred.Deferred<void> | undefined;
       let previewContextGate: Deferred.Deferred<void> | undefined;
       const deliveryWaiters = new Map<string, () => void>();
+      const finalDeliveryWaiters = new Map<string, () => void>();
       const waitForDelivery = (messageId: string) =>
         new Promise<void>((resolve) => deliveryWaiters.set(messageId, resolve));
+      const waitForFinalDelivery = (messageId: string) =>
+        new Promise<void>((resolve) => finalDeliveryWaiters.set(messageId, resolve));
+      let nativeEventHandled: (() => void) | undefined;
       const deliveryTracer = Tracer.make({
         span: (options) => {
           const span = new Tracer.NativeSpan(options);
@@ -193,21 +213,23 @@ it.effect.each([false, true])(
           span.end = (time, exit) => {
             end(time, exit);
             if (span.name === "VoiceIntake.processLatest") notifyIntakeProcessed?.();
-            if (span.attributes.has("voice.output.delivery"))
+            if (span.name === "CodexLiveSessionService.handleNativeEvent") nativeEventHandled?.();
+            if (span.attributes.has("voice.output.delivery")) {
               deliveryWaiters.get(String(span.attributes.get("voice.output.message_id")))?.();
+              if (span.attributes.get("voice.output.kind") === "final")
+                finalDeliveryWaiters.get(
+                  String(span.attributes.get("voice.output.message_id")),
+                )?.();
+            }
           };
           return span;
         },
       });
       let appendAttempts = 0;
-      let appendSpeechFails = false;
+      let appendOutputFails = false;
       let resolveAppendAttempt: (() => void) | undefined;
       let appendAttemptObserved = new Promise<void>((resolve) => {
         resolveAppendAttempt = resolve;
-      });
-      let resolveSpeech: (() => void) | undefined;
-      let speechObserved = new Promise<void>((resolve) => {
-        resolveSpeech = resolve;
       });
       let gateReadResolvers: Array<() => void> = [];
       let durableProjection: OrchestrationV2ThreadProjection;
@@ -275,6 +297,7 @@ it.effect.each([false, true])(
       let intakeDecision: ProviderAdapter.ProviderAdapterV2LiveVoiceRuntime["decideIntake"];
       let expectedNewTaskOwner: "intake" | undefined;
       let notifyIntakeProcessed: (() => void) | undefined;
+      let startupItems: ReadonlyArray<{ role: string; text: string }> = [];
       const runtime = {
         instanceId: ProviderInstanceId.make("codex-test"),
         providerSessionId: ProviderSessionId.make("provider-session-test"),
@@ -296,6 +319,7 @@ it.effect.each([false, true])(
               message: string;
             }) => Effect.Effect<string>;
             onWorkControl: NonNullable<typeof controlWork>;
+            onContext?: NonNullable<typeof backgroundContext>;
           }) =>
             Effect.gen(function* () {
               assert.equal(input.newTaskAdmission, expectedNewTaskOwner);
@@ -319,6 +343,7 @@ it.effect.each([false, true])(
                 plannerCalls += 1;
                 submitWork = input.onSubmitWork;
                 controlWork = input.onWorkControl;
+                backgroundContext = input.onContext;
                 plannerOptions = {
                   ...(input.serviceTier === undefined ? {} : { serviceTier: input.serviceTier }),
                   ...(input.reasoningEffort === undefined
@@ -328,13 +353,41 @@ it.effect.each([false, true])(
                 return { plannerNativeThreadId: `planner-native-${plannerCalls}` };
               });
             }),
-          start: () => Effect.void,
-          stop: () =>
+          start: (
+            input: Parameters<ProviderAdapter.ProviderAdapterV2LiveVoiceRuntime["start"]>[0],
+          ) =>
             Effect.sync(() => {
+              startupItems = input.initialItems ?? [];
+            }),
+          stop: () =>
+            Effect.gen(function* () {
               stops += 1;
+              const gate = stopGate;
+              stopGate = undefined;
+              if (gate !== undefined) {
+                yield* Deferred.succeed(gate.started, undefined);
+                yield* Deferred.await(gate.release);
+              }
+              if (stopFailure) {
+                nextTransaction = stopTransactionGate;
+                stopTransactionGate = undefined;
+                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver: ProviderDriverKind.make("codex"),
+                  detail: "Native stop was not acknowledged.",
+                });
+              }
             }),
           appendContext: (input: { plannerNativeThreadId: string; text: string }) =>
             Effect.gen(function* () {
+              if (finalTexts.has(input.text)) {
+                appendAttempts += 1;
+                resolveAppendAttempt?.();
+                if (appendOutputFails)
+                  return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                    driver: ProviderDriverKind.make("codex"),
+                    detail: "Ambiguous native append acknowledgement.",
+                  });
+              }
               contexts.push(input);
               const gate = contextAppendGate;
               contextAppendGate = undefined;
@@ -349,17 +402,9 @@ it.effect.each([false, true])(
             }),
           appendSpeech: (input: { plannerNativeThreadId: string; text: string }) =>
             Effect.gen(function* () {
-              appendAttempts += 1;
-              resolveAppendAttempt?.();
-              if (appendSpeechFails)
-                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
-                  driver: ProviderDriverKind.make("codex"),
-                  detail: "Ambiguous native append acknowledgement.",
-                });
               spoken.push(input);
               if (input.text.startsWith("Die Arbeit läuft noch.") && quietSpeechSignal)
                 yield* Deferred.succeed(quietSpeechSignal, undefined);
-              resolveSpeech?.();
             }),
         },
       } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime;
@@ -386,7 +431,21 @@ it.effect.each([false, true])(
       const openedRuntimes: Array<
         Parameters<ProviderSessionManager.ProviderSessionManagerV2Shape["open"]>[0]
       > = [];
-      let failNextLookup = false;
+      let failNextOpen = false;
+      const activeConsumers = new Set<ProviderSessionId>();
+      const releasedRuntimes: ProviderSessionId[] = [];
+      let releaseFailure = false;
+      let releaseGate:
+        | { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> }
+        | undefined;
+      const runtimeReleases = new Map<ProviderSessionId, Deferred.Deferred<void>>();
+      const runtimeLookups: ProviderSessionId[] = [];
+      let unresolvedStop: LiveVoiceSession | undefined;
+      const lateScope = yield* Scope.make();
+      let latePrepare: Fiber.Fiber<Exit.Exit<LiveVoiceSession, LiveVoiceError>, never> | undefined;
+      let lateOpenGate:
+        | { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> }
+        | undefined;
       const session = {
         sessionId,
         subject: "principal-subject",
@@ -441,8 +500,31 @@ it.effect.each([false, true])(
         cwd: "/private/test-worktree",
       };
       let currentPolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy = policy;
+      const sqlLayer = Layer.effect(
+        SqlClient.SqlClient,
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const withTransaction: typeof sql.withTransaction = (effect) =>
+            Effect.suspend(() => {
+              const gate = nextTransaction;
+              nextTransaction = undefined;
+              return gate === undefined
+                ? sql.withTransaction(effect)
+                : Deferred.succeed(gate.started, undefined).pipe(
+                    Effect.andThen(Deferred.await(gate.release)),
+                    Effect.andThen(sql.withTransaction(effect)),
+                  );
+            });
+          return new Proxy(sql, {
+            get: (target, property, receiver) =>
+              property === "withTransaction"
+                ? withTransaction
+                : Reflect.get(target, property, receiver),
+          });
+        }),
+      ).pipe(Layer.provide(NodeSqliteClient.layer({ filename: ":memory:" })));
       const dependencies = Layer.mergeAll(
-        NodeSqliteClient.layer({ filename: ":memory:" }),
+        sqlLayer,
         NodeCrypto.layer,
         Layer.succeed(SessionStore.SessionStore, {
           listActive: () => {
@@ -464,19 +546,8 @@ it.effect.each([false, true])(
         }),
         Layer.succeed(ProviderSessionManager.ProviderSessionManagerV2, {
           get: (providerSessionId: ProviderSessionId) =>
-            Effect.gen(function* () {
-              const gate = lookupGate;
-              lookupGate = undefined;
-              if (gate !== undefined) {
-                yield* Deferred.succeed(gate.started, undefined);
-                yield* Deferred.await(gate.release);
-              }
-              if (failNextLookup) {
-                failNextLookup = false;
-                return yield* new ProviderSessionManager.ProviderSessionLookupError({
-                  providerSessionId,
-                });
-              }
+            Effect.sync(() => {
+              runtimeLookups.push(providerSessionId);
               const existing = runtimes.get(providerSessionId);
               return existing === undefined ? Option.none() : Option.some(existing);
             }),
@@ -484,8 +555,26 @@ it.effect.each([false, true])(
             input: Parameters<ProviderSessionManager.ProviderSessionManagerV2Shape["open"]>[0],
           ) =>
             Effect.gen(function* () {
+              const gate = lookupGate;
+              lookupGate = undefined;
+              if (gate !== undefined) {
+                yield* Deferred.succeed(gate.started, undefined);
+                yield* Deferred.await(gate.release);
+              }
+              if (failNextOpen) {
+                failNextOpen = false;
+                return yield* new ProviderSessionManager.ProviderSessionOpenError({
+                  instanceId: input.modelSelection.instanceId,
+                  providerSessionId: input.providerSessionId,
+                });
+              }
               const events =
-                yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2LiveVoiceEvent>();
+                openedRuntimes.length === 0
+                  ? nativeEvents
+                  : openedRuntimes.length === 1
+                    ? secondNativeEvents
+                    : yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2LiveVoiceEvent>();
+              runtimeReleases.set(input.providerSessionId, yield* Deferred.make<void>());
               const opened = {
                 ...secondRuntime,
                 providerSessionId: input.providerSessionId,
@@ -494,7 +583,18 @@ it.effect.each([false, true])(
                   get decideIntake() {
                     return intakeDecision;
                   },
-                  events: Stream.fromQueue(events),
+                  events: Stream.unwrap(
+                    Effect.sync(() => {
+                      activeConsumers.add(input.providerSessionId);
+                      return Stream.fromQueue(events);
+                    }),
+                  ).pipe(
+                    Stream.ensuring(
+                      Effect.sync(() => {
+                        activeConsumers.delete(input.providerSessionId);
+                      }),
+                    ),
+                  ),
                 },
               };
               runtimes.set(
@@ -504,6 +604,32 @@ it.effect.each([false, true])(
               runtimeEvents.set(input.providerSessionId, events);
               openedRuntimes.push(input);
               return opened as ProviderAdapter.ProviderAdapterV2SessionRuntime;
+            }),
+          release: (
+            input: Parameters<ProviderSessionManager.ProviderSessionManagerV2Shape["release"]>[0],
+          ) =>
+            Effect.gen(function* () {
+              assert.match(input.providerSessionId, /^provider-session-live-/);
+              assert.isFalse(
+                activeConsumers.has(input.providerSessionId),
+                "the queue consumer ends before runtime release",
+              );
+              const gate = releaseGate;
+              releaseGate = undefined;
+              if (gate !== undefined) {
+                yield* Deferred.succeed(gate.started, undefined);
+                yield* Deferred.await(gate.release);
+              }
+              if (releaseFailure)
+                return yield* new ProviderSessionManager.ProviderSessionReleaseError({
+                  providerSessionId: input.providerSessionId,
+                  reason: input.reason,
+                });
+              const signal = runtimeReleases.get(input.providerSessionId);
+              if (signal === undefined) return;
+              releasedRuntimes.push(input.providerSessionId);
+              runtimes.delete(input.providerSessionId);
+              yield* Deferred.succeed(signal, undefined);
             }),
         } as unknown as ProviderSessionManager.ProviderSessionManagerV2Shape),
         Layer.succeed(ThreadManagementService.ThreadManagementService, {
@@ -671,7 +797,7 @@ it.effect.each([false, true])(
                       slug: "gpt-6-luna",
                       capabilities: {
                         optionDescriptors: [
-                          { id: "reasoningEffort", type: "select", options: [{ id: "medium" }] },
+                          { id: "reasoningEffort", type: "select", options: [{ id: "low" }] },
                           { id: "serviceTier", type: "select", options: [{ id: "priority" }] },
                         ],
                       },
@@ -691,7 +817,17 @@ it.effect.each([false, true])(
           clientRequestId: "prepare-1",
         });
         assert.equal(prepared.status, "prepared");
-        assert.equal(prepared.providerSessionId, "provider-session-test");
+        assert.notEqual(
+          prepared.providerSessionId,
+          "provider-session-test",
+          "a new voice call must not reuse the projected text runtime",
+        );
+        assert.lengthOf(openedRuntimes, 1, "a new voice call opens a fresh runtime");
+        assert.equal(openedRuntimes[0]!.purpose, "live-voice");
+        assert.notInclude(runtimeLookups, runtime.providerSessionId);
+        assert.isTrue(runtimes.has(runtime.providerSessionId), "the text runtime remains alive");
+        assert.isUndefined(openedRuntimes[0]!.resumeFromSession);
+        assert.isUndefined(openedRuntimes[0]!.initialNativeThreadId);
         assert.equal(prepared.plannerNativeThreadId, "planner-native-1");
         assert.deepEqual(plannerOptions, { serviceTier: "priority", reasoningEffort: "high" });
         const duplicatePrepare = yield* service.prepare(session, {
@@ -763,6 +899,49 @@ it.effect.each([false, true])(
         );
         assert.equal(activeEvent.type, "status");
 
+        assert.isFunction(
+          backgroundContext,
+          "background context requires a quiet client transport",
+        );
+        const pendingContext = yield* backgroundContext!({
+          plannerNativeThreadId: "planner-native-1",
+          text: "Three open items are available as background context.",
+        }).pipe(Effect.forkChild({ startImmediately: true }));
+        const contextEvent = yield* waitForEvent((event) => event.type === "context");
+        if (contextEvent.type !== "context") throw new Error("Missing quiet context event");
+        assert.equal(contextEvent.text, "Three open items are available as background context.");
+        const staleContextAck = yield* service
+          .contextDelivered(session, {
+            leaseId: prepared.leaseId,
+            generation: prepared.generation + 1,
+            deliveryId: contextEvent.deliveryId,
+            accepted: true,
+          })
+          .pipe(Effect.flip);
+        assert.equal(staleContextAck.code, "session_not_found");
+        yield* service.contextDelivered(session, {
+          leaseId: prepared.leaseId,
+          generation: prepared.generation,
+          deliveryId: contextEvent.deliveryId,
+          accepted: true,
+        });
+        yield* Fiber.join(pendingContext);
+        const refusedTransport = yield* backgroundContext!({
+          plannerNativeThreadId: "planner-native-1",
+          text: "Refused transport must not become a spoken append.",
+        }).pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
+        const refusedContextEvent = yield* waitForEvent((event) => event.type === "context");
+        if (refusedContextEvent.type !== "context")
+          throw new Error("Missing refused context event");
+        yield* service.contextDelivered(session, {
+          leaseId: prepared.leaseId,
+          generation: prepared.generation,
+          deliveryId: refusedContextEvent.deliveryId,
+          accepted: false,
+        });
+        assert.isTrue(Exit.isFailure(yield* Fiber.join(refusedTransport)));
+        assert.equal(spoken.length, 0);
+
         const legacyDelivered = yield* Queue.unbounded<LiveVoiceEvent>();
         yield* service
           .subscribe(session, {
@@ -827,6 +1006,7 @@ it.effect.each([false, true])(
           childStatus: "running" | "completed",
           finalText = `  ${`durable answer for ${runId} `.repeat(400)}\n  `,
         ) => {
+          finalTexts.add(finalText);
           const commentaryText = `commentary for ${runId}`;
           const commentaryNodeId = `commentary-${runId}`;
           const finalNodeId = `assistant-${runId}`;
@@ -1669,6 +1849,8 @@ it.effect.each([false, true])(
             { id: "checkpoint-durable-run-1", runId: "durable-run-1", status: "missing" },
           ],
         } as unknown as OrchestrationV2ThreadProjection;
+        const attemptsBeforeFinal = appendAttempts;
+        const finalDelivery = waitForFinalDelivery("final-durable-run-1");
         const childGateRead = waitForGateRead();
         yield* Queue.offer(
           t3EventQueues.get("subagent.updated")!,
@@ -1684,7 +1866,7 @@ it.effect.each([false, true])(
           } as never),
         );
         yield* childGateRead;
-        yield* Effect.promise(() => speechObserved);
+        yield* Effect.promise(() => finalDelivery);
         yield* Deferred.await(workFinished);
         assert.equal(completedWork, 1, "the held canonical job completes exactly once");
         assert.deepEqual(
@@ -1701,26 +1883,18 @@ it.effect.each([false, true])(
           yield* control("status", "explicit-result", "durable-run-1"),
         ) as { tasks: Array<{ result: string }> };
         assert.isAbove(fullResult.tasks[0]!.result.length, 1_000);
-        assert.deepEqual(spoken, [
-          {
-            plannerNativeThreadId: "planner-native-1",
-            text: `  ${`durable answer for durable-run-1 `.repeat(400)}\n  `,
-          },
-        ]);
-        assert.isFalse(
-          contexts.some((message) => message.text.includes("durable answer for durable-run-1")),
-          "the actual final answer is delivered only by the final path",
-        );
+        assert.deepEqual(spoken, [], "a background result must not force a speaking turn");
+        assert.deepEqual(contexts.at(-1), {
+          plannerNativeThreadId: "planner-native-1",
+          text: `  ${`durable answer for durable-run-1 `.repeat(400)}\n  `,
+        });
         const sentReceipt = yield* sql<{ receipt_json: string }>`
           SELECT receipt_json FROM codex_live_voice_intents
           WHERE lease_id = ${prepared.leaseId} AND generation = ${prepared.generation}
             AND planner_turn_id = ${"planner-turn-1"}
         `;
         assert.equal(readbackState(sentReceipt[0]!.receipt_json), "sent");
-        speechObserved = new Promise<void>((resolve) => {
-          resolveSpeech = resolve;
-        });
-        appendSpeechFails = true;
+        appendOutputFails = true;
         yield* invoke("call-next", "Queue follow-up work", "planner-turn-2");
         assert.equal(sends, 2);
         durableProjection = {
@@ -1758,11 +1932,11 @@ it.effect.each([false, true])(
         );
         yield* ambiguousGateRead;
         yield* Effect.promise(() => appendAttemptObserved);
-        assert.equal(appendAttempts, 2);
+        assert.equal(appendAttempts, attemptsBeforeFinal + 2);
         assert.equal(
           spoken.length,
-          1,
-          "ambiguous append acknowledgement is not treated as delivery",
+          0,
+          "ambiguous context acknowledgement never forces a speaking turn",
         );
         const unknownReceipt = yield* sql<{ receipt_json: string }>`
           SELECT receipt_json FROM codex_live_voice_intents
@@ -1782,9 +1956,13 @@ it.effect.each([false, true])(
           duplicateReadback,
           yield* invoke("call-next-again", "Queue follow-up work", "planner-turn-2"),
         );
-        assert.equal(appendAttempts, 2, "a claimed readback is never blindly retried");
+        assert.equal(
+          appendAttempts,
+          attemptsBeforeFinal + 2,
+          "a claimed readback is never blindly retried",
+        );
 
-        appendSpeechFails = false;
+        appendOutputFails = false;
         yield* invoke("call-empty-final", "Queue commentary and an empty final", "planner-turn-3");
         assert.equal(sends, 3);
         durableProjection = makeReadyProjection("durable-run-3", 3, " \t\n");
@@ -1805,7 +1983,7 @@ it.effect.each([false, true])(
         yield* emptyFinalGateRead;
         assert.equal(
           appendAttempts,
-          2,
+          attemptsBeforeFinal + 2,
           "an empty terminal final item cannot fall back to earlier commentary",
         );
         const staleGeneration = yield* Effect.exit(
@@ -1865,12 +2043,18 @@ it.effect.each([false, true])(
         );
         yield* Deferred.await(contextBeforeEnd);
         durableProjection = makeReadyProjection("durable-run-4", 4);
+        const contextPendingAtEnd = yield* backgroundContext!({
+          plannerNativeThreadId: "planner-native-1",
+          text: "Do not retain this delivery after EndCall.",
+        }).pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
+        yield* waitForEvent((event) => event.type === "context");
         const stopped = yield* service.stop(session, {
           leaseId: prepared.leaseId,
           generation: prepared.generation,
           clientRequestId: "stop-1",
         });
         assert.equal(stopped.status, "stopping");
+        assert.isTrue(Exit.isFailure(yield* Fiber.join(contextPendingAtEnd)));
         assert.isFalse(
           yield* Deferred.isDone(heldAtEnd),
           "End remains reachable during native I/O",
@@ -1894,7 +2078,7 @@ it.effect.each([false, true])(
         yield* Effect.yieldNow;
         assert.equal(
           appendAttempts,
-          2,
+          attemptsBeforeFinal + 2,
           "Stop Live suppresses readback without cancelling queued work",
         );
         const acceptedWorkAfterStop = yield* invoke(
@@ -1930,6 +2114,7 @@ it.effect.each([false, true])(
             event.session.generation === prepared.generation &&
             event.session.status === "closed",
         );
+        yield* Deferred.await(runtimeReleases.get(prepared.providerSessionId!)!);
         const legacyEvents = yield* Stream.runCollect(
           Stream.fromQueue(legacyDelivered).pipe(
             Stream.takeUntil(
@@ -1961,7 +2146,13 @@ it.effect.each([false, true])(
           threadId,
           clientRequestId: "prepare-2",
         });
-        assert.equal(secondPrepared.providerSessionId, secondProviderSessionId);
+        assert.notEqual(secondPrepared.providerSessionId, secondProviderSessionId);
+        assert.notEqual(secondPrepared.providerSessionId, prepared.providerSessionId);
+        assert.lengthOf(openedRuntimes, 2, "the next call also opens a fresh runtime");
+        assert.equal(openedRuntimes[1]!.purpose, "live-voice");
+        assert.isUndefined(openedRuntimes[1]!.resumeFromSession);
+        assert.isUndefined(openedRuntimes[1]!.initialNativeThreadId);
+        assert.isTrue(runtimes.has(runtime.providerSessionId));
         assert.equal(secondPrepared.plannerNativeThreadId, "planner-native-2");
         yield* service
           .subscribe(session, {
@@ -2067,8 +2258,8 @@ it.effect.each([false, true])(
         assert.equal(sends, 5);
         assert.equal(
           appendAttempts,
-          2,
-          "a native failure committed during principal lookup prevents appendSpeech",
+          attemptsBeforeFinal + 2,
+          "a native failure committed during principal lookup prevents native output",
         );
         const refusedReceipt = yield* sql<{ receipt_json: string }>`
           SELECT receipt_json FROM codex_live_voice_intents
@@ -2079,14 +2270,106 @@ it.effect.each([false, true])(
         assert.equal(readbackState(refusedReceipt[0]!.receipt_json), "refused");
         assert.isString(raceReceipt);
 
+        assert.include(
+          releasedRuntimes,
+          secondPrepared.providerSessionId!,
+          "a native error releases its runtime after confirmed stop",
+        );
+        yield* Deferred.await(runtimeReleases.get(secondPrepared.providerSessionId!)!);
+        assert.isTrue(runtimes.has(runtime.providerSessionId));
+
         for (const code of ["managed_account_required", "planner_restriction_failed"] as const) {
           plannerFailure = code;
           const clientRequestId = `prepare-failure-${code}`;
-          const error = yield* Effect.flip(service.prepare(session, { threadId, clientRequestId }));
+          const unconfirmedRelease = reuseRuntime && code === "planner_restriction_failed";
+          releaseFailure = unconfirmedRelease;
+          let error: LiveVoiceError;
+          if (unconfirmedRelease) {
+            const gate = {
+              started: yield* Deferred.make<void>(),
+              release: yield* Deferred.make<void>(),
+            };
+            releaseGate = gate;
+            const original = yield* service
+              .prepare(session, { threadId, clientRequestId })
+              .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+            yield* Deferred.await(gate.started);
+            const opensBeforeRetry = openedRuntimes.length;
+            let previousRead!: () => void;
+            const read = new Promise<void>((resolve) => {
+              previousRead = resolve;
+            });
+            const tracer = Tracer.make({
+              span: (options) => {
+                const span = new Tracer.NativeSpan(options);
+                const end = span.end.bind(span);
+                span.end = (time, exit) => {
+                  end(time, exit);
+                  if (
+                    String(span.attributes.get("db.query.text")).includes(
+                      "ORDER BY updated_at DESC LIMIT 1",
+                    )
+                  )
+                    previousRead();
+                };
+                return span;
+              },
+            });
+            const competing = yield* service
+              .prepare(session, { threadId, clientRequestId: "prepare-before-cleanup-confirmed" })
+              .pipe(
+                Effect.withTracer(tracer),
+                Effect.flip,
+                Effect.forkChild({ startImmediately: true }),
+              );
+            yield* Effect.promise(() => read);
+            yield* Deferred.succeed(gate.release, undefined);
+            error = yield* Fiber.join(original);
+            const competingError = yield* Fiber.join(competing);
+            assert.equal(
+              competingError.code,
+              "dispatch_conflict",
+              "parallel prepare stays blocked until cleanup is confirmed",
+            );
+            assert.lengthOf(
+              openedRuntimes,
+              opensBeforeRetry,
+              "pending cleanup must not admit a second runtime",
+            );
+          } else {
+            error = yield* Effect.flip(service.prepare(session, { threadId, clientRequestId }));
+          }
           assert.equal(error.code, code);
+          if (unconfirmedRelease) {
+            const pending = yield* service.prepare(session, { threadId, clientRequestId });
+            assert.equal(
+              pending.status,
+              "unknown",
+              "unconfirmed process cleanup keeps the lease blocked",
+            );
+            assert.notInclude(releasedRuntimes, pending.providerSessionId!);
+            assert.isTrue(runtimes.has(pending.providerSessionId!));
+            const blocked = yield* Effect.flip(
+              service.prepare(session, {
+                threadId,
+                clientRequestId: "prepare-while-cleanup-unconfirmed",
+              }),
+            );
+            assert.equal(blocked.code, "dispatch_conflict");
+            releaseFailure = false;
+            assert.equal(
+              (yield* service.stop(session, {
+                ...pending,
+                clientRequestId: "confirm-pending-cleanup",
+              })).status,
+              "failed",
+            );
+          }
           const failed = yield* service.prepare(session, { threadId, clientRequestId });
           assert.equal(failed.status, "failed");
           assert.isNull(failed.plannerNativeThreadId);
+          assert.include(releasedRuntimes, failed.providerSessionId!);
+          assert.isFalse(runtimes.has(failed.providerSessionId!));
           const attempts = plannerAttempts;
           assert.equal(
             (yield* service.prepare(session, { threadId, clientRequestId })).leaseId,
@@ -2245,6 +2528,7 @@ it.effect.each([false, true])(
               ),
               Stream.runHead,
             );
+            yield* Deferred.await(runtimeReleases.get(lease.providerSessionId!)!);
           });
         yield* endPrepared(retry);
         const sharedTextSessionId = retry.providerSessionId;
@@ -2263,14 +2547,15 @@ it.effect.each([false, true])(
           FROM codex_live_voice_leases WHERE lease_id = ${retry.leaseId}
         `;
         const stopsBeforeShared = stops;
+        const opensBeforeShared = openedRuntimes.length;
         const shared = yield* service.prepare(session, {
           threadId,
           clientRequestId: "prepare-with-shared-text-runtime",
         });
         assert.equal(shared.status, "prepared");
         assert.notEqual(shared.providerSessionId, sharedTextSessionId);
-        assert.lengthOf(openedRuntimes, 1);
-        assert.equal(openedRuntimes[0]!.resumeFromSession?.id, sharedTextSessionId);
+        assert.lengthOf(openedRuntimes, opensBeforeShared + 1);
+        assert.isUndefined(openedRuntimes.at(-1)!.resumeFromSession);
         assert.equal(stops, stopsBeforeShared, "a foreign voice lease is never stopped");
         const foreign = yield* sql<{ status: string; provider_session_id: string }>`
           SELECT status, provider_session_id FROM codex_live_voice_leases
@@ -2282,22 +2567,121 @@ it.effect.each([false, true])(
         yield* sql`UPDATE codex_live_voice_leases SET status = 'closed'
           WHERE lease_id = 'foreign-shared-runtime'`;
 
-        failNextLookup = true;
+        failNextOpen = true;
         const lookupFailure = yield* Effect.flip(
-          service.prepare(session, { threadId, clientRequestId: "prepare-lookup-failure" }),
+          service.prepare(session, { threadId, clientRequestId: "prepare-open-failure" }),
         );
         assert.equal(lookupFailure.code, "runtime_unavailable");
         const lookupOrphan = yield* sql<{ status: string }>`
           SELECT status FROM codex_live_voice_leases
-          WHERE client_request_id = 'prepare-lookup-failure'
+          WHERE client_request_id = 'prepare-open-failure'
         `;
         assert.equal(lookupOrphan[0]!.status, "unknown");
         const afterLookup = yield* service.prepare(session, {
           threadId,
-          clientRequestId: "prepare-after-lookup-failure",
+          clientRequestId: "prepare-after-open-failure",
         });
-        assert.equal(afterLookup.providerSessionId, sharedTextSessionId);
+        assert.notEqual(afterLookup.providerSessionId, sharedTextSessionId);
         yield* endPrepared(afterLookup);
+
+        const closing = yield* service.prepare(session, {
+          threadId,
+          clientRequestId: "prepare-close-during-stop",
+        });
+        const pendingStop = {
+          started: yield* Deferred.make<void>(),
+          release: yield* Deferred.make<void>(),
+        };
+        stopGate = pendingStop;
+        stopFailure = reuseRuntime;
+        const stopping = yield* service
+          .stop(session, { ...closing, clientRequestId: "close-during-stop" })
+          .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(pendingStop.started);
+        const closed = yield* service.subscribe(session, closing).pipe(
+          Stream.filter((event) => event.type === "status" && event.session.status === "closed"),
+          Stream.runHead,
+          Effect.forkChild({ startImmediately: true }),
+        );
+        const nativeClosedHandled = new Promise<void>((resolve) => {
+          nativeEventHandled = resolve;
+        });
+        yield* Queue.offer(runtimeEvents.get(closing.providerSessionId!)!, {
+          type: "closed",
+          plannerNativeThreadId: closing.plannerNativeThreadId!,
+        });
+        yield* Fiber.join(closed);
+        yield* Effect.promise(() => nativeClosedHandled);
+        let lateErrorStatus: LiveVoiceSession["status"] | undefined;
+        if (!reuseRuntime) {
+          const lateErrorHandled = new Promise<void>((resolve) => {
+            nativeEventHandled = resolve;
+          });
+          yield* Queue.offer(runtimeEvents.get(closing.providerSessionId!)!, {
+            type: "error",
+            plannerNativeThreadId: closing.plannerNativeThreadId!,
+          });
+          yield* Effect.promise(() => lateErrorHandled);
+          lateErrorStatus = (yield* service.status(session, closing)).status;
+        }
+        nativeEventHandled = undefined;
+        assert.notInclude(
+          releasedRuntimes,
+          closing.providerSessionId!,
+          "runtime release waits for the in-flight stop to settle",
+        );
+        yield* Deferred.succeed(pendingStop.release, undefined);
+        const stopResult = yield* Fiber.join(stopping);
+        assert.equal(Exit.isFailure(stopResult), reuseRuntime);
+        stopFailure = false;
+        yield* Deferred.await(runtimeReleases.get(closing.providerSessionId!)!);
+        if (lateErrorStatus !== undefined)
+          assert.equal(
+            lateErrorStatus,
+            "closed",
+            "a late native error cannot overwrite an authoritative close",
+          );
+        assert.equal(
+          (yield* service.status(session, closing)).status,
+          "closed",
+          "an authoritative closed event survives a late stop failure",
+        );
+
+        if (reuseRuntime) {
+          const raced = yield* service.prepare(session, {
+            threadId,
+            clientRequestId: "prepare-close-between-read-and-write",
+          });
+          const unknownWrite = {
+            started: yield* Deferred.make<void>(),
+            release: yield* Deferred.make<void>(),
+          };
+          stopTransactionGate = unknownWrite;
+          stopFailure = true;
+          const stopped = yield* service
+            .stop(session, { ...raced, clientRequestId: "stop-close-between-read-and-write" })
+            .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
+          yield* Deferred.await(unknownWrite.started);
+          const closed = yield* service.subscribe(session, raced).pipe(
+            Stream.filter((event) => event.type === "status" && event.session.status === "closed"),
+            Stream.runHead,
+            Effect.forkChild({ startImmediately: true }),
+          );
+          yield* Queue.offer(runtimeEvents.get(raced.providerSessionId!)!, {
+            type: "closed",
+            plannerNativeThreadId: raced.plannerNativeThreadId!,
+          });
+          yield* Fiber.join(closed);
+          yield* Deferred.succeed(unknownWrite.release, undefined);
+          assert.isTrue(Exit.isFailure(yield* Fiber.join(stopped)));
+          stopFailure = false;
+          yield* Deferred.await(runtimeReleases.get(raced.providerSessionId!)!);
+          assert.equal(
+            (yield* service.status(session, raced)).status,
+            "closed",
+            "closed is protected between the stop error's read and update",
+          );
+        }
 
         yield* sql.unsafe(`CREATE TEMP TRIGGER reject_voice_binding
           BEFORE UPDATE OF provider_session_id ON codex_live_voice_leases
@@ -2452,7 +2836,7 @@ it.effect.each([false, true])(
           const first = yield* Fiber.join(firstFiber);
           if (Exit.isFailure(first) || Exit.isFailure(second)) {
             assert.fail(
-              "Concurrent fork prepares must claim different voice runtimes before lookup.",
+              "Concurrent fork prepares must claim different voice runtimes before opening.",
             );
           }
           assert.notEqual(first.value.providerSessionId, second.value.providerSessionId);
@@ -2784,17 +3168,22 @@ it.effect.each([false, true])(
             ),
           ),
         );
-        speechObserved = new Promise<void>((resolve) => {
-          resolveSpeech = resolve;
-        });
         const firstCompletedSeed = independentSeeds.get(firstChild)!;
+        const childDelivery = waitForFinalDelivery(`final-${receipts[0]!.runId}`);
         independentJobs.set(firstChild, {
           ...firstCompletedSeed,
           messages: [...firstCompletedSeed.messages, firstSteerMessage],
         });
         yield* publishChild(0, "run.updated");
-        yield* Effect.promise(() => speechObserved);
-        assert.deepEqual(decodeJson(spoken.at(-1)!.text), {
+        yield* Effect.promise(() => childDelivery);
+        const resultContext = contexts.findLast(
+          ({ text }) => /"kind"\s*:\s*"result"/.test(text) && text.includes(receipts[0]!.taskId!),
+        );
+        assert.isDefined(
+          resultContext,
+          JSON.stringify(contexts.slice(-6).map(({ text }) => text.slice(0, 300))),
+        );
+        assert.deepEqual(decodeJson(resultContext!.text), {
           type: "background_task_output",
           taskId: receipts[0]!.taskId,
           requestId: receipts[0]!.requestId,
@@ -3049,7 +3438,7 @@ it.effect.each([false, true])(
         intakeDecision = (input) => {
           assert.equal(
             input.modelSelection.options?.find((option) => option.id === "reasoningEffort")?.value,
-            "medium",
+            "low",
           );
           return decideIntakeSnapshot(input);
         };
@@ -4116,15 +4505,342 @@ it.effect.each([false, true])(
             3,
           true,
         );
+        const previousCallClosed = yield* service.subscribe(session, intakeLease).pipe(
+          Stream.filter((event) => event.type === "status" && event.session.status === "closed"),
+          Stream.runHead,
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Queue.offer(intakeEvents, {
+          type: "closed",
+          plannerNativeThreadId: intakeLease.plannerNativeThreadId!,
+        });
+        yield* Fiber.join(previousCallClosed);
+        const originalRequest = "Correct the diagram and save the revised file.";
+        const typedRequest = "Explain the literal marker Conversation context (reference only;.";
+        const currentResult = "The revised diagram is saved. ".repeat(80);
+        const historyRunId = RunId.make("history-original-run");
+        const historyMessageId = "history-original-message";
+        const historySources = [
+          {
+            segmentId: "history-original-segment",
+            revision: 1,
+            start: 0,
+            end: originalRequest.length,
+            quote: originalRequest,
+            stopId: "committed-stop-fixture",
+          },
+        ];
+        const provenance = {
+          leaseId: intakeLease.leaseId,
+          generation: intakeLease.generation,
+          intentId: "history-original-intent",
+          stopId: "committed-stop-fixture",
+          provisional: false,
+          sources: historySources,
+        };
+        const delegatedRequest = "Keep the revised file beside the diagram.";
+        const delegatedSources = [
+          { ...historySources[0]!, quote: delegatedRequest, end: delegatedRequest.length },
+        ];
+        const delegatedProvenance = {
+          ...provenance,
+          intentId: "history-delegated-intent",
+          sources: delegatedSources,
+        };
+        const delegatedTaskId = NodeId.make("history-delegated-task");
+        const delegatedChildId = ThreadId.make("history-delegated-child");
+        const delegatedAdmissionId = RunId.make("history-delegated-admission");
+        const foreignLease = (yield* sql<{ lease_id: string; generation: number }>`
+          SELECT lease_id, generation FROM codex_live_voice_leases
+          WHERE principal_session_id = ${previousClient.sessionId} LIMIT 1`)[0]!;
+        let priorContext = "An earlier, unrelated request.";
+        for (let repeat = 0; repeat < 2; repeat++) {
+          const executionText = voiceIntakeInstruction(
+            historySources,
+            null,
+            undefined,
+            priorContext,
+          )!;
+          const historyProjection = makeRunProjection(historyRunId, "completed", currentResult);
+          const template = historyProjection.messages[0]!;
+          const delegatedText = voiceIntakeInstruction(
+            delegatedSources,
+            null,
+            undefined,
+            priorContext,
+          )!;
+          independentJobs.set(delegatedChildId, {
+            ...historyProjection,
+            thread: {
+              ...historyProjection.thread,
+              id: delegatedChildId,
+              voiceIntake: delegatedProvenance,
+              lineage: {
+                parentThreadId: threadId,
+                rootThreadId: threadId,
+                relationshipToParent: "subagent",
+              },
+              forkedFrom: { type: "node", nodeId: delegatedTaskId },
+            },
+            runs: historyProjection.runs.map((run) => ({
+              ...run,
+              threadId: delegatedChildId,
+              delegatedTaskId,
+            })),
+          });
+          durableProjection = {
+            ...historyProjection,
+            subagents: [
+              {
+                ...historyProjection.subagents[0]!,
+                id: delegatedTaskId,
+                threadId,
+                runId: delegatedAdmissionId,
+                origin: "app_owned",
+                childThreadId: delegatedChildId,
+                prompt: delegatedText,
+                status: "completed",
+              },
+            ],
+            runs: [
+              ...historyProjection.runs.map((run) => ({
+                ...run,
+                userMessageId: historyMessageId as never,
+              })),
+              {
+                ...historyProjection.runs[0]!,
+                id: delegatedAdmissionId,
+                userMessageId: "history-delegated-message" as never,
+                delegationAdmission: { modelSelection, voiceIntake: delegatedProvenance },
+              },
+              {
+                ...historyProjection.runs[0]!,
+                id: "history-foreign-admission" as never,
+                userMessageId: "history-foreign-message" as never,
+                delegationAdmission: {
+                  modelSelection,
+                  voiceIntake: {
+                    ...provenance,
+                    leaseId: foreignLease.lease_id,
+                    generation: foreignLease.generation,
+                  },
+                },
+              },
+            ],
+            messages: [
+              { ...template, id: "history-typed" as never, role: "user", text: typedRequest },
+              { ...template, id: historyMessageId as never, role: "user", text: executionText },
+              {
+                ...template,
+                id: "history-delegated-message" as never,
+                runId: delegatedAdmissionId,
+                role: "user",
+                text: delegatedText,
+              },
+              {
+                ...template,
+                id: "history-foreign-message" as never,
+                runId: "history-foreign-admission" as never,
+                role: "user",
+                text: "Preserve this unverified user text.",
+              },
+              { ...template, role: "assistant", text: currentResult },
+            ],
+          };
+          const receipt = {
+            voiceIntake: provenance,
+            sourceInstruction: executionText,
+            threadId,
+            runId: historyRunId,
+            status: "completed",
+            ...(repeat === 0
+              ? {}
+              : {
+                  intakeIntent: {
+                    id: provenance.intentId,
+                    request: executionText,
+                    sources: historySources,
+                    claimedSources: historySources,
+                    taskId: provenance.intentId,
+                    threadId,
+                    runId: historyRunId,
+                    status: "completed",
+                    provisional: false,
+                    startedProvisional: false,
+                    pendingSteer: null,
+                    result: currentResult,
+                  },
+                }),
+          };
+          yield* sql`INSERT INTO codex_live_voice_intents
+            (lease_id, generation, planner_native_thread_id, planner_turn_id, submit_slot,
+             call_id, message, command_id, message_id, dispatch_state, receipt_json, updated_at)
+            VALUES (${intakeLease.leaseId}, ${intakeLease.generation}, ${intakeLease.plannerNativeThreadId},
+              ${`history-recovery-${repeat}`}, 0, ${`history-call-${repeat}`}, ${executionText},
+              ${`history-command-${repeat}`}, ${historyMessageId}, 'admitted', ${JSON.stringify(receipt)},
+              '2026-10-24T00:00:00Z')`;
+          decideIntakeSnapshot = ({ snapshot }) => {
+            assert.equal(
+              snapshot.intents.find((intent) => intent.id === provenance.intentId)?.request,
+              originalRequest,
+              "both legacy and full restored receipts use original speech as the request label",
+            );
+            assert.equal(
+              snapshot.intents.find((intent) => intent.id === delegatedProvenance.intentId)
+                ?.request,
+              delegatedRequest,
+              "the committed admission restores original speech without its auxiliary receipt",
+            );
+            const segment = snapshot.segments.at(-1)!;
+            return Effect.succeed({
+              requestId: snapshot.requestId,
+              actions: [
+                {
+                  type: "new" as const,
+                  projectId: null,
+                  sources: [
+                    { segmentId: segment.id, revision: segment.revision, quote: segment.text },
+                  ],
+                  request: segment.text,
+                  readOnly: false,
+                },
+              ],
+            });
+          };
+          const repeatedLease = yield* service.prepare(session, {
+            threadId,
+            clientRequestId: `history-repeat-${repeat}`,
+          });
+          yield* service.start(session, {
+            ...repeatedLease,
+            clientRequestId: `history-repeat-start-${repeat}`,
+            offerSdp: "synthetic-offer",
+          });
+          assert.deepEqual(startupItems, [
+            { role: "user", text: typedRequest },
+            { role: "user", text: originalRequest },
+            { role: "user", text: delegatedRequest },
+            { role: "user", text: "Preserve this unverified user text." },
+            { role: "assistant", text: currentResult },
+          ]);
+          const repeatedEvents = runtimeEvents.get(repeatedLease.providerSessionId!)!;
+          const repeatedReady = yield* service.subscribe(session, repeatedLease).pipe(
+            Stream.filter((event) => event.type === "status" && event.session.status === "active"),
+            Stream.runHead,
+            Effect.forkChild({ startImmediately: true }),
+          );
+          yield* Queue.offer(repeatedEvents, {
+            type: "started",
+            plannerNativeThreadId: repeatedLease.plannerNativeThreadId!,
+            realtimeSessionId: `${repeatedLease.leaseId}:${repeatedLease.generation}`,
+          });
+          yield* Queue.offer(repeatedEvents, {
+            type: "sdp",
+            plannerNativeThreadId: repeatedLease.plannerNativeThreadId!,
+            sdp: "synthetic-answer",
+          });
+          yield* Fiber.join(repeatedReady);
+          const processed = new Promise<void>((resolve) => {
+            notifyIntakeProcessed = resolve;
+          });
+          yield* Queue.offer(repeatedEvents, {
+            type: "transcript",
+            role: "user",
+            plannerNativeThreadId: repeatedLease.plannerNativeThreadId!,
+            text: "Now check the revised file.",
+            segment: {
+              id: `history-followup-${repeat}`,
+              revision: 1,
+              kind: "snapshot",
+              final: true,
+            },
+          });
+          yield* Effect.promise(() => processed);
+          notifyIntakeProcessed = undefined;
+          const context = mainInputs.at(-1)!.voiceIntakeSource!.conversationContext!;
+          assert.include(context, `user: ${typedRequest}`);
+          assert.include(context, `user: ${originalRequest}`);
+          assert.include(context, `user: ${delegatedRequest}`);
+          assert.include(context, `assistant: ${currentResult}`);
+          assert.notInclude(context, "User instruction (original speech):");
+          assert.notInclude(context, "An earlier, unrelated request.");
+          assert.isAtMost(context.length, 12_000);
+          priorContext = context;
+          yield* service.stop(session, {
+            ...repeatedLease,
+            clientRequestId: `history-end-${repeat}`,
+          });
+          const repeatedClosed = yield* service.subscribe(session, repeatedLease).pipe(
+            Stream.filter((event) => event.type === "status" && event.session.status === "closed"),
+            Stream.runHead,
+            Effect.forkChild({ startImmediately: true }),
+          );
+          yield* Queue.offer(repeatedEvents, {
+            type: "closed",
+            plannerNativeThreadId: repeatedLease.plannerNativeThreadId!,
+          });
+          yield* Fiber.join(repeatedClosed);
+          yield* sql`DELETE FROM codex_live_voice_intents WHERE planner_turn_id = ${`history-recovery-${repeat}`}`;
+        }
+        unresolvedStop = yield* service.prepare(session, {
+          threadId,
+          clientRequestId: "scope-with-unknown-stop",
+        });
+        stopFailure = true;
+        const failedStop = yield* Effect.flip(
+          service.stop(session, { ...unresolvedStop, clientRequestId: "unacknowledged-stop" }),
+        );
+        assert.equal(failedStop.code, "runtime_unavailable");
+        assert.equal((yield* service.status(session, unresolvedStop)).status, "unknown");
+        assert.notInclude(releasedRuntimes, unresolvedStop.providerSessionId!);
+        if (reuseRuntime) {
+          lateOpenGate = {
+            started: yield* Deferred.make<void>(),
+            release: yield* Deferred.make<void>(),
+          };
+          lookupGate = lateOpenGate;
+          latePrepare = yield* service
+            .prepare(session, {
+              threadId: ThreadId.make("fork-prepare-scope-end"),
+              clientRequestId: "prepare-returning-after-scope-end",
+            })
+            .pipe(Effect.exit, Effect.forkIn(lateScope));
+          yield* Deferred.await(lateOpenGate.started);
+        }
       });
-      yield* program.pipe(
-        Effect.withTracer(deliveryTracer),
-        Effect.provide(
-          Layer.merge(
-            Logger.layer([warningLogger], { mergeWithExisting: false }),
-            Layer.provideMerge(CodexLiveSessionService.layer, dependencies),
+      try {
+        yield* program.pipe(
+          Effect.withTracer(deliveryTracer),
+          Effect.provide(
+            Layer.merge(
+              Logger.layer([warningLogger], { mergeWithExisting: false }),
+              Layer.provideMerge(CodexLiveSessionService.layer, dependencies),
+            ),
           ),
-        ),
-      );
+        );
+        if (lateOpenGate !== undefined) {
+          yield* Deferred.succeed(lateOpenGate.release, undefined);
+          assert.isTrue(Exit.isFailure(yield* Fiber.join(latePrepare!)));
+          const lateRuntimeId = openedRuntimes.at(-1)!.providerSessionId;
+          assert.isFalse(
+            runtimes.has(lateRuntimeId),
+            "a runtime opened after service scope end is released",
+          );
+          assert.include(releasedRuntimes, lateRuntimeId);
+        }
+        assert.isDefined(unresolvedStop);
+        assert.notInclude(
+          releasedRuntimes,
+          unresolvedStop!.providerSessionId!,
+          "scope end retains a runtime whose native stop is unknown",
+        );
+        assert.isTrue(
+          runtimes.has(runtime.providerSessionId),
+          "voice cleanup never closes the text runtime",
+        );
+        assert.isEmpty(activeConsumers, "service scope end stops all queue consumers");
+      } finally {
+        yield* Scope.close(lateScope, Exit.void);
+      }
     }),
 );

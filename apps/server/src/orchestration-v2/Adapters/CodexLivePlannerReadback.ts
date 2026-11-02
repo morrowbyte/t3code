@@ -14,7 +14,10 @@ export const appendCodexLivePlannerAnswer = Effect.fn("CodexLivePlannerReadback.
       readonly text?: string;
     };
   },
-  append: (text: string) => Effect.Effect<void, E>,
+  append: (context: {
+    readonly role: "assistant";
+    readonly text: string;
+  }) => Effect.Effect<void, E>,
 ) {
   const { item } = input;
   if (
@@ -33,7 +36,7 @@ export const appendCodexLivePlannerAnswer = Effect.fn("CodexLivePlannerReadback.
   });
   // The native append API has no idempotency key. A failed acknowledgement
   // can follow acceptance, so retain this session's claim even on failure.
-  yield* append(item.text).pipe(
+  yield* append({ role: "assistant", text: item.text }).pipe(
     Effect.onError(() => Effect.annotateCurrentSpan("voice.planner.answer_delivery", "unknown")),
   );
   yield* Effect.annotateCurrentSpan("voice.planner.answer_appended", true);

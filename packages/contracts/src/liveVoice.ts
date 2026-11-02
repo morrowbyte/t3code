@@ -139,6 +139,13 @@ export type LiveVoiceActivity = typeof LiveVoiceActivity.Type;
 export const LiveVoiceEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("status"), session: LiveVoiceSession }),
   Schema.Struct({
+    type: Schema.Literal("context"),
+    leaseId: LiveVoiceLeaseId,
+    generation: LiveVoiceGeneration,
+    deliveryId: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+    text: Schema.String.check(Schema.isMaxLength(24_000)),
+  }),
+  Schema.Struct({
     type: Schema.Literal("activity"),
     leaseId: LiveVoiceLeaseId,
     generation: LiveVoiceGeneration,

@@ -787,6 +787,7 @@ const CoreSecondWsRpcGroup = CoreWsRpcGroup.omit(
   WS_METHODS.liveVoiceStart,
   WS_METHODS.liveVoiceStop,
   WS_METHODS.liveVoiceContext,
+  WS_METHODS.liveVoiceContextDelivered,
   WS_METHODS.liveVoiceStatus,
   WS_METHODS.liveVoiceSubscribe,
   ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
@@ -2287,6 +2288,8 @@ const layerCoreWsRpc = (
         [WS_METHODS.liveVoiceStart]: (input) => liveVoiceService.start(currentSession, input),
         [WS_METHODS.liveVoiceStop]: (input) => liveVoiceService.stop(currentSession, input),
         [WS_METHODS.liveVoiceContext]: (input) => liveVoiceService.context(currentSession, input),
+        [WS_METHODS.liveVoiceContextDelivered]: (input) =>
+          liveVoiceService.contextDelivered(currentSession, input),
         [WS_METHODS.liveVoiceStatus]: (input) => liveVoiceService.status(currentSession, input),
         [WS_METHODS.liveVoiceSubscribe]: (input) =>
           liveVoiceService.subscribe(currentSession, input),

@@ -1350,6 +1350,9 @@ export class CrewFixtureError extends Schema.TaggedError<CrewFixtureError>()("Cr
   }
 }
 
+const isCrewFixtureError = Schema.is(CrewFixtureError);
+const isCrewProtocolError = Schema.is(CrewProtocolError);
+
 /**
  * Output for a command that needs no simulator: a matching shell mock, else, for a plain command
  * on a launcher T3 returned, agent-device's help or its error for a session not yet started.
@@ -1939,12 +1942,12 @@ export const runCrewSample = Effect.fn("evaluateMcpToolUse.runCrewSample")(funct
     action: "start",
     modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: base.model },
     instructions,
-    input: `Replay this fixture conversation and continue its final user request:\n${JSON.stringify(
+    input: `Replay this fixture conversation and continue its final user request:\n${yield* encodeJson(
       [
         ...base.codex.input.filter((item) => item.type === "message" && item.role === "user"),
         ...buildMessages(sample),
       ],
-    )}`,
+    ).pipe(Effect.orDie)}`,
     tools: [
       {
         name: "exec",
@@ -2017,9 +2020,7 @@ export const runCrewSample = Effect.fn("evaluateMcpToolUse.runCrewSample")(funct
     const output = yield* Effect.tryPromise({
       try: () => executeCodex(code, codexCatalog(base), answer, sample.codeStore),
       catch: (cause) =>
-        cause instanceof CrewFixtureError
-          ? cause
-          : new CrewFixtureError({ code: "invalid_native_call" }),
+        isCrewFixtureError(cause) ? cause : new CrewFixtureError({ code: "invalid_native_call" }),
     });
     if (failedEarly(testCase.expect, { calls, text: visibleText, stopReason })) {
       stopReason = "failed_early";
@@ -2098,13 +2099,13 @@ const runCrewBatch = Effect.fn("evaluateMcpToolUse.runCrewBatch")(function* (
       const row = yield* runCrewSample(testCase, baseFor(testCase), client, maxSteps).pipe(
         Effect.matchEffect({
           onFailure: (error) =>
-            error instanceof CrewProtocolError
+            isCrewProtocolError(error)
               ? Effect.fail(error)
               : Effect.succeed({
                   id: testCase.id,
                   sample: index + 1,
                   pass: false,
-                  error: error instanceof CrewFixtureError ? error.code : "crew_transport_failed",
+                  error: isCrewFixtureError(error) ? error.code : "crew_transport_failed",
                   transport: "crew-json-exec",
                   usage: null,
                   shellUsage: null,
@@ -2124,7 +2125,7 @@ const runCrewBatch = Effect.fn("evaluateMcpToolUse.runCrewBatch")(function* (
       if ("error" in row) summary.errors++;
       else if (row.pass) summary.passed++;
       else summary.failed++;
-      const bytes = new TextEncoder().encode(`${JSON.stringify(row)}\n`);
+      const bytes = new TextEncoder().encode(`${yield* encodeJson(row).pipe(Effect.orDie)}\n`);
       written += bytes.length;
       if (written > CREW_MAX_CAPTURE_BYTES) return yield* new CrewProtocolError({ code: "limit" });
       yield* results.writeAll(bytes);

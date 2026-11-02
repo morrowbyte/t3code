@@ -7,6 +7,11 @@ import type {
   VoiceIntakeSource,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+
+const encodeConversation = Schema.encodeSync(
+  Schema.fromJsonString(Schema.Array(Schema.Struct({ role: Schema.String, text: Schema.String }))),
+);
 
 export interface VoiceIntakeDependencies {
   readonly leaseId: string;
@@ -16,6 +21,7 @@ export interface VoiceIntakeDependencies {
   readonly projects?: VoiceIntakeSnapshot["projects"];
   readonly restored?: ReadonlyArray<VoiceIntakeIntent>;
   readonly getPreviewContext?: () => string | null;
+  readonly getConversationContext?: () => string;
   readonly current: Effect.Effect<boolean>;
   readonly stopId: Effect.Effect<string | null | undefined>;
   readonly decide: (snapshot: VoiceIntakeSnapshot) => Effect.Effect<VoiceIntakeDecision, Error>;
@@ -182,6 +188,7 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
   let recheckPending = false;
   let rejectionVersion = 0;
   let rejections: Rejection[] = [];
+  const rejectedActions: Array<NonNullable<VoiceIntakeSnapshot["rejections"]>[number]> = [];
   const terminalRechecks = new Set<string>();
   const sourceEpochs = new WeakMap<VoiceIntakeSource, number>();
   const decisionEpochs = new WeakMap<VoiceIntakeSource, number>();
@@ -192,6 +199,7 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
   const segmentOrder = new Map<string, number>();
   const gaps = new Set<string>();
   const parts = new Map<string, { revision: number; count: number; chunks: Map<number, string> }>();
+  const conversation = new Map<string, { role: string; text: string; revision: number }>();
   const isActive = (status: string) =>
     ["preparing", "starting", "running", "waiting", "queued"].includes(status);
   const isSteerable = (status: string) => status === "running";
@@ -217,8 +225,19 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
         reason = "lease_ended";
         return;
       }
-      if (!enabled || event.type !== "transcript" || event.role !== "user" || !event.segment)
-        return;
+      if (!enabled || event.type !== "transcript" || !event.segment) return;
+      if (event.segment.kind === "snapshot" && event.segment.partCount === 1) {
+        const key = `${event.role}:${event.segment.id}`;
+        if ((conversation.get(key)?.revision ?? 0) < event.segment.revision) {
+          conversation.set(key, {
+            role: event.role,
+            text: event.text.slice(0, 500),
+            revision: event.segment.revision,
+          });
+          while (conversation.size > 8) conversation.delete(conversation.keys().next().value!);
+        }
+      }
+      if (event.role !== "user") return;
       const source = event.segment;
       const previous = segments.get(source.id);
       if (!segmentStops.has(source.id)) {
@@ -452,6 +471,7 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
       defaultProjectId: input.defaultProjectId ?? "current-project",
       projects: input.projects ?? [],
       segments: visibleSegments,
+      rejections: [...rejectedActions],
       intents: [...intents.values()]
         .toSorted((a, b) => Number(isActive(b.status)) - Number(isActive(a.status)))
         .slice(0, 24)
@@ -486,6 +506,15 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
         })),
     };
     decidedVersion = version;
+    const recentConversation = [...conversation.values()].map(({ role, text }) => ({ role, text }));
+    let conversationText = encodeConversation(recentConversation);
+    while (conversationText.length > 4_400) {
+      recentConversation.shift();
+      conversationText = encodeConversation(recentConversation);
+    }
+    const conversationContext = [input.getConversationContext?.().slice(-7_500), conversationText]
+      .filter(Boolean)
+      .join("\n");
     decisions += 1;
     const capturedEpoch = retractionEpoch;
     const capturedRetractions = new Map(segmentRetractions);
@@ -498,7 +527,7 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
       anchorIndex: number | null = null,
     ) => {
       if (rejections.length >= 8) rejections.shift();
-      rejections.push({
+      const rejection: Rejection = {
         requestId: snapshot.requestId,
         snapshotVersion: snapshot.version,
         actionIndex,
@@ -508,6 +537,18 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
         sources:
           action && "sources" in action
             ? action.sources.slice(0, 8).map(({ segmentId, revision }) => ({ segmentId, revision }))
+            : [],
+      };
+      rejections.push(rejection);
+      if (rejectedActions.length >= 8) rejectedActions.shift();
+      rejectedActions.push({
+        ...rejection,
+        disposition: "not_applied",
+        sources:
+          action && "sources" in action
+            ? action.sources
+                .slice(0, 8)
+                .map(({ segmentId, revision, quote }) => ({ segmentId, revision, quote }))
             : [],
       });
       rejectionVersion++;
@@ -745,6 +786,7 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
             stopId: sources[0]!.stopId,
             provisional,
             sources: sources,
+            conversationContext,
           },
           action.request,
           transfer?.owner.projectId ?? action.projectId ?? undefined,
@@ -810,6 +852,7 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
                   sources,
                   awaitingFollowup: true,
                   previewContext: snapshot.previewContext ?? null,
+                  conversationContext,
                 },
               ],
             );
@@ -852,6 +895,7 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
               readOnly: action.readOnly,
               sources,
               previewContext: snapshot.previewContext ?? null,
+              conversationContext,
             },
           ],
         );
