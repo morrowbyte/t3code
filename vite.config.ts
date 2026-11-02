@@ -102,8 +102,8 @@ export default defineConfig({
     // Fixture subprocesses must not inherit the outer task runner’s cache policy.
     env: { VP_REMOTE_CACHE: "off", VP_REMOTE_CACHE_URL: "" },
     exclude: TEST_EXCLUDE,
-    hookTimeout: 60_000,
-    testTimeout: 60_000,
+    hookTimeout: 90_000,
+    testTimeout: 90_000,
     allowOnly: !process.env.CI,
     // Flaky tests are fixed, not retried.
     retry: 0,

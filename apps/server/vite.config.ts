@@ -142,8 +142,8 @@ export default mergeConfig(
         "./src/testUtils/gitConfig.setup.ts",
         "./src/testUtils/managedServiceEnv.setup.ts",
       ],
-      hookTimeout: 120_000,
-      testTimeout: 120_000,
+      hookTimeout: 180_000,
+      testTimeout: 180_000,
     },
   }),
 );

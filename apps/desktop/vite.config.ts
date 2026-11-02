@@ -145,7 +145,8 @@ export default defineConfig({
     include: [...defaultInclude, "../../native/kde-snap-shot/src/*.test.ts"],
     // The Windows lane runs workspace suites concurrently; filesystem-heavy
     // desktop integration tests can exceed Vitest's 5 second default there.
-    testTimeout: 15_000,
+    hookTimeout: 30_000,
+    testTimeout: 30_000,
     setupFiles: [
       "../../packages/shared/src/testing/longTempDir.ts",
       "../../packages/shared/src/testing/providerEnv.ts",

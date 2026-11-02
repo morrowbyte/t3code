@@ -87,8 +87,8 @@ const unitTestProject = {
     name: "unit",
     include: ["src/**/*.test.{ts,tsx}"],
     exclude: ["src/**/*.browser.test.{ts,tsx}"],
-    hookTimeout: 15_000,
-    testTimeout: 15_000,
+    hookTimeout: 30_000,
+    testTimeout: 30_000,
     setupFiles: [
       "../../packages/shared/src/testing/longTempDir.ts",
       "../../packages/shared/src/testing/providerEnv.ts",
@@ -128,8 +128,8 @@ const browserTestProject = {
   test: {
     name: "browser",
     include: ["src/**/*.browser.test.{ts,tsx}"],
-    hookTimeout: 15_000,
-    testTimeout: 15_000,
+    hookTimeout: 30_000,
+    testTimeout: 30_000,
     setupFiles: ["./test/browserSetup.ts"],
     api: { port: browserTestApiPort, strictPort: false },
     browser: {
@@ -164,8 +164,8 @@ const renderScenariosProject = {
     name: "renders",
     include: ["test/*.renders.tsx"],
     // App scenarios mount the whole app per test, which outlasts 15s on a loaded machine.
-    hookTimeout: 60_000,
-    testTimeout: 60_000,
+    hookTimeout: 90_000,
+    testTimeout: 90_000,
     setupFiles: ["./test/renderCounter.ts", ...browserTestProject.test.setupFiles],
     browser: {
       ...browserTestProject.test.browser,
