@@ -2,13 +2,11 @@ import { Alert, AlertDescription } from "../ui/alert";
 import type { AuthSessionState } from "@t3tools/contracts";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import React, { startTransition, useEffect, useEffectEvent, useRef, useState } from "react";
+import { useLocation } from "@tanstack/react-router";
+import { getPairingTokenFromUrl } from "@t3tools/shared/remote";
 
 import { connectPairing } from "../../connection/onboarding";
-import {
-  peekPairingTokenFromUrl,
-  stripPairingTokenFromUrl,
-  submitServerAuthCredential,
-} from "../../environments/primary";
+import { stripPairingTokenFromUrl, submitServerAuthCredential } from "../../environments/primary";
 import { readHostedPairingRequest } from "../../hostedPairing";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -32,11 +30,13 @@ export function PairingRouteSurface({
   initialErrorMessage?: string;
   onAuthenticated: () => void;
 }) {
-  const [autoPairToken] = useState(peekPairingTokenFromUrl);
+  const autoPairToken = useLocation({
+    select: (location) => getPairingTokenFromUrl(new URL(location.href, window.location.href)),
+  });
   const [credential, setCredential] = useState(autoPairToken ?? "");
   const [errorMessage, setErrorMessage] = useState(initialErrorMessage ?? "");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const autoSubmitAttemptedRef = useRef(false);
+  const autoSubmitAttemptedRef = useRef<string | null>(null);
 
   const submitCredential = async (nextCredential: string) => {
     setIsSubmitting(true);
@@ -68,13 +68,14 @@ export function PairingRouteSurface({
     void submitCredential(token);
   });
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- strips the pairing token from the URL and submits it once when the route carries one
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- consumes each new URL credential once, including same-document pairing navigation
   useEffect(() => {
-    if (!autoPairToken || autoSubmitAttemptedRef.current) {
+    if (!autoPairToken || autoSubmitAttemptedRef.current === autoPairToken) {
       return;
     }
 
-    autoSubmitAttemptedRef.current = true;
+    autoSubmitAttemptedRef.current = autoPairToken;
+    setCredential(autoPairToken);
     stripPairingTokenFromUrl();
     autoSubmit(autoPairToken);
   }, [autoPairToken]);
