@@ -1,5 +1,7 @@
 import {
   DEFAULT_BOAT_DEFAULTS,
+  type Project,
+  type ProjectId,
   SourceControlProviderError,
   SourceControlProviderKind,
 } from "@t3tools/contracts";
@@ -19,12 +21,29 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import { HostResources } from "../resourceTelemetry/HostResources.ts";
 import { BoatService } from "../boat/BoatService.ts";
 import * as PortScanner from "../preview/PortScanner.ts";
+
+export function layerForProject(projectId: ProjectId, cwd: string) {
+  const project: Project = {
+    id: projectId,
+    title: "Replay fixture",
+    workspaceRoot: cwd,
+    defaultModelSelection: null,
+    scripts: [],
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    deletedAt: null,
+  };
+  return Layer.mock(ProjectService.ProjectService)({
+    getById: (id) => Effect.succeed(id === projectId ? Option.some(project) : Option.none()),
+  });
+}
 
 export const layerCompute = Layer.mergeAll(
   Layer.succeed(HostResources, {

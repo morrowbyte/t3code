@@ -5,7 +5,6 @@ import {
   EventId,
   NodeId,
   ProjectId,
-  type Project,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderThreadId,
@@ -19,8 +18,6 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
-import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -29,29 +26,13 @@ import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
-import * as ProjectService from "../project/ProjectService.ts";
+import { layerForProject } from "./ProviderTurnStartService.testkit.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
 const driver = ProviderDriverKind.make("codex");
 const instanceId = ProviderInstanceId.make("codex");
 const modelSelection = { instanceId, model: "test-model" };
-
-function fixtureProjectLayer(projectId: ProjectId, cwd: string) {
-  const project: Project = {
-    id: projectId,
-    title: "Steering fixture",
-    workspaceRoot: cwd,
-    defaultModelSelection: null,
-    scripts: [],
-    createdAt: "2026-01-01T00:00:00.000Z",
-    updatedAt: "2026-01-01T00:00:00.000Z",
-    deletedAt: null,
-  };
-  return Layer.mock(ProjectService.ProjectService)({
-    getById: (id) => Effect.succeed(id === projectId ? Option.some(project) : Option.none()),
-  });
-}
 
 it.effect.each(
   (
@@ -448,7 +429,7 @@ it.effect.each(
             ProviderAdapterRegistry.layerSingle(adapter),
             {
               runEffectWorker: false,
-              projectServiceLayer: fixtureProjectLayer(
+              projectServiceLayer: layerForProject(
                 ProjectId.make("project:steering-completion"),
                 cwd,
               ),
@@ -578,7 +559,7 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
     ProviderAdapterRegistry.layerSingle(adapter),
     {
       runEffectWorker: false,
-      projectServiceLayer: fixtureProjectLayer(ProjectId.make(`project:${name}`), cwd),
+      projectServiceLayer: layerForProject(ProjectId.make(`project:${name}`), cwd),
     },
   );
   const startFirstTurn = Effect.gen(function* () {

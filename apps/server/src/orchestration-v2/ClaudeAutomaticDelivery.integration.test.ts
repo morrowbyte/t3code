@@ -43,6 +43,7 @@ import * as ThreadLaunchService from "./ThreadLaunchService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
+import { layerForProject } from "./ProviderTurnStartService.testkit.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 
 const sessionId = "automatic-delivery-session";
@@ -474,7 +475,13 @@ it.effect.each(deliveries)(
             ProviderReplayHarness.layerWithRegistry(
               { name: "claude-automatic-delivery" },
               ProviderAdapterRegistry.layerSingle(adapter),
-              { runEffectWorker: false },
+              {
+                runEffectWorker: false,
+                projectServiceLayer: layerForProject(
+                  ProjectId.make("project:automatic-delivery"),
+                  cwd,
+                ),
+              },
             ),
           ),
         );
