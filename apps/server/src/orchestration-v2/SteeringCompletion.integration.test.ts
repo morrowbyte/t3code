@@ -18,6 +18,7 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Logger from "effect/Logger";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -196,8 +197,8 @@ it.effect.each(
         const running = yield* watch(
           (event) => event.type === "provider-turn.updated" && event.payload.status === "running",
         );
-        yield* worker.drain();
-        console.error("steering fixture: initial effects drained", timing, started.length);
+        const drained = yield* worker.drain();
+        console.error("steering fixture: initial effects drained", timing, started.length, drained);
         if (started.length !== 1) {
           const initial = yield* orchestrator.getThreadProjection(threadId);
           assert.fail(JSON.stringify({ runs: initial.runs, items: initial.turnItems }));
@@ -450,6 +451,7 @@ it.effect.each(
             { runEffectWorker: false },
           ),
         ),
+        Effect.provide(Logger.layer([Logger.consoleJson])),
       );
     }),
   ),
