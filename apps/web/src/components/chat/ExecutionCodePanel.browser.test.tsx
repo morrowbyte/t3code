@@ -37,7 +37,7 @@ const base = {
   completedAt: null,
   updatedAt: DateTime.makeUnsafe("2026-10-15T00:00:01Z"),
 };
-const input = "  python3 - <<'PY'\nprint('original 🦦')\nPY\n" + "# long\n".repeat(400);
+const input = "  python3 - <<'PY' # İstanbul\nprint('original 🦦')\nPY\n" + "# long\n".repeat(400);
 const item: OrchestrationV2TurnItem = {
   ...base,
   type: "command_execution",
@@ -144,6 +144,19 @@ describe("execution code panel", () => {
       ),
     );
     expect(window.getSelection()?.toString()).toBe("🦦");
+    await act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+        search,
+        "PRINT(",
+      );
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(() =>
+      search.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+      ),
+    );
+    expect(window.getSelection()?.toString()).toBe("print(");
     await act(() =>
       search.dispatchEvent(
         new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),

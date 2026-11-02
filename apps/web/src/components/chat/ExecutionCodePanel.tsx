@@ -102,6 +102,9 @@ export function ExecutionCodeView(props: {
   const searchInput = useRef<HTMLInputElement>(null);
   const source = useRef<HTMLPreElement>(null);
   const [matchIndex, setMatchIndex] = useState(-1);
+  const searchPattern = query
+    ? new RegExp(query.replace(/[.*+?^{}()|[\]\\$]/g, "\\$&"), "iu")
+    : null;
   const copyInput = async () => {
     if (!code?.text) return;
     try {
@@ -112,16 +115,11 @@ export function ExecutionCodeView(props: {
     }
   };
   const nextMatch = (direction: -1 | 1) => {
-    if (!query || !code?.text || !source.current) return;
-    const text = code.text.toLocaleLowerCase();
-    const needle = query.toLocaleLowerCase();
-    const offsets: number[] = [];
-    for (
-      let offset = text.indexOf(needle);
-      offset >= 0;
-      offset = text.indexOf(needle, offset + Math.max(1, needle.length))
-    )
-      offsets.push(offset);
+    if (!searchPattern || !code?.text || !source.current) return;
+    const offsets = Array.from(
+      code.text.matchAll(new RegExp(searchPattern, "giu")),
+      (match) => match.index,
+    );
     if (!offsets.length) return;
     const next =
       matchIndex < 0
@@ -155,12 +153,10 @@ export function ExecutionCodeView(props: {
     }
   };
   const matches = (() => {
-    if (!query || !code?.text) return [];
+    if (!searchPattern || !code?.text) return [];
     return code.text
       .split(/\r?\n/u)
-      .flatMap((line, index) =>
-        line.toLocaleLowerCase().includes(query.toLocaleLowerCase()) ? [index + 1] : [],
-      );
+      .flatMap((line, index) => (searchPattern.test(line) ? [index + 1] : []));
   })();
   const time = (value: OrchestrationV2TurnItem["startedAt"] | undefined) =>
     value ? DateTime.formatIso(value) : "Not supplied";
