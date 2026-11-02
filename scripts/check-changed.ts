@@ -556,7 +556,6 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
                 "test",
                 "run",
                 "--passWithNoTests",
-                ...(ci ? ["--bail", "1"] : []),
                 ...(platform === "win32" ? ["--maxWorkers", "2"] : []),
               ],
               [...vitestTests],

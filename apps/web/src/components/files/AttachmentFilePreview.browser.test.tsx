@@ -317,17 +317,13 @@ describe("bounded binary previews", () => {
         asset={{ environmentId: EnvironmentId.make("test-environment"), attachmentId: "image" }}
       />,
     );
-    await vi.waitFor(() =>
-      expect(screen.container.querySelector('[role="alert"]')?.textContent).toContain(
-        "Unable to load image.",
-      ),
-    );
+    await expect.element(screen.getByRole("alert")).toHaveTextContent("Unable to load image.");
     await act(() =>
       screen.container.querySelector<HTMLButtonElement>('[role="alert"] button')!.click(),
     );
-    await vi.waitFor(() =>
-      expect(screen.container.querySelector("img")?.getAttribute("src")).toBe(image),
-    );
+    await expect
+      .element(screen.getByRole("img", { name: "photo.png" }))
+      .toHaveAttribute("src", image);
     expect(refresh).toHaveBeenCalledTimes(2);
   });
 
