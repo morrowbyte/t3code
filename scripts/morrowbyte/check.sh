@@ -121,6 +121,7 @@ fi
 source_proof group typecheck
 focused_tests=(
   apps/web/src/authBootstrap.test.ts
+  packages/client-runtime/src/answerCost.test.ts
   packages/client-runtime/src/state/authAccessHttp.test.ts
   packages/client-runtime/src/state/threadInbox.test.ts
   packages/client-runtime/src/state/threadShell.test.ts
