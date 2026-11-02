@@ -357,7 +357,8 @@ function launcherFixture() {
     fs.writeFileSync(path.join(process.env.RECORDS, process.pid + '.json'), JSON.stringify({ args, cwd: process.cwd() }));
     console.log('fixture stdout: ' + args[0]);
     console.error('fixture stderr: ' + args[0]);
-    process.exit(args[0] === process.env.FAIL_STEP ? 23 : 0);
+    if (args[0] === process.env.HANG_STEP) setInterval(() => {}, 1000);
+    else process.exit(args[0] === process.env.FAIL_STEP ? 23 : 0);
   `,
   );
   // Select the Windows launcher without changing the Effect runtime's host platform.
@@ -400,11 +401,21 @@ function launcherFixture() {
     root,
     source,
     write,
-    run(failStep = "") {
+    run(failStep = "", options: { ci?: boolean; hangStep?: string; timeout?: number } = {}) {
       return NodeChildProcess.spawnSync(process.execPath, ["scripts/check-changed.ts", "HEAD"], {
         cwd: root,
         encoding: "utf8",
-        env: { ...env, TEMP: NodeOS.tmpdir(), RECORDS: records, FAIL_STEP: failStep },
+        env: {
+          ...env,
+          TEMP: NodeOS.tmpdir(),
+          RECORDS: records,
+          FAIL_STEP: failStep,
+          HANG_STEP: options.hangStep ?? "",
+          ...(options.ci ? { CI: "true" } : {}),
+          ...(options.timeout === undefined
+            ? {}
+            : { CHECK_CHANGED_TIMEOUT: String(options.timeout) }),
+        },
       });
     },
     calls: (): Array<{ args: Array<string>; cwd: string }> =>
@@ -432,6 +443,16 @@ it("checks changed source paths through the Windows launcher", () => {
   expect(calls.some(({ args }) => args[0] === "install")).toBe(false);
   expect(result.stdout).toContain("fixture stdout: lint");
   expect(result.stdout).toContain("fixture stderr: lint");
+});
+
+it("preserves CI test output when the test process reaches its timeout", () => {
+  using project = launcherFixture();
+  project.write("packages/example/example.test.ts", "export {};\n");
+  const result = project.run("", { ci: true, hangStep: "test", timeout: 2 });
+  expect(result.status, result.stdout + result.stderr).toBe(1);
+  expect(result.stdout).toContain("TIMEOUT  test");
+  expect(result.stdout + result.stderr).toContain("fixture stdout: test");
+  expect(result.stdout + result.stderr).toContain("fixture stderr: test");
 });
 
 it.each(["install", "lint"])("reports a failing %s step with its output", (step) => {

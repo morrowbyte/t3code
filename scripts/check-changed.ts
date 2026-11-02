@@ -428,12 +428,15 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     Effect.scoped(
       Effect.gen(function* () {
         const [command, commandArgs] = vitePlusCommand(args, platform);
+        // Keep partial CI test output when the deadline interrupts collection.
+        const streamTestOutput = Boolean(ci) && args[0] === "test";
         const handle = yield* spawner.spawn(
           ChildProcess.make(command, commandArgs, {
             cwd,
             env,
             extendEnv: true,
             forceKillAfter: "5 seconds",
+            ...(streamTestOutput ? { stdout: "inherit", stderr: "inherit" } : {}),
           }),
         );
         const [output, exitCode] = yield* Effect.all(
@@ -553,6 +556,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
                 "test",
                 "run",
                 "--passWithNoTests",
+                ...(ci ? ["--bail", "1"] : []),
                 ...(platform === "win32" ? ["--maxWorkers", "2"] : []),
               ],
               [...vitestTests],
