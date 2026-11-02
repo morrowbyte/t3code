@@ -194,7 +194,12 @@ it.effect.each(
           (event) => event.type === "provider-turn.updated" && event.payload.status === "running",
         );
         yield* worker.drain();
+        yield* Effect.logInfo("steering fixture: initial effects drained", {
+          timing,
+          started: started.length,
+        });
         yield* Fiber.join(running);
+        yield* Effect.logInfo("steering fixture: provider running", { timing });
         const first = started[0]!;
         const messageId = MessageId.make("message:steering");
         const taskId = NodeId.make("task:mailbox");
@@ -285,6 +290,7 @@ it.effect.each(
             : {}),
         });
         if (timing !== "before dispatch") yield* dispatchSteer;
+        yield* Effect.logInfo("steering fixture: message dispatched", { timing });
         if (timing === "during continuation") {
           const projection = yield* orchestrator.getThreadProjection(threadId);
           const turn = projection.providerTurns[0]!;
@@ -310,8 +316,16 @@ it.effect.each(
         }
         if (timing === "after delivery") yield* worker.drain();
         const delivery =
-          timing === "during delivery" ? yield* worker.runOnce.pipe(Effect.forkScoped) : null;
+          timing === "during delivery"
+            ? yield* worker.runOnce.pipe(
+                Effect.tap((handled) =>
+                  Effect.logInfo("steering fixture: delivery worker returned", { handled }),
+                ),
+                Effect.forkScoped,
+              )
+            : null;
         if (delivery !== null) yield* Deferred.await(steerEntered);
+        yield* Effect.logInfo("steering fixture: delivery entered", { timing });
         const completed = yield* watch(
           (event) =>
             event.type === "run.updated" &&
@@ -336,6 +350,7 @@ it.effect.each(
           threadDisposition: "reusable",
         });
         yield* Fiber.join(completed);
+        yield* Effect.logInfo("steering fixture: completion persisted", { timing });
         if (delivery !== null) {
           yield* Deferred.succeed(rejectSteer, undefined);
           yield* Fiber.join(delivery);
