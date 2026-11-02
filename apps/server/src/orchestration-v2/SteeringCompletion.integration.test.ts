@@ -5,6 +5,7 @@ import {
   EventId,
   NodeId,
   ProjectId,
+  type Project,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderThreadId,
@@ -18,7 +19,8 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
-import * as Logger from "effect/Logger";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -27,12 +29,29 @@ import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
+import * as ProjectService from "../project/ProjectService.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
 const driver = ProviderDriverKind.make("codex");
 const instanceId = ProviderInstanceId.make("codex");
 const modelSelection = { instanceId, model: "test-model" };
+
+function fixtureProjectLayer(projectId: ProjectId, cwd: string) {
+  const project: Project = {
+    id: projectId,
+    title: "Steering fixture",
+    workspaceRoot: cwd,
+    defaultModelSelection: null,
+    scripts: [],
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    deletedAt: null,
+  };
+  return Layer.mock(ProjectService.ProjectService)({
+    getById: (id) => Effect.succeed(id === projectId ? Option.some(project) : Option.none()),
+  });
+}
 
 it.effect.each(
   (
@@ -53,9 +72,7 @@ it.effect.each(
 )("delivers $label when completion wins $timing", ({ mailbox, timing }) =>
   Effect.scoped(
     Effect.gen(function* () {
-      console.error("steering fixture: before workspace", timing);
       const cwd = yield* checkpointWorkspace(`steering-completion-${timing.replaceAll(" ", "-")}`);
-      console.error("steering fixture: workspace ready", timing);
       const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
       const started: ProviderAdapter.ProviderAdapterV2TurnInput[] = [];
       const steerEntered = yield* Deferred.make<void>();
@@ -193,18 +210,11 @@ it.effect.each(
           createdBy: "user",
           creationSource: "web",
         });
-        console.error("steering fixture: initial message dispatched", timing);
         const running = yield* watch(
           (event) => event.type === "provider-turn.updated" && event.payload.status === "running",
         );
-        const drained = yield* worker.drain();
-        console.error("steering fixture: initial effects drained", timing, started.length, drained);
-        if (started.length !== 1) {
-          const initial = yield* orchestrator.getThreadProjection(threadId);
-          assert.fail(JSON.stringify({ runs: initial.runs, items: initial.turnItems }));
-        }
+        yield* worker.drain();
         yield* Fiber.join(running);
-        console.error("steering fixture: provider running", timing);
         const first = started[0]!;
         const messageId = MessageId.make("message:steering");
         const taskId = NodeId.make("task:mailbox");
@@ -295,7 +305,6 @@ it.effect.each(
             : {}),
         });
         if (timing !== "before dispatch") yield* dispatchSteer;
-        console.error("steering fixture: message dispatched", timing);
         if (timing === "during continuation") {
           const projection = yield* orchestrator.getThreadProjection(threadId);
           const turn = projection.providerTurns[0]!;
@@ -321,18 +330,8 @@ it.effect.each(
         }
         if (timing === "after delivery") yield* worker.drain();
         const delivery =
-          timing === "during delivery"
-            ? yield* worker.runOnce.pipe(
-                Effect.tap((handled) =>
-                  Effect.sync(() =>
-                    console.error("steering fixture: delivery worker returned", handled),
-                  ),
-                ),
-                Effect.forkScoped,
-              )
-            : null;
+          timing === "during delivery" ? yield* worker.runOnce.pipe(Effect.forkScoped) : null;
         if (delivery !== null) yield* Deferred.await(steerEntered);
-        console.error("steering fixture: delivery entered", timing);
         const completed = yield* watch(
           (event) =>
             event.type === "run.updated" &&
@@ -357,7 +356,6 @@ it.effect.each(
           threadDisposition: "reusable",
         });
         yield* Fiber.join(completed);
-        console.error("steering fixture: completion persisted", timing);
         if (delivery !== null) {
           yield* Deferred.succeed(rejectSteer, undefined);
           yield* Fiber.join(delivery);
@@ -448,10 +446,15 @@ it.effect.each(
           ProviderReplayHarness.layerWithRegistry(
             { name: `steering-completion-${timing}` },
             ProviderAdapterRegistry.layerSingle(adapter),
-            { runEffectWorker: false },
+            {
+              runEffectWorker: false,
+              projectServiceLayer: fixtureProjectLayer(
+                ProjectId.make("project:steering-completion"),
+                cwd,
+              ),
+            },
           ),
         ),
-        Effect.provide(Logger.layer([Logger.consoleJson])),
       );
     }),
   ),
@@ -573,7 +576,10 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
   const layer = ProviderReplayHarness.layerWithRegistry(
     { name },
     ProviderAdapterRegistry.layerSingle(adapter),
-    { runEffectWorker: false },
+    {
+      runEffectWorker: false,
+      projectServiceLayer: fixtureProjectLayer(ProjectId.make(`project:${name}`), cwd),
+    },
   );
   const startFirstTurn = Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
