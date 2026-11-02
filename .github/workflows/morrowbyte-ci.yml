@@ -135,6 +135,7 @@ jobs:
         if: github.event_name != 'workflow_dispatch' || inputs.integrationOnly
         env:
           BASE_REF: ${{ inputs.integrationBase || github.event.pull_request.base.sha || github.event.before }}
+          CHECK_CHANGED_TIMEOUT: '1800'
         run: |
           set -euo pipefail
           [[ "$BASE_REF" =~ ^[A-Za-z0-9_][A-Za-z0-9_./-]*$ ]]
