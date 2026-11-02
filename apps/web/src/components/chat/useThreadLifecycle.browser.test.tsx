@@ -206,26 +206,34 @@ it.each(["Success", "Failure"] as const)(
       />
     );
     await using screen = await render(harness(threadA));
-    await page.getByRole("button", { name: "Stop thread", exact: true }).click();
-    await expect.element(page.getByRole("button", { name: "Stopping thread…" })).toBeDisabled();
+    await page.getByRole("button", { name: "Stop all work in this thread", exact: true }).click();
+    await expect
+      .element(page.getByRole("button", { name: "Stop all work in this thread" }))
+      .toBeDisabled();
     await screen.rerender(harness(threadB));
-    await page.getByRole("button", { name: "Stop thread", exact: true }).click();
+    await page.getByRole("button", { name: "Stop all work in this thread", exact: true }).click();
     await screen.rerender(harness(threadA));
-    await expect.element(page.getByRole("button", { name: "Stopping thread…" })).toBeDisabled();
+    await expect
+      .element(page.getByRole("button", { name: "Stop all work in this thread" }))
+      .toBeDisabled();
     completions[0]!(
       outcome === "Success"
         ? { _tag: "Success", value: undefined }
         : { _tag: "Failure", cause: Cause.fail(new Error("stop failed")) },
     );
     if (outcome === "Success") {
-      await expect.element(page.getByRole("button", { name: "Stopping thread…" })).toBeDisabled();
+      await expect
+        .element(page.getByRole("button", { name: "Stop all work in this thread" }))
+        .toBeDisabled();
     } else {
       await expect
-        .element(page.getByRole("button", { name: "Stop thread", exact: true }))
+        .element(page.getByRole("button", { name: "Stop all work in this thread", exact: true }))
         .toBeEnabled();
     }
     await screen.rerender(harness(threadB));
-    await expect.element(page.getByRole("button", { name: "Stopping thread…" })).toBeDisabled();
+    await expect
+      .element(page.getByRole("button", { name: "Stop all work in this thread" }))
+      .toBeDisabled();
     expect(state.switchRef).toHaveBeenCalledTimes(2);
     completions[1]!({ _tag: "Success", value: undefined });
   },
