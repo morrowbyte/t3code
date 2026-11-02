@@ -21,6 +21,7 @@ import { deriveThreadCheckpointSummaries } from "@t3tools/client-runtime/state/t
 import { getReviewSectionIdForCheckpoint } from "../features/review/reviewModel";
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
+import { resolveThreadWorkRowFixedItemSize } from "../features/threads/thread-feed-item-size";
 
 import {
   buildThreadFeed,
@@ -38,6 +39,52 @@ import { type ThreadFeedActivity } from "./threadActivity";
 const threadId = ThreadId.make("thread-1");
 const sourceThreadId = ThreadId.make("thread-source");
 const runId = RunId.make("run-1");
+
+it("measures linked agent result cards instead of assigning a tool-row height", () => {
+  const notification = {
+    ...base("result", "2026-06-20T00:01:00.000Z", 4),
+    type: "notification" as const,
+    outcome: "completed" as const,
+    summary: "Delegated task finished with a multiline result",
+  };
+  const childThreadId = ThreadId.make("child");
+  expect(
+    resolveThreadWorkRowFixedItemSize(
+      {
+        ...notification,
+        source: { kind: "subagent", childThreadId },
+      },
+      28,
+    ),
+  ).toBeUndefined();
+  expect(
+    resolveThreadWorkRowFixedItemSize(
+      {
+        ...notification,
+        source: { kind: "delegated_task", taskIds: [], childThreadId },
+      },
+      28,
+    ),
+  ).toBeUndefined();
+  expect(
+    resolveThreadWorkRowFixedItemSize(
+      {
+        ...notification,
+        source: { kind: "subagent" },
+      },
+      28,
+    ),
+  ).toBe(28);
+  expect(
+    resolveThreadWorkRowFixedItemSize(
+      {
+        ...notification,
+        source: { kind: "command" },
+      },
+      28,
+    ),
+  ).toBe(28);
+});
 
 it("shows a captured MCP app for a failed deferred write", () => {
   const mcpApp = {

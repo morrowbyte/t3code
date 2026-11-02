@@ -3,6 +3,7 @@ import { workEntryExecutionStatus } from "@t3tools/client-runtime/work-log/prese
 import { AgentIdentityLabel } from "../agent-identity/AgentIdentityLabel";
 import { Button } from "../../components/ui/Button";
 import { ThreadSubagentGroup } from "./thread-subagent-group";
+import { resolveThreadWorkRowFixedItemSize } from "./thread-feed-item-size";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import {
   WorkLogLabel,
@@ -788,10 +789,15 @@ function ThreadWorkGroupList(props: {
     onContentSizeChange(list.getState().contentLength);
     return unsubscribe;
   }, []);
-  const getFixedItemSize = (row: ThreadFeedActivity, index: number) =>
-    props.expandedRows[row.id] || props.rowSizing.fixedRowHeight === undefined
+  const getFixedItemSize = (row: ThreadFeedActivity, index: number) => {
+    const rowHeight = resolveThreadWorkRowFixedItemSize(
+      row.projectedItem.item,
+      props.rowSizing.fixedRowHeight,
+    );
+    return props.expandedRows[row.id] || rowHeight === undefined
       ? undefined
-      : props.rowSizing.fixedRowHeight + (index < props.activities.length - 1 ? WORK_ROW_GAP : 0);
+      : rowHeight + (index < props.activities.length - 1 ? WORK_ROW_GAP : 0);
+  };
   const renderItem = ({ item, index }: { item: ThreadFeedActivity; index: number }) => (
     <View className={index < props.activities.length - 1 ? "pb-px" : undefined}>
       {props.renderRow(item)}

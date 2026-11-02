@@ -246,7 +246,10 @@ import {
   type PendingThreadFeedEntry,
 } from "./pending-thread-feed";
 import type { QueuedThreadMessage } from "../../state/thread-outbox-model";
-import { resolveThreadFeedFixedItemSize } from "./thread-feed-item-size";
+import {
+  resolveThreadFeedFixedItemSize,
+  resolveThreadWorkRowFixedItemSize,
+} from "./thread-feed-item-size";
 import { htmlRenderFrameHeight } from "@t3tools/shared/htmlRender";
 import { htmlRenderRowHeight, ThreadHtmlRender } from "./HtmlRenderWebView";
 import { ThreadMcpApp } from "./McpAppWebView";
@@ -3751,7 +3754,13 @@ const ThreadFeedContent = memo(function ThreadFeedContent({
           return undefined;
         }
         return entry.activities.some(
-          (activity) => activity.prominent || expandedWorkRows[activity.id],
+          (activity) =>
+            activity.prominent ||
+            expandedWorkRows[activity.id] ||
+            resolveThreadWorkRowFixedItemSize(
+              activity.projectedItem.item,
+              workRowSizing.fixedRowHeight,
+            ) === undefined,
         )
           ? undefined
           : collapsedWorkLogHeight(entry.activities, entry.continuesWorkLog);
