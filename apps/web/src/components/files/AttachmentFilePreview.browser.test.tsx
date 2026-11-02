@@ -317,7 +317,7 @@ describe("bounded binary previews", () => {
         asset={{ environmentId: EnvironmentId.make("test-environment"), attachmentId: "image" }}
       />,
     );
-    await expect.element(screen.getByRole("alert")).toHaveTextContent("Unable to load image.");
+    await expect.element(screen.getByRole("alert")).toHaveTextContent(/Unable to load image\./);
     await act(() =>
       screen.container.querySelector<HTMLButtonElement>('[role="alert"] button')!.click(),
     );
