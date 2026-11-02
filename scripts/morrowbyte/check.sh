@@ -120,6 +120,7 @@ if [[ "$typecheck_failed" != 0 ]]; then
 fi
 source_proof group typecheck
 focused_tests=(
+  apps/web/src/authBootstrap.test.ts
   packages/client-runtime/src/state/authAccessHttp.test.ts
   packages/client-runtime/src/state/threadInbox.test.ts
   packages/client-runtime/src/state/threadShell.test.ts
@@ -450,6 +451,7 @@ focused_tests+=(
   apps/web/src/components/settings/UpdateHistoryPanel.test.tsx
 )
 renderer_tests=(
+  apps/web/src/components/auth/PairingRouteSurface.browser.test.tsx
   apps/web/src/observatory/AgentObservatory.browser.test.tsx
   apps/web/src/components/chat/ExecutionCodePanel.browser.test.tsx
   apps/web/src/components/approvalReview/HostOrderSettings.browser.test.tsx
