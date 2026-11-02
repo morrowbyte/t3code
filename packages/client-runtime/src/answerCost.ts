@@ -15,9 +15,11 @@ function formatAnswerCost(amount: number): string {
 export function answerCostPresentation(
   turn: OrchestrationV2ProviderTurn | null | undefined,
   itemId: TurnItemId,
+  snapshot?: OrchestrationV2ProviderTurn["cost"],
 ): { readonly label: string; readonly detail: string } | null {
-  if (!turn || turn.status === "pending" || turn.status === "running") return null;
-  const cost = turn.cost;
+  if (snapshot === undefined && (!turn || turn.status === "pending" || turn.status === "running"))
+    return null;
+  const cost = snapshot ?? turn?.cost;
   if (cost?.answerItemId != null && cost.answerItemId !== itemId) return null;
   if (!cost || cost.answerItemId === null) {
     return {

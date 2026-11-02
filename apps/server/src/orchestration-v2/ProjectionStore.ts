@@ -1301,10 +1301,28 @@ function activeLocalTurnItems(
   }));
 }
 
+function withAnswerCosts<
+  Row extends Pick<OrchestrationV2ProjectedTurnItem, "sourceItemId" | "item">,
+>(rows: Array<Row>, providerTurns: ReadonlyArray<OrchestrationV2ProviderTurn>): Array<Row> {
+  const costs = new Map(
+    providerTurns.flatMap((turn) =>
+      turn.status !== "pending" && turn.status !== "running" && turn.cost?.answerItemId != null
+        ? [[turn.cost.answerItemId, turn.cost] as const]
+        : [],
+    ),
+  );
+  if (costs.size === 0) return rows;
+  return rows.map((row) => {
+    const answerCost =
+      row.item.type === "assistant_message" ? costs.get(row.sourceItemId) : undefined;
+    return answerCost === undefined ? row : { ...row, answerCost };
+  });
+}
+
 function localVisibleTurnItems(
   projection: OrchestrationV2ThreadProjection,
 ): Array<OrchestrationV2ProjectedTurnItem> {
-  return activeLocalTurnItems(projection);
+  return withAnswerCosts(activeLocalTurnItems(projection), projection.providerTurns);
 }
 
 function inheritedVisibleTurnItemsFromLocalItems(
@@ -1388,6 +1406,7 @@ function visibleTurnItemsThroughRun(input: {
       (row) => row.item.threadId !== input.sourceProjection.thread.id || row.item.type === "fork",
     )
     .map((row) => ({
+      ...row,
       visibility: "inherited" as const,
       sourceThreadId: row.sourceThreadId,
       sourceItemId: row.sourceItemId,
@@ -1413,7 +1432,10 @@ function visibleTurnItemsThroughRun(input: {
     }),
   );
 
-  return [...inheritedPrefix, ...localPrefix];
+  return [
+    ...inheritedPrefix,
+    ...withAnswerCosts(localPrefix, input.sourceProjection.providerTurns),
+  ];
 }
 
 // Side chats show only their own rows; the fork transfer carries the parent's context to the model.
@@ -1448,12 +1470,7 @@ function buildVisibleTurnItems(input: {
     sourceThreadId: forkedFrom.threadId,
     sourceRunId: forkedFrom.runId,
   });
-  const local = activeLocalTurnItems(input.projection).map((row) => ({
-    visibility: "local" as const,
-    sourceThreadId: row.sourceThreadId,
-    sourceItemId: row.sourceItemId,
-    item: row.item,
-  }));
+  const local = localVisibleTurnItems(input.projection);
 
   return renumberVisibleTurnItems(
     [
@@ -3749,6 +3766,34 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         ),
     );
 
+    const readAnswerCosts = Effect.fn("ProjectionStore.readAnswerCosts")(function* (
+      threadId: ThreadId,
+      items: Array<OrchestrationV2ProjectedTurnItem>,
+    ) {
+      const turnSources = items.flatMap((row) =>
+        row.answerCost === undefined &&
+        row.item.type === "assistant_message" &&
+        row.item.providerTurnId !== null
+          ? [{ threadId: row.sourceThreadId, id: row.item.providerTurnId }]
+          : [],
+      );
+      if (turnSources.length === 0) return items;
+      const wantedTurns = yield* encodeTimelineSources([
+        ...new Map(
+          turnSources.map((source) => [`${source.threadId}:${source.id}`, source]),
+        ).values(),
+      ]);
+      const turnRows = yield* sql<PayloadRow>`
+        SELECT turn.payload_json
+        FROM orchestration_v2_projection_provider_turns turn JOIN json_each(${wantedTurns}) wanted
+        ON turn.thread_id = json_extract(wanted.value, '$.threadId')
+          AND turn.provider_turn_id = json_extract(wanted.value, '$.id')`;
+      return withAnswerCosts(
+        items,
+        yield* decodeRows(decodeProviderTurnPayload, threadId)(turnRows),
+      );
+    });
+
     const readProjection: (
       threadId: ThreadId,
       seenThreadIds: ReadonlySet<ThreadId>,
@@ -3921,12 +3966,13 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           new Set([...seenThreadIds, threadId]),
           sourceWindow,
         );
+        const visibleTurnItems = buildVisibleTurnItems({ projection, sourceProjection });
         return {
           ...projection,
-          visibleTurnItems: buildVisibleTurnItems({
-            projection,
-            sourceProjection,
-          }),
+          visibleTurnItems:
+            seenThreadIds.size === 0
+              ? yield* readAnswerCosts(threadId, visibleTurnItems)
+              : visibleTurnItems,
         };
       },
       (effect, threadId, _seenThreadIds, _window?) =>
@@ -5883,7 +5929,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               const byIdentity = new Map(
                 payloads.map((row) => [`${row.thread_id}:${row.turn_item_id}`, row.payload_json]),
               );
-              return yield* Effect.forEach(rows, (row) =>
+              const items = yield* Effect.forEach(rows, (row) =>
                 Effect.gen(function* () {
                   const payload = byIdentity.get(`${row.sourceThreadId}:${row.sourceItemId}`);
                   const item =
@@ -5904,6 +5950,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   };
                 }),
               );
+              return yield* readAnswerCosts(threadId, items);
             });
             const items = yield* materialize(
               conversationOnly && hasUserTurns

@@ -57,6 +57,7 @@ import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import * as UsageService from "../usage/UsageService.ts";
 import { priceTurnUsage } from "../usage/turnCost.ts";
 import { parseRateTable } from "../usage/usagePricing.ts";
+import { encodeThreadHistoryCursor } from "./threadHistoryPaging.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -491,7 +492,10 @@ it.effect(
               id: itemId,
               threadId: threadEvent.threadId,
               runId: null,
-              nodeId: providerTurn.nodeId,
+              nodeId:
+                answerTurnId === providerTurn.id
+                  ? providerTurn.nodeId
+                  : NodeId.make("billing-other-turn-node"),
               providerThreadId,
               providerTurnId: answerTurnId,
               nativeItemRef: null,
@@ -534,6 +538,29 @@ it.effect(
       assert.equal(cost?.answerItemId, answerId);
       assert.equal(cost?.model, modelSelection.model);
       assert.closeTo(cost?.amountUsd ?? -1, 0.000106, 1e-12);
+      const recent = yield* projections.getThreadSnapshotWindow(threadEvent.threadId, {
+        rowLimit: 1,
+      });
+      assert.isFalse(recent.projection.providerTurns.some((turn) => turn.id === providerTurn.id));
+      const older = yield* projections.getThreadHistoryPage(
+        threadEvent.threadId,
+        encodeThreadHistoryCursor({
+          snapshotSequence: recent.snapshotSequence,
+          sourceThreadId: threadEvent.threadId,
+          sourceItemId: TurnItemId.make("billing-other-turn-answer"),
+          position: 2,
+        }),
+      );
+      assert.deepInclude(
+        older.items.find((row) => row.sourceItemId === answerId),
+        { answerCost: cost },
+      );
+      assert.notProperty(
+        older.items.find(
+          (row) => row.sourceItemId === TurnItemId.make("billing-intermediate-answer"),
+        ),
+        "answerCost",
+      );
       const events = yield* eventStore
         .read({ threadId: threadEvent.threadId })
         .pipe(Stream.runCollect);
@@ -582,6 +609,76 @@ it.effect(
         subagent: true,
         durationMs: 120,
       });
+      const sourceRunId = RunId.make("billing-source-run");
+      const forkThreadId = ThreadId.make("billing-fork-thread");
+      yield* eventSink.write({
+        events: [
+          {
+            id: yield* idAllocator.allocate.event({ threadId: threadEvent.threadId }),
+            type: "run.created",
+            threadId: threadEvent.threadId,
+            occurredAt: now,
+            payload: {
+              id: sourceRunId,
+              threadId: threadEvent.threadId,
+              ordinal: 1,
+              providerInstanceId: modelSelection.instanceId,
+              modelSelection,
+              providerThreadId,
+              userMessageId: MessageId.make("billing-source-message"),
+              rootNodeId: providerTurn.nodeId,
+              activeAttemptId: null,
+              status: "completed",
+              requestedAt: now,
+              startedAt: now,
+              completedAt: now,
+              checkpointId: null,
+              contextHandoffId: null,
+            },
+          },
+          {
+            id: yield* idAllocator.allocate.event({ threadId: forkThreadId }),
+            type: "thread.created",
+            threadId: forkThreadId,
+            occurredAt: now,
+            payload: {
+              ...reloaded.thread,
+              id: forkThreadId,
+              forkedFrom: { type: "run", threadId: threadEvent.threadId, runId: sourceRunId },
+              lineage: {
+                ...reloaded.thread.lineage,
+                parentThreadId: threadEvent.threadId,
+                relationshipToParent: "fork",
+              },
+            },
+          },
+        ],
+      });
+      for (const item of reloaded.turnItems) {
+        if (item.type !== "assistant_message" || item.providerTurnId !== providerTurn.id) continue;
+        yield* eventSink.write({
+          events: [
+            {
+              id: yield* idAllocator.allocate.event({ threadId: threadEvent.threadId }),
+              type: "turn-item.updated",
+              threadId: threadEvent.threadId,
+              occurredAt: now,
+              payload: { ...item, runId: sourceRunId },
+            },
+          ],
+        });
+      }
+      const forkReload = yield* projections.getThreadSnapshotWindow(forkThreadId, { rowLimit: 4 });
+      assert.isEmpty(forkReload.projection.providerTurns);
+      const inheritedAnswer = forkReload.projection.visibleTurnItems.find(
+        (row) => row.sourceItemId === answerId,
+      );
+      assert.equal(inheritedAnswer?.sourceThreadId, threadEvent.threadId);
+      assert.deepInclude(inheritedAnswer, { answerCost: cost });
+      assert.lengthOf(
+        forkReload.projection.visibleTurnItems.filter((row) => row.answerCost !== undefined),
+        1,
+      );
       const childThreadId = ThreadId.make("native-child-cost-thread");
       const childTurn = {
         ...providerTurn,
@@ -646,6 +743,11 @@ it.effect(
       assert.equal(childProjection.providerTurns[0]?.cost?.answerItemId, childAnswerId);
       assert.equal(childProjection.providerTurns[0]?.cost?.model, "native-child-model");
       assert.equal(childProjection.providerTurns[0]?.cost?.status, "unavailable");
+      assert.deepEqual(
+        childProjection.visibleTurnItems.find((row) => row.sourceItemId === childAnswerId)
+          ?.answerCost,
+        childProjection.providerTurns[0]?.cost,
+      );
     }).pipe(Effect.provide(layerTest.pipe(Layer.provide(layerAnalytics))));
   },
 );

@@ -201,14 +201,15 @@ function upsertVisibleTurnItem(
   // search can start there.
   let index = rows.length - 1;
   while (index >= 0 && rows[index]!.sourceItemId !== item.id) index -= 1;
+  const previous = index === -1 ? undefined : rows[index]!;
   const next = {
+    ...previous,
     position: 0,
     visibility: "local" as const,
     sourceThreadId: item.threadId,
     sourceItemId: item.id,
     item,
   };
-  const previous = index === -1 ? undefined : rows[index]!;
   if (
     previous !== undefined &&
     previous.visibility === next.visibility &&

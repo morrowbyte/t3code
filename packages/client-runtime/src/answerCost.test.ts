@@ -44,6 +44,10 @@ describe("answer cost binding", () => {
   it("shows a turn total only on its bound answer, including after JSON reload", () => {
     const restored = JSON.parse(JSON.stringify(turn)) as OrchestrationV2ProviderTurn;
     expect(answerCostPresentation(restored, itemId)?.label).toBe("≈ $0.024");
+    expect(answerCostPresentation(null, itemId, restored.cost)?.label).toBe("≈ $0.024");
+    expect(
+      answerCostPresentation(null, TurnItemId.make("intermediate-answer"), restored.cost),
+    ).toBeNull();
     expect(answerCostPresentation(restored, TurnItemId.make("intermediate-answer"))).toBeNull();
     expect(answerCostPresentation({ ...turn, status: "running" }, itemId)).toBeNull();
     expect(answerCostPresentation(turn, itemId)?.detail).toContain("Subagent costs are excluded.");

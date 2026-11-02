@@ -1911,6 +1911,7 @@ export const OrchestrationV2ProjectedTurnItem = Schema.Struct({
   sourceThreadId: ThreadId,
   sourceItemId: TurnItemId,
   item: OrchestrationV2TurnItem,
+  answerCost: OrchestrationV2ProviderTurn.fields.cost,
 });
 export type OrchestrationV2ProjectedTurnItem = typeof OrchestrationV2ProjectedTurnItem.Type;
 

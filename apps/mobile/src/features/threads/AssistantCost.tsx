@@ -19,9 +19,13 @@ export function AssistantCost({
     sourceThreadId: projectedItem.sourceThreadId,
     sourceItemId: projectedItem.sourceItemId,
   });
-  if (onlyBound && support.providerTurn?.cost?.answerItemId !== projectedItem.sourceItemId)
-    return null;
-  const cost = answerCostPresentation(support.providerTurn, projectedItem.sourceItemId);
+  const snapshot = projectedItem.answerCost ?? support.providerTurn?.cost;
+  if (onlyBound && snapshot?.answerItemId !== projectedItem.sourceItemId) return null;
+  const cost = answerCostPresentation(
+    support.providerTurn,
+    projectedItem.sourceItemId,
+    projectedItem.answerCost,
+  );
   if (!cost) return null;
   return (
     <Pressable
