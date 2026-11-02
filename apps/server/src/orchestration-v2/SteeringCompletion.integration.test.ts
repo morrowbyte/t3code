@@ -198,6 +198,10 @@ it.effect.each(
         );
         yield* worker.drain();
         console.error("steering fixture: initial effects drained", timing, started.length);
+        if (started.length !== 1) {
+          const initial = yield* orchestrator.getThreadProjection(threadId);
+          assert.fail(JSON.stringify({ runs: initial.runs, items: initial.turnItems }));
+        }
         yield* Fiber.join(running);
         console.error("steering fixture: provider running", timing);
         const first = started[0]!;
