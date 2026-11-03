@@ -14,6 +14,7 @@ Rules for writing tests, and for asking for them in review. AGENTS.md carries th
 
 ## Integration and review
 
+- For visible behavior, including server-side repairs with visible effects, live evidence includes exercising the affected user flow and inspecting current screenshots. Reuse unchanged relevant live/screenshot evidence; repeat the GUI pass only after a relevant change, within existing GUI authorization and the owner's warm environment. Fixes without a visible surface need no GUI pass.
 - Freeze a commit for independent review with the acceptance cases, focused checks and relevant live evidence. Findings must identify a concrete defect or violated requirement. Normally use one correction round; if corrections repeatedly fail, ask for a human decision without waiving unresolved findings. Code-changing repairs renew the affected checks and review.
 - Before integration, qualify the relevant combination of current main and the feature, recording both the candidate and main SHAs. Separately green branches do not qualify their combination. `--exact-base` fixes the comparison base; it does not create or test a merged candidate. If main advances, reassess the affected combination rather than repeating unrelated checks.
 - Before main, assign required type evidence for affected packages to a named focused package check or existing CI job and record its commit and result. Quick integration is not type evidence. Use `check:changed` or the configured broader CI where appropriate; do not add a full suite for every feature.
