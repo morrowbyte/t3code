@@ -361,27 +361,44 @@ sys.stdout.buffer.write(output.getvalue())
     artifactDigest: meta.digest,
     verify: (options) =>
       verifySourceProof({ github, repo, source, runId: "456", expected: expected(), ...options }),
-    run: () =>
+    run: (options = {}) =>
       nightlyAfterCI({
         github,
         context: { repo, payload: { workflow_run: ci } },
         core: { info() {}, setOutput() {} },
+        options,
       }),
   };
 }
 
 test("only API-backed exact full evidence reaches dispatch, carrying immutable artifact identity", async () => {
-  const fixture = apiFixture();
-  await fixture.run();
-  assert.equal(fixture.dispatches.length, 1);
-  assert.equal(fixture.dispatches[0].inputs.source_sha, source);
-  assert.equal(fixture.dispatches[0].inputs.source_proof_run_id, "456");
-  assert.equal(fixture.dispatches[0].inputs.source_proof_artifact_id, "789");
-  assert.match(fixture.dispatches[0].inputs.source_proof_digest, /^sha256:[0-9a-f]{64}$/);
-  assert.deepEqual(
-    fixture.markers.map((marker) => marker.state),
-    ["pending", "success"],
-  );
+  for (const runnerBackend of [undefined, "boat", "blacksmith", "self-hosted"]) {
+    const fixture = apiFixture();
+    const options = runnerBackend ? { runnerBackend } : {};
+    await fixture.run(options);
+    assert.deepEqual(fixture.dispatches, [
+      {
+        ...repo,
+        workflow_id: "morrowbyte-release.yml",
+        ref: "main",
+        inputs: {
+          publish: "true",
+          linux_first: "true",
+          source_sha: source,
+          source_proof_run_id: "456",
+          source_proof_artifact_id: "789",
+          source_proof_digest: fixture.artifactDigest,
+          ...(runnerBackend ? { runner_backend: runnerBackend } : {}),
+        },
+      },
+    ]);
+    assert.deepEqual(
+      fixture.markers.map((marker) => marker.state),
+      ["pending", "success"],
+    );
+    await fixture.run(options);
+    assert.equal(fixture.dispatches.length, 1);
+  }
 });
 
 test("every invalid or partial JSON proof fails before durable intent and dispatch", async () => {

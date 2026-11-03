@@ -160,6 +160,7 @@ async function nightlyAfterCI({ github, context, core, options = {} }) {
       ref: "main",
       inputs: {
         publish: "true",
+        linux_first: "true",
         source_sha: source,
         source_proof_run_id: String(sourceProof.runId),
         source_proof_artifact_id: String(sourceProof.artifactId),
