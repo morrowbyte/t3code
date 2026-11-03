@@ -2,6 +2,10 @@ import { buildAgentMessageContext } from "@t3tools/shared/agentIdentity";
 import { firstDelegationParagraph } from "@t3tools/shared/delegationMessage";
 import {
   CommandId,
+  LiveVoiceDiagnostics,
+  LiveVoiceLeaseId,
+  LiveVoiceGeneration,
+  OrchestratorMcpEnvironmentTarget,
   type RunId,
   isProviderAvailable,
   resolveProjectProviderInstanceEnabled,
@@ -96,6 +100,8 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+import * as LiveVoiceHistory from "../voice/LiveVoiceHistory.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import {
   subagentResultForRun,
@@ -167,7 +173,24 @@ type TerminalTaskStatus = Extract<
   "completed" | "failed" | "cancelled" | "interrupted"
 >;
 
+export const OrchestratorMcpVoiceDiagnosticsInput = Schema.Struct({
+  environmentId: OrchestratorMcpEnvironmentTarget,
+  threadId: ThreadId,
+  leaseId: Schema.optionalKey(LiveVoiceLeaseId),
+  generation: Schema.optionalKey(LiveVoiceGeneration),
+  after: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+  limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 500 }))),
+});
+
 export interface OrchestratorMcpServiceShape {
+  readonly voiceDiagnostics: (
+    scope: McpInvocationScope,
+    input: typeof OrchestratorMcpVoiceDiagnosticsInput.Type,
+  ) => Effect.Effect<
+    typeof LiveVoiceDiagnostics.Type,
+    OrchestratorMcpFailure,
+    LiveVoiceHistory.LiveVoiceHistory | ServerEnvironment.ServerEnvironment
+  >;
   readonly externalDelegateTask: (
     scope: McpInvocationScope,
     input: OrchestratorMcpExternalDelegateTaskInput,
@@ -3536,6 +3559,37 @@ const make = Effect.gen(function* () {
         total: filtered.length,
       } satisfies OrchestratorMcpThreadListResult;
     }),
+    voiceDiagnostics: Effect.fn("OrchestratorMcpService.voiceDiagnostics")(
+      function* (scope, input) {
+        const environmentId = yield* (yield* ServerEnvironment.ServerEnvironment).getEnvironmentId;
+        if (scope.environmentId !== environmentId)
+          return yield* failure(
+            "capability_denied",
+            "This MCP credential belongs to another environment.",
+          );
+        yield* loadReadableThread(scope, input.threadId);
+        const history = yield* LiveVoiceHistory.LiveVoiceHistory;
+        return yield* history
+          .diagnostics({
+            environmentId,
+            threadId: input.threadId,
+            ...(input.leaseId === undefined ? {} : { leaseId: input.leaseId }),
+            ...(input.generation === undefined ? {} : { generation: input.generation }),
+            ...(input.after === undefined ? {} : { after: input.after }),
+            ...(input.limit === undefined ? {} : { limit: input.limit }),
+          })
+          .pipe(
+            Effect.mapError((error) =>
+              failure(
+                error.reason === "not_found" ? "thread_not_found" : "orchestration_error",
+                error.reason === "not_found"
+                  ? "The voice thread is unavailable."
+                  : "Voice diagnostics could not be read.",
+              ),
+            ),
+          );
+      },
+    ),
     readThread: Effect.fn("OrchestratorMcpService.readThread")(function* (scope, input) {
       const { parent, target, shell } = yield* loadReadableThread(scope, input.threadId);
       const view = input.view ?? "messages";

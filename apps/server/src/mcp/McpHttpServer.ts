@@ -59,6 +59,7 @@ import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
+import * as LiveVoiceHistory from "../voice/LiveVoiceHistory.ts";
 import * as JarvisService from "../integrations/jarvis/JarvisService.ts";
 import * as JarvisHandlers from "./toolkits/jarvis/handlers.ts";
 import { JarvisToolkit } from "./toolkits/jarvis/tools.ts";
@@ -1143,7 +1144,11 @@ export const layerPreviewToolkit = Layer.mergeAll(
 export const layerOrchestratorToolkit = toolkitRegistration(
   OrchestratorToolkit,
   OrchestratorHandlers.layer,
-).pipe(Layer.provide(OrchestratorMcpService.layer), Layer.provide(ThreadMetadataMcpService.layer));
+).pipe(
+  Layer.provide(OrchestratorMcpService.layer),
+  Layer.provide(ThreadMetadataMcpService.layer),
+  Layer.provide(LiveVoiceHistory.layer),
+);
 
 const layerApprovalReviewOrderToolkit = toolkitRegistration(
   ApprovalReviewOrderAgentToolkit.toolkit,

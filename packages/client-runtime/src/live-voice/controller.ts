@@ -272,7 +272,10 @@ export class LiveVoiceController {
   private readonly stopRequestIds = new Map<string, string>();
   private readonly stopRequests = new Map<string, Promise<void>>();
   private readonly transcriptSegments = new Map<string, LiveVoiceTranscript>();
-  private readonly contextDeliveries = new Map<string, boolean>();
+  private readonly contextDeliveries = new Map<
+    string,
+    { accepted: boolean; client: NonNullable<LiveVoiceContextDeliveredInput["client"]> }
+  >();
   private readonly pendingContext: LiveVoiceContextEvent[] = [];
   private readonly transcriptParts = new Map<
     string,
@@ -708,7 +711,7 @@ export class LiveVoiceController {
   ): void {
     const accepted = this.contextDeliveries.get(event.deliveryId);
     if (accepted !== undefined) {
-      this.acknowledgeContext(event, accepted);
+      this.acknowledgeContext(event, accepted.accepted, accepted.client);
       return;
     }
     if (this.pendingContext.some((pending) => pending.deliveryId === event.deliveryId)) return;
@@ -738,6 +741,8 @@ export class LiveVoiceController {
     if (!this.isCurrentLease(operation, lease)) return;
     const channel = this.channel;
     let accepted = false;
+    let frameCount = 0;
+    let bytes = 0;
     try {
       if (channel?.readyState === "open") {
         for (const text of splitContextText(event.text)) {
@@ -749,23 +754,43 @@ export class LiveVoiceController {
               content: [{ type: "input_text", text }],
             }),
           );
+          frameCount++;
+          bytes += new TextEncoder().encode(text).length;
         }
         accepted = true;
       }
     } catch {
       accepted = false;
     }
-    this.completeContext(event, accepted);
+    this.completeContext(event, accepted, frameCount, bytes);
   }
 
-  private completeContext(event: LiveVoiceContextEvent, accepted: boolean): void {
-    this.contextDeliveries.set(event.deliveryId, accepted);
+  private completeContext(
+    event: LiveVoiceContextEvent,
+    accepted: boolean,
+    frameCount = 0,
+    bytes = 0,
+  ): void {
+    const client = {
+      sourceTimestamp: globalThis.performance?.now() ?? 0,
+      frameCount,
+      bytes,
+      clientPhase: this.state.phase,
+      playbackEligible: this.remoteMediaReady && this.state.phase === "live",
+      playbackMuted: this.audio?.muted ?? true,
+      dataChannelState: this.channel?.readyState ?? "absent",
+    };
+    this.contextDeliveries.set(event.deliveryId, { accepted, client });
     if (this.contextDeliveries.size > MAX_CONTEXT_DELIVERIES)
       this.contextDeliveries.delete(this.contextDeliveries.keys().next().value!);
-    this.acknowledgeContext(event, accepted);
+    this.acknowledgeContext(event, accepted, client);
   }
 
-  private acknowledgeContext(event: LiveVoiceContextEvent, accepted: boolean): void {
+  private acknowledgeContext(
+    event: LiveVoiceContextEvent,
+    accepted: boolean,
+    client: NonNullable<LiveVoiceContextDeliveredInput["client"]>,
+  ): void {
     // Acceptance means queued transport frames; RPC failure leaves the server outcome unknown.
     void this.dependencies.signaling
       .contextDelivered?.({
@@ -773,6 +798,7 @@ export class LiveVoiceController {
         generation: event.generation,
         deliveryId: event.deliveryId,
         accepted,
+        client,
       })
       .catch(() => undefined);
   }

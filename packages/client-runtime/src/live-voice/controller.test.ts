@@ -349,12 +349,15 @@ describe("LiveVoiceController", () => {
         content: [{ type: "input_text", text: "The background task found three open items." }],
       }),
     );
-    expect(harness.contextDelivered).toHaveBeenCalledWith({
-      leaseId: lease.leaseId,
-      generation: lease.generation,
-      deliveryId: "context-1",
-      accepted: true,
-    });
+    expect(harness.contextDelivered).toHaveBeenCalledWith(
+      expect.objectContaining({
+        leaseId: lease.leaseId,
+        generation: lease.generation,
+        deliveryId: "context-1",
+        accepted: true,
+        client: expect.objectContaining({ frameCount: 1, dataChannelState: "open" }),
+      }),
+    );
     await harness.controller.end();
     harness.emit(context);
     expect(harness.channel.send).toHaveBeenCalledTimes(1);
@@ -381,12 +384,14 @@ describe("LiveVoiceController", () => {
     }
     expect(harness.channel.send).not.toHaveBeenCalled();
     expect(harness.contextDelivered).toHaveBeenCalledTimes(2);
-    expect(harness.contextDelivered).toHaveBeenLastCalledWith({
-      leaseId: lease.leaseId,
-      generation: lease.generation,
-      deliveryId: "queued-16",
-      accepted: false,
-    });
+    expect(harness.contextDelivered).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        leaseId: lease.leaseId,
+        generation: lease.generation,
+        deliveryId: "queued-16",
+        accepted: false,
+      }),
+    );
     harness.emit(answerEvent);
     await harness.remoteDescriptionSet;
     harness.channel.readyState = "open";
@@ -399,7 +404,12 @@ describe("LiveVoiceController", () => {
         content: [{ type: "input_text", text: `  Context ${index}\n` }],
       })),
     );
-    expect(harness.contextDelivered.mock.calls.slice(2).map(([input]) => input)).toEqual(
+    expect(
+      harness.contextDelivered.mock.calls.slice(2).map(([input]) => {
+        const { client: _client, ...receipt } = input;
+        return receipt;
+      }),
+    ).toEqual(
       Array.from({ length: 16 }, (_, index) => ({
         leaseId: lease.leaseId,
         generation: lease.generation,
@@ -484,12 +494,14 @@ describe("LiveVoiceController", () => {
         expect(new TextEncoder().encode(frame.content[0].text).length).toBeLessThanOrEqual(384);
         expect(frame.content[0].text.isWellFormed()).toBe(true);
       }
-      expect(harness.contextDelivered).toHaveBeenCalledExactlyOnceWith({
-        leaseId: lease.leaseId,
-        generation: lease.generation,
-        deliveryId: largeContext.deliveryId,
-        accepted: true,
-      });
+      expect(harness.contextDelivered).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          leaseId: lease.leaseId,
+          generation: lease.generation,
+          deliveryId: largeContext.deliveryId,
+          accepted: true,
+        }),
+      );
     }
     for (let index = 0; index < 64; index++)
       harness.emit({ ...context, deliveryId: `recent-${index}`, text: "Context" });
@@ -523,32 +535,38 @@ describe("LiveVoiceController", () => {
     harness.emit(context);
     harness.emit(context);
     expect(harness.channel.send).toHaveBeenCalledTimes(2);
-    expect(harness.contextDelivered).toHaveBeenLastCalledWith({
-      leaseId: lease.leaseId,
-      generation: lease.generation,
-      deliveryId: "send-failed",
-      accepted: false,
-    });
+    expect(harness.contextDelivered).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        leaseId: lease.leaseId,
+        generation: lease.generation,
+        deliveryId: "send-failed",
+        accepted: false,
+      }),
+    );
     harness.channel.readyState = "closed";
     harness.emit({ ...context, deliveryId: "channel-closed" });
     expect(harness.channel.send).toHaveBeenCalledTimes(2);
-    expect(harness.contextDelivered).toHaveBeenLastCalledWith({
-      leaseId: lease.leaseId,
-      generation: lease.generation,
-      deliveryId: "channel-closed",
-      accepted: false,
-    });
+    expect(harness.contextDelivered).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        leaseId: lease.leaseId,
+        generation: lease.generation,
+        deliveryId: "channel-closed",
+        accepted: false,
+      }),
+    );
     harness.channel.readyState = "open";
     harness.emit({ ...context, deliveryId: "ack-failed", text: "Queued successfully" });
     await Promise.resolve();
     expect(harness.channel.send).toHaveBeenCalledTimes(3);
     expect(harness.contextDelivered).toHaveBeenCalledTimes(4);
-    expect(harness.contextDelivered).toHaveBeenLastCalledWith({
-      leaseId: lease.leaseId,
-      generation: lease.generation,
-      deliveryId: "ack-failed",
-      accepted: true,
-    });
+    expect(harness.contextDelivered).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        leaseId: lease.leaseId,
+        generation: lease.generation,
+        deliveryId: "ack-failed",
+        accepted: true,
+      }),
+    );
     expect(harness.controller.currentState.phase).toBe("live");
     expect(harness.signaling.stop).not.toHaveBeenCalled();
     await harness.controller.end();

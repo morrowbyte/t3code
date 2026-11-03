@@ -30,6 +30,7 @@ export const requestEnvironmentVoiceSettings = Effect.fn(
       RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization["Service"]
     >;
     readonly update?: typeof VoiceTranscriptionSettingsInput.Type;
+    readonly diagnosticsEnabled?: boolean;
   }) =>
     Effect.gen(function* () {
       const request = (update?: typeof VoiceTranscriptionSettingsInput.Type) =>
@@ -44,6 +45,22 @@ export const requestEnvironmentVoiceSettings = Effect.fn(
               ? client.updateVoiceSettings({ payload: update, headers })
               : client.voiceSettings({ headers }),
         });
+      const diagnosticsEnabled = input.diagnosticsEnabled;
+      if (diagnosticsEnabled !== undefined) {
+        yield* executeAuthenticatedEnvironmentHttpRequest({
+          ...input,
+          group: "liveVoiceHistory",
+          method: "PUT",
+          timeoutMs: 15_000,
+          url: (urls) => urls.diagnosticsSettings(),
+          request: ({ client, headers }) =>
+            client.diagnosticsSettings({
+              payload: { diagnosticsEnabled },
+              headers,
+            }),
+        });
+        return yield* request();
+      }
       if (input.update?.apiKey?.trim()) {
         // Enforce this at the transport boundary, even if an older/remounted UI
         // still offers Save. Never send a new key to a plaintext-storage backend.

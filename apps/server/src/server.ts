@@ -836,7 +836,12 @@ const layerMakeRoutes = Layer.mergeAll(
         ),
       ),
       Layer.provide(PullRequestHttp.layer),
-      Layer.provide(VoiceHttp.layer.pipe(Layer.provide(VoiceTranscriptionService.layer))),
+      Layer.provide(
+        VoiceHttp.layer.pipe(
+          Layer.provide(VoiceTranscriptionService.layer),
+          Layer.provide(LiveVoiceHistory.layer),
+        ),
+      ),
       Layer.provide(VoiceRecordingHttp.layer.pipe(Layer.provide(VoiceRecordingService.layer))),
       Layer.provide(LiveVoiceHistoryHttp.layer.pipe(Layer.provide(LiveVoiceHistory.layer))),
       Layer.provide(

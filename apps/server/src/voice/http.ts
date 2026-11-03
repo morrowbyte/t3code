@@ -17,7 +17,10 @@ import {
   requireEnvironmentScope,
 } from "../auth/http.ts";
 import { traceLocalHandlerWork } from "../cloud/traceRelayRequest.ts";
+import * as LiveVoiceHistory from "./LiveVoiceHistory.ts";
 import * as VoiceTranscriptionService from "./VoiceTranscriptionService.ts";
+
+const isVoiceTranscriptionHttpError = Schema.is(VoiceTranscriptionHttpError);
 
 export const layer = HttpApiBuilder.group(
   EnvironmentHttpApi,
@@ -25,21 +28,34 @@ export const layer = HttpApiBuilder.group(
   Effect.fnUntraced(function* (handlers) {
     const service = yield* VoiceTranscriptionService.VoiceTranscriptionService;
     const fs = yield* FileSystem.FileSystem;
+    const history = yield* LiveVoiceHistory.LiveVoiceHistory;
     return handlers
       .handle("voiceSettings", () =>
         Effect.gen(function* () {
           yield* requireEnvironmentScope(AuthOrchestrationReadScope);
-          return yield* service.getSettings.pipe(
+          const settings = yield* service.getSettings.pipe(
             Effect.catch((cause) => failEnvironmentInternal("internal_error", cause)),
           );
+          const diagnostics = yield* history.diagnosticsSettings.pipe(
+            Effect.catch((cause) => failEnvironmentInternal("internal_error", cause)),
+          );
+          return { ...settings, ...diagnostics };
         }),
       )
       .handle("updateVoiceSettings", ({ payload }) =>
         Effect.gen(function* () {
           yield* requireEnvironmentScope(AuthSettingsWriteScope);
-          return yield* service
+          const settings = yield* service
             .updateSettings(payload)
             .pipe(Effect.catch((cause) => failEnvironmentInternal("internal_error", cause)));
+          if (payload.diagnosticsEnabled !== undefined)
+            yield* history
+              .setDiagnosticsEnabled(payload.diagnosticsEnabled)
+              .pipe(Effect.catch((cause) => failEnvironmentInternal("internal_error", cause)));
+          const diagnostics = yield* history.diagnosticsSettings.pipe(
+            Effect.catch((cause) => failEnvironmentInternal("internal_error", cause)),
+          );
+          return { ...settings, ...diagnostics };
         }).pipe(Effect.withTracerEnabled(false)),
       )
       .handle(
@@ -68,7 +84,7 @@ export const layer = HttpApiBuilder.group(
                   ),
               }),
               Effect.catchIf(
-                (error) => !Schema.is(VoiceTranscriptionHttpError)(error),
+                (error) => !isVoiceTranscriptionHttpError(error),
                 (error) => failEnvironmentInternal("internal_error", error),
               ),
             );

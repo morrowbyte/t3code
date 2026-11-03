@@ -4,6 +4,37 @@ import { caseForSample, cases, snapshotFor } from "./cases.ts";
 import { grade } from "./grade.ts";
 
 describe("native intake grading", () => {
+  it("carries assistant context while grading authorization only against fresh user speech", () => {
+    const original = cases.find((item) => item.id === "assistant-proposal-contextual-refinement")!;
+    const testCase = caseForSample(original, "context-sample");
+    const snapshot = snapshotFor(testCase, "lease", 2);
+    expect(snapshot.conversationContext).toBe(original.conversationContext);
+    const acceptance = snapshot.segments[1]!;
+    const action = {
+      type: "refine" as const,
+      intentId: testCase.intents[0]!.id,
+      readOnly: false,
+      message: "Ändere die Überschrift auf Team-Puls.",
+      sources: [
+        { segmentId: acceptance.id, revision: acceptance.revision, quote: acceptance.text },
+      ],
+    };
+    expect(
+      grade(testCase, snapshot, { requestId: snapshot.requestId, actions: [action] }).pass,
+    ).toBe(true);
+    expect(
+      grade(testCase, snapshot, {
+        requestId: snapshot.requestId,
+        actions: [
+          {
+            ...action,
+            sources: [{ segmentId: "assistant-proposal", revision: 1, quote: "Team-Puls" }],
+          },
+        ],
+      }).failures,
+    ).toContain("source_identity");
+  });
+
   it("recognizes the native no-files wording while rejecting a missing constraint", () => {
     const original = cases.find((item) => item.id === "rejected-chart-keeps-current-constraint")!;
     const testCase = caseForSample(original, "rejected-sample");

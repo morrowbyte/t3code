@@ -44,6 +44,33 @@ const jsonBody = (body: unknown) =>
   JSON.parse(body instanceof Uint8Array ? new TextDecoder().decode(body) : String(body));
 
 describe("requestEnvironmentVoiceSettings", () => {
+  it.effect("toggles diagnostics without restoring an outdated transcription provider", () =>
+    Effect.gen(function* () {
+      let current = { ...SETTINGS, diagnosticsEnabled: false, model: "new-provider-model" };
+      const fetchFn = ((url, init) => {
+        const headers = new Headers(init?.headers);
+        expect(headers.get("authorization")).toBe("Bearer environment-session-token");
+        if (init?.method === "PUT") {
+          expect(String(url)).toBe(
+            "https://remote-environment.example.test/api/voice/diagnostics/settings",
+          );
+          expect(jsonBody(init.body)).toEqual({ diagnosticsEnabled: true });
+          current = { ...current, diagnosticsEnabled: true };
+          return Promise.resolve(Response.json({ diagnosticsEnabled: true }));
+        }
+        return Promise.resolve(Response.json(current));
+      }) satisfies typeof fetch;
+      const result = yield* requestEnvironmentVoiceSettings({
+        prepared: PREPARED,
+        signer: Option.none(),
+        remoteAuthorization: Option.none(),
+        diagnosticsEnabled: true,
+      }).pipe(Effect.provide(RpcHttp.layerRemoteHttpClient(fetchFn)));
+      expect(result.diagnosticsEnabled).toBe(true);
+      expect(result.model).toBe("new-provider-model");
+    }),
+  );
+
   it.effect("checks the selected destination's encrypted storage before sending a new key", () =>
     Effect.gen(function* () {
       const calls: Array<{ url: string; method: string; headers: Headers; body: unknown }> = [];

@@ -11,6 +11,25 @@ import * as LiveVoiceHistory from "./LiveVoiceHistory.ts";
 const hubLayer = Layer.effect(CodexLiveEventHub.CodexLiveEventHub, CodexLiveEventHub.make).pipe(
   Layer.provide(
     Layer.succeed(LiveVoiceHistory.LiveVoiceHistory, {
+      recordDiagnostic: () => Effect.void,
+      diagnosticsSettings: Effect.succeed({ diagnosticsEnabled: false }),
+      setDiagnosticsEnabled: () => Effect.void,
+      diagnostics: () =>
+        Effect.succeed({
+          enabled: false,
+          retentionHours: 24,
+          capacity: 5000,
+          events: [],
+          nextAfter: null,
+          truncated: false,
+          persistenceAvailable: true,
+          capabilities: {
+            nativeVad: false,
+            actualPlayout: false,
+            nativeCancel: false,
+            modelContextConsumption: false,
+          },
+        }),
       record: (_session, event) =>
         event.type === "activity"
           ? Effect.die("Live activity must not be stored as transcript history.")

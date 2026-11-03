@@ -79,6 +79,7 @@ export * from "./secretRequest.ts";
 export * from "./liveVoice.ts";
 export * from "./liveVoiceContext.ts";
 export * from "./liveVoiceHistory.ts";
+export * from "./liveVoiceDiagnostics.ts";
 export * from "./secretReference.ts";
 export * from "./settingsSecretValue.ts";
 export * from "./clientRpcPermissions.ts";

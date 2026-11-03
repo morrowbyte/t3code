@@ -3154,6 +3154,7 @@ describe("CodexAdapterV2 LiveVoice planner preparation", () => {
       appendSpeech: liveVoice.appendSpeech,
       appendContext: liveVoice.appendContext,
       hasActiveSession: liveVoice.hasActiveSession,
+      diagnostics: liveVoice.diagnostics ?? Effect.die("Missing LiveVoice diagnostics."),
       prepare: (newTaskAdmission?: "intake") =>
         liveVoice.preparePlanner({
           ...(newTaskAdmission === undefined ? {} : { newTaskAdmission }),
@@ -3619,6 +3620,38 @@ describe("CodexAdapterV2 LiveVoice planner preparation", () => {
         });
         assert.isBelow(planner.requests.indexOf(injected), planner.requests.indexOf(realtime));
         assert.deepEqual((realtime.params as { initialItems: unknown[] }).initialItems, history);
+      }).pipe(Effect.scoped, Effect.provide(dependencies)),
+  );
+
+  it.effect(
+    "reports native version and hashes the actual realtime prompt without another request",
+    () =>
+      Effect.gen(function* () {
+        const planner = yield* openPlanner();
+        const beforePrepare = yield* planner.diagnostics;
+        assert.isNull(beforePrepare.conversationPromptSha256);
+        yield* planner.prepare();
+        const requestCount = planner.requests.length;
+        const diagnostics = yield* planner.diagnostics;
+        assert.equal(planner.requests.length, requestCount);
+        assert.equal(diagnostics.nativeUserAgent, "T3 Code/0.156.1");
+        assert.equal(diagnostics.nativeRuntimeVersion, "0.156.1");
+        assert.equal(diagnostics.nativeModel, "gpt-live-1-codex");
+        assert.isNull(diagnostics.nativeReasoningEffort);
+        assert.isNull(diagnostics.nativeServiceTier);
+        assert.match(String(diagnostics.intakePromptSha256), /^[a-f0-9]{64}$/u);
+        yield* planner.startCall();
+        const realtime = planner.requests.find(
+          (request) => request.method === "thread/realtime/start",
+        );
+        if (!realtime) return yield* Effect.die("Missing realtime start.");
+        const prompt = (realtime.params as { prompt: string }).prompt;
+        const crypto = yield* Crypto.Crypto;
+        const expectedHash = Buffer.from(
+          yield* crypto.digest("SHA-256", new TextEncoder().encode(prompt)),
+        ).toString("hex");
+        assert.equal(diagnostics.conversationPromptSha256, expectedHash);
+        assert.notInclude(JSON.stringify(diagnostics), "You are the user's live voice companion");
       }).pipe(Effect.scoped, Effect.provide(dependencies)),
   );
 

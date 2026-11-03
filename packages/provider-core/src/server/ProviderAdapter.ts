@@ -732,6 +732,7 @@ export interface ProviderAdapterV2SessionRuntime {
 }
 
 export interface ProviderAdapterV2LiveVoiceRuntime {
+  readonly diagnostics?: Effect.Effect<Readonly<Record<string, string | number | boolean | null>>>;
   /** A connected call is foreground activity while the workspace agent is idle. */
   readonly hasActiveSession?: Effect.Effect<boolean>;
   readonly events: Stream.Stream<ProviderAdapterV2LiveVoiceEvent, ProviderAdapterV2Error>;

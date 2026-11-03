@@ -459,10 +459,20 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
       return;
     }
     if (![...segments.values()].some((segment) => segment.text.trim())) return;
+    const recentConversation = [...conversation.values()].map(({ role, text }) => ({ role, text }));
+    let conversationText = encodeConversation(recentConversation);
+    while (conversationText.length > 4_400) {
+      recentConversation.shift();
+      conversationText = encodeConversation(recentConversation);
+    }
+    const conversationContext = [input.getConversationContext?.().slice(-7_500), conversationText]
+      .filter(Boolean)
+      .join("\n");
     const visibleSegments = [...segments.values()].slice(-12);
     const visibleSources = new Map(visibleSegments.map((segment) => [segment.id, segment]));
     const snapshot: VoiceIntakeSnapshot = {
       requestId: `${input.leaseId}:${input.generation}:intake:${version}`,
+      conversationContext,
       previewContext: input.getPreviewContext?.() ?? null,
       leaseId: input.leaseId,
       generation: input.generation,
@@ -506,15 +516,6 @@ export function makeVoiceIntake(input: VoiceIntakeDependencies) {
         })),
     };
     decidedVersion = version;
-    const recentConversation = [...conversation.values()].map(({ role, text }) => ({ role, text }));
-    let conversationText = encodeConversation(recentConversation);
-    while (conversationText.length > 4_400) {
-      recentConversation.shift();
-      conversationText = encodeConversation(recentConversation);
-    }
-    const conversationContext = [input.getConversationContext?.().slice(-7_500), conversationText]
-      .filter(Boolean)
-      .join("\n");
     decisions += 1;
     const capturedEpoch = retractionEpoch;
     const capturedRetractions = new Map(segmentRetractions);

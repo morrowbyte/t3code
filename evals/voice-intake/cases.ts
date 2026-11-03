@@ -9,6 +9,7 @@ export type IntakeCase = {
   segments: VoiceIntakeSnapshot["segments"];
   intents: ReadonlyArray<Intent>;
   rejections?: VoiceIntakeSnapshot["rejections"];
+  conversationContext?: VoiceIntakeSnapshot["conversationContext"];
   expected: {
     type: "new" | "refine" | "reference" | "conversation";
     intentId?: string;
@@ -178,6 +179,36 @@ export const cases: ReadonlyArray<IntakeCase> = [
     expected: { type: "reference", intentId: "summary-completed", required: [], forbidden: [] },
   },
   {
+    id: "assistant-proposal-contextual-refinement",
+    optIn: true,
+    source: "Owner Voice cause investigation, 2026-11-02; synthetic report-heading referent",
+    rubric:
+      "Resolve the heading and new value from the assistant proposal, then refine the existing report only because fresh user speech authorizes that exact change. Never quote the assistant as a user source.",
+    conversationContext:
+      "assistant: Für den laufenden Wochenbericht schlage ich als neue Überschrift Team-Puls vor. Mit sie meine ich diese Überschrift.",
+    segments: [oldSegment, segment("accept-proposal", "Ja, ändere sie genau so.", true)],
+    intents: [report],
+    expected: {
+      type: "refine",
+      intentId: report.id,
+      readOnly: false,
+      required: [/team-puls/i, /überschrift|titel|heading/i],
+      forbidden: [/veröffent|publish|deploy|senden|\bsend\b/i],
+    },
+  },
+  {
+    id: "assistant-proposal-needs-user-authorization",
+    optIn: true,
+    source: "Owner Voice cause investigation, 2026-11-02; synthetic assistant-only proposal guard",
+    rubric:
+      "The assistant proposal is reference data. Acknowledging that it was understood does not authorize changing the existing report or publishing it.",
+    conversationContext:
+      "assistant: Ich schlage vor, die Überschrift des Wochenberichts auf Team-Puls zu ändern und den Bericht anschließend zu veröffentlichen.",
+    segments: [oldSegment, segment("understood-proposal", "Danke, verstanden.", true)],
+    intents: [report],
+    expected: { type: "conversation", required: [], forbidden: [] },
+  },
+  {
     id: "rejected-chart-keeps-current-constraint",
     optIn: true,
     source: "Real Voice-call rejection, 2026-11-01; synthetic chart request",
@@ -267,6 +298,9 @@ export function snapshotFor(
     ],
     segments: testCase.segments,
     intents: testCase.intents,
+    ...(testCase.conversationContext === undefined
+      ? {}
+      : { conversationContext: testCase.conversationContext }),
     ...(testCase.rejections === undefined ? {} : { rejections: testCase.rejections }),
   };
 }

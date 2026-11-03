@@ -59,6 +59,8 @@ import {
 import type { DispatchRuntimeOptions } from "../orchestration-v2/DispatchRuntimeOptions.ts";
 import * as ConversationWorkCoordinator from "../orchestration-v2/ConversationWorkCoordinator.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as LiveVoiceHistory from "./LiveVoiceHistory.ts";
+import packageJson from "../../package.json" with { type: "json" };
 import * as CodexLiveEventHub from "./CodexLiveEventHub.ts";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { getCodexServiceTierOptionValue } from "../codexModelOptions.ts";
@@ -230,6 +232,12 @@ export const layer: Layer.Layer<
     const conversationWork = yield* ConversationWorkCoordinator.ConversationWorkCoordinator;
     const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
     const eventHub = yield* CodexLiveEventHub.CodexLiveEventHub;
+    const history = yield* LiveVoiceHistory.LiveVoiceHistory;
+    const trace = (
+      row: LeaseRow,
+      name: string,
+      details: Parameters<typeof history.recordDiagnostic>[1]["details"],
+    ) => history.recordDiagnostic(sessionFromRow(row), { name, details });
     const crypto = yield* Crypto.Crypto;
     const serviceScope = yield* Effect.scope;
     let closing = false;
@@ -736,7 +744,7 @@ export const layer: Layer.Layer<
         text: detail ? `Die Arbeit läuft noch. ${detail.slice(-500)}` : "Die Arbeit läuft noch.",
       };
     };
-    const canSpeakQuietStatus = (
+    const canSendQuietStatus = (
       lease: {
         readonly userSpeaking?: boolean;
         readonly assistantSpeaking?: boolean;
@@ -781,7 +789,7 @@ export const layer: Layer.Layer<
                 Effect.gen(function* () {
                   const lease = active.get(leaseKey(input.leaseId, input.generation));
                   const now = yield* DateTime.now;
-                  if (!lease || !canSpeakQuietStatus(lease, DateTime.toEpochMillis(now))) return;
+                  if (!lease || !canSendQuietStatus(lease, DateTime.toEpochMillis(now))) return;
                   const update = quietStatus(yield* readProjection(), input.runId, now);
                   if (update)
                     yield* appendDurableOutput({ ...input, ...update, kind: "status" }).pipe(
@@ -957,14 +965,20 @@ export const layer: Layer.Layer<
             const deliveryId = input.deliveryId ?? input.messageId;
             if (
               input.kind === "status" &&
-              !canSpeakQuietStatus(lease, DateTime.toEpochMillis(yield* DateTime.now))
-            )
+              !canSendQuietStatus(lease, DateTime.toEpochMillis(yield* DateTime.now))
+            ) {
+              yield* trace(row, "output.status", {
+                stage: "suppressed",
+                reason: "conversation-active-or-rate-limited",
+                channel: "commentary",
+              });
               return;
+            }
             if (
               input.kind === "final"
                 ? receipt.readback !== undefined
                 : Object.hasOwn(publicReadbacks, deliveryId) ||
-                  (input.kind !== "status" && lease.runtime.liveVoice.appendContext === undefined)
+                  lease.runtime.liveVoice.appendContext === undefined
             )
               return;
             const receiptWithState = (state: "claimed" | "refused" | "sent" | "unknown") => {
@@ -1140,13 +1154,12 @@ export const layer: Layer.Layer<
               beforeDispatch.planner_native_thread_id !== input.plannerNativeThreadId ||
               currentLease?.plannerNativeThreadId !== input.plannerNativeThreadId ||
               currentLease.runtime.liveVoice === undefined ||
-              (input.kind !== "status" &&
-                currentLease.runtime.liveVoice.appendContext === undefined) ||
+              currentLease.runtime.liveVoice.appendContext === undefined ||
               currentLease.runtime.driver !== "codex" ||
               currentLease.runtime.instanceId !== beforeDispatch.provider_instance_id ||
               currentLease.runtime.providerSessionId !== beforeDispatch.provider_session_id ||
               (input.kind === "status" &&
-                !canSpeakQuietStatus(currentLease, DateTime.toEpochMillis(yield* DateTime.now))) ||
+                !canSendQuietStatus(currentLease, DateTime.toEpochMillis(yield* DateTime.now))) ||
               !dispatchPrincipals.some(
                 (principal) =>
                   principal.sessionId === beforeDispatch.principal_session_id &&
@@ -1164,10 +1177,17 @@ export const layer: Layer.Layer<
               yield* Effect.annotateCurrentSpan("voice.output.delivery", "refused");
               return;
             }
+            yield* trace(beforeDispatch, "output.dispatch", {
+              kind: input.kind,
+              messageId: input.messageId,
+              runId: input.runId,
+              deliveryId,
+              channel: "commentary",
+              stage: "requested",
+              textLength: input.text.length,
+            });
             const state = yield* Effect.exit(
-              (input.kind === "status"
-                ? currentLease.runtime.liveVoice.appendSpeech
-                : currentLease.runtime.liveVoice.appendContext!)({
+              currentLease.runtime.liveVoice.appendContext!({
                 plannerNativeThreadId: input.plannerNativeThreadId,
                 text:
                   receipt.taskId === undefined || input.kind === "status"
@@ -1187,6 +1207,15 @@ export const layer: Layer.Layer<
               currentLease.lastQuietStatusAt = DateTime.toEpochMillis(yield* DateTime.now);
             // Neither append has an idempotency key. This records transport acceptance,
             // not audible playback, and ambiguous outcomes are never blindly replayed.
+            yield* trace(beforeDispatch, "output.dispatch", {
+              kind: input.kind,
+              messageId: input.messageId,
+              runId: input.runId,
+              deliveryId,
+              channel: "commentary",
+              stage: "settled",
+              outcome: Exit.isSuccess(state) ? "transport-accepted" : "unknown",
+            });
             const settled = receiptWithState(Exit.isSuccess(state) ? "sent" : "unknown");
             yield* sql`
             UPDATE codex_live_voice_intents SET receipt_json = json_set(receipt_json, ${deliveryPath}, json_extract(${settled}, ${deliveryPath})), updated_at = ${now}
@@ -1620,6 +1649,28 @@ export const layer: Layer.Layer<
                 generation,
                 runtime,
                 plannerNativeThreadId: prepared.plannerNativeThreadId,
+              });
+              const nativeDiagnostics = runtime.liveVoice.diagnostics
+                ? yield* runtime.liveVoice.diagnostics.pipe(Effect.orElseSucceed(() => ({})))
+                : {};
+              yield* trace(ready, "call.identity", {
+                nativeRuntimeVersion: null,
+                nativeUserAgent: null,
+                conversationPromptSha256: null,
+                intakePromptSha256: null,
+                ...nativeDiagnostics,
+                serverVersion: packageJson.version,
+                sourceRevision: /^[a-f0-9]{40}$/.test(process.env.T3CODE_SOURCE_REVISION ?? "")
+                  ? process.env.T3CODE_SOURCE_REVISION!
+                  : null,
+                dirtySourceDigest: null,
+                providerDriver: runtime.driver,
+                providerInstanceId: runtime.instanceId,
+                providerSessionId: runtime.providerSessionId,
+                plannerNativeThreadId: prepared.plannerNativeThreadId,
+                model: projection.thread.modelSelection.model,
+                reasoningEffort: reasoningEffort ?? null,
+                serviceTier: serviceTier ?? null,
               });
               yield* eventHub.publish({ type: "status", session: sessionFromRow(ready) });
               if (exclusiveAdmission) yield* startIntake(session, ready, runtime);
@@ -2256,6 +2307,22 @@ export const layer: Layer.Layer<
       if (!delivery) return;
       if (delivery.leaseId !== input.leaseId || delivery.generation !== input.generation)
         return yield* liveError("stale_lease");
+      yield* history.recordDiagnostic(sessionFromRow(row), {
+        name: "context.acknowledged",
+        details: {
+          deliveryId: input.deliveryId,
+          stage: "client-transport",
+          accepted: input.accepted,
+          channel: "commentary",
+          ...input.client,
+        },
+        ...(input.client
+          ? {
+              sourceClock: "client-monotonic" as const,
+              sourceTimestamp: input.client.sourceTimestamp,
+            }
+          : {}),
+      });
       yield* Deferred.succeed(delivery.done, input.accepted);
     }, Effect.mapError(toLiveError));
 
@@ -2289,6 +2356,12 @@ export const layer: Layer.Layer<
               )
                 return yield* liveError("invalid_state");
               contextDeliveries.set(deliveryId, { leaseId, generation, done });
+              yield* trace(row, "context.queued", {
+                deliveryId,
+                channel: "commentary",
+                stage: "published-to-client",
+                textLength: input.text.length,
+              });
               yield* eventHub.publish({
                 type: "context",
                 leaseId,
@@ -2300,7 +2373,23 @@ export const layer: Layer.Layer<
           );
           const accepted = yield* Deferred.await(done).pipe(Effect.timeout("5 seconds"));
           if (!accepted) return yield* liveError("runtime_unavailable");
-        }).pipe(Effect.ensuring(Effect.sync(() => contextDeliveries.delete(deliveryId))));
+        }).pipe(
+          Effect.tapError(() =>
+            getLease(leaseId, generation).pipe(
+              Effect.flatMap((row) =>
+                row
+                  ? trace(row, "context.failed", {
+                      deliveryId,
+                      stage: "awaiting-client-transport",
+                      outcome: "unconfirmed",
+                    })
+                  : Effect.void,
+              ),
+              Effect.ignore,
+            ),
+          ),
+          Effect.ensuring(Effect.sync(() => contextDeliveries.delete(deliveryId))),
+        );
       },
       Effect.mapError(
         (cause) =>
@@ -3074,8 +3163,42 @@ export const layer: Layer.Layer<
               runtime.liveVoice?.canStartProvisionalWork === undefined
                 ? false
                 : yield* runtime.liveVoice.canStartProvisionalWork,
-            decide: (snapshot) =>
-              decide({ snapshot, modelSelection: selection }).pipe(
+            decide: (snapshot) => {
+              const attempt = Effect.fn("CodexLiveSessionService.intakeAttempt")(function* (
+                number: number,
+              ) {
+                yield* trace(row, "intake.started", {
+                  requestId: snapshot.requestId,
+                  snapshotVersion: snapshot.version,
+                  attempt: number,
+                  model: selection.model,
+                  reasoningEffort: "low",
+                  serviceTier: "priority",
+                  sourceCount: snapshot.segments.length,
+                  sourceIds: snapshot.segments
+                    .map((segment) => `${segment.id}@${segment.revision}`)
+                    .join(","),
+                });
+                return yield* decide({ snapshot, modelSelection: selection }).pipe(
+                  Effect.tap((decision) =>
+                    trace(row, "intake.finished", {
+                      requestId: snapshot.requestId,
+                      snapshotVersion: snapshot.version,
+                      attempt: number,
+                      actionCount: decision.actions.length,
+                    }),
+                  ),
+                  Effect.tapError((error) =>
+                    trace(row, "intake.failed", {
+                      requestId: snapshot.requestId,
+                      snapshotVersion: snapshot.version,
+                      attempt: number,
+                      failureClass: isIntakeTimeout(error) ? "TimeoutError" : "ProviderError",
+                    }),
+                  ),
+                );
+              });
+              return attempt(1).pipe(
                 Effect.catch((error) =>
                   Effect.gen(function* () {
                     if (!isIntakeTimeout(error)) return yield* error;
@@ -3092,10 +3215,11 @@ export const layer: Layer.Layer<
                       attempt: 2,
                     });
                     // Exactly one retry of this frozen snapshot; newer speech wins.
-                    return yield* decide({ snapshot, modelSelection: selection });
+                    return yield* attempt(2);
                   }),
                 ),
-              ),
+              );
+            },
             admit: Effect.fn("CodexLiveSessionService.admitIntake")(function* (
               voiceIntake: VoiceIntakeProvenance,
               request: string,
@@ -3123,6 +3247,14 @@ export const layer: Layer.Layer<
                 return yield* liveError("dispatch_conflict");
               // A reclassification may quote pieces separately. The original
               // pending anchor groups still fence the exact transferred work.
+              yield* trace(row, "dispatch.requested", {
+                intentId: voiceIntake.intentId,
+                projectId: projectId ?? source.thread.projectId,
+                sourceCount: voiceIntake.sources.length,
+                sourceIds: voiceIntake.sources
+                  .map((item) => `${item.segmentId}@${item.revision}`)
+                  .join(","),
+              });
               const json = yield* submitWork({
                 principalSessionId: principal.sessionId,
                 leaseId: row.lease_id,
@@ -3145,8 +3277,23 @@ export const layer: Layer.Layer<
                 dispatchOptions: commitOptions(voiceIntake.sources, originals),
                 ...(sourceTransfer ? { sourceTransfer } : {}),
                 ...(projectId === undefined ? {} : { projectId }),
-              });
+              }).pipe(
+                Effect.tapError((error) =>
+                  trace(row, "dispatch.failed", {
+                    intentId: voiceIntake.intentId,
+                    outcome: "not-admitted",
+                    code: isLiveVoiceError(error) ? error.code : "dispatch-error",
+                  }),
+                ),
+              );
               const receipt = decodeReceipt(json) as Record<string, unknown>;
+              yield* trace(row, "dispatch.accepted", {
+                intentId: voiceIntake.intentId,
+                targetThreadId: String(receipt.threadId),
+                runId: String(receipt.runId),
+                taskId: typeof receipt.taskId === "string" ? receipt.taskId : null,
+                outcome: "admitted",
+              });
               return {
                 id: voiceIntake.intentId,
                 request,
@@ -3174,6 +3321,13 @@ export const layer: Layer.Layer<
                     !(yield* engine.validateSources(intent.pendingSteer.sources))
                   )
                     return yield* liveError("stale_lease");
+                  yield* trace(row, "steering.requested", {
+                    requestId,
+                    intentId: intent.id,
+                    targetThreadId: intent.threadId,
+                    runId: intent.runId,
+                    dispatchMode: "steer_active",
+                  });
                   const instruction = intent.pendingSteer
                     ? voiceIntakeInstruction(
                         intent.pendingSteer.sources,
@@ -3213,6 +3367,13 @@ export const layer: Layer.Layer<
                       },
                       commitOptions(sources),
                     );
+                    yield* trace(row, "steering.accepted", {
+                      requestId,
+                      intentId: intent.id,
+                      targetThreadId: source.thread.id,
+                      runId: intent.runId,
+                      outcome: "dispatch-accepted",
+                    });
                     return { intent: yield* read(intent), delivered: true };
                   }
                   const exact = yield* conversationWork.read({
@@ -3244,6 +3405,14 @@ export const layer: Layer.Layer<
                     },
                     commitOptions(sources),
                   );
+                  yield* trace(row, "steering.accepted", {
+                    requestId,
+                    intentId: intent.id,
+                    targetThreadId: exact.projection.thread.id,
+                    runId: exact.run.id,
+                    outcome: "dispatch-accepted",
+                    dispatchMode: restart ? "restart_active" : "steer_active",
+                  });
                   return {
                     intent: yield* read({
                       ...intent,
@@ -3252,6 +3421,16 @@ export const layer: Layer.Layer<
                     delivered: true,
                   };
                 }).pipe(
+                  Effect.tapError((error) =>
+                    trace(row, "steering.failed", {
+                      requestId,
+                      intentId: intent.id,
+                      targetThreadId: intent.threadId,
+                      runId: intent.runId,
+                      outcome: "not-dispatched",
+                      code: isLiveVoiceError(error) ? error.code : "dispatch-error",
+                    }),
+                  ),
                   Effect.catch((error) =>
                     Effect.gen(function* () {
                       const latest = yield* read(intent);
@@ -3448,6 +3627,19 @@ export const layer: Layer.Layer<
               const state = yield* engine.state;
               if (state.rejectionVersion > lastRejection && state.rejections.length) {
                 lastRejection = state.rejectionVersion;
+                yield* Effect.forEach(
+                  state.rejections,
+                  (rejection) =>
+                    trace(row, "intake.rejected", {
+                      requestId: rejection.requestId,
+                      snapshotVersion: rejection.snapshotVersion,
+                      actionIndex: rejection.actionIndex,
+                      actionType: rejection.actionType,
+                      code: rejection.code,
+                      version: state.version,
+                    }),
+                  { discard: true },
+                );
                 yield* Effect.logInfo("Voice intake action rejected.", {
                   version: state.version,
                   noticeVersion: state.noticeVersion,
@@ -3511,6 +3703,11 @@ export const layer: Layer.Layer<
           row.planner_native_thread_id !== event.plannerNativeThreadId
         )
           return;
+        if (event.type !== "transcript" && event.type !== "sdp")
+          yield* trace(row, "native.event", {
+            kind: event.type,
+            plannerNativeThreadId: event.plannerNativeThreadId,
+          });
         switch (event.type) {
           case "activity": {
             if (!["starting", "active", "stopping"].includes(row.status)) return;
@@ -3706,6 +3903,7 @@ export const layer: Layer.Layer<
   }),
 ).pipe(
   Layer.provideMerge(CodexLiveEventHub.layer),
+  Layer.provide(LiveVoiceHistory.layer),
   Layer.provide(ConversationWorkCoordinator.layer),
   Layer.provide(ProjectStore.layer),
 );
