@@ -1,7 +1,9 @@
 # Crew on your own machines
 
 Use this guide for the Morrowbyte fork. GitHub stores source, check results and
-published releases; development and build commands run on your machines.
+published releases. Run development and checks at Crew's assigned compute
+placement; reuse its matching Boat environment when assigned. Without an
+assignment, use the project's daily user-selected execution location.
 
 ## Once per developer machine
 
@@ -38,15 +40,16 @@ For Electron-specific behavior use `vp run dev:desktop`. Android UI development
 uses Metro and the existing development client; native dependency changes need
 a new development client. See the [mobile setup](../../apps/mobile/README.md).
 
-Parallel agents use separate branches/worktrees and separate dev state. Give
-each agent ownership of its files. Reuse its worktree, dependencies and preview
-instead of creating another copy for every check. A native desktop or Android
-test only belongs in a feature's loop when that native behavior changed.
+Each independent feature has one stable project-local `workKey`, one owner and
+its own branch/worktree, test state and ports. Reuse that owner and warm preview;
+small helpers share its environment with one writer per path. Check the actual
+user flow early, including screenshots for UI work, within the user's test
+authorization. Native checks belong in the loop when native behavior changed.
 
 Before integration:
 
 ```sh
-vp run check:integration
+vp run check:integration --exact-base <frozen-main-sha>
 git add <changed-files>
 git commit -m "feat: describe the feature"
 git push -u origin <feature-branch>
@@ -54,27 +57,37 @@ git push -u origin <feature-branch>
 
 `check:integration` checks changed-file formatting, lint and adjacent tests. It
 includes uncommitted and untracked files. It compares with the merge base of
-`origin/main`; pass another base ref when needed. A passing result is reused
-while its inputs stay unchanged. Fix failures, integrate through the repository's
-normal merge rules, and keep developing. Do not add a package build or repeat
-the release suite for every merge.
+`origin/main` by default; `--exact-base` fixes the recorded comparison SHA.
+Quick integration does not check types. Before main, assign required type
+evidence for affected packages to a focused check or existing CI job. Qualify
+the relevant current-main/feature combination, obtain independent review of
+the frozen commit and explicit human merge approval. A comparison base alone
+does not test that combination. Follow the [integration and review rules](../internals/testing.md#integration-and-review);
+reuse passing evidence while its relevant inputs stay unchanged. These are
+repository instructions, not GitHub branch-protection guarantees.
 
 ## Qualify and package a release
 
-The complete release workflow below performs the broader qualification itself.
-Do not run the same suite manually before dispatching it. When investigating
-packaging locally instead of running that workflow, qualify the committed source
-revision once:
+New builds require a successful external SourceProof from
+`morrowbyte-local-source-check.yml` for the exact frozen source and its first
+parent. The release verifies that proof; it does not run the broader source
+suite itself. Use an existing remote branch at the frozen commit; the workflow
+rechecks the exact SHA and parent after dispatch:
 
 ```sh
-vp run check:changed <previous-qualified-ref>
-vp run check:release
+source_branch=$(git symbolic-ref --quiet --short HEAD) || exit 1
+source_sha=$(git rev-parse HEAD)
+base_sha=$(git rev-parse "$source_sha^1")
+test "$(gh api "repos/morrowbyte/t3code/git/ref/heads/$source_branch" --jq .object.sha)" = "$source_sha" || exit 1
+gh workflow run morrowbyte-local-source-check.yml --repo morrowbyte/t3code \
+  --ref "$source_branch" -f source_sha="$source_sha" -f base_sha="$base_sha"
 ```
 
-The first command adds type checks, unused code/dependency checks and generated
-operations for the changes since that ref. The second runs the fork's broader
-regressions and writes its generation evidence into a private task directory
-when it runs outside Actions. Keep the same source revision for packaging.
+The proof binds the source/base SHAs, check program and lockfiles, toolchain,
+complete check groups and producing run/attempt/artifact digest. A local
+`check:release` is useful for diagnosis but does not replace that API-verified
+workflow provenance. `check:changed` supplies the wider changed-file checks
+when needed. Do not repeat the full suite manually before the workflow.
 
 Linux, including the NixOS build shell:
 
@@ -94,16 +107,21 @@ toolchain/runtime. Android release packaging needs Java 21, the pinned Android
 SDK/NDK and the existing signing key. Preserve that key and the app ID to keep
 installed phones upgradeable. A debug APK does not qualify a signed update.
 
-For a complete published release use `morrowbyte-release.yml`, which packages
-the shared JS once and joins the Linux, Windows, NixOS and Android artifacts:
+For an authorized published release use `morrowbyte-release.yml`, which packages
+the shared JS once and consumes the qualified source. Set `proof_run_id`,
+`proof_artifact_id` and `proof_digest` from the successful SourceProof artifact;
+the workflow revalidates their exact identity:
 
 ```sh
 gh workflow run morrowbyte-release.yml --repo morrowbyte/t3code --ref main \
-  -f source_sha="$(git rev-parse HEAD)" -f publish=true
+  -f source_sha="$source_sha" -f publish=true \
+  -f source_proof_run_id="$proof_run_id" \
+  -f source_proof_artifact_id="$proof_artifact_id" \
+  -f source_proof_digest="$proof_digest"
 ```
 
-This needs the workflow enabled and its own runners online. Check them before
-requesting the release:
+This needs the workflow enabled and the selected backend ready. For self-hosted
+jobs, check the registered runners before requesting the release:
 
 ```sh
 gh api repos/morrowbyte/t3code/actions/runners \
@@ -153,12 +171,22 @@ Windows still uses the native `morrowbyte-windows` runner. Set
 `MORROWBYTE_CI_BACKEND=boat` to use Boat for Linux CI as well.
 `MORROWBYTE_BOAT_RUNNER` optionally selects a prepared Boat snapshot label;
 the default is `boat-large`. Public repositories require the Boat GitHub App
-and an explicit allowed-user list in Boat's CI settings. Preserve
-`MORROWBYTE_AUTOMATIC_NIGHTLY=false` unless automatic publication is separately
-approved.
+and an explicit allowed-user list in Boat's CI settings. Automatic publication
+is separately controlled by `MORROWBYTE_AUTOMATIC_NIGHTLY`; do not change that
+authorization while selecting compute.
 
-With `-f linux_first=true`, the same run publishes verified Linux/NixOS/Android
-assets before Windows finishes. Windows is then appended to the same tag and
+The automatic Nightly dispatcher explicitly sets `linux_first=true`, retaining
+the exact SourceProof fields, current-main check and single-dispatch intent.
+It does not wait for a Windows start gate. Manual dispatch keeps
+`linux_first=false` by default; add `-f linux_first=true` when that publication
+order is intended. The existing Linux-first path requires the shared bundle,
+Linux, NixOS and Android startup checks before publication. Windows is appended
+after its own successful build, without delaying those verified assets.
+
+Build once and promote the same hash/provenance-bound bytes. Keep successful
+unchanged artifacts after an isolated platform failure; rebuild only artifacts
+whose relevant inputs changed. Source, fixture, browser, native, package and
+installed evidence prove different stages. Windows is appended to the same tag and
 source without replacing any published asset. Its checksums and provenance are
 `SHA256SUMS-windows` and `RELEASE-RECEIPT-windows.txt`; the original checksums and
 receipt stay unchanged. Older Windows CLI launchers that only read `SHA256SUMS`

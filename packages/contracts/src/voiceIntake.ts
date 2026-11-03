@@ -86,6 +86,7 @@ const KnownIntent = Schema.Struct({
 });
 export const VoiceIntakeSnapshot = Schema.Struct({
   requestId: Id,
+  conversationContext: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(12_000))),
   previewContext: Schema.optionalKey(
     Schema.NullOr(Schema.String.check(Schema.isMaxLength(24_000))),
   ),

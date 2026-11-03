@@ -53,6 +53,7 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
@@ -429,6 +430,8 @@ const decodeThreadUpdateResult = Schema.decodeUnknownEffect(ThreadMetadataMcpUpd
 const decodeThreadListResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadListResult);
 
 const layerLocalToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
+  Layer.provide(SqlitePersistence.layerMemory),
+  Layer.provide(Layer.mock(ServerEnvironment.ServerEnvironment)({})),
   Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
   Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
   Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),

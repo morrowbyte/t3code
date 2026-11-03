@@ -16,5 +16,16 @@ export const LiveVoiceContextDeliveredInput = Schema.Struct({
   generation: LiveVoiceGeneration,
   deliveryId: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
   accepted: Schema.Boolean,
+  client: Schema.optionalKey(
+    Schema.Struct({
+      sourceTimestamp: Schema.Number,
+      frameCount: Schema.Number,
+      bytes: Schema.Number,
+      clientPhase: Schema.String.check(Schema.isMaxLength(40)),
+      playbackEligible: Schema.Boolean,
+      playbackMuted: Schema.Boolean,
+      dataChannelState: Schema.String.check(Schema.isMaxLength(20)),
+    }),
+  ),
 });
 export type LiveVoiceContextDeliveredInput = typeof LiveVoiceContextDeliveredInput.Type;

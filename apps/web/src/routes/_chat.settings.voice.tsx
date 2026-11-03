@@ -1,3 +1,4 @@
+import { VoiceDiagnosticsSettings } from "../components/settings/VoiceDiagnosticsSettings";
 import { VoiceRecordingSettings } from "../components/settings/VoiceRecordingSettings";
 import { createFileRoute } from "@tanstack/react-router";
 import { VoiceTranscriptionSettingsPanel } from "../components/settings/VoiceTranscriptionSettings";
@@ -7,6 +8,7 @@ function VoiceSettingsRoute() {
   return (
     <SettingsPageContainer>
       <VoiceTranscriptionSettingsPanel />
+      <VoiceDiagnosticsSettings />
       <VoiceRecordingSettings />
     </SettingsPageContainer>
   );

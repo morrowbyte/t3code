@@ -1,4 +1,9 @@
-import { AuthOrchestrationReadScope, EnvironmentHttpApi } from "@t3tools/contracts";
+import {
+  type AuthEnvironmentScope,
+  AuthOrchestrationReadScope,
+  AuthSettingsWriteScope,
+  EnvironmentHttpApi,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as HttpEffect from "effect/http/HttpEffect";
@@ -24,14 +29,43 @@ export const layer = HttpApiBuilder.group(
   Effect.fnUntraced(function* (handlers) {
     const history = yield* LiveVoiceHistory.LiveVoiceHistory;
     const environment = yield* ServerEnvironment.ServerEnvironment;
-    const authorize = Effect.gen(function* () {
-      yield* requireEnvironmentScope(AuthOrchestrationReadScope);
+    const authorizeScope = Effect.fn("liveVoiceHistoryHttp.authorize")(function* (
+      scope: AuthEnvironmentScope,
+    ) {
+      yield* requireEnvironmentScope(scope);
       yield* HttpEffect.appendPreResponseHandler((_request, response) =>
         Effect.succeed(HttpServerResponse.setHeader(response, "cache-control", "no-store")),
       );
       return yield* environment.getEnvironmentId;
     });
+    const authorize = authorizeScope(AuthOrchestrationReadScope);
     return handlers
+      .handle("diagnosticsSettings", ({ payload }) =>
+        Effect.gen(function* () {
+          yield* authorizeScope(AuthSettingsWriteScope);
+          yield* history
+            .setDiagnosticsEnabled(payload.diagnosticsEnabled)
+            .pipe(Effect.catch(() => failEnvironmentInternal("internal_error")));
+          return yield* history.diagnosticsSettings.pipe(
+            Effect.catch(() => failEnvironmentInternal("internal_error")),
+          );
+        }),
+      )
+      .handle("diagnostics", ({ params, query }) =>
+        Effect.gen(function* () {
+          const environmentId = yield* authorize;
+          return yield* history
+            .diagnostics({
+              environmentId,
+              threadId: params.threadId,
+              ...(query.leaseId ? { leaseId: query.leaseId } : {}),
+              ...(query.generation ? { generation: Number(query.generation) } : {}),
+              ...(query.after ? { after: Number(query.after) } : {}),
+              ...(query.limit ? { limit: Number(query.limit) } : {}),
+            })
+            .pipe(Effect.catch(mapError));
+        }),
+      )
       .handle("calls", ({ params, query }) =>
         Effect.gen(function* () {
           const environmentId = yield* authorize;

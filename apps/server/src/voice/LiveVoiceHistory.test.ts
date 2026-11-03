@@ -10,6 +10,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
+import * as DateTime from "effect/DateTime";
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as LiveVoiceHistory from "./LiveVoiceHistory.ts";
 import * as CodexLiveEventHub from "./CodexLiveEventHub.ts";
@@ -157,4 +159,164 @@ it.effect("reports write failure while allowing live status delivery to continue
     const history = yield* LiveVoiceHistory.LiveVoiceHistory;
     assert.isFalse((yield* history.list(target)).persistenceAvailable);
   }).pipe(Effect.provide(services.pipe(Layer.provideMerge(sqlite)))),
+);
+
+it.effect("keeps diagnostics opt-in, bounded, correlated and separate from transcripts", () =>
+  Effect.gen(function* () {
+    yield* setup;
+    const history = yield* LiveVoiceHistory.LiveVoiceHistory;
+    yield* history.recordDiagnostic(session, {
+      name: "intake.started",
+      details: { requestId: "request-1" },
+    });
+    assert.isFalse((yield* history.diagnostics({ ...target })).enabled);
+    assert.lengthOf((yield* history.diagnostics({ ...target })).events, 0);
+    yield* history.setDiagnosticsEnabled(true);
+    yield* history.record(session, {
+      type: "transcript",
+      leaseId: session.leaseId,
+      generation: 1,
+      role: "user",
+      text: "private spoken words",
+      segment: {
+        id: "speech-1",
+        revision: 2,
+        kind: "snapshot",
+        final: false,
+        partIndex: 0,
+        partCount: 1,
+      },
+    });
+    yield* history.recordDiagnostic(session, {
+      name: "intake.started",
+      details: { requestId: "request-1", text: "MUST_NOT_STORE", apiKey: "SECRET" },
+    });
+    yield* history.recordDiagnostic(
+      { ...session, leaseId: "other-call" },
+      { name: "context.sent", details: { deliveryId: "delivery-1" } },
+    );
+    const page = yield* history.diagnostics({
+      ...target,
+      leaseId: session.leaseId,
+      generation: 1,
+      limit: 1,
+    });
+    assert.lengthOf(page.events, 1);
+    assert.isTrue(page.truncated);
+    assert.equal(page.events[0]!.name, "transcript.received");
+    assert.deepEqual(page.events[0]!.details, {
+      role: "user",
+      segmentId: "speech-1",
+      revision: 2,
+      final: false,
+      kind: "snapshot",
+      partIndex: 0,
+      partCount: 1,
+      textLength: 20,
+    });
+    assert.equal(page.events[0]!.sourceClock, "server-receipt");
+    const next = yield* history.diagnostics({
+      ...target,
+      leaseId: session.leaseId,
+      generation: 1,
+      after: page.nextAfter!,
+    });
+    assert.lengthOf(next.events, 1);
+    assert.deepEqual(next.events[0]!.details, { requestId: "request-1" });
+    assert.isFalse(JSON.stringify(next).includes("MUST_NOT_STORE"));
+    assert.isFalse(JSON.stringify(next).includes("SECRET"));
+    assert.isFalse(JSON.stringify(page).includes("private spoken words"));
+    assert.lengthOf(
+      (yield* history.transcript({ ...target, leaseId: session.leaseId, generation: 1 })).entries,
+      1,
+    );
+    yield* history.setDiagnosticsEnabled(false);
+    yield* history.recordDiagnostic(session, { name: "intake.finished", details: {} });
+    assert.lengthOf(
+      (yield* history.diagnostics({ ...target, leaseId: session.leaseId })).events,
+      2,
+    );
+    assert.lengthOf(
+      (yield* history.diagnostics({ ...target, environmentId: EnvironmentId.make("other-env") }))
+        .events,
+      0,
+    );
+  }).pipe(Effect.provide(LiveVoiceHistory.layer.pipe(Layer.provideMerge(sqlite)))),
+);
+
+it.effect(
+  "expires diagnostic metadata, caps stored events, and fails open on unavailable storage",
+  () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const history = yield* LiveVoiceHistory.LiveVoiceHistory;
+      const sql = yield* SqlClient.SqlClient;
+      yield* history.setDiagnosticsEnabled(true);
+      yield* history.recordDiagnostic(session, {
+        name: "call.identity",
+        details: { nativeRuntimeVersion: "test-runtime" },
+      });
+      yield* TestClock.adjust("25 hours");
+      assert.lengthOf((yield* history.diagnostics(target)).events, 0);
+      assert.equal(
+        (yield* sql`SELECT COUNT(*) AS count FROM codex_live_voice_diagnostics`)[0]!.count,
+        0,
+      );
+      const recordedAt = DateTime.formatIso(yield* DateTime.now);
+      const records = Array.from({ length: 5001 }, () => ({
+        environment_id: session.environmentId,
+        thread_id: session.threadId,
+        lease_id: session.leaseId,
+        generation: 1,
+        recorded_at: recordedAt,
+        event_json:
+          '{"name":"fixture","sourceClock":"server-receipt","sourceTimestamp":null,"details":{}}',
+      }));
+      yield* sql`INSERT INTO codex_live_voice_diagnostics ${sql.insert(records)}`;
+      yield* history.recordDiagnostic(session, {
+        name: "context.sent",
+        details: { deliveryId: "last" },
+      });
+      assert.equal(
+        (yield* sql`SELECT COUNT(*) AS count FROM codex_live_voice_diagnostics`)[0]!.count,
+        5000,
+      );
+      const page = yield* history.diagnostics({ ...target, limit: 9000 });
+      assert.lengthOf(page.events, 500);
+      assert.isTrue(page.truncated);
+      yield* sql`DROP TABLE codex_live_voice_diagnostics`;
+      yield* history.recordDiagnostic(session, { name: "context.sent", details: {} });
+      yield* history.record(session, {
+        type: "transcript",
+        leaseId: session.leaseId,
+        generation: 1,
+        role: "assistant",
+        text: "The call continues.",
+      });
+      assert.lengthOf(
+        (yield* history.transcript({ ...target, leaseId: session.leaseId, generation: 1 })).entries,
+        1,
+      );
+      assert.isFalse((yield* history.list(target)).persistenceAvailable);
+    }).pipe(Effect.provide(LiveVoiceHistory.layer.pipe(Layer.provideMerge(sqlite)))),
+);
+
+it.effect("stops capture immediately when a different service instance disables diagnostics", () =>
+  Effect.gen(function* () {
+    yield* setup;
+    const writer = yield* LiveVoiceHistory.LiveVoiceHistory;
+    yield* writer.setDiagnosticsEnabled(true);
+    const other = yield* Effect.provide(
+      LiveVoiceHistory.LiveVoiceHistory,
+      Layer.fresh(LiveVoiceHistory.layer),
+    );
+    assert.isTrue((yield* other.diagnosticsSettings).diagnosticsEnabled);
+    yield* writer.setDiagnosticsEnabled(false);
+    yield* other.recordDiagnostic(session, {
+      name: "transcript.received",
+      details: { segmentId: "after-opt-out" },
+    });
+    assert.lengthOf((yield* writer.diagnostics(target)).events, 0);
+    assert.isFalse((yield* other.diagnosticsSettings).diagnosticsEnabled);
+  }).pipe(Effect.provide(LiveVoiceHistory.layer.pipe(Layer.provideMerge(sqlite)))),
 );

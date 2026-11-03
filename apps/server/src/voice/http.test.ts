@@ -15,6 +15,7 @@ import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as AuthHttp from "../auth/http.ts";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as VoiceService from "./VoiceTranscriptionService.ts";
+import * as History from "./LiveVoiceHistory.ts";
 import * as VoiceHttp from "./http.ts";
 
 class VoiceTestApi extends HttpApi.make("environment").add(EnvironmentHttpApi.groups.voice) {}
@@ -67,6 +68,17 @@ const handlerFor = (scopes: ReadonlyArray<string>, fail = false) => {
   };
   const layer = HttpApiBuilder.layer(VoiceTestApi).pipe(
     Layer.provide(VoiceHttp.layer),
+    Layer.provide(
+      Layer.succeed(History.LiveVoiceHistory, {
+        record: () => Effect.void,
+        recordDiagnostic: () => Effect.void,
+        diagnosticsSettings: Effect.succeed({ diagnosticsEnabled: false }),
+        setDiagnosticsEnabled: () => Effect.void,
+        diagnostics: () => Effect.die("unused"),
+        list: () => Effect.die("unused"),
+        transcript: () => Effect.die("unused"),
+      }),
+    ),
     Layer.provide(Layer.succeed(VoiceService.VoiceTranscriptionService, service)),
     Layer.provide(AuthHttp.layerAuthenticatedAuth),
     Layer.provide(Layer.succeed(EnvironmentAuth.EnvironmentAuth, auth)),
@@ -153,7 +165,11 @@ it.effect("voice settings require read permission and writes require settings pe
     expect(read.status).toBe(200);
     const body = yield* Effect.promise(() => read.json());
     expect(body).not.toHaveProperty("apiKey");
-    expect(body).toMatchObject({ provider: "codex-account", apiKeyConfigured: false });
+    expect(body).toMatchObject({
+      provider: "codex-account",
+      apiKeyConfigured: false,
+      diagnosticsEnabled: false,
+    });
     const write = yield* Effect.promise(() =>
       route.handler(
         new Request("http://environment.test/api/voice/settings", {
@@ -163,6 +179,7 @@ it.effect("voice settings require read permission and writes require settings pe
             provider: "codex-account",
             instanceId: null,
             model: "gpt-transcribe",
+            diagnosticsEnabled: true,
           }),
         }),
         context,

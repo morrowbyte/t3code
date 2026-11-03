@@ -31,6 +31,7 @@ import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -115,7 +116,9 @@ const layerLaunches = Layer.effect(
 );
 
 const layerTools = Layer.mergeAll(
-  McpHttpServer.layerOrchestratorToolkit,
+  McpHttpServer.layerOrchestratorToolkit.pipe(
+    Layer.provide(Layer.mock(ServerEnvironment.ServerEnvironment)({})),
+  ),
   McpHttpServer.layerThreadToolkit,
   McpHttpServer.layerProjectRegistration.pipe(
     Layer.provide(Layer.mock(AgentAvatarService.AgentAvatarService)({})),

@@ -1,5 +1,6 @@
 import {
   OrchestratorMcpCapabilitiesInput,
+  LiveVoiceDiagnostics,
   OrchestratorMcpCapabilitiesResult,
   OrchestratorMcpExternalDelegateTaskInput,
   OrchestratorMcpExternalTaskInput,
@@ -50,6 +51,8 @@ import { McpSchema, Tool, Toolkit } from "effect/ai";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 
+import * as LiveVoiceHistory from "../../../voice/LiveVoiceHistory.ts";
+import * as ServerEnvironment from "../../../environment/ServerEnvironment.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as PeerLinkRequests from "../../../peer/PeerLinkRequests.ts";
@@ -305,6 +308,24 @@ const ThreadListTool = Tool.make("t3_thread_list", {
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true);
 
+const VoiceDiagnosticsTool = Tool.make("t3_voice_diagnostics", {
+  description:
+    "Read captured Voice diagnostic metadata for one thread, including during an active call. Filter by leaseId/generation; page with after=nextAfter and a limit of 1–500. Reports intake, steering and context transport boundaries; transport acceptance does not prove model consumption or audible playback. enabled:false means capture is off; unavailable capability flags remain unknown to this trace. Does not enable capture, record audio, interrupt speech or cancel work.",
+  parameters: OrchestratorMcpService.OrchestratorMcpVoiceDiagnosticsInput,
+  success: LiveVoiceDiagnostics,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies: [
+    ...dependencies,
+    LiveVoiceHistory.LiveVoiceHistory,
+    ServerEnvironment.ServerEnvironment,
+  ],
+})
+  .annotate(Tool.Title, "Read Voice diagnostics")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true);
+
 const ThreadReadTool = Tool.make("t3_thread_read", {
   description:
     "Read any thread by id. `messages` (default): user and assistant messages and plans. `activity`: all timeline items. Keep reads small: low `limit` and `maxCharsPerItem`. Page with `afterPosition=nextPosition`. Cut-off text: `itemId` with `textOffset=nextTextOffset`. Reading a child's final result marks it delivered. In your reply, name it as its `link` verbatim.",
@@ -438,6 +459,7 @@ export const OrchestratorToolkit = Toolkit.make(
   CreateThreadsTool,
   ThreadListTool,
   ThreadReadTool,
+  VoiceDiagnosticsTool,
   ThreadUpdateTool,
   ThreadSendTool,
   ThreadWaitTool,

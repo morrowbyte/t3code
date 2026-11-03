@@ -45,7 +45,7 @@ export function voiceSettingsErrorMessage(error: unknown): string {
 
 export async function voiceSettingsRequest(
   environmentId: EnvironmentId,
-  update?: typeof VoiceTranscriptionSettingsInput.Type,
+  update?: typeof VoiceTranscriptionSettingsInput.Type | { readonly diagnosticsEnabled: boolean },
 ): Promise<typeof VoiceTranscriptionSettings.Type> {
   const request = connectionAtomRuntime.fn<void>()((_input, get) =>
     Effect.gen(function* () {
@@ -58,7 +58,11 @@ export async function voiceSettingsRequest(
         prepared: prepared.value,
         signer,
         remoteAuthorization,
-        ...(update ? { update } : {}),
+        ...(update
+          ? "provider" in update
+            ? { update }
+            : { diagnosticsEnabled: update.diagnosticsEnabled }
+          : {}),
       });
     }).pipe(Effect.withTracerEnabled(false)),
   );

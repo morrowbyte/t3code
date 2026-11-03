@@ -5,11 +5,21 @@ Rules for writing tests, and for asking for them in review. AGENTS.md carries th
 ## What to test
 
 - Test behavior that can break, such as orchestration and event-sourcing, provider protocol translation, auth and permission guards, persistence and migrations, external-format parsing, race fixes, and the logic a bug fix changed. Leave out tests for what types already guarantee, trivial logic, copy text, smoke runs, mock-call mirrors, callback wiring, and props rendered to static markup.
+- Assert realistic observable outcomes against the user's acceptance cases. A mock returning the value the test expects is not feature evidence; use fixtures at real external boundaries and verify the resulting output, state or protocol payload.
 - Extend before you add. When an existing test or table covers the behavior, add a row or an assertion there. Write a new `it` only when no case fits.
 - Test at one layer: the lowest one that fails on `main`. Do not repeat the case in a wrapper test, at each call site, or in web and mobile copies of the same logic.
 - In review, ask for a missing test only when it would catch a real regression. Do not ask for one assertion per constant, label, or `switch` case. Flag a new test that breaks the rules above, and name the fix: fold it into the existing case or table, delete it, or keep one layer.
 - Backend behavior changes ship with focused tests for that behavior.
 - Proof for a bug fix depends on the bug. Logic, data, state, and protocol bugs get a failing test first (the fewest that fail on `main` for that reason, in an existing case of the module's test file where one fits), then the fix. Purely visual bugs (spacing, colour, alignment, a layout shift) get before/after captures as their proof and no test: do not add UI tests for nitpicks, and do not ask for one in review when a capture already shows it. A server-only fix with no visible surface ships the test plus a short runtime transcript.
+
+## Integration and review
+
+- For visible behavior, including server-side repairs with visible effects, live evidence includes exercising the affected user flow and inspecting current screenshots. Reuse unchanged relevant live/screenshot evidence; repeat the GUI pass only after a relevant change, within existing GUI authorization and the owner's warm environment. Fixes without a visible surface need no GUI pass.
+- Freeze a commit for independent review with the acceptance cases, focused checks and relevant live evidence. Findings must identify a concrete defect or violated requirement. Normally use one correction round; if corrections repeatedly fail, ask for a human decision without waiving unresolved findings. Code-changing repairs renew the affected checks and review.
+- Before integration, qualify the relevant combination of current main and the feature, recording both the candidate and main SHAs. Separately green branches do not qualify their combination. `--exact-base` fixes the comparison base; it does not create or test a merged candidate. If main advances, reassess the affected combination rather than repeating unrelated checks.
+- Before main, assign required type evidence for affected packages to a named focused package check or existing CI job and record its commit and result. Quick integration is not type evidence. Use `check:changed` or the configured broader CI where appropriate; do not add a full suite for every feature.
+- Obtain explicit human merge approval for the reviewed change before merging. These are repository instructions, not a claim that GitHub enforces review, approval or candidate freshness. Do not change branch protection or rulesets without a separate maintainer decision.
+- Reuse evidence only while its relevant source, dependencies, toolchain, test configuration and platform remain unchanged. Distinguish source, fixture, browser, native, package and installed evidence. Build once and promote the same hash/provenance-bound bytes; preserve successful unchanged artifacts after an isolated platform or infrastructure failure.
 
 ## Waiting for work
 

@@ -935,6 +935,94 @@ it.effect("continues a confirmed provisional task once without admitting replace
   }),
 );
 
+it.effect("resolves a contextual refinement with prior conversation and fresh user sources", () =>
+  Effect.gen(function* () {
+    const original = "Ändere die Überschrift des Wochenberichts.";
+    const proposal = "Die neue Überschrift könnte Team-Puls heißen.";
+    const acceptance = "Ja, ändere sie genau so.";
+    const seen: VoiceIntakeSnapshot[] = [];
+    const test = setup((snapshot) =>
+      Effect.sync(() => {
+        seen.push(snapshot);
+        if (seen.length === 1)
+          return {
+            requestId: snapshot.requestId,
+            actions: [
+              {
+                type: "new" as const,
+                projectId: null,
+                readOnly: false,
+                request: original,
+                sources: [source(original)],
+              },
+            ],
+          };
+        assert.include(snapshot.conversationContext, "Current project: Alpha");
+        assert.include(snapshot.conversationContext, proposal);
+        assert.include(snapshot.conversationContext, '"role":"assistant"');
+        assert.isFalse(snapshot.segments.some((segment) => segment.id === "assistant-proposal"));
+        return {
+          requestId: snapshot.requestId,
+          actions: [
+            {
+              type: "refine" as const,
+              intentId: snapshot.intents[0]!.id,
+              readOnly: false,
+              message: "Setze die Überschrift auf Team-Puls.",
+              sources: [source(acceptance, "user-acceptance")],
+            },
+          ],
+        };
+      }),
+    );
+    test.setConversationContext("Current project: Alpha");
+    yield* test.engine.observe(transcript(original, 1, true));
+    yield* test.engine.processLatest();
+    yield* test.engine.observe({
+      ...transcript(proposal, 1, true, "assistant-proposal"),
+      role: "assistant",
+    });
+    yield* test.engine.processLatest();
+    assert.equal(seen.length, 1, "the assistant proposal does not trigger intake");
+    yield* test.engine.observe(transcript(acceptance, 1, true, "user-acceptance"));
+    yield* test.engine.processLatest();
+    assert.equal(test.admitted.length, 1);
+    assert.deepEqual(test.steered, ["Setze die Überschrift auf Team-Puls."]);
+    const intent = (yield* test.engine.state).intents[0]!;
+    assert.deepEqual(intent.sources.at(-1), source(acceptance, "user-acceptance"));
+    assert.include(test.steeredConversationContexts[0], proposal);
+  }),
+);
+
+it.effect("never accepts an assistant proposal as a fresh authorization source", () =>
+  Effect.gen(function* () {
+    const proposal = "Veröffentliche den Wochenbericht.";
+    const test = setup((snapshot) =>
+      Effect.succeed({
+        requestId: snapshot.requestId,
+        actions: [
+          {
+            type: "new" as const,
+            projectId: null,
+            readOnly: false,
+            request: proposal,
+            sources: [source(proposal, "assistant-proposal")],
+          },
+        ],
+      }),
+    );
+    test.setConversationContext(`assistant: ${proposal}`);
+    yield* test.engine.observe({
+      ...transcript(proposal, 1, true, "assistant-proposal"),
+      role: "assistant",
+    });
+    yield* test.engine.observe(transcript("Danke, verstanden.", 1, true, "user-response"));
+    yield* test.engine.processLatest();
+    assert.equal(test.admitted.length, 0);
+    assert.equal((yield* test.engine.state).rejections[0]?.code, "source_revision_mismatch");
+  }),
+);
+
 it.effect(
   "executes authorized clauses during continuously growing speech and coalesces two tasks plus later steering",
   () =>
@@ -971,6 +1059,8 @@ it.effect(
       yield* test.engine.observe(transcript(text));
       const firstRun = yield* test.engine.processLatest().pipe(Effect.forkChild);
       const first = yield* Queue.take(pending);
+      assert.include(first.snapshot.conversationContext, "do not write the solution");
+      assert.include(first.snapshot.conversationContext, "Which part of ownership");
       for (const [index, tail] of [
         " Ich beschreibe noch",
         " die Kategorien und Filter.",
@@ -1008,6 +1098,7 @@ it.effect(
       assert.include(test.admittedConversationContexts[0], '"role":"assistant"');
       assert.include(test.admittedConversationContexts[0], "Which part of ownership");
       assert.notInclude(test.admittedConversationContexts[0], "Different discussion");
+      assert.equal(test.admittedConversationContexts[0], first.snapshot.conversationContext);
       const secondRun = yield* test.engine.processLatest().pipe(Effect.forkChild);
       const second = yield* Queue.take(pending);
       assert.equal(second.snapshot.version, 6, "intermediate revisions coalesce");

@@ -29,6 +29,7 @@ import * as Context from "effect/Context";
 import type * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 import { LiveVoiceCallHistory, LiveVoiceCallTranscript } from "./liveVoiceHistory.ts";
+import { LiveVoiceDiagnostics } from "./liveVoiceDiagnostics.ts";
 import { LiveVoiceLeaseId } from "./liveVoice.ts";
 import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
@@ -878,6 +879,7 @@ export const VoiceTranscriptionUpload = HttpApiSchema.asMultipart({
 })(Schema.Struct({ audio: Multipart.SingleFileSchema }));
 export const VoiceTranscriptionResult = Schema.Struct({ transcript: Schema.String });
 export const VoiceTranscriptionSettingsInput = Schema.Struct({
+  diagnosticsEnabled: Schema.optionalKey(Schema.Boolean),
   provider: Schema.Literals(["codex-account", "openai-api"]),
   instanceId: Schema.NullOr(Schema.String.check(Schema.isMaxLength(200))),
   model: Schema.String.check(Schema.isMaxLength(100)),
@@ -885,6 +887,7 @@ export const VoiceTranscriptionSettingsInput = Schema.Struct({
   apiKey: Schema.optionalKey(Schema.NullOr(Schema.String.check(Schema.isMaxLength(1000)))),
 });
 export const VoiceTranscriptionSettings = Schema.Struct({
+  diagnosticsEnabled: Schema.optionalKey(Schema.Boolean),
   provider: Schema.Literals(["codex-account", "openai-api"]),
   instanceId: Schema.NullOr(Schema.String),
   model: Schema.String,
@@ -927,6 +930,28 @@ export class VoiceTranscriptionHttpError extends Schema.TaggedError<VoiceTranscr
   }
 }
 class EnvironmentLiveVoiceHistoryHttpApi extends HttpApiGroup.make("liveVoiceHistory").add(
+  HttpApiEndpoint.put("diagnosticsSettings", "/api/voice/diagnostics/settings", {
+    headers: OptionalBearerHeaders,
+    payload: Schema.Struct({ diagnosticsEnabled: Schema.Boolean }),
+    success: Schema.Struct({ diagnosticsEnabled: Schema.Boolean }),
+    error: [EnvironmentAuthInvalidError, EnvironmentScopeRequiredError, EnvironmentInternalError],
+  }).middleware(EnvironmentAuthenticatedAuth),
+  HttpApiEndpoint.get("diagnostics", "/api/voice/threads/:threadId/diagnostics", {
+    params: { threadId: ThreadId },
+    query: {
+      leaseId: Schema.optional(LiveVoiceLeaseId),
+      generation: Schema.optional(Schema.String.check(Schema.isPattern(/^[1-9][0-9]{0,14}$/))),
+      after: Schema.optional(Schema.String.check(Schema.isPattern(/^[0-9]{1,15}$/))),
+      limit: Schema.optional(Schema.String.check(Schema.isPattern(/^[1-9][0-9]{0,2}$/))),
+    },
+    headers: OptionalBearerHeaders,
+    success: LiveVoiceDiagnostics,
+    error: [
+      EnvironmentAuthInvalidError,
+      ...EnvironmentScopedOperationErrors,
+      EnvironmentResourceNotFoundError,
+    ],
+  }).middleware(EnvironmentAuthenticatedAuth),
   HttpApiEndpoint.get("calls", "/api/voice/threads/:threadId/calls", {
     params: { threadId: ThreadId },
     query: { before: Schema.optional(Schema.String.check(Schema.isPattern(/^[1-9][0-9]{0,14}$/))) },

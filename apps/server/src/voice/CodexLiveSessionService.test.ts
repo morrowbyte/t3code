@@ -389,6 +389,8 @@ it.effect.each([false, true])(
                   });
               }
               contexts.push(input);
+              if (input.text.startsWith("Die Arbeit läuft noch.") && quietSpeechSignal)
+                yield* Deferred.succeed(quietSpeechSignal, undefined);
               const gate = contextAppendGate;
               contextAppendGate = undefined;
               const signal = contextSignals.get(input.text);
@@ -811,12 +813,23 @@ it.effect.each([false, true])(
       const program = Effect.gen(function* () {
         yield* runMigrations();
         const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO orchestration_v2_projection_threads
+          (thread_id, project_id, title, default_provider, provider_instance_id, runtime_mode, interaction_mode, created_at, updated_at, payload_json)
+          VALUES (${threadId}, ${projection.thread.projectId}, 'Voice trace fixture', 'codex', ${providerInstanceId}, 'full-access', 'default', '2026-10-23', '2026-10-23', ${JSON.stringify(projection.thread)})`;
+        yield* sql`UPDATE codex_live_voice_diagnostics_settings SET enabled = 1 WHERE id = 1`;
         const service = yield* CodexLiveSessionService.CodexLiveSessionService;
         const prepared = yield* service.prepare(session, {
           threadId,
           clientRequestId: "prepare-1",
         });
         assert.equal(prepared.status, "prepared");
+        const identity = yield* sql<{
+          event_json: string;
+        }>`SELECT event_json FROM codex_live_voice_diagnostics WHERE lease_id = ${prepared.leaseId} AND json_extract(event_json, '$.name') = 'call.identity'`;
+        assert.lengthOf(identity, 1);
+        assert.include(identity[0]!.event_json, '"nativeRuntimeVersion":null');
+        assert.include(identity[0]!.event_json, '"serverVersion":');
+        assert.notInclude(identity[0]!.event_json, "offer-sdp");
         assert.notEqual(
           prepared.providerSessionId,
           "provider-session-test",
@@ -3405,7 +3418,8 @@ it.effect.each([false, true])(
            interaction_mode, active_provider_thread_id, created_at, updated_at, archived_at, deleted_at, payload_json)
           VALUES (${threadId}, ${sourceThread.projectId}, ${"Voice intake fixture"}, ${sourceThread.providerInstanceId},
            ${sourceThread.providerInstanceId}, ${sourceThread.runtimeMode}, ${sourceThread.interactionMode},
-           NULL, '2026-10-23T00:00:00Z', '2026-10-23T00:00:00Z', NULL, NULL, ${JSON.stringify(sourceThread)})`;
+           NULL, '2026-10-23T00:00:00Z', '2026-10-23T00:00:00Z', NULL, NULL, ${JSON.stringify(sourceThread)})
+          ON CONFLICT(thread_id) DO UPDATE SET payload_json = excluded.payload_json`;
         expectedNewTaskOwner = "intake";
         let decideIntakeSnapshot: NonNullable<
           ProviderAdapter.ProviderAdapterV2LiveVoiceRuntime["decideIntake"]
@@ -3949,7 +3963,7 @@ it.effect.each([false, true])(
             runs: job.runs.map((run) => ({ ...run, status: "completed" })),
           });
         const quietCount = () =>
-          spoken.filter((item) => item.text.startsWith("Die Arbeit läuft noch.")).length;
+          contexts.filter((item) => item.text.startsWith("Die Arbeit läuft noch.")).length;
         const beforeQuiet = quietCount();
         yield* TestClock.adjust("45 seconds");
         assert.equal(quietCount(), beforeQuiet, "current user speech suppresses quiet progress");
@@ -4053,10 +4067,35 @@ it.effect.each([false, true])(
         assert.equal(
           quietCount(),
           beforeQuiet + 1,
-          "one factual spoken update after a quiet threshold",
+          "one factual silent context update after a quiet threshold",
         );
         yield* TestClock.adjust("90 seconds");
         assert.equal(quietCount(), beforeQuiet + 1, "unchanged evidence never repeats as filler");
+        assert.isFalse(
+          spoken.some((item) => item.text.startsWith("Die Arbeit läuft noch.")),
+          "periodic status never requests audible speech",
+        );
+        const traced = yield* sql<{
+          name: string;
+          lease_id: string;
+          event_json: string;
+        }>`SELECT lease_id, json_extract(event_json, '$.name') AS name, event_json FROM codex_live_voice_diagnostics WHERE lease_id = ${intakeLease.leaseId}`;
+        for (const name of [
+          "transcript.received",
+          "intake.started",
+          "intake.finished",
+          "dispatch.accepted",
+          "steering.accepted",
+          "steering.failed",
+          "output.dispatch",
+        ])
+          assert.isTrue(
+            traced.some((event) => event.name === name),
+            `missing diagnostic milestone ${name}`,
+          );
+        assert.isFalse(
+          traced.some((event) => event.event_json.includes("PRIVATE_PROVIDER_TEXT_MUST_NOT_LOG")),
+        );
         for (const [id, job] of savedJobs) independentJobs.set(id, job);
         const requestId = "voice-public-question";
         const publicQuestion = "Soll die Suche auch archivierte Einträge finden?";

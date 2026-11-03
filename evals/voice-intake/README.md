@@ -10,6 +10,8 @@ The six cases cover an unfinished utterance containing a complete task, correcti
 
 Two additional opt-in regressions cover a chart proposal rejected during a new constraint and a chart explicitly withdrawn afterward. Select them with `--case rejected-chart-keeps-current-constraint,rejected-chart-stays-cancelled --effort low` for six native decisions with the default three samples. The default six-case comparison and its 36-turn cap stay unchanged.
 
+The opt-in cases `assistant-proposal-contextual-refinement` and `assistant-proposal-needs-user-authorization` cover a fresh user accepting a proposal whose target/value occur only in prior assistant context, and a mere acknowledgement that must not authorize the proposal. They use the production snapshot conversation-context field; source grounding remains restricted to user segments.
+
 Use an already installed compatible Codex binary and the existing provider OAuth session. No API key is required. The expected binary SHA-256 is mandatory. This eval does not change authentication or install dependencies.
 
 ```sh
