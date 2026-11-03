@@ -71,13 +71,16 @@ repository instructions, not GitHub branch-protection guarantees.
 New builds require a successful external SourceProof from
 `morrowbyte-local-source-check.yml` for the exact frozen source and its first
 parent. The release verifies that proof; it does not run the broader source
-suite itself. Produce the proof once through the existing workflow:
+suite itself. Use an existing remote branch at the frozen commit; the workflow
+rechecks the exact SHA and parent after dispatch:
 
 ```sh
+source_branch=$(git symbolic-ref --quiet --short HEAD) || exit 1
 source_sha=$(git rev-parse HEAD)
 base_sha=$(git rev-parse "$source_sha^1")
+test "$(gh api "repos/morrowbyte/t3code/git/ref/heads/$source_branch" --jq .object.sha)" = "$source_sha" || exit 1
 gh workflow run morrowbyte-local-source-check.yml --repo morrowbyte/t3code \
-  --ref "$source_sha" -f source_sha="$source_sha" -f base_sha="$base_sha"
+  --ref "$source_branch" -f source_sha="$source_sha" -f base_sha="$base_sha"
 ```
 
 The proof binds the source/base SHAs, check program and lockfiles, toolchain,
