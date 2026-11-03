@@ -149,8 +149,7 @@ it.effect.each(["read", "capability", "environment", "missing"] as const)(
           assert.deepEqual(historyReads, []);
         }
       }).pipe(
-        Effect.provide(service),
-        Effect.provide(history),
+        Effect.provide(Layer.merge(service, history)),
         Effect.provideService(
           ServerEnvironment.ServerEnvironment,
           ServerEnvironment.ServerEnvironment.of({
