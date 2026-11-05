@@ -15,7 +15,7 @@ and modes you choose in a draft keep their permissions.
 | **Supervised**        | Requests approval for commands and file changes.                                      |
 | **Auto-accept edits** | Approves file edits automatically; other actions can still require approval.          |
 | **Auto**              | Uses the provider's automatic review to approve routine actions and ask about others. |
-| **Full access**       | Allows commands and edits without approval prompts.                                   |
+| **Full access**       | Allows unrestricted commands and edits; providers can still require approval.         |
 
 An administrator can cap the modes available on a machine with a
 [managed policy](./managed-policy.md#permission-modes); modes above the cap show who manages them.
@@ -51,6 +51,10 @@ request. An approval allows the action once; check its execution receipt and tar
 treating the change as complete.
 
 ## Provider differences
+
+Codex runs without a filesystem sandbox in **Full access**, but its command safety checks can
+still request your approval. These requests appear in the conversation instead of being rejected
+because approval prompts are disabled. Explicitly forbidden policy rules still block execution.
 
 Providers enforce permissions differently. Some read-only actions can proceed in **Supervised**.
 **Auto** uses automatic review on Codex, Claude, Cursor, Grok, and fx; providers without an equivalent,

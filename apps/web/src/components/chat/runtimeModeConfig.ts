@@ -22,7 +22,7 @@ export const runtimeModeConfig: Record<
   },
   "full-access": {
     label: "Full access",
-    description: "Allow commands and edits without prompts.",
+    description: "Unrestricted access; providers may still request approval.",
     // An open lock reads like a closed one at small sizes; a crossed shield does not.
     icon: ShieldOffIcon,
   },

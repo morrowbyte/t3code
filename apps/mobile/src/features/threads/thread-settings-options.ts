@@ -27,7 +27,7 @@ export const RUNTIME_MODE_CHOICES: ReadonlyArray<{
   {
     mode: "full-access",
     label: "Full access",
-    description: "Allow commands and edits without prompts.",
+    description: "Unrestricted access; providers may still request approval.",
   },
 ];
 

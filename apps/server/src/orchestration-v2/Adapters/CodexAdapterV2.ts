@@ -1097,7 +1097,9 @@ function codexRuntimeModeTurnDefaults(runtimeMode: RuntimeMode): {
       };
     case "full-access":
       return {
-        approvalPolicy: "never",
+        // Codex's command safety checks still run without a sandbox. With "never",
+        // even a false positive becomes a hard denial instead of a reviewable request.
+        approvalPolicy: "on-request",
         approvalsReviewer: "user",
         sandboxPolicy: {
           type: "dangerFullAccess",
