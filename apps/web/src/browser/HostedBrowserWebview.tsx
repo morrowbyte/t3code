@@ -5,7 +5,7 @@ import type {
   ScopedThreadRef,
 } from "@t3tools/contracts";
 import { useShallow } from "zustand/react/shallow";
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState, useSyncExternalStore } from "react";
 
 import { previewBridge } from "~/components/preview/previewBridge";
 import { usePreviewBridge } from "~/components/preview/usePreviewBridge";
@@ -19,6 +19,7 @@ import {
   browserViewportSettingKey,
   resolveBrowserViewportLayout,
   resolveFittedBrowserViewport,
+  resolveHiddenBrowserViewportSize,
 } from "./browserViewportLayout";
 import { BrowserDeviceToolbar } from "./BrowserDeviceToolbar";
 import { BrowserViewportResizeHandles } from "./BrowserViewportResizeHandles";
@@ -47,6 +48,13 @@ declare global {
     webview: ElectronWebview;
   }
 }
+
+const subscribeToWindowSize = (onChange: () => void) => {
+  window.addEventListener("resize", onChange);
+  return () => window.removeEventListener("resize", onChange);
+};
+const readWindowWidth = () => window.innerWidth;
+const readWindowHeight = () => window.innerHeight;
 
 export function HostedBrowserWebview(props: {
   readonly threadRef: ScopedThreadRef;
@@ -222,18 +230,15 @@ export function HostedBrowserWebview(props: {
     setAspectRatioLocked(aspectRatio !== null);
   };
   const content = presentation.content;
-  const hiddenWidth =
-    viewport._tag !== "fill"
-      ? viewport.width * layoutZoomFactor
-      : content
-        ? content.width / content.scale
-        : (lastRect?.width ?? 1280);
-  const hiddenHeight =
-    viewport._tag !== "fill"
-      ? viewport.height * layoutZoomFactor
-      : content
-        ? content.height / content.scale
-        : (lastRect?.height ?? 800);
+  const windowWidth = useSyncExternalStore(subscribeToWindowSize, readWindowWidth);
+  const windowHeight = useSyncExternalStore(subscribeToWindowSize, readWindowHeight);
+  const { width: hiddenWidth, height: hiddenHeight } = resolveHiddenBrowserViewportSize({
+    setting: viewport,
+    zoomFactor: layoutZoomFactor,
+    content,
+    lastRect,
+    windowSize: { width: windowWidth, height: windowHeight },
+  });
   // Build from primitives on each side of the resize hook to keep both objects cached.
   const containerSize =
     active && lastRect ? lastRect : { width: hiddenWidth, height: hiddenHeight };
