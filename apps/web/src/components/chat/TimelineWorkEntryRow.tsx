@@ -72,6 +72,7 @@ import {
   THINKING_PREVIEW_PLUGINS,
   THOUGHT_PREVIEW_PLUGINS,
 } from "./TimelineWorkEntryRow.logic";
+import { ComputerObservationReceipt } from "./ComputerObservationReceipt";
 
 export function useThreadReadTarget(entry: TimelineWorkEntry, environmentId: EnvironmentId) {
   const rawThreadId = threadReadTargetId(entry);
@@ -623,6 +624,13 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
         </>
       }
     >
+      {expanded && workEntry.projectedItem ? (
+        <ComputerObservationReceipt
+          projectedItem={workEntry.projectedItem}
+          environmentId={ctx.activeThreadEnvironmentId}
+          source={ctx.turnItemSource}
+        />
+      ) : null}
       {expanded && viewedImage && threadRef ? (
         <WorkLogDetails kind="media">
           <ChatMarkdownAssetImage
