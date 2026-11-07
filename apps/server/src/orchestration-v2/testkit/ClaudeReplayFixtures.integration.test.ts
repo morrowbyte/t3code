@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect";
 import { ClaudeOrchestratorReplayHarness } from "../Adapters/ClaudeAdapterV2.testkit.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as Orchestrator from "../Orchestrator.ts";
+import * as ProviderTurnStartServiceTestkit from "../ProviderTurnStartService.testkit.ts";
 import { userFacingDispatchErrorMessage } from "../UserFacingErrors.ts";
 import { provideDeterministicTestRuntime } from "./DeterministicRuntime.ts";
 import { subagentInput } from "./fixtures/subagent/input.ts";
@@ -101,7 +102,12 @@ describe("Claude Agent SDK replay fixtures", () => {
         assert.deepEqual(after.messages, child.messages);
       }).pipe(
         Effect.provide(
-          ProviderReplayHarness.layerProviderReplay(scenario, ClaudeOrchestratorReplayHarness),
+          ProviderReplayHarness.layerProviderReplay(scenario, ClaudeOrchestratorReplayHarness, {
+            projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+              materialized.projectId,
+              process.cwd(),
+            ),
+          }),
         ),
         provideDeterministicTestRuntime,
         Effect.scoped,

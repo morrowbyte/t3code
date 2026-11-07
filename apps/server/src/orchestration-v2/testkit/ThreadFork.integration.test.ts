@@ -19,6 +19,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { ClaudeOrchestratorReplayHarness } from "../Adapters/ClaudeAdapterV2.testkit.ts";
 import { CodexOrchestratorReplayHarness } from "../Adapters/CodexAdapterV2.testkit.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import * as ProviderTurnStartServiceTestkit from "../ProviderTurnStartService.testkit.ts";
 import { provideDeterministicTestRuntime } from "./DeterministicRuntime.ts";
 import {
   THREAD_FORK_NATIVE_PRIOR_TURN_ALPHA_PROMPT,
@@ -222,6 +223,7 @@ describe("orchestration V2 thread fork", () => {
           ] satisfies ReadonlyArray<OrchestrationV2Command>;
 
           return {
+            projectId,
             sourceThreadId,
             targetThreadId,
             commands,
@@ -246,6 +248,12 @@ describe("orchestration V2 thread fork", () => {
             runtimePolicyOverride: { cwd },
           },
           ClaudeOrchestratorReplayHarness,
+          {
+            projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+              materialized.projectId,
+              cwd,
+            ),
+          },
         ).pipe(provideDeterministicTestRuntime);
 
         const sourceProjection = result.projections.get(materialized.sourceThreadId);
@@ -381,6 +389,7 @@ describe("orchestration V2 thread fork", () => {
         ] satisfies ReadonlyArray<OrchestrationV2Command>;
 
         return {
+          projectId,
           sourceThreadId,
           targetThreadId,
           commands,
@@ -407,6 +416,12 @@ describe("orchestration V2 thread fork", () => {
           runtimePolicyOverride: { cwd, ...CODEX_READ_ONLY_NEVER_POLICY },
         },
         CodexOrchestratorReplayHarness,
+        {
+          projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+            materialized.projectId,
+            cwd,
+          ),
+        },
       ).pipe(provideDeterministicTestRuntime);
 
       const targetProjection = result.projections.get(materialized.targetThreadId);
@@ -590,6 +605,7 @@ describe("orchestration V2 thread fork", () => {
         ] satisfies ReadonlyArray<OrchestrationV2Command>;
 
         return {
+          projectId,
           sourceThreadId,
           targetThreadId,
           secondRunId,
@@ -624,6 +640,12 @@ describe("orchestration V2 thread fork", () => {
           runtimePolicyOverride: { cwd },
         },
         ClaudeOrchestratorReplayHarness,
+        {
+          projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+            materialized.projectId,
+            cwd,
+          ),
+        },
       ).pipe(provideDeterministicTestRuntime);
 
       const sourceProjection = result.projections.get(materialized.sourceThreadId);
@@ -807,6 +829,7 @@ describe("orchestration V2 thread fork", () => {
         ] satisfies ReadonlyArray<OrchestrationV2Command>;
 
         return {
+          projectId,
           sourceThreadId,
           targetThreadId,
           targetSecondRunId,
@@ -843,6 +866,12 @@ describe("orchestration V2 thread fork", () => {
           runtimePolicyOverride: { cwd },
         },
         ClaudeOrchestratorReplayHarness,
+        {
+          projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+            materialized.projectId,
+            cwd,
+          ),
+        },
       ).pipe(provideDeterministicTestRuntime);
 
       const targetProjection = result.projections.get(materialized.targetThreadId);

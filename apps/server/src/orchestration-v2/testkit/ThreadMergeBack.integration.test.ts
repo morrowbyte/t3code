@@ -20,6 +20,7 @@ import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
 import { ClaudeOrchestratorReplayHarness } from "../Adapters/ClaudeAdapterV2.testkit.ts";
 import { CodexOrchestratorReplayHarness } from "../Adapters/CodexAdapterV2.testkit.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import * as ProviderTurnStartServiceTestkit from "../ProviderTurnStartService.testkit.ts";
 import { provideDeterministicTestRuntime } from "./DeterministicRuntime.ts";
 import {
   CODEX_MODEL_SELECTION,
@@ -384,6 +385,7 @@ describe("orchestration V2 merge-back provider replay", () => {
             },
           ] satisfies ReadonlyArray<OrchestrationV2Command>;
           return {
+            projectId,
             commands,
             sourceThreadId,
             firstForkThreadId,
@@ -457,6 +459,12 @@ describe("orchestration V2 merge-back provider replay", () => {
           ],
           runtimePolicyOverride: { cwd },
         };
+        const replayOptions = {
+          projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+            materialized.projectId,
+            cwd,
+          ),
+        };
         const result =
           variant.driver === "codex"
             ? yield* runOrchestratorV2ProviderReplayScenario(
@@ -467,6 +475,7 @@ describe("orchestration V2 merge-back provider replay", () => {
                   ),
                 },
                 CodexHistoryReplayHarness,
+                replayOptions,
               ).pipe(provideDeterministicTestRuntime)
             : yield* runOrchestratorV2ProviderReplayScenario(
                 {
@@ -474,6 +483,7 @@ describe("orchestration V2 merge-back provider replay", () => {
                   transcript: yield* ClaudeOrchestratorReplayHarness.decodeTranscript(transcript),
                 },
                 ClaudeOrchestratorReplayHarness,
+                replayOptions,
               ).pipe(provideDeterministicTestRuntime);
 
         const source = result.projections.get(materialized.sourceThreadId);

@@ -28,6 +28,7 @@ import {
 import * as CursorAdapterV2Testkit from "../Adapters/CursorAdapterV2.testkit.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as EffectWorker from "../EffectWorker.ts";
+import * as ProviderTurnStartServiceTestkit from "../ProviderTurnStartService.testkit.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import { provideDeterministicTestRuntime } from "./DeterministicRuntime.ts";
 import {
@@ -207,6 +208,10 @@ const runCursorRecovery = Effect.fn("runCursorRecovery")(function* (input: {
   const { phase1Commands, phase1Steps, phase2Commands, phase2Steps } =
     splitAfterFirstIdle(materialized);
   const options = {
+    projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+      materialized.projectId,
+      tempDir,
+    ),
     databaseLayer: SqlitePersistence.layerFromPath(dbPath).pipe(
       Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
     ),
@@ -312,6 +317,10 @@ describe("orchestrator replay recovery", () => {
               CodexAdapterV2Testkit.layer({ transcript, driver }),
           };
           const options = {
+            projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+              materialized.projectId,
+              workspace,
+            ),
             databaseLayer: SqlitePersistence.layerFromPath(dbPath).pipe(
               Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
             ),
@@ -414,6 +423,10 @@ describe("orchestrator replay recovery", () => {
           splitAfterFirstIdle(materialized);
         const { harness, assertComplete } = makeClaudeRestartReplayHarness(transcript);
         const options = {
+          projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+            materialized.projectId,
+            workspace,
+          ),
           databaseLayer: SqlitePersistence.layerFromPath(path.join(tempDir, "state.sqlite")).pipe(
             Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
           ),
@@ -528,6 +541,10 @@ describe("orchestrator replay recovery", () => {
           splitAfterFirstIdle(materialized);
         const { harness, assertComplete } = makeClaudeRestartReplayHarness(transcript);
         const options = {
+          projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+            materialized.projectId,
+            workspace,
+          ),
           databaseLayer: SqlitePersistence.layerFromPath(path.join(tempDir, "state.sqlite")).pipe(
             Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
           ),
@@ -582,6 +599,7 @@ describe("orchestrator replay recovery", () => {
             },
             harness,
             {
+              projectServiceLayer: options.projectServiceLayer,
               databaseLayer: SqlitePersistence.layerFromPath(snapshotPath).pipe(
                 Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
               ),

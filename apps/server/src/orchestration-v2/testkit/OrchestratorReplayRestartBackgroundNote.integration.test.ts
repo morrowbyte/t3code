@@ -17,6 +17,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as EffectWorker from "../EffectWorker.ts";
 import * as EventSink from "../EventSink.ts";
 import * as Orchestrator from "../Orchestrator.ts";
+import * as ProviderTurnStartServiceTestkit from "../ProviderTurnStartService.testkit.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import { provideDeterministicTestRuntime } from "./DeterministicRuntime.ts";
 import { CLAUDE_BACKGROUND_SUBAGENT_AFTER_ROOT_PROMPT } from "./fixtures/claude_background_subagent_after_root/input.ts";
@@ -154,6 +155,10 @@ const runRestart = Effect.fn("runRestart")(function* (input: {
     modelSelection: CLAUDE_MODEL_SELECTION,
   });
 
+  const projectServiceLayer = ProviderTurnStartServiceTestkit.layerForProject(
+    materialized.projectId,
+    workspace,
+  );
   const firstIdle = materialized.steps.findIndex((step) => step.type === "await_thread_idle");
   const phase1Steps = materialized.steps.slice(0, firstIdle + 1);
   const phase2Steps = materialized.steps.slice(firstIdle + 1);
@@ -210,6 +215,7 @@ const runRestart = Effect.fn("runRestart")(function* (input: {
       Effect.provide(
         Layer.merge(
           ProviderReplayHarness.layerProviderReplay(beforeScenario, harness, {
+            projectServiceLayer,
             databaseLayer: layerDatabase,
           }),
           layerDatabase,
@@ -233,6 +239,7 @@ const runRestart = Effect.fn("runRestart")(function* (input: {
     }).pipe(
       Effect.provide(
         ProviderReplayHarness.layerProviderReplay(restartScenario, harness, {
+          projectServiceLayer,
           databaseLayer: snapshotDatabase,
           recoverOnStartup: true,
           continueThreadsAfterServerUpdate: input.continueThreadsAfterServerUpdate,
@@ -250,6 +257,7 @@ const runRestart = Effect.fn("runRestart")(function* (input: {
 
   const after = yield* Effect.scoped(
     runOrchestratorV2ProviderReplayScenario(scenario("after-restart", phase2Steps), harness, {
+      projectServiceLayer,
       databaseLayer: snapshotDatabase,
       continueThreadsAfterServerUpdate: input.continueThreadsAfterServerUpdate,
     }),

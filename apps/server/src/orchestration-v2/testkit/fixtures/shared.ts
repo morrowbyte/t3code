@@ -305,6 +305,7 @@ export interface OrchestratorReplayFixture {
 }
 
 export interface MaterializedOrchestratorFixtureInput {
+  readonly projectId: ProjectId;
   readonly commands: ReadonlyArray<OrchestrationV2Command>;
   readonly steps: ReadonlyArray<OrchestratorV2ScenarioStep>;
   readonly projectionThreadIds: ReadonlyArray<ThreadId>;
@@ -966,6 +967,7 @@ export function materializeFixtureInput(input: {
     }
 
     return {
+      projectId,
       commands,
       steps,
       projectionThreadIds:

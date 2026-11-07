@@ -648,19 +648,19 @@ it.effect(
       });
       expect(yield* h.installation.start).toMatchObject({
         phase: "downloading",
-        version: "0.163.0",
-        totalBytes: 162230206,
+        version: "0.166.0",
+        totalBytes: 202589789,
       });
       expect(yield* terminalState(h.installation)).toMatchObject({ phase: "failed" });
       expect(h.downloadUrls).toEqual([
-        "https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-package-x86_64-pc-windows-msvc.tar.gz",
+        "https://github.com/openai/codex/releases/download/rust-v0.166.0/codex-package-x86_64-pc-windows-msvc.tar.gz",
       ]);
       expect(CodexInstallation.resolveCodexReleaseAsset("win32", "x64")).toMatchObject({
         target: "x86_64-pc-windows-msvc",
-        sha256: "901028b285614a9974f431f9d9f6534b3e5ed8d62eba4ba64f4762c00f040522",
+        sha256: "d559bb88e74d471265857b93b7f19bc250dae527673b9191b33534478093f6bc",
       });
       expect(yield* h.fs.exists(`${h.installation.managedDirectory}/active.json`)).toBe(false);
-      expect(yield* h.fs.exists(`${h.installation.managedDirectory}/0.163.0`)).toBe(false);
+      expect(yield* h.fs.exists(`${h.installation.managedDirectory}/0.166.0`)).toBe(false);
     }).pipe(
       Effect.scoped,
       Effect.provide(Layer.mergeAll(CodexInstallationTestHost.layer, NodeCrypto.layer)),
@@ -794,7 +794,7 @@ it.effect.each([
     Effect.gen(function* () {
       const h = yield* makeHarness({ platform, arch, useReleaseCatalog: true });
       expect(yield* h.installation.start).toMatchObject({
-        version: "0.163.0",
+        version: "0.166.0",
         phase: "downloading",
       });
       expect((yield* terminalState(h.installation)).phase).toBe("failed");
@@ -816,12 +816,12 @@ it.effect("upgrades past an older local CLI and prefers the verified device-auth
       useReleaseCatalog: true,
     });
     expect((yield* h.installation.resolve()).source).toBe("local");
-    expect(yield* h.installation.start).toMatchObject({ phase: "downloading", version: "0.163.0" });
+    expect(yield* h.installation.start).toMatchObject({ phase: "downloading", version: "0.166.0" });
     expect((yield* terminalState(h.installation)).phase).toBe("failed");
     expect(h.downloads()).toBe(1);
     const release = CodexInstallation.resolveCodexReleaseAsset("linux", "x64");
     if (!release) throw new Error("Missing Linux release fixture");
-    const directory = `${h.installation.managedDirectory}/0.163.0`;
+    const directory = `${h.installation.managedDirectory}/0.166.0`;
     for (const name of ["bin/codex", "bin/codex-code-mode-host", "codex-path/rg"]) {
       yield* h.fs.makeDirectory(`${directory}/${name.split("/")[0]}`, { recursive: true });
       yield* h.fs.writeFileString(`${directory}/${name}`, "synthetic-runtime", { mode: 0o755 });
@@ -844,7 +844,7 @@ it.effect("upgrades past an older local CLI and prefers the verified device-auth
       JSON.stringify({ version: release.version }),
     );
     expect(yield* h.installation.resolve()).toMatchObject({
-      version: "0.163.0",
+      version: "0.166.0",
       source: "managed",
     });
     expect(yield* h.fs.exists(h.localBinaryPath)).toBe(true);

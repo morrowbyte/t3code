@@ -17,6 +17,7 @@ import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import { AcpRegistryOrchestratorReplayHarness } from "../Adapters/AcpRegistryAdapterV2.testkit.ts";
 import * as EffectWorker from "../EffectWorker.ts";
 import * as Orchestrator from "../Orchestrator.ts";
+import * as ProviderTurnStartServiceTestkit from "../ProviderTurnStartService.testkit.ts";
 import { provideDeterministicTestRuntime } from "./DeterministicRuntime.ts";
 import { materializeFixtureInput, SIMPLE_PROMPT } from "./fixtures/shared.ts";
 import {
@@ -197,6 +198,14 @@ describe("ACP registry replay fixtures", () => {
         Effect.provide(
           layerProviderReplay(scenario, AcpRegistryOrchestratorReplayHarness, {
             runEffectWorker: false,
+            ...(testCase.firstTurn
+              ? {
+                  projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+                    materialized.projectId,
+                    scenario.runtimePolicyOverride.cwd,
+                  ),
+                }
+              : {}),
           }),
         ),
       );

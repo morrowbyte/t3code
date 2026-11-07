@@ -596,7 +596,7 @@ it.effect(
       assert.lengthOf(recorded, 1);
       assert.deepEqual(recorded[0], {
         driver: CODEX_DRIVER,
-        providerTurn: completedTurn,
+        providerTurn: { ...completedTurn, turnTokenUsage, cost },
         context: input.analyticsContext,
       });
       const sourceRunId = RunId.make("billing-source-run");
