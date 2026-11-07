@@ -54,6 +54,7 @@ export function ProviderAuthenticationSection({
   const [pending, setPending] = useState(false);
   const pendingRef = useRef(false);
   const terminalQueue = useRef<ProviderAuthRespondInput[]>([]);
+  const signInLinkInput = useRef<HTMLInputElement>(null);
   const terminalSending = useRef(false);
   const auth = query.data;
   const interaction = auth?.interaction;
@@ -228,11 +229,20 @@ export function ProviderAuthenticationSection({
                 <TooltipTrigger
                   render={
                     <Button
-                      aria-label="Copy sign-in link"
-                      size="icon-sm"
+                      aria-label={
+                        interaction?.type === "deviceCode"
+                          ? "Select sign-in link"
+                          : "Copy sign-in link"
+                      }
+                      size={interaction?.type === "deviceCode" ? "sm" : "icon-sm"}
                       variant="ghost-muted"
                       disabled={disabled}
                       onClick={() => {
+                        if (interaction?.type === "deviceCode") {
+                          signInLinkInput.current?.focus();
+                          signInLinkInput.current?.select();
+                          return;
+                        }
                         // Copy during the click to retain clipboard activation; consent must still be
                         // recorded before use.
                         const copied = writeTextToClipboard(url, "Provider sign-in link");
@@ -244,10 +254,13 @@ export function ProviderAuthenticationSection({
                       }}
                     >
                       <CopyIcon />
+                      {interaction?.type === "deviceCode" ? "Select link" : null}
                     </Button>
                   }
                 />
-                <TooltipPopup>Copy sign-in link</TooltipPopup>
+                <TooltipPopup>
+                  {interaction?.type === "deviceCode" ? "Select sign-in link" : "Copy sign-in link"}
+                </TooltipPopup>
               </Tooltip>
             </>
           ) : null}
@@ -336,11 +349,23 @@ export function ProviderAuthenticationSection({
       query.error ? (
         <>
           {interaction?.type === "deviceCode" ? (
-            <p className="py-2 text-sm text-muted-foreground">
-              Enter code{" "}
-              <code className="select-all font-mono text-foreground">{interaction.userCode}</code>{" "}
-              in your browser.
-            </p>
+            <div className="space-y-2 py-2">
+              <Input
+                ref={signInLinkInput}
+                aria-label="Sign-in link"
+                readOnly
+                value={interaction.url}
+                onFocus={(event) => event.currentTarget.select()}
+              />
+              <p className="text-xs text-muted-foreground">
+                Copy the selected link with Ctrl+C or ⌘C, then paste it into your browser.
+              </p>
+              <p className="text-sm text-muted-foreground">
+                Enter code{" "}
+                <code className="select-all font-mono text-foreground">{interaction.userCode}</code>{" "}
+                in your browser.
+              </p>
+            </div>
           ) : null}
           {interaction?.type === "terminal" ? (
             <div className="py-2">

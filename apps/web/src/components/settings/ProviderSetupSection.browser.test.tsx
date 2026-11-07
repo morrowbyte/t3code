@@ -695,7 +695,7 @@ describe("Antigravity setup", () => {
     await using screen = decorateSetupScreen(await render(<></>));
     const { container, button: _button, click } = screen;
 
-    const url = "https://auth.openai.com/codex/device";
+    const url = "https://example.test/device?request=synthetic";
     setup.auth = authState({
       interaction: { type: "deviceCode", id: "remote-native-code", url, userCode: "SYNTH-REMOTE" },
       authorizationUrl: url,
@@ -718,6 +718,16 @@ describe("Antigravity setup", () => {
     );
     expect(container.textContent).toContain("SYNTH-REMOTE");
     expect(container.textContent).toContain("in your browser");
+    const signInLink = container.querySelector<HTMLInputElement>(
+      'input[aria-label="Sign-in link"]',
+    );
+    expect(signInLink).not.toBeNull();
+    expect(signInLink?.readOnly).toBe(true);
+    expect(signInLink?.value).toBe(url);
+    await click("Select link");
+    expect(document.activeElement).toBe(signInLink);
+    expect(signInLink?.selectionStart).toBe(0);
+    expect(signInLink?.selectionEnd).toBe(url.length);
     expect(container.querySelector(`[id="provider-callback-${instanceId}"]`)).toBeNull();
     expect(setup.openExternal).not.toHaveBeenCalled();
     expect(setup.startAuth).not.toHaveBeenCalled();
