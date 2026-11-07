@@ -20,6 +20,10 @@ export function materializeReplayTranscriptRuntimeInstructions(
               : undefined;
   if (harness === undefined) return transcript;
   const instructions = buildRuntimeInstructions({ harness, model: runtime.model });
+  const runtimeInfoEndTag = "</runtime_info>";
+  const sharedInstructions = instructions.slice(
+    instructions.indexOf(runtimeInfoEndTag) + runtimeInfoEndTag.length,
+  );
 
   return {
     ...transcript,
@@ -56,11 +60,26 @@ export function materializeReplayTranscriptRuntimeInstructions(
           lastPart.type === "text" &&
           "text" in lastPart &&
           typeof lastPart.text === "string" &&
-          // A recording that switched models mid-thread already carries the
-          // instructions for the model each prompt ran on.
-          (lastPart.text === instructions || lastPart.text.startsWith("<runtime_info>"))
+          lastPart.text.startsWith("<runtime_info>")
         ) {
-          return entry;
+          const headerEnd = lastPart.text.indexOf(runtimeInfoEndTag);
+          if (headerEnd === -1) {
+            throw new Error(`${transcript.scenario} has an unterminated recorded runtime header.`);
+          }
+          // Preserve the recorded model header while refreshing the shared instruction blocks.
+          const text =
+            lastPart.text.slice(0, headerEnd + runtimeInfoEndTag.length) + sharedInstructions;
+          if (text === lastPart.text) return entry;
+          return {
+            ...entry,
+            frame: {
+              ...frame,
+              params: {
+                ...frame.params,
+                prompt: [...prompt.slice(0, -1), { ...lastPart, text }],
+              },
+            },
+          };
         }
         return {
           ...entry,

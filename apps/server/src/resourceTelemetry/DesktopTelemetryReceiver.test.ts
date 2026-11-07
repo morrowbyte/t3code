@@ -1,4 +1,5 @@
 import * as NodeStream from "@effect/platform-node/NodeStream";
+import * as PlatformNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as Queue from "effect/Queue";
 import { DesktopTelemetryControlMessage, DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
@@ -330,6 +331,7 @@ it.effect.each(["none", "top", "nested"] as const)(
       Effect.provide(
         Layer.mergeAll(
           NodeServices.layer,
+          PlatformNodeCrypto.layerSecureRandom,
           ServerConfig.layerTest("/fixture", { prefix: "main-renderer-receiver" }).pipe(
             Layer.provide(NodeServices.layer),
           ),
