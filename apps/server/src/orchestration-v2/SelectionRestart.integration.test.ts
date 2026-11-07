@@ -31,6 +31,7 @@ import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
+import * as ProviderTurnStartServiceTestkit from "./ProviderTurnStartService.testkit.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
@@ -390,6 +391,12 @@ it.live("retries a failed selection restart session open before completing", () 
           ProviderReplayHarness.layerWithRegistry(
             { name: "selection-restart-lifecycle" },
             layerRegistry,
+            {
+              projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+                ProjectId.make("project:selection-restart"),
+                cwd,
+              ),
+            },
           ),
         ),
       );
@@ -477,6 +484,7 @@ it.live("Stop during a restart interrupts the turn the restart could not stop", 
       const result = yield* Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const eventSink = yield* EventSink.EventSinkV2;
         const running = yield* orchestrator.streamDomainEvents.pipe(
           Stream.filter(
             (event) => event.type === "provider-turn.updated" && event.payload.status === "running",
@@ -527,6 +535,7 @@ it.live("Stop during a restart interrupts the turn the restart could not stop", 
           modelSelection: initialSelection,
           dispatchMode: { type: "restart_active", targetRunId: runId },
         });
+        const terminalSequence = yield* eventSink.latestSequence({ threadId });
         yield* orchestrator.dispatch({
           type: "run.interrupt",
           commandId: CommandId.make("command:selection-restart-stop:stop"),
@@ -534,6 +543,15 @@ it.live("Stop during a restart interrupts the turn the restart could not stop", 
           runId,
         });
         yield* worker.drain();
+        yield* eventSink.stream({ threadId, afterSequence: terminalSequence }).pipe(
+          Stream.map((stored) => stored.event),
+          Stream.filter(
+            (event) =>
+              event.type === "provider-turn.updated" && event.payload.status === "interrupted",
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+        );
         return {
           projection: yield* orchestrator.getThreadProjection(threadId),
           captured: yield* Ref.get(state),
@@ -543,6 +561,12 @@ it.live("Stop during a restart interrupts the turn the restart could not stop", 
           ProviderReplayHarness.layerWithRegistry(
             { name: "selection-restart-stop" },
             ProviderAdapterRegistry.layerSingle(adapter),
+            {
+              projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+                ProjectId.make("project:selection-restart-stop"),
+                cwd,
+              ),
+            },
           ),
         ),
       );
@@ -693,7 +717,16 @@ it.live(
             liveSessionId: liveSession.id,
             detachedSessionIds,
           };
-        }).pipe(Effect.provide(ProviderReplayHarness.layerWithRegistry({ name }, layerRegistry)));
+        }).pipe(
+          Effect.provide(
+            ProviderReplayHarness.layerWithRegistry({ name }, layerRegistry, {
+              projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+                ProjectId.make(`project:${name}`),
+                cwd,
+              ),
+            }),
+          ),
+        );
 
         const { projection, captured } = result;
         assert.lengthOf(projection.runs, 2);
@@ -893,7 +926,16 @@ it.live.each(["active", "idle", "selection-command", "pooled", "separate-home"] 
           assert.equal(returnedThread.providerInstanceId, providerInstanceId);
           assert.isEmpty(third.contextHandoffs);
           assert.deepEqual(messages, ["first", "second", "third"]);
-        }).pipe(Effect.provide(ProviderReplayHarness.layerWithRegistry({ name }, layerRegistry)));
+        }).pipe(
+          Effect.provide(
+            ProviderReplayHarness.layerWithRegistry({ name }, layerRegistry, {
+              projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+                ProjectId.make(`project:${name}`),
+                cwd,
+              ),
+            }),
+          ),
+        );
       }),
     ),
 );

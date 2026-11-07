@@ -26,6 +26,7 @@ import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+import * as ProviderTurnStartServiceTestkit from "./ProviderTurnStartService.testkit.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -1020,7 +1021,13 @@ const stopEarlierBackgroundWork = ({
           ProviderReplayHarness.layerWithRegistry(
             { name: "background-work-stop" },
             ProviderAdapterRegistry.layerSingle(adapter),
-            { runEffectWorker: false },
+            {
+              runEffectWorker: false,
+              projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+                ProjectId.make("project:background-work-stop"),
+                cwd,
+              ),
+            },
           ),
         ),
       );

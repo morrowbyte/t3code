@@ -4,6 +4,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
   MessageId,
+  ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderThreadId,
@@ -48,6 +49,7 @@ import * as ProjectionReplay from "../testkit/ProjectionReplay.ts";
 import * as ProjectionStore from "../ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "../testkit/ProviderReplayHarness.ts";
+import * as ProviderTurnStartServiceTestkit from "../ProviderTurnStartService.testkit.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
@@ -678,7 +680,13 @@ const layerBoot = (input: {
       },
     },
     ProviderAdapterRegistry.layerSingle(makeCodexAdapter(input.capturedTurns)),
-    { databaseLayer: layerDatabase },
+    {
+      databaseLayer: layerDatabase,
+      projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+        ProjectId.make(PROJECT_ID),
+        input.workspace,
+      ),
+    },
   );
   return Layer.mergeAll(
     layerStoresProvided,
