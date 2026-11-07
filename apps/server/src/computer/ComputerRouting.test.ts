@@ -136,6 +136,12 @@ it("offers the desktop fallback when an unbound web task has no preview", () => 
     route: "desktop",
     reason: "preview-unavailable",
     interaction: "capability-dependent",
+    nextTools: expect.arrayContaining(["desktop_status", "desktop_set_observation_mode"]),
+    observationGuidance: expect.stringContaining("successful native result"),
+  });
+  expect(selectComputerRoute({ kind: "desktop" }, inventory, null)).toMatchObject({
+    nextTools: expect.arrayContaining(["desktop_status", "desktop_set_observation_mode"]),
+    observationGuidance: expect.stringContaining("Do not require a screenshot"),
   });
 });
 

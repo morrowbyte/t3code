@@ -54,6 +54,7 @@ export const ComputerRoute = Schema.Struct({
   reuseExistingTab: Schema.optional(Schema.Boolean),
   candidates: Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String })),
   nextTools: Schema.Array(Schema.String),
+  observationGuidance: Schema.optional(Schema.String),
 });
 export type ComputerRoute = typeof ComputerRoute.Type;
 
@@ -68,13 +69,26 @@ export function selectComputerRoute(
   const base = { candidates: [] };
   const nativeTools =
     inventory.platform === "linux"
-      ? ["desktop_windows", "desktop_semantic_direct", "desktop_observe", "desktop_act"]
+      ? [
+          "desktop_status",
+          "desktop_set_observation_mode",
+          "desktop_act",
+          "desktop_windows",
+          "desktop_semantic_direct",
+          "desktop_observe",
+        ]
       : ["start_session"];
   const desktop = {
     ...base,
     route: "desktop" as const,
     interaction: "capability-dependent" as const,
     nextTools: nativeTools,
+    ...(inventory.platform === "linux"
+      ? {
+          observationGuidance:
+            "Check desktop_status for the native observation policy. For private actions, call desktop_set_observation_mode with mode 'disabled' and wait for a successful native result before acting. enabled permits reads; observation_active reports actual reading. include_image=false and observe_after=false do not disable observation. Do not require a screenshot or accessibility read, and do not treat a previous result as current.",
+        }
+      : {}),
   };
   if (target.kind === "desktop") return { ...desktop, reason: "desktop-task" };
   const requestedApp = target.kind === "application" ? target.application : target.browser;
