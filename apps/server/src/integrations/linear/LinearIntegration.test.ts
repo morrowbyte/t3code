@@ -9,6 +9,7 @@ import {
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as PlatformNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -132,7 +133,7 @@ function fixture(configured = true) {
           ),
       });
     }),
-  ).pipe(Layer.provideMerge(NodeServices.layer));
+  ).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, PlatformNodeCrypto.layer)));
   const infrastructure = ServerConfig.layerTest(process.cwd(), { prefix: "linear-settings-" }).pipe(
     Layer.provideMerge(fileSystem),
   );

@@ -17,7 +17,7 @@ Before proposing a script, check the available task and host context: operating 
 Finalize readability before submitting the script, purpose, working directory and timeout for the user's in-app review. The exact submitted script is what the user reviews and the host executes; never reformat or rewrite an approved script. Do not add an approval round solely for style. Keep the tool call open while awaiting the decision and result. The host binds the proposal to this active task and executes the approved script once; approval does not grant a reusable elevated session. Windows may also require the user to confirm native UAC. Report rejection, cancellation and unknown outcomes accurately. Never resubmit an unknown operation automatically. This mechanism does not override a provider policy denial or authorize access to another unapproved host.
 </privileged_commands>`;
 
-const PULL_REQUEST_LINKING_INSTRUCTIONS = `<pull_request_linking>
+export const PULL_REQUEST_LINKING_INSTRUCTIONS = `<pull_request_linking>
 Link each PR you create, take over, or push to: link_pull_request, or link_pull_requests for several, full URL, every stack layer, as your next call. Host tools do not link for you. If linking fails, say so. Skip PRs you only read or review, and PRs named only as background. Call watch_pull_request when asked to monitor or babysit, or when work you were asked to do, such as a merge, still waits on checks or reviews, even after an earlier unwatch. Finish any needed branch update and push first, then watch and end your turn. Otherwise act now or hand back. Delegated children never watch, even if the brief says babysit. After PR work, a child's last line is: PR <full URL>, head <SHA>, checks and reviews <state>. Links and watches persist across pushes. For PR waits, no sleep, loops, gh --watch, Monitor or ScheduleWakeup. Before handback, call unwatch_pull_request on any PR you watch.
 </pull_request_linking>`;
 
@@ -58,6 +58,8 @@ export function buildRuntimeInstructions(runtime: {
   readonly modelName?: string | undefined;
   readonly reasoningEffort?: string | undefined;
   readonly visualProtocolAttached?: boolean | undefined;
+  /** False when the session's system prompt already carries the linking instructions. */
+  readonly pullRequestLinking?: boolean;
 }): string {
   const harness = toSingleLine(runtime.harness);
   const model = toSingleLine(runtime.model ?? "");
@@ -68,7 +70,9 @@ export function buildRuntimeInstructions(runtime: {
   const modelInfo = model && model !== "auto" && model !== "default" ? `, as ${modelLabel}` : "";
   const effortInfo = effort ? ` with ${effort} reasoning effort` : "";
   const visuals = runtime.visualProtocolAttached ? "" : `\n\n${T3_CODE_VISUAL_INSTRUCTIONS}`;
-  return `<runtime_info>In case you're asked: you are running in T3 Code through the ${harness} harness${modelInfo}${effortInfo}. No need to mention this otherwise. You can embed images, video, and audio in your response using Markdown image syntax with absolute file paths. Link any other file you produce using its absolute path so the user can open it in T3 Code's files viewer.</runtime_info>\n\n${TOOL_ACTIVITY_LABEL_INSTRUCTIONS}\n\n${PRIVILEGED_COMMAND_INSTRUCTIONS}\n\n${PULL_REQUEST_LINKING_INSTRUCTIONS}\n\n${TOOL_OUTPUT_SELECTION_INSTRUCTIONS}\n\n${AGENT_MESSAGE_INSTRUCTIONS}\n\n${RESPONSE_AUDIENCE_INSTRUCTIONS}${visuals}`;
+  const linking =
+    runtime.pullRequestLinking === false ? "" : `\n\n${PULL_REQUEST_LINKING_INSTRUCTIONS}`;
+  return `<runtime_info>In case you're asked: you are running in T3 Code through the ${harness} harness${modelInfo}${effortInfo}. No need to mention this otherwise. You can embed images, video, and audio in your response using Markdown image syntax with absolute file paths. Link any other file you produce using its absolute path so the user can open it in T3 Code's files viewer.</runtime_info>\n\n${TOOL_ACTIVITY_LABEL_INSTRUCTIONS}\n\n${PRIVILEGED_COMMAND_INSTRUCTIONS}${linking}\n\n${TOOL_OUTPUT_SELECTION_INSTRUCTIONS}\n\n${AGENT_MESSAGE_INSTRUCTIONS}\n\n${RESPONSE_AUDIENCE_INSTRUCTIONS}${visuals}`;
 }
 
 function toSingleLine(value: string): string {

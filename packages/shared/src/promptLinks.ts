@@ -211,7 +211,12 @@ export function promptLinkTarget(
     if (url.pathname === "/new") {
       return { kind: "new", appPath: `/new${url.search}`, search: url.search };
     }
-    thread = url.searchParams.has("prompt") ? THREAD_PATH.exec(url.pathname) : null;
+    // Explicit copied-thread routes need no prompt; normal app routes still do.
+    thread = url.pathname.startsWith("/threads/")
+      ? THREAD_PATH.exec(url.pathname.slice("/threads".length))
+      : url.searchParams.has("prompt")
+        ? THREAD_PATH.exec(url.pathname)
+        : null;
   }
   if (!thread) return null;
   try {

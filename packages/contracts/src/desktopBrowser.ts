@@ -85,6 +85,8 @@ export const DesktopBrowserEvent = Schema.Union([
   }),
   /** One CDP message from the tab's relay. */
   Schema.Struct({ type: Schema.Literal("cdp"), ...TabKey, message: Schema.String }),
+  /** Its `<webview>` started or stopped being on screen in a desktop window. */
+  Schema.Struct({ type: Schema.Literal("shown"), ...TabKey, shown: Schema.Boolean }),
 ]);
 export type DesktopBrowserEvent = typeof DesktopBrowserEvent.Type;
 

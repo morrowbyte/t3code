@@ -1,5 +1,4 @@
 import * as Context from "effect/Context";
-import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
@@ -11,7 +10,6 @@ import * as Schema from "effect/Schema";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
-import { decodeJwt } from "jose";
 import {
   CodexSettings,
   VoiceTranscriptionSettings,
@@ -33,20 +31,24 @@ import {
   resolveCodexHomeLayout,
 } from "../provider/Drivers/CodexHomeLayout.ts";
 
-export class VoiceTranscriptionError extends Data.TaggedError("VoiceTranscriptionError")<{
-  readonly reason:
-    | "audio_too_large"
-    | "auth_required"
-    | "invalid_routing"
-    | "provider_unavailable"
-    | "upstream_unauthorized"
-    | "upstream_forbidden"
-    | "upstream_failure"
-    | "invalid_response"
-    | "timeout";
-  readonly detail: string;
-  readonly status?: number;
-}> {}
+export class VoiceTranscriptionError extends Schema.TaggedError<VoiceTranscriptionError>()(
+  "VoiceTranscriptionError",
+  {
+    reason: Schema.Literals([
+      "audio_too_large",
+      "auth_required",
+      "invalid_routing",
+      "provider_unavailable",
+      "upstream_unauthorized",
+      "upstream_forbidden",
+      "upstream_failure",
+      "invalid_response",
+      "timeout",
+    ]),
+    detail: Schema.String,
+    status: Schema.optionalKey(Schema.Number),
+  },
+) {}
 
 export const MAX_VOICE_AUDIO_BYTES = 25 * 1024 * 1024;
 const VOICE_TRANSCRIPTION_TIMEOUT = "60 seconds" as const;
@@ -160,14 +162,28 @@ export const readTrustedAccountContext = Effect.fn("voice.readTrustedAccountCont
       detail: "Codex account does not match workspace routing.",
     });
   }
-  const claims = yield* Effect.try({
-    try: () => decodeJwt(auth.authToken!),
-    catch: () =>
-      new VoiceTranscriptionError({
-        reason: "auth_required",
-        detail: "Codex account identity could not be verified.",
-      }),
-  });
+  const tokenParts = auth.authToken.split(".");
+  const payload = tokenParts[1];
+  if (tokenParts.length !== 3 || !payload) {
+    return yield* new VoiceTranscriptionError({
+      reason: "auth_required",
+      detail: "Codex account identity could not be verified.",
+    });
+  }
+  const claims = yield* decodeBase64UrlString(payload).pipe(
+    Effect.flatMap(
+      Schema.decodeUnknownEffect(
+        Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+      ),
+    ),
+    Effect.mapError(
+      () =>
+        new VoiceTranscriptionError({
+          reason: "auth_required",
+          detail: "Codex account identity could not be verified.",
+        }),
+    ),
+  );
   const authClaims = claims["https://api.openai.com/auth"];
   if (!authClaims || typeof authClaims !== "object") {
     return yield* new VoiceTranscriptionError({
@@ -192,7 +208,7 @@ export const readTrustedAccountContext = Effect.fn("voice.readTrustedAccountCont
 });
 
 export const prepareCodexTranscriptionHome = Effect.fn("voice.prepareCodexTranscriptionHome")(
-  function* (config: typeof CodexSettings.Type) {
+  function* (config: CodexSettings) {
     const layout = yield* resolveCodexHomeLayout(config);
     yield* materializeCodexShadowHome(layout).pipe(
       Effect.mapError(
@@ -353,7 +369,7 @@ export const transcribeOpenAiApi = Effect.fn("voice.transcribeOpenAiApi")(functi
     ),
     Effect.timeout(VOICE_TRANSCRIPTION_TIMEOUT),
     Effect.mapError((error) =>
-      error instanceof VoiceTranscriptionError ? error : safeProviderError(error),
+      isVoiceTranscriptionError(error) ? error : safeProviderError(error),
     ),
   );
 });
@@ -505,7 +521,7 @@ export const layer = Layer.effect(
       };
     }).pipe(
       Effect.mapError((cause) =>
-        cause instanceof VoiceTranscriptionError
+        isVoiceTranscriptionError(cause)
           ? cause
           : new VoiceTranscriptionError({
               reason: "provider_unavailable",
@@ -644,7 +660,7 @@ export const layer = Layer.effect(
               Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
               Effect.timeout(VOICE_TRANSCRIPTION_TIMEOUT),
               Effect.mapError((cause) =>
-                cause instanceof VoiceTranscriptionError ? cause : safeProviderError(cause),
+                isVoiceTranscriptionError(cause) ? cause : safeProviderError(cause),
               ),
               Effect.withTracerEnabled(false),
             );
@@ -666,7 +682,7 @@ export const layer = Layer.effect(
           );
         }).pipe(
           Effect.mapError((cause) =>
-            cause instanceof VoiceTranscriptionError ? cause : safeProviderError(cause),
+            isVoiceTranscriptionError(cause) ? cause : safeProviderError(cause),
           ),
           Effect.withTracerEnabled(false),
         );
@@ -680,3 +696,7 @@ export const layer = Layer.effect(
     ),
   ),
 );
+
+const isVoiceTranscriptionError = Schema.is(VoiceTranscriptionError);
+
+const decodeBase64UrlString = Schema.decodeEffect(Schema.StringFromBase64Url);

@@ -19,7 +19,7 @@ import {
   type ResourceTelemetrySourceStatus,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
-import * as Crypto from "effect/Crypto";
+import * as Crypto from "effect/crypto/SecureRandom";
 import * as Deferred from "effect/Deferred";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { applyShellEnvironment } from "@t3tools/shared/shell";
@@ -430,7 +430,7 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
   const platform = yield* HostProcess.Platform;
   const applyShellSnapshot = makeApplyDesktopShellEnvironmentSnapshot(environment, platform);
   const serverSettings = yield* ServerSettings.ServerSettingsService;
-  const crypto = yield* Effect.serviceOption(Crypto.Crypto);
+  const crypto = yield* Effect.serviceOption(Crypto.SecureRandom);
   let desktopNonce: string | undefined;
   let serverNonce: string | undefined;
   let diagnosticPending:
@@ -797,7 +797,7 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
       )
         return unavailable("unsupported");
       if (diagnosticPending) return unavailable("busy");
-      const nonce = yield* crypto.value.randomUUIDv4().pipe(Effect.option);
+      const nonce = yield* crypto.value.uuidV4().pipe(Effect.option);
       if (Option.isNone(nonce)) return unavailable("unsupported");
       const pair = desktopNonce;
       const peer = serverNonce ?? nonce.value;

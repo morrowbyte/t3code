@@ -16,11 +16,12 @@ import {
 } from "../lib/imageAnnotation";
 import { uuidv4 } from "../lib/uuid";
 import { AppText } from "./ui/AppText";
-import type { ResolvedFilePreviewSource } from "./FilePreviewModal.types";
+import type { FilePreviewImage } from "./FilePreviewModal.types";
 import { useThreadSelection } from "../state/use-thread-selection";
 import { useCommentDictation } from "../features/voice-input/useCommentDictation";
 import {
   ComposerDictationCancelAction,
+  ComposerDictationError,
   ComposerDictationPrimaryAction,
   ComposerDictationStatus,
   ComposerDictationToolbar,
@@ -120,7 +121,7 @@ function Tool(props: {
 }
 
 export function ImageAnnotationEditor(props: {
-  readonly source: ResolvedFilePreviewSource;
+  readonly source: FilePreviewImage & { readonly uri: string };
   readonly onSend: SendImageAnnotation;
   readonly onRequestClose: () => void;
 }) {
@@ -487,6 +488,10 @@ export function ImageAnnotationEditor(props: {
           }
           className="m-3 max-h-28 min-h-12 rounded-lg border border-border px-3 py-2 text-foreground"
         />
+        <ComposerDictationError
+          error={dictation.state.phase === "error" ? dictation.state.error : null}
+          onDismiss={dictation.cancel}
+        />
         {dictation.isAvailable || dictationPresentation.statusLabel !== null ? (
           <View className="px-3 pb-2">
             <ComposerDictationToolbar showsDictation={dictationPresentation.statusLabel !== null}>
@@ -500,7 +505,6 @@ export function ImageAnnotationEditor(props: {
                   elapsedSeconds={dictation.elapsedSeconds}
                   phase={dictation.state.phase}
                   presentation={dictationPresentation}
-                  onDismissError={dictation.cancel}
                 />
                 <ComposerDictationPrimaryAction
                   state={dictation.state}

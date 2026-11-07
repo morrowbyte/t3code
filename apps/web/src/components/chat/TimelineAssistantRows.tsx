@@ -178,7 +178,7 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
             </Button>
           ) : null}
         </div>
-        {row.showAssistantMeta || row.showAssistantTimestamp ? (
+        {row.showAssistantMeta ? (
           <AssistantMessageMeta
             className="mt-1.5"
             projectedItem={row.projectedItem}

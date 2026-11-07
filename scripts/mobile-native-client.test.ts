@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -80,5 +81,5 @@ it.effect("recognizes the fork Android development APK before considering a rebu
       ["-s", "emulator-5554", "shell", "pm", "list", "packages", "com.morrowbyte.t3code.dev"],
       ["-s", "emulator-5554", "shell", "pm", "path", "com.morrowbyte.t3code.dev"],
     ]);
-  }).pipe(Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.provide([NodeServices.layer, NodeCrypto.layerDigest])),
 );

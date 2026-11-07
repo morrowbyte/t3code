@@ -13,6 +13,8 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as Digest from "effect/crypto/Digest";
+import * as Mac from "effect/crypto/Mac";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -113,6 +115,8 @@ export class LinearIntegration extends Context.Service<
 >()("t3/integrations/linear/LinearIntegration") {}
 
 const make = Effect.gen(function* () {
+  const cryptoDigest = yield* Digest.Digest;
+  const cryptoMac = yield* Mac.Mac;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const config = yield* ServerConfig.ServerConfig;
@@ -418,7 +422,9 @@ const make = Effect.gen(function* () {
           Effect.mapError(() => new LinearIntegrationError({ reason: "invalid" })),
         );
         if (
-          !constantTimeEquals(pending.state, input.state) ||
+          !(yield* constantTimeEquals(pending.state, input.state).pipe(
+            Effect.provideService(Digest.Digest, cryptoDigest),
+          )) ||
           pending.expiresAt < (yield* Clock.currentTimeMillis)
         )
           return yield* new LinearIntegrationError({ reason: "invalid" });
@@ -446,12 +452,12 @@ const make = Effect.gen(function* () {
         const secret = yield* readSecret(WEBHOOK_SECRET);
         if (
           Option.isNone(secret) ||
-          !verifyWebhookSignature({
+          !(yield* verifyWebhookSignature({
             signature: { header: "linear-signature", encoding: "hex", prefix: "" },
             secret: secret.value,
             headers: input.headers,
             body: input.body,
-          })
+          }).pipe(Effect.provideService(Mac.Mac, cryptoMac)))
         )
           return "rejected" as const;
         const event = yield* decodeEvent(new TextDecoder().decode(input.body)).pipe(Effect.option);

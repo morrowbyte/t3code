@@ -145,6 +145,7 @@ export class DesktopBrowserHost extends Context.Service<
     readonly handleCommandLine: (line: string) => Effect.Effect<void>;
     readonly attach: (key: DesktopBrowserTabKey, debuggee: DesktopBrowserTabDebugger) => void;
     readonly detach: (key: DesktopBrowserTabKey) => void;
+    readonly setShown: (key: DesktopBrowserTabKey, shown: boolean | undefined) => void;
     /** Native credential entry blocks every relay operation, including observations. */
     readonly setPrivateEntry: (source: Electron.WebContents, active: boolean) => void;
     readonly isPrivateEntry: (source: Electron.WebContents) => boolean;
@@ -342,7 +343,7 @@ export const make = Effect.gen(function* () {
     if (!result?.current()) throw unavailable();
     return result;
   };
-  const handlePrivateResponse = (response: typeof DesktopBrowserPrivateEntryResponse.Type) => {
+  const handlePrivateResponse = (response: DesktopBrowserPrivateEntryResponse) => {
     const tab = tabs.get(keyOf(response));
     if (
       !tab ||
@@ -404,6 +405,8 @@ export const make = Effect.gen(function* () {
       pending.reject();
     }
   };
+  // Visibility may be published before the debugger attaches.
+  const shownTabs = new Map<string, boolean>();
 
   const nextScreenshot = (tab: AttachedTab) => {
     tab.screenshotTurn = null;
@@ -777,6 +780,19 @@ export const make = Effect.gen(function* () {
     debuggee.debugger.on("message", tab.onMessage);
     debuggee.webContents.on("did-navigate", tab.onNewDocument);
     emit({ type: "attached", ...key, ...(tab.attachment ? { privateEntry: tab.attachment } : {}) });
+    const shown = shownTabs.get(id);
+    if (shown !== undefined) emit({ type: "shown", ...key, shown });
+  };
+
+  const setShown = (key: DesktopBrowserTabKey, shown: boolean | undefined) => {
+    const id = keyOf(key);
+    if (shown === undefined) {
+      shownTabs.delete(id);
+      return;
+    }
+    if (shownTabs.get(id) === shown) return;
+    shownTabs.set(id, shown);
+    if (tabs.has(id)) emit({ type: "shown", ...key, shown });
   };
 
   const dispatchCommandLine = (line: string) =>
@@ -851,6 +867,7 @@ export const make = Effect.gen(function* () {
           ? { channelEpoch, attachmentId: NodeCrypto.randomUUID() }
           : null;
         tab.cancelled.clear();
+        const shown = shownTabs.get(keyOf(tab.key));
         return PubSub.publish(outbox, {
           connection: activeConnection,
           event: {
@@ -858,7 +875,16 @@ export const make = Effect.gen(function* () {
             ...tab.key,
             ...(tab.attachment ? { privateEntry: tab.attachment } : {}),
           },
-        });
+        }).pipe(
+          Effect.andThen(
+            shown !== undefined
+              ? PubSub.publish(outbox, {
+                  connection: activeConnection,
+                  event: { type: "shown", ...tab.key, shown },
+                })
+              : Effect.void,
+          ),
+        );
       },
       { discard: true },
     );
@@ -891,8 +917,7 @@ export const make = Effect.gen(function* () {
         ),
       dispatchCommandLine: (line) =>
         Effect.suspend(() => {
-          // @effect-diagnostics-next-line effectSucceedWithVoid:off -- Dispatch uses undefined to signal that no completion acknowledgement exists.
-          if (closed || activeConnection !== token) return Effect.succeed(undefined);
+          if (closed || activeConnection !== token) return Effect.undefined;
           return dispatchCommandLine(line).pipe(
             Effect.map((completion) => {
               if (completion) void completion.settled.catch(close);
@@ -939,6 +964,7 @@ export const make = Effect.gen(function* () {
       return !!tab && isCurrentAttachment(tab);
     },
     acquirePrivateEntry,
+    setShown,
     placeDownload,
     humanStartedDownload,
   });

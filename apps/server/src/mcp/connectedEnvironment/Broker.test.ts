@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
@@ -49,7 +50,7 @@ it.effect("forwards source-derived limits and accepts only the registered relay 
       const broker = yield* Broker.make.pipe(
         Effect.provide(
           Layer.mergeAll(
-            NodeServices.layer,
+            Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
             ThreadCommandExecutor.layer,
             Layer.succeed(ThreadManagement.ThreadManagementService, threads),
           ),

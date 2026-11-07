@@ -13,6 +13,10 @@ inputs:
     description: Arguments for `vp install`, such as filters. Empty installs the whole workspace.
     required: false
     default: ""
+  save-pnpm-store:
+    description: Set to "false" when a concurrent job with the same install args saves the pnpm store
+    required: false
+    default: "true"
 runs:
   using: composite
   steps:

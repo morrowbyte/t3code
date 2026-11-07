@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -24,6 +25,7 @@ import * as Stream from "effect/Stream";
 import { ClaudeProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as EffectWorker from "../orchestration-v2/EffectWorker.ts";
+import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -32,9 +34,9 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
+import * as ProviderTurnStartServiceTestkit from "../orchestration-v2/ProviderTurnStartService.testkit.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
-import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
@@ -55,6 +57,8 @@ it.effect("task_cancel ends a delegated child's background native subagent", () 
   Effect.scoped(
     Effect.gen(function* () {
       const cwd = yield* checkpointWorkspace("task-cancel-native-subagent");
+      const projectId = ProjectId.make("project:task-cancel");
+      const layerProjects = ProviderTurnStartServiceTestkit.layerForProject(projectId, cwd);
       const turns: Array<{
         readonly turn: ProviderAdapter.ProviderAdapterV2TurnInput;
         readonly events: Queue.Queue<ProviderAdapter.ProviderAdapterV2Event>;
@@ -136,7 +140,7 @@ it.effect("task_cancel ends a delegated child's background native subagent", () 
       const layerOrchestrator = ProviderReplayHarness.layerWithRegistry(
         { name: "task-cancel-native-subagent" },
         layerAdapters,
-        { runEffectWorker: false },
+        { runEffectWorker: false, projectServiceLayer: layerProjects },
       );
       const layerOrchestration = Layer.merge(
         layerOrchestrator,
@@ -154,12 +158,13 @@ it.effect("task_cancel ends a delegated child's background native subagent", () 
           Layer.mergeAll(
             layerAdapters,
             Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
-            Layer.mock(ProjectService.ProjectService)({}),
+            layerProjects,
             Layer.mock(SecretRequests.SecretRequests)({}),
             Layer.mock(RemoteDelegation.RemoteDelegation)({}),
             ServerSettings.layerTest(),
             Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
             NodeServices.layer,
+            NodeCrypto.layer,
           ),
         ),
       );
@@ -167,15 +172,20 @@ it.effect("task_cancel ends a delegated child's background native subagent", () 
       yield* Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const eventSink = yield* EventSink.EventSinkV2;
         const service = yield* OrchestratorMcpService.OrchestratorMcpService;
         const parentThreadId = ThreadId.make("thread:task-cancel-parent");
         const watch = (predicate: (event: OrchestrationV2DomainEvent) => boolean) =>
-          orchestrator.streamDomainEvents.pipe(
-            Stream.filter(predicate),
-            Stream.take(1),
-            Stream.runDrain,
-            Effect.forkScoped,
-          );
+          Effect.gen(function* () {
+            const afterSequence = yield* eventSink.latestSequence();
+            return yield* eventSink.stream({ afterSequence }).pipe(
+              Stream.map((stored) => stored.event),
+              Stream.filter(predicate),
+              Stream.take(1),
+              Stream.runDrain,
+              Effect.forkScoped,
+            );
+          });
         const turnRunning = () =>
           watch(
             (event) => event.type === "provider-turn.updated" && event.payload.status === "running",
@@ -184,7 +194,7 @@ it.effect("task_cancel ends a delegated child's background native subagent", () 
           type: "thread.create",
           commandId: CommandId.make("create-parent"),
           threadId: parentThreadId,
-          projectId: ProjectId.make("project:task-cancel"),
+          projectId,
           title: "Parent",
           modelSelection,
           runtimeMode: "full-access",

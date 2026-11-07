@@ -1,10 +1,10 @@
-import * as NodeURL from "node:url";
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Semaphore from "effect/Semaphore";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
@@ -188,7 +188,8 @@ describe("ManagedTunnelLimits", () => {
         Effect.promise(() => PGlite.create()),
         (client) => Effect.promise(() => client.close()),
       );
-      const migrationsDir = NodeURL.fileURLToPath(
+      const path = yield* Path.Path;
+      const migrationsDir = yield* path.fromFileUrl(
         new URL("../../migrations/postgres/", import.meta.url),
       );
       const migrations = (yield* fs.readDirectory(migrationsDir)).toSorted();

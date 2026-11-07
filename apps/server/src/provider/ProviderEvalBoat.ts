@@ -3,7 +3,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { baseSshArgs, buildSshHostSpecEffect, resolveSshCommand } from "@t3tools/ssh/command";
 import * as Context from "effect/Context";
 import type { Done } from "effect/Cause";
-import * as Crypto from "effect/Crypto";
+import * as Crypto from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -99,7 +99,7 @@ const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Crypto.SecureRandom;
   const ssh = yield* resolveSshCommand;
   const home = yield* HostProcess.HomeDirectory;
 
@@ -160,7 +160,7 @@ const make = Effect.gen(function* () {
     const hostSpec = yield* buildSshHostSpecEffect(target).pipe(
       Effect.mapError((cause) => new ProviderEvalBoatError({ code: "host_mismatch", cause })),
     );
-    const jobId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+    const jobId = yield* crypto.uuidV4().pipe(Effect.orDie);
     const outputDirectory = `/home/user/.cache/crew-evals/${jobId}`;
     const captureDirectory = path.join(home, ".cache", "crew", "provider-evals", jobId);
     const stdoutPath = path.join(captureDirectory, "ssh.stdout.log");

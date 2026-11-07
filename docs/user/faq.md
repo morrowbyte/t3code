@@ -73,11 +73,11 @@ No. Your code and prompts go from your machine to your provider (Anthropic, Open
 
 ## Worktrees are eating my disk. How do I clean them up?
 
-Open **Settings > Storage** and turn on automatic worktree cleanup. You can also run it now from there. Worktrees add up fast. One user cleared 500 GB. [Storage cleanup](./project-settings.md#storage-cleanup)
+Open **Settings → Worktrees → Cleanup** and turn on automatic worktree cleanup. You can also run it now from there. Worktrees add up fast. One user cleared 500 GB. [Storage cleanup](./project-settings.md#storage-cleanup)
 
 ## Is there voice input?
 
-Voice is not limited to iPhone. Depending on your client version, connected environment, and account, you may see a composer recording control or a Live call control for eligible Codex threads. See [Voice input and calls](./voice-input.md) for controls and requirements, or [Voice input on iPhone](./composer.md#voice-input-on-iphone) for the separate iPhone dictation flow.
+Yes. On iPhone and Android, dictation uses on-device speech by default; you can opt in to a paired environment instead. Web and desktop require you to choose an environment first. The transcript goes into your draft for review. See [Voice input](./voice-input.md). Eligible Codex threads also offer Live voice calls; see [Voice input and calls](./voice-input.md).
 
 ## Does it work on Windows, Mac, and Linux?
 

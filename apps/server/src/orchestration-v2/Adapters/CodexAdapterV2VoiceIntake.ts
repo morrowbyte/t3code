@@ -141,7 +141,10 @@ const prepareDecision = Effect.fn("CodexAdapterV2.prepareVoiceIntake")(function*
   yield* client.raw.request("initialize", buildCodexInitializeParams());
   yield* client.notify("initialized", undefined);
   const effective = yield* client.raw.request("config/read", { cwd, includeLayers: false });
-  const config = yield* Effect.try(() => codexVoiceIsolationConfig(effective, false));
+  const config = yield* Effect.try({
+    try: () => codexVoiceIsolationConfig(effective, false),
+    catch: (cause) => new DecisionRefused({ reason: "unexpected_capability", cause }),
+  });
   const started = yield* client.raw.request("thread/start", {
     model: modelSelection.model,
     serviceTier: "priority",
@@ -155,7 +158,10 @@ const prepareDecision = Effect.fn("CodexAdapterV2.prepareVoiceIntake")(function*
     baseInstructions: instructions,
     config: { ...config, model_reasoning_effort: effort },
   });
-  const nativeThreadId = yield* Effect.try(() => assertCodexVoiceThreadIsolation(started, true));
+  const nativeThreadId = yield* Effect.try({
+    try: () => assertCodexVoiceThreadIsolation(started, true),
+    catch: (cause) => new DecisionRefused({ reason: "unexpected_capability", cause }),
+  });
   yield* Effect.addFinalizer(() =>
     client.raw
       .request("thread/unsubscribe", { threadId: nativeThreadId })
@@ -173,7 +179,10 @@ const prepareDecision = Effect.fn("CodexAdapterV2.prepareVoiceIntake")(function*
     limit: 256,
     detail: "full",
   });
-  yield* Effect.try(() => assertCodexVoiceMcpIsolation(inventory));
+  yield* Effect.try({
+    try: () => assertCodexVoiceMcpIsolation(inventory),
+    catch: (cause) => new DecisionRefused({ reason: "unexpected_capability", cause }),
+  });
 
   type Pending = {
     readonly snapshot: VoiceIntakeSnapshot;

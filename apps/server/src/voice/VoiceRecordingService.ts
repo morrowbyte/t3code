@@ -11,7 +11,7 @@ import {
 import * as NodeCrypto from "node:crypto";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Crypto from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -100,7 +100,7 @@ export const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const config = yield* ServerConfig.ServerConfig;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Crypto.SecureRandom;
   const sql = yield* SqlClient.SqlClient;
   const lock = yield* Semaphore.make(1);
   const directory = path.join(config.stateDir, "voice-recordings");
@@ -266,7 +266,7 @@ export const make = Effect.gen(function* () {
               previous.reduce((sum, e) => sum + e.bytes, 0) >= MAX_STORE_BYTES
             )
               return yield* new VoiceRecordingError({ reason: "limit" });
-            const id = yield* crypto.randomUUIDv4();
+            const id = yield* crypto.uuidV4();
             const manifest: Manifest = {
               ...input,
               id,

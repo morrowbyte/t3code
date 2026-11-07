@@ -92,7 +92,8 @@ const evaluate = async (debuggee: Electron.Debugger, expression: string) => {
   return reply.result?.value;
 };
 
-let focusSequence = 0;
+/** Host focus shared by the presses in flight in one window, so a later press keeps the field an earlier one saved. */
+const HOST_FOCUS = "globalThis.__t3PreviewFocus";
 
 /** A CDP pointer press focuses the guest's native view even with focus emulation enabled. */
 const sendPointerPress = async (
@@ -107,16 +108,18 @@ const sendPointerPress = async (
   if (!host || host.isDestroyed() || webContents.focusedFrame) {
     return debuggee.sendCommand(method, params, sessionId);
   }
-  const key = JSON.stringify(`__t3PreviewFocus${++focusSequence}`);
+  // Focus in a webview with a press in flight came from that press, so keep the earlier save.
   await host.executeJavaScript(`(() => {
+    const state = (${HOST_FOCUS} ??= { saved: null, presses: [] });
     const active = document.activeElement;
-    if (!active || active === document.body || active.tagName === "WEBVIEW") return;
-    globalThis[${key}] = () => {
-      delete globalThis[${key}];
-      const current = document.activeElement;
-      if (active.isConnected && current?.tagName === "WEBVIEW" &&
-          current.getWebContentsId() === ${webContents.id}) active.focus({ preventScroll: true });
-    };
+    let pressed = false;
+    try {
+      pressed = active?.tagName === "WEBVIEW" && state.presses.includes(active.getWebContentsId());
+    } catch {}
+    if (!pressed) {
+      state.saved = active && active !== document.body && active.tagName !== "WEBVIEW" ? active : null;
+    }
+    state.presses.push(${webContents.id});
   })()`);
   try {
     beforeSend?.();
@@ -129,9 +132,19 @@ const sendPointerPress = async (
       } catch {
         restoreFocus = false;
       }
-      await host.executeJavaScript(
-        restoreFocus ? `globalThis[${key}]?.()` : `delete globalThis[${key}]`,
-      );
+      // Membership check: a host reload starts a new state without this press.
+      await host.executeJavaScript(`(() => {
+        const state = ${HOST_FOCUS};
+        const index = state ? state.presses.indexOf(${webContents.id}) : -1;
+        if (index < 0) return;
+        state.presses.splice(index, 1);
+        if (state.presses.length === 0) delete ${HOST_FOCUS};
+        const current = document.activeElement;
+        try {
+          if (${restoreFocus} && state.saved?.isConnected && current?.tagName === "WEBVIEW" &&
+              current.getWebContentsId() === ${webContents.id}) state.saved.focus({ preventScroll: true });
+        } catch {}
+      })()`);
     }
   }
 };

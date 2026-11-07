@@ -2,7 +2,6 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
-import * as Data from "effect/Data";
 import * as Schema from "effect/Schema";
 import { VoiceTranscriptionHttpError } from "@t3tools/contracts";
 import { AtomRegistry } from "effect/reactivity";
@@ -21,11 +20,10 @@ import { environmentSession } from "../state/session";
 const MAX_VOICE_RECORDING_BYTES = 25 * 1024 * 1024;
 const isVoiceTranscriptionHttpError = Schema.is(VoiceTranscriptionHttpError);
 
-class VoiceTranscriptionEnvironmentUnavailableError extends Data.TaggedError(
+class VoiceTranscriptionEnvironmentUnavailableError extends Schema.TaggedError<VoiceTranscriptionEnvironmentUnavailableError>()(
   "VoiceTranscriptionEnvironmentUnavailableError",
-)<{
-  readonly message: string;
-}> {}
+  { message: Schema.String },
+) {}
 
 const transcribeAtom = connectionAtomRuntime.fn<{
   readonly environmentId: EnvironmentId;
@@ -63,7 +61,7 @@ const transcribeAtom = connectionAtomRuntime.fn<{
 export function transcribeVoiceRecording(environmentId: EnvironmentId): VoiceDictationTranscriber {
   return async (audio, { signal }) => {
     if (audio.size > MAX_VOICE_RECORDING_BYTES) {
-      throw new VoiceDictationServiceError(
+      throw VoiceDictationServiceError.new(
         "This recording is too large. Record a shorter message.",
       );
     }
@@ -84,7 +82,7 @@ export function transcribeVoiceRecording(environmentId: EnvironmentId): VoiceDic
     );
     if (Result.isSuccess(result)) return result.success;
     if (isVoiceTranscriptionHttpError(result.failure)) {
-      throw new VoiceDictationServiceError(voiceTranscriptionFailureMessage(result.failure.reason));
+      throw VoiceDictationServiceError.new(voiceTranscriptionFailureMessage(result.failure.reason));
     }
     throw new Error("Transcription request failed.");
   };

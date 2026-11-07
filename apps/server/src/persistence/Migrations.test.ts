@@ -69,7 +69,7 @@ describe("runMigrations", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  it.effect.each([63, 64, 65, 68, 69, 70, 71, 72, 73, 74, 75, 76])(
+  it.effect.each([63, 64, 65, 68, 69, 70, 71, 72, 73, 74, 75, 76, 80, 81])(
     "appends upstream migrations after the shipped fork prefix %s",
     (id) =>
       Effect.gen(function* () {
@@ -83,7 +83,7 @@ describe("runMigrations", () => {
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
-  it.effect("preserves fork Voice and host authority data when appending migrations 73–81", () =>
+  it.effect("preserves fork Voice and host authority data when appending migrations 73–85", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations({ toMigrationInclusive: 72 });
@@ -135,6 +135,10 @@ describe("runMigrations", () => {
         [79, "SubagentDeliveryState"],
         [80, "ProjectionProjectsPinArchive"],
         [81, "PrivilegedRecoveryIndexes"],
+        [82, "RepairBooleanSettledOverride"],
+        [83, "DropOrchestrationEventCorrelationIndex"],
+        [84, "DelegatedRecoveryIndexes"],
+        [85, "ScheduledTaskThreadMode"],
       ]);
       assert.deepStrictEqual(yield* retained, before);
       assert.deepStrictEqual(yield* runMigrations(), []);
@@ -265,6 +269,44 @@ describe("runMigrations", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
+  it.effect("drops the unused correlation index and keeps correlation values", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 54 });
+      yield* sql`
+        INSERT INTO orchestration_events (
+          event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+          command_id, causation_event_id, correlation_id, actor_kind, payload_json, metadata_json
+        )
+        VALUES (
+          'event-1', 'thread', 'thread-1', 0, 'thread.created', '2026-01-01T00:00:00.000Z',
+          'command-1', NULL, 'correlation-1', 'client', '{}', '{}'
+        )
+      `;
+
+      yield* runMigrations();
+
+      const indexes = yield* sql<{ readonly name: string }>`
+        SELECT name FROM sqlite_master
+        WHERE type = 'index' AND tbl_name = 'orchestration_events' AND sql IS NOT NULL
+      `;
+      const indexNames = indexes.map((row) => row.name);
+      assert.notInclude(indexNames, "idx_orch_events_correlation_id");
+      for (const kept of [
+        "idx_orch_events_stream_version",
+        "idx_orch_events_stream_sequence",
+        "idx_orch_events_command_id",
+        "idx_orchestration_events_agent_stream_sequence",
+      ]) {
+        assert.include(indexNames, kept);
+      }
+      const events = yield* sql<{ readonly correlation_id: string | null }>`
+        SELECT correlation_id FROM orchestration_events WHERE event_id = 'event-1'
+      `;
+      assert.deepStrictEqual(events, [{ correlation_id: "correlation-1" }]);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect.each([30, 54])("still starts with a site-local migration at id %s", (id) =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -327,6 +369,10 @@ it.effect("registers every migration file", () =>
       ApprovalReviewReadyIndex: 69,
       ApprovalReviewHostOrders: 70,
       ShellStopRequestIndex: 71,
+      RepairBooleanSettledOverride: 82,
+      DropOrchestrationEventCorrelationIndex: 83,
+      DelegatedRecoveryIndexes: 84,
+      ScheduledTaskThreadMode: 85,
     };
     const files = (yield* fs.readDirectory(dir)).flatMap((name) => {
       const match = /^(\d+)_(\w+)\.ts$/.exec(name);

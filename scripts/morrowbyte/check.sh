@@ -324,7 +324,6 @@ for native_integration_test in "${native_integration_tests[@]}"; do
 done
 voice_tests=(
   apps/web/src/voice/recordingDraftStore.test.ts
-  apps/web/src/voice/useVoiceDictation.test.tsx
   packages/client-runtime/src/state/voiceTranscriptionHttp.test.ts
 )
 for voice_test in "${voice_tests[@]}"; do
@@ -452,6 +451,7 @@ focused_tests+=(
   apps/web/src/components/settings/UpdateHistoryPanel.test.tsx
 )
 renderer_tests=(
+  apps/web/src/voice/useVoiceDictation.browser.test.tsx
   apps/web/src/components/auth/PairingRouteSurface.browser.test.tsx
   apps/web/src/observatory/AgentObservatory.browser.test.tsx
   apps/web/src/components/chat/ExecutionCodePanel.browser.test.tsx

@@ -35,7 +35,7 @@ export function VoiceDictationControl(props: {
   const transcribeCapturedRecording: VoiceDictationTranscriber = (audio, options) => {
     if (recordedTargetKey.current !== currentTargetKey()) {
       return Promise.reject(
-        new VoiceDictationServiceError(
+        VoiceDictationServiceError.new(
           "The selected draft changed. Return to the original draft to retry this recording.",
         ),
       );
@@ -57,12 +57,12 @@ export function VoiceDictationControl(props: {
     onTranscript: (text) => {
       const targetKey = recordedTargetKey.current;
       if (currentTargetKey() !== targetKey) {
-        throw new VoiceDictationServiceError(
+        throw VoiceDictationServiceError.new(
           "The selected draft changed. Return to the original draft to retry this recording.",
         );
       }
       if (!props.onTranscript(text, targetKey)) {
-        throw new VoiceDictationServiceError(
+        throw VoiceDictationServiceError.new(
           "The transcript could not be inserted. Your recording is still available to retry.",
         );
       }

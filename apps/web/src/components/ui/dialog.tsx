@@ -47,6 +47,7 @@ function Dialog<Payload>(props: DialogPrimitive.Root.Props<Payload>) {
   const localActions = useRef<DialogPrimitive.Root.Actions | null>(null);
   const actions = props.actionsRef ?? localActions;
   // Use the root's close action even when a popup supplies its own close controls.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Register the mounted dialog's close action with the external keyboard-layer registry and unregister on cleanup.
   useLayoutEffect(() => registerKeyboardLayer(id, () => actions.current?.close()), [actions, id]);
   return (
     <ControlledOpenContext value={props.open}>
@@ -192,7 +193,7 @@ function DialogFooter({
 function DialogTitle({ className, ...props }: DialogPrimitive.Title.Props) {
   return (
     <DialogPrimitive.Title
-      className={cn("wrap-anywhere font-semibold text-xl leading-none", className)}
+      className={cn("wrap-anywhere font-semibold text-xl leading-snug", className)}
       data-slot="dialog-title"
       {...props}
     />

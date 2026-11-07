@@ -17,7 +17,9 @@ import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as VoiceService from "./VoiceTranscriptionService.ts";
 import * as VoiceHttp from "./http.ts";
 
-class VoiceTestApi extends HttpApi.make("environment").add(EnvironmentHttpApi.groups.voice) {}
+class VoiceTestApi extends HttpApi.make("environment").add(
+  EnvironmentHttpApi.groups.voiceTranscription,
+) {}
 
 const handlerFor = (scopes: ReadonlyArray<string>, fail = false) => {
   let received: VoiceService.VoiceAudio | undefined;

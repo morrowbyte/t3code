@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { CodexSettings, ProviderSessionId, ThreadId } from "@t3tools/contracts";
@@ -5,7 +6,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import type * as CodexClient from "effect-codex-app-server/client";
 import type * as CodexSchema from "effect-codex-app-server/schema";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -92,7 +93,7 @@ it.effect(
           settings: yield* decodeSettings({}),
           environment: {},
           clientFactory: { open: () => Effect.succeed(client) },
-          crypto: yield* Crypto.Crypto,
+          digest: yield* Digest.Digest,
           fileSystem: yield* FileSystem.FileSystem,
           idAllocator: yield* IdAllocator.IdAllocatorV2,
           serverConfig: yield* makeReplayServerConfig("live-voice-activity").pipe(Effect.orDie),
@@ -150,7 +151,12 @@ it.effect(
       }),
     ).pipe(
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
       ),
     ),
 );

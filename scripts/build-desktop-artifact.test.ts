@@ -43,6 +43,7 @@ import {
   packWindowsServerAsar,
   preflightWindowsDesktopBuild,
   renderMacPasskeyEntitlements,
+  resolveMacFileExclusions,
   resolveMacWebAuthnEntitlements,
   resolveMacPasskeySigningConfiguration,
   resolveMergedStageDependencies,
@@ -416,10 +417,13 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   });
 
   it("brands desktop display names while preserving channel executable names", () => {
-    assert.equal(resolveDesktopProductName("0.1.0"), "Crew");
-    assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "Crew (Nightly)");
-    assert.equal(resolveWindowsExecutableName("0.1.0"), "T3 Code (Beta)");
-    assert.equal(resolveWindowsExecutableName("0.0.17-nightly.20260413.42"), "T3 Code (Nightly)");
+    assert.equal(resolveDesktopProductName("0.1.0", {}), "Crew");
+    assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42", {}), "Crew (Nightly)");
+    assert.equal(resolveWindowsExecutableName("0.1.0", {}), "T3 Code (Beta)");
+    assert.equal(
+      resolveWindowsExecutableName("0.0.17-nightly.20260413.42", {}),
+      "T3 Code (Nightly)",
+    );
   });
 
   it("uses Crew artwork without requiring a release profile", () => {
@@ -916,8 +920,11 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
       assert.notProperty(mac, "asar");
       assert.notProperty(linux, "asar");
-      assert.notProperty(mac, "asarUnpack");
+      assert.deepStrictEqual(mac.asarUnpack, [
+        "**/node_modules/@transcribe-cpp/**/*.{dylib,so,so.*}",
+      ]);
       assert.deepStrictEqual(linux.asarUnpack, [
+        "**/node_modules/@transcribe-cpp/**/*.{dylib,so,so.*}",
         "**/node_modules/@trycua/**",
         "**/node_modules/@ubjs/**",
       ]);
@@ -1003,48 +1010,34 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 
-  it.effect(
-    "does not emit an upstream-identified Debian package for Morrowbyte Linux builds",
-    () => {
-      const previousProfile = process.env.T3CODE_DESKTOP_PROFILE;
-      process.env.T3CODE_DESKTOP_PROFILE = "morrowbyte";
-      return Effect.gen(function* () {
-        const config = yield* createBuildConfig(
-          "linux",
-          "AppImage",
-          "1.2.3-nightly.20261013.1",
-          false,
-          false,
-          undefined,
-          undefined,
-        );
-
-        assert.deepStrictEqual((config.linux as Record<string, unknown>).target, ["AppImage"]);
-      }).pipe(
-        Effect.ensuring(
-          Effect.sync(() => {
-            if (previousProfile === undefined) delete process.env.T3CODE_DESKTOP_PROFILE;
-            else process.env.T3CODE_DESKTOP_PROFILE = previousProfile;
-          }),
-        ),
-        Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+  it.effect("does not emit an upstream-identified Debian package for Morrowbyte Linux builds", () =>
+    Effect.gen(function* () {
+      const config = yield* createBuildConfig(
+        "linux",
+        "AppImage",
+        "1.2.3-nightly.20261013.1",
+        false,
+        false,
+        undefined,
+        undefined,
       );
-    },
+
+      assert.deepStrictEqual((config.linux as Record<string, unknown>).target, ["AppImage"]);
+    }).pipe(
+      Effect.provideService(HostProcess.Environment, { T3CODE_DESKTOP_PROFILE: "morrowbyte" }),
+      Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+    ),
   );
 
   it.effect("brands configurable installers while retaining an explicit installer identity", () => {
-    const previousProfile = process.env.T3CODE_DESKTOP_PROFILE;
-    const previousName = process.env.T3CODE_DESKTOP_PRODUCT_NAME;
-    const previousAppId = process.env.T3CODE_DESKTOP_APP_ID;
-    const previousInstallerGuid = process.env.T3CODE_DESKTOP_INSTALLER_GUID;
-    const previousExecutable = process.env.T3CODE_DESKTOP_EXECUTABLE_NAME;
-    delete process.env.T3CODE_DESKTOP_EXECUTABLE_NAME;
-    process.env.T3CODE_DESKTOP_PROFILE = "morrowbyte";
-    process.env.T3CODE_DESKTOP_APP_ID = "com.morrowbyte.t3code";
-    process.env.T3CODE_DESKTOP_PRODUCT_NAME = "Crew";
-    process.env.T3CODE_DESKTOP_INSTALLER_GUID = "11111111-2222-3333-4444-555555555555";
+    const environment: NodeJS.ProcessEnv = {
+      T3CODE_DESKTOP_PROFILE: "morrowbyte",
+      T3CODE_DESKTOP_APP_ID: "com.morrowbyte.t3code",
+      T3CODE_DESKTOP_PRODUCT_NAME: "Crew",
+      T3CODE_DESKTOP_INSTALLER_GUID: "11111111-2222-3333-4444-555555555555",
+    };
     return Effect.gen(function* () {
-      assert.equal(resolveDesktopProductName("1.2.3-nightly.20261014.1"), "Crew");
+      assert.equal(resolveDesktopProductName("1.2.3-nightly.20261014.1", environment), "Crew");
       const win = yield* createBuildConfig(
         "win",
         "nsis",
@@ -1070,7 +1063,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       });
       assert.equal(win.productName, "Crew");
       assert.equal(linux.productName, "Crew");
-      assert.equal(resolveWindowsExecutableName("1.2.3-nightly.20261014.1"), "Morrowbyte");
+      assert.equal(
+        resolveWindowsExecutableName("1.2.3-nightly.20261014.1", environment),
+        "Morrowbyte",
+      );
       assert.equal((win.win as Record<string, unknown>).executableName, "Morrowbyte");
       assert.equal((linux.linux as Record<string, unknown>).executableName, "t3code");
       assert.equal((win.nsis as Record<string, unknown>).shortcutName, "Crew");
@@ -1083,9 +1079,9 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         (win.nsis as Record<string, unknown>).guid,
         "11111111-2222-3333-4444-555555555555",
       );
-      process.env.T3CODE_DESKTOP_EXECUTABLE_NAME = "T3 Code (Morrowbyte Nightly)";
+      environment.T3CODE_DESKTOP_EXECUTABLE_NAME = "T3 Code (Morrowbyte Nightly)";
       assert.equal(
-        resolveWindowsExecutableName("1.2.3-nightly.20261014.1"),
+        resolveWindowsExecutableName("1.2.3-nightly.20261014.1", environment),
         "T3 Code (Morrowbyte Nightly)",
       );
       assert.deepStrictEqual(win.extraMetadata, {
@@ -1094,20 +1090,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         t3codeAppId: "com.morrowbyte.t3code",
       });
     }).pipe(
-      Effect.ensuring(
-        Effect.sync(() => {
-          if (previousProfile === undefined) delete process.env.T3CODE_DESKTOP_PROFILE;
-          else process.env.T3CODE_DESKTOP_PROFILE = previousProfile;
-          if (previousName === undefined) delete process.env.T3CODE_DESKTOP_PRODUCT_NAME;
-          else process.env.T3CODE_DESKTOP_PRODUCT_NAME = previousName;
-          if (previousAppId === undefined) delete process.env.T3CODE_DESKTOP_APP_ID;
-          else process.env.T3CODE_DESKTOP_APP_ID = previousAppId;
-          if (previousInstallerGuid === undefined) delete process.env.T3CODE_DESKTOP_INSTALLER_GUID;
-          else process.env.T3CODE_DESKTOP_INSTALLER_GUID = previousInstallerGuid;
-          if (previousExecutable === undefined) delete process.env.T3CODE_DESKTOP_EXECUTABLE_NAME;
-          else process.env.T3CODE_DESKTOP_EXECUTABLE_NAME = previousExecutable;
-        }),
-      ),
+      Effect.provideService(HostProcess.Environment, environment),
       Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
     );
   });
@@ -1253,6 +1236,30 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       }),
     ),
   );
+
+  it("drops the other architecture's Darwin prebuilds from single-architecture Mac builds", () => {
+    const excludes = (arch: "arm64" | "x64" | "universal", file: string) =>
+      resolveMacFileExclusions(arch).some((glob) => NodePath.matchesGlob(file, glob.slice(1)));
+    const x64 = [
+      "node_modules/node-pty/prebuilds/darwin-x64/pty.node",
+      "node_modules/objc-js/prebuilds/darwin-x64/node.napi.node",
+    ];
+    const arm64 = [
+      "node_modules/node-pty/prebuilds/darwin-arm64/pty.node",
+      "node_modules/objc-js/prebuilds/darwin-arm64/node.napi.armv8.node",
+    ];
+
+    for (const file of x64) {
+      assert.isTrue(excludes("arm64", file), file);
+      assert.isFalse(excludes("x64", file), file);
+      assert.isFalse(excludes("universal", file), file);
+    }
+    for (const file of arm64) {
+      assert.isTrue(excludes("x64", file), file);
+      assert.isFalse(excludes("arm64", file), file);
+      assert.isFalse(excludes("universal", file), file);
+    }
+  });
 
   it.effect("unpacks target Windows natives while excluding the other architecture", () =>
     Effect.scoped(

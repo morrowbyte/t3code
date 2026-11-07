@@ -16,6 +16,7 @@ import {
   type OrchestrationV2ThreadShell,
   type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Net from "@t3tools/shared/Net";
 import * as Effect from "effect/Effect";
@@ -66,7 +67,7 @@ function setup(
   onForwardClose: () => Effect.Effect<void> = () => Effect.void,
 ) {
   const calls: string[] = [];
-  const privateForwards: string[][] = [];
+  const privateForwards: Array<ChildProcess.StandardCommand["args"]> = [];
   const closedPreviews: string[] = [];
   const openedPreviews: string[] = [];
   const previewTabs = new Map<string, { tabId: string }>();
@@ -153,7 +154,7 @@ function setup(
       }).pipe(Effect.tap(() => onCall(path, method, body, idempotencyKey))),
   });
   const base = ServerConfig.layerTest(process.cwd(), { prefix: "boat-service-" }).pipe(
-    Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
   const services = Layer.mergeAll(
     api,
@@ -197,7 +198,7 @@ function setup(
             if (command._tag !== "StandardCommand") return yield* Effect.die("Unexpected pipeline");
             const forwarding = command.args.includes("-L");
             if (forwarding) {
-              privateForwards.push([...command.args]);
+              privateForwards.push(command.args);
               yield* Effect.addFinalizer(() =>
                 Effect.sync(() => {
                   closedForwards++;
@@ -2301,7 +2302,7 @@ it.live("source sync removes deleted files and preserves ignored runtime data", 
     assert.equal(yield* sync, 0);
     assert.isFalse(yield* fs.exists(`${root}/new.ts`));
     assert.equal(yield* fs.readFileString(`${root}/node_modules/cache`), "dependency");
-  }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)), Effect.scoped),
 );
 
 it.effect.each(["ready", "failed"] as const)(

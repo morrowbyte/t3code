@@ -3,17 +3,21 @@ import dmSansLatinUrl from "../assets/fonts/dm-sans-latin.woff2?url";
 import "../styles/fonts.css";
 import { GITHUB_REPOSITORY_URL, UPSTREAM_REPOSITORY_URL } from "../lib/site";
 import { RELEASES_URL } from "../lib/releases";
+import type { JsonLd } from "../lib/seo";
 
 interface Props {
   title?: string;
   description?: string;
   pageClass?: string;
+  jsonLd?: ReadonlyArray<JsonLd>;
+  noindex?: boolean;
 }
 
 const {
   title = "Crew",
   description = "Crew. One workspace for conversations, research, code, and delegated work.",
   pageClass,
+  noindex = false,
 } = Astro.props;
 
 const socialImageUrl = Astro.site ? new URL("/crew-native-1024.png", Astro.site) : undefined;
@@ -26,7 +30,7 @@ const canonicalUrl = Astro.site ? new URL(Astro.url.pathname, Astro.site) : unde
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content={description} />
-    {canonicalUrl && <link rel="canonical" href={canonicalUrl} />}
+    {noindex ? <meta name="robots" content="noindex" /> : canonicalUrl && <link rel="canonical" href={canonicalUrl} />}
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Crew" />
     <meta property="og:url" content={canonicalUrl} />

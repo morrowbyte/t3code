@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -222,5 +223,5 @@ it.effect.each(["session", "evaluation"] as const)(
       yield* auth.logout(Effect.void);
       yield* Deferred.await(stopped);
       assert.isTrue(Exit.isFailure(yield* Fiber.await(startup)));
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

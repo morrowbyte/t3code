@@ -9,7 +9,7 @@ import {
   type ProviderTurnId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Crypto from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -90,7 +90,7 @@ const make = Effect.gen(function* () {
   const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
   const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
   const environment = yield* ServerEnvironment.ServerEnvironment;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Crypto.SecureRandom;
   const owners = new WeakMap<
     TrustedAppControlOwner,
     {
@@ -193,7 +193,7 @@ const make = Effect.gen(function* () {
         const environmentId = yield* environment.getEnvironmentId;
         let incarnation = incarnations.get(execution.runtime);
         if (incarnation === undefined) {
-          const candidate = yield* crypto.randomUUIDv4();
+          const candidate = yield* crypto.uuidV4();
           incarnation = incarnations.get(execution.runtime) ?? candidate;
           incarnations.set(execution.runtime, incarnation);
         }

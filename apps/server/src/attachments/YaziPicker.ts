@@ -19,7 +19,7 @@ import * as PtyAdapter from "@t3tools/shared/PtyAdapter";
 import { hostPreviewMimeTypeFromExtension } from "@t3tools/shared/filePreview";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Crypto from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -83,7 +83,7 @@ export class YaziPicker extends Context.Service<
 
 const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Crypto.SecureRandom;
   const path = yield* Path.Path;
   const pty = yield* PtyAdapter.PtyAdapter;
   const home = yield* HostProcess.HomeDirectory;
@@ -95,7 +95,10 @@ const make = Effect.gen(function* () {
     sessions.delete(id);
     for (const unsubscribe of session.unsubscribe) unsubscribe();
     if (session.exitCode === undefined) {
-      yield* Effect.try(() => session.process.kill()).pipe(Effect.ignore);
+      yield* Effect.try({
+        try: () => session.process.kill(),
+        catch: (cause) => new YaziPickerError({ reason: "terminal", cause }),
+      }).pipe(Effect.ignore);
     }
     yield* fs.remove(session.directory, { recursive: true, force: true }).pipe(Effect.ignore);
   });
@@ -163,7 +166,7 @@ const make = Effect.gen(function* () {
       selected.push({
         path: canonicalPath,
         metadata: {
-          id: yield* crypto.randomUUIDv4().pipe(Effect.orDie),
+          id: yield* crypto.uuidV4().pipe(Effect.orDie),
           name: path.basename(selectedPath),
           mimeType,
           sizeBytes: Number(info.size),
@@ -200,7 +203,7 @@ const make = Effect.gen(function* () {
               rows: input.rows,
               env: { ...environment, TERM: "xterm-256color", COLORTERM: "truecolor" },
             });
-            const sessionId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+            const sessionId = yield* crypto.uuidV4().pipe(Effect.orDie);
             const session: Session = {
               owner,
               directory,
@@ -250,7 +253,7 @@ const make = Effect.gen(function* () {
             Effect.catch((cause) =>
               Effect.sync(() => {
                 session.state = "failed";
-                session.error = Schema.is(YaziPickerError)(cause)
+                session.error = isYaziPickerError(cause)
                   ? cause.message
                   : new YaziPickerError({ reason: "selection" }).message;
               }),
@@ -318,9 +321,7 @@ const make = Effect.gen(function* () {
             }),
           ).pipe(
             Effect.mapError((cause) =>
-              Schema.is(YaziPickerError)(cause)
-                ? cause
-                : new YaziPickerError({ reason: "read", cause }),
+              isYaziPickerError(cause) ? cause : new YaziPickerError({ reason: "read", cause }),
             ),
           );
         }),
@@ -338,3 +339,5 @@ const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(YaziPicker, make);
+
+const isYaziPickerError = Schema.is(YaziPickerError);

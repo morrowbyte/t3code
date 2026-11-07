@@ -8,6 +8,7 @@ import {
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
@@ -64,7 +65,7 @@ const fixture = <A, E, R>(
       Layer.mergeAll(
         ServerConfig.layerTest(process.cwd(), { prefix: "recording-test-" }),
         NodeSqliteClient.layer({ filename: ":memory:" }),
-      ).pipe(Layer.provideMerge(NodeServices.layer)),
+      ).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
     ),
     Effect.scoped,
   );

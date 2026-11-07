@@ -1,3 +1,7 @@
+import {
+  BearerConnectionTarget,
+  BearerConnectionProfile,
+} from "@t3tools/client-runtime/connection";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   approvalSocketUrl,
@@ -165,8 +169,16 @@ describe("saved approval routes", () => {
     const connectionId = "learned:win:https://win.example@saved";
     const learned = {
       ...baseCatalog,
-      targets: [{ ...baseCatalog.targets[0]!, connectionId }],
-      profiles: [{ ...baseCatalog.profiles[0]!, connectionId }],
+      targets: [new BearerConnectionTarget({ environmentId: id, label: "Windows", connectionId })],
+      profiles: [
+        new BearerConnectionProfile({
+          environmentId: id,
+          label: "Windows",
+          connectionId,
+          httpBaseUrl: "https://win.example/",
+          wsBaseUrl: "wss://win.example/",
+        }),
+      ],
     } as typeof baseCatalog;
     expect(selectSavedApprovalRoute(learned, "win")).toMatchObject({
       kind: "bearer",

@@ -6,7 +6,7 @@ import {
   type MainRendererDiagnosticsRequest,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Crypto from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -62,8 +62,8 @@ type Pending = {
 export const make = Effect.fn("desktop.mainRendererDiagnostics.make")(function* () {
   const windows = yield* ElectronWindow.ElectronWindow;
   const app = yield* ElectronApp.ElectronApp;
-  const crypto = yield* Crypto.Crypto;
-  const sessionNonce = yield* crypto.randomUUIDv4().pipe(Effect.option);
+  const crypto = yield* Crypto.SecureRandom;
+  const sessionNonce = yield* crypto.uuidV4().pipe(Effect.option);
   let generation = 0;
   let requestSequence = 0;
   let pending: Pending | undefined;
@@ -157,7 +157,7 @@ export const make = Effect.fn("desktop.mainRendererDiagnostics.make")(function* 
           return unavailable("not-main");
         const metadata = yield* app.metadata.pipe(Effect.option);
         if (Option.isNone(metadata)) return unavailable("unsupported");
-        const nonce = yield* crypto.randomUUIDv4().pipe(Effect.option);
+        const nonce = yield* crypto.uuidV4().pipe(Effect.option);
         if (Option.isNone(nonce)) return unavailable("unsupported");
         const requestNonce = nonce.value;
         const deferred = yield* Deferred.make<MainRendererDiagnosticsReadResult>();

@@ -4,7 +4,7 @@ import type {
   VoiceTranscriptionSettingsInput,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as Data from "effect/Data";
+import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import { AtomRegistry } from "effect/reactivity";
@@ -15,9 +15,10 @@ import { connectionAtomRuntime } from "../connection/runtime";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentSession } from "../state/session";
 
-class VoiceSettingsUnavailable extends Data.TaggedError("VoiceSettingsUnavailable")<{
-  readonly message: string;
-}> {}
+class VoiceSettingsUnavailable extends Schema.TaggedError<VoiceSettingsUnavailable>()(
+  "VoiceSettingsUnavailable",
+  { message: Schema.String },
+) {}
 
 /** Fixed client copy only: errors can contain private upstream bodies or request payloads. */
 export function voiceSettingsErrorMessage(error: unknown): string {

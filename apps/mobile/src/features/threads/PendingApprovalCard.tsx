@@ -61,6 +61,7 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
   const authority = props.approval.approvalReview;
   const expiresAt = authority?.expiresAt;
   const originalExpiresAt = authority?.originalOrder?.receipt.expiresAt;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Schedule and clear native timers for request and source expiry while this approval is mounted.
   useEffect(() => {
     const timers = [...new Set([expiresAt, originalExpiresAt])]
       .filter((deadline): deadline is number => deadline !== undefined)
@@ -74,9 +75,13 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
   }, [expiresAt, originalExpiresAt]);
   const options = props.approval.options ?? DEFAULT_APPROVAL_OPTIONS;
   const key = `${props.environmentId ?? "unknown"}:${props.approval.requestId}`;
-  const latest = useRef(props);
+  const latest = useRef<PendingApprovalCardProps | null>(props);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Bind captured native actions and pending provider replies to the committed request; invalidate them on unmount.
   useLayoutEffect(() => {
     latest.current = props;
+    return () => {
+      latest.current = null;
+    };
   }, [props]);
   const inFlight = useRef(new Set<string>());
   const [inFlightSnapshot, setInFlightSnapshot] = useState<ReadonlySet<string>>(new Set());
@@ -150,6 +155,7 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
     inFlightSnapshot.has(key);
   const respond = async (decision: ProviderApprovalDecision, reviewedBundle?: ReviewBundle) => {
     const current = latest.current;
+    if (current === null) return;
     const packageHash = current.approval.approvalReview?.packageHash;
     if (
       current.environmentId !== props.environmentId ||
@@ -180,10 +186,12 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
     refreshResponses();
     setFailedKey(null);
     const reportFailure = () => {
+      const current = latest.current;
       if (
-        latest.current.environmentId === props.environmentId &&
-        latest.current.approval.requestId === props.approval.requestId &&
-        latest.current.approval.detail === props.approval.detail
+        current !== null &&
+        current.environmentId === props.environmentId &&
+        current.approval.requestId === props.approval.requestId &&
+        current.approval.detail === props.approval.detail
       )
         setFailedKey(key);
     };
@@ -204,7 +212,7 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
       .catch(reportFailure)
       .finally(() => {
         inFlight.current.delete(key);
-        refreshResponses();
+        if (latest.current !== null) refreshResponses();
       });
   };
   const responseControls = (reviewedBundle?: ReviewBundle) => (
@@ -240,10 +248,11 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
           This review request is no longer pending or has expired.
         </Text>
       ) : null}
-      <View className="flex-row flex-wrap gap-2.5">
+      <View className="gap-2">
         {options.map((option) => (
           <Button
             key={option.decision}
+            fullWidth
             label={option.label}
             tone={
               option.decision === "accept"

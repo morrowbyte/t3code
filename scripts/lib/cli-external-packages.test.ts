@@ -41,6 +41,9 @@ describe("shouldBundleCliDependency", () => {
       "@ubjs/node/typescript/dist/resolve-lib.js",
       "@ff-labs/fff-node",
       "@napi-rs/keyring",
+      "transcribe-cpp",
+      "@transcribe-cpp/win32-x64-cpu-vulkan",
+      "koffi",
       "@clerk/electron-passkeys",
       "node-addon-api",
     ]) {

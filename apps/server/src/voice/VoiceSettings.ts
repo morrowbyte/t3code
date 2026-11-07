@@ -1,11 +1,12 @@
 import { VoiceTranscriptionSettingsInput } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto has no authenticated encryption API.
 import * as NodeCrypto from "node:crypto";
-import * as Crypto from "effect/Crypto";
-import * as Data from "effect/Data";
+import * as Crypto from "effect/crypto/SecureRandom";
+import * as EffectConfig from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
 import * as Semaphore from "effect/Semaphore";
@@ -21,7 +22,10 @@ const SECRET = "voice-transcription-api-key";
 const WRAPPING_KEY = "voice-transcription-wrapping-key";
 const ENVELOPE = Buffer.from("t3-voice-key:v1\0");
 
-class VoiceSecretEncryptionError extends Data.TaggedError("VoiceSecretEncryptionError")<{}> {
+class VoiceSecretEncryptionError extends Schema.TaggedError<VoiceSecretEncryptionError>()(
+  "VoiceSecretEncryptionError",
+  {},
+) {
   override get message() {
     return "The saved voice key could not be secured. Remove it and save it again.";
   }
@@ -37,7 +41,7 @@ const encryptKey = (value: string, key: Uint8Array, nonce: Uint8Array) =>
       const ciphertext = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
       return Buffer.concat([ENVELOPE, nonce, cipher.getAuthTag(), ciphertext]);
     },
-    catch: () => new VoiceSecretEncryptionError(),
+    catch: () => new VoiceSecretEncryptionError({}),
   });
 
 const decryptKey = (value: Uint8Array, key: Uint8Array) =>
@@ -61,7 +65,7 @@ const decryptKey = (value: Uint8Array, key: Uint8Array) =>
         decipher.final(),
       ]).toString("utf8");
     },
-    catch: () => new VoiceSecretEncryptionError(),
+    catch: () => new VoiceSecretEncryptionError({}),
   });
 
 /** Non-secret preferences are independent of provider coding credentials. */
@@ -72,31 +76,41 @@ export const makeVoiceSettings = Effect.gen(function* () {
   const path = yield* Path.Path;
   const server = yield* ServerConfig.ServerConfig;
   const secrets = yield* ServerSecretStore.ServerSecretStore;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Crypto.SecureRandom;
   const lock = yield* Semaphore.make(1);
   const filename = path.join(server.stateDir, "voice-transcription.json");
   const readConfig = Effect.gen(function* () {
     const exists = yield* fs.exists(filename);
-    return exists
-      ? yield* fs
-          .readFileString(filename)
-          .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Config))))
-      : {
-          provider:
-            process.env.T3CODE_TRANSCRIPTION_PROVIDER === "openai-api"
-              ? ("openai-api" as const)
-              : ("codex-account" as const),
-          instanceId: process.env.T3CODE_TRANSCRIPTION_CODEX_INSTANCE_ID ?? null,
-          model: process.env.T3CODE_TRANSCRIPTION_MODEL || "gpt-transcribe",
-        };
+    if (exists) {
+      return yield* fs
+        .readFileString(filename)
+        .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Config))));
+    }
+    const provider = yield* EffectConfig.String("T3CODE_TRANSCRIPTION_PROVIDER").pipe(
+      EffectConfig.withDefault("codex-account"),
+    );
+    const instanceId = yield* EffectConfig.String("T3CODE_TRANSCRIPTION_CODEX_INSTANCE_ID").pipe(
+      EffectConfig.option,
+    );
+    const model = yield* EffectConfig.String("T3CODE_TRANSCRIPTION_MODEL").pipe(
+      EffectConfig.withDefault("gpt-transcribe"),
+    );
+    return {
+      provider: provider === "openai-api" ? ("openai-api" as const) : ("codex-account" as const),
+      instanceId: Option.getOrNull(instanceId),
+      model: model || "gpt-transcribe",
+    };
   });
   const read = Effect.gen(function* () {
     const config = yield* readConfig;
     const stored = yield* secrets.get(SECRET);
-    let apiKey = process.env.T3CODE_TRANSCRIPTION_API_KEY;
+    const environmentKey = yield* EffectConfig.Redacted("T3CODE_TRANSCRIPTION_API_KEY").pipe(
+      EffectConfig.option,
+    );
+    let apiKey = Option.isSome(environmentKey) ? Redacted.value(environmentKey.value) : undefined;
     if (Option.isSome(stored)) {
       const key = yield* secrets.get(WRAPPING_KEY);
-      if (Option.isNone(key)) return yield* new VoiceSecretEncryptionError();
+      if (Option.isNone(key)) return yield* new VoiceSecretEncryptionError({});
       // Reads never migrate plaintext or recreate a missing wrapping key.
       apiKey = yield* decryptKey(stored.value, key.value);
     }
@@ -111,17 +125,15 @@ export const makeVoiceSettings = Effect.gen(function* () {
   // Transcription continues to use the strict read above.
   const readForSettings = read.pipe(
     Effect.map((config) => ({ ...config, keyUnavailable: false })),
-    Effect.catchIf(
-      (error) => error instanceof VoiceSecretEncryptionError,
-      () =>
-        readConfig.pipe(
-          Effect.map((config) => ({
-            ...config,
-            apiKey: undefined,
-            apiKeySource: "saved" as const,
-            keyUnavailable: true,
-          })),
-        ),
+    Effect.catchIf(Schema.is(VoiceSecretEncryptionError), () =>
+      readConfig.pipe(
+        Effect.map((config) => ({
+          ...config,
+          apiKey: undefined,
+          apiKeySource: "saved" as const,
+          keyUnavailable: true,
+        })),
+      ),
     ),
   );
   const write = (input: typeof VoiceTranscriptionSettingsInput.Type) =>

@@ -13,7 +13,7 @@ import {
 } from "@t3tools/contracts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -63,11 +63,11 @@ const make = Effect.gen(function* () {
   const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
   const events = yield* EventStore.EventStoreV2;
   const environment = yield* ServerEnvironment.ServerEnvironment;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Digest.Digest;
   const lane = yield* KeyedLock.make<string>();
 
   const digest = (parts: ReadonlyArray<string>) =>
-    crypto.digest("SHA-256", new TextEncoder().encode(JSON.stringify(parts))).pipe(
+    crypto.digest(Digest.sha256, new TextEncoder().encode(JSON.stringify(parts))).pipe(
       Effect.map((bytes) =>
         Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(""),
       ),

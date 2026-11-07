@@ -1,9 +1,11 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { ProviderSetupError, ProviderInstanceId } from "@t3tools/contracts";
 import * as CodexClient from "effect-codex-app-server/client";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
@@ -173,7 +175,7 @@ it.effect.each([
     }
     assert.isFalse(requests.some((request) => request.method.startsWith("thread/")));
     assert.isFalse(requests.some((request) => request.method === "turn/start"));
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect("keeps simultaneous account logins isolated even when native login IDs coincide", () =>
@@ -265,7 +267,7 @@ it.effect("keeps simultaneous account logins isolated even when native login IDs
     );
     assert.deepEqual(second.reads, ["work"]);
     assert.deepEqual(first.reads, ["personal"]);
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect("withholds device sign-in for an older runtime and rechecks before login", () =>
@@ -308,5 +310,5 @@ it.effect("withholds device sign-in for an older runtime and rechecks before log
       Stream.take(1),
       Stream.runDrain,
     );
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

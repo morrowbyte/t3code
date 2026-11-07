@@ -28,7 +28,8 @@ import {
   isOrchestrationV2WorkActive,
 } from "@t3tools/contracts";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
-import * as Crypto from "effect/Crypto";
+import * as Crypto from "effect/crypto/SecureRandom";
+import * as Digest from "effect/crypto/Digest";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -399,7 +400,8 @@ export const make = Effect.gen(function* () {
   const projects = yield* Projects.ProjectService;
   const git = yield* Git.GitVcsDriver;
   const api = yield* BoatApi;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Crypto.SecureRandom;
+  const digestService = yield* Digest.Digest;
   const previews = yield* PreviewManager;
   const devices = yield* DeviceService;
   const projections = yield* ProjectionStoreV2;
@@ -1643,7 +1645,9 @@ export const make = Effect.gen(function* () {
           const workspace = yield* fs
             .readFileString(path.join(source.workspaceRoot, "pnpm-workspace.yaml"))
             .pipe(
-              Effect.flatMap((text) => Effect.try(() => parseYaml(text))),
+              Effect.flatMap((text) =>
+                Effect.try({ try: () => parseYaml(text), catch: storageError }),
+              ),
               Effect.flatMap(decodeWorkspaceVersions),
               Effect.orElseSucceed(() => null),
             );
@@ -2522,7 +2526,9 @@ ${action.command}`,
       const content = yield* fs.readFile(file).pipe(Effect.mapError(storageError));
       if (content.length !== Number(stat.size) || content.length > 2_097_152)
         return yield* new BoatError({ category: "conflict" });
-      const digest = yield* crypto.digest("SHA-256", content).pipe(Effect.mapError(storageError));
+      const digest = yield* digestService
+        .digest(Digest.sha256, content)
+        .pipe(Effect.mapError(storageError));
       files.push({
         path: name,
         sha256: Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join(""),

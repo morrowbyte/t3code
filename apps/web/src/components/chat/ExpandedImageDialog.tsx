@@ -241,7 +241,7 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
             <ChevronLeftIcon className="size-5" />
           </Button>
         )}
-        <MediaActions source={actionsSource}>
+        <MediaActions source={actionsSource} showTooltip={false}>
           <div className="relative isolate z-10 flex max-h-full max-w-[var(--media-width)] flex-col items-center">
             {annotating && item.src && onSendAnnotation ? (
               <ImageAnnotationEditor

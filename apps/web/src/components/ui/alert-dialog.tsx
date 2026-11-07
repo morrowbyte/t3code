@@ -15,6 +15,7 @@ function AlertDialog<Payload>(props: AlertDialogPrimitive.Root.Props<Payload>) {
   const id = useId();
   const localActions = useRef<AlertDialogPrimitive.Root.Actions | null>(null);
   const actions = props.actionsRef ?? localActions;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Register the mounted dialog's close action with the external keyboard-layer registry and unregister on cleanup.
   useLayoutEffect(() => registerKeyboardLayer(id, () => actions.current?.close()), [actions, id]);
   return (
     <ControlledOpenContext value={props.open}>
@@ -121,7 +122,7 @@ function AlertDialogFooter({
 function AlertDialogTitle({ className, ...props }: AlertDialogPrimitive.Title.Props) {
   return (
     <AlertDialogPrimitive.Title
-      className={cn("wrap-anywhere shrink-0 font-semibold text-xl leading-none", className)}
+      className={cn("wrap-anywhere shrink-0 font-semibold text-xl leading-snug", className)}
       data-slot="alert-dialog-title"
       {...props}
     />

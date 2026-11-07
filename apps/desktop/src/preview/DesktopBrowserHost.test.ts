@@ -13,6 +13,14 @@ import * as NodePath from "node:path";
 
 import * as DesktopBrowserHost from "./DesktopBrowserHost.ts";
 
+class PrivateEntryTestError extends Schema.TaggedError<PrivateEntryTestError>()(
+  "PrivateEntryTestError",
+  { cause: Schema.Defect() },
+) {}
+
+const tryPrivateEntry = <A>(operation: () => PromiseLike<A>) =>
+  Effect.tryPromise({ try: operation, catch: (cause) => new PrivateEntryTestError({ cause }) });
+
 const decodeEvent = Schema.decodeUnknownSync(Schema.fromJsonString(DesktopBrowserEvent));
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeCdpReply = Schema.decodeUnknownSync(
@@ -110,7 +118,7 @@ const takeEvents = (host: DesktopBrowserHost.DesktopBrowserHost["Service"], coun
 
 const connect = Effect.fn(function* (host: DesktopBrowserHost.DesktopBrowserHost["Service"]) {
   const connection = host.createConnection();
-  const messages = yield* Queue.unbounded<typeof DesktopBrowserEvent.Type>();
+  const messages = yield* Queue.unbounded<DesktopBrowserEvent>();
   yield* connection.events.pipe(
     Stream.runForEach((line) => Queue.offer(messages, decodeEvent(new TextDecoder().decode(line)))),
     Effect.forkScoped,
@@ -122,11 +130,11 @@ const grant = Effect.fn(function* (
   host: DesktopBrowserHost.DesktopBrowserHost["Service"],
   backend: {
     connection: DesktopBrowserHost.DesktopBrowserConnection;
-    messages: Queue.Queue<typeof DesktopBrowserEvent.Type>;
+    messages: Queue.Queue<DesktopBrowserEvent>;
   },
   source: Electron.WebContents,
 ) {
-  const acquiring = yield* Effect.tryPromise(() => host.acquirePrivateEntry(source)).pipe(
+  const acquiring = yield* tryPrivateEntry(() => host.acquirePrivateEntry(source)).pipe(
     Effect.forkScoped,
   );
   const request = yield* Queue.take(backend.messages);
@@ -182,7 +190,7 @@ describe("DesktopBrowserHost", () => {
       expect(
         Exit.isFailure(
           yield* Effect.exit(
-            Effect.tryPromise(() => host.acquirePrivateEntry(debuggee.tab.webContents)),
+            tryPrivateEntry(() => host.acquirePrivateEntry(debuggee.tab.webContents)),
           ),
         ),
       ).toBe(true);
@@ -200,7 +208,7 @@ describe("DesktopBrowserHost", () => {
         yield* Queue.take(backend.messages);
         const { lease } = yield* grant(host, backend, debuggee.tab.webContents);
         host.setPrivateEntry(debuggee.tab.webContents, true);
-        const releasing = yield* Effect.tryPromise(() => lease.release()).pipe(Effect.forkScoped);
+        const releasing = yield* tryPrivateEntry(() => lease.release()).pipe(Effect.forkScoped);
         const request = yield* Queue.take(backend.messages);
         if (request.type !== "private-entry-release") throw new Error("Expected release");
         yield* backend.connection.handleCommandLine(
@@ -245,7 +253,7 @@ describe("DesktopBrowserHost", () => {
         expect(host.canRequestPrivateEntry(debuggee.tab.webContents)).toBe(false);
         expect(host.isPrivateEntry(debuggee.tab.webContents)).toBe(true);
         expect(
-          Exit.isFailure(yield* Effect.exit(Effect.tryPromise(() => first.lease.release()))),
+          Exit.isFailure(yield* Effect.exit(tryPrivateEntry(() => first.lease.release()))),
         ).toBe(true);
         const current = yield* connect(host);
         const attached = yield* Queue.take(current.messages);
@@ -301,7 +309,7 @@ describe("DesktopBrowserHost", () => {
         host.attach(key, debuggee.tab);
         yield* Queue.take(backend.messages);
         const acquiring = yield* Effect.exit(
-          Effect.tryPromise(() => host.acquirePrivateEntry(debuggee.tab.webContents)),
+          tryPrivateEntry(() => host.acquirePrivateEntry(debuggee.tab.webContents)),
         ).pipe(Effect.forkScoped);
         const request = yield* Queue.take(backend.messages);
         if (request.type !== "private-entry-acquire") throw new Error("Expected acquire");
@@ -325,7 +333,7 @@ describe("DesktopBrowserHost", () => {
         expect(
           Exit.isFailure(
             yield* Effect.exit(
-              Effect.tryPromise(() => host.acquirePrivateEntry(debuggee.tab.webContents)),
+              tryPrivateEntry(() => host.acquirePrivateEntry(debuggee.tab.webContents)),
             ),
           ),
         ).toBe(true);
@@ -426,6 +434,50 @@ describe("DesktopBrowserHost", () => {
       // A restarted backend subscribes after the attach and still hears it.
       expect(yield* takeEvents(host, 1)).toMatchObject([{ type: "attached", ...key }]);
       expect(yield* takeEvents(host, 1)).toMatchObject([{ type: "attached", ...key }]);
+    }),
+  );
+
+  it.effect("re-sends shown to a backend that starts later and when a tab attaches again", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      host.attach(key, makeDebuggee().tab);
+      host.setShown(key, true);
+      const reader = yield* takeEvents(host, 5).pipe(Effect.forkScoped({ startImmediately: true }));
+      host.detach(key);
+      host.attach(key, makeDebuggee().tab);
+
+      const privateEntry = {
+        channelEpoch: expect.stringMatching(/\S/),
+        attachmentId: expect.stringMatching(/\S/),
+      };
+      expect(yield* Fiber.join(reader)).toEqual([
+        { type: "attached", ...key, privateEntry },
+        { type: "shown", ...key, shown: true },
+        { type: "detached", ...key, privateEntry },
+        { type: "attached", ...key, privateEntry },
+        { type: "shown", ...key, shown: true },
+      ]);
+    }),
+  );
+
+  it.effect("replays an explicit hidden report before announcing another tab", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const other = { ...key, tabId: "tab-2" };
+      host.setShown(key, false);
+      host.attach(key, makeDebuggee().tab);
+      host.setShown(other, true);
+      host.attach(other, makeDebuggee().tab);
+
+      const privateEntry = {
+        channelEpoch: expect.stringMatching(/\S/),
+        attachmentId: expect.stringMatching(/\S/),
+      };
+      expect(yield* takeEvents(host, 3)).toEqual([
+        { type: "attached", ...key, privateEntry },
+        { type: "shown", ...key, shown: false },
+        { type: "attached", ...other, privateEntry },
+      ]);
     }),
   );
 

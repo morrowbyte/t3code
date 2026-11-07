@@ -18,16 +18,11 @@ import {
 import { useRef } from "react";
 import { Platform, Pressable, ScrollView, View, type LayoutChangeEvent } from "react-native";
 import Animated, {
-  Easing,
-  FadeInUp,
-  FadeOutDown,
   useAnimatedStyle,
   useSharedValue,
   type DerivedValue,
   type SharedValue,
 } from "react-native-reanimated";
-
-import { USER_INPUT_TOGGLE_DURATION_MS } from "./pendingUserInputLayout";
 
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
@@ -53,6 +48,7 @@ export interface PendingUserInputCardProps {
   readonly collapsed: boolean;
   readonly onToggleCollapsed: () => void;
   readonly onStopThread?: () => void;
+  readonly inline?: boolean;
   readonly cardProgress?: SharedValue<number>;
   readonly cardCoverage?: SharedValue<number>;
   readonly onInputFocusChange?: (focused: boolean) => void;
@@ -72,9 +68,6 @@ export interface PendingUserInputCardProps {
   readonly onSubmit: () => Promise<unknown>;
   readonly onDismiss: () => Promise<unknown>;
 }
-
-/** Android cannot hit-test overlays beyond their parent's bounds; render its expanded card in-flow. */
-const EXPANDED_CARD_IS_OVERLAY = Platform.OS === "ios";
 
 function proseDirectionStyle(text: string, setDirection: TextDirection | undefined) {
   const direction = textDirection(text);
@@ -140,14 +133,16 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
       .join(" "),
   );
 
-  const cardCoverage = props.cardCoverage;
+  const defaultProgress = useSharedValue(1);
+  const defaultCoverage = useSharedValue(0);
+  const cardProgress = props.cardProgress ?? defaultProgress;
+  const cardCoverage = props.cardCoverage ?? defaultCoverage;
+  const { maxHeight } = props;
+  const inline = props.inline === true;
   const barHeightRef = useRef(0);
   const cardHeightRef = useRef(0);
   const cardHeight = useSharedValue(0);
   const notifyCoverage = () => {
-    if (!cardCoverage) {
-      return;
-    }
     // The card resizes with the keyboard every frame, so easing each sample would leave the
     // feed inset and floating controls trailing it.
     cardCoverage.set(Math.max(0, cardHeightRef.current - barHeightRef.current));
@@ -161,22 +156,26 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
     cardHeight.set(event.nativeEvent.layout.height);
     notifyCoverage();
   };
-  const cardProgress = props.cardProgress;
-  const maxHeight = props.maxHeight;
   const cardAnimatedStyle = useAnimatedStyle(() => {
-    const progress = cardProgress === undefined ? 1 : cardProgress.value;
+    if (inline) return { maxHeight: maxHeight.value };
+    const progress = cardProgress.value;
+    const travel = Platform.OS === "android" ? cardCoverage.value : cardHeight.value;
     return {
       maxHeight: maxHeight.value,
-      transform: [{ translateY: (1 - progress) * cardHeight.value }],
+      opacity:
+        Platform.OS === "android"
+          ? Math.min(1, (progress * cardHeight.value) / Math.max(1, cardHeight.value - travel))
+          : 1,
+      transform: [{ translateY: (1 - progress) * travel }],
     };
   });
-  const cardMaxHeightStyle = useAnimatedStyle(() => ({ maxHeight: maxHeight.value }));
+  // Android hit-tests inside the parent; its height is also the space the card takes below the feed.
+  const androidBoundsStyle = useAnimatedStyle(() => ({
+    paddingTop: cardCoverage.value * cardProgress.value,
+  }));
   const overlayHeightStyle = useAnimatedStyle(() => ({ height: maxHeight.value }));
 
-  // Keep the iOS card mounted so expansion starts on the UI thread without waiting for React layout.
-  const renderCard = EXPANDED_CARD_IS_OVERLAY || !props.collapsed;
-  const showBar = props.collapsed || EXPANDED_CARD_IS_OVERLAY;
-  const bar = showBar ? (
+  const bar = (
     <View
       onLayout={handleBarLayout}
       pointerEvents={props.collapsed ? "auto" : "none"}
@@ -217,25 +216,15 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
         />
       ) : null}
     </View>
-  ) : null;
-  const card = renderCard ? (
+  );
+  const card = (
     <Animated.View
       onLayout={handleCardLayout}
       pointerEvents={props.collapsed ? "none" : "auto"}
       accessibilityElementsHidden={props.collapsed}
       importantForAccessibility={props.collapsed ? "no-hide-descendants" : "auto"}
-      entering={
-        EXPANDED_CARD_IS_OVERLAY
-          ? undefined
-          : FadeInUp.duration(USER_INPUT_TOGGLE_DURATION_MS).easing(Easing.out(Easing.cubic))
-      }
-      exiting={
-        EXPANDED_CARD_IS_OVERLAY
-          ? undefined
-          : FadeOutDown.duration(USER_INPUT_TOGGLE_DURATION_MS).easing(Easing.out(Easing.cubic))
-      }
       className="overflow-hidden gap-2.5 rounded-[20px] border border-border bg-card-alt p-4"
-      style={EXPANDED_CARD_IS_OVERLAY ? cardAnimatedStyle : cardMaxHeightStyle}
+      style={cardAnimatedStyle}
     >
       <Pressable
         accessibilityRole="button"
@@ -431,21 +420,21 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
         </Text>
       ) : null}
     </Animated.View>
-  ) : null;
+  );
+  if (inline) return props.collapsed ? bar : card;
   return (
-    <View className="relative">
+    <Animated.View
+      className="relative"
+      style={Platform.OS === "android" ? androidBoundsStyle : undefined}
+    >
       {bar}
-      {EXPANDED_CARD_IS_OVERLAY ? (
-        <Animated.View
-          pointerEvents={props.collapsed ? "none" : "box-none"}
-          className="absolute inset-x-0 bottom-0 justify-end overflow-hidden"
-          style={overlayHeightStyle}
-        >
-          {card}
-        </Animated.View>
-      ) : (
-        card
-      )}
-    </View>
+      <Animated.View
+        pointerEvents={props.collapsed ? "none" : "box-none"}
+        className="absolute inset-x-0 bottom-0 justify-end overflow-hidden"
+        style={overlayHeightStyle}
+      >
+        {card}
+      </Animated.View>
+    </Animated.View>
   );
 }

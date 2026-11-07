@@ -10,7 +10,7 @@ import {
   type DesktopUpdateStatusReport,
   type HostPowerSnapshot,
 } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
+import * as Crypto from "effect/crypto/SecureRandom";
 import * as Scope from "effect/Scope";
 import * as MainRendererDiagnostics from "../ipc/methods/mainRendererDiagnostics.ts";
 import * as Cause from "effect/Cause";
@@ -162,7 +162,7 @@ export const make = Effect.fn("desktop.telemetryPublisher.make")(function* () {
   const diagnosticService = yield* Effect.serviceOption(
     MainRendererDiagnostics.MainRendererDiagnostics,
   );
-  const crypto = yield* Effect.serviceOption(Crypto.Crypto);
+  const crypto = yield* Effect.serviceOption(Crypto.SecureRandom);
   const scope = yield* Scope.Scope;
   const electronApp = yield* ElectronApp.ElectronApp;
   const powerMonitor = yield* ElectronPowerMonitor.ElectronPowerMonitor;
@@ -452,7 +452,7 @@ export const make = Effect.fn("desktop.telemetryPublisher.make")(function* () {
               handleControl: (message) => handleControlForSource(legacySourceId, message),
               closed: Effect.void,
             };
-          const nonce = yield* crypto.value.randomUUIDv4().pipe(Effect.option);
+          const nonce = yield* crypto.value.uuidV4().pipe(Effect.option);
           if (Option.isNone(nonce))
             return {
               encoded,

@@ -31,7 +31,7 @@ import * as Semaphore from "effect/Semaphore";
 import { makeVoiceIntake, transferVoiceIntakeClaim } from "./VoiceIntake.ts";
 import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";
-import * as Crypto from "effect/Crypto";
+import * as Crypto from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -216,7 +216,7 @@ export const layer: Layer.Layer<
   | ProviderSessionManager.ProviderSessionManagerV2
   | ThreadManagementService.ThreadManagementService
   | ProviderInstanceRegistry.ProviderInstanceRegistry
-  | Crypto.Crypto
+  | Crypto.SecureRandom
 > = Layer.effect(
   CodexLiveSessionService,
   Effect.gen(function* () {
@@ -230,7 +230,7 @@ export const layer: Layer.Layer<
     const conversationWork = yield* ConversationWorkCoordinator.ConversationWorkCoordinator;
     const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
     const eventHub = yield* CodexLiveEventHub.CodexLiveEventHub;
-    const crypto = yield* Crypto.Crypto;
+    const crypto = yield* Crypto.SecureRandom;
     const serviceScope = yield* Effect.scope;
     let closing = false;
     const leaseLocks = yield* KeyedLock.make<string>();
@@ -1449,7 +1449,7 @@ export const layer: Layer.Layer<
                   {
                     leaseId: currentPreviousLease.lease_id,
                     generation: currentPreviousLease.generation,
-                    clientRequestId: yield* crypto.randomUUIDv4(),
+                    clientRequestId: yield* crypto.uuidV4(),
                   },
                   true,
                 );
@@ -1457,7 +1457,7 @@ export const layer: Layer.Layer<
               }
             }
 
-            const leaseId = yield* crypto.randomUUIDv4();
+            const leaseId = yield* crypto.uuidV4();
             const generation = 1;
             const now = DateTime.formatIso(yield* DateTime.now);
             yield* sql`
@@ -1472,7 +1472,7 @@ export const layer: Layer.Layer<
             ${encodeRuntimePolicy(runtimePolicy)}, NULL, NULL, ${session.sessionId}, ${session.subject},
             ${input.clientRequestId}, 'preparing', ${now}
           )
-        `.pipe(Effect.catch(() => Effect.fail(liveError("dispatch_conflict"))));
+        `.pipe(Effect.mapError(() => liveError("dispatch_conflict")));
             const initial: LiveVoiceSession = {
               leaseId,
               generation,
@@ -1487,7 +1487,7 @@ export const layer: Layer.Layer<
 
             return yield* Effect.gen(function* () {
               const providerSessionId = ProviderSessionId.make(
-                `provider-session-live-${yield* crypto.randomUUIDv4()}`,
+                `provider-session-live-${yield* crypto.uuidV4()}`,
               );
               yield* sql`
               UPDATE codex_live_voice_leases SET provider_session_id = ${providerSessionId},
@@ -1519,9 +1519,7 @@ export const layer: Layer.Layer<
                     }),
                   ),
                   Effect.mapError(() => liveError("runtime_unavailable")),
-                  Effect.catch((error) =>
-                    markUnknown(leaseId, generation).pipe(Effect.andThen(Effect.fail(error))),
-                  ),
+                  Effect.tapError(() => markUnknown(leaseId, generation)),
                 ),
               );
               if (closing) return yield* liveError("runtime_unavailable");
@@ -1756,9 +1754,7 @@ export const layer: Layer.Layer<
               })
               .pipe(
                 Effect.mapError(() => liveError("runtime_unavailable")),
-                Effect.catch((error) =>
-                  updateStatus(row, "unknown").pipe(Effect.andThen(Effect.fail(error))),
-                ),
+                Effect.tapError(() => updateStatus(row, "unknown")),
               );
             return sessionFromRow((yield* getLease(input.leaseId, input.generation)) ?? row);
           }),
@@ -2267,7 +2263,7 @@ export const layer: Layer.Layer<
         input: { readonly plannerNativeThreadId: string; readonly text: string },
       ) {
         const done = yield* Deferred.make<boolean>();
-        const deliveryId = yield* crypto.randomUUIDv4();
+        const deliveryId = yield* crypto.uuidV4();
         yield* Effect.gen(function* () {
           yield* leaseLocks.withLock(
             leaseKey(leaseId, generation),

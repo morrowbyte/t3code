@@ -1,6 +1,6 @@
 import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Crypto from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -18,12 +18,12 @@ export class ConnectedEnvironmentAdmission extends Context.Service<
 >()("t3/mcp/connectedEnvironment/Admission/ConnectedEnvironmentAdmission") {}
 
 export const make = Effect.gen(function* () {
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Crypto.SecureRandom;
   const leases = new Map<string, { sessionId: string; expiresAt: number }>();
   const create = Effect.fn("ConnectedEnvironmentAdmission.create")(function* (sessionId: string) {
     const now = performance.now();
     for (const [id, lease] of leases) if (lease.expiresAt <= now) leases.delete(id);
-    const id = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+    const id = yield* crypto.uuidV4().pipe(Effect.orDie);
     leases.set(id, { sessionId, expiresAt: now + ADMISSION_LIFETIME_MS });
     return id;
   });

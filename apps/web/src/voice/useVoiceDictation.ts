@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import * as Schema from "effect/Schema";
 import { useStableCallback } from "~/hooks/useStableCallback";
 import { acquireMicrophoneOwnership } from "@t3tools/client-runtime/live-voice";
 import {
@@ -20,10 +21,12 @@ export type VoiceDictationTranscriber = (
   options: { readonly signal: AbortSignal },
 ) => Promise<string>;
 
-export class VoiceDictationServiceError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "VoiceDictationServiceError";
+export class VoiceDictationServiceError extends Schema.TaggedError<VoiceDictationServiceError>()(
+  "VoiceDictationServiceError",
+  { message: Schema.String },
+) {
+  static new(message: string) {
+    return new VoiceDictationServiceError({ message });
   }
 }
 
@@ -67,6 +70,7 @@ export function useVoiceDictation(input: {
     setState({ phase: "idle" });
   }
   const inputRef = useRef(input);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- commits delivery callbacks for MediaRecorder and in-flight transcription without restarting capture when the prompt changes
   useLayoutEffect(() => {
     inputRef.current = input;
   }, [input]);
@@ -133,7 +137,7 @@ export function useVoiceDictation(input: {
       const transcriptMissing =
         insertedTranscriptRef.current && inputRef.current.hasTranscript?.(transcript) === false;
       if (transcriptMissing && delivery === "send")
-        throw new VoiceDictationServiceError(
+        throw VoiceDictationServiceError.new(
           "The recorded text is no longer in this prompt. Choose Insert text to restore it before sending.",
         );
       if (!insertedTranscriptRef.current || transcriptMissing) {
@@ -159,7 +163,7 @@ export function useVoiceDictation(input: {
           writeRecordingDraft(targetKey, null);
         if (generationRef.current !== generation || abortController.signal.aborted) return;
         if (!accepted)
-          throw new VoiceDictationServiceError(
+          throw VoiceDictationServiceError.new(
             "The message could not be sent. Your text and recording are available to retry.",
           );
       }
@@ -169,12 +173,11 @@ export function useVoiceDictation(input: {
     })()
       .catch((error: unknown) => {
         if (generationRef.current !== generation || abortController.signal.aborted) return;
-        const message =
-          error instanceof VoiceDictationServiceError
-            ? error.message
-            : delivery === "send" && insertedTranscriptRef.current
-              ? "Sending failed. Your text and recording are still available to retry."
-              : "Transcription failed. Your recording is still available to retry.";
+        const message = isVoiceDictationServiceError(error)
+          ? error.message
+          : delivery === "send" && insertedTranscriptRef.current
+            ? "Sending failed. Your text and recording are still available to retry."
+            : "Transcription failed. Your recording is still available to retry.";
         if (targetKey)
           writeRecordingDraft(targetKey, {
             audio,
@@ -308,6 +311,7 @@ export function useVoiceDictation(input: {
     }
   };
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes to this draft and owns its recorder, microphone, abort controller and object URLs until the target changes or unmounts
   useEffect(() => {
     const generation = ++generationRef.current;
     if (targetKey)
@@ -350,3 +354,5 @@ export function useVoiceDictation(input: {
 
   return { state, start, stop, transcribe, cancel } as const;
 }
+
+const isVoiceDictationServiceError = Schema.is(VoiceDictationServiceError);

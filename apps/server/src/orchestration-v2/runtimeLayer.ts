@@ -1,5 +1,6 @@
 import * as AgentObservatory from "../observatory/AgentObservatoryService.ts";
 import * as TrustedInvocation from "../mcp/TrustedAppControlInvocation.ts";
+import * as WorktreeBranchSync from "./WorktreeBranchSync.ts";
 import * as GuestShareService from "../guest/GuestShareService.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
@@ -440,6 +441,9 @@ export const layerProduction = Layer.mergeAll(
         layerEventStoreProvided,
       ),
     ),
+  ),
+  WorktreeBranchSync.layer.pipe(
+    Layer.provide(Layer.merge(layerThreadManagementProvided, ProjectionStore.layer)),
   ),
   layer,
   layerManagedProjectFoldersProvided,

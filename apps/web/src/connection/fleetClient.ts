@@ -1,6 +1,6 @@
 import type { EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as Data from "effect/Data";
+import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
 import { AtomRegistry } from "effect/reactivity";
 import { RemoteEnvironmentAuthorization } from "@t3tools/client-runtime/authorization/service";
@@ -12,7 +12,9 @@ import {
 import { connectionAtomRuntime } from "./runtime";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentSession } from "../state/session";
-class FleetUnavailable extends Data.TaggedError("FleetUnavailable")<{ readonly message: string }> {}
+class FleetUnavailable extends Schema.TaggedError<FleetUnavailable>()("FleetUnavailable", {
+  message: Schema.String,
+}) {}
 export async function readFleetConnections(environmentId: EnvironmentId) {
   const request = connectionAtomRuntime.fn<void>()((_input, get) =>
     Effect.gen(function* () {

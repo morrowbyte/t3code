@@ -1,7 +1,9 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Cause from "effect/Cause";
 import * as Console from "effect/Console";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -50,15 +52,24 @@ const selectedCases = cases.filter((testCase) =>
 );
 if (!selectedCases.length || selectedCases.length * samples * efforts.length > 36)
   throw new Error("No cases selected or 36-turn bound exceeded");
-const { crypto, path } = await Effect.runPromise(
-  Effect.all({ crypto: Crypto.Crypto, path: Path.Path }).pipe(Effect.provide(NodeServices.layer)),
+const runtimeLayer = Layer.mergeAll(
+  NodeServices.layer,
+  NodeCrypto.layerDigest,
+  NodeCrypto.layerSecureRandom,
+);
+const runRuntime = <A, E>(effect: Effect.Effect<A, E, Layer.Success<typeof runtimeLayer>>) =>
+  Effect.runPromise(effect.pipe(Effect.provide(runtimeLayer)));
+const { crypto, digest, path } = await runRuntime(
+  Effect.all({ crypto: SecureRandom.SecureRandom, digest: Digest.Digest, path: Path.Path }),
 );
 const output = path.resolve(values.out);
 const binary = path.resolve(values.binary);
 const hash = Effect.fn("VoiceIntakeEval.hash")(function* (file: string) {
-  return Buffer.from(yield* crypto.digest("SHA-256", NodeFS.readFileSync(file))).toString("hex");
+  return Buffer.from(yield* digest.digest(Digest.sha256, NodeFS.readFileSync(file))).toString(
+    "hex",
+  );
 });
-const binarySha256 = await Effect.runPromise(hash(binary));
+const binarySha256 = await runRuntime(hash(binary));
 if (binarySha256 !== values["binary-sha256"]) throw new Error("Native binary digest mismatch");
 NodeFS.mkdirSync(output, { recursive: true, mode: 0o700 });
 if (NodeFS.existsSync(path.join(output, "manifest.json")))
@@ -85,7 +96,7 @@ const write = (name: string, value: unknown) =>
   });
 const append = (name: string, value: unknown) =>
   NodeFS.appendFileSync(path.join(output, name), JSON.stringify(value) + "\n", { mode: 0o600 });
-const startedAt = await Effect.runPromise(DateTime.now);
+const startedAt = await runRuntime(DateTime.now);
 const manifest = {
   version: 1,
   owner: "voice-interactivity-20261101-native-qualification",
@@ -100,7 +111,7 @@ const manifest = {
   samples,
   sampleIdentity:
     "fresh segment and intent IDs per decision, including intent provenance and expected targets",
-  sourceDigests: await Effect.runPromise(sourceDigests()),
+  sourceDigests: await runRuntime(sourceDigests()),
   actualWorkDispatched: false,
   audioMeasured: false,
   privateSyntheticDataOnly: true,
@@ -138,7 +149,7 @@ const program = Effect.scoped(
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const protocolFailure = yield* Deferred.make<never, Error>();
     for (const effort of efforts) {
-      const leaseId = `synthetic-intake-${effort}-${yield* crypto.randomUUIDv4()}`;
+      const leaseId = `synthetic-intake-${effort}-${yield* crypto.uuidV4()}`;
       let opened = false;
       let version = 0;
       let activeTurns = 0;
@@ -394,11 +405,11 @@ const program = Effect.scoped(
       });
     }
   }),
-).pipe(Effect.provide(NodeServices.layer));
+);
 
 let exitCode = 0;
 try {
-  await Effect.runPromise(program);
+  await runRuntime(program);
 } catch {
   exitCode = 1;
   if (!failure) failure = { reason: "runner_or_isolation_failure", totals: { ...totals } };
@@ -452,7 +463,7 @@ const timings = efforts.map((effort) => {
     ),
   };
 });
-const sourceDigestsAfter = await Effect.runPromise(sourceDigests());
+const sourceDigestsAfter = await runRuntime(sourceDigests());
 const summary = {
   exitCode,
   failure,
@@ -487,7 +498,7 @@ if (
 )
   exitCode = 1;
 write("summary.json", { ...summary, exitCode });
-await Effect.runPromise(
+await runRuntime(
   encodeJson({ output, exitCode, totals, groups, pidsStillAlive }).pipe(
     Effect.flatMap(Console.log),
   ),

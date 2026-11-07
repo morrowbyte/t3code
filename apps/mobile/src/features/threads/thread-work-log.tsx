@@ -38,7 +38,6 @@ import {
 import {
   Animated as NativeAnimated,
   type ColorValue,
-  Easing,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -73,6 +72,7 @@ import {
   workEntryRowLabel,
 } from "../../lib/threadActivity";
 import {
+  isJsonToolText,
   toolCallLines,
   turnItemOutputImages,
   turnItemOutputText,
@@ -108,10 +108,9 @@ import Animated, {
 import { useAssetUrl } from "../../state/assets";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import { useOpenLinkedThread } from "./useOpenLinkedThread";
+import { startShimmerSteps } from "./work-shimmer-steps";
 
 const SHIMMER_WIDTH = 72;
-const SHIMMER_SWEEP_MS = 1_350;
-const SHIMMER_PAUSE_MS = 1_450;
 const SHIMMER_ICON_AND_GAP_WIDTH = 30;
 export const THREAD_DISCLOSURE_TRANSITION_MS = 180;
 const WORK_LOG_LAYOUT_TRANSITION = LinearTransition.duration(THREAD_DISCLOSURE_TRANSITION_MS);
@@ -272,44 +271,33 @@ export function ShimmeringWorkContent(props: {
   const appIsActive = useAppActive();
   const reducedMotion = useReduceMotionEnabled();
   const screenIsFocused = useIsFocused();
-  const progress = useAnimatedValue(0);
+  // Native from creation, so each setValue updates the view without a React render.
+  const progress = useAnimatedValue(0, { useNativeDriver: true });
   const gradientId = `work-shimmer-${useId().replaceAll(":", "")}`;
   const contentWidth = Math.min(
     availableWidth,
     (props.showIcon ? SHIMMER_ICON_AND_GAP_WIDTH : 0) + Math.ceil(textWidth),
   );
 
-  // Runs on React Native's native driver instead of Reanimated, whose
-  // per-frame commits starve React's while commit pausing is disabled
-  // (package.json). See docs/internals/performance-regressions.md.
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- starts the native-driver shimmer loop while visible and active, and stops it on cleanup
+  // Uses a native Animated value instead of Reanimated, whose per-frame commits
+  // starve React's while commit pausing is disabled (package.json). See
+  // docs/internals/performance-regressions.md.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- steps the native shimmer value on timers while visible and active, and stops them on cleanup
   useEffect(() => {
     progress.setValue(0);
     if (contentWidth <= 0 || reducedMotion || !appIsActive || !screenIsFocused) return;
-
-    const loop = NativeAnimated.loop(
-      NativeAnimated.timing(progress, {
-        toValue: 1,
-        duration: SHIMMER_SWEEP_MS + SHIMMER_PAUSE_MS,
-        easing: Easing.linear,
-        useNativeDriver: true,
-      }),
-    );
-    loop.start();
-    return () => loop.stop();
+    return startShimmerSteps(progress);
   }, [appIsActive, contentWidth, progress, reducedMotion, screenIsFocused]);
 
-  // One timing covers the sweep and the pause, so the native driver can loop it.
   // The React Compiler memoizes these, so re-renders don't rebuild the native
   // animation nodes.
-  const inputRange = [0, SHIMMER_SWEEP_MS / (SHIMMER_SWEEP_MS + SHIMMER_PAUSE_MS), 1];
   const sweepTranslateX = progress.interpolate({
-    inputRange,
-    outputRange: [-SHIMMER_WIDTH, contentWidth, contentWidth],
+    inputRange: [0, 1],
+    outputRange: [-SHIMMER_WIDTH, contentWidth],
   });
   const counterSweepTranslateX = progress.interpolate({
-    inputRange,
-    outputRange: [SHIMMER_WIDTH, -contentWidth, -contentWidth],
+    inputRange: [0, 1],
+    outputRange: [SHIMMER_WIDTH, -contentWidth],
   });
 
   return (
@@ -934,7 +922,7 @@ function WorkspacePreparationRetryButton(props: {
   );
 }
 
-function RecordedCodeText({
+function ToolCodeText({
   code,
   language,
   theme,
@@ -1016,13 +1004,14 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
     const warning = failureItem.failure.class === "usage_limit";
     const timestamp = new Date(row.createdAt);
     const resetAt = failureItem.failure.resetAt;
+    // The reset time is the viewer's local time; naming the zone keeps it unambiguous.
     const resetTime = resetAt
-      ? new Date(resetAt).toLocaleString(undefined, {
+      ? `${new Date(resetAt).toLocaleString(undefined, {
           month: "short",
           day: "numeric",
           hour: "numeric",
           minute: "2-digit",
-        })
+        })} (${new Intl.DateTimeFormat().resolvedOptions().timeZone})`
       : null;
     const label = warning
       ? `Usage limit reached.${resetTime ? ` Retry after ${resetTime}.` : ""}`
@@ -1399,7 +1388,7 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
                       tone="secondary"
                       onPress={() => props.onCopyRow(row.id, call.command!)}
                     />
-                    <RecordedCodeText
+                    <ToolCodeText
                       code={call.command}
                       language={commandHighlightLanguage(call.command)}
                       theme={props.themeAppearance}
@@ -1407,8 +1396,12 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
                   </View>
                 ) : null,
                 ...(call.args ?? []).map(([key, value]) =>
-                  (key === "code" || key === "script" || key === "command" || key === "cmd") &&
-                  shownItem.type === "dynamic_tool" ? (
+                  key === "code" ||
+                  key === "script" ||
+                  key === "command" ||
+                  key === "cmd" ||
+                  key === "html" ||
+                  isJsonToolText(value) ? (
                     <View key={key}>
                       <Text className="font-mono text-2xs leading-normal text-foreground-muted">
                         {key}
@@ -1418,19 +1411,25 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
                         tone="secondary"
                         onPress={() => props.onCopyRow(row.id, value)}
                       />
-                      <RecordedCodeText
+                      <ToolCodeText
                         code={value}
                         language={
-                          key === "command" || key === "cmd"
-                            ? commandHighlightLanguage(value)
-                            : isJavaScriptReplTool(shownItem.toolName)
-                              ? "typescript"
-                              : typeof shownItem.input === "object" &&
-                                  shownItem.input !== null &&
-                                  "language" in shownItem.input &&
-                                  typeof shownItem.input.language === "string"
-                                ? shownItem.input.language
-                                : "text"
+                          key === "html"
+                            ? "html"
+                            : isJsonToolText(value)
+                              ? "json"
+                              : key === "command" || key === "cmd"
+                                ? commandHighlightLanguage(value)
+                                : shownItem.type === "dynamic_tool" &&
+                                    isJavaScriptReplTool(shownItem.toolName)
+                                  ? "typescript"
+                                  : shownItem.type === "dynamic_tool" &&
+                                      typeof shownItem.input === "object" &&
+                                      shownItem.input !== null &&
+                                      "language" in shownItem.input &&
+                                      typeof shownItem.input.language === "string"
+                                    ? shownItem.input.language
+                                    : "text"
                         }
                         theme={props.themeAppearance}
                       />
@@ -1446,7 +1445,7 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
                       tone="secondary"
                       onPress={() => props.onCopyRow(row.id, call.argsText!)}
                     />
-                    <RecordedCodeText
+                    <ToolCodeText
                       code={call.argsText}
                       language={
                         shownItem.type === "dynamic_tool" &&
@@ -1471,7 +1470,11 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
                         selectable
                         className="font-mono text-2xs leading-normal text-foreground"
                       >
-                        {line}
+                        {isJsonToolText(line) ? (
+                          <ToolCodeText code={line} language="json" theme={props.themeAppearance} />
+                        ) : (
+                          line
+                        )}
                       </Text>
                     ) : (
                       line
@@ -1479,7 +1482,11 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
                 )
             ) : fullDetail ? (
               <Text selectable className="font-mono text-2xs leading-normal text-foreground-muted">
-                {fullDetail}
+                {isJsonToolText(fullDetail) ? (
+                  <ToolCodeText code={fullDetail} language="json" theme={props.themeAppearance} />
+                ) : (
+                  fullDetail
+                )}
               </Text>
             ) : null}
             {fetchedOutput ? (
@@ -1490,7 +1497,15 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
                   (!call || call.command || call.args || call.argsText) && "mt-1.5",
                 )}
               >
-                {fetchedOutput}
+                {isJsonToolText(fetchedOutput) ? (
+                  <ToolCodeText
+                    code={fetchedOutput}
+                    language="json"
+                    theme={props.themeAppearance}
+                  />
+                ) : (
+                  fetchedOutput
+                )}
               </Text>
             ) : null}
             {streamsOutput ? null : exitLine}
@@ -1633,11 +1648,13 @@ export function ThreadWorkGroupToggle(props: {
 export function ThreadThinkingRow(props: {
   readonly rowSizing: ReturnType<typeof deriveThreadWorkLogSizing>;
   readonly iconSubtleColor: ColorValue;
+  readonly label?: string;
 }) {
+  const label = props.label ?? "Thinking";
   return (
     <View
       accessible
-      accessibilityLabel="Thinking"
+      accessibilityLabel={label}
       className="-mx-1 min-h-8 flex-row items-center px-1.5 py-0"
       style={{ minHeight: props.rowSizing.estimatedRowHeight }}
     >
@@ -1645,7 +1662,7 @@ export function ThreadThinkingRow(props: {
         key={props.rowSizing.textSizeKey}
         icon="brain"
         iconSubtleColor={props.iconSubtleColor}
-        label="Thinking"
+        label={label}
         showIcon
       />
     </View>

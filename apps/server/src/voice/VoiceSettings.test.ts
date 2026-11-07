@@ -4,6 +4,7 @@ import * as Layer from "effect/Layer";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Option from "effect/Option";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ServerConfig from "../config.ts";
@@ -28,7 +29,7 @@ it.effect("keeps an unchanged key private and removes only the explicitly saved 
           ),
       });
     }),
-  ).pipe(Layer.provideMerge(NodeServices.layer));
+  ).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
   return Effect.gen(function* () {
     const store = yield* makeVoiceSettings;
     const config = yield* ServerConfig.ServerConfig;
@@ -60,6 +61,7 @@ it.effect("keeps an unchanged key private and removes only the explicitly saved 
     assert.notDeepEqual(yield* fs.readFile(secretPath), encrypted);
     assert.equal((yield* reopened.read).apiKey, "fixture-private-key");
     yield* store.write({ ...settings, apiKey: null });
+    // @effect-diagnostics-next-line processEnvInEffect:off -- This assertion compares the real inherited process fallback after removing the saved key.
     assert.equal((yield* store.read).apiKey, process.env.T3CODE_TRANSCRIPTION_API_KEY);
     assert.notEqual((yield* store.read).apiKeySource, "saved");
   }).pipe(
@@ -114,7 +116,7 @@ it.effect("rejects tampering, missing wrapping keys and plaintext without rewrit
         Layer.provideMerge(
           ServerConfig.layerTest(process.cwd(), { prefix: "voice-key-security-" }),
         ),
-        Layer.provideMerge(NodeServices.layer),
+        Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
       ),
     ),
     Effect.scoped,
@@ -150,7 +152,7 @@ it.effect("keeps settings metadata recoverable without repairing a missing wrapp
         Layer.provideMerge(
           ServerConfig.layerTest(process.cwd(), { prefix: "voice-settings-recovery-" }),
         ),
-        Layer.provideMerge(NodeServices.layer),
+        Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
       ),
     ),
     Effect.scoped,
@@ -183,7 +185,7 @@ it.effect("does not hide malformed preference files behind key recovery metadata
         Layer.provideMerge(
           ServerConfig.layerTest(process.cwd(), { prefix: "voice-settings-invalid-config-" }),
         ),
-        Layer.provideMerge(NodeServices.layer),
+        Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
       ),
     ),
     Effect.scoped,

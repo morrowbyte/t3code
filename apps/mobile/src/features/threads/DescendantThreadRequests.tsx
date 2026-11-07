@@ -58,6 +58,7 @@ function RequestCard(props: {
       ) : null}
       {request.activePendingUserInput ? (
         <PendingUserInputCard
+          inline
           origin={props.group.origin}
           environmentId={props.group.origin.environmentId}
           pendingUserInput={request.activePendingUserInput}

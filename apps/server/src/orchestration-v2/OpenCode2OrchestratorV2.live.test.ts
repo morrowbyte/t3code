@@ -4,6 +4,7 @@ import * as PortScanner from "../preview/PortScanner.ts";
 import * as CuaControl from "../cua/CuaControl.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSqlite from "node:sqlite";
 import { assert, it } from "@effect/vitest";
@@ -98,7 +99,7 @@ const layerMcpRegistry = Layer.succeed(
           browserToolsAvailable: false,
         },
       }),
-    resolve: () => Effect.sync(() => undefined),
+    resolve: () => Effect.undefined,
     touch: () => Effect.void,
     revokeProviderSession: () => Effect.void,
     revokeThread: () => Effect.void,
@@ -108,7 +109,7 @@ const layerMcpRegistry = Layer.succeed(
 
 const fixtureEnvironmentId = EnvironmentId.make("00000000-0000-4000-8000-000000000001");
 const layerPlatformTest = Layer.mergeAll(
-  NodeServices.layer,
+  Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
   Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
     resolveLink: () => Effect.die("unused title link"),
   }),
@@ -167,7 +168,7 @@ const layerProviderInstanceRegistry = ProviderInstanceRegistryHydration.layer.pi
         Layer.provide(layerServerConfig),
         Layer.provide(layerPlatformTest),
       ),
-      NodeServices.layer,
+      Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
       FetchHttpClient.layer,
       OpenCodeRuntime.layer.pipe(
         Layer.provide(layerSpawnedServers),
@@ -408,7 +409,12 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
         const models = yield* assistantModels(sessionId!);
         assert.equal(models.at(-1), SWITCHED_MODEL);
         assert.notEqual(models[0], SWITCHED_MODEL);
-      }).pipe(Effect.provide(Layer.merge(layerLive, NodeServices.layer)), Effect.scoped),
+      }).pipe(
+        Effect.provide(
+          Layer.merge(layerLive, Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+        ),
+        Effect.scoped,
+      ),
     360_000,
   );
 
@@ -517,7 +523,12 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
         assert.equal(answered.runs.at(-1)?.status, "completed");
         const reply = answered.messages.findLast((message) => message.role === "assistant");
         assert.match(reply?.text ?? "", /blue/i);
-      }).pipe(Effect.provide(Layer.merge(layerLive, NodeServices.layer)), Effect.scoped),
+      }).pipe(
+        Effect.provide(
+          Layer.merge(layerLive, Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+        ),
+        Effect.scoped,
+      ),
     600_000,
   );
 
@@ -554,7 +565,12 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
         assert.equal(planned.runs.at(-1)?.status, "completed");
         assert.isFalse(yield* fs.exists(path.join(ROOT, "work", "plan_write_probe.txt")));
         assert.isTrue(yield* fs.exists(path.join(planDir, "probe-plan.md")));
-      }).pipe(Effect.provide(Layer.merge(layerLive, NodeServices.layer)), Effect.scoped),
+      }).pipe(
+        Effect.provide(
+          Layer.merge(layerLive, Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+        ),
+        Effect.scoped,
+      ),
     360_000,
   );
 
@@ -682,7 +698,12 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
           stoppedChild.turnItems.some((item) => item.status === "running"),
           "the stopped child shows nothing running",
         );
-      }).pipe(Effect.provide(Layer.merge(layerLive, NodeServices.layer)), Effect.scoped),
+      }).pipe(
+        Effect.provide(
+          Layer.merge(layerLive, Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+        ),
+        Effect.scoped,
+      ),
     480_000,
   );
 
@@ -880,7 +901,12 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
           .map((row) => String(row.id));
         db.close();
         assert.lengthOf(userMessages, 2);
-      }).pipe(Effect.provide(Layer.merge(layerLive, NodeServices.layer)), Effect.scoped),
+      }).pipe(
+        Effect.provide(
+          Layer.merge(layerLive, Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+        ),
+        Effect.scoped,
+      ),
     600_000,
   );
 
@@ -979,7 +1005,12 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
           compaction?.type === "compaction" ? (compaction.summary ?? "").length : 0,
           0,
         );
-      }).pipe(Effect.provide(Layer.merge(layerLive, NodeServices.layer)), Effect.scoped),
+      }).pipe(
+        Effect.provide(
+          Layer.merge(layerLive, Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+        ),
+        Effect.scoped,
+      ),
     360_000,
   );
 
@@ -1020,6 +1051,7 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
         const runs = (count: number) => (projection: OrchestrationV2ThreadProjection) =>
           projection.runs.length === count && settled(projection);
 
+        // @effect-diagnostics-next-line processEnvInEffect:off -- This opt-in live fixture reads the externally configured server and transport endpoints.
         if (process.env.OPENCODE2_MCP_URL !== undefined) {
           yield* send(
             threadId,
@@ -1062,7 +1094,12 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
         const answer = next.turnItems.findLast((item) => item.type === "assistant_message");
         assert.include(answer?.type === "assistant_message" ? answer.text : "", "sleep 60");
         assert.lengthOf(next.providerThreads, 1);
-      }).pipe(Effect.provide(Layer.merge(layerLive, NodeServices.layer)), Effect.scoped),
+      }).pipe(
+        Effect.provide(
+          Layer.merge(layerLive, Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+        ),
+        Effect.scoped,
+      ),
     360_000,
   );
 
@@ -1100,6 +1137,7 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
             (item) => item.type === "command_execution" && item.status === "running",
           ),
         );
+        // @effect-diagnostics-next-line processEnvInEffect:off -- This opt-in live fixture reads the externally configured server and transport endpoints.
         yield* HttpClient.get(process.env.OPENCODE2_DROP_URL!).pipe(
           Effect.provide(FetchHttpClient.layer),
           Effect.orDie,
@@ -1112,7 +1150,9 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
         assert.include(reply?.type === "assistant_message" ? reply.text : "", "AFTER_DROP");
         const opencode = yield* OpenCode2Client.make.pipe(Effect.provide(FetchHttpClient.layer));
         const api = yield* opencode.connect({
+          // @effect-diagnostics-next-line processEnvInEffect:off -- This opt-in live fixture reads the externally configured server and transport endpoints.
           baseUrl: process.env.OPENCODE2_SERVER_URL!,
+          // @effect-diagnostics-next-line processEnvInEffect:off -- This opt-in live fixture reads the externally configured server and transport endpoints.
           password: process.env.OPENCODE2_SERVER_PASSWORD ?? "",
         });
         const servers = yield* api.client.mcp.list({ location: { directory: work } });
@@ -1121,7 +1161,12 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
           [],
           "an external server gets no T3 MCP server, as with 1.x",
         );
-      }).pipe(Effect.provide(Layer.merge(layerLive, NodeServices.layer)), Effect.scoped),
+      }).pipe(
+        Effect.provide(
+          Layer.merge(layerLive, Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+        ),
+        Effect.scoped,
+      ),
     360_000,
   );
 });

@@ -1,7 +1,7 @@
 import { ModelSelection, type ThreadId, TrimmedNonEmptyString } from "@t3tools/contracts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Crypto from "effect/crypto/SecureRandom";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -140,7 +140,7 @@ export class ProviderEvalSession extends Context.Service<
 const make = Effect.gen(function* () {
   const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
   const threadManagement = yield* ThreadManagement.ThreadManagementService;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Crypto.SecureRandom;
   const serviceScope = yield* Scope.Scope;
   const admission = yield* Semaphore.make(1);
   const sessions = new Map<string, Session>();
@@ -237,7 +237,7 @@ const make = Effect.gen(function* () {
         const evaluate = adapter.evaluate;
         if (!evaluate) return yield* new ProviderEvalSessionError({ code: "unsupported" });
         const session: Session = {
-          id: yield* crypto.randomUUIDv4().pipe(Effect.orDie),
+          id: yield* crypto.uuidV4().pipe(Effect.orDie),
           owner,
           clientRequestId: request.clientRequestId,
           scope: yield* Scope.fork(serviceScope),

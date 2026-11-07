@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -23,6 +24,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { ClaudeProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as EffectWorker from "../orchestration-v2/EffectWorker.ts";
+import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -33,9 +35,9 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
+import * as ProviderTurnStartServiceTestkit from "../orchestration-v2/ProviderTurnStartService.testkit.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
-import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
@@ -60,6 +62,8 @@ it.effect.each([
     Effect.scoped(
       Effect.gen(function* () {
         const cwd = yield* checkpointWorkspace("task-cancel-usage-limit");
+        const projectId = ProjectId.make("project:task-cancel-limit");
+        const layerProjects = ProviderTurnStartServiceTestkit.layerForProject(projectId, cwd);
         // Set while the provider's usage-limit result is already on its way.
         let limitInFlight: Effect.Effect<void> = Effect.void;
         const turns: Array<{
@@ -143,7 +147,7 @@ it.effect.each([
         const layerOrchestrator = ProviderReplayHarness.layerWithRegistry(
           { name: "task-cancel-usage-limit" },
           layerAdapters,
-          { runEffectWorker: false },
+          { runEffectWorker: false, projectServiceLayer: layerProjects },
         );
         const layerOrchestration = Layer.merge(
           layerOrchestrator,
@@ -183,12 +187,13 @@ it.effect.each([
             Layer.mergeAll(
               layerAdapters,
               Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
-              Layer.mock(ProjectService.ProjectService)({}),
+              layerProjects,
               Layer.mock(SecretRequests.SecretRequests)({}),
               Layer.mock(RemoteDelegation.RemoteDelegation)({}),
               ServerSettings.layerTest(),
               Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
               NodeServices.layer,
+              NodeCrypto.layer,
             ),
           ),
         );
@@ -196,6 +201,7 @@ it.effect.each([
         yield* Effect.gen(function* () {
           const orchestrator = yield* Orchestrator.OrchestratorV2;
           const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const eventSink = yield* EventSink.EventSinkV2;
           const service = yield* OrchestratorMcpService.OrchestratorMcpService;
           const sweep = Effect.andThen(
             Effect.suspend(() => sweeps.get("usage-limit-recovery")!),
@@ -203,12 +209,16 @@ it.effect.each([
           );
           const parentThreadId = ThreadId.make("thread:task-cancel-limit-parent");
           const watch = (predicate: (event: OrchestrationV2DomainEvent) => boolean) =>
-            orchestrator.streamDomainEvents.pipe(
-              Stream.filter(predicate),
-              Stream.take(1),
-              Stream.runDrain,
-              Effect.forkScoped,
-            );
+            Effect.gen(function* () {
+              const afterSequence = yield* eventSink.latestSequence();
+              return yield* eventSink.stream({ afterSequence }).pipe(
+                Stream.map((stored) => stored.event),
+                Stream.filter(predicate),
+                Stream.take(1),
+                Stream.runDrain,
+                Effect.forkScoped,
+              );
+            });
           const turnRunning = () =>
             watch(
               (event) =>
@@ -218,7 +228,7 @@ it.effect.each([
             type: "thread.create",
             commandId: CommandId.make("create-parent"),
             threadId: parentThreadId,
-            projectId: ProjectId.make("project:task-cancel-limit"),
+            projectId,
             title: "Parent",
             modelSelection,
             runtimeMode: "full-access",

@@ -1,11 +1,12 @@
 import type { ScopedThreadRef } from "@t3tools/contracts";
-import { useLayoutEffect, useMemo, useState } from "react";
-import { View } from "react-native";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { View, type TextInputInstance } from "react-native";
 import { AppTextInput as TextInput } from "../../components/ui/AppText";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { environmentThreadDetails } from "../../state/threads";
 import {
   ComposerDictationCancelAction,
+  ComposerDictationError,
   ComposerDictationPrimaryAction,
   ComposerDictationStatus,
   ComposerDictationToolbar,
@@ -28,16 +29,21 @@ export function QuestionAnswerInput(props: {
   readonly onFocus: () => void;
   readonly onBlur: () => void;
 }) {
+  const inputRef = useRef<TextInputInstance>(null);
+  const nativeText = useRef(props.value);
+  const [initialText] = useState(props.value);
   const ownerKey = questionDictationOwnerKey(props.origin, props.requestId, props.questionId);
   const draft = useMemo(() => createQuestionDictationDraft(ownerKey), [ownerKey]);
   const { session } = useGlobalVoiceInput();
   const disabled = props.disabled || props.dictationDisabled;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Keep the active native dictation target current and cancel its voice session when this input becomes unavailable.
   useLayoutEffect(() => {
     if (disabled) {
       draft.deactivate();
       session.cancel(ownerKey);
     } else draft.update(props.value, props.onChangeText);
   }, [draft, disabled, props.value, props.onChangeText, session, ownerKey]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Invalidate captured dictation targets and release this owner's native voice session on unmount or owner change.
   useLayoutEffect(
     () => () => {
       draft.deactivate();
@@ -54,6 +60,12 @@ export function QuestionAnswerInput(props: {
     cursor?.ownerKey === ownerKey
       ? cursor.selection
       : { start: props.value.length, end: props.value.length };
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- only external draft changes replace native text, preserving autocorrection while typing
+  useLayoutEffect(() => {
+    if (nativeText.current === props.value) return;
+    nativeText.current = props.value;
+    inputRef.current?.setNativeProps({ text: props.value, selection });
+  }, [props.value, selection]);
   const readDraftMessage = () => {
     const request = appAtomRegistry
       .get(environmentThreadDetails.pendingRequestsAtom(props.origin))
@@ -85,16 +97,17 @@ export function QuestionAnswerInput(props: {
     <View className="gap-2">
       <TextInput
         accessibilityLabel={props.label}
-        value={props.value}
+        ref={inputRef}
+        defaultValue={initialText}
         multiline={props.multiline}
         submitBehavior={props.multiline ? "newline" : undefined}
         editable={!props.disabled && !voice.freezesEditor}
         onChangeText={(value) => {
-          // Observe edits immediately, before React renders the controlled value.
+          nativeText.current = value;
+          // Observe edits before the parent renders the updated draft.
           draft.update(value, props.onChangeText);
           props.onChangeText(value);
         }}
-        selection={selection}
         onSelectionChange={({ nativeEvent }) =>
           setCursor({ ownerKey, selection: nativeEvent.selection })
         }
@@ -102,6 +115,10 @@ export function QuestionAnswerInput(props: {
         onBlur={props.onBlur}
         placeholder="Or type a custom answer"
         className="min-h-[54px] rounded-2xl border border-input-border bg-input px-3.5 py-3 font-sans text-base text-foreground"
+      />
+      <ComposerDictationError
+        error={voice.state.phase === "error" ? voice.state.error : null}
+        onDismiss={voice.cancel}
       />
       {voice.isAvailable || presentation.statusLabel !== null ? (
         <ComposerDictationToolbar showsDictation={presentation.statusLabel !== null}>
@@ -112,7 +129,6 @@ export function QuestionAnswerInput(props: {
               elapsedSeconds={voice.elapsedSeconds}
               phase={voice.state.phase}
               presentation={presentation}
-              onDismissError={voice.cancel}
             />
             <ComposerDictationPrimaryAction
               state={voice.state}

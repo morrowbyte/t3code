@@ -34,6 +34,12 @@ import * as PreviewPasskeys from "./Passkeys.ts";
 import { makeProtonPassProvider } from "./ProtonPassCli.ts";
 import { makeAutofill } from "./ProtonPassAutofill.ts";
 
+const tryAutofill = <A>(operation: () => PromiseLike<A>) =>
+  Effect.tryPromise({
+    try: operation,
+    catch: (cause) => new PreviewManager.PreviewOperationError({ operation: "autofill", cause }),
+  });
+
 describe("fitPictureInPictureContentSize", () => {
   it("does not collapse toward the minimum size when orientation changes repeatedly", () => {
     const portrait = PreviewManager.fitPictureInPictureContentSize([523, 294], 9 / 16);
@@ -866,6 +872,33 @@ describe("PreviewManager", () => {
             );
             expect(preventDefault).toHaveBeenCalledTimes(expected ? 1 : 0);
             expect(send).toHaveBeenCalledTimes(expected ? 1 : 0);
+          }),
+        platform,
+      ),
+  );
+
+  effectIt.effect.each([
+    ["darwin", true, false, true],
+    ["darwin", false, true, false],
+    ["linux", false, true, true],
+    ["win32", true, false, false],
+  ] as const)(
+    "reloads the preview only on the platform refresh chord: %s meta=%s ctrl=%s",
+    ([platform, meta, control, expected]) =>
+      withManager(
+        (manager) =>
+          Effect.gen(function* () {
+            const preview = makeFaviconWebContents();
+            fromId.mockReturnValue(preview.webContents);
+            yield* manager.createTab("tab_refresh");
+            yield* manager.registerWebview("tab_refresh", 42);
+            const preventDefault = vi.fn();
+            preview.listeners.get("before-input-event")!(
+              { preventDefault } as never,
+              { type: "keyDown", key: "r", meta, control, shift: false, alt: false } as never,
+            );
+            expect(preventDefault).toHaveBeenCalledTimes(expected ? 1 : 0);
+            expect(preview.reload).toHaveBeenCalledTimes(expected ? 1 : 0);
           }),
         platform,
       ),
@@ -1793,7 +1826,7 @@ describe("PreviewManager", () => {
 
           const capture = yield* manager.captureScreenshot("private_tab").pipe(Effect.forkScoped);
           yield* Effect.promise(() => started);
-          const refused = yield* Effect.exit(Effect.tryPromise(() => target.enterPrivate()));
+          const refused = yield* Effect.exit(tryAutofill(() => target.enterPrivate()));
           expect(Exit.isFailure(refused)).toBe(true);
           expect(frame.executeJavaScript).not.toHaveBeenCalled();
           releaseCapture?.();
@@ -1859,9 +1892,9 @@ describe("PreviewManager", () => {
         preview.listeners.get("did-start-navigation")?.();
         expect(target?.current()).toBe(false);
         if (target) {
-          expect(
-            Exit.isFailure(yield* Effect.exit(Effect.tryPromise(() => target.enterPrivate()))),
-          ).toBe(true);
+          expect(Exit.isFailure(yield* Effect.exit(tryAutofill(() => target.enterPrivate())))).toBe(
+            true,
+          );
         }
         expect(frame.executeJavaScript).not.toHaveBeenCalled();
       }),
@@ -1919,7 +1952,7 @@ describe("PreviewManager", () => {
           yield* Effect.promise(() => target.enterPrivate());
           const releaseRead = target.holdPrivate();
           expect(
-            Exit.isFailure(yield* Effect.exit(Effect.tryPromise(() => target.clearAndResume()))),
+            Exit.isFailure(yield* Effect.exit(tryAutofill(() => target.clearAndResume()))),
           ).toBe(true);
           releaseRead();
           const fill = yield* Effect.promise(() => target.fill("fake-user", "fake-password")).pipe(
@@ -1927,7 +1960,7 @@ describe("PreviewManager", () => {
           );
           yield* Effect.promise(() => started.promise);
           expect(
-            Exit.isFailure(yield* Effect.exit(Effect.tryPromise(() => target.clearAndResume()))),
+            Exit.isFailure(yield* Effect.exit(tryAutofill(() => target.clearAndResume()))),
           ).toBe(true);
           expect(Exit.isFailure(yield* Effect.exit(manager.captureScreenshot("private_tab")))).toBe(
             true,
@@ -1943,9 +1976,7 @@ describe("PreviewManager", () => {
           expect(target.current()).toBe(false);
           expect(
             Exit.isFailure(
-              yield* Effect.exit(
-                Effect.tryPromise(() => target.fill("fake-user", "fake-password")),
-              ),
+              yield* Effect.exit(tryAutofill(() => target.fill("fake-user", "fake-password"))),
             ),
           ).toBe(true);
           expect(insertText).toHaveBeenCalledTimes(2);
@@ -2021,14 +2052,14 @@ describe("PreviewManager", () => {
             },
           );
           yield* Effect.promise(() => started.promise);
-          expect(
-            Exit.isFailure(yield* Effect.exit(Effect.tryPromise(() => target.enterPrivate()))),
-          ).toBe(true);
+          expect(Exit.isFailure(yield* Effect.exit(tryAutofill(() => target.enterPrivate())))).toBe(
+            true,
+          );
           yield* manager.cancelPickElement("private_tab");
           expect(yield* Fiber.join(pick)).toBeNull();
-          expect(
-            Exit.isFailure(yield* Effect.exit(Effect.tryPromise(() => target.enterPrivate()))),
-          ).toBe(true);
+          expect(Exit.isFailure(yield* Effect.exit(tryAutofill(() => target.enterPrivate())))).toBe(
+            true,
+          );
           pending.resolve({ getSize: () => ({ width: 1, height: 1 }) });
           yield* Effect.yieldNow;
           expect(
@@ -2078,7 +2109,7 @@ describe("PreviewManager", () => {
           expect(a.password.value).toBe("fake-password");
           expect(replacement.value).toBe("fake-password");
           expect(
-            Exit.isFailure(yield* Effect.exit(Effect.tryPromise(() => target.clearAndResume()))),
+            Exit.isFailure(yield* Effect.exit(tryAutofill(() => target.clearAndResume()))),
           ).toBe(true);
           // A second attempt still refuses: failed clear must retain bookkeeping.
           expect(run(PreviewManager.protonPassAutofillScripts.clear)).toBe(false);
@@ -2136,7 +2167,7 @@ describe("PreviewManager", () => {
               if (!target) throw new Error("Missing target");
               yield* Effect.promise(() => target.enterPrivate());
               yield* Effect.promise(() => target.fill("fake-user", "fake-password"));
-              const clearing = yield* Effect.tryPromise(() => target.clearAndResume()).pipe(
+              const clearing = yield* tryAutofill(() => target.clearAndResume()).pipe(
                 Effect.exit,
                 Effect.forkScoped,
               );
@@ -2254,9 +2285,7 @@ describe("PreviewManager", () => {
             },
           );
           expect(
-            Exit.isFailure(
-              yield* Effect.exit(Effect.tryPromise(() => service.fill(target, reference))),
-            ),
+            Exit.isFailure(yield* Effect.exit(tryAutofill(() => service.fill(target, reference)))),
           ).toBe(true);
           expect(credentials).not.toHaveBeenCalled();
           expect(execute).not.toHaveBeenCalled();
@@ -2298,9 +2327,9 @@ describe("PreviewManager", () => {
           if (!target) throw new Error("Missing target");
           yield* Effect.promise(() => target.enterPrivate());
           yield* Effect.promise(() => target.fill("fake-user", "fake-password"));
-          const clearing = yield* Effect.exit(
-            Effect.tryPromise(() => target.clearAndResume()),
-          ).pipe(Effect.forkScoped);
+          const clearing = yield* Effect.exit(tryAutofill(() => target.clearAndResume())).pipe(
+            Effect.forkScoped,
+          );
           yield* Queue.take(peer.releases);
           expect(a.username.value).toBe("");
           expect(a.password.value).toBe("");
@@ -2314,7 +2343,7 @@ describe("PreviewManager", () => {
           const current = yield* manager.getAutofillTarget(wc, frame);
           expect(current?.privateEntry).toBe(true);
           expect(
-            Exit.isFailure(yield* Effect.exit(Effect.tryPromise(() => current!.enterPrivate()))),
+            Exit.isFailure(yield* Effect.exit(tryAutofill(() => current!.enterPrivate()))),
           ).toBe(true);
         }),
       { holdRelease: true },
@@ -2358,7 +2387,7 @@ describe("PreviewManager", () => {
         if (!target) throw new Error("Missing target");
         yield* Effect.promise(() => target.enterPrivate());
         const filling = yield* Effect.exit(
-          Effect.tryPromise(() => target.fill("fake-user", "fake-password")),
+          tryAutofill(() => target.fill("fake-user", "fake-password")),
         ).pipe(Effect.forkScoped);
         yield* Effect.promise(() => focused.promise);
         yield* peer.revoke;
@@ -2423,9 +2452,7 @@ describe("PreviewManager", () => {
             write: async () => {},
           });
           expect(
-            Exit.isFailure(
-              yield* Effect.exit(Effect.tryPromise(() => service.fill(target, reference))),
-            ),
+            Exit.isFailure(yield* Effect.exit(tryAutofill(() => service.fill(target, reference)))),
           ).toBe(true);
           expect(inserted).toHaveBeenCalledTimes(2);
           expect(a.username.value).toBe("");
@@ -2437,9 +2464,7 @@ describe("PreviewManager", () => {
           insertValues = true;
           const reads = cli.mock.calls.length;
           expect(
-            Exit.isFailure(
-              yield* Effect.exit(Effect.tryPromise(() => service.fill(target, reference))),
-            ),
+            Exit.isFailure(yield* Effect.exit(tryAutofill(() => service.fill(target, reference)))),
           ).toBe(true);
           expect(inserted).toHaveBeenCalledTimes(2);
           expect(cli).toHaveBeenCalledTimes(reads);
@@ -3658,6 +3683,70 @@ describe("PreviewManager", () => {
           expect(capturePage).not.toHaveBeenCalled();
         }),
       ),
+  );
+
+  effectIt.effect("delivers annotation voice state only to the pick session that owns it", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const firstReady = yield* Deferred.make<void>();
+        const secondReady = yield* Deferred.make<void>();
+        let registrations = 0;
+        const guest = {
+          ...makeTestPreviewWebContents(async () => ({
+            toPNG: () => Buffer.from("unused"),
+            toJPEG: () => Buffer.from("unused"),
+            getSize: () => ({ width: 1, height: 1 }),
+          })),
+          isFocused: () => true,
+          focus: vi.fn(),
+          send: (channel: string, ...args: unknown[]) => {
+            webviewSend(channel, ...args);
+            if (channel === "preview:start-pick")
+              Deferred.doneUnsafe(registrations++ === 0 ? firstReady : secondReady, Effect.void);
+          },
+          once: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn(), removeListener: vi.fn() },
+        };
+        fromId.mockReturnValue(guest as never);
+        yield* manager.createTab("tab_1");
+        yield* manager.registerWebview("tab_1", 42);
+        const first = yield* manager
+          .pickElement("tab_1", { sessionId: "first", shortcuts: [] })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(firstReady);
+        const state = {
+          tabId: "tab_1",
+          sessionId: "first",
+          available: true,
+          phase: "recording" as const,
+          status: "Recording",
+          errorAction: null,
+          preview: null,
+          freezesEditor: true,
+          blocksSubmission: true,
+          level: 0,
+          shortcutLabel: "Ctrl+D",
+          draft: { text: "Tighten spacing", cursor: 15 },
+        };
+        yield* manager.updateAnnotationVoice(state);
+        expect(webviewSend).toHaveBeenCalledWith("preview:annotation-voice-state", state);
+        const second = yield* manager
+          .pickElement("tab_1", { sessionId: "second", shortcuts: [] })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(secondReady);
+        expect(yield* Fiber.join(first)).toBeNull();
+        webviewSend.mockClear();
+        yield* manager.updateAnnotationVoice(state);
+        expect(webviewSend).not.toHaveBeenCalled();
+        yield* manager.updateAnnotationVoice({ ...state, sessionId: "second" });
+        expect(webviewSend).toHaveBeenCalledOnce();
+        yield* manager.cancelPickElement("tab_1");
+        expect(yield* Fiber.join(second)).toBeNull();
+        webviewSend.mockClear();
+        yield* manager.updateAnnotationVoice({ ...state, sessionId: "second" });
+        expect(webviewSend).not.toHaveBeenCalled();
+      }),
+    ),
   );
 
   effectIt.effect("keeps annotation send grants isolated and updates an active pick", () =>

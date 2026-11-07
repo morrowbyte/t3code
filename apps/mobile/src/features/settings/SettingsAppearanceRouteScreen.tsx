@@ -10,35 +10,30 @@ import { TextAppearanceSection } from "./appearance/sections/TextAppearanceSecti
 import { ThemeAppearanceSection } from "./appearance/sections/ThemeAppearanceSection";
 
 import { AgentIdentitySettings } from "../agent-identity/AgentIdentitySettings";
-import {
-  AndroidSettingsEnvironmentFilter,
-  SettingsEnvironmentFilterHeader,
-} from "./components/SettingsEnvironmentFilterHeader";
+import { useSettingsEnvironmentMenu } from "./components/SettingsEnvironmentFilterHeader";
 
 export function SettingsAppearanceRouteScreen() {
+  const environmentMenu = useSettingsEnvironmentMenu();
   const insets = useSafeAreaInsets();
 
   return (
-    <>
-      <SettingsEnvironmentFilterHeader />
-      <SettingsScreen title="Appearance" trailing={<AndroidSettingsEnvironmentFilter />}>
-        <ScrollView
-          contentInsetAdjustmentBehavior="automatic"
-          showsVerticalScrollIndicator={false}
-          className="flex-1"
-          contentContainerClassName="gap-6 px-5 pt-4"
-          contentContainerStyle={{
-            paddingBottom: Math.max(insets.bottom, 18) + 18,
-          }}
-        >
-          <ThemeAppearanceSection />
-          <AgentIdentitySettings />
-          {Platform.OS === "android" ? <AndroidNavigationAppearanceSection /> : null}
-          <TextAppearanceSection />
-          <TerminalAppearanceSection />
-          <CodeAppearanceSection />
-        </ScrollView>
-      </SettingsScreen>
-    </>
+    <SettingsScreen title="Appearance" menus={[environmentMenu]}>
+      <ScrollView
+        contentInsetAdjustmentBehavior="automatic"
+        showsVerticalScrollIndicator={false}
+        className="flex-1"
+        contentContainerClassName="gap-6 px-5 pt-4"
+        contentContainerStyle={{
+          paddingBottom: Math.max(insets.bottom, 18) + 18,
+        }}
+      >
+        <ThemeAppearanceSection />
+        <AgentIdentitySettings />
+        {Platform.OS === "android" ? <AndroidNavigationAppearanceSection /> : null}
+        <TextAppearanceSection />
+        <TerminalAppearanceSection />
+        <CodeAppearanceSection />
+      </ScrollView>
+    </SettingsScreen>
   );
 }

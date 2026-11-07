@@ -10,7 +10,7 @@ import { Button } from "../../components/ui/Button";
 import { nativeLiveVoiceSession, useNativeLiveVoiceSession } from "../../state/liveVoice";
 import { useEnvironmentPresentation } from "../../state/presentation";
 import { environmentThreadShells } from "../../state/threads";
-import { workspaceDockBottomClearance } from "../workspace/workspace-tabs-state";
+import { workspaceDockBottomClearance } from "../layout/workspace/workspace-tabs-state";
 import {
   NativeVoiceBubbleViewToggle,
   useNativeVoiceBubbleView,
