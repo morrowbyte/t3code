@@ -133,6 +133,7 @@ it.effect(
         yield* start();
         yield* notifications.get("thread/realtime/error")!({ threadId: "voice-planner" });
         assert.isFalse(yield* voice.hasActiveSession!);
+        yield* voice.stop("voice-planner");
         const entered = yield* Deferred.make<void>();
         const release = yield* Deferred.make<void>();
         gate = { entered, release };
