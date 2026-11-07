@@ -55,6 +55,7 @@ import * as EffectOutbox from "../EffectOutbox.ts";
 import * as ProjectionReplay from "./ProjectionReplay.ts";
 import * as ProjectionStore from "../ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
+import * as ProviderTurnStartServiceTestkit from "../ProviderTurnStartService.testkit.ts";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import {
   CLAUDE_MODEL_SELECTION,
@@ -1036,6 +1037,12 @@ describe("orchestration v2 provider switching", () => {
                 },
               },
               layerRegistry,
+              {
+                projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+                  projectId,
+                  cwd,
+                ),
+              },
             ),
           ),
         );
@@ -1219,6 +1226,12 @@ describe("orchestration v2 provider switching", () => {
                   },
                 },
                 layerRegistry,
+                {
+                  projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+                    projectId,
+                    cwd,
+                  ),
+                },
               ),
             ),
           );
@@ -1344,6 +1357,12 @@ describe("orchestration v2 provider switching", () => {
                   },
                 },
                 layerRegistry,
+                {
+                  projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+                    projectId,
+                    cwd,
+                  ),
+                },
               ),
             ),
           );
@@ -1470,6 +1489,12 @@ describe("orchestration v2 provider switching", () => {
                   },
                 },
                 layerRegistry,
+                {
+                  projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+                    projectId,
+                    cwd,
+                  ),
+                },
               ),
             ),
           );
@@ -1573,6 +1598,12 @@ describe("orchestration v2 provider switching", () => {
                 },
               },
               registry,
+              {
+                projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+                  projectId,
+                  cwd,
+                ),
+              },
             ),
           ),
         );
@@ -1760,6 +1791,12 @@ describe("orchestration v2 provider switching", () => {
                 },
               },
               layerRegistry,
+              {
+                projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+                  projectId,
+                  cwd,
+                ),
+              },
             ),
           ),
         );
@@ -1883,6 +1920,12 @@ describe("orchestration v2 provider switching", () => {
                   },
                 },
                 layerRegistry,
+                {
+                  projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+                    ProjectId.make(`project:queued-capability:${key}`),
+                    cwd,
+                  ),
+                },
               ),
             ),
           );
@@ -2076,6 +2119,12 @@ describe("orchestration v2 provider switching", () => {
                 },
               },
               layerRegistry,
+              {
+                projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+                  ProjectId.make("project:queued-steer-provider-switch"),
+                  cwd,
+                ),
+              },
             ),
           ),
         );
@@ -2267,6 +2316,12 @@ describe("orchestration v2 provider switching", () => {
                 },
               },
               layerRegistry,
+              {
+                projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+                  ProjectId.make("project:queued-account-switch"),
+                  cwd,
+                ),
+              },
             ),
           ),
         );
@@ -2478,7 +2533,13 @@ describe("orchestration v2 provider switching", () => {
                   },
                 },
                 layerRegistry,
-                { databaseLayer: layerDatabase },
+                {
+                  databaseLayer: layerDatabase,
+                  projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+                    ProjectId.make("project:queued-provider-switch"),
+                    cwd,
+                  ),
+                },
               ),
               layerOutboxProvided,
             ),
@@ -2760,6 +2821,12 @@ describe("orchestration v2 provider switching", () => {
                 },
               },
               layerRegistry,
+              {
+                projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+                  ProjectId.make("project:handoff-releases-session"),
+                  cwd,
+                ),
+              },
             ),
           ),
         );
@@ -2938,6 +3005,12 @@ describe("orchestration v2 provider switching", () => {
                   },
                 },
                 layerRegistry,
+                {
+                  projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+                    ProjectId.make(`project:fresh-context:${key}`),
+                    cwd,
+                  ),
+                },
               ),
             ),
           );
@@ -3050,6 +3123,12 @@ describe("orchestration v2 provider switching", () => {
                 },
               },
               layerRegistry,
+              {
+                projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+                  ProjectId.make("project:fresh-context-reserved"),
+                  cwd,
+                ),
+              },
             ),
           ),
         );
@@ -3279,6 +3358,12 @@ describe("orchestration v2 provider switching", () => {
               ProviderReplayHarness.layerWithRegistry(
                 { name: `pr-wake-${delivery}`, runtimePolicyOverride: { cwd } },
                 layerRegistry,
+                {
+                  projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+                    projectId,
+                    cwd,
+                  ),
+                },
               ),
             ),
           );
@@ -3464,6 +3549,12 @@ describe("orchestration v2 provider switching", () => {
                 },
               },
               layerRegistry,
+              {
+                projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+                  ProjectId.make("project:queued-handoff-rejection"),
+                  cwd,
+                ),
+              },
             ),
           ),
         );
@@ -3560,7 +3651,13 @@ describe("orchestration v2 provider switching", () => {
             },
           },
           layerRegistry,
-          { databaseLayer: layerDatabase },
+          {
+            databaseLayer: layerDatabase,
+            projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+              importedProjectId,
+              cwd,
+            ),
+          },
         );
         const layerTest = Layer.mergeAll(
           layerStoresProvided,
