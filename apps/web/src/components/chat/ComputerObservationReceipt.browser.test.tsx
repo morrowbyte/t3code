@@ -56,7 +56,7 @@ it("keeps a fetched native receipt historical and clears it on detail failure", 
   harness.query.mockReset().mockReturnValue({ data: null, isPending: true, error: null });
   await using screen = await render(panel());
   await expect
-    .element(screen.getByText("Observation policy unconfirmed for this call"))
+    .element(screen.getByText("Bei diesem Aufruf: Keine bestätigte Rückmeldung"))
     .toBeVisible();
 
   harness.query.mockReturnValue({
@@ -65,7 +65,7 @@ it("keeps a fetched native receipt historical and clears it on detail failure", 
     error: null,
   });
   await screen.rerender(panel());
-  await expect.element(screen.getByText("Observation disabled at this call")).toBeVisible();
+  await expect.element(screen.getByText("Bei diesem Aufruf: Blick aus")).toBeVisible();
   expect(screen.container.textContent).not.toContain("never expose");
 
   harness.query.mockReturnValue({
@@ -75,9 +75,9 @@ it("keeps a fetched native receipt historical and clears it on detail failure", 
   });
   await screen.rerender(panel());
   await expect
-    .element(screen.getByText("Observation policy unconfirmed for this call"))
+    .element(screen.getByText("Bei diesem Aufruf: Keine bestätigte Rückmeldung"))
     .toBeVisible();
-  expect(screen.container.textContent).not.toContain("disabled");
+  expect(screen.container.textContent).not.toContain("Blick aus");
 });
 
 it("rejects an old revision and a result belonging to another native call", async () => {
@@ -95,7 +95,7 @@ it("rejects an old revision and a result belonging to another native call", asyn
   });
   await using screen = await render(panel());
   await expect
-    .element(screen.getByText("Observation policy unconfirmed for this call"))
+    .element(screen.getByText("Bei diesem Aufruf: Keine bestätigte Rückmeldung"))
     .toBeVisible();
   harness.query.mockReturnValue({
     data: { item: { ...item, id: TurnItemId.make("other-call"), outputOmitted: false, output } },
@@ -104,6 +104,6 @@ it("rejects an old revision and a result belonging to another native call", asyn
   });
   await screen.rerender(panel());
   await expect
-    .element(screen.getByText("Observation policy unconfirmed for this call"))
+    .element(screen.getByText("Bei diesem Aufruf: Keine bestätigte Rückmeldung"))
     .toBeVisible();
 });

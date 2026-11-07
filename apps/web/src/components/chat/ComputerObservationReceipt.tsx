@@ -47,11 +47,11 @@ function NativeObservationReceipt({ projectedItem, environmentId, source }: Prop
   if (!receipt) return null;
   const label =
     receipt.kind === "unconfirmed"
-      ? "Observation policy unconfirmed for this call"
+      ? "Bei diesem Aufruf: Keine bestätigte Rückmeldung"
       : receipt.mode === "disabled"
-        ? "Observation disabled at this call"
+        ? "Bei diesem Aufruf: Blick aus"
         : receipt.active
-          ? "Observation allowed · reading at this call"
-          : "Observation allowed · idle at this call";
+          ? "Bei diesem Aufruf: Bildschirm wurde gelesen"
+          : "Bei diesem Aufruf: Blick an · keine Auslese";
   return <p className="ms-7 py-1 text-xs text-muted-foreground">{label}</p>;
 }
