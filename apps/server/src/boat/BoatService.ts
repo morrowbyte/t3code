@@ -228,7 +228,18 @@ const decodeWorkspaceVersions = Schema.decodeUnknownEffect(
 const decodeProjectManifest = Schema.decodeUnknownEffect(Schema.fromJsonString(ProjectManifest));
 const SnapshotResponse = Schema.Struct({ snapshot: SavedSnapshot });
 const RemoteSandbox = Schema.Struct({
-  sandbox: Schema.Struct({ id: Schema.String, state: Schema.String }),
+  sandbox: Schema.Struct({
+    id: Schema.String,
+    state: Schema.String.pipe(
+      Schema.decodeTo(
+        Schema.String,
+        SchemaTransformation.transform({
+          decode: (state) => (state === "provisioned" ? "idle" : state),
+          encode: (state) => state,
+        }),
+      ),
+    ),
+  }),
 });
 const Limits = Schema.Struct({
   canStart: Schema.Boolean,
