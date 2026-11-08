@@ -2375,7 +2375,7 @@ function codexReplayPreamble(input: {
           input: [{ type: "text", text: input.sentPrompt ?? input.prompt }],
           cwd: "/workspace",
           model: "gpt-5.4",
-          approvalPolicy: "on-request",
+          approvalPolicy: "never",
           approvalsReviewer: "user",
           sandboxPolicy: { type: "dangerFullAccess" },
           summary: "detailed",
@@ -5035,78 +5035,6 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
-  it.effect.each(["accept", "decline"] as const)(
-    "lets the user %s a command flagged by Codex in full access",
-    (decision) =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const nativeThreadId = `full-access-review-${decision}`;
-          const nativeTurnId = `full-access-review-turn-${decision}`;
-          const prompt = "Update the open workbook.";
-          const pending = yield* Deferred.make<OrchestrationV2RuntimeRequest>();
-          const harness = yield* makeCodexReplayHarness(
-            makeCodexReplayTranscript({
-              scenario: `codex-full-access-review-${decision}`,
-              entries: [
-                ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt }),
-                {
-                  type: "emit_inbound",
-                  frame: {
-                    id: 100,
-                    method: "item/commandExecution/requestApproval",
-                    params: {
-                      threadId: nativeThreadId,
-                      turnId: nativeTurnId,
-                      itemId: "reviewed-command",
-                      startedAtMs: 1782622441000,
-                      command: "Write-Output 'reviewed command'",
-                      reason: "Command safety check requires approval.",
-                    } satisfies CodexSchema.CommandExecutionRequestApprovalParams,
-                  },
-                },
-                {
-                  type: "expect_outbound",
-                  frame: { id: 100, result: { decision } },
-                },
-                {
-                  type: "emit_inbound",
-                  frame: {
-                    method: "turn/completed",
-                    params: {
-                      threadId: nativeThreadId,
-                      turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
-                    },
-                  },
-                },
-              ],
-            }),
-            (event) =>
-              event.type === "runtime_request.updated" && event.runtimeRequest.status === "pending"
-                ? Deferred.succeed(pending, event.runtimeRequest)
-                : Effect.void,
-          );
-          yield* harness.runtime.startTurn(
-            makeCodexTestTurnInput({
-              threadId: harness.threadId,
-              providerThread: harness.providerThread,
-              now: yield* DateTime.now,
-              attemptId: RunAttemptId.make(`full-access-review-${decision}`),
-              text: prompt,
-            }),
-          );
-          const request = yield* Deferred.await(pending);
-          assert.equal(request.kind, "command");
-          assert.equal(request.status, "pending");
-          yield* harness.runtime.respondToRuntimeRequest({ requestId: request.id, decision });
-          yield* harness.awaitTerminal(1);
-        }).pipe(
-          Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
-          ),
-        ),
-      ),
-  );
-
   it.effect("stops asking for commands the user allowed for the session", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -5123,7 +5051,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             sandboxPolicy: { type: "readOnly" },
           },
           "full-access": {
-            approvalPolicy: "on-request",
+            approvalPolicy: "never",
             approvalsReviewer: "user",
             sandboxPolicy: { type: "dangerFullAccess" },
           },
@@ -6044,7 +5972,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                     input: [],
                     cwd: "/workspace",
                     model: "gpt-5.4",
-                    approvalPolicy: "on-request",
+                    approvalPolicy: "never",
                     approvalsReviewer: "user",
                     sandboxPolicy: { type: "dangerFullAccess" },
                     summary: "detailed",
@@ -6079,7 +6007,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                           input: [{ type: "text", text: "Continue where you left off." }],
                           cwd: "/workspace",
                           model: "gpt-5.4",
-                          approvalPolicy: "on-request",
+                          approvalPolicy: "never",
                           approvalsReviewer: "user",
                           sandboxPolicy: { type: "dangerFullAccess" },
                           summary: "detailed",
@@ -6220,7 +6148,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                     input: [],
                     cwd: "/workspace",
                     model: "gpt-5.4",
-                    approvalPolicy: "on-request",
+                    approvalPolicy: "never",
                     approvalsReviewer: "user",
                     sandboxPolicy: { type: "dangerFullAccess" },
                     summary: "detailed",
@@ -11758,7 +11686,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   input: [],
                   cwd: "/workspace",
                   model: "gpt-5.4",
-                  approvalPolicy: "on-request",
+                  approvalPolicy: "never",
                   approvalsReviewer: "user",
                   sandboxPolicy: { type: "dangerFullAccess" },
                   summary: "detailed",
@@ -11901,7 +11829,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                     input: [],
                     cwd: "/workspace",
                     model: "gpt-5.4",
-                    approvalPolicy: "on-request",
+                    approvalPolicy: "never",
                     approvalsReviewer: "user",
                     sandboxPolicy: { type: "dangerFullAccess" },
                     summary: "detailed",
