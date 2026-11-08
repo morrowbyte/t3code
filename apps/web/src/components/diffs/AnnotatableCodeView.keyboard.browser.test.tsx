@@ -5,7 +5,7 @@ import { expect, it, vi } from "vite-plus/test";
 import { act, render } from "../../../test/render";
 import { useComposerDraftStore } from "~/composerDraftStore";
 import "~/index.css";
-import { AnnotatableCodeView } from "./AnnotatableCodeView";
+import { AnnotatableCodeView, type AnnotatableCodeViewHandle } from "./AnnotatableCodeView";
 
 function setup(): Disposable {
   const reset = () => useComposerDraftStore.setState(useComposerDraftStore.getInitialState(), true);
@@ -24,11 +24,16 @@ it("selects diff lines with the keyboard and creates a real comment draft", asyn
   const fileDiff = parsePatchFiles(
     "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1,3 +1,3 @@\n-old\n+new\n same\n last\n",
   )[0]!.files[0]!;
-  const viewer = vi.fn();
+  let resolveViewer!: (handle: AnnotatableCodeViewHandle) => void;
+  const viewerReady = new Promise<AnnotatableCodeViewHandle>((resolve) => {
+    resolveViewer = resolve;
+  });
   await using _screen = await render(
     <AnnotatableCodeView
       codeViewKey="keyboard-diff"
-      viewerRef={viewer}
+      viewerRef={(handle) => {
+        if (handle !== null) resolveViewer(handle);
+      }}
       pendingFiles={[]}
       files={[{ fileKey: "a", filePath: "a.ts", fileDiff, fileVersion: 0, collapsed: false }]}
       sectionId="test"
@@ -42,9 +47,8 @@ it("selects diff lines with the keyboard and creates a real comment draft", asyn
     { container: host },
   );
   // The real viewer mounts only after its worker pool finishes initializing.
-  await vi.waitFor(() =>
-    expect(viewer.mock.calls.some(([handle]) => typeof handle?.scrollTo === "function")).toBe(true),
-  );
+  const viewer = await viewerReady;
+  expect(typeof viewer.scrollTo).toBe("function");
   const region = host.querySelector<HTMLElement>('[aria-label="Test diff code"]')!;
   region.focus();
   await act(async () =>
