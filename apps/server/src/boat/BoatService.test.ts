@@ -2536,7 +2536,10 @@ it.effect("replays unknown creation with the original parameters despite canStar
 });
 
 it.effect("treats an active resume retry as success without clearing the process or leases", () => {
-  const test = setup();
+  const test = setup((path) => {
+    if (path.endsWith("/resume")) test.setMachineState("provisioned");
+    return Effect.void;
+  });
   return Effect.gen(function* () {
     const boat = yield* make;
     yield* boat.connect(Redacted.make("boat_fixture_private"));
@@ -2554,7 +2557,19 @@ it.effect("treats an active resume retry as success without clearing the process
     assert.isTrue(Exit.isFailure(archiving));
     assert.equal(test.calls.filter((call) => call.endsWith("/resume")).length, 0);
     test.setMachineState("archived");
-    yield* boat.operate({ action: "resume", projectId, requestId: "first" }, ownerThreadId);
+    const resumed = yield* boat.operate(
+      { action: "resume", projectId, requestId: "first" },
+      ownerThreadId,
+    );
+    assert.equal(resumed.instances[0]?.state, "idle");
+    const lease = yield* boat.assertActiveLease(
+      { requestId: "first", sandboxId: "bx_23456789" },
+      ownerThreadId,
+    );
+    yield* lease.check;
+    yield* boat.reconcile();
+    assert.deepEqual((yield* boat.read(projectId)).instances[0]?.leases, [ownerThreadId]);
+    assert.equal(test.calls.filter((call) => call.endsWith("/stop")).length, 1);
     yield* boat.operate({ action: "prepare", projectId, requestId: "first" });
     const before = (yield* boat.read(projectId)).instances[0];
     const result = yield* boat.operate({ action: "resume", projectId, requestId: "first" });
@@ -2562,6 +2577,10 @@ it.effect("treats an active resume retry as success without clearing the process
     assert.equal(result.instances[0]?.previewUrl, before?.previewUrl);
     assert.equal(result.instances[0]?.processId, 123);
     assert.deepEqual(result.instances[0]?.leases, [ownerThreadId]);
+    test.setOwnerActive(false);
+    yield* boat.reconcile();
+    assert.equal((yield* boat.read(projectId)).instances[0]?.state, "archived");
+    assert.equal(test.calls.filter((call) => call.endsWith("/stop")).length, 2);
   }).pipe(Effect.scoped, Effect.provide(test.services));
 });
 
