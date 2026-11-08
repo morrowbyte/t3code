@@ -1477,6 +1477,8 @@ effectIt.effect("rechecks archive storage after Boat renewal and before prepare"
 effectIt.effect.each([
   { state: null, action: "start", prepares: true },
   { state: "stopped", action: "resume", prepares: true },
+  { state: "archived", action: "resume", prepares: true },
+  { state: "idle", action: "renew", prepares: true },
   { state: "ready", action: "renew", prepares: false },
   { state: "running", action: "renew", prepares: false },
 ] as const)(
@@ -1494,11 +1496,19 @@ effectIt.effect.each([
         compute: {
           resources: pressuredHostResources,
           boat: computeBoat([neighbour, ...(state === null ? [] : [selected])]),
-          operate: () =>
+          operate: (operation) =>
             Effect.succeed(
               computeBoat([
                 neighbour,
-                { ...selected, state: state === "running" ? "running" : "ready" },
+                {
+                  ...selected,
+                  state:
+                    operation.action !== "prepare" && (state === "archived" || state === "idle")
+                      ? "idle"
+                      : state === "running"
+                        ? "running"
+                        : "ready",
+                },
               ]),
             ),
         },
