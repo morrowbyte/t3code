@@ -2604,6 +2604,49 @@ it.effect.each(["ready", "provisioned"])(
   },
 );
 
+it.effect.each([true, false])(
+  "revalidates a prepared command after stop and resume when running is %s",
+  (running) => {
+    let starts = 0;
+    const test = setup((path, _method, body) =>
+      Effect.sync(() => {
+        if (path.endsWith("/stop")) test.setMachineState("archiving");
+        if (body && typeof body === "object" && "detached" in body && body.detached === true)
+          starts++;
+      }),
+    );
+    return Effect.gen(function* () {
+      const boat = yield* make;
+      yield* boat.connect(Redacted.make("boat_fixture_private"));
+      yield* boat.configure(projectId, {
+        ...DEFAULT_BOAT_PROJECT,
+        enabled: true,
+        devCommand: "node server.js",
+      });
+      const target = { projectId, requestId: "prepared" };
+      yield* boat.operate({ ...target, action: "start" }, ownerThreadId);
+      yield* boat.operate({ ...target, action: "prepare" }, ownerThreadId);
+      assert.equal(starts, 1);
+      const processId = (yield* boat.read(projectId)).instances[0]!.processId;
+      const openedPreviews = test.openedPreviews.length;
+      yield* boat.operate({ ...target, action: "stop" }, ownerThreadId);
+      assert.lengthOf(test.openedPreviews, openedPreviews);
+      for (const state of ["archiving", "stopping"]) {
+        test.setMachineState(state);
+        yield* boat.read(projectId);
+        yield* boat.operate({ ...target, action: "preview" }, ownerThreadId);
+        assert.lengthOf(test.openedPreviews, openedPreviews);
+      }
+      test.setMachineState("archived");
+      yield* boat.operate({ ...target, action: "resume" }, ownerThreadId);
+      test.setCommandStatus({ processId, status: "lost", known: false, running, exitCode: null });
+      yield* boat.operate({ ...target, action: "prepare" }, ownerThreadId);
+      assert.include(test.calls, `GET /sandboxes/bx_23456789/commands/${processId}`);
+      assert.equal(starts, running ? 1 : 2);
+    }).pipe(Effect.scoped, Effect.provide(test.services));
+  },
+);
+
 it.effect("retains an unknown resume reservation and its idempotency key across restart", () => {
   let lose = true;
   const bodies: unknown[] = [];

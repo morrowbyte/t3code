@@ -268,6 +268,7 @@ const Deletion = Schema.Struct({
 const Process = Schema.Struct({ processId: Schema.Number });
 const ProcessStatus = Schema.Struct({
   processId: Schema.optional(Schema.Number),
+  running: Schema.optional(Schema.Boolean),
   exitCode: Schema.optional(
     Schema.NullOr(Schema.Number).pipe(
       Schema.decodeTo(
@@ -1143,7 +1144,7 @@ export const make = Effect.gen(function* () {
                     candidate.requestId === item.requestId &&
                     candidate.projectId === item.projectId,
                 ) ?? item;
-              if (!current.sandboxId || inactive.has(current.state) || current.state === "deleting")
+              if (!current.sandboxId || !["ready", "idle", "running"].includes(current.state))
                 return current;
               const settings = projectSettings(current.projectId);
               if (settings.webAccess === "private") {
@@ -1524,7 +1525,11 @@ export const make = Effect.gen(function* () {
               ...(current.resumeOperation && !pending ? { resumeOperation: null } : {}),
             };
           });
-          if (next.threadId && next.processId !== null && !inactive.has(next.state)) {
+          if (
+            next.threadId &&
+            next.processId !== null &&
+            ["ready", "idle", "running"].includes(next.state)
+          ) {
             if (next.previewUrl) return yield* attachPreview(next, token);
             const settings = projectSettings(item.projectId);
             const probe = yield* api
@@ -2048,7 +2053,8 @@ export const make = Effect.gen(function* () {
                 : yield* api
                     .request(token, `${sandboxPath}/commands/${preparedInstance.processId}`)
                     .pipe(Effect.flatMap(decode(ProcessStatus)));
-            const running = process !== null && process.exitCode === undefined;
+            const running =
+              process !== null && process.exitCode === undefined && process.running !== false;
             if (!settings.enabled || !settings.devCommand.trim())
               return yield* new BoatError({ category: "disabled" });
             if (settings.previewKind === "android" && settings.webAccess !== "private")
@@ -2348,9 +2354,7 @@ ${action.command}`,
                         resumeOperation,
                         state: "provisioning",
                         expiresAt: DateTime.formatIso(DateTime.makeUnsafe(expiresAt)),
-                        ...(current.resumeOperation
-                          ? {}
-                          : { stoppedAt: null, processId: null, previewUrl: null }),
+                        ...(current.resumeOperation ? {} : { stoppedAt: null, previewUrl: null }),
                       }
                     : item,
                 ),
@@ -2410,7 +2414,6 @@ ${action.command}`,
         yield* api.request(token, `${sandboxPath}/${action.action}`, "POST", {});
         yield* updateInstance(action, {
           state: "stopping",
-          processId: null,
           previewUrl: null,
           leases: [],
           resumeOperation: null,
@@ -2422,7 +2425,10 @@ ${action.command}`,
       yield* previews
         .close({ threadId: instance.threadId, tabId: PreviewTabId.make(instance.previewTabId) })
         .pipe(Effect.orElseSucceed(() => undefined));
-      yield* updateInstance(action, { previewTabId: null, processId: null });
+      yield* updateInstance(action, {
+        previewTabId: null,
+        ...(action.action === "delete" ? { processId: null } : {}),
+      });
     }
     if (["stop", "delete"].includes(action.action)) {
       yield* workLock.withPermits(1)(
