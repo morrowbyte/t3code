@@ -1,8 +1,5 @@
 import { RegistryContext } from "@effect/atom-react";
-import type {
-  EnvironmentRegistry as ConnectionRegistry,
-  EnvironmentSupervisor as ConnectionSupervisor,
-} from "@t3tools/client-runtime/connection";
+import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import {
   BoatError,
   DEFAULT_BOAT_DEFAULTS,
@@ -10,19 +7,24 @@ import {
   EnvironmentId,
   ProjectId,
   ThreadId,
-  type BoatAction,
   type BoatInstance,
   type BoatState,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
-import { AtomRegistry } from "effect/reactivity";
+import { AsyncResult, AtomRegistry } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
 
 import { render } from "../../../test/render";
+import type { boatEnvironment } from "../../state/boat";
+
+type ReadRequest = Parameters<typeof boatEnvironment.read.run>[1];
+type OperateRequest = Parameters<typeof boatEnvironment.operate.run>[1];
+type CommandResult = AtomCommandResult<BoatState, BoatError>;
 
 const fixture = vi.hoisted(() => ({
-  read: undefined as (() => BoatState) | undefined,
-  operate: undefined as ((input: BoatAction) => BoatState) | undefined,
+  read: vi.fn<(request: ReadRequest) => Promise<CommandResult>>(),
+  operate: vi.fn<(request: OperateRequest) => Promise<CommandResult>>(),
 }));
 
 vi.mock("../../hooks/useNowMinute", () => ({ useNowMinute: () => "2026-11-01T12:00" }));
@@ -35,68 +37,28 @@ vi.mock("../../state/session", async () => {
   const prepared = Option.some({});
   return { usePreparedConnection: () => prepared };
 });
-vi.mock("@t3tools/client-runtime/state/session", async () => {
-  const { AsyncResult, Atom } = await import("effect/reactivity");
-  const { AuthOrchestrationReadScope, AuthOrchestrationOperateScope, AuthPreviewOperateScope } =
-    await import("@t3tools/contracts");
-  const scopes = [
-    AuthOrchestrationReadScope,
-    AuthOrchestrationOperateScope,
-    AuthPreviewOperateScope,
-  ];
-  const session = Atom.make(
-    AsyncResult.success({
-      authenticated: true,
-      auth: {
-        policy: "remote-reachable",
-        bootstrapMethods: [],
-        sessionMethods: [],
-        sessionCookieName: "fixture",
-      },
-      scopes,
-      permissions: scopes,
-    }),
-  );
-  return { createEnvironmentSessionAtoms: () => ({ sessionStateAtom: () => session }) };
-});
 vi.mock("../../state/boat", async () => {
-  const { createBoatEnvironment } = await import("@t3tools/client-runtime/state/boat");
-  const connection = await import("@t3tools/client-runtime/connection");
-  const { EnvironmentRegistry } = connection.EnvironmentRegistry;
-  const { EnvironmentSupervisor } = connection.EnvironmentSupervisor;
-  const { AVAILABLE_CONNECTION_STATE } = connection;
-  const { EnvironmentId, BoatError, WS_METHODS } = await import("@t3tools/contracts");
-  const Effect = await import("effect/Effect");
-  const Layer = await import("effect/Layer");
-  const Option = await import("effect/Option");
-  const SubscriptionRef = await import("effect/SubscriptionRef");
   const { Atom } = await import("effect/reactivity");
-  const runtime = Atom.runtime(
-    Layer.effect(
-      EnvironmentRegistry,
-      Effect.gen(function* () {
-        const client = {
-          [WS_METHODS.boatRead]: () => Effect.sync(() => fixture.read!()),
-          [WS_METHODS.boatOperate]: (input: BoatAction) =>
-            Effect.try({
-              try: () => fixture.operate!(input),
-              catch: (cause) =>
-                cause instanceof BoatError ? cause : new BoatError({ category: "provider" }),
-            }),
-        };
-        const supervisor = {
-          target: { environmentId: EnvironmentId.make("boat-browser"), label: "Boat fixture" },
-          session: yield* SubscriptionRef.make(Option.some({ client })),
-          state: yield* SubscriptionRef.make({ ...AVAILABLE_CONNECTION_STATE, phase: "connected" }),
-        } as unknown as ConnectionSupervisor.EnvironmentSupervisor["Service"];
-        return {
-          run: (_id, effect) => Effect.provideService(effect, EnvironmentSupervisor, supervisor),
-        } as ConnectionRegistry.EnvironmentRegistry["Service"];
-      }),
-    ),
-  );
-  return { boatEnvironment: createBoatEnvironment(runtime) };
+  const allowed = Atom.make(true);
+  return {
+    boatEnvironment: {
+      read: { label: "boat:read", permissionAtom: () => allowed },
+      operate: { label: "boat:operate", permissionAtom: () => allowed },
+    },
+  };
 });
+vi.mock("../../state/use-atom-command", () => ({
+  useAtomCommand: (command: { label: string }) => {
+    switch (command.label) {
+      case "boat:read":
+        return fixture.read;
+      case "boat:operate":
+        return fixture.operate;
+      default:
+        throw new Error(`Unexpected command: ${command.label}`);
+    }
+  },
+}));
 
 import "~/index.css";
 import { ThreadDetailsBoat } from "./ThreadDetailsBoat";
@@ -130,14 +92,8 @@ function machine(requestId: string, owner: ThreadId): BoatInstance {
 }
 
 function setup() {
-  fixture.read = undefined;
-  fixture.operate = undefined;
-}
-
-it("manages only this thread's VMs with an explicit runtime and recovers after a failed stop", async () => {
-  setup();
-  const registry = AtomRegistry.make();
-  using _registry = { [Symbol.dispose]: () => registry.dispose() };
+  fixture.read.mockReset();
+  fixture.operate.mockReset();
   let state: BoatState = {
     defaults: DEFAULT_BOAT_DEFAULTS,
     configured: true,
@@ -146,39 +102,58 @@ it("manages only this thread's VMs with an explicit runtime and recovers after a
     instances: [machine("other", ThreadId.make("other-thread"))],
   };
   let failStop = true;
-  fixture.read = () => state;
-  fixture.operate = (action) => {
-    if (action.projectId !== projectId || action.threadId !== threadId)
-      throw new BoatError({ category: "conflict" });
-    if (action.action === "start" || action.action === "renew") {
-      if (!action.ttlMinutes) throw new BoatError({ category: "conflict" });
-      const owned = state.instances.find((instance) => instance.requestId === action.requestId);
-      const updated = {
-        ...(owned ?? machine(action.requestId, threadId)),
-        sandboxId: "vm-current",
-        expiresAt: DateTime.formatIso(DateTime.makeUnsafe(now + action.ttlMinutes * 60_000)),
-      };
-      state = {
-        ...state,
-        instances: [
-          ...state.instances.filter((item) => item.requestId !== action.requestId),
-          updated,
-        ],
-      };
-    } else if (action.action === "stop") {
-      if (failStop) {
-        failStop = false;
-        throw new BoatError({ category: "provider", status: 503 });
-      }
-      state = {
-        ...state,
-        instances: state.instances.map((item) =>
-          item.requestId === action.requestId ? { ...item, state: "stopped" } : item,
-        ),
-      };
-    } else throw new BoatError({ category: "conflict" });
-    return state;
-  };
+  const conflict = () => AsyncResult.failure(Cause.fail(new BoatError({ category: "conflict" })));
+  fixture.read.mockImplementation(async (request) =>
+    request.environmentId === environmentId && request.input.projectId === projectId
+      ? AsyncResult.success(state)
+      : conflict(),
+  );
+  fixture.operate.mockImplementation(
+    async ({ environmentId: targetEnvironment, input: action }) => {
+      if (
+        targetEnvironment !== environmentId ||
+        action.projectId !== projectId ||
+        action.threadId !== threadId
+      )
+        return conflict();
+      if (action.action === "start" || action.action === "renew") {
+        if (!action.ttlMinutes) return conflict();
+        const owned = state.instances.find((instance) => instance.requestId === action.requestId);
+        const updated = {
+          ...(owned ?? machine(action.requestId, threadId)),
+          sandboxId: "vm-current",
+          expiresAt: DateTime.formatIso(DateTime.makeUnsafe(now + action.ttlMinutes * 60_000)),
+        };
+        state = {
+          ...state,
+          instances: [
+            ...state.instances.filter((item) => item.requestId !== action.requestId),
+            updated,
+          ],
+        };
+      } else if (action.action === "stop") {
+        if (failStop) {
+          failStop = false;
+          return AsyncResult.failure(
+            Cause.fail(new BoatError({ category: "provider", status: 503 })),
+          );
+        }
+        state = {
+          ...state,
+          instances: state.instances.map((item) =>
+            item.requestId === action.requestId ? { ...item, state: "stopped" } : item,
+          ),
+        };
+      } else return conflict();
+      return AsyncResult.success(state);
+    },
+  );
+}
+
+it("manages only this thread's VMs with an explicit runtime and recovers after a failed stop", async () => {
+  setup();
+  const registry = AtomRegistry.make();
+  using _registry = { [Symbol.dispose]: () => registry.dispose() };
   await using screen = await render(
     <RegistryContext.Provider value={registry}>
       <ThreadDetailsBoat environmentId={environmentId} projectId={projectId} threadId={threadId} />
