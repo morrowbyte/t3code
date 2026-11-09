@@ -102,7 +102,8 @@ function setup() {
     instances: [machine("other", ThreadId.make("other-thread"))],
   };
   let failStop = true;
-  const conflict = () => AsyncResult.failure(Cause.fail(new BoatError({ category: "conflict" })));
+  const conflict = () =>
+    AsyncResult.failure<BoatState, BoatError>(Cause.fail(new BoatError({ category: "conflict" })));
   fixture.read.mockImplementation(async (request) =>
     request.environmentId === environmentId && request.input.projectId === projectId
       ? AsyncResult.success(state)
@@ -134,7 +135,7 @@ function setup() {
       } else if (action.action === "stop") {
         if (failStop) {
           failStop = false;
-          return AsyncResult.failure(
+          return AsyncResult.failure<BoatState, BoatError>(
             Cause.fail(new BoatError({ category: "provider", status: 503 })),
           );
         }
