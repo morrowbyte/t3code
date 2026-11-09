@@ -1,4 +1,4 @@
-name: Repair Windows release Vite+ launcher
+name: Repair Windows release tool launchers
 on:
   push:
     branches: [ops/windows-vp-release109]
@@ -43,3 +43,45 @@ jobs:
             throw
           }
           Write-Host "Runner launcher repaired. Original retained at $backup"
+
+      - name: Expose an existing full 7-Zip installation to release jobs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $chocolatey = if ($env:ChocolateyInstall) { $env:ChocolateyInstall } else { Join-Path $env:ProgramData 'chocolatey' }
+          $candidates = @(
+            foreach ($root in @($env:ProgramFiles, $env:ProgramW6432, ${env:ProgramFiles(x86)})) {
+              if ($root) { Join-Path $root '7-Zip\7z.exe' }
+            }
+            Join-Path $env:LOCALAPPDATA 'Programs\7-Zip\7z.exe'
+            foreach ($package in @('7zip', '7zip.install', '7zip.commandline')) {
+              Join-Path $chocolatey "lib\$package\tools\7z.exe"
+            }
+          ) | Select-Object -Unique
+          $sevenZip = $null
+          foreach ($candidate in $candidates) {
+            if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+            try { $probe = & $candidate i 2>&1 } catch { continue }
+            if ($LASTEXITCODE -eq 0 -and ($probe -match '\bNsis\b')) {
+              $sevenZip = (Resolve-Path -LiteralPath $candidate).Path
+              break
+            }
+          }
+          if (-not $sevenZip) { throw "Full 7-Zip with NSIS support not found. Checked: $($candidates -join '; ')" }
+          $shim = Join-Path $env:USERPROFILE 'crew-actions-runner\tools\vite-plus\node_modules\.bin\7z.cmd'
+          $wrapper = "@echo off`r`n`"$sevenZip`" %*`r`nexit /b %ERRORLEVEL%`r`n"
+          $created = -not (Test-Path -LiteralPath $shim)
+          if (-not $created -and [IO.File]::ReadAllText($shim) -ne $wrapper) {
+            throw 'An unexpected 7z.cmd already exists; it was not changed.'
+          }
+          try {
+            if ($created) { [IO.File]::WriteAllText($shim, $wrapper, [Text.Encoding]::ASCII) }
+            $probe = & $shim i 2>&1
+            if ($LASTEXITCODE -ne 0 -or -not ($probe -match '\bNsis\b')) {
+              throw 'The 7-Zip launcher did not pass its NSIS support probe.'
+            }
+          } catch {
+            if ($created -and (Test-Path -LiteralPath $shim)) { Remove-Item -LiteralPath $shim }
+            throw
+          }
+          Write-Host "Release 7-Zip launcher ready: $sevenZip"
