@@ -1,22 +1,21 @@
 import { useAtomValue } from "@effect/atom-react";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { Link } from "@tanstack/react-router";
-import type { BoatState, EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
-import { RefreshCwIcon } from "lucide-react";
-import { useEffect, useEffectEvent, useState } from "react";
+import type { BoatAction, BoatState, EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
+import { ExternalLinkIcon, PlusIcon, RefreshCwIcon, ServerIcon, SquareIcon } from "lucide-react";
+import { useEffect, useEffectEvent, useId, useState } from "react";
+import { useLiveRefresh } from "../../hooks/useLiveRefresh";
+import { useNowMinute } from "../../hooks/useNowMinute";
+import { randomUUID } from "../../lib/utils";
 import { boatEnvironment } from "../../state/boat";
 import { useEnvironment } from "../../state/environments";
 import { usePreparedConnection } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { Input } from "../ui/input";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
-import { BOAT_SIZE_LABELS } from "./threadDetailsBoat";
-
-const dollars = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-  maximumFractionDigits: 4,
-});
-const hours = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 });
+import { BOAT_SIZE_LABELS, boatRuntimeLabel, selectThreadBoats } from "./threadDetailsBoat";
 
 export function ThreadDetailsBoat({
   environmentId,
@@ -28,15 +27,19 @@ export function ThreadDetailsBoat({
   threadId: ThreadId;
 }) {
   const allowed = useAtomValue(boatEnvironment.read.permissionAtom(environmentId));
+  const canOperate = useAtomValue(boatEnvironment.operate.permissionAtom(environmentId));
   const connection = usePreparedConnection(environmentId);
   const connectionState = useEnvironment(environmentId)?.connection;
   const connected = connectionState?.phase === "connected";
   const read = useAtomCommand(boatEnvironment.read, { reportFailure: false });
+  const operate = useAtomCommand(boatEnvironment.operate, { reportFailure: false });
+  const nowMinute = useNowMinute();
+  const runtimeInputId = useId();
+  const [runtimeMinutes, setRuntimeMinutes] = useState("60");
+  const [pending, setPending] = useState<string | null>(null);
+  const [operationError, setOperationError] = useState<string | null>(null);
   const refresh = useEffectEvent((targetEnvironment: EnvironmentId, targetProject: ProjectId) =>
-    read({
-      environmentId: targetEnvironment,
-      input: { projectId: targetProject, analytics: { range: "month", threadId } },
-    }),
+    read({ environmentId: targetEnvironment, input: { projectId: targetProject } }),
   );
   const [revision, setRevision] = useState(0);
   const queryKey = JSON.stringify([environmentId, projectId, threadId]);
@@ -49,7 +52,13 @@ export function ThreadDetailsBoat({
     failed: boolean;
   } | null>(null);
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Read external Boat state on mount, explicit refresh and reconnection; discard replies from old connections.
+  useLiveRefresh(() => setRevision((value) => value + 1), {
+    enabled: allowed && connected,
+    key: `thread-boats:${queryKey}`,
+    intervalMs: 60_000,
+  });
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Read external Boat state on mount, refresh and reconnection; discard replies from old connections.
   useEffect(() => {
     if (!allowed || !connected) return;
     let active = true;
@@ -105,57 +114,64 @@ export function ThreadDetailsBoat({
       : null;
   const state = (allowed || !connected) && result?.queryKey === queryKey ? result.state : null;
   const loading = allowed && connected && current === null;
-  const analytics = state?.analytics;
-  const points = analytics?.instances.flatMap((instance) => instance.threadPoints) ?? [];
-  const costs = points.flatMap((point) => (point.dollars === null ? [] : [point.dollars]));
-  const seconds = points.flatMap((point) => (point.seconds === null ? [] : [point.seconds]));
-  const empty = analytics?.instances.length === 0 && analytics.omittedInstances === 0;
-  const cost = costs.length
-    ? dollars.format(costs.reduce((sum, value) => sum + value, 0))
-    : empty
-      ? dollars.format(0)
-      : "Unknown";
-  const billableHours = seconds.length
-    ? hours.format(seconds.reduce((sum, value) => sum + value, 0) / 3600)
-    : empty
-      ? "0"
-      : "Unknown";
-  const incomplete =
-    (analytics?.omittedInstances ?? 0) > 0 ||
-    points.some(
-      (point) =>
-        point.attribution === "unknown" ||
-        point.status === "unavailable" ||
-        point.dollars === null ||
-        point.seconds === null,
-    );
-  const stale = points.some((point) => point.status === "stale");
-  const starts = analytics?.instances.reduce((sum, instance) => sum + instance.starts, 0) ?? 0;
-  const stops = analytics?.instances.reduce((sum, instance) => sum + instance.stops, 0) ?? 0;
+  const instances = selectThreadBoats(state?.instances ?? [], projectId, threadId);
+  const ttlMinutes = Number(runtimeMinutes);
+  const validRuntime = Number.isInteger(ttlMinutes) && ttlMinutes >= 1 && ttlMinutes <= 1440;
+  const available = connected && canOperate && state?.configured === true && pending === null;
   const status = !connected
-    ? "Boat offline"
+    ? "Offline · showing saved Boats"
     : !allowed
-      ? "Boat unavailable"
-      : loading
-        ? "Loading Boat…"
+      ? "Boat access unavailable"
+      : loading && !state
+        ? "Loading Boats…"
         : current?.failed || !state
           ? state
-            ? "Could not refresh Boat · saved values"
-            : "Could not refresh Boat"
+            ? "Could not refresh · showing saved Boats"
+            : "Could not load Boats"
           : !state.configured
-            ? "Boat not connected"
-            : !analytics
-              ? "Boat analytics unavailable on this server"
-              : null;
+            ? "Connect Boat in settings to add a VM."
+            : null;
+
+  const runOperation = async (action: BoatAction) => {
+    if (!available) return;
+    setPending(action.requestId);
+    setOperationError(null);
+    await Promise.resolve()
+      .then(() => operate({ environmentId, input: action }))
+      .then((response) => {
+        if (response._tag === "Failure") {
+          const error = squashAtomCommandFailure(response);
+          setOperationError(error instanceof Error ? error.message : "Could not update Boat.");
+        }
+      })
+      .catch((error: unknown) => {
+        setOperationError(error instanceof Error ? error.message : "Could not update Boat.");
+      })
+      .finally(() => {
+        setPending(null);
+        setRevision((value) => value + 1);
+      });
+  };
+
+  const start = async () => {
+    if (!available || !validRuntime) return;
+    await runOperation({
+      action: "start",
+      projectId,
+      threadId,
+      requestId: `thread-vm-${randomUUID()}`,
+      ttlMinutes,
+    });
+  };
 
   return (
     <ThreadDetailsSection
       headingId="thread-details-boat-heading"
-      title="Boat"
+      title={`Boats${state ? ` · ${instances.length}` : ""}`}
       actions={
         <ThreadDetailsControl
           part="icon"
-          aria-label="Refresh Boat"
+          aria-label="Refresh Boats"
           disabled={!allowed || !connected || loading}
           onClick={() => setRevision((value) => value + 1)}
         >
@@ -163,53 +179,139 @@ export function ThreadDetailsBoat({
         </ThreadDetailsControl>
       }
     >
-      <div className="flex flex-col gap-1 px-2 text-xs">
-        {status ? <p role="status">{status}</p> : null}
-        {analytics ? (
-          <>
-            <dl
-              className="grid min-w-0 grid-cols-2 gap-2"
-              aria-label="Estimated thread usage this month"
-            >
-              <div className="min-w-0">
-                <dt className="text-muted-foreground">Estimated thread share</dt>
-                <dd className="break-all font-medium tabular-nums">{cost}</dd>
-              </div>
-              <div className="min-w-0">
-                <dt className="text-muted-foreground">Estimated billable hours</dt>
-                <dd className="break-all font-medium tabular-nums">{billableHours}</dd>
-              </div>
-            </dl>
-            <p className="text-muted-foreground">
-              This month · UTC{incomplete ? " · Incomplete history" : ""}
-              {stale ? " · Saved measurements" : ""}
-            </p>
-            <p className="text-muted-foreground tabular-nums">
-              Recorded VM activity · {starts} starts · {stops} stops
-            </p>
-            <details className="mt-1 text-muted-foreground">
-              <summary className="cursor-pointer rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
-                VMs and account
-              </summary>
-              <dl className="mt-2 grid grid-cols-4 gap-1" aria-label="Active Boat instances">
-                {Object.entries(BOAT_SIZE_LABELS).map(([size, label]) => (
-                  <div key={size}>
-                    <dt>{label}</dt>
-                    <dd className="font-medium tabular-nums">
-                      {analytics.activeInstances[size as keyof typeof BOAT_SIZE_LABELS]}
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-              {state?.account ? (
-                <p className="mt-2 tabular-nums">
-                  Account left · {hours.format(state.account.remainingHours)} default VM-h
+      <div className="flex flex-col gap-2 px-2 text-xs">
+        {status ? (
+          <p role="status" className="text-muted-foreground">
+            {status}
+          </p>
+        ) : null}
+        {operationError ? (
+          <p role="alert" className="text-destructive">
+            {operationError}
+          </p>
+        ) : null}
+        {state && instances.length === 0 ? (
+          <p className="text-muted-foreground">No Boats owned by this thread.</p>
+        ) : null}
+        <ul className="m-0 flex list-none flex-col divide-y divide-border/60 p-0">
+          {instances.map((instance) => {
+            const name = instance.sandboxId ?? instance.requestId;
+            const runtime = boatRuntimeLabel(instance, Date.parse(`${nowMinute}:00Z`));
+            const resumable = instance.state === "stopped" || instance.state === "archived";
+            const renewable = ["idle", "ready", "running"].includes(instance.state);
+            const stoppable =
+              instance.sandboxId !== null &&
+              !["stopped", "archived", "deleting"].includes(instance.state);
+            const busy = pending === instance.requestId;
+            return (
+              <li key={instance.requestId} className="min-w-0 py-2 first:pt-0 last:pb-0">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <ServerIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={<span className="min-w-0 flex-1 truncate font-medium" />}
+                    >
+                      {name}
+                    </TooltipTrigger>
+                    <TooltipPopup>{name}</TooltipPopup>
+                  </Tooltip>
+                  <span className="shrink-0 text-muted-foreground">{instance.state}</span>
+                </div>
+                <p className="mt-0.5 text-muted-foreground">
+                  {BOAT_SIZE_LABELS[instance.size]}
+                  {runtime ? (
+                    <>
+                      {" "}
+                      ·{" "}
+                      <Tooltip>
+                        <TooltipTrigger render={<time dateTime={instance.expiresAt} />}>
+                          {runtime}
+                        </TooltipTrigger>
+                        <TooltipPopup>{new Date(instance.expiresAt).toLocaleString()}</TooltipPopup>
+                      </Tooltip>
+                    </>
+                  ) : null}
+                  {busy ? " · Updating…" : null}
                 </p>
-              ) : null}
-            </details>
-          </>
+                <div className="mt-1 flex flex-wrap items-center gap-1">
+                  {renewable || resumable ? (
+                    <ThreadDetailsControl
+                      part="meta"
+                      disabled={!available || !validRuntime}
+                      onClick={() =>
+                        void runOperation({
+                          action: resumable ? "resume" : "renew",
+                          projectId,
+                          threadId,
+                          requestId: instance.requestId,
+                          ttlMinutes,
+                        })
+                      }
+                      aria-label={`${resumable ? "Resume" : "Renew"} ${name} for ${runtimeMinutes} minutes`}
+                    >
+                      {resumable ? "Resume" : "Renew"}
+                      {validRuntime ? ` · ${ttlMinutes} min` : ""}
+                    </ThreadDetailsControl>
+                  ) : null}
+                  {instance.previewUrl ? (
+                    <ThreadDetailsControl
+                      part="meta"
+                      render={<a href={instance.previewUrl} target="_blank" rel="noreferrer" />}
+                    >
+                      <ExternalLinkIcon aria-hidden /> Open
+                    </ThreadDetailsControl>
+                  ) : null}
+                  {stoppable ? (
+                    <ThreadDetailsControl
+                      part="meta"
+                      disabled={!available}
+                      onClick={() =>
+                        void runOperation({
+                          action: "stop",
+                          projectId,
+                          threadId,
+                          requestId: instance.requestId,
+                        })
+                      }
+                      aria-label={`Stop ${name}`}
+                    >
+                      <SquareIcon aria-hidden /> Stop
+                    </ThreadDetailsControl>
+                  ) : null}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+        {state?.configured ? (
+          <div className="flex items-center gap-2">
+            <label htmlFor={runtimeInputId} className="shrink-0 text-muted-foreground">
+              Runtime
+            </label>
+            <div className="w-16">
+              <Input
+                id={runtimeInputId}
+                type="number"
+                size="compact"
+                min={1}
+                max={1440}
+                value={runtimeMinutes}
+                aria-invalid={!validRuntime}
+                onChange={(event) => setRuntimeMinutes(event.target.value)}
+              />
+            </div>
+            <span className="text-muted-foreground">min</span>
+            <ThreadDetailsControl
+              part="meta"
+              disabled={!available || !validRuntime}
+              onClick={() => void start()}
+            >
+              <PlusIcon aria-hidden /> Start
+            </ThreadDetailsControl>
+          </div>
         ) : null}
         <ThreadDetailsControl
+          part="meta"
           render={
             <Link
               to="/boat"
@@ -222,7 +324,7 @@ export function ThreadDetailsBoat({
             />
           }
         >
-          View analytics
+          Usage and history
         </ThreadDetailsControl>
       </div>
     </ThreadDetailsSection>

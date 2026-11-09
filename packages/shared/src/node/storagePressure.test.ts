@@ -73,8 +73,7 @@ it.layer(NodePath.layer)("native storage samples", (it) => {
             sampleStorage(paths, probe),
           ),
         );
-        if (metadataUsedGiB === 8) expect(result).toBeNull();
-        else expect(result?.code).toBe("storage_pressure");
+        expect(result).toBeNull();
         expect(probe.run.mock.calls.filter(([command]) => command === "findmnt")).toHaveLength(2);
         expect(probe.run.mock.calls.filter(([command]) => command === "btrfs")).toHaveLength(1);
       }),
@@ -96,26 +95,19 @@ it.layer(NodePath.layer)("native storage samples", (it) => {
       }),
   );
 
-  it.effect(
-    "reports persistent invalid findmnt JSON without exposing stdout or admitting unknown storage",
-    () =>
-      Effect.gen(function* () {
-        const { probe, workspace } = setup(yield* Path.Path);
-        probe.run.mockResolvedValue("private incomplete payload");
-        const result = yield* Effect.promise(() =>
-          checkStorageAdmissionFailure([workspace], 0, false, (paths) =>
-            sampleStorage(paths, probe),
-          ),
-        );
-        expect(result?.code).toBe("storage_measurement_failed");
-        expect(result?.message).toContain("findmnt returned invalid JSON");
-        expect(result?.message).toContain("26 characters");
-        expect(result?.message).not.toContain("private incomplete payload");
-        expect(probe.run.mock.calls).toHaveLength(2);
-      }),
+  it.effect("uses measured writable capacity when supplementary findmnt output is incomplete", () =>
+    Effect.gen(function* () {
+      const { probe, workspace } = setup(yield* Path.Path);
+      probe.run.mockResolvedValue("private incomplete payload");
+      const result = yield* Effect.promise(() =>
+        checkStorageAdmissionFailure([workspace], 0, false, (paths) => sampleStorage(paths, probe)),
+      );
+      expect(result).toBeNull();
+      expect(probe.run.mock.calls).toHaveLength(2);
+    }),
   );
 
-  it.effect("does not admit a known Btrfs volume when required measurements fail", () =>
+  it.effect("does not reject writable Btrfs volumes when supplementary telemetry fails", () =>
     Effect.gen(function* () {
       for (const { cause, attempts } of [
         { cause: new Error("missing counter"), attempts: 1 },
@@ -147,11 +139,7 @@ it.layer(NodePath.layer)("native storage samples", (it) => {
             sampleStorage(paths, probe),
           ),
         );
-        expect(result?.code).toBe("storage_measurement_failed");
-        expect(result?.message).toContain("Cannot check storage capacity");
-        expect(result?.message).toContain("Capacity is unknown");
-        expect(result?.message).toContain(cause.message);
-        expect(result?.message).not.toContain("Not enough");
+        expect(result).toBeNull();
         expect(probe.run.mock.calls.filter(([command]) => command === "findmnt")).toHaveLength(
           attempts,
         );

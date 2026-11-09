@@ -63,9 +63,15 @@ project preview when it is ready. Choose Android for an emulator-based preview. 
 editing local files, use **Sync changes** to update the same machine, including removed
 source files, while preserving its running development process and dependency cache.
 
-Environments stop after one hour by default. Set another default or override it per project.
-Crew renews the deadline while an agent is using the environment and stops it when its last
-agent finishes. You can also stop it yourself and resume later. Retention controls how long
+Boat is optional. Enabling it for a project does not move ordinary agent work off your
+computer. In the thread details, Boats lists that thread's machines and their remaining
+runtime. Choose a runtime when starting or resuming a VM; agent tools also require an
+explicit duration. The default is one hour.
+
+Five minutes before expiry, Crew asks an available owner agent to decide whether to renew
+or save its work. It does not renew just because you have not answered. The VM stops at
+its deadline even when the agent is idle or waiting for you. You can also stop it yourself
+and resume later. Retention controls how long
 Crew keeps a stopped environment before deleting it; deleting removes its remote disk.
 Save a snapshot explicitly when you need a reusable environment beyond that period.
 Wait until the snapshot is ready before using it as the template for another environment.
@@ -74,7 +80,7 @@ The project's budget limits new compute reservations. Open **Boat** in the sideb
 compare project and thread usage today, over the last seven days, or this month; periods
 use UTC. VM list values are before plan and credit coverage. Thread shares are estimates
 based on recorded time sharing each VM; older time without a recorded assignment stays
-unknown. The thread details panel links directly to that thread's analytics.
+unknown. The thread details panel lists its VMs and links to usage history.
 
 Account capacity and configuration remain in **Settings → Integrations**. Enable project
 CI to write its GitHub workflow, then review and commit that workflow. GitHub must also

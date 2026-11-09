@@ -1,7 +1,6 @@
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import { hasSpeechTranscription } from "@t3tools/shared/speechTranscription";
-import * as NodeOS from "node:os";
 import {
   CommandId,
   latestProviderTurnForAttempt,
@@ -13,7 +12,6 @@ import {
   type OrchestrationV2RunAttempt,
   type OrchestrationV2TurnItem,
   isCompactionCommandMessage,
-  linkOriginIsFenced,
   parseGoalCommand,
   RunId,
   ThreadId,
@@ -57,8 +55,6 @@ export const storageRunInterrupt =
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as StoragePressure from "../storagePressure.ts";
-import * as BoatService from "../boat/BoatService.ts";
-import * as HostResources from "../resourceTelemetry/HostResources.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -88,7 +84,6 @@ import {
 } from "@t3tools/provider-core/server/failure";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
-import { chooseComputePlacement, computeRequestId } from "./ComputePlacement.ts";
 import {
   isRestartNoteContinuation,
   pendingRestartCancelledBackgroundWork,
@@ -125,14 +120,12 @@ class WorktreeRecreateNoBaseError extends Schema.TaggedError<WorktreeRecreateNoB
   }
 }
 
-class ComputePlacementError extends Schema.TaggedError<ComputePlacementError>()(
-  "ComputePlacementError",
-  { reason: Schema.String },
+class WorkspaceSourceError extends Schema.TaggedError<WorkspaceSourceError>()(
+  "WorkspaceSourceError",
+  { reason: Schema.Literals(["project_not_found", "source_changed"]) },
 ) {
   override get message(): string {
-    if (this.reason === "boat_disabled")
-      return "This turn requires remote compute, but Boat is not enabled for this project. Enable Boat for this project or resolve the local resource constraint before retrying.";
-    return `Cannot start provider work: compute placement is blocked (${this.reason}).`;
+    return `Cannot start provider work: the workspace is unavailable (${this.reason}).`;
   }
 }
 
@@ -182,8 +175,6 @@ export const layer: Layer.Layer<
   | ServerConfig.ServerConfig
   | ServerSettings.ServerSettingsService
   | StoragePressure.StoragePressure
-  | BoatService.BoatService
-  | HostResources.HostResources
   | GitWorkflowService.GitWorkflowService
   | ProjectService.ProjectService
   | ProviderAuthService.ProviderAuthService
@@ -201,8 +192,6 @@ export const layer: Layer.Layer<
     const path = yield* Path.Path;
     const serverConfig = yield* ServerConfig.ServerConfig;
     const storagePressure = yield* StoragePressure.StoragePressure;
-    const boat = yield* BoatService.BoatService;
-    const hostResources = yield* HostResources.HostResources;
     const storageRunInterrupt = yield* StorageRunInterrupt;
     const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
     const projects = yield* ProjectService.ProjectService;
@@ -918,7 +907,7 @@ export const layer: Layer.Layer<
         function* (expectedStatus: "starting" | "running") {
           const project = yield* projects.getById(projection.thread.projectId);
           if (Option.isNone(project))
-            return yield* new ComputePlacementError({ reason: "project_not_found" });
+            return yield* new WorkspaceSourceError({ reason: "project_not_found" });
           const current = yield* projectionStore.getRuntimeRecoveryProjection(projection.thread.id);
           const currentRun = current.runs.find((candidate) => candidate.id === run.id);
           if (currentRun?.status !== expectedStatus || currentRun.activeAttemptId !== attempt.id)
@@ -933,156 +922,11 @@ export const layer: Layer.Layer<
             workspace !== path.resolve(resolvedRuntimePolicy.cwd ?? serverConfig.cwd) ||
             (computeProjectRoot !== undefined && projectRoot !== computeProjectRoot)
           )
-            return yield* new ComputePlacementError({ reason: "source_changed" });
+            return yield* new WorkspaceSourceError({ reason: "source_changed" });
           computeProjectRoot ??= projectRoot;
           return { thread, workspace, projectRoot };
         },
       );
-      const prepareCompute = Effect.fn("ProviderTurnStartService.prepareCompute")(function* () {
-        const source = yield* checkComputeSource("starting");
-        if (source === undefined) return undefined;
-        const { thread } = source;
-        const fenced = thread.linkOrigin !== undefined && linkOriginIsFenced(thread.linkOrigin);
-        const forceBoat =
-          !fenced &&
-          thread.id.startsWith("work-owner:") &&
-          (yield* boat.isEnabled(thread.projectId));
-        const resources = yield* hostResources.read;
-        const placementInput = {
-          projectId: thread.projectId,
-          ownerThreadId: thread.id,
-          requestId: computeRequestId(thread.projectId, thread.id),
-          resources,
-          storageFailure: null,
-          forceBoat,
-        };
-        let placement = chooseComputePlacement({ ...placementInput, boat: null });
-        if (placement.target === "local") {
-          return (yield* boat.isEnabled(thread.projectId)) ? localComputeContext(false) : "";
-        }
-        if (placement.target !== "blocked" || placement.reason !== "boat_unavailable")
-          return yield* new ComputePlacementError({ reason: placement.reason });
-        if (fenced) return yield* new ComputePlacementError({ reason: "linked_source_fenced" });
-        const state = yield* boat.read(thread.projectId);
-        if ((yield* checkComputeSource("starting")) === undefined) return undefined;
-        let ownerThreadId = thread.id;
-        placement = chooseComputePlacement({ ...placementInput, boat: state });
-        const hasOwnReservation = state.instances.some(
-          (instance) =>
-            instance.projectId === thread.projectId &&
-            instance.threadId === thread.id &&
-            instance.state === "provisioning",
-        );
-        if (
-          !hasOwnReservation &&
-          state.configured &&
-          state.projects[thread.projectId]?.enabled &&
-          ((placement.target === "boat" && placement.action === "start") ||
-            (placement.target === "blocked" &&
-              (placement.reason === "boat_conflict" || placement.reason === "boat_capacity"))) &&
-          thread.lineage.relationshipToParent === "subagent"
-        ) {
-          const visited = new Set<ThreadId>([thread.id]);
-          let lineage = thread.lineage;
-          while (
-            visited.size < 64 &&
-            lineage.relationshipToParent === "subagent" &&
-            lineage.parentThreadId !== null
-          ) {
-            const parentId = lineage.parentThreadId;
-            if (visited.has(parentId)) break;
-            visited.add(parentId);
-            const parent = yield* projectionStore.getThreadShell(parentId);
-            if (
-              parent === null ||
-              parent.deletedAt !== null ||
-              parent.projectId !== thread.projectId ||
-              path.resolve(parent.worktreePath ?? source.projectRoot) !== source.workspace
-            )
-              break;
-            const candidate = chooseComputePlacement({
-              ...placementInput,
-              ownerThreadId: parent.id,
-              requestId: computeRequestId(thread.projectId, parent.id),
-              boat: state,
-            });
-            if (candidate.target === "boat" && candidate.action !== "start") {
-              ownerThreadId = parent.id;
-              placement = candidate;
-              break;
-            }
-            lineage = parent.lineage;
-          }
-        }
-        if (placement.target === "local") return localComputeContext(true);
-        if (placement.target !== "boat")
-          return yield* new ComputePlacementError({ reason: placement.reason });
-        if ((yield* checkComputeSource("starting")) === undefined) return undefined;
-        const target = { projectId: thread.projectId, requestId: placement.requestId };
-        const previous = state.instances.find(
-          (instance) =>
-            instance.projectId === target.projectId &&
-            instance.requestId === target.requestId &&
-            instance.threadId === ownerThreadId,
-        );
-        let prepared = yield* boat.operate({ ...target, action: placement.action }, thread.id);
-        if ((yield* checkComputeSource("starting")) === undefined) return undefined;
-        const selected = () =>
-          prepared.instances.find(
-            (instance) =>
-              instance.projectId === target.projectId &&
-              instance.requestId === target.requestId &&
-              instance.threadId === ownerThreadId,
-          );
-        let readinessChecks = 0;
-        const waitForComputeReadiness = Effect.fn(
-          "ProviderTurnStartService.waitForComputeReadiness",
-        )(function* () {
-          while (selected()?.state === "provisioning" && readinessChecks < 60) {
-            readinessChecks += 1;
-            yield* Effect.sleep("1 second");
-            if ((yield* checkComputeSource("starting")) === undefined) return false;
-            prepared = yield* boat.read(thread.projectId);
-            if ((yield* checkComputeSource("starting")) === undefined) return false;
-          }
-          const instance = selected();
-          if (!instance?.sandboxId || !["idle", "ready", "running"].includes(instance.state))
-            return yield* new ComputePlacementError({ reason: "boat_not_ready" });
-          return true;
-        });
-        if (!(yield* waitForComputeReadiness())) return undefined;
-        if (
-          placement.action !== "renew" ||
-          previous?.state === "idle" ||
-          selected()?.state === "idle"
-        ) {
-          const currentSource = yield* checkComputeSource("starting");
-          if (currentSource === undefined) return undefined;
-          // Node FileSystem.makeTempFile uses this directory when no directory is supplied.
-          const archiveDirectory = yield* Effect.sync(() => NodeOS.tmpdir());
-          const storageFailure = yield* Effect.promise(() =>
-            storagePressure.check([
-              serverConfig.stateDir,
-              currentSource.workspace,
-              archiveDirectory,
-            ]),
-          );
-          if ((yield* checkComputeSource("starting")) === undefined) return undefined;
-          if (storageFailure !== null)
-            return yield* new ComputePlacementError({ reason: storageFailure.code });
-          prepared = yield* boat.operate({ ...target, action: "prepare" }, thread.id);
-          if ((yield* checkComputeSource("starting")) === undefined) return undefined;
-          if (!(yield* waitForComputeReadiness())) return undefined;
-        }
-        return [
-          "Compute placement: boat.",
-          `projectId: ${target.projectId}`,
-          `requestId: ${target.requestId}`,
-          `ownerThreadId: ${ownerThreadId}`,
-          "Run heavy commands through boat_environment with action exec and exactly this projectId and requestId. Ordinary shell operations remain local.",
-          "This routing context grants no additional permissions.",
-        ].join("\n");
-      });
       // The provider turn marks cancellation work delivered; restart continuations use their own text or resume natively.
       const noteContinuation = isRestartNoteContinuation(
         run,
@@ -1627,21 +1471,20 @@ export const layer: Layer.Layer<
       if (!(yield* isCurrentAttemptInStatus("starting"))) {
         return;
       }
-      let computeContext = "";
-      if (!goalCommand && !isCompactionCommandMessage(message)) {
-        const compute = yield* Effect.result(prepareCompute());
-        if (compute._tag === "Failure") {
-          if (input.willRetry === true) return yield* compute.failure;
+      const validateWorkspaceSource = !goalCommand && !isCompactionCommandMessage(message);
+      if (validateWorkspaceSource) {
+        const source = yield* Effect.result(checkComputeSource("starting"));
+        if (source._tag === "Failure") {
+          if (input.willRetry === true) return yield* source.failure;
           yield* settleStartFailure({
-            signal: "compute-placement-failure",
-            title: "Compute unavailable",
-            error: compute.failure,
-            message: compute.failure.message,
+            signal: "workspace-source-failure",
+            title: "Workspace unavailable",
+            error: source.failure,
+            message: source.failure.message,
           });
           return;
         }
-        if (compute.success === undefined) return;
-        computeContext = compute.success;
+        if (source.success === undefined) return;
       }
       const now = yield* DateTime.now;
       const handoffContext = resumedHandoffContext ?? handoffContextForThread(loadedProviderThread);
@@ -1774,13 +1617,13 @@ export const layer: Layer.Layer<
           payload: runningRootNode,
         },
       ];
-      if (computeContext !== "") {
+      if (validateWorkspaceSource) {
         const source = yield* Effect.result(checkComputeSource("starting"));
         if (source._tag === "Failure") {
           if (input.willRetry === true) return yield* source.failure;
           yield* settleStartFailure({
-            signal: "compute-placement-failure",
-            title: "Compute unavailable",
+            signal: "workspace-source-failure",
+            title: "Workspace unavailable",
             error: source.failure,
             message: source.failure.message,
           });
@@ -1847,11 +1690,11 @@ export const layer: Layer.Layer<
             sideChatHandoff === undefined || compact || goalCommand
               ? ""
               : sideChatHandoff.summaryText;
-          const context = [delivery.context, sideChatContext, restartNote, computeContext]
+          const context = [delivery.context, sideChatContext, restartNote]
             .filter((part) => part !== "")
             .join("\n\n");
           const { restartContinuationOfRunId: _resumedRunId, ...promptedInput } = turnInput;
-          if (computeContext !== "") {
+          if (validateWorkspaceSource) {
             const currentSource = yield* checkComputeSource("running").pipe(
               Effect.tapError(() =>
                 delivery.unsent.pipe(
@@ -1929,7 +1772,7 @@ export const layer: Layer.Layer<
         retryHandoff.length === 0 &&
         sideChatHandoff === undefined &&
         restartNote === "" &&
-        computeContext === "" &&
+        !validateWorkspaceSource &&
         !noteContinuation
           ? session
           : makeDeliverySession(session, startWithHandoffs);

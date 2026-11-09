@@ -7,7 +7,7 @@ import * as NodeUtil from "node:util";
 
 const GiB = 1024 ** 3;
 const BTRFS_MAGIC = 0x9123683en;
-const STOP_RESERVE_BYTES = 4 * GiB;
+const START_RESERVE_BYTES = 256 * 1024 ** 2;
 const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
 
 export interface BtrfsStorageSample {
@@ -35,7 +35,7 @@ export interface StorageFailure {
 export function storageMeasurementFailure(cause: unknown): StorageFailure {
   return {
     code: "storage_measurement_failed",
-    message: `Cannot check storage capacity. Capacity is unknown; work is blocked for safety. Check that the working directory, T3 data directory and filesystem measurements are accessible, then try again. (${cause instanceof Error ? cause.message : String(cause)})`,
+    message: `Cannot check storage capacity. Check that the working directory and T3 data directory are accessible, then try again. (${cause instanceof Error ? cause.message : String(cause)})`,
   };
 }
 
@@ -161,47 +161,51 @@ export async function sampleStorage(
         ),
       };
       if (probe.platform !== "linux" || resolved.stats.type !== BTRFS_MAGIC) return sample;
-      const mountArgs = ["--json", "--target", resolved.path, "--output", "FSTYPE,UUID"];
-      let mount: unknown;
-      for (let attempt = 0; attempt < 2; attempt++) {
-        let mountOutput: string;
-        try {
-          mountOutput = await probe.run("findmnt", mountArgs);
-        } catch (cause) {
-          if (
-            attempt === 0 &&
-            cause !== null &&
-            typeof cause === "object" &&
-            "code" in cause &&
-            cause.code === "EAGAIN" &&
-            "syscall" in cause &&
-            cause.syscall === "spawn findmnt"
-          )
-            continue;
-          throw cause;
+      try {
+        const mountArgs = ["--json", "--target", resolved.path, "--output", "FSTYPE,UUID"];
+        let mount: unknown;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          let mountOutput: string;
+          try {
+            mountOutput = await probe.run("findmnt", mountArgs);
+          } catch (cause) {
+            if (
+              attempt === 0 &&
+              cause !== null &&
+              typeof cause === "object" &&
+              "code" in cause &&
+              cause.code === "EAGAIN" &&
+              "syscall" in cause &&
+              cause.syscall === "spawn findmnt"
+            )
+              continue;
+            throw cause;
+          }
+          try {
+            mount = JSON.parse(mountOutput);
+            break;
+          } catch {
+            if (attempt === 0) continue;
+            throw new Error(
+              `findmnt returned invalid JSON (${mountOutput.length} characters) at ${resolved.path} after two attempts; filesystem identity is unknown`,
+            );
+          }
         }
-        try {
-          mount = JSON.parse(mountOutput);
-          break;
-        } catch {
-          if (attempt === 0) continue;
-          throw new Error(
-            `findmnt returned invalid JSON (${mountOutput.length} characters) at ${resolved.path} after two attempts; filesystem identity is unknown`,
-          );
+        const entry = (mount as { filesystems?: { fstype?: string; uuid?: string }[] })
+          .filesystems?.[0];
+        if (entry?.fstype !== "btrfs" || !/^[a-f0-9-]{36}$/iu.test(entry.uuid ?? "")) {
+          throw new Error(`Cannot identify Btrfs filesystem at ${path}`);
         }
+        const uuid = entry.uuid!;
+        let pending = filesystems.get(uuid);
+        if (!pending) {
+          pending = readBtrfs(resolved.path, uuid, probe);
+          filesystems.set(uuid, pending);
+        }
+        return { ...sample, btrfs: await pending };
+      } catch {
+        return sample;
       }
-      const entry = (mount as { filesystems?: { fstype?: string; uuid?: string }[] })
-        .filesystems?.[0];
-      if (entry?.fstype !== "btrfs" || !/^[a-f0-9-]{36}$/iu.test(entry.uuid ?? "")) {
-        throw new Error(`Cannot identify Btrfs filesystem at ${path}`);
-      }
-      const uuid = entry.uuid!;
-      let pending = filesystems.get(uuid);
-      if (!pending) {
-        pending = readBtrfs(resolved.path, uuid, probe);
-        filesystems.set(uuid, pending);
-      }
-      return { ...sample, btrfs: await pending };
     }),
   );
 }
@@ -209,49 +213,24 @@ export async function sampleStorage(
 export function storagePressureMessage(
   sample: StorageSample,
   requiredBytes: number,
-  previouslyBlocked = false,
+  _previouslyBlocked = false,
 ): string | null {
   if (sample.availableBytes < requiredBytes) {
-    return `Not enough free disk space at ${sample.path}: ${(sample.availableBytes / GiB).toFixed(2)} GiB available; at least ${(requiredBytes / GiB).toFixed(0)} GiB required. Free disk space and try again.`;
+    return `Not enough free disk space at ${sample.path}: ${(sample.availableBytes / GiB).toFixed(2)} GiB available; at least ${(requiredBytes / GiB).toFixed(2)} GiB required. Free disk space and try again.`;
   }
-  const btrfs = sample.btrfs;
-  if (!btrfs) return null;
-  for (const [name, value] of Object.entries(btrfs)) byteCount(value, name);
-  if (!btrfs.metadataTotalBytes) throw new Error("Btrfs metadata size is unavailable");
-  const headroom = Math.max(
-    0,
-    btrfs.metadataTotalBytes -
-      btrfs.metadataUsedBytes -
-      btrfs.metadataReservedBytes -
-      btrfs.metadataPinnedBytes -
-      btrfs.metadataMayUseBytes -
-      btrfs.metadataReadonlyBytes,
-  );
-  const usedFraction = btrfs.metadataUsedBytes / btrfs.metadataTotalBytes;
-  // Free data extents cannot replace metadata chunks; committed reservations also consume headroom.
-  const minimumHeadroom = Math.min(
-    (previouslyBlocked ? 1.5 : 1) * GiB,
-    btrfs.metadataTotalBytes * (previouslyBlocked ? 0.12 : 0.1),
-  );
-  const tight = usedFraction >= (previouslyBlocked ? 0.88 : 0.9) || headroom < minimumHeadroom;
-  if (btrfs.deviceErrors === 0 && !(btrfs.deviceUnallocatedBytes < 40 * GiB && tight)) return null;
-  return `Btrfs storage pressure at ${sample.path}: ${(btrfs.deviceUnallocatedBytes / GiB).toFixed(2)} GiB device-unallocated, ${(headroom / GiB).toFixed(2)} GiB metadata headroom, ${(usedFraction * 100).toFixed(1)}% metadata used, ${btrfs.deviceErrors} device errors. Restore filesystem reserve before starting more work.`;
+  return null;
 }
 
-/** Failed Btrfs measurements never fall back to statfs-only admission. */
+/** Auxiliary Btrfs counters are not a reliable measure of writable capacity. */
 export async function checkStorageAdmissionFailure(
   paths: readonly string[],
-  activeWork = 0,
-  previouslyBlocked = false,
+  _activeWork = 0,
+  _previouslyBlocked = false,
   sample: typeof sampleStorage = sampleStorage,
 ): Promise<StorageFailure | null> {
-  const required = Math.max(
-    previouslyBlocked ? 10 * GiB : 8 * GiB,
-    STOP_RESERVE_BYTES + (Math.max(0, activeWork) + 1) * 2 * GiB,
-  );
   try {
     for (const entry of await sample(paths)) {
-      const message = storagePressureMessage(entry, required, previouslyBlocked);
+      const message = storagePressureMessage(entry, START_RESERVE_BYTES);
       if (message) return { code: "storage_pressure", message };
     }
     return null;

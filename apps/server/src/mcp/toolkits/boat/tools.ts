@@ -13,6 +13,15 @@ import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
 import * as BoatService from "../../../boat/BoatService.ts";
 
+const agentBoatAction = Schema.Union([
+  BoatAction.members[0],
+  Schema.Struct({
+    ...BoatAction.members[1].fields,
+    ttlMinutes: BoatDefaults.fields.ttlMinutes,
+  }),
+  BoatAction.members[2],
+]);
+
 const common = {
   success: BoatState,
   failure: OrchestratorMcpFailure,
@@ -36,7 +45,7 @@ export const BoatToolkit = Toolkit.make(
   Tool.make("boat_status", {
     ...common,
     description:
-      "Read Boat account capacity, project budget and owned cloud environments. No API keys are returned.",
+      "Read Boat account capacity, project budget and thread-owned VMs with expiry times. Boat is optional additional compute; enabling it does not require moving ordinary thread work off the local host. No API keys are returned.",
     parameters: Schema.Struct({
       ...BoatReadInput.fields,
       environmentId: OrchestratorMcpEnvironmentTarget,
@@ -54,9 +63,9 @@ export const BoatToolkit = Toolkit.make(
   Tool.make("boat_environment", {
     ...common,
     description:
-      "Start, prepare, exec, preview, stop, resume or delete a project's Boat VM. Start uses a unique requestId; reuse it after an uncertain reply. Exec runs a command for up to 20 seconds in the workspace. Prepare syncs non-ignored working source, including deleted files, into the existing VM. It preserves a running dev process, dependencies and caches; otherwise it installs and launches the configured dev command. After local edits, prepare again with the same requestId, then inspect the existing preview. Stop ends processes but retains disk; delete discards it. Wait for idle or ready before prepare. Crew tracks calling agents and stops their VM when no agent uses it. Renew extends its bounded timeout while working; budget still applies. Resume stopped VMs for further work. Account setup belongs in Settings.",
+      "Manage optional thread-owned Boat VMs: start, prepare, exec, preview, renew, stop, resume or delete. Start, resume and renew require explicit ttlMinutes (usually 60); the VM stops at that deadline even while the agent is idle or awaiting user input. Start uses a unique requestId; reuse it after an uncertain reply. Exec runs a command for up to 20 seconds. Prepare syncs non-ignored working source, including deleted files, preserving the running dev process, dependencies and caches. Wait for idle or ready before prepare; prepare again after local edits. Preview opens the configured web or desktop target; use returned managed controls for UI interaction. Before expiry, renew only for work still needed, or preserve commits and artifacts and stop. Stop retains the disk; delete discards it. A failed VM operation is local to that VM and must not block unrelated work. Account setup belongs in Settings.",
     parameters: Schema.Struct({
-      request: BoatAction,
+      request: agentBoatAction,
       environmentId: OrchestratorMcpEnvironmentTarget,
     }),
   }).annotate(Tool.Destructive, true),

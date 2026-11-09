@@ -4,16 +4,13 @@ import {
   checkStorageAdmissionFailure,
   sampleStorage,
   storagePressureMessage,
-  storageMeasurementFailure,
   type StorageFailure,
 } from "@t3tools/shared/node/storagePressure";
 
 export { checkStorageAdmission, sampleStorage } from "@t3tools/shared/node/storagePressure";
 export type { StorageSample, StorageFailure } from "@t3tools/shared/node/storagePressure";
 
-const GiB = 1024 ** 3;
-/** Keep room for the app database and for work already in progress. */
-const STOP_RESERVE_BYTES = 4 * GiB;
+const STOP_RESERVE_BYTES = 64 * 1024 ** 2;
 
 export interface StoragePressureGuard {
   readonly check: (paths: readonly string[]) => Promise<StorageFailure | null>;
@@ -27,67 +24,25 @@ export class StoragePressure extends Context.Service<StoragePressure, StoragePre
   "t3/storagePressure",
 ) {}
 
-/** Retain the recovery threshold until a fresh measurement succeeds above it. */
 export function makeStoragePressure(
   sample: typeof sampleStorage = sampleStorage,
 ): StoragePressureGuard {
-  const blockedPaths = new Set<string>();
-  let active = 0;
-  let tail = Promise.resolve();
-  const check = async (paths: readonly string[]) => {
-    const failure = await checkStorageAdmissionFailure(
-      paths,
-      active,
-      paths.some((path) => blockedPaths.has(path)),
-      sample,
-    );
-    for (const path of paths) {
-      if (failure === null) blockedPaths.delete(path);
-      else blockedPaths.add(path);
-    }
-    return failure;
-  };
+  const check = (paths: readonly string[]) => checkStorageAdmissionFailure(paths, 0, false, sample);
   return {
     check,
-    acquire: async (paths) => {
-      let unlock!: () => void;
-      const previous = tail;
-      tail = new Promise<void>((resolve) => {
-        unlock = resolve;
-      });
-      await previous;
-      try {
-        const failure = await check(paths);
-        if (failure !== null) return { failure, release: () => {} };
-        active += 1;
-        let released = false;
-        return {
-          failure: null,
-          release: () => {
-            if (!released) {
-              released = true;
-              active -= 1;
-            }
-          },
-        };
-      } finally {
-        unlock();
-      }
-    },
+    acquire: async (paths) => ({ failure: await check(paths), release: () => {} }),
     checkRunning: async (paths) => {
-      try {
-        for (const entry of await sample(paths)) {
-          const message = storagePressureMessage(entry, STOP_RESERVE_BYTES);
-          if (message) {
-            blockedPaths.add(entry.path);
-            return { code: "storage_pressure", message };
+      for (const path of paths) {
+        try {
+          for (const entry of await sample([path])) {
+            const message = storagePressureMessage(entry, STOP_RESERVE_BYTES);
+            if (message) return { code: "storage_pressure", message };
           }
+        } catch {
+          // Missing telemetry is not evidence of an exhausted filesystem.
         }
-        return null;
-      } catch (cause) {
-        for (const path of paths) blockedPaths.add(path);
-        return storageMeasurementFailure(cause);
       }
+      return null;
     },
   };
 }

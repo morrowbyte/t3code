@@ -1,6 +1,6 @@
 import { ProjectId, ThreadId, type BoatInstance } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
-import { summarizeProjectBoat } from "./threadDetailsBoat";
+import { boatRuntimeLabel, selectThreadBoats } from "./threadDetailsBoat";
 
 const projectId = ProjectId.make("project");
 const instance = (overrides: Partial<BoatInstance> = {}): BoatInstance => ({
@@ -25,33 +25,43 @@ const instance = (overrides: Partial<BoatInstance> = {}): BoatInstance => ({
   ...overrides,
 });
 
-describe("summarizeProjectBoat", () => {
-  it("counts actual sizes across project threads and excludes other projects", () => {
-    const summary = summarizeProjectBoat(
+describe("selectThreadBoats", () => {
+  it("lists only machines owned by this thread, including retained stopped machines", () => {
+    const threadId = ThreadId.make("first");
+    const selected = selectThreadBoats(
       [
-        instance({ size: "small", threadId: ThreadId.make("first"), costUsd: 0.018 }),
-        instance({ size: "large", threadId: ThreadId.make("second"), costUsd: 0.072 }),
-        instance({ size: "xlarge", costUsd: 0.2 }),
+        instance({ requestId: "stopped", state: "stopped", threadId }),
+        instance({ requestId: "owned", threadId }),
+        instance({
+          requestId: "other-owner",
+          threadId: ThreadId.make("second"),
+          leases: [threadId],
+        }),
         instance(),
-        instance({ projectId: ProjectId.make("other"), costUsd: 100 }),
+        instance({ requestId: "deleted", state: "deleted", threadId }),
+        instance({ requestId: "other-project", projectId: ProjectId.make("other"), threadId }),
       ],
       projectId,
+      threadId,
     );
-    expect(summary.active).toEqual({ small: 1, default: 1, large: 1, xlarge: 1 });
-    expect(summary.costUsd).toBeCloseTo(0.326);
+    expect(selected.map((boat) => boat.requestId)).toEqual(["owned", "stopped"]);
   });
 
-  it("retains inactive VM usage without counting those VMs as active", () => {
-    const states = ["running", "starting", "deleting", "archived", "stopped", "deleted", "error"];
-    const summary = summarizeProjectBoat(
-      states.map((state) => instance({ state })),
-      projectId,
-    );
-    expect(summary.active).toEqual({ small: 0, default: 3, large: 0, xlarge: 0 });
-    expect(summary.costUsd).toBeCloseTo(states.length * 0.036);
-    expect(summarizeProjectBoat([], projectId)).toEqual({
-      active: { small: 0, default: 0, large: 0, xlarge: 0 },
-      costUsd: 0,
-    });
+  it("keeps provisioning machines visible before a sandbox ID is assigned", () => {
+    const threadId = ThreadId.make("first");
+    const pending = instance({ threadId, state: "provisioning", sandboxId: null });
+    expect(selectThreadBoats([pending], projectId, threadId)).toEqual([pending]);
+    expect(selectThreadBoats([], projectId, threadId)).toEqual([]);
+  });
+});
+
+describe("boatRuntimeLabel", () => {
+  it("shows the remaining deadline without claiming an expired machine has stopped", () => {
+    const now = Date.parse("2026-10-30T00:30:00Z");
+    expect(boatRuntimeLabel(instance(), now)).toBe("30 min left");
+    expect(boatRuntimeLabel(instance(), now + 30 * 60000)).toBe("Runtime ended");
+    expect(boatRuntimeLabel(instance({ expiresAt: "unknown" }), now)).toBe("Runtime unknown");
+    expect(boatRuntimeLabel(instance({ state: "stopped" }), now)).toBeNull();
+    expect(boatRuntimeLabel(instance({ state: "archived" }), now)).toBeNull();
   });
 });

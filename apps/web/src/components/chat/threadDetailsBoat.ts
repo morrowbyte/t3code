@@ -1,4 +1,4 @@
-import type { BoatInstance, ProjectId } from "@t3tools/contracts";
+import type { BoatInstance, ProjectId, ThreadId } from "@t3tools/contracts";
 
 export const BOAT_SIZE_LABELS = {
   small: "Small",
@@ -9,13 +9,31 @@ export const BOAT_SIZE_LABELS = {
 
 const inactiveStates = new Set(["archived", "stopped", "deleted", "error"]);
 
-export function summarizeProjectBoat(instances: readonly BoatInstance[], projectId: ProjectId) {
-  const active = { small: 0, default: 0, large: 0, xlarge: 0 };
-  let costUsd = 0;
-  for (const instance of instances) {
-    if (instance.projectId !== projectId) continue;
-    costUsd += instance.costUsd;
-    if (!inactiveStates.has(instance.state)) active[instance.size] += 1;
-  }
-  return { active, costUsd };
+export function selectThreadBoats(
+  instances: readonly BoatInstance[],
+  projectId: ProjectId,
+  threadId: ThreadId,
+) {
+  return instances
+    .filter(
+      (instance) =>
+        instance.projectId === projectId &&
+        instance.threadId === threadId &&
+        instance.state !== "deleted",
+    )
+    .toSorted(
+      (a, b) =>
+        Number(inactiveStates.has(a.state)) - Number(inactiveStates.has(b.state)) ||
+        b.createdAt.localeCompare(a.createdAt) ||
+        a.requestId.localeCompare(b.requestId),
+    );
+}
+
+export function boatRuntimeLabel(instance: BoatInstance, nowMs: number) {
+  if (inactiveStates.has(instance.state)) return null;
+  const remaining = Date.parse(instance.expiresAt) - nowMs;
+  if (!Number.isFinite(remaining)) return "Runtime unknown";
+  if (remaining <= 0) return "Runtime ended";
+  const minutes = Math.ceil(remaining / 60000);
+  return `${minutes} min left`;
 }

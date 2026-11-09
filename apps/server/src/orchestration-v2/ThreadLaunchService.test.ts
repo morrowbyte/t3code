@@ -194,6 +194,28 @@ function makeHarness(options: HarnessOptions = {}) {
   );
   const boatCalls: Array<{ action: string; threadId: ThreadId | undefined }> = [];
   const boatTargets: string[] = [];
+  const readBoat = vi.fn<BoatService["Service"]["read"]>(() =>
+    options.boatStatusUnavailable
+      ? Effect.fail(new BoatError({ category: "provider" }))
+      : Effect.succeed({
+          configured: options.boatEnabled ?? false,
+          defaults: { ttlMinutes: 60, retentionDays: 1 },
+          account: {
+            status: "active",
+            canStart: true,
+            reason: null,
+            remainingHours: 10,
+            walletUsd: 0,
+            maxConcurrent: 4,
+            sizes: ["default"],
+          },
+          projects: options.boatEnabled
+            ? { [projectId]: { ...DEFAULT_BOAT_PROJECT, enabled: true } }
+            : {},
+          instances: options.boatInstances ?? [],
+        }),
+  );
+  const isBoatEnabled = vi.fn(() => Effect.succeed(options.boatEnabled ?? false));
   const layerExternalServices = Layer.mergeAll(
     NodeServices.layer,
     NodeCrypto.layer,
@@ -218,27 +240,8 @@ function makeHarness(options: HarnessOptions = {}) {
       acquire: async () => ({ failure: options.storageFailure ?? null, release: () => {} }),
     }),
     Layer.mock(BoatService)({
-      isEnabled: () => Effect.succeed(options.boatEnabled ?? false),
-      read: () =>
-        options.boatStatusUnavailable
-          ? Effect.fail(new BoatError({ category: "provider" }))
-          : Effect.succeed({
-              configured: options.boatEnabled ?? false,
-              defaults: { ttlMinutes: 60, retentionDays: 1 },
-              account: {
-                status: "active",
-                canStart: true,
-                reason: null,
-                remainingHours: 10,
-                walletUsd: 0,
-                maxConcurrent: 4,
-                sizes: ["default"],
-              },
-              projects: options.boatEnabled
-                ? { [projectId]: { ...DEFAULT_BOAT_PROJECT, enabled: true } }
-                : {},
-              instances: options.boatInstances ?? [],
-            }),
+      isEnabled: isBoatEnabled,
+      read: readBoat,
       operate: (action, threadId) => {
         boatCalls.push({ action: action.action, threadId });
         boatTargets.push(action.requestId);
@@ -366,6 +369,8 @@ function makeHarness(options: HarnessOptions = {}) {
     closeTerminal,
     boatCalls,
     boatTargets,
+    readBoat,
+    isBoatEnabled,
   };
 }
 
@@ -398,98 +403,55 @@ function launchInput(input: {
   };
 }
 
-it.effect.each([undefined, "budget"] as const)(
-  "prepares an enabled Boat project without local fallback (%s)",
-  (boatError) => {
-    const harness = makeHarness({
-      boatEnabled: true,
-      ...(boatError === undefined ? {} : { boatError }),
+it.effect.each([
+  "ready",
+  "running",
+  "archived",
+  "deleted",
+  "unavailable",
+  "budget",
+  "capacity",
+] as const)("starts a work owner locally without consulting its %s Boat", (state) => {
+  const owner = ThreadId.make(`work-owner:${"a".repeat(64)}:report-${state}`);
+  const harness = makeHarness({
+    boatEnabled: true,
+    boatStatusUnavailable: state === "unavailable",
+    ...(state === "budget" || state === "capacity" ? { boatError: state } : {}),
+    hostResources: {
+      cpuUtilization: 0.98,
+      cpuCount: 8,
+      totalMemoryBytes: 32 * 1024 ** 3,
+      availableMemoryBytes: 512 * 1024 ** 2,
+    },
+    boatInstances: [
+      {
+        projectId,
+        threadId: owner,
+        requestId: `work-${"a".repeat(64)}`,
+        sandboxId: "historical-sandbox",
+        state:
+          state === "unavailable" || state === "budget" || state === "capacity" ? "deleted" : state,
+      } as BoatInstance,
+    ],
+  });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const launched = yield* launches.launch({
+      ...launchInput({ command: `local-${state}`, thread: owner, message: "Implement report" }),
+      workspaceStrategy: { type: "worktree", baseRef: "main" },
     });
-    return Effect.gen(function* () {
-      const launches = yield* ThreadLaunch.ThreadLaunchService;
-      const launched = yield* launches.launch({
-        ...launchInput({ command: "boat-owner", thread: "ignored", message: "Implement report" }),
-        workKey: "boat-report",
-        workspaceStrategy: { type: "worktree", baseRef: "main" },
-      });
-      const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
-      const finished = yield* tracker.stream(launched.threadId).pipe(
-        Stream.filter((item) => item !== null && item.phase !== "running"),
-        Stream.runHead,
-      );
-      assert.strictEqual(
-        Option.getOrNull(finished)?.phase,
-        boatError === undefined ? "done" : "failed",
-      );
-      assert.deepEqual(
-        harness.boatCalls,
-        boatError === undefined
-          ? [
-              { action: "start", threadId: launched.threadId },
-              { action: "prepare", threadId: launched.threadId },
-            ]
-          : [{ action: "start", threadId: launched.threadId }],
-      );
-      assert.strictEqual(harness.runSetup.mock.calls.length, 0);
-    }).pipe(Effect.provide(harness.layer));
-  },
-);
-
-it.effect.each(["running", "archived"] as const)(
-  "reuses only the bound owner's %s Boat under pressure",
-  (state) => {
-    const owner = ThreadId.make(`reuse-${state}`);
-    const harness = makeHarness({
-      boatEnabled: true,
-      hostResources: {
-        cpuUtilization: 0.98,
-        cpuCount: 8,
-        totalMemoryBytes: 32 * 1024 ** 3,
-        availableMemoryBytes: 16 * 1024 ** 3,
-      },
-      boatInstances: [
-        {
-          projectId,
-          threadId: ThreadId.make("foreign"),
-          requestId: "foreign-vm",
-          sandboxId: "foreign-sandbox",
-          state: "running",
-        } as BoatInstance,
-        {
-          projectId,
-          threadId: owner,
-          requestId: "owned-vm",
-          sandboxId: "owned-sandbox",
-          state,
-        } as BoatInstance,
-      ],
-    });
-    return Effect.gen(function* () {
-      const launch = yield* ThreadLaunch.ThreadLaunchService;
-      yield* launch.launch(
-        launchInput({
-          command: `reuse-${state}`,
-          thread: owner,
-          workspace: { type: "worktree", baseRef: "main" },
-        }),
-      );
-      const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
-      const finished = yield* tracker.stream(owner).pipe(
-        Stream.filter(
-          (value) => value !== null && (value.phase === "done" || value.phase === "failed"),
-        ),
-        Stream.runHead,
-      );
-      assert.strictEqual(Option.getOrNull(finished)?.phase, "done");
-      assert.deepEqual(
-        harness.boatCalls.map((call) => call.action),
-        [state === "archived" ? "resume" : "renew", "prepare"],
-      );
-      assert.deepEqual(harness.boatTargets, ["owned-vm", "owned-vm"]);
-      assert.strictEqual(harness.runSetup.mock.calls.length, 0);
-    }).pipe(Effect.provide(harness.layer));
-  },
-);
+    const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+    const finished = yield* tracker.stream(launched.threadId).pipe(
+      Stream.filter((item) => item !== null && item.phase !== "running"),
+      Stream.runHead,
+    );
+    assert.strictEqual(Option.getOrNull(finished)?.phase, "done");
+    assert.strictEqual(harness.runSetup.mock.calls.length, 1);
+    assert.strictEqual(harness.readBoat.mock.calls.length, 0);
+    assert.strictEqual(harness.isBoatEnabled.mock.calls.length, 0);
+    assert.deepEqual(harness.boatCalls, []);
+  }).pipe(Effect.provide(harness.layer));
+});
 
 it.effect.each([
   { driver: "codex", message: "/goal implement the report" },
@@ -526,96 +488,41 @@ it.effect.each([
   },
 );
 
-it.effect("checks local archive storage again immediately before Boat prepare", () => {
-  let checks = 0;
-  const harness = makeHarness({
-    boatEnabled: true,
-    hostResources: {
-      cpuUtilization: 0.98,
-      cpuCount: 8,
-      availableMemoryBytes: 16 * 1024 ** 3,
-      totalMemoryBytes: 32 * 1024 ** 3,
-    },
-    storageCheck: async () =>
-      ++checks === 1
-        ? null
-        : {
-            code: "storage_pressure",
-            message: "Archive storage became critical",
-          },
-  });
-  return Effect.gen(function* () {
-    const launches = yield* ThreadLaunch.ThreadLaunchService;
-    const launched = yield* launches.launch({
-      ...launchInput({ command: "late-storage", thread: "late-storage", message: "Build" }),
-      workspaceStrategy: { type: "worktree", baseRef: "main" },
+it.effect.each(["storage_pressure", "storage_measurement_failed"] as const)(
+  "checks state storage before creating a worktree (%s)",
+  (code) => {
+    let stateDir = "";
+    const checkedPaths: string[][] = [];
+    const harness = makeHarness({
+      boatEnabled: true,
+      storageCheck: async (paths) => {
+        checkedPaths.push([...paths]);
+        return { code, message: "State filesystem admission refused" };
+      },
     });
-    const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
-    const finished = yield* tracker.stream(launched.threadId).pipe(
-      Stream.filter((entry) => entry !== null && entry.phase !== "running"),
-      Stream.runHead,
-    );
-    assert.strictEqual(Option.getOrNull(finished)?.phase, "failed");
-    assert.deepEqual(
-      harness.boatCalls.map((call) => call.action),
-      ["start"],
-    );
-    assert.strictEqual(harness.runSetup.mock.calls.length, 0);
-  }).pipe(Effect.provide(harness.layer));
-});
-
-it.effect.each([
-  { stage: "placement", code: "storage_pressure" },
-  { stage: "placement", code: "storage_measurement_failed" },
-  { stage: "archive", code: "storage_pressure" },
-  { stage: "archive", code: "storage_measurement_failed" },
-] as const)("checks state storage before $stage ($code)", ({ stage, code }) => {
-  let stateDir = "";
-  const checkedPaths: string[][] = [];
-  const harness = makeHarness({
-    boatEnabled: true,
-    hostResources: {
-      cpuUtilization: 0.98,
-      cpuCount: 8,
-      availableMemoryBytes: 16 * 1024 ** 3,
-      totalMemoryBytes: 32 * 1024 ** 3,
-    },
-    storageCheck: async (paths) => {
-      checkedPaths.push([...paths]);
-      return paths.includes(stateDir) && (stage === "placement" || checkedPaths.length > 1)
-        ? { code, message: "State filesystem admission refused" }
-        : null;
-    },
-  });
-  return Effect.gen(function* () {
-    stateDir = (yield* ServerConfig.ServerConfig).stateDir;
-    const launches = yield* ThreadLaunch.ThreadLaunchService;
-    const launched = yield* launches.launch({
-      ...launchInput({
-        command: `state-${stage}-${code}`,
-        thread: `state-${stage}-${code}`,
-        message: "Build",
-      }),
-      workspaceStrategy: { type: "worktree", baseRef: "main" },
-    });
-    const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
-    const finished = yield* tracker.stream(launched.threadId).pipe(
-      Stream.filter((entry) => entry !== null && entry.phase !== "running"),
-      Stream.runHead,
-    );
-    assert.strictEqual(Option.getOrNull(finished)?.phase, "failed");
-    assert.deepEqual(
-      harness.boatCalls.map((call) => call.action),
-      stage === "placement" ? [] : ["start"],
-    );
-    assert.strictEqual(harness.runSetup.mock.calls.length, 0);
-    assert.include(checkedPaths.at(-1) ?? [], stateDir);
-    if (stage === "placement") assert.strictEqual(harness.createWorktree.mock.calls.length, 0);
-  }).pipe(Effect.provide(harness.layer));
-});
+    return Effect.gen(function* () {
+      stateDir = (yield* ServerConfig.ServerConfig).stateDir;
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const launched = yield* launches.launch({
+        ...launchInput({ command: `state-${code}`, thread: `state-${code}`, message: "Build" }),
+        workspaceStrategy: { type: "worktree", baseRef: "main" },
+      });
+      const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+      const finished = yield* tracker.stream(launched.threadId).pipe(
+        Stream.filter((entry) => entry !== null && entry.phase !== "running"),
+        Stream.runHead,
+      );
+      assert.strictEqual(Option.getOrNull(finished)?.phase, "failed");
+      assert.deepEqual(harness.boatCalls, []);
+      assert.strictEqual(harness.runSetup.mock.calls.length, 0);
+      assert.include(checkedPaths.at(-1) ?? [], stateDir);
+      assert.strictEqual(harness.createWorktree.mock.calls.length, 0);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
 
 it.effect.each(["cpu", "memory", "budget", "storage", "healthy"] as const)(
-  "places ordinary development according to resources without bypassing admission (%s)",
+  "keeps ordinary development local regardless of resource pressure or Boat budget (%s)",
   (condition) => {
     const pressured = condition !== "healthy";
     const harness = makeHarness({
@@ -653,17 +560,11 @@ it.effect.each(["cpu", "memory", "budget", "storage", "healthy"] as const)(
       );
       assert.strictEqual(
         Option.getOrNull(finished)?.phase,
-        condition === "budget" || condition === "storage" ? "failed" : "done",
+        condition === "storage" ? "failed" : "done",
       );
-      assert.strictEqual(harness.runSetup.mock.calls.length, condition === "healthy" ? 1 : 0);
-      assert.deepEqual(
-        harness.boatCalls.map((call) => call.action),
-        condition === "healthy" || condition === "storage"
-          ? []
-          : condition === "budget"
-            ? ["start"]
-            : ["start", "prepare"],
-      );
+      assert.strictEqual(harness.runSetup.mock.calls.length, condition === "storage" ? 0 : 1);
+      assert.deepEqual(harness.boatCalls, []);
+      assert.strictEqual(harness.readBoat.mock.calls.length, 0);
       if (condition === "storage") assert.strictEqual(harness.createWorktree.mock.calls.length, 0);
     }).pipe(Effect.provide(harness.layer));
   },
@@ -757,9 +658,9 @@ it.effect.each(["Continue the report", "/compact", "/goal pause"])(
       assert.strictEqual(Option.getOrNull(finished)?.phase, "done");
       assert.deepEqual(
         harness.boatCalls.map((call) => call.action),
-        control ? [] : ["start", "resume", "prepare"],
+        [],
       );
-      assert.strictEqual(harness.runSetup.mock.calls.length, 0);
+      assert.strictEqual(harness.runSetup.mock.calls.length, control ? 0 : 1);
     }).pipe(Effect.provide(harness.layer));
   },
 );

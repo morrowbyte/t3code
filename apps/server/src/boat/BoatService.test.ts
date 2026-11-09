@@ -1570,6 +1570,107 @@ it.effect(
     }),
 );
 
+it.effect("uses the duration chosen for each start, renewal and resume", () => {
+  const durations: Array<number | undefined> = [];
+  const test = setup((path, method, body) =>
+    Effect.sync(() => {
+      if (
+        (path === "/sandboxes" && method === "POST") ||
+        method === "PATCH" ||
+        path.endsWith("/resume")
+      )
+        durations.push((body as { ttlSeconds?: number }).ttlSeconds);
+    }),
+  );
+  return Effect.gen(function* () {
+    const boat = yield* make;
+    yield* boat.connect(Redacted.make("boat_fixture_private"));
+    yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: false });
+    const startedAt = yield* Clock.currentTimeMillis;
+    const started = yield* boat.operate(
+      { action: "start", projectId, requestId: "duration", ttlMinutes: 15 },
+      ownerThreadId,
+    );
+    assert.equal(Date.parse(started.instances[0]!.expiresAt), startedAt + 15 * 60_000);
+    const renewed = yield* boat.operate(
+      { action: "renew", projectId, requestId: "duration", ttlMinutes: 30 },
+      ownerThreadId,
+    );
+    assert.equal(Date.parse(renewed.instances[0]!.expiresAt), startedAt + 30 * 60_000);
+    yield* boat.operate({ action: "stop", projectId, requestId: "duration" });
+    const resumed = yield* boat.operate(
+      { action: "resume", projectId, requestId: "duration", ttlMinutes: 10 },
+      ownerThreadId,
+    );
+    assert.equal(Date.parse(resumed.instances[0]!.expiresAt), startedAt + 10 * 60_000);
+    assert.deepEqual(durations, [900, 1800, 600]);
+  }).pipe(Effect.scoped, Effect.provide(test.services));
+});
+
+it.effect("warns the owner before expiry without extending an idle VM", () => {
+  const test = setup();
+  return Effect.gen(function* () {
+    const boat = yield* make;
+    yield* boat.connect(Redacted.make("boat_fixture_private"));
+    yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: true });
+    const started = yield* boat.operate(
+      { action: "start", projectId, requestId: "warning", ttlMinutes: 6 },
+      ownerThreadId,
+    );
+    const warnings = yield* Stream.toPull(boat.expiring);
+    yield* TestClock.adjust("61 seconds");
+    yield* boat.reconcile();
+    const [warning] = yield* warnings;
+    assert.deepEqual(warning, {
+      projectId,
+      threadId: ownerThreadId,
+      requestId: "warning",
+      sandboxId: "bx_23456789",
+      expiresAt: started.instances[0]!.expiresAt,
+    });
+    test.setOwnerActive(false);
+    yield* TestClock.adjust("5 minutes");
+    yield* boat.reconcile();
+    assert.include(test.calls, "POST /sandboxes/bx_23456789/stop");
+    assert.notInclude(test.calls, "PATCH /sandboxes/bx_23456789");
+  }).pipe(Effect.scoped, Effect.provide(test.services));
+});
+
+it.effect("continues deadline cleanup when status refresh or another VM stop fails", () => {
+  let fail = false;
+  const test = setup((path) =>
+    fail && (path === "/limits" || path === "/sandboxes/bx_23456789/stop")
+      ? Effect.fail(new BoatError({ category: "provider", status: 503 }))
+      : Effect.void,
+  );
+  return Effect.gen(function* () {
+    yield* Effect.gen(function* () {
+      const boat = yield* make;
+      yield* boat.connect(Redacted.make("boat_fixture_private"));
+      yield* boat.configureDefaults({ ttlMinutes: 1, retentionDays: 14 });
+      yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: true });
+      yield* boat.operate({ action: "start", projectId, requestId: "unavailable" }, ownerThreadId);
+    }).pipe(Effect.scoped);
+    const fs = yield* FileSystem.FileSystem;
+    const config = yield* ServerConfig.ServerConfig;
+    const filename = `${config.stateDir}/boat.json`;
+    const stored = JSON.parse(yield* fs.readFileString(filename));
+    stored.instances.push({
+      ...stored.instances[0],
+      requestId: "healthy",
+      sandboxId: "bx_healthy",
+    });
+    yield* fs.writeFileString(filename, JSON.stringify(stored));
+    const boat = yield* make;
+    fail = true;
+    yield* TestClock.adjust("61 seconds");
+    yield* boat.reconcile();
+    assert.include(test.calls, "POST /sandboxes/bx_23456789/stop");
+    assert.include(test.calls, "POST /sandboxes/bx_healthy/stop");
+    assert.notInclude(test.calls, "DELETE /sandboxes/bx_healthy");
+  }).pipe(Effect.scoped, Effect.provide(test.services));
+});
+
 it.effect("binds the caller worktree across restart and rejects a later source rewrite", () => {
   const test = setup();
   return Effect.gen(function* () {

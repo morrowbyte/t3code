@@ -45,6 +45,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import * as Semaphore from "effect/Semaphore";
 import * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
 import * as ServerConfig from "../config.ts";
 import * as Secrets from "../auth/ServerSecretStore.ts";
 import type { AuthenticatedSession } from "../auth/EnvironmentAuth.ts";
@@ -357,9 +358,18 @@ export interface BoatDesktopViewer {
   readonly disconnect: Effect.Effect<void>;
 }
 
+export interface BoatExpiryWarning {
+  readonly projectId: ProjectId;
+  readonly threadId: ThreadId;
+  readonly requestId: string;
+  readonly sandboxId: string;
+  readonly expiresAt: string;
+}
+
 export class BoatService extends Context.Service<
   BoatService,
   {
+    readonly expiring: Stream.Stream<BoatExpiryWarning>;
     readonly transfer: (
       input: BoatTransferInput,
       session: AuthenticatedSession,
@@ -443,6 +453,7 @@ export const make = Effect.gen(function* () {
     }
   >();
   const lock = yield* Semaphore.make(1);
+  const expiryWarnings = yield* PubSub.sliding<BoatExpiryWarning>(128);
   const leaseChanges = yield* PubSub.unbounded<{
     ledger: typeof Ledger.Type;
     work: typeof Work.Type;
@@ -1793,7 +1804,10 @@ export const make = Effect.gen(function* () {
       return yield* new BoatError({ category: "not_found" });
     const token = yield* key;
     const settings = projectSettings(action.projectId);
+    const ttlMinutes =
+      "ttlMinutes" in action ? (action.ttlMinutes ?? settings.ttlMinutes) : settings.ttlMinutes;
     if (
+      (action.action === "prepare" || action.action === "preview") &&
       settings.webAccess === "private" &&
       settings.previewKind === "android" &&
       !settings.privateAndroidTarget
@@ -1844,7 +1858,7 @@ export const make = Effect.gen(function* () {
         return yield* read(action.projectId);
       }
       const status = instance ? null : yield* read(action.projectId);
-      const reservation = (settings.ttlMinutes / 60) * rates[settings.size];
+      const reservation = (ttlMinutes / 60) * rates[settings.size];
       const now = yield* Clock.currentTimeMillis;
       instance ??= {
         requestId: action.requestId,
@@ -1857,7 +1871,7 @@ export const make = Effect.gen(function* () {
         size: settings.size,
         state: "provisioning",
         createdAt: DateTime.formatIso(DateTime.makeUnsafe(now)),
-        expiresAt: DateTime.formatIso(DateTime.makeUnsafe(now + settings.ttlMinutes * 60000)),
+        expiresAt: DateTime.formatIso(DateTime.makeUnsafe(now + ttlMinutes * 60000)),
         costUsd: 0,
         threadId: threadId ?? null,
         previewTabId: null,
@@ -1889,7 +1903,6 @@ export const make = Effect.gen(function* () {
               return yield* new BoatError({ category: "conflict" });
             return existing;
           }
-          if (!settings.enabled) return yield* new BoatError({ category: "disabled" });
           if (!status?.account?.canStart || !status.account.sizes.includes(settings.size))
             return yield* new BoatError({ category: "capacity" });
           const own = ledger.instances.filter((item) => item.projectId === action.projectId);
@@ -1991,11 +2004,11 @@ export const make = Effect.gen(function* () {
               : 0),
           0,
         );
-      if (spent + (settings.ttlMinutes / 60) * rates[instance.size] > settings.budgetUsd)
+      if (spent + (ttlMinutes / 60) * rates[instance.size] > settings.budgetUsd)
         return yield* new BoatError({ category: "budget" });
-      yield* api.request(token, sandboxPath, "PATCH", { ttlSeconds: settings.ttlMinutes * 60 });
+      yield* api.request(token, sandboxPath, "PATCH", { ttlSeconds: ttlMinutes * 60 });
       yield* updateInstance(action, {
-        expiresAt: DateTime.formatIso(DateTime.makeUnsafe(now + settings.ttlMinutes * 60000)),
+        expiresAt: DateTime.formatIso(DateTime.makeUnsafe(now + ttlMinutes * 60000)),
       });
       return yield* read(action.projectId);
     }
@@ -2045,8 +2058,7 @@ export const make = Effect.gen(function* () {
                     .request(token, `${sandboxPath}/commands/${preparedInstance.processId}`)
                     .pipe(Effect.flatMap(decode(ProcessStatus)));
             const running = process !== null && process.exitCode === undefined;
-            if (!settings.enabled || !settings.devCommand.trim())
-              return yield* new BoatError({ category: "disabled" });
+            if (!settings.devCommand.trim()) return yield* new BoatError({ category: "disabled" });
             if (settings.previewKind === "android" && settings.webAccess !== "private")
               yield* api.request(token, `${sandboxPath}/desktop?vnc=1`, "POST");
             yield* workLock.withPermits(1)(
@@ -2300,10 +2312,9 @@ ${action.command}`,
               if (resumeInFlight.has(current.requestId)) return null;
               if (!current.resumeOperation) {
                 if (!inactive.has(current.state)) return null;
-                if (!settings.enabled) return yield* new BoatError({ category: "disabled" });
                 if (!fresh.account?.canStart) return yield* new BoatError({ category: "capacity" });
               }
-              const ttlSeconds = current.resumeOperation?.ttlSeconds ?? settings.ttlMinutes * 60;
+              const ttlSeconds = current.resumeOperation?.ttlSeconds ?? ttlMinutes * 60;
               const expiresAt = Math.max(
                 current.resumeOperation ? Date.parse(current.expiresAt) : 0,
                 now + ttlSeconds * 1000,
@@ -2825,6 +2836,105 @@ ${action.command}`,
       revoked: Deferred.await(ended),
     };
   });
+  const reconcileInstance = Effect.fn("BoatService.reconcileInstance")(function* (
+    item: StoredInstance,
+    now: number,
+  ) {
+    if (!item.sandboxId || item.state === "deleted" || item.state === "deleting") return;
+    const settings = projectSettings(item.projectId);
+    if (["archived", "stopped"].includes(item.state)) {
+      if (item.stoppedAt && now - Date.parse(item.stoppedAt) >= settings.retentionDays * 86400000)
+        yield* operate({
+          action: "delete",
+          projectId: item.projectId,
+          requestId: item.requestId,
+        });
+      return;
+    }
+    if (inactive.has(item.state) || item.resumeOperation) return;
+    const spent = ledger.instances
+      .filter((entry) => entry.projectId === item.projectId)
+      .reduce((sum, entry) => sum + entry.costUsd, 0);
+    if (Date.parse(item.expiresAt) <= now || spent >= settings.budgetUsd) {
+      yield* operate({ action: "stop", projectId: item.projectId, requestId: item.requestId });
+      return;
+    }
+    const threadId = work[item.requestId]?.source.threadId ?? item.threadId;
+    if (threadId && Date.parse(item.expiresAt) - now <= 5 * 60_000)
+      yield* PubSub.publish(expiryWarnings, {
+        projectId: item.projectId,
+        threadId,
+        requestId: item.requestId,
+        sandboxId: item.sandboxId,
+        expiresAt: item.expiresAt,
+      });
+    const commands = work[item.requestId]?.commands ?? [];
+    if (item.leases.length === 0 && commands.length === 0) return;
+    const token = yield* key;
+    const finishedCommands = new Set<number>();
+    for (const command of commands) {
+      if (Date.parse(command.expiresAt) <= now) {
+        finishedCommands.add(command.processId);
+        continue;
+      }
+      const status = yield* api
+        .request(
+          token,
+          `/sandboxes/${encodeURIComponent(item.sandboxId)}/commands/${command.processId}`,
+        )
+        .pipe(
+          Effect.flatMap(decode(ProcessStatus)),
+          Effect.catchTags({
+            BoatError: (error) => Effect.succeed(error.status === 404 ? { exitCode: -1 } : null),
+          }),
+        );
+      if (status?.exitCode !== undefined) finishedCommands.add(command.processId);
+    }
+    const liveCommands = commands.filter((command) => !finishedCommands.has(command.processId));
+    if (finishedCommands.size > 0)
+      yield* workLock.withPermits(1)(
+        Effect.gen(function* () {
+          const current = work[item.requestId]!;
+          yield* saveWork({
+            ...work,
+            [item.requestId]: {
+              ...current,
+              commands: current.commands.filter(
+                (command) => !finishedCommands.has(command.processId),
+              ),
+            },
+          });
+        }),
+      );
+    const liveOwners = new Set(
+      liveCommands.flatMap((command) => (command.threadId ? [command.threadId] : [])),
+    );
+    const sourceOwner = work[item.requestId]?.source.threadId ?? item.threadId;
+    const roots = new Set([...item.leases, ...(sourceOwner ? [sourceOwner] : [])]);
+    for (const threadId of roots) {
+      for (const active of yield* activeLeaseOwners(threadId, item.projectId, item.requestId))
+        liveOwners.add(active);
+    }
+    const finishedOwners = new Set(item.leases.filter((threadId) => !liveOwners.has(threadId)));
+    const newOwners = [...liveOwners].filter((threadId) => !item.leases.includes(threadId));
+    const current =
+      finishedOwners.size > 0 || newOwners.length > 0
+        ? yield* updateInstance(item, (latest) => ({
+            leases: [
+              ...new Set([
+                ...latest.leases.filter(
+                  (threadId) =>
+                    !finishedOwners.has(threadId) ||
+                    work[item.requestId]?.commands.some((command) => command.threadId === threadId),
+                ),
+                ...newOwners,
+              ]),
+            ],
+          }))
+        : item;
+    if (current.leases.length === 0 && (work[item.requestId]?.commands.length ?? 0) === 0)
+      yield* operate({ action: "stop", projectId: item.projectId, requestId: item.requestId });
+  });
   const reconcile = Effect.fn("BoatService.reconcile")(function* () {
     const owned = ledger.instances.filter(
       (item) => item.sandboxId && item.state !== "deleted" && item.state !== "error",
@@ -2834,97 +2944,25 @@ ${action.command}`,
       !ledger.instances.some((item) => item.savedSnapshot?.status === "saving")
     )
       return;
-    yield* read();
-    const now = yield* Clock.currentTimeMillis;
-    for (const item of ledger.instances) {
-      if (!item.sandboxId || item.state === "deleted" || item.state === "deleting") continue;
-      const settings = projectSettings(item.projectId);
-      if (["archived", "stopped"].includes(item.state)) {
-        if (item.stoppedAt && now - Date.parse(item.stoppedAt) >= settings.retentionDays * 86400000)
-          yield* operate({
-            action: "delete",
-            projectId: item.projectId,
-            requestId: item.requestId,
-          });
-        continue;
-      }
-      if (inactive.has(item.state) || item.resumeOperation) continue;
-      const spent = ledger.instances
-        .filter((entry) => entry.projectId === item.projectId)
-        .reduce((sum, entry) => sum + entry.costUsd, 0);
-      if (Date.parse(item.expiresAt) <= now || spent >= settings.budgetUsd) {
-        yield* operate({ action: "stop", projectId: item.projectId, requestId: item.requestId });
-        continue;
-      }
-      const commands = work[item.requestId]?.commands ?? [];
-      if (item.leases.length === 0 && commands.length === 0) continue;
-      const token = yield* key;
-      const finishedCommands = new Set<number>();
-      for (const command of commands) {
-        if (Date.parse(command.expiresAt) <= now) {
-          finishedCommands.add(command.processId);
-          continue;
-        }
-        const status = yield* api
-          .request(
-            token,
-            `/sandboxes/${encodeURIComponent(item.sandboxId)}/commands/${command.processId}`,
-          )
-          .pipe(
-            Effect.flatMap(decode(ProcessStatus)),
-            Effect.catchTags({
-              BoatError: (error) => Effect.succeed(error.status === 404 ? { exitCode: -1 } : null),
-            }),
-          );
-        if (status?.exitCode !== undefined) finishedCommands.add(command.processId);
-      }
-      const liveCommands = commands.filter((command) => !finishedCommands.has(command.processId));
-      if (finishedCommands.size > 0)
-        yield* workLock.withPermits(1)(
-          Effect.gen(function* () {
-            const current = work[item.requestId]!;
-            yield* saveWork({
-              ...work,
-              [item.requestId]: {
-                ...current,
-                commands: current.commands.filter(
-                  (command) => !finishedCommands.has(command.processId),
-                ),
-              },
-            });
+    yield* read().pipe(
+      Effect.catchTags({
+        BoatError: (error) =>
+          Effect.logWarning("Boat status refresh failed; retaining recorded deadlines", {
+            category: error.category,
           }),
-        );
-      const liveOwners = new Set(
-        liveCommands.flatMap((command) => (command.threadId ? [command.threadId] : [])),
+      }),
+    );
+    const now = yield* Clock.currentTimeMillis;
+    for (const item of ledger.instances)
+      yield* reconcileInstance(item, now).pipe(
+        Effect.catchTags({
+          BoatError: (error) =>
+            Effect.logWarning("Boat lifecycle action failed; retrying on the next pass", {
+              requestId: item.requestId,
+              category: error.category,
+            }),
+        }),
       );
-      const sourceOwner = work[item.requestId]?.source.threadId ?? item.threadId;
-      const roots = new Set([...item.leases, ...(sourceOwner ? [sourceOwner] : [])]);
-      for (const threadId of roots) {
-        for (const active of yield* activeLeaseOwners(threadId, item.projectId, item.requestId))
-          liveOwners.add(active);
-      }
-      const finishedOwners = new Set(item.leases.filter((threadId) => !liveOwners.has(threadId)));
-      const newOwners = [...liveOwners].filter((threadId) => !item.leases.includes(threadId));
-      const current =
-        finishedOwners.size > 0 || newOwners.length > 0
-          ? yield* updateInstance(item, (latest) => ({
-              leases: [
-                ...new Set([
-                  ...latest.leases.filter(
-                    (threadId) =>
-                      !finishedOwners.has(threadId) ||
-                      work[item.requestId]?.commands.some(
-                        (command) => command.threadId === threadId,
-                      ),
-                  ),
-                  ...newOwners,
-                ]),
-              ],
-            }))
-          : item;
-      if (current.leases.length === 0 && (work[item.requestId]?.commands.length ?? 0) === 0)
-        yield* operate({ action: "stop", projectId: item.projectId, requestId: item.requestId });
-    }
   });
   yield* Effect.forever(
     Effect.gen(function* () {
@@ -2933,6 +2971,7 @@ ${action.command}`,
     }),
   ).pipe(Effect.forkScoped);
   return {
+    expiring: Stream.fromPubSub(expiryWarnings),
     read,
     assertActiveLease,
     openDesktopAccess,

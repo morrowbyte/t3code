@@ -178,19 +178,13 @@ export const BoatAction = Schema.Union([
     ...instanceFields,
     command: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(8000)),
   }),
-  Schema.Struct({ action: Schema.Literal("start"), ...instanceFields }),
   Schema.Struct({
-    action: Schema.Literals([
-      "stop",
-      "resume",
-      "renew",
-      "delete",
-      "preview",
-      "prepare",
-      "logs",
-      "cancel",
-      "snapshot",
-    ]),
+    action: Schema.Literals(["start", "resume", "renew"]),
+    ...instanceFields,
+    ttlMinutes: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 1440 }))),
+  }),
+  Schema.Struct({
+    action: Schema.Literals(["stop", "delete", "preview", "prepare", "logs", "cancel", "snapshot"]),
     ...instanceFields,
   }),
 ]);

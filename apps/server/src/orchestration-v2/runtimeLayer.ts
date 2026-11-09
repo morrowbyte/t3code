@@ -1,4 +1,5 @@
 import * as AgentObservatory from "../observatory/AgentObservatoryService.ts";
+import * as BoatExpiryNotifications from "./BoatExpiryNotifications.ts";
 import * as TrustedInvocation from "../mcp/TrustedAppControlInvocation.ts";
 import * as GuestShareService from "../guest/GuestShareService.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
@@ -460,6 +461,7 @@ export const layerProduction = Layer.mergeAll(
     ),
   ),
   layerProviderContinuationWorkerProvided,
+  BoatExpiryNotifications.layer.pipe(Layer.provide(layerThreadManagementProvided)),
   layerAgentSessionImporterProvided,
   EffectOutbox.layerPruneWorker.pipe(Layer.provide(EffectOutbox.layer)),
 ).pipe(
