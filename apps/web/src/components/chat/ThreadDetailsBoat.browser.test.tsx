@@ -171,7 +171,9 @@ it("manages only this thread's VMs with an explicit runtime and recovers after a
   await screen.getByRole("button", { name: "Renew vm-current for 45 minutes" }).click();
   await expect.element(screen.getByText("45 min left", { exact: true })).toBeVisible();
   await screen.getByRole("button", { name: "Stop vm-current" }).click();
-  await expect.element(screen.getByRole("alert")).toHaveTextContent(/HTTP 503/);
+  await expect
+    .element(screen.getByRole("alert"))
+    .toHaveTextContent("Boat could not complete the request (HTTP 503).");
   await expect.element(screen.getByRole("button", { name: "Stop vm-current" })).toBeEnabled();
   await screen.getByRole("button", { name: "Stop vm-current" }).click();
   await expect
