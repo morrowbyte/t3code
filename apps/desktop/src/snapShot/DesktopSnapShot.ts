@@ -534,7 +534,13 @@ async function captureSource({
       }
     }
     const accessibleIdentity = active
-      ? { ...active, bounds: snapShotFlashBounds(active, platform) }
+      ? {
+          ...active,
+          bounds: snapShotFlashBounds(active, platform),
+          ...(platform === "win32" && active.clientBounds
+            ? { clientBounds: Electron.screen.screenToDipRect(null, active.clientBounds) }
+            : {}),
+        }
       : linuxWindow?.processId
         ? {
             title: linuxWindow.title,

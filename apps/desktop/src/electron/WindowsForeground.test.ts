@@ -31,6 +31,7 @@ function makeApi(input: {
     })),
     getWindowText: vi.fn(() => ""),
     getWindowRect: vi.fn(() => undefined),
+    getWindowClientBounds: vi.fn(() => undefined),
     getProcessImagePath: vi.fn(() => ""),
     isKeyDown: vi.fn(() => false),
     attachThreadInput: vi.fn((_source, _target, attach) =>

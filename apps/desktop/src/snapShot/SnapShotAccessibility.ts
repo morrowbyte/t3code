@@ -174,7 +174,7 @@ async function readCapturedWindowAccessibility(
     });
   // Preserve the screenshot frame origin and scale so accessibility coordinates include decorations.
   const sourceBounds =
-    matchMode === "wayland" && active.clientBounds
+    (matchMode === "wayland" || platform === "win32") && active.clientBounds
       ? active.bounds
       : (accessibleBounds ?? active.bounds);
   const richRead = accessibleWindowElementTree(window, sourceBounds, imageSize, {

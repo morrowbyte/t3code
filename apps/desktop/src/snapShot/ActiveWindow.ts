@@ -17,6 +17,7 @@ export type ActiveWindow = {
     readonly width: number;
     readonly height: number;
   };
+  readonly clientBounds?: ActiveWindow["bounds"];
   readonly owner: {
     readonly name: string;
     readonly processId: number;
@@ -161,6 +162,7 @@ async function windowsActiveWindow(): Promise<ActiveWindow | undefined> {
   if (handle === 0n) return undefined;
   const bounds = api.getWindowRect(handle);
   if (!bounds) return undefined;
+  const clientBounds = api.getWindowClientBounds(handle);
   const { processId } = api.getWindowThreadAndProcessId(handle);
   const path = processId === 0 ? "" : api.getProcessImagePath(processId);
   const name = path.split(/[\\/]/).pop() ?? "";
@@ -169,6 +171,7 @@ async function windowsActiveWindow(): Promise<ActiveWindow | undefined> {
     id: Number(handle),
     title: api.getWindowText(handle),
     bounds,
+    ...(clientBounds ? { clientBounds } : {}),
     owner: { name, processId, path },
   };
 }

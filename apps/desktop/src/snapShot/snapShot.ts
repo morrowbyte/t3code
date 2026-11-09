@@ -477,7 +477,7 @@ export function findAccessibleWindow<
       ? (["width", "height"] as const)
       : (["x", "y", "width", "height"] as const);
   const candidateBounds =
-    matchMode === "wayland" && captured.clientBounds
+    (matchMode === "wayland" || captured.platform === "win32") && captured.clientBounds
       ? [captured.bounds, captured.clientBounds]
       : [captured.bounds];
   const matchesBounds = (window: T) => {

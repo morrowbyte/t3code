@@ -13,6 +13,7 @@ export interface WindowsForegroundApi {
   ) =>
     | { readonly x: number; readonly y: number; readonly width: number; readonly height: number }
     | undefined;
+  readonly getWindowClientBounds: WindowsForegroundApi["getWindowRect"];
   readonly getProcessImagePath: (processId: number) => string;
   readonly isKeyDown: (virtualKey: number) => boolean;
   readonly attachThreadInput: (
@@ -148,6 +149,32 @@ export function loadWindowsForegroundApi(): Promise<WindowsForegroundApi> {
           y: top,
           width: Math.max(0, rect.readInt32LE(8) - left),
           height: Math.max(0, rect.readInt32LE(12) - top),
+        };
+      },
+      getWindowClientBounds: (windowHandle) => {
+        const rect = Buffer.alloc(16);
+        const origin = Buffer.alloc(8);
+        const readRect = load({
+          library: user32,
+          funcName: "GetClientRect",
+          retType: DataType.Boolean,
+          paramsType: [DataType.BigInt, DataType.U8Array],
+          paramsValue: [windowHandle, rect],
+        });
+        if (!readRect) return undefined;
+        const readOrigin = load({
+          library: user32,
+          funcName: "ClientToScreen",
+          retType: DataType.Boolean,
+          paramsType: [DataType.BigInt, DataType.U8Array],
+          paramsValue: [windowHandle, origin],
+        });
+        if (!readOrigin) return undefined;
+        return {
+          x: origin.readInt32LE(0),
+          y: origin.readInt32LE(4),
+          width: Math.max(0, rect.readInt32LE(8) - rect.readInt32LE(0)),
+          height: Math.max(0, rect.readInt32LE(12) - rect.readInt32LE(4)),
         };
       },
       getProcessImagePath: (processId) => {
