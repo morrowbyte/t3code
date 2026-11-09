@@ -111,3 +111,23 @@ jobs:
             throw
           }
           Write-Host "Release 7-Zip launcher ready: $sevenZip"
+
+      - name: Restore Windows PowerShell Utility command discovery
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host "Windows PowerShell: $($PSVersionTable.PSVersion)"
+          Write-Host "Module paths: $env:PSModulePath"
+          Get-Module -ListAvailable Microsoft.PowerShell.Utility | ForEach-Object { Write-Host "Utility module: $($_.Path)" }
+          if (-not (Get-Command Get-FileHash -ErrorAction SilentlyContinue)) {
+            $utility = Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1'
+            Write-Host "Importing standard Utility module: $utility"
+            Import-Module -Name $utility -Force -ErrorAction Stop
+          }
+          Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $PSHOME 'powershell.exe')
+
+      - name: Verify Get-FileHash in a fresh release shell
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $PSHOME 'powershell.exe')
