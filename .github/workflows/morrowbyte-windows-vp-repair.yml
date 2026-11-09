@@ -112,46 +112,124 @@ jobs:
           }
           Write-Host "Release 7-Zip launcher ready: $sevenZip"
 
-      - name: Inspect this runner's service and module-path configuration
+      - name: Schedule an idle restart with corrected runner module paths
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $root = Join-Path $env:USERPROFILE 'crew-actions-runner'
-          $serviceFile = Join-Path $root '.service'
-          if (Test-Path -LiteralPath $serviceFile -PathType Leaf) {
-            $name = [IO.File]::ReadAllText($serviceFile).Trim()
-            if ($name -match '^[A-Za-z0-9_.-]+$') { Write-Host "Runner service file: $name" }
-            else { Write-Host 'Runner service file has an unrecognized format; contents omitted.' }
-          } else { Write-Host 'Runner service file: absent' }
-
-          foreach ($service in (Get-CimInstance Win32_Service | Where-Object {
-            $_.PathName -and $_.PathName.IndexOf($root, [StringComparison]::OrdinalIgnoreCase) -ge 0
-          })) {
-            $executable = if ($service.PathName -match '^"([^"]+)"') { $Matches[1] }
-              elseif ($service.PathName -match '^(.+?\.exe)(?:\s|$)') { $Matches[1] } else { '(unrecognized)' }
-            Write-Host "Runner service: name=$($service.Name); state=$($service.State); account=$($service.StartName); executable=$executable"
+          $legacy = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+          $probe = '$ErrorActionPreference = "Stop"; Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $PSHOME "powershell.exe") | Out-Null'
+          $probePassed = $false
+          try {
+            $probeOutput = & $legacy -NoLogo -NoProfile -NonInteractive -Command $probe 2>&1
+            $probePassed = $LASTEXITCODE -eq 0
+          } catch {}
+          $global:LASTEXITCODE = 0
+          if ($probePassed) {
+            Write-Host 'A fresh Windows PowerShell shell already resolves Get-FileHash; no restart scheduled.'
+            return
           }
-
-          foreach ($task in (Get-ScheduledTask)) {
-            foreach ($action in $task.Actions) {
-              $matchesRoot = ($action.Execute -and $action.Execute.IndexOf($root, [StringComparison]::OrdinalIgnoreCase) -ge 0) -or
-                ($action.Arguments -and $action.Arguments.IndexOf($root, [StringComparison]::OrdinalIgnoreCase) -ge 0)
-              if ($matchesRoot) {
-                Write-Host "Runner task: path=$($task.TaskPath); name=$($task.TaskName); state=$($task.State); executable=$($action.Execute); arguments omitted"
-              }
-            }
+          $listenerExe = Join-Path $root 'bin\Runner.Listener.exe'
+          $owned = @(Get-CimInstance Win32_Process -Filter "Name='Runner.Listener.exe'" | Where-Object { $_.ExecutablePath -ieq $listenerExe })
+          if ($owned.Count -ne 1 -or $owned[0].ProcessId -ne 7044) {
+            throw 'The expected manually started runner listener changed; no restart was scheduled.'
           }
-
-          foreach ($process in (Get-CimInstance Win32_Process -Filter "Name='Runner.Listener.exe'" | Where-Object {
-            $_.ExecutablePath -and $_.ExecutablePath.StartsWith("$root\", [StringComparison]::OrdinalIgnoreCase)
-          })) {
-            Write-Host "Runner listener: pid=$($process.ProcessId); executable=$($process.ExecutablePath)"
+          $taskName = 'CrewRunnerModulePathRepair109'
+          if (Get-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction SilentlyContinue) {
+            throw 'The one-off repair task already exists; inspect it before scheduling another.'
           }
-
+          $tools = Join-Path $root 'tools'
+          $scriptFile = Join-Path $tools 'module-path-repair109-v1.ps1'
+          $logFile = Join-Path $tools 'module-path-repair109-v1.log'
           $environmentFile = Join-Path $root '.env'
-          if (Test-Path -LiteralPath $environmentFile -PathType Leaf) {
-            $moduleLines = @([IO.File]::ReadAllLines($environmentFile) | Where-Object { $_ -match '^PSModulePath=' })
-            if ($moduleLines.Count) { $moduleLines | ForEach-Object { Write-Host "Runner .env module path: $_" } }
-            else { Write-Host 'Runner .env: no PSModulePath entry; other entries omitted.' }
-          } else { Write-Host 'Runner .env: absent' }
-          Write-Host "Module paths: $env:PSModulePath"
+          $backup = "$environmentFile.release109-original"
+          foreach ($file in @($scriptFile, $logFile, $backup)) {
+            if (Test-Path -LiteralPath $file) { throw "Existing repair state was not overwritten: $file" }
+          }
+          $hadEnvironment = Test-Path -LiteralPath $environmentFile -PathType Leaf
+          $original = if ($hadEnvironment) { [IO.File]::ReadAllBytes($environmentFile) } else { $null }
+          $lines = if ($hadEnvironment) { @([IO.File]::ReadAllLines($environmentFile) | Where-Object { $_ -notmatch '^PSModulePath=' }) } else { @() }
+          $coreModules = (Join-Path $PSHOME 'Modules').TrimEnd('\')
+          $paths = @(
+            Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules'
+            Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules'
+            Join-Path $env:USERPROFILE 'Documents\WindowsPowerShell\Modules'
+            $env:PSModulePath -split ';' | Where-Object { $_ -and $_.TrimEnd('\') -ine $coreModules }
+          ) | Select-Object -Unique
+          $lines += "PSModulePath=$($paths -join ';')"
+          $encoding = [Text.UTF8Encoding]::new($false)
+          $script = @'
+          $ErrorActionPreference = 'Stop'
+          $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+          $log = Join-Path $PSScriptRoot 'module-path-repair109-v1.log'
+          function Write-RepairLog([string]$message) {
+            [IO.File]::AppendAllText($log, ('{0:o} {1}' -f [DateTime]::UtcNow, $message) + [Environment]::NewLine)
+          }
+          try {
+            if ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value -ne '__USER_SID__') {
+              throw 'The scheduled task is not running as the original user.'
+            }
+            $workerExe = Join-Path $root 'bin\Runner.Worker.exe'
+            $listenerExe = Join-Path $root 'bin\Runner.Listener.exe'
+            $deadline = [DateTime]::UtcNow.AddSeconds(90)
+            while (@(Get-CimInstance Win32_Process -Filter "Name='Runner.Worker.exe'" | Where-Object { $_.ExecutablePath -ieq $workerExe }).Count) {
+              if ([DateTime]::UtcNow -ge $deadline) { throw 'The owned runner did not become idle; nothing was stopped.' }
+              Start-Sleep -Seconds 3
+            }
+            $environmentFile = Join-Path $root '.env'
+            $digest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($environmentFile)))
+            if ($digest -ne '__ENV_HASH__') { throw 'Runner environment changed after preparation; nothing was stopped.' }
+            $listeners = @(Get-CimInstance Win32_Process -Filter "Name='Runner.Listener.exe'" | Where-Object { $_.ExecutablePath -ieq $listenerExe })
+            if ($listeners.Count -ne 1 -or $listeners[0].ProcessId -ne 7044) {
+              throw 'The expected idle listener identity changed; nothing was stopped.'
+            }
+            $listener = [Diagnostics.Process]::GetProcessById(7044)
+            $null = $listener.Handle
+            if ($listener.Path -ine $listenerExe) { throw 'Listener executable identity changed; nothing was stopped.' }
+            if (@(Get-CimInstance Win32_Process -Filter "Name='Runner.Worker.exe'" | Where-Object { $_.ExecutablePath -ieq $workerExe }).Count) {
+              throw 'An owned worker appeared before restart; nothing was stopped.'
+            }
+            $run = Join-Path $root 'run.cmd'
+            if (-not (Test-Path -LiteralPath $run -PathType Leaf)) { throw 'The runner launcher is missing; nothing was stopped.' }
+            Write-RepairLog 'Stopping only the verified idle listener 7044.'
+            Stop-Process -InputObject $listener -ErrorAction Stop
+            Start-Sleep -Seconds 2
+            $listeners = @(Get-CimInstance Win32_Process -Filter "Name='Runner.Listener.exe'" | Where-Object { $_.ExecutablePath -ieq $listenerExe })
+            if ($listeners.Count -gt 1) { throw 'Multiple owned listeners appeared; no additional runner was started.' }
+            if ($listeners.Count -eq 0) {
+              Start-Process -FilePath $env:ComSpec -ArgumentList ('/d /c "{0}"' -f $run) -WorkingDirectory $root -WindowStyle Hidden
+              Write-RepairLog 'Started this runner through its existing run.cmd.'
+            } else { Write-RepairLog 'A replacement owned listener already appeared; it was retained.' }
+            $deadline = [DateTime]::UtcNow.AddSeconds(30)
+            do {
+              $listeners = @(Get-CimInstance Win32_Process -Filter "Name='Runner.Listener.exe'" | Where-Object { $_.ExecutablePath -ieq $listenerExe })
+              if ($listeners.Count) { break }
+              Start-Sleep -Seconds 2
+            } while ([DateTime]::UtcNow -lt $deadline)
+            if ($listeners.Count -ne 1) { throw 'A single replacement listener was not observed.' }
+            Write-RepairLog "Replacement listener observed: $($listeners[0].ProcessId). A fresh job must verify Get-FileHash."
+          } catch {
+            Write-RepairLog $_.Exception.Message
+            exit 1
+          }
+          '@
+          $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          try {
+            if ($hadEnvironment) { Copy-Item -LiteralPath $environmentFile -Destination $backup }
+            [IO.File]::WriteAllLines($environmentFile, [string[]]$lines, $encoding)
+            $digest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($environmentFile)))
+            $script = $script.Replace('__USER_SID__', $userSid).Replace('__ENV_HASH__', $digest)
+            [IO.File]::WriteAllText($scriptFile, $script, $encoding)
+            $action = New-ScheduledTaskAction -Execute (Join-Path $PSHOME 'pwsh.exe') -Argument ('-NoLogo -NoProfile -NonInteractive -File "{0}"' -f $scriptFile)
+            $principal = New-ScheduledTaskPrincipal -UserId $userSid -LogonType Interactive -RunLevel Limited
+            $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(30)
+            $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 3) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+            Register-ScheduledTask -TaskName $taskName -TaskPath '\' -Action $action -Principal $principal -Trigger $trigger -Settings $settings | Out-Null
+          } catch {
+            if ($hadEnvironment) { [IO.File]::WriteAllBytes($environmentFile, $original) }
+            elseif (Test-Path -LiteralPath $environmentFile) { Remove-Item -LiteralPath $environmentFile }
+            if (Test-Path -LiteralPath $scriptFile) { Remove-Item -LiteralPath $scriptFile }
+            throw
+          }
+          Write-Host "Scheduled one idle restart as the current user. Repair log: $logFile"
+          Write-Host 'Scheduling is not verification: the next fresh runner job must pass Get-FileHash.'
