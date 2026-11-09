@@ -1,6 +1,8 @@
 import { RegistryContext } from "@effect/atom-react";
-import type * as ConnectionRegistry from "@t3tools/client-runtime/connection/registry";
-import type * as ConnectionSupervisor from "@t3tools/client-runtime/connection/supervisor";
+import type {
+  EnvironmentRegistry as ConnectionRegistry,
+  EnvironmentSupervisor as ConnectionSupervisor,
+} from "@t3tools/client-runtime/connection";
 import {
   BoatError,
   DEFAULT_BOAT_DEFAULTS,
@@ -59,9 +61,10 @@ vi.mock("@t3tools/client-runtime/state/session", async () => {
 });
 vi.mock("../../state/boat", async () => {
   const { createBoatEnvironment } = await import("@t3tools/client-runtime/state/boat");
-  const { EnvironmentRegistry } = await import("@t3tools/client-runtime/connection/registry");
-  const { EnvironmentSupervisor } = await import("@t3tools/client-runtime/connection/supervisor");
-  const { AVAILABLE_CONNECTION_STATE } = await import("@t3tools/client-runtime/connection/model");
+  const connection = await import("@t3tools/client-runtime/connection");
+  const { EnvironmentRegistry } = connection.EnvironmentRegistry;
+  const { EnvironmentSupervisor } = connection.EnvironmentSupervisor;
+  const { AVAILABLE_CONNECTION_STATE } = connection;
   const { EnvironmentId, BoatError, WS_METHODS } = await import("@t3tools/contracts");
   const Effect = await import("effect/Effect");
   const Layer = await import("effect/Layer");
