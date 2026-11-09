@@ -3447,7 +3447,7 @@ it.effect("directly interrupts the provider if the storage callback is blocked",
   }),
 );
 
-it.effect("stops a real bounded child for Btrfs metadata pressure despite free data space", () =>
+it.effect("stops a real bounded child when measured free disk space becomes critical", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const dir = yield* Effect.acquireRelease(
@@ -3489,7 +3489,7 @@ it.effect("stops a real bounded child for Btrfs metadata pressure despite free d
       assert.isAtMost((yield* Effect.promise(() => NodeFSP.stat(file))).size, 1024);
       const stopped = yield* Deferred.make<void>();
       const now = yield* DateTime.now;
-      let metadataUsedBytes = 8 * 1024 ** 3;
+      let availableBytes = 50 * 1024 ** 3;
       let reads = 0;
       let releases = 0;
       let exitSignal: NodeJS.Signals | null = null;
@@ -3497,17 +3497,7 @@ it.effect("stops a real bounded child for Btrfs metadata pressure despite free d
         reads += 1;
         return paths.map((path) => ({
           path,
-          availableBytes: 50 * 1024 ** 3,
-          btrfs: {
-            deviceUnallocatedBytes: 2 * 1024 ** 3,
-            metadataTotalBytes: 10 * 1024 ** 3,
-            metadataUsedBytes,
-            metadataReservedBytes: 0,
-            metadataPinnedBytes: 0,
-            metadataMayUseBytes: 0,
-            metadataReadonlyBytes: 0,
-            deviceErrors: 0,
-          },
+          availableBytes,
         }));
       });
       const result = yield* captureRootRunTermination({
@@ -3561,7 +3551,7 @@ it.effect("stops a real bounded child for Btrfs metadata pressure despite free d
           }),
         afterStart: (closed) =>
           Effect.gen(function* () {
-            metadataUsedBytes = 9.5 * 1024 ** 3;
+            availableBytes = 32 * 1024 ** 2;
             yield* TestClock.adjust("5 seconds");
             yield* Deferred.await(stopped);
             yield* Deferred.await(closed);
