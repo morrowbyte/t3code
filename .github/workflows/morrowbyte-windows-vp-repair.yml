@@ -112,23 +112,20 @@ jobs:
           }
           Write-Host "Release 7-Zip launcher ready: $sevenZip"
 
+      - name: Probe hashing in the exact legacy release shell
+        id: legacy_probe
+        shell: powershell
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $PSHOME 'powershell.exe')
+
       - name: Schedule an idle restart with corrected runner module paths
+        if: steps.legacy_probe.outcome != 'success'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $root = Join-Path $env:USERPROFILE 'crew-actions-runner'
-          $legacy = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-          $probe = '$ErrorActionPreference = "Stop"; Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $PSHOME "powershell.exe") | Out-Null'
-          $probePassed = $false
-          try {
-            $probeOutput = & $legacy -NoLogo -NoProfile -NonInteractive -Command $probe 2>&1
-            $probePassed = $LASTEXITCODE -eq 0
-          } catch {}
-          $global:LASTEXITCODE = 0
-          if ($probePassed) {
-            Write-Host 'A fresh Windows PowerShell shell already resolves Get-FileHash; no restart scheduled.'
-            return
-          }
           $listenerExe = Join-Path $root 'bin\Runner.Listener.exe'
           $owned = @(Get-CimInstance Win32_Process -Filter "Name='Runner.Listener.exe'" | Where-Object { $_.ExecutablePath -ieq $listenerExe })
           if ($owned.Count -ne 1 -or $owned[0].ProcessId -ne 7044) {
