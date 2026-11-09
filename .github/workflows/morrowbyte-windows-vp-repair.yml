@@ -44,11 +44,12 @@ jobs:
           }
           Write-Host "Runner launcher repaired. Original retained at $backup"
 
-      - name: Expose an existing full 7-Zip installation to release jobs
+      - name: Prepare a full 7-Zip launcher for release jobs
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $chocolatey = if ($env:ChocolateyInstall) { $env:ChocolateyInstall } else { Join-Path $env:ProgramData 'chocolatey' }
+          $portableRoot = Join-Path $env:USERPROFILE 'crew-actions-runner\tools\7zip-26.06'
           $candidates = @(
             foreach ($root in @($env:ProgramFiles, $env:ProgramW6432, ${env:ProgramFiles(x86)})) {
               if ($root) { Join-Path $root '7-Zip\7z.exe' }
@@ -56,6 +57,9 @@ jobs:
             Join-Path $env:LOCALAPPDATA 'Programs\7-Zip\7z.exe'
             foreach ($package in @('7zip', '7zip.install', '7zip.commandline')) {
               Join-Path $chocolatey "lib\$package\tools\7z.exe"
+            }
+            if (Test-Path -LiteralPath $portableRoot -PathType Container) {
+              Get-ChildItem -LiteralPath $portableRoot -Filter '7z.exe' -File -Recurse | ForEach-Object { $_.FullName }
             }
           ) | Select-Object -Unique
           $sevenZip = $null
@@ -67,7 +71,29 @@ jobs:
               break
             }
           }
-          if (-not $sevenZip) { throw "Full 7-Zip with NSIS support not found. Checked: $($candidates -join '; ')" }
+          if (-not $sevenZip) {
+            $msi = Join-Path $env:RUNNER_TEMP 'crew-7z2606-x64.msi'
+            try {
+              Invoke-WebRequest -Uri 'https://github.com/ip7z/7zip/releases/download/26.06/7z2606-x64.msi' -OutFile $msi -TimeoutSec 60
+              $digest = (Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($digest -ne '6dc822569e777d9a3ecd5ffcbc22b55600af87e6c5d9810a64e8566cf5a4af9f') {
+                throw 'The official 7-Zip MSI SHA-256 did not match.'
+              }
+              $arguments = "/a `"$msi`" /qn /norestart TARGETDIR=`"$portableRoot`""
+              $process = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\msiexec.exe') -ArgumentList $arguments -Wait -PassThru -NoNewWindow
+              if ($process.ExitCode -ne 0) { throw "7-Zip administrative extraction failed with exit code $($process.ExitCode)." }
+              foreach ($candidate in (Get-ChildItem -LiteralPath $portableRoot -Filter '7z.exe' -File -Recurse)) {
+                $probe = & $candidate.FullName i 2>&1
+                if ($LASTEXITCODE -eq 0 -and ($probe -match '\bNsis\b')) {
+                  $sevenZip = $candidate.FullName
+                  break
+                }
+              }
+              if (-not $sevenZip) { throw 'The extracted 7-Zip executable did not provide NSIS support.' }
+            } finally {
+              if (Test-Path -LiteralPath $msi) { Remove-Item -LiteralPath $msi -ErrorAction SilentlyContinue }
+            }
+          }
           $shim = Join-Path $env:USERPROFILE 'crew-actions-runner\tools\vite-plus\node_modules\.bin\7z.cmd'
           $wrapper = "@echo off`r`n`"$sevenZip`" %*`r`nexit /b %ERRORLEVEL%`r`n"
           $created = -not (Test-Path -LiteralPath $shim)
