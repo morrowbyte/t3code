@@ -112,22 +112,46 @@ jobs:
           }
           Write-Host "Release 7-Zip launcher ready: $sevenZip"
 
-      - name: Restore Windows PowerShell Utility command discovery
-        shell: powershell
+      - name: Inspect this runner's service and module-path configuration
+        shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          Write-Host "Windows PowerShell: $($PSVersionTable.PSVersion)"
-          Write-Host "Module paths: $env:PSModulePath"
-          Get-Module -ListAvailable Microsoft.PowerShell.Utility | ForEach-Object { Write-Host "Utility module: $($_.Path)" }
-          if (-not (Get-Command Get-FileHash -ErrorAction SilentlyContinue)) {
-            $utility = Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1'
-            Write-Host "Importing standard Utility module: $utility"
-            Import-Module -Name $utility -Force -ErrorAction Stop
-          }
-          Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $PSHOME 'powershell.exe')
+          $root = Join-Path $env:USERPROFILE 'crew-actions-runner'
+          $serviceFile = Join-Path $root '.service'
+          if (Test-Path -LiteralPath $serviceFile -PathType Leaf) {
+            $name = [IO.File]::ReadAllText($serviceFile).Trim()
+            if ($name -match '^[A-Za-z0-9_.-]+$') { Write-Host "Runner service file: $name" }
+            else { Write-Host 'Runner service file has an unrecognized format; contents omitted.' }
+          } else { Write-Host 'Runner service file: absent' }
 
-      - name: Verify Get-FileHash in a fresh release shell
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $PSHOME 'powershell.exe')
+          foreach ($service in (Get-CimInstance Win32_Service | Where-Object {
+            $_.PathName -and $_.PathName.IndexOf($root, [StringComparison]::OrdinalIgnoreCase) -ge 0
+          })) {
+            $executable = if ($service.PathName -match '^"([^"]+)"') { $Matches[1] }
+              elseif ($service.PathName -match '^(.+?\.exe)(?:\s|$)') { $Matches[1] } else { '(unrecognized)' }
+            Write-Host "Runner service: name=$($service.Name); state=$($service.State); account=$($service.StartName); executable=$executable"
+          }
+
+          foreach ($task in (Get-ScheduledTask)) {
+            foreach ($action in $task.Actions) {
+              $matchesRoot = ($action.Execute -and $action.Execute.IndexOf($root, [StringComparison]::OrdinalIgnoreCase) -ge 0) -or
+                ($action.Arguments -and $action.Arguments.IndexOf($root, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+              if ($matchesRoot) {
+                Write-Host "Runner task: path=$($task.TaskPath); name=$($task.TaskName); state=$($task.State); executable=$($action.Execute); arguments omitted"
+              }
+            }
+          }
+
+          foreach ($process in (Get-CimInstance Win32_Process -Filter "Name='Runner.Listener.exe'" | Where-Object {
+            $_.ExecutablePath -and $_.ExecutablePath.StartsWith("$root\", [StringComparison]::OrdinalIgnoreCase)
+          })) {
+            Write-Host "Runner listener: pid=$($process.ProcessId); executable=$($process.ExecutablePath)"
+          }
+
+          $environmentFile = Join-Path $root '.env'
+          if (Test-Path -LiteralPath $environmentFile -PathType Leaf) {
+            $moduleLines = @([IO.File]::ReadAllLines($environmentFile) | Where-Object { $_ -match '^PSModulePath=' })
+            if ($moduleLines.Count) { $moduleLines | ForEach-Object { Write-Host "Runner .env module path: $_" } }
+            else { Write-Host 'Runner .env: no PSModulePath entry; other entries omitted.' }
+          } else { Write-Host 'Runner .env: absent' }
+          Write-Host "Module paths: $env:PSModulePath"
