@@ -8,7 +8,7 @@ on:
 # One writer for the durable per-source dispatch intent. Never cancel an owner
 # between intent persistence and reconciliation of its dispatch acknowledgement.
 concurrency:
-  group: morrowbyte-main-nightly-dispatch
+  group: morrowbyte-main-nightly-dispatch-${{ github.event.workflow_run.head_sha }}
   cancel-in-progress: false
 
 permissions:
@@ -46,6 +46,6 @@ jobs:
           run-install: false
       - name: Dispatch or reconcile the existing Nightly workflow
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.MORROWBYTE_RELEASE_TOKEN || github.token }}
           RELEASE_BACKEND: ${{ vars.MORROWBYTE_RELEASE_BACKEND }}
         run: node scripts/morrowbyte/nightly-dispatch-client.cjs
