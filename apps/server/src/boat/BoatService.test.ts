@@ -1618,9 +1618,10 @@ it.effect("warns the owner before expiry without extending an idle VM", () => {
       ownerThreadId,
     );
     const warnings = yield* Stream.toPull(boat.expiring);
+    const warningFiber = yield* warnings.pipe(Effect.forkScoped({ startImmediately: true }));
     yield* TestClock.adjust("61 seconds");
     yield* boat.reconcile();
-    const [warning] = yield* warnings;
+    const [warning] = yield* Fiber.join(warningFiber);
     assert.deepEqual(warning, {
       projectId,
       threadId: ownerThreadId,
