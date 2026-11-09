@@ -366,6 +366,7 @@ sys.stdout.buffer.write(output.getvalue())
         github,
         context: { repo, payload: { workflow_run: ci } },
         core: { info() {}, setOutput() {} },
+        options: { wait: async () => {} },
       }),
   };
 }
@@ -393,7 +394,7 @@ test("every invalid or partial JSON proof fails before durable intent and dispat
   }
 });
 
-test("missing, failed, aborted, foreign or unprovenanced runs cannot authorize dispatch", async () => {
+test("missing, failed, aborted, foreign or unprovenanced runs cannot authorize release dispatch", async () => {
   const invalid = [
     [() => {}, { missing: true }],
     [
@@ -431,7 +432,11 @@ test("missing, failed, aborted, foreign or unprovenanced runs cannot authorize d
   for (const [change, options] of invalid) {
     const fixture = apiFixture(change, options);
     await assert.rejects(fixture.run());
-    assert.equal(fixture.dispatches.length, 0);
+    assert.equal(
+      fixture.dispatches.filter((dispatch) => dispatch.workflow_id === "morrowbyte-release.yml")
+        .length,
+      0,
+    );
     assert.equal(fixture.markers.length, 0);
   }
 });

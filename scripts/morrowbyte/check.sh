@@ -452,6 +452,7 @@ focused_tests+=(
   apps/web/src/components/settings/UpdateHistoryPanel.test.tsx
 )
 renderer_tests=(
+  apps/web/src/components/chat/ThreadDetailsBoat.browser.test.tsx
   apps/web/src/components/auth/PairingRouteSurface.browser.test.tsx
   apps/web/src/observatory/AgentObservatory.browser.test.tsx
   apps/web/src/components/chat/ExecutionCodePanel.browser.test.tsx

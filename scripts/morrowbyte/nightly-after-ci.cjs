@@ -56,6 +56,73 @@ function decideDispatch({ source, main, statuses, runs, runCount, releases }) {
   return { action: "dispatch" };
 }
 
+async function ensureSourceQualification({
+  github,
+  repo,
+  source,
+  wait = () => new Promise((resolve) => setTimeout(resolve, 30_000)),
+}) {
+  const workflow = "morrowbyte-local-source-check.yml";
+  assert(
+    `${repo.owner}/${repo.repo}` === REPOSITORY && /^[0-9a-f]{40}$/.test(source),
+    "invalid-qualification-source",
+  );
+  const observe = async () => {
+    const { data } = await github.rest.actions.listWorkflowRuns({
+      ...repo,
+      workflow_id: workflow,
+      head_sha: source,
+      event: "workflow_dispatch",
+      per_page: 100,
+    });
+    assert(
+      Array.isArray(data.workflow_runs) &&
+        data.total_count <= 100 &&
+        data.total_count === data.workflow_runs.length,
+      "qualification-run-window-incomplete",
+    );
+    for (const run of data.workflow_runs)
+      assert(
+        Number.isSafeInteger(run.id) &&
+          run.id > 0 &&
+          run.head_sha === source &&
+          run.path === `.github/workflows/${workflow}` &&
+          run.event === "workflow_dispatch",
+        "qualification-run-identity-mismatch",
+      );
+    return data.workflow_runs.toSorted((a, b) => b.id - a.id)[0];
+  };
+  let run = await observe();
+  if (!run) {
+    const { data: commit } = await github.rest.repos.getCommit({ ...repo, ref: source });
+    assert(
+      commit.sha === source && /^[0-9a-f]{40}$/.test(commit.parents?.[0]?.sha ?? ""),
+      "qualification-base-unavailable",
+    );
+    try {
+      await github.rest.actions.createWorkflowDispatch({
+        ...repo,
+        workflow_id: workflow,
+        ref: "main",
+        inputs: { source_sha: source, base_sha: commit.parents[0].sha },
+      });
+    } catch (error) {
+      if (error?.status >= 400 && error.status < 500) throw error;
+      // An uncertain acknowledgement is reconciled below without dispatching again.
+    }
+  }
+  for (let attempt = 0; attempt <= 130; attempt++) {
+    if (run?.status === "completed") {
+      assert(run.conclusion === "success", "source-qualification-not-successful");
+      return run.id;
+    }
+    assert(run || attempt < 4, "source-qualification-dispatch-not-visible");
+    assert(attempt < 130, "source-qualification-wait-exhausted");
+    await wait();
+    run = await observe();
+  }
+}
+
 async function nightlyAfterCI({ github, context, core, options = {} }) {
   assert(
     !options.runnerBackend || ["self-hosted", "blacksmith", "boat"].includes(options.runnerBackend),
@@ -146,7 +213,9 @@ async function nightlyAfterCI({ github, context, core, options = {} }) {
   };
   if (await finish(await observe())) return;
   const { verifySourceProof } = require("./source-proof.cjs");
-  const sourceProof = await verifySourceProof({ github, repo, source });
+  core.info(`Preparing full source qualification for ${source}`);
+  const runId = await ensureSourceQualification({ github, repo, source, wait: options.wait });
+  const sourceProof = await verifySourceProof({ github, repo, source, runId });
   // Qualification can take time; main and the durable intent must still agree.
   if (await finish(await observe())) return;
   // Persist BEFORE the one mutating request. A crash or ambiguous HTTP result
@@ -189,3 +258,4 @@ async function nightlyAfterCI({ github, context, core, options = {} }) {
 module.exports = nightlyAfterCI;
 module.exports.validateTrigger = validateTrigger;
 module.exports.decideDispatch = decideDispatch;
+module.exports.ensureSourceQualification = ensureSourceQualification;

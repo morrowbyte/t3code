@@ -250,7 +250,9 @@ module.exports = { createGitHubClient, main };
 if (require.main === module) {
   main().catch(() => {
     // Do not log arbitrary exception messages from HTTP, payloads, or signed URLs.
-    console.error("Nightly dispatch failed; inspect the recorded dispatch intent before retrying.");
+    console.error(
+      "Nightly orchestration failed; inspect source qualification and any recorded dispatch intent before retrying.",
+    );
     process.exitCode = 1;
   });
 }

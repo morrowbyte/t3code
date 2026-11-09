@@ -1,7 +1,11 @@
 "use strict";
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { validateTrigger, decideDispatch } = require("./nightly-after-ci.cjs");
+const {
+  validateTrigger,
+  decideDispatch,
+  ensureSourceQualification,
+} = require("./nightly-after-ci.cjs");
 const source = "a".repeat(40),
   other = "b".repeat(40);
 const run = {
@@ -80,6 +84,165 @@ test("truncated observations cannot clear intent or invent a unique run", () => 
   );
   assert.throws(() => decideDispatch({ ...state(), runCount: 1 }));
   assert.throws(() => decideDispatch({ ...state(), releases: undefined }));
+});
+
+function qualificationFixture(initialRun, dispatchError) {
+  const repo = { owner: "morrowbyte", repo: "t3code" };
+  const qualification = {
+    id: 42,
+    repository: { full_name: "morrowbyte/t3code" },
+    head_repository: { full_name: "morrowbyte/t3code" },
+    head_sha: source,
+    head_branch: "main",
+    path: ".github/workflows/morrowbyte-local-source-check.yml",
+    event: "workflow_dispatch",
+    status: "queued",
+    conclusion: null,
+  };
+  let visible = initialRun ? { ...qualification, ...initialRun } : null;
+  const dispatches = [];
+  const github = {
+    rest: {
+      repos: {
+        getCommit: async (input) => {
+          assert.deepEqual(input, { ...repo, ref: source });
+          return { data: { sha: source, parents: [{ sha: other }] } };
+        },
+      },
+      actions: {
+        listWorkflowRuns: async (input) => {
+          assert.equal(input.workflow_id, "morrowbyte-local-source-check.yml");
+          assert.equal(input.head_sha, source);
+          assert.equal(input.event, "workflow_dispatch");
+          return {
+            data: { total_count: visible ? 1 : 0, workflow_runs: visible ? [visible] : [] },
+          };
+        },
+        createWorkflowDispatch: async (input) => {
+          dispatches.push(input);
+          if (dispatchError?.status >= 400 && dispatchError.status < 500) throw dispatchError;
+          visible = { ...qualification };
+          if (dispatchError) throw dispatchError;
+        },
+      },
+    },
+  };
+  return {
+    repo,
+    github,
+    dispatches,
+    complete: () => {
+      visible = { ...visible, status: "completed", conclusion: "success" };
+    },
+  };
+}
+
+test("automatically qualifies missing source and reuses queued or successful qualification", async () => {
+  for (const initialRun of [null, {}, { status: "completed", conclusion: "success" }]) {
+    const fixture = qualificationFixture(initialRun);
+    const id = await ensureSourceQualification({
+      github: fixture.github,
+      repo: fixture.repo,
+      source,
+      wait: async () => fixture.complete(),
+    });
+    assert.equal(id, 42);
+    assert.deepEqual(
+      fixture.dispatches,
+      initialRun
+        ? []
+        : [
+            {
+              ...fixture.repo,
+              workflow_id: "morrowbyte-local-source-check.yml",
+              ref: "main",
+              inputs: { source_sha: source, base_sha: other },
+            },
+          ],
+    );
+  }
+});
+
+test("reconciles an uncertain qualification dispatch without issuing another request", async () => {
+  const fixture = qualificationFixture(null, Error("response lost"));
+  assert.equal(
+    await ensureSourceQualification({
+      github: fixture.github,
+      repo: fixture.repo,
+      source,
+      wait: async () => fixture.complete(),
+    }),
+    42,
+  );
+  assert.equal(fixture.dispatches.length, 1);
+  const forbidden = Object.assign(Error("forbidden"), { status: 403 });
+  const refused = qualificationFixture(null, forbidden);
+  await assert.rejects(
+    ensureSourceQualification({
+      github: refused.github,
+      repo: refused.repo,
+      source,
+      wait: async () => assert.fail("a definite refusal must not wait"),
+    }),
+    (error) => error === forbidden,
+  );
+  assert.equal(refused.dispatches.length, 1);
+});
+
+test("does not release failed or mismatched qualification observations", async () => {
+  for (const initialRun of [
+    { status: "completed", conclusion: "failure" },
+    { head_sha: other },
+    { path: ".github/workflows/foreign.yml" },
+    { event: "push" },
+  ]) {
+    const fixture = qualificationFixture(initialRun);
+    await assert.rejects(
+      ensureSourceQualification({
+        github: fixture.github,
+        repo: fixture.repo,
+        source,
+        wait: async () => assert.fail("invalid observation must not wait"),
+      }),
+    );
+    assert.equal(fixture.dispatches.length, 0);
+  }
+  const fixture = qualificationFixture({});
+  fixture.github.rest.actions.listWorkflowRuns = async () => ({
+    data: { total_count: 1, workflow_runs: [] },
+  });
+  await assert.rejects(
+    ensureSourceQualification({
+      github: fixture.github,
+      repo: fixture.repo,
+      source,
+      wait: async () => assert.fail("incomplete observation must not wait"),
+    }),
+  );
+  assert.equal(fixture.dispatches.length, 0);
+});
+
+test("bounds qualification acknowledgement and completion without duplicate dispatch", async () => {
+  for (const visible of [false, true]) {
+    const fixture = qualificationFixture(visible ? {} : null);
+    if (!visible)
+      fixture.github.rest.actions.createWorkflowDispatch = async (input) => {
+        fixture.dispatches.push(input);
+      };
+    let waits = 0;
+    await assert.rejects(
+      ensureSourceQualification({
+        github: fixture.github,
+        repo: fixture.repo,
+        source,
+        wait: async () => {
+          waits += 1;
+        },
+      }),
+    );
+    assert.equal(waits, visible ? 130 : 4);
+    assert.equal(fixture.dispatches.length, visible ? 0 : 1);
+  }
 });
 
 const { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } = require("node:fs");
