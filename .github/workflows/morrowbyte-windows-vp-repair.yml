@@ -1,0 +1,45 @@
+name: Repair Windows release Vite+ launcher
+on:
+  push:
+    branches: [ops/windows-vp-release109]
+    paths: [.github/workflows/morrowbyte-windows-vp-repair.yml]
+
+permissions: {}
+concurrency:
+  group: morrowbyte-windows-vp-repair
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: github.repository == 'morrowbyte/t3code'
+    runs-on: ${{ fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_WINDOWS_RUNNER || 'morrowbyte-windows')) }}
+    timeout-minutes: 5
+    steps:
+      - name: Repair the stale runner-local Vite+ launcher
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $globalVp = Join-Path $env:USERPROFILE '.vite-plus\bin\vp.exe'
+          $shim = Join-Path $env:USERPROFILE 'crew-actions-runner\tools\vite-plus\node_modules\.bin\vp.cmd'
+          $backup = "$shim.release109-original"
+          foreach ($file in @($globalVp, $shim)) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Required launcher missing: $file" }
+          }
+          & $globalVp env --help
+          if ($LASTEXITCODE -ne 0) { throw 'The installed global Vite+ CLI did not pass its probe.' }
+          $original = [IO.File]::ReadAllBytes($shim)
+          $wrapper = "@echo off`r`n`"%USERPROFILE%\.vite-plus\bin\vp.exe`" %*`r`nexit /b %ERRORLEVEL%`r`n"
+          if (-not (Test-Path -LiteralPath $backup)) {
+            [IO.File]::WriteAllBytes($backup, $original)
+          } elseif ([IO.File]::ReadAllText($shim) -ne $wrapper) {
+            throw 'An existing repair backup belongs to a different launcher state.'
+          }
+          try {
+            [IO.File]::WriteAllText($shim, $wrapper, [Text.Encoding]::ASCII)
+            & $shim env --help
+            if ($LASTEXITCODE -ne 0) { throw 'The repaired launcher did not pass its probe.' }
+          } catch {
+            [IO.File]::WriteAllBytes($shim, $original)
+            throw
+          }
+          Write-Host "Runner launcher repaired. Original retained at $backup"
