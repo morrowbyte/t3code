@@ -1,0 +1,141 @@
+name: One-off release 109 Windows fallback
+on:
+  push:
+    branches: [ops/windows-release109-blacksmith]
+    paths: [.github/workflows/morrowbyte-release109-windows-fallback.yml]
+
+permissions:
+  actions: write
+concurrency:
+  group: morrowbyte-release109-windows-backend
+  cancel-in-progress: false
+
+jobs:
+  fallback:
+    if: github.repository == 'morrowbyte/t3code'
+    runs-on: boat-large
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ secrets.MORROWBYTE_RELEASE_TOKEN }}
+    steps:
+      - name: Prepare the frozen release and backend receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/release109-windows-fallback.py" <<'PY'
+          import json, os, sys, time
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from urllib.error import HTTPError
+          from urllib.request import Request, urlopen
+
+          REPO, SOURCE = "morrowbyte/t3code", "03982962cd55c7d81a4f5092b7fb305f740ea2ce"
+          RUN, ATTEMPT, FAILED = 42693451714, 3, 129450994285
+          VARIABLE, LABEL = "MORROWBYTE_WINDOWS_RELEASE_BACKEND", "blacksmith-8vcpu-windows-2025"
+          receipt = Path(os.environ["RUNNER_TEMP"]) / "release109-windows-backend.json"
+          mode = sys.argv[1]
+          saved = json.loads(receipt.read_text()) if mode == "dispatch" else None
+          started = saved["started_monotonic"] if saved else time.monotonic()
+          restoring = False
+          token = os.environ.get("GH_TOKEN")
+          assert token and os.environ["GITHUB_REPOSITORY"] == REPO, "Release credential or repository mismatch"
+          headers = {"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+
+          def api(path, method="GET", body=None, missing=False, timeout=30):
+              remaining = started + (270 if restoring else 180) - time.monotonic()
+              if remaining <= 0:
+                  raise RuntimeError("Controller API budget exhausted; inspect the uploaded backend receipt")
+              request = Request("https://api.github.com/repos/" + REPO + "/" + path,
+                                data=None if body is None else json.dumps(body).encode(),
+                                headers={**headers, "Content-Type": "application/json"}, method=method)
+              try:
+                  with urlopen(request, timeout=min(timeout, remaining)) as response:
+                      data = response.read()
+                      return json.loads(data) if data else None
+              except HTTPError as error:
+                  if missing and error.code == 404:
+                      return None
+                  raise RuntimeError(f"GitHub {method} {path}: HTTP {error.code}") from None
+
+          def backend():
+              value = api("actions/variables/" + VARIABLE, missing=True)
+              if value is None:
+                  return None
+              assert value["name"] == VARIABLE and value["value"] in ("", "configured", "self-hosted", "blacksmith"), "Unexpected backend configuration"
+              return value["value"]
+
+          def frozen_release():
+              run = api(f"actions/runs/{RUN}")
+              assert (run["repository"]["full_name"], run["head_sha"], run["head_branch"], run["path"], run["event"], run["run_attempt"], run["status"], run["conclusion"]) == (REPO, SOURCE, "main", ".github/workflows/morrowbyte-release.yml", "workflow_dispatch", ATTEMPT, "completed", "failure"), "Frozen release is no longer eligible"
+              data = api(f"actions/runs/{RUN}/jobs?filter=latest&per_page=100")
+              assert data["total_count"] == len(data["jobs"]) < 100, "Incomplete job observation"
+              jobs = [job for job in data["jobs"] if job["name"] == "build_windows"]
+              assert len(jobs) == 1 and (jobs[0]["id"], jobs[0]["status"], jobs[0]["conclusion"]) == (FAILED, "completed", "failure"), "Windows failure identity changed"
+
+          if mode == "capture":
+              current = api("actions/runs/" + os.environ["GITHUB_RUN_ID"] + "/jobs?filter=latest&per_page=100")
+              controllers = [job for job in current["jobs"] if job["name"] == os.environ["GITHUB_JOB"] and job["status"] == "in_progress"]
+              assert len(controllers) == 1, "Controller job timing is ambiguous"
+              elapsed = max(0, (datetime.now(timezone.utc) - datetime.fromisoformat(controllers[0]["started_at"].replace("Z", "+00:00"))).total_seconds())
+              started = min(started, time.monotonic() - elapsed)
+              frozen_release()
+              receipt.write_text(json.dumps({"source": SOURCE, "run": RUN, "attempt": ATTEMPT, "failed_job": FAILED,
+                                             "controller_sha": os.environ["GITHUB_SHA"], "started_monotonic": started,
+                                             "prior_backend": backend()}, indent=2) + "\n")
+              print("Frozen release validated; original backend recorded without mutation.")
+          else:
+              assert (saved["source"], saved["run"], saved["attempt"], saved["failed_job"], saved["controller_sha"]) == (SOURCE, RUN, ATTEMPT, FAILED, os.environ["GITHUB_SHA"]), "Receipt identity mismatch"
+              prior = saved["prior_backend"]
+              frozen_release()
+              assert backend() == prior, "Backend changed after receipt capture"
+              write_intent = False
+              try:
+                  if prior != "blacksmith":
+                      write_intent = True
+                      if prior is None:
+                          api("actions/variables", "POST", {"name": VARIABLE, "value": "blacksmith"})
+                      else:
+                          api("actions/variables/" + VARIABLE, "PATCH", {"name": VARIABLE, "value": "blacksmith"})
+                  assert backend() == "blacksmith", "Temporary backend selection was not observed"
+                  frozen_release()
+                  api(f"actions/jobs/{FAILED}/rerun", "POST")
+                  deadline = time.monotonic() + 60
+                  while True:
+                      remaining = deadline - time.monotonic()
+                      if remaining <= 0:
+                          raise RuntimeError("New Windows job was not observed; inspect the existing run before retrying")
+                      data = api(f"actions/runs/{RUN}/jobs?filter=latest&per_page=100", timeout=min(30, remaining))
+                      assert data["total_count"] == len(data["jobs"]) < 100, "Incomplete rerun observation"
+                      jobs = [job for job in data["jobs"] if job["name"] == "build_windows" and job["id"] != FAILED]
+                      assert len(jobs) <= 1, "Multiple new Windows jobs observed"
+                      if jobs:
+                          assert LABEL in jobs[0]["labels"], "New Windows job selected an unexpected runner; no second dispatch was made"
+                          print(f"Windows job {jobs[0]['id']} selected {LABEL}; existing platform artifacts are retained.")
+                          break
+                      time.sleep(min(2, max(0, deadline - time.monotonic())))
+              finally:
+                  restoring = True
+                  if write_intent:
+                      current = backend()
+                      if current != prior:
+                          assert current == "blacksmith", "Backend changed externally; automatic restoration refused"
+                          if prior is None:
+                              api("actions/variables/" + VARIABLE, "DELETE")
+                          else:
+                              api("actions/variables/" + VARIABLE, "PATCH", {"name": VARIABLE, "value": prior})
+                  assert backend() == prior, "Original backend was not restored; use the uploaded receipt"
+                  print("Original Windows backend configuration verified restored.")
+          PY
+          python3 "$RUNNER_TEMP/release109-windows-fallback.py" capture
+
+      - name: Preserve the original backend before selection
+        uses: actions/upload-artifact@v4
+        with:
+          name: release109-windows-backend-before-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release109-windows-backend.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Select one Windows fallback and restore the original backend
+        shell: bash
+        run: python3 "$RUNNER_TEMP/release109-windows-fallback.py" dispatch
