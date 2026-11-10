@@ -893,6 +893,7 @@ it.effect.each(["pending", "cached"] as const)(
       const configRpcServices = Layer.mergeAll(
         layerUnusedConfigRpcServices,
         Layer.mock(ExternalLauncher.ExternalLauncher)({
+          resolveAvailableFileApps: () => Effect.succeed(["default"]),
           resolveAvailableEditors: () =>
             Deferred.succeed(discoveryStarted, undefined).pipe(
               Effect.andThen(Deferred.await(finishDiscovery)),
@@ -999,6 +1000,7 @@ it.effect.each(["pending", "cached"] as const)(
       assert.equal(snapshot.type, "snapshot");
       if (snapshot.type !== "snapshot") return yield* Effect.die("Missing initial snapshot");
       assert.deepEqual(snapshot.config.remoteOpenTargets, discovery === "cached" ? targets : []);
+      assert.deepEqual(snapshot.config.availableFileApps, ["default"]);
       assert.isFalse(snapshot.config.settings.defaultAutoPull);
       assert.deepEqual(snapshot.config.keybindings, initialKeybindings);
       const duringAck = yield* keybindings.upsertKeybindingRule({
@@ -1094,6 +1096,7 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
     const configRpcServices = Layer.mergeAll(
       layerUnusedConfigRpcServices,
       Layer.mock(ExternalLauncher.ExternalLauncher)({
+        resolveAvailableFileApps: () => Effect.succeed(["default"]),
         resolveAvailableEditors: () => Effect.succeed([]),
         // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
         resolveFileManagerRevealKind: () => Effect.succeed(undefined),
@@ -1178,6 +1181,7 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
     });
     const snapshot = (yield* Queue.take(responses)) as ServerConfigStreamEvent;
     if (snapshot.type !== "snapshot") return yield* Effect.die("Missing initial snapshot");
+    assert.deepEqual(snapshot.config.availableFileApps, ["default"]);
     assert.isUndefined(snapshot.config.providers[0]?.workspaceSnapshots);
     yield* server.write(0, { _tag: "Ack", requestId: configRequest });
 
