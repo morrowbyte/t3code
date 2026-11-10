@@ -996,6 +996,7 @@ describe("RpcSessionFactory", () => {
         ],
         issues: [{ kind: "keybindings.future-issue", message: "From a newer server" }],
         availableEditors: ["some-future-editor", "zed"],
+        availableFileApps: ["some-future-app", "default", "obsidian"],
       });
       yield* Fiber.join(readyFiber);
 
@@ -1003,6 +1004,7 @@ describe("RpcSessionFactory", () => {
       expect(config.keybindings).toEqual([{ command: "terminal.toggle", shortcut }]);
       expect(config.issues).toEqual([]);
       expect(config.availableEditors).toEqual(["zed"]);
+      expect(config.availableFileApps).toEqual(["default", "obsidian"]);
     }),
   );
 });

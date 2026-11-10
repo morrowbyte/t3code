@@ -33,6 +33,7 @@ import { createCommandPermissions } from "./commandPermissions.ts";
 import { createEnvironmentRpcCommand } from "./runtime.ts";
 import { AVAILABLE_CONNECTION_STATE } from "../connection/model.ts";
 import { createPeerLinkEnvironmentAtoms } from "./peerLinks.ts";
+import { createShellEnvironmentAtoms } from "./shellCommands.ts";
 
 vi.mock("./session.ts", () => ({
   createEnvironmentSessionAtoms: () => ({ sessionStateAtom: sessions }),
@@ -67,6 +68,31 @@ const setup = Effect.gen(function* () {
 });
 
 describe("command permissions", () => {
+  it.effect("requires operate permission on the host receiving a file-open request", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        const openFile = createShellEnvironmentAtoms(runtime).openFile;
+        registry.set(sessions(env), AsyncResult.success(grant(true)));
+        registry.set(sessions(other), AsyncResult.success(grant(false)));
+        expect(registry.get(openFile.permissionAtom(env))).toBe(true);
+        expect(registry.get(openFile.permissionAtom(other))).toBe(false);
+        const result = yield* Effect.promise(() =>
+          openFile.run(registry, {
+            environmentId: other,
+            input: { path: "/vault/note.md", app: "obsidian" },
+          }),
+        );
+        expect(result._tag).toBe("Failure");
+        if (result._tag === "Failure") {
+          expect(Cause.squash(result.cause)).toMatchObject({
+            _tag: "EnvironmentAuthorizationError",
+            requiredScope: AuthOrchestrationOperateScope,
+          });
+        }
+      }),
+    ),
+  );
   it.effect("requires the destination preview grant to close a browser tab", () =>
     Effect.scoped(
       Effect.gen(function* () {

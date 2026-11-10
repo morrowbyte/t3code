@@ -362,6 +362,19 @@ File links refer to the environment's machine, including when you connect remote
 Previews use the original file, even outside the workspace. Moving or deleting it
 can break the preview, so save a copy if you need to keep it.
 
+## Open files in installed apps
+
+On web and desktop connected to a local environment, right-click a file link or use the file
+preview's **Open** menu and choose **Open in default app**. This uses the operating system's
+file association, such as Excel for spreadsheets or your PDF reader, without changing your
+preferred code editor.
+
+When Obsidian is installed and its URI handler is registered, Markdown and Excalidraw files also
+offer **Open in Obsidian**. The file must belong to a vault registered in Obsidian; Obsidian picks
+the most specific matching vault and reports when no vault matches. These actions use existing
+files on the local environment and are unavailable for remote files; save a copy to open those
+on your device. The Obsidian action is unavailable in WSL.
+
 ## Files outside the workspace
 
 Follow an agent's file link to read a report or other file outside the workspace.

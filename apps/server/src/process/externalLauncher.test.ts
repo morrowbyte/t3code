@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - the Windows launch smoke tests use filesystem notifications to observe real PowerShell launches.
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodePath from "@effect/platform-node/NodePath";
 import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Deferred from "effect/Deferred";
@@ -20,7 +21,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { EDITORS } from "@t3tools/contracts";
 import { resolveEditorCommand } from "@t3tools/shared/editor";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { SpawnExecutableResolution } from "@t3tools/shared/shell";
+import { CommandAvailability, SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as ExternalLauncher from "./externalLauncher.ts";
 
 // Windows drive letters break mocked POSIX PATH splitting; these tests also require /bin/sh stubs.
@@ -29,6 +30,7 @@ const windowsHost = HostProcess.Platform.defaultValue() === "win32";
 interface MockSpawnResult {
   readonly spawnError?: PlatformError.PlatformError;
   readonly exitCode?: number;
+  readonly failOnExitCode?: boolean;
   readonly stdout?: string;
   readonly stall?: boolean;
 }
@@ -36,9 +38,11 @@ interface MockSpawnResult {
 function makeMockDetachedHandle(input: MockSpawnResult & { readonly onUnref?: () => void } = {}) {
   return ChildProcessSpawner.makeHandle({
     pid: ChildProcessSpawner.ProcessId(1),
-    exitCode: input.stall
-      ? Effect.never
-      : Effect.succeed(ChildProcessSpawner.ExitCode(input.exitCode ?? 0)),
+    exitCode: input.failOnExitCode
+      ? Effect.die(new Error("App exit must not be awaited"))
+      : input.stall
+        ? Effect.never
+        : Effect.succeed(ChildProcessSpawner.ExitCode(input.exitCode ?? 0)),
     isRunning: Effect.succeed(true),
     kill: () => Effect.void,
     unref: Effect.sync(() => {
@@ -64,6 +68,8 @@ const layerTest = (input: {
   readonly onSpawn?: (command: ChildProcess.StandardCommand) => void;
   readonly onUnref?: () => void;
   readonly spawnResult?: (command: ChildProcess.StandardCommand) => MockSpawnResult | undefined;
+  readonly fileSystem?: Layer.Layer<FileSystem.FileSystem>;
+  readonly path?: Layer.Layer<Path.Path>;
 }) => {
   const layerSpawner = Layer.succeed(
     ChildProcessSpawner.ChildProcessSpawner,
@@ -85,7 +91,16 @@ const layerTest = (input: {
   );
 
   return Layer.mergeAll(
-    ExternalLauncher.layer.pipe(Layer.provide(Layer.merge(NodeServices.layer, layerSpawner))),
+    ExternalLauncher.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          layerSpawner,
+          input.fileSystem ?? Layer.empty,
+          input.path ?? Layer.empty,
+        ),
+      ),
+    ),
     Layer.succeed(HostProcess.Platform, input.platform),
     Layer.succeed(
       SpawnExecutableResolution,
@@ -978,5 +993,364 @@ it.effect("starts a Windows command shim for unicode paths with cmd metacharacte
         ' ^"--goto^" ^"C:\\Users\\jö\\R^&D^ ^(100^%^)\\naïve^ ^^file^!.ts:3:7^"',
       ),
     );
+  }),
+);
+
+const fileOpenFixture = (input: {
+  readonly platform?: NodeJS.Platform;
+  readonly canonicalPath?: string;
+  readonly fileType?: FileSystem.File.Info["type"];
+  readonly pathError?: PlatformError.SystemErrorTag;
+  readonly env?: Record<string, string>;
+  readonly onUnref?: () => void;
+  readonly unavailableCommand?: string;
+  readonly desktopHandlerExists?: boolean;
+  readonly desktopHandlerPath?: string;
+  readonly spawnResult?: (command: ChildProcess.StandardCommand) => MockSpawnResult | undefined;
+}) => {
+  const spawned: ChildProcess.StandardCommand[] = [];
+  const platform = input.platform ?? "win32";
+  const canonicalPath = input.canonicalPath ?? "C:\\Vault\\Überblick & Plan #1.md";
+  return {
+    spawned,
+    canonicalPath,
+    layer: layerTest({
+      platform,
+      env: input.env ?? {},
+      fileSystem: FileSystem.layerNoop({
+        realPath: () =>
+          input.pathError
+            ? Effect.fail(
+                PlatformError.systemError({
+                  _tag: input.pathError,
+                  module: "FileSystem",
+                  method: "realPath",
+                }),
+              )
+            : Effect.succeed(canonicalPath),
+        stat: () =>
+          Effect.succeed({ type: input.fileType ?? "File", mode: 0o755 } as FileSystem.File.Info),
+        exists: (target) =>
+          Effect.succeed(
+            input.desktopHandlerPath === undefined
+              ? (input.desktopHandlerExists ?? true)
+              : target === input.desktopHandlerPath ||
+                  input.desktopHandlerPath.startsWith(`${target}/`),
+          ),
+        readDirectory: () => Effect.succeed([]),
+      }),
+      path: platform === "win32" ? NodePath.layerWin32 : Path.layer,
+      onSpawn: (command) => spawned.push(command),
+      ...(input.onUnref === undefined ? {} : { onUnref: input.onUnref }),
+      ...(input.spawnResult === undefined ? {} : { spawnResult: input.spawnResult }),
+    }).pipe(
+      Layer.provideMerge(
+        Layer.succeed(CommandAvailability, (command) =>
+          Effect.succeed(command !== input.unavailableCommand),
+        ),
+      ),
+    ),
+  };
+};
+
+it.effect.each([0, 1])(
+  "opens standard files through the OS association and observes Windows exit $0",
+  (exitCode) =>
+    Effect.gen(function* () {
+      const fixture = fileOpenFixture({ spawnResult: () => ({ exitCode }) });
+      const result = yield* Effect.gen(function* () {
+        const launcher = yield* ExternalLauncher.ExternalLauncher;
+        return yield* launcher
+          .openFile({ path: "C:\\links\\Plan.pdf", app: "default" })
+          .pipe(Effect.exit);
+      }).pipe(Effect.provide(fixture.layer));
+      assert.equal(Exit.isSuccess(result), exitCode === 0);
+      if (Exit.isFailure(result)) {
+        assert.deepInclude(Cause.squash(result.cause), {
+          _tag: "ExternalLauncherFileOpenError",
+          reason: "launch-failed",
+        });
+      }
+      const command = fixture.spawned.at(-1);
+      assert.ok(command);
+      assert.include(command.command, "powershell.exe");
+      assert.equal(command.options.detached, false);
+      assert.equal(command.options.windowsHide, true);
+      assert.equal(command.options.stdout, "ignore");
+      const source = Buffer.from(command.args.at(-1)!, "base64").toString("utf16le");
+      assert.include(source, "Invoke-Item -LiteralPath");
+      assert.include(source, "C:\\links\\Plan.pdf");
+      assert.include(source, "-ErrorAction Stop");
+      assert.include(source, "exit 1");
+    }),
+);
+
+it.effect("opens the canonical Obsidian URI with encoded spaces, umlauts and URI delimiters", () =>
+  Effect.gen(function* () {
+    const fixture = fileOpenFixture({});
+    yield* Effect.gen(function* () {
+      const launcher = yield* ExternalLauncher.ExternalLauncher;
+      yield* launcher.openFile({ path: "C:\\junction\\note.md", app: "obsidian" });
+    }).pipe(Effect.provide(fixture.layer));
+    const command = fixture.spawned.at(-1);
+    assert.ok(command);
+    const source = Buffer.from(command.args.at(-1)!, "base64").toString("utf16le");
+    assert.include(source, `obsidian://open?path=${encodeURIComponent(fixture.canonicalPath)}`);
+    assert.notInclude(source, "junction");
+  }),
+);
+
+it.effect.each([
+  [{ path: "relative.md", app: "default" }, {}, "invalid-path"],
+  [{ path: "\\vault\\note.md", app: "default" }, {}, "invalid-path"],
+  [{ path: "C:\\vault", app: "default" }, { fileType: "Directory" }, "not-file"],
+  [
+    { path: "C:\\note.pdf", app: "obsidian" },
+    { canonicalPath: "C:\\note.pdf" },
+    "unsupported-format",
+  ],
+  [{ path: "C:\\missing.md", app: "default" }, { pathError: "NotFound" }, "not-found"],
+  [{ path: "C:\\private.md", app: "obsidian" }, { pathError: "PermissionDenied" }, "access-failed"],
+] as const)(
+  "rejects an invalid file-open target before starting an app: $0",
+  ([request, options, reason]) =>
+    Effect.gen(function* () {
+      const fixture = fileOpenFixture(options);
+      const error = yield* Effect.gen(function* () {
+        return yield* (yield* ExternalLauncher.ExternalLauncher)
+          .openFile(request)
+          .pipe(Effect.flip);
+      }).pipe(Effect.provide(fixture.layer));
+      assert.equal(error.reason, reason);
+      assert.deepEqual(fixture.spawned, []);
+    }),
+);
+
+it.effect.each([
+  ["win32", {}, "C:\\Vault\\drawing.excalidraw", "powershell.exe"],
+  ["darwin", {}, "/Vault/Übersicht.md", "/usr/bin/open"],
+  ["linux", { PATH: "/usr/bin", DISPLAY: ":0" }, "/Vault/Übersicht.md", "xdg-open"],
+] as const)(
+  "discovers registered Obsidian without its CLI and opens on $0",
+  ([platform, env, canonicalPath, opener]) =>
+    Effect.gen(function* () {
+      const fixture = fileOpenFixture({
+        platform,
+        env,
+        canonicalPath,
+        spawnResult: (command) =>
+          command.command === "xdg-mime" ? { stdout: "obsidian.desktop\n" } : {},
+      });
+      yield* Effect.gen(function* () {
+        const launcher = yield* ExternalLauncher.ExternalLauncher;
+        assert.deepEqual(yield* launcher.resolveAvailableFileApps(), ["default", "obsidian"]);
+        yield* launcher.openFile({ path: canonicalPath, app: "obsidian" });
+      }).pipe(Effect.provide(fixture.layer));
+      const launch = fixture.spawned.at(-1);
+      assert.ok(launch);
+      assert.include(launch.command, opener);
+      if (platform !== "win32")
+        assert.deepEqual(launch.args, [
+          `obsidian://open?path=${encodeURIComponent(canonicalPath)}`,
+        ]);
+      assert.isFalse(fixture.spawned.some((command) => command.command === "obsidian"));
+    }),
+);
+
+it.effect.each([
+  ["default", false],
+  ["obsidian", false],
+  ["default", true],
+  ["obsidian", true],
+] as const)(
+  "accepts and unreferences the Linux $0 app without waiting for it to exit, nested handler $1",
+  ([app, nested]) =>
+    Effect.gen(function* () {
+      let unrefCount = 0;
+      const fixture = fileOpenFixture({
+        platform: "linux",
+        canonicalPath: "/vault/Überblick.md",
+        env: { PATH: "/usr/bin", DISPLAY: ":0" },
+        ...(nested ? { desktopHandlerPath: "/usr/share/applications/editors/editor.desktop" } : {}),
+        onUnref: () => {
+          unrefCount += 1;
+        },
+        spawnResult: (command) =>
+          command.command === "xdg-open"
+            ? { failOnExitCode: true }
+            : {
+                stdout: command.args.includes("filetype")
+                  ? "text/markdown\n"
+                  : nested
+                    ? "editors-editor.desktop\n"
+                    : "obsidian.desktop\n",
+              },
+      });
+      yield* Effect.gen(function* () {
+        yield* (yield* ExternalLauncher.ExternalLauncher).openFile({
+          path: "/links/note.md",
+          app,
+        });
+      }).pipe(Effect.provide(fixture.layer));
+      const launch = fixture.spawned.at(-1);
+      assert.ok(launch);
+      assert.equal(launch.command, "xdg-open");
+      assert.deepEqual(launch.args, [
+        app === "obsidian"
+          ? `obsidian://open?path=${encodeURIComponent(fixture.canonicalPath)}`
+          : "/links/note.md",
+      ]);
+      assert.equal(launch.options.detached, true);
+      assert.equal(launch.options.stdin, "ignore");
+      assert.equal(launch.options.stdout, "ignore");
+      assert.equal(launch.options.stderr, "ignore");
+      assert.equal(unrefCount, 1);
+      if (app === "default") {
+        assert.deepEqual(
+          fixture.spawned
+            .filter((command) => command.command === "xdg-mime")
+            .map((command) => command.args),
+          [
+            ["query", "filetype", "/links/note.md"],
+            ["query", "default", "text/markdown"],
+          ],
+        );
+      }
+    }),
+);
+
+it.effect.each(["default", "obsidian"] as const)("reports a failed Linux $0 app spawn", (app) =>
+  Effect.gen(function* () {
+    const fixture = fileOpenFixture({
+      platform: "linux",
+      canonicalPath: "/vault/Überblick.md",
+      env: { PATH: "/usr/bin", DISPLAY: ":0" },
+      spawnResult: (command) =>
+        command.command === "xdg-open"
+          ? {
+              spawnError: PlatformError.systemError({
+                _tag: "NotFound",
+                module: "ChildProcessSpawner",
+                method: "spawn",
+              }),
+            }
+          : {
+              stdout: command.args.includes("filetype") ? "text/markdown\n" : "obsidian.desktop\n",
+            },
+    });
+    const error = yield* Effect.gen(function* () {
+      return yield* (yield* ExternalLauncher.ExternalLauncher)
+        .openFile({ path: "/vault/Überblick.md", app })
+        .pipe(Effect.flip);
+    }).pipe(Effect.provide(fixture.layer));
+    assert.equal(error.reason, "launch-failed");
+    assert.ok(error.cause);
+  }),
+);
+
+it.effect.each([
+  { handler: "" },
+  { handler: "../invalid.desktop" },
+  { handler: "missing.desktop", desktopHandlerExists: false },
+  { handler: "editor.desktop", exitCode: 1 },
+  { handler: "editor.desktop", fileType: "" },
+  { handler: "editor.desktop", unavailableCommand: "xdg-mime" },
+])("rejects a missing Linux standard file handler: $0", (options) =>
+  Effect.gen(function* () {
+    const fixture = fileOpenFixture({
+      platform: "linux",
+      canonicalPath: "/vault/Überblick.md",
+      env: { PATH: "/usr/bin", DISPLAY: ":0" },
+      ...(options.desktopHandlerExists === undefined
+        ? {}
+        : { desktopHandlerExists: options.desktopHandlerExists }),
+      ...(options.unavailableCommand === undefined
+        ? {}
+        : { unavailableCommand: options.unavailableCommand }),
+      spawnResult: (command) =>
+        command.args.includes("filetype")
+          ? { stdout: options.fileType ?? "text/markdown\n" }
+          : { stdout: options.handler, exitCode: options.exitCode ?? 0 },
+    });
+    const result = yield* Effect.gen(function* () {
+      return yield* (yield* ExternalLauncher.ExternalLauncher)
+        .openFile({ path: "/links/note.md", app: "default" })
+        .pipe(Effect.exit);
+    }).pipe(Effect.provide(fixture.layer));
+    assert.isTrue(Exit.isFailure(result));
+    if (Exit.isFailure(result)) {
+      assert.deepInclude(Cause.squash(result.cause), {
+        _tag: "ExternalLauncherFileOpenError",
+        reason: "app-unavailable",
+      });
+    }
+    assert.isFalse(fixture.spawned.some((command) => command.command === "xdg-open"));
+  }),
+);
+
+it.effect.each(["win32", "linux"] as const)(
+  "does not advertise or launch Obsidian when its URI handler is missing on $0",
+  (platform) =>
+    Effect.gen(function* () {
+      const filePath = platform === "win32" ? "C:\\note.md" : "/vault/note.md";
+      const fixture = fileOpenFixture({
+        platform,
+        canonicalPath: filePath,
+        env: { PATH: "/usr/bin", DISPLAY: ":0" },
+        spawnResult: () => ({ exitCode: 1 }),
+      });
+      yield* Effect.gen(function* () {
+        const launcher = yield* ExternalLauncher.ExternalLauncher;
+        assert.deepEqual(yield* launcher.resolveAvailableFileApps(), ["default"]);
+        const error = yield* launcher
+          .openFile({ path: filePath, app: "obsidian" })
+          .pipe(Effect.flip);
+        assert.equal(error.reason, "app-unavailable");
+      }).pipe(Effect.provide(fixture.layer));
+      assert.equal(fixture.spawned.filter((command) => command.command !== "busctl").length, 2);
+    }),
+);
+
+it.effect(
+  "recovers a Linux desktop session for file discovery and does not send WSL paths to Windows",
+  () =>
+    Effect.gen(function* () {
+      const fixture = fileOpenFixture({
+        platform: "linux",
+        canonicalPath: "/vault/Überblick.md",
+        env: { PATH: "/usr/bin", WSL_DISTRO_NAME: "Ubuntu" },
+        spawnResult: (command) =>
+          command.command === "busctl"
+            ? { stdout: JSON.stringify({ data: ["WAYLAND_DISPLAY=wayland-0"] }) }
+            : command.command === "xdg-mime"
+              ? {
+                  stdout: command.args.includes("filetype")
+                    ? "text/markdown\n"
+                    : "obsidian.desktop\n",
+                }
+              : {},
+      });
+      yield* Effect.gen(function* () {
+        const launcher = yield* ExternalLauncher.ExternalLauncher;
+        assert.deepEqual(yield* launcher.resolveAvailableFileApps(), ["default"]);
+        const error = yield* launcher
+          .openFile({ path: "/vault/Überblick.md", app: "obsidian" })
+          .pipe(Effect.flip);
+        assert.equal(error.reason, "app-unavailable");
+        yield* launcher.openFile({ path: "/vault/Überblick.md", app: "default" });
+      }).pipe(Effect.provide(fixture.layer), Effect.provideService(HostProcess.Environment, {}));
+      assert.equal(fixture.spawned.at(-1)?.command, "xdg-open");
+      assert.equal(fixture.spawned.at(-1)?.options.env?.WAYLAND_DISPLAY, "wayland-0");
+      assert.isFalse(fixture.spawned.some((command) => command.command.endsWith("powershell.exe")));
+    }),
+);
+
+it.effect("does not offer file apps on a headless Linux host", () =>
+  Effect.gen(function* () {
+    const fixture = fileOpenFixture({ platform: "linux" });
+    const apps = yield* Effect.gen(function* () {
+      return yield* (yield* ExternalLauncher.ExternalLauncher).resolveAvailableFileApps();
+    }).pipe(Effect.provide(fixture.layer), Effect.provideService(HostProcess.Environment, {}));
+    assert.deepEqual(apps, []);
   }),
 );

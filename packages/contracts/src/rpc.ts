@@ -141,7 +141,7 @@ import {
   AcpRegistrySetProviderInput,
   AcpRegistrySetProviderResult,
 } from "./acpRegistry.ts";
-import { ExternalLauncherError, LaunchEditorInput } from "./editor.ts";
+import { ExternalLauncherError, LaunchEditorInput, OpenFileInput } from "./editor.ts";
 import {
   AuthAccessStreamError,
   AuthAccessStreamEvent,
@@ -511,6 +511,7 @@ export const WS_METHODS = {
   projectsCreateFromThread: "projects.createFromThread",
 
   shellOpenInEditor: "shell.openInEditor",
+  shellOpenFile: "shell.openFile",
 
   filesystemBrowse: "filesystem.browse",
   filesystemGetMetadata: "filesystem.getMetadata",
@@ -1561,6 +1562,11 @@ const WsShellOpenInEditorRpc = Rpc.make(WS_METHODS.shellOpenInEditor, {
   error: Schema.Union([ExternalLauncherError, EnvironmentAuthorizationError]),
 });
 
+const WsShellOpenFileRpc = Rpc.make(WS_METHODS.shellOpenFile, {
+  payload: OpenFileInput,
+  error: Schema.Union([ExternalLauncherError, EnvironmentAuthorizationError]),
+});
+
 const WsFilesystemGetMetadataRpc = Rpc.make(WS_METHODS.filesystemGetMetadata, {
   payload: FilesystemGetMetadataInput,
   success: FilesystemGetMetadataResult,
@@ -2577,6 +2583,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsFeatureTimingRpc,
   WsProjectsMutateRpc,
   WsShellOpenInEditorRpc,
+  WsShellOpenFileRpc,
   WsFilesystemBrowseRpc,
   WsFilesystemGetMetadataRpc,
   WsAgentSessionsScanRpc,

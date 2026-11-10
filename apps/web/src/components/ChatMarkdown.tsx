@@ -206,6 +206,7 @@ import {
 } from "./chat/ChatMarkdownMedia";
 import { MarkdownExternalLinkContent } from "./chat/MarkdownExternalLink";
 import { MarkdownFileLink } from "./chat/MarkdownFileLink";
+import { useFileApps } from "../fileApps";
 import { canUseMarkdownFileShellActions } from "./chat/MarkdownFileLink.logic";
 import { rehypeChipPunctuation } from "./chat/markdownChipPunctuation";
 import { handleMarkdownFragmentClick, rehypeHeadingIds } from "./chat/markdownFragments";
@@ -636,6 +637,7 @@ function useChatMarkdownState({
   const [preferredEditor] = usePreferredEditor(availableEditors);
   const preferredEditorMenuLabel = openInEditorMenuLabel(preferredEditor);
   const openInPreferredEditor = useOpenInPreferredEditor(environmentId, availableEditors);
+  const fileApps = useFileApps(environmentId);
   const openInEditor = useAtomCommand(shellEnvironment.openInEditor, {
     reportFailure: false,
   });
@@ -865,6 +867,16 @@ function useChatMarkdownState({
                 openInPreferredEditor(
                   markdownFileEditorTarget(fileLinkMeta, await resolveHostPath()),
                 )
+            : undefined
+        }
+        onOpenDefault={
+          fileApps.appsForPath(fileLinkMeta.filePath).includes("default")
+            ? async () => fileApps.open((await resolveHostPath()).absolutePath, "default")
+            : undefined
+        }
+        onOpenObsidian={
+          fileApps.appsForPath(fileLinkMeta.filePath).includes("obsidian")
+            ? async () => fileApps.open((await resolveHostPath()).absolutePath, "obsidian")
             : undefined
         }
         resolveCopyPaths={async () =>

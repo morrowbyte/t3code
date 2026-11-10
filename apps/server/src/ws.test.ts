@@ -179,6 +179,7 @@ it.effect("resends late editors without rolling back updates already sent", () =
       Stream.make(settingsUpdated({ enableProviderUpdateChecks: false })),
       {
         resolveAvailableEditors: () => Effect.succeed(["file-manager"]),
+        resolveAvailableFileApps: () => Effect.succeed([]),
         resolveFileManagerRevealKind: () =>
           Deferred.await(settingsSent).pipe(Effect.as("file-explorer" as const)),
       },
@@ -211,6 +212,7 @@ it.effect("resends a reveal kind and remote targets that outlast the snapshot ti
       Stream.empty,
       {
         resolveAvailableEditors: () => Effect.succeed(["file-manager"]),
+        resolveAvailableFileApps: () => Effect.succeed([]),
         resolveFileManagerRevealKind: () => Effect.succeed("file-explorer"),
       },
       { resolveTargets: () => Deferred.await(finishDiscovery) },
@@ -233,6 +235,36 @@ it.effect("resends a reveal kind and remote targets that outlast the snapshot ti
   }).pipe(Effect.scoped),
 );
 
+it.effect("resends late file apps while preserving settings and editor discoveries", () =>
+  Effect.gen(function* () {
+    const settingsSent = yield* Deferred.make<void>();
+    const events = yield* withLateConfigDiscovery(
+      snapshotConfig({ availableEditors: ["zed"], availableFileApps: [] }),
+      Stream.make(settingsUpdated({ enableProviderUpdateChecks: false })),
+      {
+        resolveAvailableEditors: () => Effect.succeed(["zed"]),
+        resolveFileManagerRevealKind: () => Effect.succeed("finder"),
+        resolveAvailableFileApps: () =>
+          Deferred.await(settingsSent).pipe(Effect.as(["default", "obsidian"] as const)),
+      },
+      { resolveTargets: () => Effect.succeed([]) },
+    ).pipe(
+      Stream.tap((event) =>
+        event.type === "settingsUpdated" ? Deferred.succeed(settingsSent, undefined) : Effect.void,
+      ),
+      Stream.runCollect,
+    );
+    assert.equal(events.length, 2);
+    const late = events.at(-1);
+    assert.equal(late?.type, "snapshot");
+    if (late?.type === "snapshot") {
+      assert.deepEqual(late.config.availableFileApps, ["default", "obsidian"]);
+      assert.deepEqual(late.config.availableEditors, ["zed"]);
+      assert.deepEqual(late.config.settings, { enableProviderUpdateChecks: false } as never);
+    }
+  }),
+);
+
 it.effect("runs editor, remote open target and direct endpoint discovery side by side", () =>
   Effect.gen(function* () {
     // Each discovery finishes only once the other two have started, so a
@@ -250,6 +282,7 @@ it.effect("runs editor, remote open target and direct endpoint discovery side by
 
     const discovery = yield* resolveOpenDiscoveryForConfig({
       editors: startThenAwait(editorsStarted, ["file-manager" as const]),
+      fileApps: Effect.succeed(["default" as const]),
       fileManagerRevealKind: Effect.succeed("finder" as const),
       remoteOpenTargets: startThenAwait(targetsStarted, []),
       directEndpoints: startThenAwait(endpointsStarted, []),
@@ -257,6 +290,7 @@ it.effect("runs editor, remote open target and direct endpoint discovery side by
 
     assert.deepEqual(discovery, {
       availableEditors: ["file-manager"],
+      availableFileApps: ["default"],
       shellRevealInFileManager: true,
       shellRevealInFileManagerKind: "finder",
       remoteOpenTargets: [],

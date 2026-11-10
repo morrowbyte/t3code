@@ -61,6 +61,7 @@ import {
   ClientWebDeployment,
   type DiscoveredLocalServerList,
   type EditorId,
+  type FileAppId,
   type FileManagerRevealKind,
   type OrchestrationV2Command,
   type GitActionProgressEvent,
@@ -330,7 +331,7 @@ const resolveFileManagerRevealKindForConfig = <E, R>(
 
 type EditorDiscovery = Pick<
   ExternalLauncher.ExternalLauncher["Service"],
-  "resolveAvailableEditors" | "resolveFileManagerRevealKind"
+  "resolveAvailableEditors" | "resolveFileManagerRevealKind" | "resolveAvailableFileApps"
 >;
 
 const resolveEditorConfig = Effect.fn("ws.resolveEditorConfig")(function* <E, R>(
@@ -357,6 +358,10 @@ export const withLateConfigDiscovery = <E, R>(
   launcher: EditorDiscovery,
   remoteOpenTargets: RemoteOpenTargets.RemoteOpenTargets["Service"],
 ) => {
+  const lateFileApps = Stream.fromEffect(launcher.resolveAvailableFileApps()).pipe(
+    Stream.filter((apps) => apps.join() !== (config.availableFileApps ?? []).join()),
+    Stream.map((apps) => ({ type: "fileAppsResolved" as const, apps })),
+  );
   const lateEditorConfig = Stream.fromEffect(launcher.resolveAvailableEditors()).pipe(
     Stream.filter(
       (editors) =>
@@ -383,11 +388,18 @@ export const withLateConfigDiscovery = <E, R>(
     Stream.map((targets) => ({ type: "remoteOpenTargetsResolved" as const, targets })),
   );
 
-  return Stream.merge(liveUpdates, Stream.merge(lateEditorConfig, lateRemoteOpenTargets)).pipe(
+  return Stream.merge(
+    Stream.merge(liveUpdates, lateFileApps),
+    Stream.merge(lateEditorConfig, lateRemoteOpenTargets),
+  ).pipe(
     Stream.mapAccum(
       (): ClientServerConfig => config,
       (current, event): readonly [ClientServerConfig, ReadonlyArray<ServerConfigStreamEvent>] => {
         switch (event.type) {
+          case "fileAppsResolved": {
+            const next = { ...current, availableFileApps: event.apps };
+            return [next, [{ version: 1, type: "snapshot", config: next }]];
+          }
           case "editorsResolved": {
             const {
               availableEditors: _editors,
@@ -419,11 +431,25 @@ export const withLateConfigDiscovery = <E, R>(
 
 // Discoveries run side by side so the slowest one, not their sum, bounds the
 // server config snapshot. Each degrades on timeout rather than failing it.
-export const resolveOpenDiscoveryForConfig = <T, D, E1, R1, E2, R2, E3, R3, E4, R4>(discovery: {
+export const resolveOpenDiscoveryForConfig = <
+  T,
+  D,
+  E1,
+  R1,
+  E2,
+  R2,
+  E3,
+  R3,
+  E4,
+  R4,
+  E5,
+  R5,
+>(discovery: {
   readonly editors: Effect.Effect<ReadonlyArray<EditorId>, E1, R1>;
   readonly fileManagerRevealKind: Effect.Effect<FileManagerRevealKind | undefined, E2, R2>;
   readonly remoteOpenTargets: Effect.Effect<ReadonlyArray<T>, E3, R3>;
   readonly directEndpoints: Effect.Effect<ReadonlyArray<D>, E4, R4>;
+  readonly fileApps: Effect.Effect<ReadonlyArray<FileAppId>, E5, R5>;
 }) =>
   Effect.all(
     {
@@ -439,6 +465,7 @@ export const resolveOpenDiscoveryForConfig = <T, D, E1, R1, E2, R2, E3, R3, E4, 
       // not stall server.getConfig, so it degrades to an empty list.
       remoteOpenTargets: resolveAvailableEditorsForConfig(discovery.remoteOpenTargets),
       directEndpoints: resolveAvailableEditorsForConfig(discovery.directEndpoints),
+      availableFileApps: resolveAvailableEditorsForConfig(discovery.fileApps),
     },
     { concurrency: "unbounded" },
   ).pipe(Effect.map(({ editorConfig, ...endpoints }) => ({ ...editorConfig, ...endpoints })));
@@ -711,6 +738,7 @@ const CoreFirstWsRpcGroup = CoreWsRpcGroup.omit(
   WS_METHODS.projectsWriteFile,
   WS_METHODS.projectsMutate,
   WS_METHODS.shellOpenInEditor,
+  WS_METHODS.shellOpenFile,
   WS_METHODS.filesystemGetMetadata,
   WS_METHODS.filesystemBrowse,
   WS_METHODS.attachmentsCreateUploadUrl,
@@ -2109,6 +2137,7 @@ const layerCoreWsRpc = (
         const lastEventLoopStall = yield* eventLoopMonitor.latestNoticeableStall;
         const discovery = yield* resolveOpenDiscoveryForConfig({
           editors: externalLauncher.resolveAvailableEditors(),
+          fileApps: externalLauncher.resolveAvailableFileApps(),
           fileManagerRevealKind: externalLauncher.resolveFileManagerRevealKind(),
           remoteOpenTargets: options.deferRemoteOpenTargets
             ? Effect.succeed([])
@@ -3335,6 +3364,7 @@ const layerCoreWsRpc = (
             ),
           ),
         [WS_METHODS.shellOpenInEditor]: (input) => externalLauncher.launchEditor(input),
+        [WS_METHODS.shellOpenFile]: (input) => externalLauncher.openFile(input),
         [WS_METHODS.filesystemGetMetadata]: (input) => workspaceFileSystem.getMetadata(input),
         [WS_METHODS.filesystemBrowse]: (input) =>
           workspaceEntries.browse(input).pipe(

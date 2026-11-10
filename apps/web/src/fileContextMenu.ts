@@ -17,10 +17,12 @@ import { useAtomCommand } from "./state/use-atom-command";
 import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
 import { toastManager } from "./components/ui/toast";
 import { useAtomValue } from "@effect/atom-react";
+import { useFileApps } from "./fileApps";
 
 export type FileContextMenuAction =
   | "reveal-in-folder"
   | "open"
+  | "obsidian"
   /** Submenu parent; never the activated id. */
   | "open-with"
   | `editor:${EditorId}`;
@@ -53,6 +55,7 @@ const EDITOR_LABEL_BY_ID = new Map(EDITORS.map((editor) => [editor.id, editor.la
 export interface FileContextMenuCapabilities {
   readonly revealLabel: string | undefined;
   readonly canOpenDefault: boolean;
+  readonly canOpenObsidian: boolean;
   readonly editorIds: ReadonlyArray<EditorId>;
 }
 
@@ -63,7 +66,10 @@ function buildFileContextMenuItems(input: {
   if (!input.hasAbsolutePath) return [];
   const items: ContextMenuItem<FileContextMenuAction>[] = [];
   if (input.capabilities.canOpenDefault) {
-    items.push({ id: "open", label: "Open", icon: "pencil" });
+    items.push({ id: "open", label: "Open in default app", icon: "external-link" });
+  }
+  if (input.capabilities.canOpenObsidian) {
+    items.push({ id: "obsidian", label: "Open in Obsidian" });
   }
   if (input.capabilities.revealLabel !== undefined) {
     items.push({
@@ -87,6 +93,7 @@ function buildFileContextMenuItems(input: {
 }
 
 export function useFileContextMenu(environmentId: EnvironmentId | null) {
+  const fileApps = useFileApps(environmentId);
   const openInEditor = useAtomCommand(shellEnvironment.openInEditor, { reportFailure: false });
   const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
 
@@ -101,7 +108,8 @@ export function useFileContextMenu(environmentId: EnvironmentId | null) {
           ? revealInFileExplorerLabelForOs(serverConfig.environment.platform.os)
           : revealInFileExplorerLabelForKind(serverConfig.shellRevealInFileManagerKind)
         : undefined,
-    canOpenDefault: availableEditors.includes("file-manager"),
+    canOpenDefault: fileApps.appsForPath("").includes("default"),
+    canOpenObsidian: false,
     editorIds: availableEditors,
   };
 
@@ -110,14 +118,19 @@ export function useFileContextMenu(environmentId: EnvironmentId | null) {
     target: FileContextMenuTarget,
   ): Promise<void> => {
     const absolutePath = resolveFileContextMenuAbsolutePath(target);
-    if (absolutePath === null || environmentId === null) return;
+    if (absolutePath === null || environmentId === null || target.environmentId !== environmentId)
+      return;
+
+    if (action === "open" || action === "obsidian") {
+      await fileApps.open(absolutePath, action === "open" ? "default" : "obsidian");
+      return;
+    }
 
     const reveal = action === "reveal-in-folder";
-    const editor =
-      action === "open" || reveal
-        ? ("file-manager" as const)
-        : (action.slice("editor:".length) as EditorId);
-    if (action !== "open" && !reveal && !capabilities.editorIds.includes(editor)) return;
+    const editor = reveal
+      ? ("file-manager" as const)
+      : (action.slice("editor:".length) as EditorId);
+    if (!reveal && !capabilities.editorIds.includes(editor)) return;
 
     const result = await openInEditor({
       environmentId,
@@ -126,12 +139,9 @@ export function useFileContextMenu(environmentId: EnvironmentId | null) {
     if (result._tag !== "Failure") return;
     toastManager.add({
       type: "error",
-      title:
-        action === "open"
-          ? "Could not open file"
-          : reveal
-            ? "Unable to reveal file"
-            : `Could not open in ${EDITOR_LABEL_BY_ID.get(editor) ?? editor}`,
+      title: reveal
+        ? "Unable to reveal file"
+        : `Could not open in ${EDITOR_LABEL_BY_ID.get(editor) ?? editor}`,
       description: absolutePath,
     });
   };
@@ -143,7 +153,10 @@ export function useFileContextMenu(environmentId: EnvironmentId | null) {
     const api = readLocalApi();
     const items = buildFileContextMenuItems({
       hasAbsolutePath: resolveFileContextMenuAbsolutePath(target) !== null,
-      capabilities,
+      capabilities: {
+        ...capabilities,
+        canOpenObsidian: fileApps.appsForPath(target.filePath).includes("obsidian"),
+      },
     });
     if (items.length === 0 || api === undefined) return;
     const clicked = await api.contextMenu.show(items, position);
@@ -155,7 +168,10 @@ export function useFileContextMenu(environmentId: EnvironmentId | null) {
     buildItems: (target: FileContextMenuTarget) =>
       buildFileContextMenuItems({
         hasAbsolutePath: resolveFileContextMenuAbsolutePath(target) !== null,
-        capabilities,
+        capabilities: {
+          ...capabilities,
+          canOpenObsidian: fileApps.appsForPath(target.filePath).includes("obsidian"),
+        },
       }),
     capabilities,
     activate,

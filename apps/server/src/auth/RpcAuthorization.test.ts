@@ -34,6 +34,9 @@ import {
 import * as RpcAuthorization from "./RpcAuthorization.ts";
 
 describe("RPC authorization scopes", () => {
+  it("requires operate permission to open a file on the server host", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.shellOpenFile)).toBe(AuthOrchestrationOperateScope);
+  });
   it("keeps avatar reads read-only while generation and cancellation require operate", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.agentAvatarRead)).toBe(AuthOrchestrationReadScope);
     expect(requiredScopeForRpcMethod(WS_METHODS.agentAvatarGenerate)).toBe(

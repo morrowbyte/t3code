@@ -41,6 +41,10 @@ vi.mock(import("~/remoteOpen"), async (original) => ({
   useRemoteOpenState: () => ({ mode: "local-exec" }) as never,
   useRemoteOpenResolution: () => ({ state: { mode: "local-exec" }, isResolved: true }) as never,
 }));
+vi.mock(import("~/state/environments"), async (original) => ({
+  ...(await original()),
+  usePrimaryEnvironmentId: () => EnvironmentId.make("primary"),
+}));
 vi.mock(import("~/hooks/useTheme"), async (original) => ({
   ...(await original()),
   useTheme: () => ({ resolvedTheme: "dark" }) as never,
@@ -129,6 +133,7 @@ describe("rendered Markdown task saves", () => {
   it("keeps a truncated read read-only without queuing a replacement", async () => {
     using _settings = setup();
     await using screen = await render(markdownPreview(true));
+    await expect.element(screen.getByRole("button", { name: "Choose editor" })).toBeVisible();
     using _timers = fakeTimers();
     const checkbox = screen.container.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
     expect(checkbox).not.toBeNull();

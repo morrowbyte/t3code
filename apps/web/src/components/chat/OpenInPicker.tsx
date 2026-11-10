@@ -73,6 +73,7 @@ import {
 } from "./threadDetailsPanelStyles";
 import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
 import { useComposerMenuState } from "./useComposerMenuState";
+import { useFileApps } from "../../fileApps";
 
 type OpenInOption = {
   label: string;
@@ -232,6 +233,8 @@ export const OpenInPicker = memo(function OpenInPicker({
   const ActionGroup = isPanel ? "div" : Group;
   const panelAnchorRef = useRef<HTMLDivElement | null>(null);
   const openInEditorMutation = useAtomCommand(shellEnvironment.openInEditor, "open in editor");
+  const fileApps = useFileApps(environmentId);
+  const availableFileApps = openInCwdIsFile && openInCwd ? fileApps.appsForPath(openInCwd) : [];
   const remote = useRemoteOpenState(environmentId);
   const canOperateHost = useEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
   const isHostEditorDenied = remote.mode === "local-exec" && !canOperateHost;
@@ -290,6 +293,20 @@ export const OpenInPicker = memo(function OpenInPicker({
 
   const editorItems = (
     <>
+      {availableFileApps.map((app) => (
+        <MenuItem
+          key={`file-app:${app}`}
+          density={presentation === "menu" ? "touch" : "default"}
+          onClick={() => {
+            if (openInCwd) void fileApps.open(openInCwd, app);
+          }}
+        >
+          <SquareArrowOutUpRightIcon aria-hidden="true" />
+          <MenuItemLabel>
+            {app === "default" ? "Open in default app" : "Open in Obsidian"}
+          </MenuItemLabel>
+        </MenuItem>
+      ))}
       {remote.mode === "remote-unavailable" ? (
         <MenuItem density={presentation === "menu" ? "touch" : "default"} disabled>
           No SSH route to {environmentLabel}

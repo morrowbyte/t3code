@@ -73,6 +73,28 @@ vi.mock(import("../state/server"), async (original) => {
     ) as never,
   };
 });
+
+vi.mock(import("../state/shell"), async (original) => {
+  const actual = await original();
+  const { Atom } = await import("effect/reactivity");
+  return {
+    ...actual,
+    shellEnvironment: {
+      ...actual.shellEnvironment,
+      openFile: {
+        ...actual.shellEnvironment.openFile,
+        permissionAtom: (id: EnvironmentId | null) =>
+          Atom.make((get) => {
+            const allowed = () => id !== null && (id !== threadRef.environmentId || state.allowed);
+            const refresh = () => get.setSelf(allowed());
+            state.listeners.add(refresh);
+            get.addFinalizer(() => state.listeners.delete(refresh));
+            return allowed();
+          }),
+      },
+    },
+  };
+});
 vi.mock(import("../state/entities"), async (original) => ({
   ...(await original()),
   readThreadShell: (() => ({ pullRequests: state.pullRequests })) as never,
@@ -120,6 +142,7 @@ const linkedPullRequest: ThreadPullRequestLink = {
 };
 const serverConfig = {
   availableEditors: ["vscode", "file-manager"] as readonly EditorId[],
+  availableFileApps: ["default", "obsidian"] as const,
   shellRevealInFileManager: true,
   shellRevealInFileManagerKind: "xdg-open",
   environment: { platform: { os: "linux" }, capabilities: {} },
@@ -185,7 +208,14 @@ it("removes host actions after revocation while keeping file preview and copying
   using _setup = setup();
   await using screen = await renderMarkdown("[Readme](docs/readme.md)");
   await screen.openContextMenu();
-  expect(offeredActions()).toEqual(["open", "reveal", "copy-relative", "copy-full"]);
+  expect(offeredActions()).toEqual([
+    "open-default",
+    "open-obsidian",
+    "open",
+    "reveal",
+    "copy-relative",
+    "copy-full",
+  ]);
   await setAllowed(false);
   state.choose.mockResolvedValue("copy-full");
   await screen.openContextMenu();
@@ -196,26 +226,45 @@ it("removes host actions after revocation while keeping file preview and copying
   expect(state.openEditor).not.toHaveBeenCalled();
 });
 
-it("does not launch an editor after revocation during a native context menu", async () => {
-  using _setup = setup();
-  let choose: (action: string) => void = () => {
-    throw new Error("Menu not opened");
-  };
-  state.choose.mockImplementationOnce(
-    () =>
-      new Promise<string>((resolve) => {
-        choose = resolve;
+it.each(["open", "open-default", "open-obsidian"])(
+  "rechecks %s after revocation during a native context menu",
+  async (action) => {
+    using _setup = setup();
+    let choose: (action: string) => void = () => {
+      throw new Error("Menu not opened");
+    };
+    state.choose.mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          choose = resolve;
+        }),
+    );
+    await using screen = await renderMarkdown("[Readme](docs/readme.md)");
+    await screen.openContextMenu();
+    expect(offeredActions()).toContain(action);
+    await act(async () => {
+      state.allowed = false;
+      choose(action);
+    });
+    expect(state.openEditor).not.toHaveBeenCalled();
+
+    await setAllowed(true);
+    state.choose.mockResolvedValue(action);
+    await screen.openContextMenu();
+    await vi.waitFor(() =>
+      expect(state.openEditor).toHaveBeenCalledExactlyOnceWith({
+        environmentId: threadRef.environmentId,
+        input:
+          action === "open"
+            ? { cwd: "/work/docs/readme.md", editor: "vscode" }
+            : {
+                path: "/work/docs/readme.md",
+                app: action === "open-default" ? "default" : "obsidian",
+              },
       }),
-  );
-  await using screen = await renderMarkdown("[Readme](docs/readme.md)");
-  await screen.openContextMenu();
-  expect(offeredActions()).toContain("open");
-  await act(async () => {
-    state.allowed = false;
-    choose("open");
-  });
-  expect(state.openEditor).not.toHaveBeenCalled();
-});
+    );
+  },
+);
 
 it("does not reveal a file after revocation during its workspace lookup", async () => {
   using _setup = setup();

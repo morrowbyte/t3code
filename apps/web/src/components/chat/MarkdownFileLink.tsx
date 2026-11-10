@@ -37,6 +37,8 @@ interface MarkdownFileLinkProps {
   theme: "light" | "dark";
   threadRef?: ScopedThreadRef | undefined;
   onOpen?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
+  onOpenDefault?: (() => Promise<void>) | undefined;
+  onOpenObsidian?: (() => Promise<void>) | undefined;
   onOpenInPanel: (panelPath: string, line: number | undefined) => void;
   resolveCopyPaths: () => Promise<ReturnType<typeof markdownFileCopyPaths>>;
   openInEditorMenuLabel: string;
@@ -61,6 +63,8 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
   theme,
   threadRef,
   onOpen,
+  onOpenDefault,
+  onOpenObsidian,
   onOpenInPanel,
   openInEditorMenuLabel,
   onOpenInBrowser,
@@ -250,6 +254,12 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
       const clicked = await api.contextMenu.show(
         [
           ...(onOpenMedia ? ([{ id: "preview-media", label: "Preview media" }] as const) : []),
+          ...(onOpenDefault
+            ? ([{ id: "open-default", label: "Open in default app" }] as const)
+            : []),
+          ...(onOpenObsidian
+            ? ([{ id: "open-obsidian", label: "Open in Obsidian" }] as const)
+            : []),
           ...(onOpen ? ([{ id: "open", label: openInEditorMenuLabel }] as const) : []),
           ...(onOpenInBrowser
             ? ([{ id: "open-in-browser", label: "Open in integrated browser" }] as const)
@@ -266,6 +276,14 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
       }
       if (clicked === "open") {
         handleOpenInEditor();
+        return;
+      }
+      if (clicked === "open-default") {
+        await onOpenDefault?.();
+        return;
+      }
+      if (clicked === "open-obsidian") {
+        await onOpenObsidian?.();
         return;
       }
       if (clicked === "open-in-browser") {
@@ -404,6 +422,8 @@ function areMarkdownFileLinkPropsEqual(
     previous.theme === next.theme &&
     previous.threadRef === next.threadRef &&
     previous.onOpen === next.onOpen &&
+    previous.onOpenDefault === next.onOpenDefault &&
+    previous.onOpenObsidian === next.onOpenObsidian &&
     previous.onOpenInPanel === next.onOpenInPanel &&
     previous.openInEditorMenuLabel === next.openInEditorMenuLabel &&
     previous.onOpenInBrowser === next.onOpenInBrowser &&

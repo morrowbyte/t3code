@@ -162,6 +162,15 @@ export const LaunchEditorInput = Schema.Struct({
 });
 export type LaunchEditorInput = typeof LaunchEditorInput.Type;
 
+export const FileAppId = Schema.Literals(["default", "obsidian"]);
+export type FileAppId = typeof FileAppId.Type;
+
+export const OpenFileInput = Schema.Struct({
+  path: Schema.String,
+  app: FileAppId,
+});
+export type OpenFileInput = typeof OpenFileInput.Type;
+
 const remoteSchemeOf = (editor: EditorDefinition): string | undefined =>
   editor.remoteScheme ?? (editor.jetbrainsProductCode === undefined ? undefined : "jetbrains");
 
@@ -305,6 +314,45 @@ export class ExternalLauncherEditorSpawnError extends Schema.TaggedError<Externa
   }
 }
 
+export class ExternalLauncherFileOpenError extends Schema.TaggedError<ExternalLauncherFileOpenError>()(
+  "ExternalLauncherFileOpenError",
+  {
+    path: Schema.String,
+    app: FileAppId,
+    reason: Schema.Literals([
+      "invalid-path",
+      "not-found",
+      "not-file",
+      "access-failed",
+      "unsupported-format",
+      "app-unavailable",
+      "launch-failed",
+    ]),
+    cause: Schema.optionalKey(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    switch (this.reason) {
+      case "invalid-path":
+        return "Opening a file requires an absolute file path.";
+      case "not-found":
+        return `File not found: ${this.path}`;
+      case "not-file":
+        return `Not a regular file: ${this.path}`;
+      case "access-failed":
+        return `Cannot access file: ${this.path}`;
+      case "unsupported-format":
+        return "Obsidian can open Markdown (.md) and Excalidraw (.excalidraw) files.";
+      case "app-unavailable":
+        return this.app === "obsidian"
+          ? "Obsidian is unavailable for opening files on this host."
+          : "No application is available to open this file on this host.";
+      case "launch-failed":
+        return `Failed to open '${this.path}' with ${this.app}.`;
+    }
+  }
+}
+
 export const ExternalLauncherError = Schema.Union([
   ExternalLauncherUnknownEditorError,
   ExternalLauncherUnsupportedEditorError,
@@ -312,5 +360,6 @@ export const ExternalLauncherError = Schema.Union([
   ExternalLauncherUnsupportedTargetError,
   ExternalLauncherBrowserSpawnError,
   ExternalLauncherEditorSpawnError,
+  ExternalLauncherFileOpenError,
 ]);
 export type ExternalLauncherError = typeof ExternalLauncherError.Type;

@@ -64,10 +64,43 @@ vi.mock(import("../../editorPreferences"), async (importOriginal) => {
 vi.mock(import("../../remoteOpen"), async (importOriginal) => ({
   ...(await importOriginal()),
   useRemoteOpenState: () => state.remote,
+  useRemoteOpenResolution: () => ({ isResolved: true, state: state.remote }),
   useRemoteCapableEditors: () => state.clientEditors,
   useRemoteOpenHint: () => [false, state.markHintSeen] as const,
   openRemoteEditorUrl: state.openUrl,
 }));
+
+vi.mock(import("../../state/server"), async (importOriginal) => {
+  const { Atom } = await import("effect/reactivity");
+  const config = Atom.make({ availableFileApps: ["default", "obsidian"] });
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    serverEnvironment: { ...actual.serverEnvironment, configValueAtom: (() => config) as never },
+  };
+});
+
+vi.mock(import("../../state/shell"), async (importOriginal) => {
+  const actual = await importOriginal();
+  const { Atom } = await import("effect/reactivity");
+  return {
+    ...actual,
+    shellEnvironment: {
+      ...actual.shellEnvironment,
+      openFile: {
+        ...actual.shellEnvironment.openFile,
+        permissionAtom: (id: EnvironmentId | null) =>
+          Atom.make((get) => {
+            const allowed = () => id !== null && state.allowed.has(id);
+            const refresh = () => get.setSelf(allowed());
+            state.listeners.add(refresh);
+            get.addFinalizer(() => state.listeners.delete(refresh));
+            return allowed();
+          }),
+      },
+    },
+  };
+});
 
 import { OpenInPicker } from "./OpenInPicker";
 import {
@@ -118,7 +151,12 @@ async function setup(platform = "Linux") {
   async function renderPicker(
     availableEditors: readonly EditorId[] = editors,
     panel = false,
-    { openInCwd = "/work/project", revealFileManager = false, openOnSelect = false } = {},
+    {
+      openInCwd = "/work/project",
+      revealFileManager = false,
+      openOnSelect = false,
+      isFile = false,
+    } = {},
   ) {
     await act(async () => {
       for (const listener of state.listeners) listener();
@@ -128,6 +166,7 @@ async function setup(platform = "Linux") {
           keybindings={DEFAULT_RESOLVED_KEYBINDINGS}
           availableEditors={availableEditors}
           openInCwd={openInCwd}
+          openInCwdIsFile={isFile}
           revealFileManager={revealFileManager}
           openOnSelect={openOnSelect}
           displayMode={panel ? "panel" : "toolbar"}
@@ -189,6 +228,38 @@ async function setup(platform = "Linux") {
 }
 
 describe("host editor access", () => {
+  it.each([
+    ["Open in default app", "default", "D:\\Unterlagen\\Übersicht.xlsx:12:3"],
+    ["Open in Obsidian", "obsidian", "D:\\Vault\\Übersicht.excalidraw.md:12:3"],
+  ] as const)(
+    "%s opens the file without replacing the preferred editor",
+    async (label, app, path) => {
+      await using fixture = await setup("Win32");
+      state.allowed.add(selected);
+      await fixture.renderPicker(["vscode"], false, {
+        openInCwd: path,
+        isFile: true,
+        openOnSelect: true,
+      });
+
+      await userEvent.click(fixture.screen.getByRole("button", { name: "Choose editor" }));
+      await userEvent.click(page.getByRole("menuitem", { name: label, exact: true }));
+      expect(state.run).toHaveBeenCalledExactlyOnceWith({
+        environmentId: selected,
+        input: { path: path.replace(/:12:3$/, ""), app },
+      });
+      expect(state.setPreferred).not.toHaveBeenCalled();
+      expect(state.openUrl).not.toHaveBeenCalled();
+
+      await using _announcements = announcementTimers();
+      expect((await fixture.pressOpenFavorite()).defaultPrevented).toBe(true);
+      expect(state.run).toHaveBeenLastCalledWith({
+        environmentId: selected,
+        input: { cwd: path, editor: "vscode" },
+      });
+    },
+  );
+
   it.each([
     "D:\\projects\\sample-project\\file-preview\\network-diagram.html",
     "D:\\projects\\sample project\\file preview\\network diagram.html",

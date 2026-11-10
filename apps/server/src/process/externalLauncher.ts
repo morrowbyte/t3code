@@ -5,16 +5,20 @@ import {
   ExternalLauncherBrowserSpawnError,
   ExternalLauncherCommandNotFoundError,
   ExternalLauncherEditorSpawnError,
+  ExternalLauncherFileOpenError,
   ExternalLauncherUnknownEditorError,
   ExternalLauncherUnsupportedEditorError,
   ExternalLauncherUnsupportedTargetError,
   type EditorId,
+  type FileAppId,
   type FileManagerRevealKind,
   type LaunchEditorInput,
+  type OpenFileInput,
 } from "@t3tools/contracts";
 import { resolveEditorCommand } from "@t3tools/shared/editor";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
+  CommandAvailability,
   isCommandAvailable,
   resolveSpawnCommand,
   withPathDirectoryListings,
@@ -27,6 +31,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/process/ChildProcess";
@@ -117,6 +122,7 @@ const CommandLookupEnvConfig = Config.all({
   ProgramFiles: Config.String("ProgramFiles").pipe(Config.option),
   ProgramW6432: Config.String("ProgramW6432").pipe(Config.option),
   XDG_DATA_HOME: Config.String("XDG_DATA_HOME").pipe(Config.option),
+  XDG_DATA_DIRS: Config.String("XDG_DATA_DIRS").pipe(Config.option),
   "ProgramFiles(x86)": Config.String("ProgramFiles(x86)").pipe(Config.option),
 }).pipe(Config.map(compactEnv));
 
@@ -450,10 +456,12 @@ export class ExternalLauncher extends Context.Service<
   ExternalLauncher,
   {
     readonly resolveAvailableEditors: () => Effect.Effect<ReadonlyArray<EditorId>>;
+    readonly resolveAvailableFileApps: () => Effect.Effect<ReadonlyArray<FileAppId>>;
     /** Requires file-manager in resolveAvailableEditors; Linux relies on its directory-handler probe. */
     readonly resolveFileManagerRevealKind: () => Effect.Effect<FileManagerRevealKind | undefined>;
     readonly launchBrowser: (target: string) => Effect.Effect<void, ExternalLauncherError>;
     readonly launchEditor: (input: LaunchEditorInput) => Effect.Effect<void, ExternalLauncherError>;
+    readonly openFile: (input: OpenFileInput) => Effect.Effect<void, ExternalLauncherFileOpenError>;
   }
 >()("t3/process/externalLauncher") {}
 
@@ -714,10 +722,253 @@ const readGraphicalSessionEnv = Effect.fn("externalLauncher.readGraphicalSession
   Effect.orElseSucceed((): NodeJS.ProcessEnv => ({})),
 );
 
-const launchAndUnref = Effect.fn("externalLauncher.launchAndUnref")(function* (
+const runFileCommand = Effect.fn("externalLauncher.runFileCommand")(function* (
+  command: string,
+  args: ReadonlyArray<string>,
+  extraEnv: NodeJS.ProcessEnv,
+  captureOutput = false,
+) {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const { ELECTRON_RUN_AS_NODE: _runAsNode, ...env } = yield* HostProcess.Environment;
+  return yield* spawner
+    .spawn(
+      ChildProcess.make(command, args, {
+        detached: false,
+        shell: false,
+        windowsHide: true,
+        stdin: "ignore",
+        stdout: captureOutput ? "pipe" : "ignore",
+        stderr: "ignore",
+        env: { ...env, ...extraEnv },
+        extendEnv: false,
+        forceKillAfter: "1 second",
+      }),
+    )
+    .pipe(
+      Effect.flatMap((handle) =>
+        Effect.all(
+          {
+            stdout: handle.stdout.pipe(Stream.decodeText(), Stream.mkString),
+            exitCode: handle.exitCode,
+          },
+          { concurrency: "unbounded" },
+        ),
+      ),
+      Effect.scoped,
+    );
+});
+
+const resolveFileOpener = Effect.fn("externalLauncher.resolveFileOpener")(function* (
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv,
+) {
+  const commandAvailable = yield* CommandAvailability;
+  const command =
+    platform === "win32"
+      ? resolvePowerShellPath(env)
+      : platform === "darwin"
+        ? "/usr/bin/open"
+        : platform === "linux" && hasGraphicalLinuxSession(env)
+          ? "xdg-open"
+          : undefined;
+  return command !== undefined && (yield* commandAvailable(command, { env })) ? command : undefined;
+});
+
+// Desktop file IDs replace subdirectory slashes with hyphens.
+const hasLinuxDesktopFile = Effect.fn("externalLauncher.hasLinuxDesktopFile")(function* (
+  directory: string,
+  desktopId: string,
+): Effect.fn.Return<boolean, PlatformError.PlatformError, FileSystem.FileSystem | Path.Path> {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  if (yield* fs.exists(path.join(directory, desktopId))) return true;
+  for (
+    let split = desktopId.indexOf("-");
+    split !== -1;
+    split = desktopId.indexOf("-", split + 1)
+  ) {
+    const prefix = desktopId.slice(0, split);
+    if (!prefix || prefix === "." || prefix === "..") continue;
+    const nested = path.join(directory, prefix);
+    if (
+      (yield* fs.exists(nested)) &&
+      (yield* hasLinuxDesktopFile(nested, desktopId.slice(split + 1)))
+    )
+      return true;
+  }
+  return false;
+});
+
+const hasLinuxMimeHandler = Effect.fn("externalLauncher.hasLinuxMimeHandler")(function* (
+  mimeType: string,
+  env: NodeJS.ProcessEnv,
+) {
+  const commandAvailable = yield* CommandAvailability;
+  if (!(yield* commandAvailable("xdg-mime", { env }))) return false;
+  const result = yield* runFileCommand("xdg-mime", ["query", "default", mimeType], env, true);
+  const desktopId = result.stdout.trim();
+  if (result.exitCode !== 0 || !/^[^/\\\r\n]+\.desktop$/.test(desktopId)) return false;
+  const path = yield* Path.Path;
+  const dataHome =
+    env.XDG_DATA_HOME ?? (env.HOME ? path.join(env.HOME, ".local", "share") : undefined);
+  const dataDirs = [dataHome, ...(env.XDG_DATA_DIRS ?? "/usr/local/share:/usr/share").split(":")];
+  return yield* Effect.forEach(
+    dataDirs.filter((dir): dir is string => dir !== undefined && dir.length > 0),
+    (dir) => hasLinuxDesktopFile(path.join(dir, "applications"), desktopId),
+  ).pipe(Effect.map((exists) => exists.some(Boolean)));
+});
+
+const hasLinuxDefaultFileHandler = Effect.fn("externalLauncher.hasLinuxDefaultFileHandler")(
+  function* (target: string, env: NodeJS.ProcessEnv) {
+    const commandAvailable = yield* CommandAvailability;
+    if (!(yield* commandAvailable("xdg-mime", { env }))) return false;
+    const result = yield* runFileCommand("xdg-mime", ["query", "filetype", target], env, true);
+    const mimeType = result.stdout.trim();
+    if (result.exitCode !== 0 || !/^[^\s/]+\/[^\s/]+$/.test(mimeType)) return false;
+    return yield* hasLinuxMimeHandler(mimeType, env);
+  },
+  Effect.timeout("2 seconds"),
+  Effect.orElseSucceed(() => false),
+);
+
+const hasObsidianHandler = Effect.fn("externalLauncher.hasObsidianHandler")(
+  function* (platform: NodeJS.Platform, env: NodeJS.ProcessEnv) {
+    // A WSL desktop entry may forward URIs to Windows without translating their embedded file path.
+    if (
+      platform === "linux" &&
+      (env.WSL_DISTRO_NAME !== undefined || env.WSL_INTEROP !== undefined)
+    ) {
+      return false;
+    }
+    if (platform === "win32") {
+      // HKCR merges per-user and machine registrations; an empty URL Protocol value is valid.
+      const source =
+        "$ErrorActionPreference = 'Stop'; $key = [Microsoft.Win32.Registry]::ClassesRoot.OpenSubKey('obsidian'); if ($null -eq $key -or -not ($key.GetValueNames() -contains 'URL Protocol')) { exit 1 }; $handler = $key.OpenSubKey('shell\\open\\command'); if ($null -eq $handler -or [string]::IsNullOrWhiteSpace([string]$handler.GetValue(''))) { exit 1 }; exit 0";
+      const result = yield* runFileCommand(
+        resolvePowerShellPath(env),
+        [...POWERSHELL_ARGUMENTS_PREFIX, encodeUtf16LeBase64(source)],
+        env,
+      );
+      return result.exitCode === 0;
+    }
+    if (platform === "darwin") {
+      const result = yield* runFileCommand(
+        "/usr/bin/osascript",
+        [
+          "-l",
+          "JavaScript",
+          "-e",
+          'ObjC.import("AppKit"); const handler = $.NSWorkspace.sharedWorkspace.URLForApplicationToOpenURL($.NSURL.URLWithString("obsidian://open")); if (handler.isNil()) { throw new Error("No Obsidian URI handler"); }',
+        ],
+        env,
+      );
+      return result.exitCode === 0;
+    }
+    return platform === "linux"
+      ? yield* hasLinuxMimeHandler("x-scheme-handler/obsidian", env)
+      : false;
+  },
+  Effect.timeout("2 seconds"),
+  Effect.orElseSucceed(() => false),
+);
+
+const resolveFileAppContext = Effect.fn("externalLauncher.resolveFileAppContext")(function* () {
+  const platform = yield* HostProcess.Platform;
+  const env = {
+    ...(yield* readBrowserLaunchEnv),
+    ...(yield* readCommandLookupEnv),
+    ...(yield* readGraphicalSessionEnv()),
+  };
+  return { platform, env, command: yield* resolveFileOpener(platform, env) };
+});
+
+const resolveAvailableFileApps = Effect.fn("externalLauncher.resolveAvailableFileApps")(
+  function* () {
+    const { platform, env, command } = yield* resolveFileAppContext();
+    if (command === undefined) return [];
+    const apps: FileAppId[] = ["default"];
+    if (yield* hasObsidianHandler(platform, env)) apps.push("obsidian");
+    return apps;
+  },
+);
+
+const openFile = Effect.fn("externalLauncher.openFile")(function* (input: OpenFileInput) {
+  const platform = yield* HostProcess.Platform;
+  const path =
+    platform === "win32"
+      ? yield* Path.Path.pipe(Effect.provide(NodePath.layerWin32))
+      : yield* Path.Path;
+  if (
+    !path.isAbsolute(input.path) ||
+    (platform === "win32" && path.parse(input.path).root.length < 2) ||
+    input.path.includes("\0")
+  ) {
+    return yield* new ExternalLauncherFileOpenError({ ...input, reason: "invalid-path" });
+  }
+  const fs = yield* FileSystem.FileSystem;
+  const accessError = (cause: PlatformError.PlatformError) =>
+    new ExternalLauncherFileOpenError({
+      ...input,
+      reason: cause.reason._tag === "NotFound" ? "not-found" : "access-failed",
+      cause,
+    });
+  const canonicalPath = yield* fs.realPath(input.path).pipe(Effect.mapError(accessError));
+  const info = yield* fs.stat(canonicalPath).pipe(Effect.mapError(accessError));
+  if (info.type !== "File") {
+    return yield* new ExternalLauncherFileOpenError({ ...input, reason: "not-file" });
+  }
+  if (
+    input.app === "obsidian" &&
+    ![".md", ".excalidraw"].includes(path.extname(canonicalPath).toLowerCase())
+  ) {
+    return yield* new ExternalLauncherFileOpenError({ ...input, reason: "unsupported-format" });
+  }
+  const { env, command } = yield* resolveFileAppContext();
+  if (
+    command === undefined ||
+    (input.app === "obsidian" && !(yield* hasObsidianHandler(platform, env))) ||
+    (platform === "linux" &&
+      input.app === "default" &&
+      !(yield* hasLinuxDefaultFileHandler(input.path, env)))
+  ) {
+    return yield* new ExternalLauncherFileOpenError({ ...input, reason: "app-unavailable" });
+  }
+  const target =
+    input.app === "obsidian"
+      ? `obsidian://open?path=${encodeURIComponent(canonicalPath)}`
+      : input.path;
+  const args =
+    platform === "win32"
+      ? [
+          ...POWERSHELL_ARGUMENTS_PREFIX,
+          encodeUtf16LeBase64(
+            `$ErrorActionPreference = 'Stop'; try { ${input.app === "obsidian" ? "Start-Process -FilePath" : "Invoke-Item -LiteralPath"} ${escapePowerShellStringLiteral(target)} -ErrorAction Stop; exit 0 } catch { exit 1 }`,
+          ),
+        ]
+      : [target];
+  // xdg-open may run the selected application until it closes.
+  if (platform === "linux") {
+    return yield* launchAndUnref(
+      { command, args, options: { ...DETACHED_IGNORE_STDIO_OPTIONS, shell: false, env } },
+      (cause) => new ExternalLauncherFileOpenError({ ...input, reason: "launch-failed", cause }),
+    );
+  }
+  const result = yield* runFileCommand(command, args, env).pipe(
+    Effect.mapError(
+      (cause) => new ExternalLauncherFileOpenError({ ...input, reason: "launch-failed", cause }),
+    ),
+  );
+  if (result.exitCode !== 0) {
+    return yield* new ExternalLauncherFileOpenError({ ...input, reason: "launch-failed" });
+  }
+});
+
+const launchAndUnref = Effect.fn("externalLauncher.launchAndUnref")(function* <
+  E extends ExternalLauncherError,
+>(
   launch: ProcessLaunch,
-  onError: (cause: unknown) => ExternalLauncherError,
-): Effect.fn.Return<void, ExternalLauncherError, ChildProcessSpawner.ChildProcessSpawner> {
+  onError: (cause: unknown) => E,
+): Effect.fn.Return<void, E, ChildProcessSpawner.ChildProcessSpawner> {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   // Inherited ELECTRON_RUN_AS_NODE would make Electron apps opened by this launcher run as Node and exit.
   const { ELECTRON_RUN_AS_NODE: _runAsNode, ...env } = yield* HostProcess.Environment;
@@ -820,9 +1071,24 @@ export const make = Effect.gen(function* () {
     ),
     EDITOR_DISCOVERY_CACHE_TTL,
   );
+  const cachedAvailableFileApps = yield* makeStaleWhileRevalidate(
+    provideCommandResolutionServices(resolveAvailableFileApps()).pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+    ),
+    EDITOR_DISCOVERY_CACHE_TTL,
+  );
 
   // Forwarders retain the underlying launcher and discovery spans.
   return ExternalLauncher.of({
+    resolveAvailableFileApps: Effect.fnUntraced(function* () {
+      return yield* cachedAvailableFileApps;
+    }),
+    openFile: Effect.fnUntraced(
+      function* (input) {
+        return yield* provideCommandResolutionServices(openFile(input));
+      },
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+    ),
     resolveAvailableEditors: Effect.fnUntraced(function* () {
       return yield* cachedAvailableEditors;
     }),
