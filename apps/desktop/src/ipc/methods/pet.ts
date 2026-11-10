@@ -63,6 +63,7 @@ export const installPet = Effect.fn("desktop.pet.install")(function* () {
         pet.resetProjection();
       });
     }
+    return main;
   });
   const initialize = () => Effect.tryPromise(() => pet.load()).pipe(Effect.orDie);
   yield* initialize();
@@ -132,10 +133,10 @@ export const installPet = Effect.fn("desktop.pet.install")(function* () {
       payload: Schema.Void,
       result: DesktopPetStatus,
       handler: Effect.fn("desktop.pet.import")(function* (_input, event) {
-        yield* authorize(event);
+        const owner = yield* authorize(event);
         return yield* mutex.withPermits(1)(
           Effect.tryPromise(async () => {
-            const selected = await Electron.dialog.showOpenDialog({
+            const selected = await Electron.dialog.showOpenDialog(owner, {
               title: "Import animated pet",
               properties: ["openDirectory"],
             });
