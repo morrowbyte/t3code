@@ -29,21 +29,50 @@ function renderNotes(subjects, previous, current, repository) {
     return [match[3].trim()];
   });
   const unique = [...new Set(items)];
-  const entries = unique.length ? unique.map((item) => `- ${item}`).join("\n") : "No user-facing changes were identified for this release.";
+  const entries = unique.length
+    ? unique.map((item) => `- ${item}`).join("\n")
+    : "No user-facing changes were identified for this release.";
   return `## What's changed\n\n${entries}\n\nFull Changelog: https://github.com/${repository}/compare/${previous}...${current}\n`;
 }
 
 function generateNotes(current, source, repository) {
-  if (!current || !source || !repository || !/^[\w.-]+\/[\w.-]+$/.test(repository)) throw new Error("Expected tag, source and repository");
-  const releases = JSON.parse(execFileSync("gh", ["release", "list", "--repo", repository, "--limit", "1000", "--json", "tagName,isDraft,publishedAt"], { encoding: "utf8" }));
+  if (!current || !source || !repository || !/^[\w.-]+\/[\w.-]+$/.test(repository))
+    throw new Error("Expected tag, source and repository");
+  const releases = JSON.parse(
+    execFileSync(
+      "gh",
+      [
+        "release",
+        "list",
+        "--repo",
+        repository,
+        "--limit",
+        "1000",
+        "--json",
+        "tagName,isDraft,publishedAt",
+      ],
+      { encoding: "utf8" },
+    ),
+  );
   const previous = previousTag(releases, current, (tag) => {
     try {
-      execFileSync("git", ["merge-base", "--is-ancestor", `refs/tags/${tag}^{commit}`, source], { stdio: "ignore" });
+      execFileSync("git", ["merge-base", "--is-ancestor", `refs/tags/${tag}^{commit}`, source], {
+        stdio: "ignore",
+      });
       return true;
-    } catch { return false; }
+    } catch {
+      return false;
+    }
   });
-  if (!previous) throw new Error("No previous published nightly on the source history; cannot determine release changes");
-  const subjects = execFileSync("git", ["log", "--reverse", "--no-merges", "--format=%s", `refs/tags/${previous}..${source}`], { encoding: "utf8" }).split(/\r?\n/);
+  if (!previous)
+    throw new Error(
+      "No previous published nightly on the source history; cannot determine release changes",
+    );
+  const subjects = execFileSync(
+    "git",
+    ["log", "--reverse", "--no-merges", "--format=%s", `refs/tags/${previous}..${source}`],
+    { encoding: "utf8" },
+  ).split(/\r?\n/);
   return renderNotes(subjects, previous, current, repository);
 }
 
