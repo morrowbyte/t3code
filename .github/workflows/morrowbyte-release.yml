@@ -2037,7 +2037,7 @@ jobs:
             !/.repos/
           sparse-checkout-cone-mode: false
           ref: ${{ needs.preflight.outputs.source_sha }}
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Use local release build storage
         if: inputs.runner_backend == 'self-hosted' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
@@ -2303,29 +2303,13 @@ jobs:
             fi
             assert_draft_release
           else
-            if [[ "$DESKTOP_ONLY" == true ]]; then
-              platform_notes="Desktop-only hotfix for Windows x64, Linux x64 and NixOS x64. No Android or macOS assets were built for this release."
-            else
-              platform_notes="Android source $ANDROID_SOURCE_SHA."
-            fi
-            if [[ -n "$WINDOWS_RECOVERY_RUN_ID" ]]; then
-              platform_notes+=" Retained Linux, NixOS, Android and shared runtime bytes from run $WINDOWS_RECOVERY_RUN_ID. Windows packaging uses validation-only script $WINDOWS_PACKAGING_SHA256 from control source $GITHUB_SHA; application source and version remain unchanged."
-            fi
-            if [[ -n "$CONTINUATION68_RUN_ID" ]]; then
-              platform_notes+=" Corrected desktop/server bundle retained unchanged from run 40291055865. The signed Android package is retained unchanged from run 40293470700 at the same application source. Linux and Windows packages use private dependency copies. The release version is unchanged."
-            fi
-            if [[ "$CONTINUATION68_RUN_ID" == 40297878651 ]]; then
-              platform_notes+=" Linux, Windows and CLI package bytes are retained unchanged from run 40297878651; only the missing NixOS closure is built in this publication run."
-            fi
-            if [[ "$CONTINUATION75_RUN_ID" == 40821076738 ]]; then
-              platform_notes+=" Desktop, NixOS and CLI bytes are retained unchanged from run 40821076738. Only the missing source-matching Android package is built in this continuation."
-            fi
+            node scripts/morrowbyte/nightly-release-notes.cjs "$tag" "$source_sha" "$GH_REPO" "$RUNNER_TEMP/nightly-release-notes.md"
             gh release create "$tag" \
               --target "$source_sha" \
               --title "Morrowbyte Nightly ${{ needs.preflight.outputs.version }}" \
               --prerelease \
               --draft \
-              --notes "Fork channel desktop source $source_sha. $platform_notes Linux AppImage installs include a user-local installer. NixOS installs use the dedicated package and updater launcher when available at https://github.com/$GH_REPO/tree/main/packaging/nixos. Linux auto-updates stay disabled for Nix store installs. This build has no configured T3 Connect relay backend."
+              --notes-file "$RUNNER_TEMP/nightly-release-notes.md"
           fi
           # Asset replacement is permitted only while the release is still a
           # draft. Recheck immediately before each clobber in case a maintainer
@@ -2403,7 +2387,7 @@ jobs:
             !/.repos/
           sparse-checkout-cone-mode: false
           ref: ${{ needs.preflight.outputs.source_sha }}
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Use local release build storage
         if: inputs.runner_backend == 'self-hosted' && vars.MORROWBYTE_LINUX_INIT_SCRIPT != ''
@@ -2614,29 +2598,13 @@ jobs:
             fi
             assert_draft_release
           else
-            if [[ "$DESKTOP_ONLY" == true ]]; then
-              platform_notes="Desktop-only hotfix for Windows x64, Linux x64 and NixOS x64. No Android or macOS assets were built for this release."
-            else
-              platform_notes="Android source $ANDROID_SOURCE_SHA."
-            fi
-            if [[ -n "$WINDOWS_RECOVERY_RUN_ID" ]]; then
-              platform_notes+=" Retained Linux, NixOS, Android and shared runtime bytes from run $WINDOWS_RECOVERY_RUN_ID. Windows packaging uses validation-only script $WINDOWS_PACKAGING_SHA256 from control source $GITHUB_SHA; application source and version remain unchanged."
-            fi
-            if [[ -n "$CONTINUATION68_RUN_ID" ]]; then
-              platform_notes+=" Corrected desktop/server bundle retained unchanged from run 40291055865. The signed Android package is retained unchanged from run 40293470700 at the same application source. Linux and Windows packages use private dependency copies. The release version is unchanged."
-            fi
-            if [[ "$CONTINUATION68_RUN_ID" == 40297878651 ]]; then
-              platform_notes+=" Linux, Windows and CLI package bytes are retained unchanged from run 40297878651; only the missing NixOS closure is built in this publication run."
-            fi
-            if [[ "$CONTINUATION75_RUN_ID" == 40821076738 ]]; then
-              platform_notes+=" Desktop, NixOS and CLI bytes are retained unchanged from run 40821076738. Only the missing source-matching Android package is built in this continuation."
-            fi
+            node scripts/morrowbyte/nightly-release-notes.cjs "$tag" "$source_sha" "$GH_REPO" "$RUNNER_TEMP/nightly-release-notes.md"
             gh release create "$tag" \
               --target "$source_sha" \
               --title "Morrowbyte Nightly ${{ needs.preflight.outputs.version }}" \
               --prerelease \
               --draft \
-              --notes "Fork channel desktop source $source_sha. $platform_notes Linux AppImage installs include a user-local installer. NixOS installs use the dedicated package and updater launcher when available at https://github.com/$GH_REPO/tree/main/packaging/nixos. Linux auto-updates stay disabled for Nix store installs. This build has no configured T3 Connect relay backend."
+              --notes-file "$RUNNER_TEMP/nightly-release-notes.md"
           fi
           # Asset replacement is permitted only while the release is still a
           # draft. Recheck immediately before each clobber in case a maintainer

@@ -1,6 +1,7 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const { generateNotes } = require("./nightly-release-notes.cjs");
 const { spawnSync } = require("node:child_process");
 const { createHash } = require("node:crypto");
 const { mkdirSync, readFileSync, readdirSync, writeFileSync } = require("node:fs");
@@ -193,7 +194,7 @@ function main(mode, directory) {
       "--draft",
       "--latest=false",
       "--notes",
-      `Windows-only Morrowbyte release. Application source ${source}. WSL backend reuses the unchanged published ${runtimeTag} runtime (${runtimeSource}). No Linux, NixOS, Android or macOS packages were built. Linux updater metadata continues to reference .61; NixOS and Android stay on their existing releases.`,
+      generateNotes(tag, source, repository),
     );
   }
   const files = readdirSync(directory).sort();

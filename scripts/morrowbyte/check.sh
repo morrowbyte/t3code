@@ -24,7 +24,7 @@ source_proof begin
 node scripts/sync-third-party-license-notices.ts --check
 source_proof group licenses
 
-node --test scripts/morrowbyte/nightly-after-ci.test.cjs scripts/morrowbyte/nightly-dispatch-client.test.cjs scripts/morrowbyte/source-proof.test.cjs
+node --test scripts/morrowbyte/nightly-after-ci.test.cjs scripts/morrowbyte/nightly-dispatch-client.test.cjs scripts/morrowbyte/nightly-release-notes.test.cjs scripts/morrowbyte/source-proof.test.cjs
 python3 scripts/morrowbyte/release68-continuation.test.py
 python3 scripts/morrowbyte/release75-continuation.test.py
 source_proof group dispatch-and-recovery
