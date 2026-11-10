@@ -1,7 +1,7 @@
 import type { ServerSelfUpdateOutcome } from "@t3tools/contracts";
 
-// Bump for incompatible runtime layout changes; launchers survive self-updates. Protocol 3 requires standalone executables.
-export const SERVICE_LAUNCHER_PROTOCOL = 3 as const;
+// Persistent launchers must understand explicit restore transactions before selecting an older runtime.
+export const SERVICE_LAUNCHER_PROTOCOL = 4 as const;
 export const SERVICE_LAUNCHER_CONTEXT_ENV = "T3_SERVICE_LAUNCHER_CONTEXT";
 export const SERVICE_ENV_FILE = "service.env";
 export const SERVICE_STATE_FILE = "service-state.json";
@@ -16,9 +16,21 @@ export interface PendingServiceUpdate {
   readonly targetVersion: string;
   readonly dbPath: string;
   readonly status: "pending";
+  readonly restore?: ServiceRestoreProof;
 }
 
-export type ServiceUpdateRecord = PendingServiceUpdate | ServerSelfUpdateOutcome;
+export interface ServiceRestoreProof {
+  readonly installationId: string;
+  readonly expectedHash: string;
+  readonly originalHash: string;
+  readonly previousHold: boolean;
+}
+
+export type ServiceUpdateRecord =
+  | PendingServiceUpdate
+  | (ServerSelfUpdateOutcome & {
+      readonly restore?: ServiceRestoreProof;
+    });
 
 export interface ServiceState {
   readonly protocol: typeof SERVICE_LAUNCHER_PROTOCOL;
@@ -41,6 +53,7 @@ export type ServiceLauncherChildMessage =
   | {
       readonly type: "prepared";
       readonly updateId: string;
+      readonly restore?: { readonly installationId: string; readonly version: string };
     };
 
 export type ServiceLauncherParentMessage =
@@ -82,9 +95,36 @@ function decodeServiceUpdate(value: unknown): ServiceUpdateRecord | undefined {
   ) {
     return undefined;
   }
+  let restore: ServiceRestoreProof | undefined;
+  if (value.restore !== undefined) {
+    if (
+      !isRecord(value.restore) ||
+      typeof value.restore.installationId !== "string" ||
+      !/^[a-f0-9]{64}$/.test(value.restore.installationId) ||
+      typeof value.restore.expectedHash !== "string" ||
+      !/^[a-f0-9]{64}$/.test(value.restore.expectedHash) ||
+      typeof value.restore.originalHash !== "string" ||
+      !/^[a-f0-9]{64}$/.test(value.restore.originalHash) ||
+      typeof value.restore.previousHold !== "boolean"
+    )
+      return undefined;
+    restore = {
+      installationId: value.restore.installationId,
+      expectedHash: value.restore.expectedHash,
+      originalHash: value.restore.originalHash,
+      previousHold: value.restore.previousHold,
+    };
+  }
   if (status === "pending") {
     return typeof value.dbPath === "string" && value.dbPath.trim() !== ""
-      ? { id, fromVersion, targetVersion, dbPath: value.dbPath, status }
+      ? {
+          id,
+          fromVersion,
+          targetVersion,
+          dbPath: value.dbPath,
+          status,
+          ...(restore === undefined ? {} : { restore }),
+        }
       : undefined;
   }
   if (
@@ -96,6 +136,7 @@ function decodeServiceUpdate(value: unknown): ServiceUpdateRecord | undefined {
       fromVersion,
       targetVersion,
       status,
+      ...(restore === undefined ? {} : { restore }),
       ...(typeof value.reason === "string" ? { reason: value.reason } : {}),
     };
   }
@@ -148,7 +189,9 @@ export function decodeServiceState(value: unknown): ServiceState | undefined {
     !isExactServiceVersion(value.activeVersion) ||
     (value.update !== undefined && update === undefined) ||
     (update !== undefined &&
-      compareExactServiceVersions(update.targetVersion, update.fromVersion) <= 0) ||
+      (update.restore === undefined
+        ? compareExactServiceVersions(update.targetVersion, update.fromVersion) <= 0
+        : compareExactServiceVersions(update.targetVersion, update.fromVersion) >= 0)) ||
     (update?.status === "pending" && update.fromVersion !== value.activeVersion) ||
     (update?.status === "committed" && update.targetVersion !== value.activeVersion) ||
     ((update?.status === "rolled-back" || update?.status === "failed") &&
@@ -237,9 +280,19 @@ export function decodeServiceLauncherChildMessage(
   ) {
     return { type: value.type, targetVersion: value.targetVersion, dbPath: value.dbPath };
   }
-  return value.type === "prepared" && typeof value.updateId === "string"
-    ? { type: value.type, updateId: value.updateId }
-    : undefined;
+  if (value.type !== "prepared" || typeof value.updateId !== "string") return undefined;
+  if (value.restore === undefined) return { type: value.type, updateId: value.updateId };
+  if (
+    !isRecord(value.restore) ||
+    typeof value.restore.installationId !== "string" ||
+    typeof value.restore.version !== "string"
+  )
+    return undefined;
+  return {
+    type: value.type,
+    updateId: value.updateId,
+    restore: { installationId: value.restore.installationId, version: value.restore.version },
+  };
 }
 
 export function decodeServiceLauncherParentMessage(

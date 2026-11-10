@@ -1,4 +1,5 @@
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { serverUpdatesOnHold } from "../cloud/serverRestore.ts";
 import {
   CLI_RELEASE_BASE_URL_ENV,
   CLI_RELEASE_CHANNELS,
@@ -329,6 +330,12 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
   readonly allowDowngrade: boolean;
   readonly assumeYes: boolean;
 }) {
+  if (yield* serverUpdatesOnHold({ baseDir: input.baseDir })) {
+    return yield* new CliUpdateError({
+      reason:
+        "Automatic updates are on hold after restore. Run t3 restore --component server --resume-updates --yes to allow updates again.",
+    });
+  }
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const runner = yield* ProcessRunner.ProcessRunner;

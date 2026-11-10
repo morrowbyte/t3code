@@ -52,6 +52,7 @@ import { isExactServiceVersion, SERVICE_LAUNCHER_PROTOCOL } from "./serviceProto
 import { makeServerUpdateHistory } from "./updateHistory.ts";
 import * as DesktopTelemetryReceiver from "../resourceTelemetry/DesktopTelemetryReceiver.ts";
 import * as Crypto from "effect/Crypto";
+import { serverUpdatesOnHold } from "./serverRestore.ts";
 
 const PREFLIGHT_TIMEOUT = Duration.seconds(30);
 
@@ -177,6 +178,14 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
   const update: ServerSelfUpdate["Service"]["update"] = Effect.fn(
     "cloud.server_self_update.update",
   )(function* (input, reportProgress = () => Effect.void, onHandoffAccepted = () => Effect.void) {
+    if (
+      capability === "boot-service" &&
+      (yield* serverUpdatesOnHold({ baseDir: serverConfig.baseDir }))
+    ) {
+      return yield* failWith(
+        "Server updates are on hold after restore. Resume updates explicitly first.",
+      );
+    }
     const policyRefusal = managedUpdateRefusal(
       policy.document,
       capability === "boot-service" ? cliReleaseChannelOf(input.targetVersion.trim()) : undefined,

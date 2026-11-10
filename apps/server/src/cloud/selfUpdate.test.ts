@@ -21,6 +21,7 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
 import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 import * as ServerSelfUpdate from "./selfUpdate.ts";
+import { writeServerUpdateHold } from "./serverRestoreManifest.ts";
 
 interface HarnessOptions {
   readonly mode?: "web" | "desktop";
@@ -30,6 +31,7 @@ interface HarnessOptions {
   readonly requestUpdate?: ServiceLauncherClient.ServiceLauncherClient["Service"]["requestUpdate"];
   readonly desktopAppUpdate?: DesktopAppUpdate.DesktopAppUpdate["Service"];
   readonly policy?: ManagedPolicyDocument;
+  readonly updateHold?: boolean;
 }
 
 const archiveBytes = new TextEncoder().encode("not really a tarball");
@@ -58,6 +60,8 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-self-update-test-" });
+  if (options.updateHold !== undefined)
+    yield* Effect.promise(() => writeServerUpdateHold(baseDir, options.updateHold!));
   const order: string[] = [];
   const runner = ProcessRunner.ProcessRunner.of({
     run: (input) =>
@@ -138,6 +142,15 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
 });
 
 it.layer(NodeServices.layer)("server self update", (it) => {
+  it.effect("refuses automatic replacement while the persisted restore hold is active", () =>
+    Effect.gen(function* () {
+      const { selfUpdate, order } = yield* makeHarness({ updateHold: true });
+      const error = yield* selfUpdate.update({ targetVersion: "1.1.0" }).pipe(Effect.flip);
+      expect(error.reason).toContain("on hold after restore");
+      expect(order).toEqual([]);
+    }),
+  );
+
   it.effect("stages and preflights before asking the launcher for an update ID", () =>
     Effect.gen(function* () {
       const { selfUpdate, order } = yield* makeHarness();

@@ -11,6 +11,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Version output must flush before Electron exits, without acquiring the runtime.
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -19,6 +20,10 @@ import * as Electron from "electron";
 
 import * as NetService from "@t3tools/shared/Net";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import {
+  recoverDesktopRestoreBeforeStartup,
+  runDesktopRestoreController,
+} from "@t3tools/shared/desktopRestore";
 import type { RemoteT3RunnerOptions } from "@t3tools/ssh/tunnel";
 import serverPackageJson from "../../server/package.json" with { type: "json" };
 
@@ -82,8 +87,11 @@ import * as DesktopWslEnvironment from "./wsl/DesktopWslEnvironment.ts";
 import * as DesktopWslServerTree from "./wsl/DesktopWslServerTree.ts";
 import { resolveWindowsProfileBinding } from "./app/DesktopWindowsProfileBinding.ts";
 
+const restoreProbeRequested = process.argv.includes("--crew-desktop-restore-probe");
+const restoreControllerIndex = process.argv.indexOf("--crew-desktop-restore-controller");
+
 let packagedDistributionProfile = false;
-if (Electron.app.isPackaged) {
+if (Electron.app.isPackaged && !restoreProbeRequested && restoreControllerIndex === -1) {
   try {
     const packageMetadata = JSON.parse(
       NodeFS.readFileSync(`${Electron.app.getAppPath()}/package.json`, "utf8"),
@@ -101,6 +109,23 @@ if (Electron.app.isPackaged) {
     }
   } catch {
     // Upstream and development packages have no fork profile marker.
+  }
+}
+
+if (restoreProbeRequested) {
+  try {
+    const metadata = JSON.parse(
+      NodeFS.readFileSync(`${Electron.app.getAppPath()}/package.json`, "utf8"),
+    ) as { t3codeRestore?: Record<string, unknown> };
+    if (!metadata.t3codeRestore || typeof metadata.t3codeRestore !== "object")
+      throw new Error("Missing restore compatibility metadata");
+    NodeFS.writeSync(
+      process.stdout.fd,
+      `${JSON.stringify({ ...metadata.t3codeRestore, version: Electron.app.getVersion() })}\n`,
+    );
+    Electron.app.exit(0);
+  } catch {
+    Electron.app.exit(2);
   }
 }
 
@@ -302,4 +327,26 @@ const layerDesktopRuntime = layerDesktopClerk.pipe(
   Layer.provideMerge(DesktopPreReadyPlatform.layer),
 );
 
-DesktopApp.program.pipe(Effect.provide(layerDesktopRuntime), NodeRuntime.runMain);
+if (restoreControllerIndex !== -1) {
+  const baseDir = process.argv[restoreControllerIndex + 1];
+  const transactionId = process.argv[restoreControllerIndex + 2];
+  if (!baseDir || !transactionId || process.argv.length !== restoreControllerIndex + 3) {
+    Electron.app.exit(2);
+  } else {
+    void runDesktopRestoreController({ baseDir, transactionId }).then(
+      () => Electron.app.exit(0),
+      () => Electron.app.exit(1),
+    );
+  }
+} else if (!restoreProbeRequested) {
+  const baseDir = NodePath.resolve(
+    process.env.T3CODE_HOME?.trim() || NodePath.join(NodeOS.homedir(), ".t3"),
+  );
+  void recoverDesktopRestoreBeforeStartup({ baseDir }).then(
+    (recovering) => {
+      if (recovering) Electron.app.exit(0);
+      else DesktopApp.program.pipe(Effect.provide(layerDesktopRuntime), NodeRuntime.runMain);
+    },
+    () => Electron.app.exit(1),
+  );
+}

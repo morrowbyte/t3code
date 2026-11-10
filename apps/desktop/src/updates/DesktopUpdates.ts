@@ -14,6 +14,7 @@ import {
 } from "@t3tools/contracts";
 import { errorTag } from "@t3tools/shared/observability";
 import { makeUpdateHistory } from "@t3tools/shared/updateHistory";
+import { isDesktopUpdateHeld } from "@t3tools/shared/desktopRestore";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -43,6 +44,7 @@ import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as IpcChannels from "../ipc/channels.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopUpdatePolicy from "./DesktopUpdatePolicy.ts";
+import * as DesktopRestore from "./DesktopRestore.ts";
 import { normalizeDesktopUpdateReleaseNotes } from "./releaseNotes.ts";
 import { isReleasedDesktopVersionForChannel } from "./updateChannels.ts";
 import { desktopUpdateChannelOf } from "@t3tools/shared/cliRelease";
@@ -400,6 +402,9 @@ export const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
   const qualification = yield* Effect.serviceOption(DesktopUpdateInstallQualification);
+  const restoreHold = Effect.tryPromise(() =>
+    isDesktopUpdateHeld({ baseDir: environment.baseDir }),
+  ).pipe(Effect.catch(() => Effect.succeed(true)));
   const history = yield* makeUpdateHistory(
     environment.path.join(environment.baseDir, "runtime", DESKTOP_UPDATE_HISTORY_FILE),
   );
@@ -651,6 +656,7 @@ export const make = Effect.gen(function* () {
   ) {
     yield* Effect.annotateCurrentSpan({ reason });
     if (yield* Ref.get(desktopState.quitting)) return false;
+    if (yield* restoreHold) return false;
     if (!(yield* Ref.get(updaterConfiguredRef))) return false;
 
     const state = yield* Ref.get(updateStateRef);
@@ -953,6 +959,7 @@ export const make = Effect.gen(function* () {
   const installDownloadedUpdate = (expectedVersion?: string, clientOnly = false) =>
     Effect.scoped(
       Effect.gen(function* () {
+        if (yield* restoreHold) return { accepted: false, completed: false, failed: false };
         const actionCompletions = yield* PubSub.subscribe(finishedUpdateActions);
         let admission: "admitted" | "refused" | "wait-for-check" = "wait-for-check";
         while (admission === "wait-for-check") {
@@ -1484,6 +1491,7 @@ export const make = Effect.gen(function* () {
       Effect.flatMap((state) => resolveStateDisabledReason(state.channel)),
     ),
     configure: Effect.gen(function* () {
+      if (!mockUpdates) yield* DesktopRestore.observe();
       const context = yield* Effect.context<never>();
       const runEffect = (effect: Effect.Effect<void>) => {
         void Effect.runPromiseWith(context)(effect);

@@ -6,6 +6,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import packageJson from "../../package.json" with { type: "json" };
+import { serverRestoreIdentity } from "./serverRestoreManifest.ts";
 import {
   decodeServiceLauncherContext,
   decodeServiceLauncherParentMessage,
@@ -126,7 +127,7 @@ const resolveStartup = Effect.fn("cloud.service_launcher_client.resolve_startup"
 
     const managed = context !== undefined;
 
-    return { host, context, managed };
+    return { host, context, managed, environment, currentVersion };
   },
 );
 
@@ -140,7 +141,7 @@ export const resolveServiceLauncherMode = Effect.fn("cloud.service_launcher_clie
 export const make = Effect.fn("cloud.service_launcher_client.make")(function* (options?: {
   readonly currentVersion?: string;
 }) {
-  const { host, context, managed } = yield* resolveStartup(options);
+  const { host, context, managed, environment, currentVersion } = yield* resolveStartup(options);
 
   const exchange = (
     message: ServiceLauncherChildMessage,
@@ -220,22 +221,40 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
       : context.update;
   const prepareTrial =
     pending !== undefined
-      ? exchange(
-          { type: "prepared", updateId: pending.id },
-          (reply) => reply.type === "committed" && reply.updateId === pending.id,
-        ).pipe(
-          Effect.flatMap((reply) => {
-            if (reply.type !== "committed") {
-              return Effect.die("service launcher returned an impossible prepared response");
-            }
-            return Effect.succeed({
-              id: pending.id,
-              fromVersion: pending.fromVersion,
-              targetVersion: pending.targetVersion,
-              status: "committed" as const,
-            });
-          }),
-        )
+      ? Effect.gen(function* () {
+          const restore =
+            pending.restore === undefined
+              ? undefined
+              : yield* Effect.tryPromise({
+                  try: async () => ({
+                    installationId: (await serverRestoreIdentity(environment["T3CODE_HOME"] ?? ""))
+                      .installationId,
+                    version: currentVersion,
+                  }),
+                  catch: (cause) =>
+                    new ServiceLauncherClientError({ operation: "version-mismatch", cause }),
+                });
+          return yield* exchange(
+            {
+              type: "prepared",
+              updateId: pending.id,
+              ...(restore === undefined ? {} : { restore }),
+            },
+            (reply) => reply.type === "committed" && reply.updateId === pending.id,
+          ).pipe(
+            Effect.flatMap((reply) => {
+              if (reply.type !== "committed") {
+                return Effect.die("service launcher returned an impossible prepared response");
+              }
+              return Effect.succeed({
+                id: pending.id,
+                fromVersion: pending.fromVersion,
+                targetVersion: pending.targetVersion,
+                status: "committed" as const,
+              });
+            }),
+          );
+        })
       : Effect.succeed(outcome);
 
   return ServiceLauncherClient.of({

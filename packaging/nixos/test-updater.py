@@ -66,7 +66,9 @@ elif '--requisites' in args: print(os.environ['TEST_PACKAGE'])
 elif '--add-root' in args:
  root=args[args.index('--add-root')+1]
  if not os.path.lexists(root): os.symlink(os.environ['TEST_PACKAGE'],root)
-elif '--verify-path' not in args: sys.exit(88)
+elif '--verify-path' in args:
+ if os.environ.get('TEST_VERIFY_FAIL'): sys.exit(8)
+else: sys.exit(88)
 ''')
         self.env = {**os.environ, 'PATH': str(self.bin)+':'+os.environ['PATH'],
                     'T3_MORROWBYTE_DATA_DIR': str(self.data), 'T3_MORROWBYTE_MANAGED': '1',
@@ -103,6 +105,12 @@ elif '--verify-path' not in args: sys.exit(88)
         old = self.data/'versions/0.0.47-nightly.20261013.3'
         old.symlink_to(self.package)
         (self.data/'current').symlink_to(old)
+        prepared = self.data/'prepared'
+        prepared.mkdir(exist_ok=True)
+        (prepared/(old.name+'.json')).write_text(json.dumps(dict(
+            schemaVersion=1, version=old.name, repository='morrowbyte/t3code',
+            channel='nightly', system='x86_64-linux', storePath=self.package,
+            sha256='a'*64, compression='zstd')))
         return os.readlink(self.data/'current')
 
     def test_check_is_read_only_and_excludes_draft(self):
@@ -165,6 +173,10 @@ elif '--verify-path' not in args: sys.exit(88)
         old_path = Path(old)
         old_path.unlink()
         old_path.symlink_to(self.legacy_package)
+        receipt = self.data/'prepared'/(old_path.name+'.json')
+        provenance = json.loads(receipt.read_text())
+        provenance['storePath'] = self.legacy_package
+        receipt.write_text(json.dumps(provenance))
         self.env['TEST_NETWORK_FAIL'] = '1'
         r = self.run_update('--rollback', old_path.name)
         self.assertNotEqual(r.returncode, 0)
@@ -172,7 +184,40 @@ elif '--verify-path' not in args: sys.exit(88)
         r = self.run_update('--rollback', old_path.name)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual((self.data/'current').resolve(), Path(self.legacy_package))
-        self.assertFalse(self.log.exists())
+        self.assertIn('--verify-path', self.log.read_text())
+
+    def test_rollback_rejects_unproven_and_corrupt_closure_before_selection(self):
+        if not self.real_store: self.skipTest('Nix fixture needed for Store path validation')
+        old = self.previous()
+        version = Path(old).name
+        receipt = self.data/'prepared'/(version+'.json')
+        provenance = receipt.read_text()
+        receipt.unlink()
+        result = self.run_update('--rollback', version)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('provenance', result.stderr)
+        self.assertEqual(os.readlink(self.data/'current'), old)
+        receipt.write_text(provenance)
+        self.env['TEST_VERIFY_FAIL'] = '1'
+        result = self.run_update('--rollback', version)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('integrity', result.stderr)
+        self.assertEqual(os.readlink(self.data/'current'), old)
+
+    def test_persisted_restore_hold_prevents_activation(self):
+        if not self.real_store: self.skipTest('Nix fixture needed for Store path validation')
+        old = self.previous()
+        result = self.run_update('--prepare', VERSION)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        hold = self.data/'runtime'/'desktop-restore'
+        hold.mkdir(parents=True)
+        (hold/'registry.json').write_text(json.dumps(dict(format=1, updateHold=True)))
+        result = self.run_update('--activate', VERSION)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('held', result.stderr)
+        self.assertEqual(os.readlink(self.data/'current'), old)
+        result = self.run_update('--rollback', Path(old).name)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_legacy_launcher_cannot_escape_package_bin(self):
         self.env['T3_MORROWBYTE_LEGACY_EXECUTABLE_NAME'] = '../other'

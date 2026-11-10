@@ -23,6 +23,8 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as ProcessRunner from "../processRunner.ts";
 import { isExactServiceVersion, parseServiceState, SERVICE_STATE_FILE } from "./serviceProtocol.ts";
+import { inspectServerRestore } from "./serverRestoreStore.ts";
+import { SERVER_RESTORE_MANIFEST, verifyServerRestoreRuntime } from "./serverRestoreManifest.ts";
 
 const PINNED_RUNTIME_DIR = "runtime";
 const PINNED_RUNTIME_INSTALL_TIMEOUT = Duration.minutes(10);
@@ -447,6 +449,22 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
 
     input.onProgress?.({ stage: "validate" });
     yield* input.validate(stagingPaths);
+    if (
+      yield* fs
+        .exists(input.path.join(stagingDir, SERVER_RESTORE_MANIFEST))
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new PinnedRuntimeInstallError({ step: "checking the restore manifest", cause }),
+          ),
+        )
+    ) {
+      yield* Effect.tryPromise({
+        try: () => verifyServerRestoreRuntime(stagingDir, input.version),
+        catch: (cause) =>
+          new PinnedRuntimeInstallError({ step: "verifying the restore manifest", cause }),
+      });
+    }
     yield* fs
       .writeFileString(stagingPaths.sentinelPath, `${input.version}\n`)
       .pipe(
@@ -705,6 +723,16 @@ const selectUnusedRuntimes = Effect.fn("cloud.pinned_runtime.select_unused")(fun
     if (state.update !== undefined) {
       keep.add(state.update.fromVersion);
       keep.add(state.update.targetVersion);
+    }
+    const retained = yield* Effect.tryPromise(() => inspectServerRestore(input.baseDir)).pipe(
+      Effect.option,
+    );
+    if (Option.isSome(retained)) {
+      for (const candidate of retained.value.candidates
+        .filter((candidate) => candidate.blockedReason === null)
+        .slice(0, retained.value.maxVersions - 1)) {
+        keep.add(candidate.version);
+      }
     }
   }
   const executables = yield* runningExecutables();

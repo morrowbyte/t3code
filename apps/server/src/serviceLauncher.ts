@@ -7,6 +7,22 @@ import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
+import type { AppRestoreInput, AppRestoreResult } from "@t3tools/contracts";
+import {
+  acquireServiceLauncherLock,
+  acquireStoppedServerProfile,
+  assertServerRestoreStopped,
+  serveServerRestoreControl,
+} from "./cloud/serverRestoreControl.ts";
+import {
+  qualifyServerRestoreRuntime,
+  serverRestoreIdentity,
+  serverRestoreDatabaseBlocker,
+  serverUpdateHold,
+  verifyServerRestoreRuntime,
+  writeServerUpdateHold,
+} from "./cloud/serverRestoreManifest.ts";
+import { preflightServerRestore } from "./cloud/serverRestoreStore.ts";
 
 import type {
   PendingServiceUpdate,
@@ -393,6 +409,7 @@ function terminalUpdate<S extends TerminalStatus>(input: {
     fromVersion: input.pending.fromVersion,
     targetVersion: input.pending.targetVersion,
     status: input.status,
+    ...(input.pending.restore === undefined ? {} : { restore: input.pending.restore }),
     ...(input.reason === undefined ? {} : { reason: input.reason }),
   };
 }
@@ -447,6 +464,7 @@ export class Launcher {
   readonly #completion = Promise.withResolvers<void>();
   readonly #backupSpaceProbe: Partial<BackupSpaceProbe> | undefined;
   readonly #environment: Readonly<NodeJS.ProcessEnv>;
+  readonly #initialRestore: AppRestoreInput | undefined;
 
   constructor(
     baseDir: string,
@@ -454,6 +472,7 @@ export class Launcher {
     options: {
       readonly backupSpaceProbe?: Partial<BackupSpaceProbe>;
       readonly environment?: Readonly<NodeJS.ProcessEnv>;
+      readonly initialRestore?: AppRestoreInput;
     } = {},
   ) {
     this.#baseDir = baseDir;
@@ -461,20 +480,147 @@ export class Launcher {
     this.#environment = { ...(options.environment ?? process.env) };
     this.#statePath = NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE);
     this.#state = state;
+    this.#initialRestore = options.initialRestore;
   }
 
   async run(): Promise<void> {
+    let releaseLock: (() => void) | undefined;
+    let closeControl: (() => Promise<void>) | undefined;
     const onSigterm = () => void this.stop("SIGTERM");
     const onSigint = () => void this.stop("SIGINT");
     process.once("SIGTERM", onSigterm);
     process.once("SIGINT", onSigint);
     try {
-      this.#enqueue(() => this.#recover());
+      this.#enqueue(async () => {
+        releaseLock = await acquireServiceLauncherLock(this.#baseDir);
+        this.#state = await readServiceState(this.#statePath);
+        if (this.#stopRequested && this.#initialRestore !== undefined) return;
+        if (this.#initialRestore !== undefined) {
+          await assertServerRestoreStopped(this.#baseDir);
+          const pending = this.#state.update;
+          if (pending?.status === "pending") {
+            if (
+              pending.restore === undefined ||
+              pending.targetVersion !== this.#initialRestore.version ||
+              pending.fromVersion !== this.#initialRestore.expectedCurrentVersion ||
+              pending.restore.expectedHash !== this.#initialRestore.expectedHash
+            )
+              throw new Error("A different managed transaction needs recovery first.");
+          } else await this.#prepareRestore(this.#initialRestore);
+        }
+        closeControl = await serveServerRestoreControl(
+          this.#baseDir,
+          (request) =>
+            new Promise((resolve) => {
+              this.#enqueue(async () => {
+                try {
+                  if (request.action === "release-hold") {
+                    if (this.#state.update?.status === "pending")
+                      throw new Error("A version transaction is still pending.");
+                    await writeServerUpdateHold(this.#baseDir, false);
+                    resolve({
+                      status: "restored",
+                      version: this.#state.activeVersion,
+                      reason: null,
+                    });
+                    return;
+                  }
+                  if (this.#child?.role !== "active")
+                    throw new Error("The managed server is not ready for restore.");
+                  const child = this.#child;
+                  await this.#prepareRestore(request.input);
+                  this.#timer = setTimeout(
+                    () => this.#enqueue(() => this.#beginTrial(child)),
+                    HANDOFF_DELAY_MS,
+                  );
+                  resolve({ status: "scheduled", version: request.input.version, reason: null });
+                } catch (cause) {
+                  resolve({
+                    status: "failed",
+                    version: this.#state.activeVersion,
+                    reason: cause instanceof Error ? cause.message : "Restore preflight failed.",
+                  });
+                }
+              });
+            }),
+        );
+        await this.#recover();
+      });
       await this.#completion.promise;
     } finally {
       process.off("SIGTERM", onSigterm);
       process.off("SIGINT", onSigint);
+      await closeControl?.();
+      releaseLock?.();
     }
+  }
+
+  async #prepareRestore(input: AppRestoreInput): Promise<void> {
+    const { identity, state } = await preflightServerRestore(
+      this.#baseDir,
+      input,
+      this.#environment,
+    );
+    const blocker = await databaseBackupBlocker(
+      this.#baseDir,
+      identity.dbPath,
+      this.#backupSpaceProbe,
+    );
+    if (blocker !== undefined) throw new Error(blocker);
+    if (this.#stopRequested) throw new Error("Restore was cancelled before handoff.");
+    const pending: PendingServiceUpdate = {
+      id: NodeCrypto.randomUUID(),
+      fromVersion: state.activeVersion,
+      targetVersion: input.version,
+      dbPath: identity.dbPath,
+      status: "pending",
+      restore: {
+        installationId: identity.installationId,
+        expectedHash: input.expectedHash,
+        originalHash: (
+          await verifyServerRestoreRuntime(
+            runtimePaths(this.#baseDir, state.activeVersion).versionDir,
+            state.activeVersion,
+          )
+        ).sha256,
+        previousHold: await serverUpdateHold(this.#baseDir),
+      },
+    };
+    const next: ServiceState = { ...state, update: pending };
+    await writeServerUpdateHold(this.#baseDir, true);
+    try {
+      await writeServiceState(this.#statePath, next);
+    } catch (cause) {
+      await writeServerUpdateHold(this.#baseDir, pending.restore!.previousHold);
+      throw cause;
+    }
+    this.#state = next;
+  }
+
+  async #verifyRestore(pending: PendingServiceUpdate): Promise<void> {
+    if (pending.restore === undefined) return;
+    const identity = await serverRestoreIdentity(this.#baseDir);
+    if (
+      identity.installationId !== pending.restore.installationId ||
+      identity.dbPath !== pending.dbPath
+    )
+      throw new Error("Restore installation identity changed.");
+    const target = await verifyServerRestoreRuntime(
+      runtimePaths(this.#baseDir, pending.targetVersion).versionDir,
+      pending.targetVersion,
+    );
+    const original = await verifyServerRestoreRuntime(
+      runtimePaths(this.#baseDir, pending.fromVersion).versionDir,
+      pending.fromVersion,
+    );
+    if (
+      target.sha256 !== pending.restore.expectedHash ||
+      original.sha256 !== pending.restore.originalHash ||
+      target.manifest.eventContract !== original.manifest.eventContract ||
+      target.manifest.profileContract !== original.manifest.profileContract ||
+      serverRestoreDatabaseBlocker(identity.dbPath, target.manifest) !== undefined
+    )
+      throw new Error("Restore runtime or database compatibility changed.");
   }
 
   #enqueue(transition: () => Promise<void>): void {
@@ -535,6 +681,8 @@ export class Launcher {
     const update = this.#state.update;
     if (update?.status !== "pending") {
       if (update !== undefined) {
+        if (update.restore !== undefined && update.status !== "committed")
+          await writeServerUpdateHold(this.#baseDir, update.restore.previousHold);
         await discardDatabaseBackup(this.#baseDir, update.id).catch(() => undefined);
       }
       await this.#startChild(this.#state.activeVersion, "active", update);
@@ -552,11 +700,21 @@ export class Launcher {
   }
 
   async #startTrial(pending: PendingServiceUpdate): Promise<void> {
+    if (this.#stopRequested) return;
+    let releaseProfile: (() => void) | undefined;
     try {
+      if (pending.restore !== undefined)
+        releaseProfile = await acquireStoppedServerProfile(this.#baseDir);
+      await this.#verifyRestore(pending);
+      if (pending.restore !== undefined) await writeServerUpdateHold(this.#baseDir, true);
       await backupDatabaseOnce(this.#baseDir, pending);
     } catch {
+      releaseProfile?.();
+      releaseProfile = undefined;
       await this.#returnToPrevious(pending, "failed", "db-backup-failed");
       return;
+    } finally {
+      releaseProfile?.();
     }
     try {
       await this.#startChild(pending.targetVersion, "trial", pending);
@@ -572,6 +730,15 @@ export class Launcher {
     }
     if (this.#stopping) return;
     const paths = runtimePaths(this.#baseDir, version);
+    if (update?.restore !== undefined) {
+      const runtime = await verifyServerRestoreRuntime(paths.versionDir, version);
+      const expected =
+        version === update.targetVersion
+          ? update.restore.expectedHash
+          : update.restore.originalHash;
+      if (runtime.sha256 !== expected)
+        throw new Error("Selected restore runtime changed before startup.");
+    }
     const context: ServiceLauncherContext = {
       protocol: SERVICE_LAUNCHER_PROTOCOL,
       childVersion: version,
@@ -579,7 +746,11 @@ export class Launcher {
     };
     const spawnArguments = runtimeSpawnArguments(paths);
     const child = NodeChildProcess.spawn(spawnArguments.command, spawnArguments.args, {
-      env: { ...this.#environment, [SERVICE_LAUNCHER_CONTEXT_ENV]: JSON.stringify(context) },
+      env: {
+        ...this.#environment,
+        T3CODE_HOME: this.#baseDir,
+        [SERVICE_LAUNCHER_CONTEXT_ENV]: JSON.stringify(context),
+      },
       stdio: ["inherit", "inherit", "inherit", "ipc"],
     });
     await new Promise<void>((resolve, reject) => {
@@ -624,7 +795,7 @@ export class Launcher {
       await this.#handleUpdateRequest(child, message);
       return;
     }
-    await this.#handlePrepared(child, message.updateId);
+    await this.#handlePrepared(child, message);
   }
 
   async #handleUpdateRequest(
@@ -651,6 +822,10 @@ export class Launcher {
     }
     if (compareExactServiceVersions(message.targetVersion, child.version) <= 0) {
       await reject("Remote updates must select a newer server version.");
+      return;
+    }
+    if (await serverUpdateHold(this.#baseDir)) {
+      await reject("Server updates are on hold after restore. Resume updates explicitly first.");
       return;
     }
     if (!NodePath.isAbsolute(message.dbPath)) {
@@ -684,6 +859,9 @@ export class Launcher {
       status: "pending",
     };
     const next: ServiceState = { ...this.#state, update: pending };
+    await serverRestoreIdentity(this.#baseDir)
+      .then((identity) => qualifyServerRestoreRuntime(identity, child.version))
+      .catch(() => undefined);
     await writeServiceState(this.#statePath, next);
     this.#state = next;
     await sendMessage(child.process, { type: "update-accepted", updateId: pending.id });
@@ -701,13 +879,19 @@ export class Launcher {
     await this.#startTrial(pending);
   }
 
-  async #handlePrepared(child: ManagedChild, updateId: string): Promise<void> {
+  async #handlePrepared(
+    child: ManagedChild,
+    message: Extract<ServiceLauncherChildMessage, { readonly type: "prepared" }>,
+  ): Promise<void> {
     const pending = this.#state.update;
     if (
       child.role !== "trial" ||
       pending?.status !== "pending" ||
-      pending.id !== updateId ||
-      pending.targetVersion !== child.version
+      pending.id !== message.updateId ||
+      pending.targetVersion !== child.version ||
+      (pending.restore !== undefined &&
+        (message.restore?.installationId !== pending.restore.installationId ||
+          message.restore?.version !== child.version))
     ) {
       if (child.role === "trial" && pending?.status === "pending") {
         await this.#returnToPrevious(pending, "rolled-back", "invalid-prepared", child);
@@ -716,6 +900,19 @@ export class Launcher {
       throw new Error("Trial child reported prepared for an unexpected update.");
     }
     this.#clearTimer();
+    if (pending.restore !== undefined) {
+      try {
+        await this.#verifyRestore(pending);
+      } catch {
+        await this.#returnToPrevious(
+          pending,
+          "rolled-back",
+          "restore-identity-or-hash-changed",
+          child,
+        );
+        return;
+      }
+    }
     const committed = terminalUpdate({ pending, status: "committed" });
     const next: ServiceState = {
       ...this.#state,
@@ -727,6 +924,10 @@ export class Launcher {
     child.role = "active";
     await discardDatabaseBackup(this.#baseDir, committed.id).catch(() => undefined);
     await sendMessage(child.process, { type: "committed", updateId: committed.id });
+    await serverRestoreIdentity(this.#baseDir)
+      .then((identity) => qualifyServerRestoreRuntime(identity, child.version))
+      .catch(() => undefined);
+    if (this.#initialRestore !== undefined) void this.stop("SIGTERM");
   }
 
   async #handlePreparedTimeout(child: ManagedChild): Promise<void> {
@@ -746,6 +947,10 @@ export class Launcher {
     if (this.#child !== child || this.#stopping) return;
     this.#child = null;
     if (code === STATE_DIR_OWNED_EXIT_CODE) {
+      if (this.#state.update?.status === "pending" && this.#state.update.restore !== undefined)
+        throw new Error(
+          "Another server acquired this profile during restore; recovery remains pending.",
+        );
       await this.#idleWhileStateDirOwned();
       return;
     }
@@ -803,7 +1008,18 @@ export class Launcher {
       this.#child = null;
       await terminateChild(child.process);
     }
-    await restoreDatabaseBackup(this.#baseDir, pending);
+    if (pending.restore !== undefined) {
+      const identity = await serverRestoreIdentity(this.#baseDir);
+      if (identity.installationId !== pending.restore.installationId)
+        throw new Error("The profile identity changed; automatic recovery was stopped.");
+    }
+    const releaseProfile =
+      pending.restore === undefined ? undefined : await acquireStoppedServerProfile(this.#baseDir);
+    try {
+      await restoreDatabaseBackup(this.#baseDir, pending);
+    } finally {
+      releaseProfile?.();
+    }
     const outcome = terminalUpdate({ pending, status, reason });
     const next: ServiceState = {
       ...this.#state,
@@ -812,9 +1028,33 @@ export class Launcher {
     };
     await writeServiceState(this.#statePath, next);
     this.#state = next;
+    if (pending.restore !== undefined)
+      await writeServerUpdateHold(this.#baseDir, pending.restore.previousHold);
     await discardDatabaseBackup(this.#baseDir, pending.id).catch(() => undefined);
     await this.#startChild(next.activeVersion, "active", outcome);
+    if (this.#initialRestore !== undefined) void this.stop("SIGTERM");
   }
+}
+
+export async function restoreStoppedServer(
+  baseDir: string,
+  input: AppRestoreInput,
+): Promise<AppRestoreResult> {
+  const statePath = NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE);
+  const state = await readServiceState(statePath);
+  const environment = await readServiceEnvironment(baseDir);
+  await new Launcher(baseDir, state, { environment, initialRestore: input }).run();
+  const outcome = await readServiceState(statePath);
+  return outcome.activeVersion === input.version && outcome.update?.status === "committed"
+    ? { status: "restored", version: outcome.activeVersion, reason: null }
+    : {
+        status: "failed",
+        version: outcome.activeVersion,
+        reason:
+          outcome.update?.status !== "pending"
+            ? (outcome.update?.reason ?? "The trial did not commit.")
+            : "Recovery is still pending.",
+      };
 }
 
 export async function main(): Promise<void> {

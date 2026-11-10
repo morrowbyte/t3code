@@ -32,6 +32,14 @@ import { selectCliRuntimeExternalDependencies } from "./lib/cli-external-package
 import { signWithJsign } from "./lib/windows-jsign.ts";
 import { windowsSystemTar } from "./lib/windows-tar.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
+import { migrationManifest } from "../apps/server/src/persistence/Migrations.ts";
+import {
+  SERVER_RESTORE_MANIFEST,
+  SERVER_RESTORE_PROFILE_CONTRACT,
+  serverRestoreFiles,
+  serverRestoreHash,
+} from "../apps/server/src/cloud/serverRestoreManifest.ts";
+import { SERVICE_LAUNCHER_PROTOCOL } from "../apps/server/src/cloud/serviceProtocol.ts";
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
 const BuildArch = Schema.Literals(["arm64", "x64"]);
@@ -551,6 +559,49 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   if (input.platform !== "win") {
     yield* fs.chmod(executablePath, 0o755);
   }
+
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const sourceSha = (yield* spawner.string(
+    ChildProcess.make("git", ["rev-parse", "HEAD"], { cwd: repoRoot }),
+  )).trim();
+  if (!/^[a-f0-9]{40}$/.test(sourceSha)) {
+    return yield* new CliArchiveInputMissingError({
+      inputPath: "git HEAD",
+      hint: "Restore manifests require an exact source commit.",
+    });
+  }
+  const contractsDir = path.join(repoRoot, "packages/contracts/src");
+  const contractSources = (yield* Effect.tryPromise(() => serverRestoreFiles(contractsDir))).filter(
+    ({ path: sourcePath }) => sourcePath.endsWith(".ts") && !sourcePath.endsWith(".test.ts"),
+  );
+  const profileSources: Array<readonly [string, string]> = [];
+  for (const relative of ["config.ts", "serverSettings.ts", "environment/ServerEnvironment.ts"]) {
+    profileSources.push([
+      relative,
+      serverRestoreHash(yield* fs.readFileString(path.join(serverDir, "src", relative))),
+    ]);
+  }
+  for (const relative of ["auth", "secrets"]) {
+    for (const file of yield* Effect.tryPromise(() =>
+      serverRestoreFiles(path.join(serverDir, "src", relative)),
+    )) {
+      if (file.path.endsWith(".ts") && !file.path.endsWith(".test.ts"))
+        profileSources.push([`${relative}/${file.path}`, file.sha256]);
+    }
+  }
+  yield* fs.writeFileString(
+    path.join(contentDir, SERVER_RESTORE_MANIFEST),
+    `${JSON.stringify({
+      format: 1,
+      version: input.version,
+      sourceSha,
+      launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+      profileContract: `${SERVER_RESTORE_PROFILE_CONTRACT}:${serverRestoreHash(JSON.stringify(profileSources))}`,
+      eventContract: serverRestoreHash(JSON.stringify(contractSources)),
+      migrations: migrationManifest.map(([id, name]) => ({ id, name })),
+      files: yield* Effect.tryPromise(() => serverRestoreFiles(contentDir)),
+    })}\n`,
+  );
 
   yield* fs.makeDirectory(input.outputDir, { recursive: true });
   const archivePath = path.join(

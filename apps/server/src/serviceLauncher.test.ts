@@ -113,6 +113,38 @@ it("rejects contradictory service state", () => {
       },
     }),
   );
+
+  const restore = {
+    installationId: "a".repeat(64),
+    expectedHash: "b".repeat(64),
+    originalHash: "c".repeat(64),
+    previousHold: false,
+  };
+  const pendingRestore = {
+    protocol: SERVICE_LAUNCHER_PROTOCOL,
+    activeVersion: "1.0.0",
+    update: {
+      id: "restore-1",
+      fromVersion: "1.0.0",
+      targetVersion: "0.9.0",
+      dbPath: "/tmp/state.sqlite",
+      status: "pending",
+      restore,
+    },
+  };
+  assert.deepEqual(decodeServiceState(pendingRestore), pendingRestore);
+  assert.isUndefined(
+    decodeServiceState({
+      ...pendingRestore,
+      update: { ...pendingRestore.update, targetVersion: "1.1.0" },
+    }),
+  );
+  assert.isUndefined(
+    decodeServiceState({
+      ...pendingRestore,
+      update: { ...pendingRestore.update, restore: { ...restore, expectedHash: "unverified" } },
+    }),
+  );
 });
 
 const writeFakeRuntime = (

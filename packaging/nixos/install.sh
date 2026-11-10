@@ -20,6 +20,13 @@ valid_install() {
   [[ "$target" == /nix/store/* ]] || return 1
   [[ -x "$target/bin/t3code-morrowbyte" || ( -n "$legacy_executable" && -x "$target/bin/$legacy_executable" ) ]]
 }
+assert_update_not_held() {
+  local restore_dir="${T3CODE_HOME:-$base_dir}/runtime/desktop-restore"
+  [[ ! -f "$restore_dir/transaction.json" ]] || die 'desktop restore recovery is pending; updates are held'
+  if [[ -e "$restore_dir/registry.json" ]]; then
+    jq -e '.format == 1 and .updateHold == false' "$restore_dir/registry.json" >/dev/null || die 'desktop updates are held; resume them explicitly'
+  fi
+}
 point_to() {
   # Both the version link and current are in the same filesystem; rename is atomic.
   local next="$base_dir/.current.$$" previous
@@ -43,6 +50,7 @@ case "$mode" in
     printf 'Installed version: %s\nChannel: %s\nRepository: %s\n' "$(installed_version)" "$channel" "$repo"
     exit 0 ;;
   --rollback|--activate)
+    for tool in jq nix-store flock; do command -v "$tool" >/dev/null 2>&1 || die "required command not found: $tool"; done
     version="${2:-}"
     [[ $# -eq 2 ]] && valid_version "$version" || die 'activation requires an installed version'
     [[ -d "$base_dir" ]] || die 'activation requires an installed version'
@@ -50,12 +58,25 @@ case "$mode" in
     flock -n 9 || die 'another update is running'
     valid_install "$version" || die 'activation requires an installed version'
     if [[ "$mode" == --activate ]]; then
+      assert_update_not_held
       [[ -f "$base_dir/prepared/$version.json" ]] || die 'version has not been prepared'
       jq -e --arg version "$version" --arg repository "$repo" --arg channel "$channel" \
         --arg storePath "$(readlink -f "$install_dir/$version")" \
         '.schemaVersion == 1 and .version == $version and .repository == $repository and .channel == $channel and .system == "x86_64-linux" and .storePath == $storePath' \
         "$base_dir/prepared/$version.json" >/dev/null || die 'prepared version provenance changed'
+    else
+      [[ -f "$base_dir/prepared/$version.json" ]] || die 'rollback version lacks verified provenance'
+      jq -e --arg version "$version" --arg repository "$repo" \
+        --arg storePath "$(readlink -f "$install_dir/$version")" \
+        '.schemaVersion == 1 and .version == $version and .repository == $repository and (.channel == "stable" or .channel == "nightly") and .system == "x86_64-linux" and .storePath == $storePath and (.sha256 | test("^[a-f0-9]{64}$"))' \
+        "$base_dir/prepared/$version.json" >/dev/null || die 'rollback version provenance changed'
     fi
+    closure_paths="$(nix-store --query --requisites "$(readlink -f "$install_dir/$version")")" || die 'closure membership is unavailable'
+    [[ -n "$closure_paths" ]] || die 'closure membership is empty'
+    while IFS= read -r path; do
+      [[ "$path" == /nix/store/* ]] || die 'invalid closure member'
+      nix-store --verify-path "$path" || die 'closure integrity verification failed'
+    done <<<"$closure_paths"
     point_to "$version"
     printf 'Selected installed version %s; running processes unchanged.\n' "$version"
     exit 0 ;;
@@ -117,6 +138,7 @@ fi
 mkdir -p "$base_dir" "$install_dir" "$base_dir/prepared" "$base_dir/.gcroots"
 exec 9>"$base_dir/.update.lock"
 flock -n 9 || die 'another update is running'
+[[ "$mode" != --update ]] || assert_update_not_held
 # Version links may be the target of current/previous. Replacing one during
 # preparation would activate different bytes indirectly, before --activate.
 if [[ -e "$install_dir/$version" || -L "$install_dir/$version" ]]; then

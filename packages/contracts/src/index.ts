@@ -98,3 +98,5 @@ export * from "./voiceRecording.ts";
 export * from "./connectedEnvironmentMcp.ts";
 
 export * from "./boat.ts";
+
+export * from "./appRestore.ts";

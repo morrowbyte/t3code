@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as MainRendererDiagnostics from "./methods/mainRendererDiagnostics.ts";
+import { listAppRestores, restoreAppVersion, resumeAppUpdates } from "./methods/appRestore.ts";
 
 import { receiveProviderAuthCallback, cancelProviderAuthCallback } from "./methods/providerAuth.ts";
 import * as DesktopIpc from "./DesktopIpc.ts";
@@ -155,6 +156,9 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(revealWindow);
   yield* ipc.handle(probeRemoteEditors);
   yield* ipc.handle(getUpdateState);
+  yield* ipc.handle(listAppRestores);
+  yield* ipc.handle(restoreAppVersion);
+  yield* ipc.handle(resumeAppUpdates);
   yield* ipc.handle(setUpdateChannel);
   yield* ipc.handle(downloadUpdate);
   yield* ipc.handle(installUpdate);

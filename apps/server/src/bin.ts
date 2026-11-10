@@ -18,7 +18,41 @@ if (
   // Guard sockets before either dispatch path can load outbound-capable modules.
   const { ignoreMacosTypeOfServiceEinval } = await import("./outboundHttp.ts");
   ignoreMacosTypeOfServiceEinval();
-  if (command === "cua-session-mcp") {
+  if (command === "--crew-desktop-restore-probe") {
+    try {
+      // @effect-diagnostics-next-line nodeBuiltinImport:off -- Probe bundled metadata before loading CLI services.
+      const { readFile } = await import("node:fs/promises");
+      const metadata = JSON.parse(
+        await readFile(new URL("../../../package.json", import.meta.url), "utf8"),
+      ) as { version?: unknown; t3codeRestore?: Record<string, unknown> };
+      if (
+        typeof metadata.version !== "string" ||
+        !metadata.t3codeRestore ||
+        typeof metadata.t3codeRestore !== "object" ||
+        Array.isArray(metadata.t3codeRestore)
+      )
+        throw new Error("No desktop restore metadata");
+      process.stdout.write(
+        `${JSON.stringify({ ...metadata.t3codeRestore, version: metadata.version })}\n`,
+      );
+    } catch {
+      process.exitCode = 2;
+    }
+  } else if (command === "--crew-desktop-restore-controller") {
+    if (process.argv.length !== 5) {
+      process.exitCode = 2;
+    } else {
+      try {
+        const { runDesktopRestoreController } = await import("@t3tools/shared/desktopRestore");
+        await runDesktopRestoreController({
+          baseDir: process.argv[3]!,
+          transactionId: process.argv[4]!,
+        });
+      } catch {
+        process.exitCode = 1;
+      }
+    }
+  } else if (command === "cua-session-mcp") {
     const { runCuaSessionMcp } = await import("./cua/CuaSessionMcp.ts");
     await runCuaSessionMcp(process.argv.slice(3));
   } else if (command === "editor-follow-acp") {

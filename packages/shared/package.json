@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./desktopRestore": {
+      "types": "./src/desktopRestore.ts",
+      "import": "./src/desktopRestore.ts"
+    },
     "./liveVoiceActivity": {
       "types": "./src/liveVoiceActivity.ts",
       "import": "./src/liveVoiceActivity.ts"
