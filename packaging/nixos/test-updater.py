@@ -386,6 +386,21 @@ else: sys.exit(88)
         self.assertIn('another desktop restore operation', result.stderr)
         self.assertEqual(lock.read_text(), 'unavailable')
         self.assert_no_archive_or_import()
+        lock.unlink()
+        target = self.root/'foreign-lock-target'
+        target.write_text('preserve foreign target')
+        for path in [lock, lock.with_name('mutation.lock.recovery')]:
+            with self.subTest(symlink=path.name):
+                if path.exists(): path.unlink()
+                path.symlink_to(target)
+                inode = path.lstat().st_ino
+                result = self.run_update('--prepare', VERSION)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertTrue(path.is_symlink())
+                self.assertEqual(path.lstat().st_ino, inode)
+                self.assertEqual(target.read_text(), 'preserve foreign target')
+                self.assert_no_archive_or_import()
+                path.unlink()
 
     def test_export_stream_exact_size_and_decompressor_status_precede_import(self):
         original = json.loads(self.manifest.read_text())
@@ -550,14 +565,43 @@ else: sys.exit(88)
             self.assertEqual(lock.read_text(), identity)
             self.assert_no_archive_or_import()
             recovery = directory/'mutation.lock.recovery'
-            recovery.write_text('other-recovery')
+            if recovery.exists(): recovery.unlink()
+            os.link(owner_file, recovery)
+            recovery_inode = recovery.stat().st_ino
             result = self.run_update('--prepare', VERSION)
             self.assertNotEqual(result.returncode, 0)
-            self.assertEqual(recovery.read_text(), 'other-recovery')
+            self.assertEqual(recovery.read_text(), identity)
             self.assertEqual(lock.stat().st_ino, before)
-            recovery.unlink()
             owner.send_signal(signal.SIGKILL)
             owner.wait()
+            recovering = subprocess.Popen(['bash', '-c',
+                'exec 8<>"$1"; flock -n 8 || exit 2; printf "locked\\n"; read -r value',
+                'restore-recovery-owner', str(recovery)], stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            try:
+                self.assertEqual(recovering.stdout.readline(), b'locked\n')
+                result = self.run_update('--prepare', VERSION)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('another desktop restore operation', result.stderr)
+                self.assertEqual(lock.stat().st_ino, before)
+                self.assertEqual(recovery.stat().st_ino, recovery_inode)
+                self.assert_no_archive_or_import()
+                recovering.send_signal(signal.SIGKILL)
+                self.assertEqual(recovering.wait(), -signal.SIGKILL)
+            finally:
+                if recovering.poll() is None:
+                    recovering.kill()
+                    recovering.wait()
+                recovering.stdin.close()
+                recovering.stdout.close()
+            self.env['TEST_IMPORT_FAIL'] = '1'
+            result = self.run_update('--prepare', VERSION)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('--import', self.log.read_text())
+            self.assertFalse(lock.exists())
+            self.assertEqual(recovery.stat().st_ino, recovery_inode)
+            self.assertEqual(recovery.read_text(), identity)
+            del self.env['TEST_IMPORT_FAIL']
             if self.real_store:
                 result = self.run_update('--prepare', VERSION)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -565,7 +609,7 @@ else: sys.exit(88)
                 self.assertIsNone(resumed['pendingImport'])
                 self.assertIsNotNone(resumed['candidate'])
                 self.assertFalse(lock.exists())
-                self.assertFalse(recovery.exists())
+                self.assertEqual(recovery.stat().st_ino, recovery_inode)
                 self.assertEqual(owner_file.read_text(), identity)
                 self.assertEqual(pending['manifestSha256'], hashlib.sha256(self.manifest.read_bytes()).hexdigest())
         finally:

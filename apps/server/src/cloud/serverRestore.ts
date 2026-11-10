@@ -86,7 +86,7 @@ export class ServerRestore extends Context.Service<
       readonly baseDir: string;
     }) => Effect.Effect<AppRestoreState, ServerRestoreError>;
   }
->()("t3/cloud/ServerRestore") {}
+>()("t3/cloud/serverRestore") {}
 
 export const layer = Layer.succeed(ServerRestore, {
   list: listServerRestore,

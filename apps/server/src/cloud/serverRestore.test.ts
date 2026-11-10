@@ -413,11 +413,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("offline server rest
       yield* fs.writeFileString(NodePath.join(versions, "0.5.0", ".install-complete"), "0.5.0\n");
       for (const version of ["0.5.0", "1.0.0", "2.0.0"]) {
         yield* Effect.promise(() =>
-          NodeFSP.utimes(
-            NodePath.join(versions, version, ".install-complete"),
-            new Date(0),
-            new Date(0),
-          ),
+          NodeFSP.utimes(NodePath.join(versions, version, ".install-complete"), 0, 0),
         );
       }
       const removed = yield* prunePinnedRuntimes({ baseDir, keep: ["2.0.0"] }).pipe(

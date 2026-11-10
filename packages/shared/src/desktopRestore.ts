@@ -399,44 +399,154 @@ export async function desktopRestoreProcessIdentity(pid: number): Promise<string
   }
 }
 
+async function verifyDesktopRestoreLock(
+  file: string,
+  handle: NodeFSP.FileHandle,
+  recovery = false,
+) {
+  const opened = await handle.stat();
+  const current = await NodeFSP.lstat(file);
+  if (
+    !opened.isFile() ||
+    !current.isFile() ||
+    current.isSymbolicLink() ||
+    opened.uid !== process.getuid?.() ||
+    (opened.mode & 0o022) !== 0 ||
+    (recovery && (opened.mode & 0o7777) !== 0o600) ||
+    opened.dev !== current.dev ||
+    opened.ino !== current.ino
+  )
+    throw new Error("Desktop restore lock ownership or identity changed.");
+}
+
+async function readDesktopRestoreLockOwner(handle: NodeFSP.FileHandle) {
+  const stat = await handle.stat();
+  if (stat.size > 128) throw new Error("Another desktop restore operation has an unknown owner.");
+  const buffer = Buffer.alloc(129);
+  const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+  if (bytesRead !== stat.size)
+    throw new Error("Another desktop restore operation has an unknown owner.");
+  return buffer.toString("utf8", 0, bytesRead);
+}
+
+async function assertDesktopRestoreOwnerDead(owner: string) {
+  const match = /^([1-9][0-9]*):([0-9]+)$/.exec(owner);
+  if (match === null || match[0] !== owner || !Number.isSafeInteger(Number(match[1])))
+    throw new Error("Another desktop restore operation has an unknown owner.");
+  const current = await desktopRestoreProcessIdentity(Number(match[1]));
+  if (current !== null && (!/^[1-9][0-9]*:[0-9]+$/.test(current) || current === owner))
+    throw new Error("Another desktop restore operation is active.");
+}
+
+async function withDesktopRestoreRecoveryMutex<A>(lock: string, operation: () => Promise<A>) {
+  const file = `${lock}.recovery`;
+  const handle = await NodeFSP.open(
+    file,
+    NodeFS.constants.O_RDWR |
+      NodeFS.constants.O_CREAT |
+      NodeFS.constants.O_NOFOLLOW |
+      NodeFS.constants.O_NONBLOCK,
+    0o600,
+  );
+  try {
+    await verifyDesktopRestoreLock(file, handle, true);
+    // flock locks the inherited open file description until this parent closes its handle.
+    const child = NodeChildProcess.spawn("flock", ["-n", "3"], {
+      stdio: ["ignore", "ignore", "ignore", handle.fd],
+    });
+    await new Promise<void>((resolve, reject) => {
+      child.once("error", (cause) =>
+        reject(new Error("Desktop restore recovery mutex is unavailable.", { cause })),
+      );
+      child.once("exit", (code) => {
+        if (code === 0) resolve();
+        else
+          reject(
+            new Error(
+              code === 1
+                ? "Another desktop restore operation is active or recovering."
+                : "Desktop restore recovery mutex is unavailable.",
+            ),
+          );
+      });
+    });
+    await verifyDesktopRestoreLock(file, handle, true);
+    const legacyOwner = await readDesktopRestoreLockOwner(handle);
+    if (legacyOwner !== "") await assertDesktopRestoreOwnerDead(legacyOwner);
+    return await operation();
+  } finally {
+    // Never unlink this inode: other processes may already have opened it for flock.
+    await handle.close();
+  }
+}
+
 async function withLock<A>(baseDir: string, operation: () => Promise<A>): Promise<A> {
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Restore locking requires Linux process identities and flock.
+  if (process.platform !== "linux") throw new Error("Desktop restore locking requires Linux.");
+  const identity = await desktopRestoreProcessIdentity(process.pid);
+  if (identity === null || !/^[1-9][0-9]*:[0-9]+$/.test(identity))
+    throw new Error("Desktop restore process identity is unavailable.");
   const directory = paths(baseDir).directory;
   await NodeFSP.mkdir(directory, { recursive: true, mode: 0o700 });
+  const directoryStat = await NodeFSP.lstat(directory);
+  if (
+    !directoryStat.isDirectory() ||
+    directoryStat.isSymbolicLink() ||
+    directoryStat.uid !== process.getuid?.() ||
+    (directoryStat.mode & 0o022) !== 0
+  )
+    throw new Error("Desktop restore directory ownership changed.");
   const lock = NodePath.join(directory, "mutation.lock");
-  const identity = await desktopRestoreProcessIdentity(process.pid);
-  let handle;
-  try {
-    handle = await NodeFSP.open(lock, "wx", 0o600);
-  } catch (cause) {
-    if (
-      !(typeof cause === "object" && cause !== null && "code" in cause && cause.code === "EEXIST")
-    )
-      throw cause;
-    const recoveryLock = `${lock}.recovery`;
-    const recovery = await NodeFSP.open(recoveryLock, "wx", 0o600);
+  const handle = await withDesktopRestoreRecoveryMutex(lock, async () => {
+    let handle;
     try {
-      const owner = String(await NodeFSP.readFile(lock, "utf8")).split(":");
-      if (
-        owner.length !== 2 ||
-        !/^\d+$/.test(owner[0]!) ||
-        (await desktopRestoreProcessIdentity(Number(owner[0]))) === owner.join(":")
-      ) {
-        throw new Error("Another desktop restore operation is active.", { cause });
-      }
-      await NodeFSP.unlink(lock);
       handle = await NodeFSP.open(lock, "wx", 0o600);
-    } finally {
-      await recovery.close();
-      await NodeFSP.unlink(recoveryLock);
+    } catch (cause) {
+      if (
+        !(typeof cause === "object" && cause !== null && "code" in cause && cause.code === "EEXIST")
+      )
+        throw cause;
+      const observed = await NodeFSP.open(
+        lock,
+        NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_NONBLOCK,
+      );
+      try {
+        await verifyDesktopRestoreLock(lock, observed);
+        const owner = await readDesktopRestoreLockOwner(observed);
+        await assertDesktopRestoreOwnerDead(owner);
+        if ((await readDesktopRestoreLockOwner(observed)) !== owner)
+          throw new Error("Desktop restore lock changed during recovery.", { cause });
+        await verifyDesktopRestoreLock(lock, observed);
+        await NodeFSP.unlink(lock);
+      } finally {
+        await observed.close();
+      }
+      handle = await NodeFSP.open(lock, "wx", 0o600);
     }
-  }
+    try {
+      await handle.writeFile(identity);
+      await verifyDesktopRestoreLock(lock, handle);
+      return handle;
+    } catch (cause) {
+      try {
+        await verifyDesktopRestoreLock(lock, handle);
+        await NodeFSP.unlink(lock);
+      } finally {
+        await handle.close();
+      }
+      throw cause;
+    }
+  });
   try {
-    await handle.writeFile(identity ?? "unavailable");
     await discardUnfinishedStaging(baseDir);
     return await operation();
   } finally {
-    await handle.close();
-    await NodeFSP.unlink(lock);
+    try {
+      await verifyDesktopRestoreLock(lock, handle);
+      await NodeFSP.unlink(lock);
+    } finally {
+      await handle.close();
+    }
   }
 }
 

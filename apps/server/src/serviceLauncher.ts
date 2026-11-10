@@ -701,7 +701,10 @@ export class Launcher {
         signal: this.#retentionController.signal,
       }).catch((cause: unknown) => {
         if (!this.#retentionController.signal.aborted)
-          console.error("Runtime retention recovery could not complete.", cause);
+          NodeFS.writeSync(
+            2,
+            `${NodeUtil.format("Runtime retention recovery could not complete.", cause)}\n`,
+          );
       });
       if (this.#stopRequested) return;
       await this.#startChild(this.#state.activeVersion, "active", update);
@@ -987,7 +990,10 @@ export class Launcher {
       signal: this.#retentionController.signal,
     }).catch((cause: unknown) => {
       if (!this.#retentionController.signal.aborted)
-        console.error("Committed runtime retention cleanup could not complete.", cause);
+        NodeFS.writeSync(
+          2,
+          `${NodeUtil.format("Committed runtime retention cleanup could not complete.", cause)}\n`,
+        );
     });
     await sendMessage(child.process, { type: "committed", updateId: committed.id });
     if (this.#initialRestore !== undefined) void this.stop("SIGTERM");

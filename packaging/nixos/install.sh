@@ -24,9 +24,10 @@ candidate_version="" candidate_store=""
 import_ledger='[]'
 pending_import='null'
 desktop_lock="" lock_owner="" lock_recovery="" lock_observed="" work_dir=""
+lock_recovery_open=0
 cleanup() {
-  if [[ -n "$desktop_lock" && -n "$lock_owner" && "$desktop_lock" -ef "$lock_owner" ]]; then rm -- "$desktop_lock"; fi
-  if [[ -n "$lock_recovery" && -n "$lock_owner" && "$lock_recovery" -ef "$lock_owner" ]]; then rm -- "$lock_recovery"; fi
+  if [[ -n "$desktop_lock" && -n "$lock_owner" && -f "$desktop_lock" && ! -L "$desktop_lock" && "$desktop_lock" -ef "$lock_owner" ]]; then rm -- "$desktop_lock"; fi
+  if [[ "$lock_recovery_open" == 1 ]]; then exec 8>&-; fi
   [[ -z "$lock_observed" ]] || rm -f -- "$lock_observed"
   [[ -z "$lock_owner" ]] || rm -f -- "$lock_owner"
   [[ -z "$work_dir" ]] || rm -rf -- "$work_dir"
@@ -248,21 +249,57 @@ read_allocation() {
   done <"$work_dir/closure-sizes"
   jq -sc 'sort_by(.path)' "$work_dir/actual-allocation"
 }
+assert_desktop_lock_owner_dead() {
+  local owner="$1" owner_pid owner_start process_stat
+  local -a fields
+  [[ "$owner" =~ ^([1-9][0-9]*):([0-9]+)$ ]] || die 'another desktop restore operation has an unknown owner'
+  owner_pid="${BASH_REMATCH[1]}" owner_start="${BASH_REMATCH[2]}"
+  if [[ -e "/proc/$owner_pid/stat" ]]; then
+    process_stat="$(cat "/proc/$owner_pid/stat")" || die 'cannot prove desktop restore lock owner is dead'
+    process_stat="${process_stat##*) }"
+    read -r -a fields <<<"$process_stat"
+    [[ "${fields[19]:-}" =~ ^[0-9]+$ ]] || die 'cannot prove desktop restore lock owner is dead'
+    [[ "${fields[0]}" == Z || "${fields[19]}" != "$owner_start" ]] || die 'another desktop restore operation is active'
+  else
+    [[ -d /proc/self && ! -e "/proc/$owner_pid" ]] || die 'cannot prove desktop restore lock owner is dead'
+  fi
+}
+verify_desktop_recovery_lock() {
+  local descriptor="/proc/$$/fd/8" mode
+  [[ -f "$lock_recovery" && ! -L "$lock_recovery" && "$lock_recovery" -ef "$descriptor" ]] || die 'desktop restore recovery mutex identity changed'
+  mode="$(stat -Lc '%a' -- "$descriptor")" || die 'cannot prove desktop restore recovery mutex permissions'
+  [[ "$(stat -Lc '%u' -- "$descriptor")" == "$(id -u)" && "$mode" == 600 ]] || die 'unsafe desktop restore recovery mutex ownership or permissions'
+}
 lock_desktop_retention() {
-  local directory="$restore_home/runtime/desktop-restore" process_stat owner owner_pid owner_start mode
+  local directory="$restore_home/runtime/desktop-restore" process_stat owner mode
   mkdir -p "$directory"
-  [[ ! -L "$directory" ]] || die 'desktop restore directory changed'
+  [[ -d "$directory" && ! -L "$directory" ]] || die 'desktop restore directory changed'
+  mode="$(stat -c '%a' -- "$directory")" || die 'cannot prove desktop restore directory permissions'
+  [[ "$(stat -c '%u' -- "$directory")" == "$(id -u)" ]] && (( (8#$mode & 8#022) == 0 )) || die 'unsafe desktop restore directory ownership or permissions'
   desktop_lock="$directory/mutation.lock"
   process_stat="$(cat "/proc/$$/stat")" || die 'cannot prove import lock owner'
   process_stat="${process_stat##*) }"
   local -a fields
   read -r -a fields <<<"$process_stat"
   [[ "${fields[19]:-}" =~ ^[0-9]+$ ]] || die 'cannot prove import lock owner'
+  lock_recovery="$desktop_lock.recovery"
+  if [[ ! -e "$lock_recovery" && ! -L "$lock_recovery" ]]; then
+    (umask 077; set -o noclobber; : >"$lock_recovery") 2>/dev/null || [[ -f "$lock_recovery" && ! -L "$lock_recovery" ]] || die 'cannot create desktop restore recovery mutex'
+  fi
+  [[ -f "$lock_recovery" && ! -L "$lock_recovery" ]] || die 'invalid desktop restore recovery mutex'
+  exec 8<>"$lock_recovery" || die 'cannot open desktop restore recovery mutex'
+  lock_recovery_open=1
+  verify_desktop_recovery_lock
+  flock -n 8 || die 'another desktop restore operation is active or recovering'
+  verify_desktop_recovery_lock
+  (( $(stat -Lc '%s' -- "/proc/$$/fd/8") <= 128 )) || die 'another desktop restore operation has an unknown recovery owner'
+  if [[ -s "/proc/$$/fd/8" ]]; then
+    owner="$(cat <&8)" || die 'cannot read desktop restore recovery owner'
+    assert_desktop_lock_owner_dead "$owner"
+  fi
   lock_owner="$(mktemp "$directory/.import-owner.XXXXXX")"
   printf '%s:%s' "$$" "${fields[19]}" >"$lock_owner"
   if ! ln -T -- "$lock_owner" "$desktop_lock" 2>/dev/null; then
-    lock_recovery="$desktop_lock.recovery"
-    ln -T -- "$lock_owner" "$lock_recovery" 2>/dev/null || die 'another desktop restore operation is active or recovering'
     lock_observed="$(mktemp "$directory/.import-observed.XXXXXX")"
     rm -- "$lock_observed"
     ln -T -- "$desktop_lock" "$lock_observed" 2>/dev/null || die 'cannot prove stale desktop restore lock'
@@ -271,23 +308,17 @@ lock_desktop_retention() {
     [[ "$(stat -c '%u' -- "$lock_observed")" == "$(id -u)" ]] && (( (8#$mode & 8#022) == 0 )) || die 'cannot prove desktop restore lock ownership'
     (( $(stat -c '%s' -- "$lock_observed") <= 128 )) || die 'another desktop restore operation has an unknown owner'
     owner="$(cat "$lock_observed")"
-    [[ "$owner" =~ ^([1-9][0-9]*):([0-9]+)$ ]] || die 'another desktop restore operation has an unknown owner'
-    owner_pid="${BASH_REMATCH[1]}" owner_start="${BASH_REMATCH[2]}"
-    if [[ -e "/proc/$owner_pid/stat" ]]; then
-      process_stat="$(cat "/proc/$owner_pid/stat")" || die 'cannot prove desktop restore lock owner is dead'
-      process_stat="${process_stat##*) }"
-      read -r -a fields <<<"$process_stat"
-      [[ "${fields[19]:-}" =~ ^[0-9]+$ ]] || die 'cannot prove desktop restore lock owner is dead'
-      [[ "${fields[0]}" == Z || "${fields[19]}" != "$owner_start" ]] || die 'another desktop restore operation is active'
-    else
-      [[ -d /proc/self && ! -e "/proc/$owner_pid" ]] || die 'cannot prove desktop restore lock owner is dead'
-    fi
-    [[ "$desktop_lock" -ef "$lock_observed" && "$(cat "$desktop_lock")" == "$owner" ]] || die 'desktop restore lock changed during recovery'
+    assert_desktop_lock_owner_dead "$owner"
+    [[ "$(cat "$lock_observed")" == "$owner" && ! -L "$desktop_lock" && "$desktop_lock" -ef "$lock_observed" ]] || die 'desktop restore lock changed during recovery'
     rm -- "$desktop_lock"
     ln -T -- "$lock_owner" "$desktop_lock" 2>/dev/null || die 'another desktop restore operation acquired the lock'
-    rm -- "$lock_recovery" "$lock_observed"
-    lock_recovery="" lock_observed=""
+    rm -- "$lock_observed"
+    lock_observed=""
   fi
+  # Keep this inode persistent; unlinking it would split concurrent flock owners.
+  flock -u 8 || die 'cannot release desktop restore recovery mutex'
+  exec 8>&-
+  lock_recovery_open=0
   [[ ! -e "$directory/transaction.json" && ! -L "$directory/transaction.json" ]] || die 'desktop restore recovery is pending; import is held'
 }
 admit_import() {

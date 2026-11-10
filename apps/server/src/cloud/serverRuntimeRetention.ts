@@ -521,7 +521,6 @@ export async function acquireServerRuntimeRetention(
         const directory = NodePath.join(versionsDir, name);
         if (
           name === state?.activeVersion ||
-          (state?.update?.status === "pending" && name === state.update.fromVersion) ||
           referenced(directory) ||
           !isExactServiceVersion(name)
         ) {

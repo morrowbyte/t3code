@@ -143,9 +143,9 @@ const fetchReleaseAsset = Effect.fn("cloud.pinned_runtime.fetch_release_asset")(
         const length = Number(response.headers["content-length"]);
         const total = Number.isFinite(length) && length > 0 ? length : undefined;
         if (total !== undefined && total > maxBytes)
-          return yield* Effect.fail(
-            new Error("The release asset exceeds the runtime storage budget."),
-          );
+          return yield* new PinnedRuntimeInstallError({
+            step: "admitting the release asset storage budget",
+          });
         let received = 0;
         onProgress?.({ stage: "download", received, total });
         const chunks = yield* response.stream.pipe(
@@ -209,6 +209,7 @@ const decodeReceiptDigests = Schema.decodeUnknownSync(
     Schema.Array(Schema.Struct({ name: Schema.String, digest: Schema.String })),
   ),
 );
+const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 const verifyReleaseReceipt = Effect.fn("cloud.pinned_runtime.verify_release_receipt")(function* (
   text: string,
@@ -413,7 +414,7 @@ const installFromArchive = Effect.fn("cloud.pinned_runtime.install_archive")(fun
     try: async () => {
       const manifest =
         manifestResult.code === 0 && !manifestResult.stdoutTruncated
-          ? decodeServerRestoreManifest(JSON.parse(manifestResult.stdout) as unknown)
+          ? decodeServerRestoreManifest(decodeJson(manifestResult.stdout))
           : undefined;
       if (manifest === undefined || manifest.version !== input.version)
         throw new Error("The archive has no supported size manifest.");

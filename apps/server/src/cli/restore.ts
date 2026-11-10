@@ -29,13 +29,15 @@ class RestoreCliError extends Schema.TaggedError<RestoreCliError>()("RestoreCliE
 }
 
 const failure = (reason: string, exitCode = 3) => new RestoreCliError({ reason, exitCode });
+const isRestoreCliError = Schema.is(RestoreCliError);
+const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 export function selectRestoreTarget(
   state: AppRestoreState,
   input: {
     version: string;
-    expectedHash?: string;
-    expectedCurrentVersion?: string;
+    expectedHash?: string | undefined;
+    expectedCurrentVersion?: string | undefined;
   },
 ): AppRestoreInput {
   if (state.unavailableReason) throw failure(state.unavailableReason);
@@ -63,7 +65,7 @@ const showState = Effect.fn("cli.restore.showState")(function* (
   state: AppRestoreState,
   json: boolean,
 ) {
-  if (json) return yield* Console.log(JSON.stringify(state));
+  if (json) return yield* Console.log(yield* encodeJson(state));
   yield* Console.log(`Crew ${state.component}: ${state.currentVersion} (${state.installationId})`);
   yield* Console.log(
     `Automatic updates: ${state.updateHold ? "on hold" : "enabled"}. Retained: ${state.totalBytes}/${state.maxBytes} bytes; up to ${state.maxVersions} versions.`,
@@ -203,7 +205,7 @@ export const restoreCommand = Command.make("restore", {
             expectedCurrentVersion: Option.getOrUndefined(flags.expectedCurrentVersion),
           }),
         catch: (cause) =>
-          cause instanceof RestoreCliError ? cause : failure("The restore target is invalid.", 2),
+          isRestoreCliError(cause) ? cause : failure("The restore target is invalid.", 2),
       });
       if (flags.dryRun) {
         const plan = {
@@ -215,7 +217,7 @@ export const restoreCommand = Command.make("restore", {
         };
         return yield* Console.log(
           flags.json
-            ? JSON.stringify(plan)
+            ? yield* encodeJson(plan)
             : `Restore ${state.currentVersion} → ${input.version}; sha256:${input.expectedHash}. Crew will restart and automatic updates will be held. No changes made.`,
         );
       }
@@ -243,17 +245,17 @@ export const restoreCommand = Command.make("restore", {
         );
       yield* Console.log(
         flags.json
-          ? JSON.stringify(result)
+          ? yield* encodeJson(result)
           : `${result.status === "restored" ? "Restored" : "Restore scheduled for"} Crew ${result.version}.${result.reason ? ` ${result.reason}` : ""}`,
       );
     }).pipe(
       Effect.catch((error) =>
         Effect.gen(function* () {
           const message = error instanceof Error ? error.message : "Restore could not complete.";
-          const exitCode = error instanceof RestoreCliError ? error.exitCode : 3;
+          const exitCode = isRestoreCliError(error) ? error.exitCode : 3;
           process.exitCode = exitCode;
           if (flags.json)
-            yield* Console.log(JSON.stringify({ status: "failed", error: message, exitCode }));
+            yield* Console.log(yield* encodeJson({ status: "failed", error: message, exitCode }));
           else yield* Console.error(message);
         }),
       ),
