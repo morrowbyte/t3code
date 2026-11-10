@@ -52,6 +52,22 @@ async function directoryBytes(directory: string): Promise<number> {
   return bytes;
 }
 
+export async function serverRuntimeStorage(baseDir: string) {
+  const directory = NodePath.join(baseDir, "runtime", "versions");
+  const entries = await NodeFSP.readdir(directory).catch((cause: NodeJS.ErrnoException) => {
+    if (cause.code === "ENOENT") return [];
+    throw cause;
+  });
+  let totalBytes = 0;
+  for (const entry of entries) {
+    const target = NodePath.join(directory, entry);
+    const stat = await NodeFSP.lstat(target);
+    totalBytes += stat.isDirectory() ? await directoryBytes(target) : stat.size;
+    if (!Number.isSafeInteger(totalBytes)) throw new Error("Runtime storage size is unsupported.");
+  }
+  return { entries, totalBytes };
+}
+
 export async function serverRestoreLimits(baseDir: string) {
   let text: string;
   try {
@@ -88,11 +104,16 @@ export async function readServerRestoreState(baseDir: string) {
   return { identity, state };
 }
 
-export async function inspectServerRestore(baseDir: string): Promise<AppRestoreState> {
-  const { identity, state } = await readServerRestoreState(baseDir);
+export async function inspectServerRestore(
+  baseDir: string,
+  nextState?: ServiceState,
+): Promise<AppRestoreState> {
+  const { identity, state: recordedState } = await readServerRestoreState(baseDir);
+  const state = nextState ?? recordedState;
   const limits = await serverRestoreLimits(identity.baseDir);
   const versionsDir = NodePath.join(identity.baseDir, "runtime", "versions");
-  const versions = (await NodeFSP.readdir(versionsDir))
+  const storage = await serverRuntimeStorage(identity.baseDir);
+  const versions = storage.entries
     .filter(isExactServiceVersion)
     .sort((a, b) => compareExactServiceVersions(b, a));
   const currentDir = NodePath.join(versionsDir, state.activeVersion);
@@ -104,7 +125,7 @@ export async function inspectServerRestore(baseDir: string): Promise<AppRestoreS
     currentSentinel.trim() !== state.activeVersion
       ? undefined
       : await verifyServerRestoreRuntime(currentDir, state.activeVersion).catch(() => undefined);
-  let totalBytes = 0;
+  const totalBytes = storage.totalBytes;
   const candidates: Array<AppRestoreState["candidates"][number]> = [];
   for (const version of versions) {
     const directory = NodePath.join(versionsDir, version);
@@ -112,7 +133,6 @@ export async function inspectServerRestore(baseDir: string): Promise<AppRestoreS
     const sizeBytes = redirected
       ? (await NodeFSP.lstat(directory)).size
       : await directoryBytes(directory);
-    totalBytes += sizeBytes;
     if (version === state.activeVersion) continue;
     const sentinel = await NodeFSP.readFile(
       NodePath.join(directory, ".install-complete"),
@@ -146,14 +166,22 @@ export async function inspectServerRestore(baseDir: string): Promise<AppRestoreS
       blockedReason: blockedReason ?? null,
     });
   }
+  const candidateRecord = await NodeFSP.lstat(
+    NodePath.join(identity.baseDir, "runtime", "install-candidate.json"),
+  ).catch((cause: NodeJS.ErrnoException) => {
+    if (cause.code === "ENOENT") return undefined;
+    throw cause;
+  });
   const unavailableReason =
     state.update?.status === "pending"
       ? "A managed version transaction is still pending."
-      : versions.length > limits.maxVersions || totalBytes > limits.maxBytes
-        ? "Retained runtimes exceed the configured limit; no server was stopped."
-        : current === undefined
-          ? "The current runtime has no verified supported restore manifest."
-          : null;
+      : candidateRecord !== undefined
+        ? `A runtime candidate record awaits cleanup (${storage.entries.length} entries; committed limit ${limits.maxVersions}, at most one temporary transaction slot). Staging and archive bytes count toward the ${limits.maxBytes}-byte limit.`
+        : storage.entries.length > limits.maxVersions || totalBytes > limits.maxBytes
+          ? "Retained runtimes exceed the configured limit; no server was stopped."
+          : current === undefined
+            ? "The current runtime has no verified supported restore manifest."
+            : null;
   return {
     component: "server",
     installationId: identity.installationId,

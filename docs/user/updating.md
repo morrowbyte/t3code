@@ -60,6 +60,20 @@ server, add `--component server`. Use `--base-dir PATH` to select an explicit
 installation home. Restore affects that installation only. Legacy versions
 without verified compatibility and health metadata cannot be selected.
 
+Desktop restore supports Linux AppImage (with FUSE) and managed Nix installs.
+Windows installers are not supported. A retained build must already include the
+restore and health contract; older installed builds cannot be qualified retroactively.
+A separate server also needs launcher protocol 4; update its managed launcher
+before using restore if the CLI reports an older protocol.
+
+The default retention is two versions: up to 2 GiB for desktop artifacts and
+1 GiB for separate server runtimes. Shared Nix closure paths count once. Server
+updates use at most one additional candidate slot within the byte limit. If the
+protected versions and the switch cannot fit, the operation stops before shutdown.
+Configure desktop limits with `T3CODE_DESKTOP_RESTORE_MAX_VERSIONS` and
+`T3CODE_DESKTOP_RESTORE_MAX_BYTES`; for a separate server, set `maxVersions` and
+`maxBytes` in `runtime/restore-limits.json` below its T3 home.
+
 Automatic updates stay on hold after a restore. Resume them from the restore
 dialog, or run `t3 restore --resume-updates --yes` (add `--component server` for
 the separate server).

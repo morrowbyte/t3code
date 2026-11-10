@@ -15,7 +15,13 @@ import * as DesktopState from "../app/DesktopState.ts";
 import { makeComponentLogger } from "../app/DesktopObservability.ts";
 
 const { logWarning } = makeComponentLogger("desktop-restore");
-const decodeBuild = Schema.decodeUnknownSync(DesktopRestoreStore.DesktopRestoreBuild);
+const decodePackage = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      t3codeRestore: Schema.optionalKey(DesktopRestoreStore.DesktopRestoreBuild),
+    }),
+  ),
+);
 
 export const observe = Effect.fn("DesktopRestore.observe")(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
@@ -31,11 +37,11 @@ export const observe = Effect.fn("DesktopRestore.observe")(function* () {
   let session: (() => Promise<void>) | undefined;
   const register = Effect.tryPromise(async () => {
     const Electron = await import("electron");
-    const metadata: unknown = JSON.parse(
+    const metadata = decodePackage(
       await NodeFSP.readFile(NodePath.join(environment.appPath, "package.json"), "utf8"),
     );
-    if (typeof metadata !== "object" || metadata === null || !("t3codeRestore" in metadata)) return;
-    const build = decodeBuild(metadata.t3codeRestore);
+    const build = metadata.t3codeRestore;
+    if (build === undefined) return;
     if (build.version !== environment.appVersion)
       throw new Error("Restore build metadata version mismatch.");
     const baseDir = await NodeFSP.realpath(environment.baseDir);
@@ -88,11 +94,12 @@ export const observe = Effect.fn("DesktopRestore.observe")(function* () {
     if (session === undefined)
       session = await DesktopRestoreStore.startDesktopRestoreSession({
         baseDir,
+        appDataDirectory: environment.appDataDirectory,
         quiesce: () =>
           Effect.runPromiseWith(context)(
             Effect.gen(function* () {
               if (yield* Ref.get(state.quitting))
-                return yield* Effect.dieMessage("Desktop is already quitting.");
+                return yield* Effect.die(new Error("Desktop is already quitting."));
               yield* Ref.set(state.quitting, true);
               const instances = yield* pool.list;
               yield* Effect.forEach(
@@ -104,7 +111,7 @@ export const observe = Effect.fn("DesktopRestore.observe")(function* () {
           ),
         quit: () => Electron.app.quit(),
       });
-    await DesktopRestoreStore.markDesktopRestoreHealthy({ baseDir, identity, build });
+    return { baseDir, identity, build };
   }).pipe(
     Effect.catch(() =>
       logWarning(
@@ -117,9 +124,18 @@ export const observe = Effect.fn("DesktopRestore.observe")(function* () {
       await session?.();
     }).pipe(Effect.ignore),
   );
+  const registration = yield* register;
   yield* SubscriptionRef.changes(state.primaryBackendStartup).pipe(
     Stream.filter((startup) => startup._tag === "Ready"),
-    Stream.runForEach(() => register),
+    Stream.runForEach(() =>
+      Effect.gen(function* () {
+        const current = registration ?? (yield* register);
+        if (current === undefined) return;
+        yield* Effect.tryPromise(() => DesktopRestoreStore.markDesktopRestoreHealthy(current)).pipe(
+          Effect.catch(() => logWarning("Desktop restore runtime health verification failed.")),
+        );
+      }),
+    ),
     Effect.forkScoped,
   );
 });

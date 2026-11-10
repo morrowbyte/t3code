@@ -44,9 +44,8 @@ function RestoreVersions({ state }: { state: AppRestoreState }) {
     } catch {
       setFailed(true);
       setMessage("Restore could not start. Refresh the version list before trying again.");
-    } finally {
-      setBusy(false);
     }
+    setBusy(false);
   };
 
   const resumeUpdates = async () => {
@@ -59,9 +58,8 @@ function RestoreVersions({ state }: { state: AppRestoreState }) {
     } catch {
       setFailed(true);
       setMessage("Automatic updates could not be resumed.");
-    } finally {
-      setBusy(false);
     }
+    setBusy(false);
   };
 
   return (

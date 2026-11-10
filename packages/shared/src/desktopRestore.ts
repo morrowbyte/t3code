@@ -16,6 +16,11 @@ import {
   retainedDesktopBytes,
 } from "./desktopRestoreNix.ts";
 import { renderDesktopRestoreLauncher } from "./desktopRestoreLauncher.ts";
+import {
+  DesktopRestoreProcess,
+  readDesktopRestoreLaunchContext,
+} from "./desktopRestoreGraphics.ts";
+export { DesktopRestoreProcess } from "./desktopRestoreGraphics.ts";
 
 const HASH = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/));
 const VERSION = Schema.String.check(Schema.isPattern(/^[0-9A-Za-z][0-9A-Za-z.+_-]{0,127}$/));
@@ -81,11 +86,14 @@ const Transaction = Schema.Struct({
   phase: Schema.Literals(["prepared", "switching", "starting", "recovering"]),
   stagePath: Schema.NullOr(Schema.String),
   originalHold: Schema.Boolean,
+  originalProcess: Schema.optionalKey(DesktopRestoreProcess),
+  launchedProcess: Schema.optionalKey(DesktopRestoreProcess),
 });
 export type DesktopRestoreTransaction = typeof Transaction.Type;
 
 const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
 const decodeBuild = Schema.decodeUnknownSync(DesktopRestoreBuild);
+const decodeIdentity = Schema.decodeUnknownSync(Identity);
 const decodeRegistry = Schema.decodeUnknownSync(Registry);
 const decodeTransaction = Schema.decodeUnknownSync(Transaction);
 const DEFAULT_MAX_BYTES = 2 * 1024 ** 3;
@@ -233,7 +241,7 @@ async function withLock<A>(baseDir: string, operation: () => Promise<A>): Promis
         !/^\d+$/.test(owner[0]!) ||
         (await desktopRestoreProcessIdentity(Number(owner[0]))) === owner.join(":")
       ) {
-        throw new Error("Another desktop restore operation is active.");
+        throw new Error("Another desktop restore operation is active.", { cause });
       }
       await NodeFSP.unlink(lock);
       handle = await NodeFSP.open(lock, "wx", 0o600);
@@ -448,7 +456,7 @@ export interface RegisterDesktopRestoreInput {
 export async function registerDesktopRestoreBuild(input: RegisterDesktopRestoreInput) {
   return withLock(input.baseDir, async () => {
     const build = decodeBuild(input.build);
-    const identity = Schema.decodeUnknownSync(Identity)(input.identity);
+    const identity = decodeIdentity(input.identity);
     if (
       identity.baseDir !== (await NodeFSP.realpath(input.baseDir)) ||
       ![identity.installPath, identity.stateDir, identity.userDataDir, identity.launcherPath].every(
@@ -703,6 +711,10 @@ export async function restoreDesktopVersion(
         throw new Error("Windows restore requires an independent verified installer controller.");
       await verifyDesktopRestoreArtifact(input.baseDir, from);
       await verifyDesktopRestoreArtifact(input.baseDir, to);
+      const graphics = await readDesktopRestoreLaunchContext(
+        input.baseDir,
+        registry.installationId,
+      );
       const installed =
         registry.identity.kind === "nix"
           ? await readNixRestoreClosure(await NodeFSP.realpath(registry.identity.installPath), true)
@@ -769,6 +781,7 @@ export async function restoreDesktopVersion(
         phase: "prepared",
         stagePath,
         originalHold: registry.updateHold,
+        originalProcess: graphics.owner,
       };
       const controllerPath = NodePath.join(paths(input.baseDir).directory, "controller.sh");
       const controllerSource = renderDesktopRestoreLauncher({

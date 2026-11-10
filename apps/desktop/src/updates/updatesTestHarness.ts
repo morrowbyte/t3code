@@ -19,6 +19,7 @@ import * as DesktopUpdates from "./DesktopUpdates.ts";
 export const flushCallbacks = Effect.yieldNow;
 
 export interface UpdatesHarnessOptions {
+  readonly restoreHold?: Effect.Effect<boolean, unknown>;
   readonly checkForUpdates?: Effect.Effect<
     void,
     ElectronUpdater.ElectronUpdaterCheckForUpdatesError
@@ -354,6 +355,11 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
           }),
     ),
     Layer.provide(layerFileSystem),
+    Layer.provide(
+      Layer.succeed(DesktopUpdates.DesktopUpdateRestoreHold, {
+        isHeld: options.restoreHold ?? Effect.succeed(false),
+      }),
+    ),
     Layer.provide(DesktopUpdatePolicy.layerTest(options.policy)),
     Layer.provideMerge(layerUpdater),
     Layer.provideMerge(layerWindow),

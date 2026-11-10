@@ -186,6 +186,12 @@ export class DesktopUpdateInstallQualification extends Context.Service<
   DesktopUpdateInstallQualification,
   { readonly completeRuntimeCreationFence: boolean }
 >()("@t3tools/desktop/updates/DesktopUpdates/DesktopUpdateInstallQualification") {}
+
+export class DesktopUpdateRestoreHold extends Context.Service<
+  DesktopUpdateRestoreHold,
+  { readonly isHeld: Effect.Effect<boolean, unknown> }
+>()("@t3tools/desktop/updates/DesktopUpdates/DesktopUpdateRestoreHold") {}
+
 export class DesktopUpdateChannelManagedError extends Schema.TaggedError<DesktopUpdateChannelManagedError>()(
   "DesktopUpdateChannelManagedError",
   {
@@ -402,9 +408,10 @@ export const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
   const qualification = yield* Effect.serviceOption(DesktopUpdateInstallQualification);
-  const restoreHold = Effect.tryPromise(() =>
-    isDesktopUpdateHeld({ baseDir: environment.baseDir }),
-  ).pipe(Effect.catch(() => Effect.succeed(true)));
+  const restoreHoldReader = yield* Effect.serviceOption(DesktopUpdateRestoreHold);
+  const restoreHold = Option.getOrElse(restoreHoldReader, () => ({
+    isHeld: Effect.tryPromise(() => isDesktopUpdateHeld({ baseDir: environment.baseDir })),
+  })).isHeld.pipe(Effect.orElseSucceed(() => true));
   const history = yield* makeUpdateHistory(
     environment.path.join(environment.baseDir, "runtime", DESKTOP_UPDATE_HISTORY_FILE),
   );
@@ -711,6 +718,7 @@ export const make = Effect.gen(function* () {
   });
 
   const downloadAvailableUpdate = Effect.gen(function* () {
+    if (yield* restoreHold) return { accepted: false, completed: false };
     const state = yield* Ref.get(updateStateRef);
     if (!(yield* Ref.get(updaterConfiguredRef)) || state.status !== "available") {
       return { accepted: false, completed: false };
@@ -1491,7 +1499,12 @@ export const make = Effect.gen(function* () {
       Effect.flatMap((state) => resolveStateDisabledReason(state.channel)),
     ),
     configure: Effect.gen(function* () {
-      if (!mockUpdates) yield* DesktopRestore.observe();
+      if (!mockUpdates)
+        yield* DesktopRestore.observe().pipe(
+          Effect.provideService(DesktopBackendPool.DesktopBackendPool, pool),
+          Effect.provideService(DesktopEnvironment.DesktopEnvironment, environment),
+          Effect.provideService(DesktopState.DesktopState, desktopState),
+        );
       const context = yield* Effect.context<never>();
       const runEffect = (effect: Effect.Effect<void>) => {
         void Effect.runPromiseWith(context)(effect);

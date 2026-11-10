@@ -12,7 +12,7 @@ const StorePath = Schema.String.check(
 );
 export const NixClosureMember = Schema.Struct({
   path: StorePath,
-  narHash: Schema.String.check(Schema.isPattern(/^sha256[:\-][A-Za-z0-9+/=]+$/)),
+  narHash: Schema.String.check(Schema.isPattern(/^sha256[:-][A-Za-z0-9+/=]+$/)),
   narSize: Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0)),
 });
 export type NixClosureMember = typeof NixClosureMember.Type;
@@ -28,9 +28,10 @@ const NixProvenance = Schema.Struct({
 });
 const decodeMember = Schema.decodeUnknownSync(NixClosureMember);
 const decodeProvenance = Schema.decodeUnknownSync(NixProvenance);
+const decodeStorePath = Schema.decodeUnknownSync(StorePath);
 
 export async function readNixRestoreClosure(storePath: string, verify: boolean) {
-  Schema.decodeUnknownSync(StorePath)(storePath);
+  decodeStorePath(storePath);
   const { stdout } = await execFile(
     "nix",
     [
@@ -89,7 +90,7 @@ export async function readNixRestoreProvenance(dataDir: string, version: string)
 }
 
 export async function retainNixRestoreRoot(root: string, storePath: string) {
-  Schema.decodeUnknownSync(StorePath)(storePath);
+  decodeStorePath(storePath);
   await NodeFSP.mkdir(NodePath.dirname(root), { recursive: true, mode: 0o700 });
   try {
     if ((await NodeFSP.realpath(root)) !== storePath)

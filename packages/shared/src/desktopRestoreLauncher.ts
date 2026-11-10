@@ -24,6 +24,7 @@ export function renderDesktopRestoreLauncher(input: {
     "unset APPIMAGE_EXTRACT_AND_RUN",
     `image=${shellWord(input.artifactPath)}`,
     `work=$(mktemp -d ${shellWord(`${input.baseDir}/runtime/desktop-restore/.mount.XXXXXX`)})`,
+    ': >"$work/mount"',
     '"$image" --appimage-mount >"$work/mount" 2>"$work/mount-error" &',
     "mounter=$!",
     `trap 'kill "$mounter" 2>/dev/null || true; wait "$mounter" 2>/dev/null || true; rm -rf -- "$work"' EXIT`,

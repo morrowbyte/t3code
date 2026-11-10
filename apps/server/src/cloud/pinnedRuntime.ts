@@ -24,7 +24,15 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ProcessRunner from "../processRunner.ts";
 import { isExactServiceVersion, parseServiceState, SERVICE_STATE_FILE } from "./serviceProtocol.ts";
 import { inspectServerRestore } from "./serverRestoreStore.ts";
-import { SERVER_RESTORE_MANIFEST, verifyServerRestoreRuntime } from "./serverRestoreManifest.ts";
+import {
+  decodeServerRestoreManifest,
+  SERVER_RESTORE_MANIFEST,
+  verifyServerRestoreRuntime,
+} from "./serverRestoreManifest.ts";
+import {
+  acquireServerRuntimeRetention,
+  readServerRuntimeCandidate,
+} from "./serverRuntimeRetention.ts";
 
 const PINNED_RUNTIME_DIR = "runtime";
 const PINNED_RUNTIME_INSTALL_TIMEOUT = Duration.minutes(10);
@@ -120,6 +128,7 @@ const fetchReleaseAsset = Effect.fn("cloud.pinned_runtime.fetch_release_asset")(
   url: string,
   step: string,
   onProgress?: (progress: PinnedRuntimeProgress) => void,
+  maxBytes = 16 * 1024 * 1024,
 ) {
   // Bound stalls while holding the install lock, but allow transfers that keep
   // receiving bytes to finish regardless of their total duration.
@@ -130,6 +139,10 @@ const fetchReleaseAsset = Effect.fn("cloud.pinned_runtime.fetch_release_asset")(
       Effect.fn(function* (response) {
         const length = Number(response.headers["content-length"]);
         const total = Number.isFinite(length) && length > 0 ? length : undefined;
+        if (total !== undefined && total > maxBytes)
+          return yield* Effect.fail(
+            new Error("The release asset exceeds the runtime storage budget."),
+          );
         let received = 0;
         onProgress?.({ stage: "download", received, total });
         const chunks = yield* response.stream.pipe(
@@ -138,8 +151,10 @@ const fetchReleaseAsset = Effect.fn("cloud.pinned_runtime.fetch_release_asset")(
             orElse: () => Stream.fail(new Cause.TimeoutError()),
           }),
           Stream.tap((chunk) =>
-            Effect.sync(() => {
+            Effect.try(() => {
               received += chunk.byteLength;
+              if (received > maxBytes)
+                throw new Error("The release asset exceeds the runtime storage budget.");
               onProgress?.({ stage: "download", received, total });
             }),
           ),
@@ -160,7 +175,7 @@ const fetchReleaseAsset = Effect.fn("cloud.pinned_runtime.fetch_release_asset")(
     Effect.mapError(
       (cause) =>
         new PinnedRuntimeInstallError({
-          step: cause._tag === "TimeoutError" ? `${step} (timed out)` : step,
+          step: cause instanceof Cause.TimeoutError ? `${step} (timed out)` : step,
           cause,
         }),
     ),
@@ -316,6 +331,7 @@ const checksumForArchive = Effect.fn("cloud.pinned_runtime.checksum_for_archive"
 const installFromArchive = Effect.fn("cloud.pinned_runtime.install_archive")(function* (
   input: PinnedRuntimeInstallInput,
   stagingDir: string,
+  retention: Awaited<ReturnType<typeof acquireServerRuntimeRetention>>,
 ) {
   const { fs, path } = input;
   const platformKey = cliArchivePlatformKey(input.platform, input.arch);
@@ -330,11 +346,17 @@ const installFromArchive = Effect.fn("cloud.pinned_runtime.install_archive")(fun
 
   input.onProgress?.({ stage: "download", received: 0, total: undefined });
   const expected = yield* checksumForArchive(input, baseUrl, fileName);
+  const limits = yield* Effect.tryPromise({
+    try: () => retention.check(0),
+    catch: (cause) =>
+      new PinnedRuntimeInstallError({ step: "checking runtime storage admission", cause }),
+  });
   const archive = yield* fetchReleaseAsset(
     httpClient,
     `${baseUrl}/${fileName}`,
     "downloading the t3 release archive",
     input.onProgress,
+    limits.maxBytes,
   );
   input.onProgress?.({ stage: "verify" });
   const digest = yield* Effect.tryPromise({
@@ -349,6 +371,14 @@ const installFromArchive = Effect.fn("cloud.pinned_runtime.install_archive")(fun
   }
 
   const archivePath = path.join(stagingDir, PINNED_RUNTIME_ARCHIVE_FILE);
+  yield* Effect.tryPromise({
+    try: () => retention.check(archive.byteLength),
+    catch: (cause) =>
+      new PinnedRuntimeInstallError({
+        step: "admitting the t3 release archive within runtime retention and free space",
+        cause,
+      }),
+  });
   yield* fs
     .writeFile(archivePath, archive)
     .pipe(
@@ -356,6 +386,49 @@ const installFromArchive = Effect.fn("cloud.pinned_runtime.install_archive")(fun
         (cause) => new PinnedRuntimeInstallError({ step: "writing the t3 release archive", cause }),
       ),
     );
+  const manifestResult = yield* input.runner
+    .run({
+      command: cliArchiveTarCommand(input.platform, process.env),
+      args: [
+        "-xOf",
+        archivePath,
+        `${fileName.replace(/\.(?:tar\.gz|zip)$/, "")}/${SERVER_RESTORE_MANIFEST}`,
+      ],
+      timeout: PINNED_RUNTIME_INSTALL_TIMEOUT,
+      maxOutputBytes: 16 * 1024 * 1024,
+    })
+    .pipe(
+      Effect.mapError(
+        (cause) =>
+          new PinnedRuntimeInstallError({
+            step: "reading the bounded archive restore manifest",
+            cause,
+          }),
+      ),
+    );
+  yield* Effect.tryPromise({
+    try: async () => {
+      const manifest =
+        manifestResult.code === 0 && !manifestResult.stdoutTruncated
+          ? decodeServerRestoreManifest(JSON.parse(manifestResult.stdout) as unknown)
+          : undefined;
+      if (manifest === undefined || manifest.version !== input.version)
+        throw new Error("The archive has no supported size manifest.");
+      const extractedBytes = manifest.files.reduce(
+        (bytes, file) => bytes + file.sizeBytes,
+        new TextEncoder().encode(manifestResult.stdout).byteLength,
+      );
+      if (!Number.isSafeInteger(extractedBytes))
+        throw new Error("The archive size is unsupported.");
+      // Reserve bounded install and qualification receipts while the archive still occupies disk.
+      await retention.check(extractedBytes + retention.metadataBytes(input.version));
+    },
+    catch: (cause) =>
+      new PinnedRuntimeInstallError({
+        step: "admitting archive extraction within runtime retention and free space",
+        cause,
+      }),
+  });
   input.onProgress?.({ stage: "extract" });
   const extractStep = "extracting the t3 release archive";
   // Strip the archive's stem directory so the executable lands at <versionDir>/t3.
@@ -383,6 +456,7 @@ const installFromArchive = Effect.fn("cloud.pinned_runtime.install_archive")(fun
 
 const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(function* (
   input: PinnedRuntimeInstallInput,
+  retention: Awaited<ReturnType<typeof acquireServerRuntimeRetention>>,
 ) {
   const { fs } = input;
   const paths = pinnedRuntimePaths(input.path, input.baseDir, input.version, input.platform);
@@ -400,19 +474,30 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
   if (alreadyPinned) {
     input.onProgress?.({ stage: "cached" });
     yield* input.validate(paths);
+    yield* Effect.tryPromise({
+      try: () => retention.admit(input.version, true),
+      catch: (cause) =>
+        new PinnedRuntimeInstallError({
+          step: "admitting the cached runtime within retention limits without stopping the server",
+          cause,
+        }),
+    });
     return paths;
   }
   if (versionDirExists) {
-    yield* fs.remove(paths.versionDir, { recursive: true, force: true }).pipe(
-      Effect.mapError(
-        (cause) =>
-          new PinnedRuntimeInstallError({
-            step: "removing an incomplete pinned runtime",
-            cause,
-          }),
-      ),
-    );
+    return yield* new PinnedRuntimeInstallError({
+      step: "refusing an existing unverified runtime directory without deleting it",
+    });
   }
+
+  yield* Effect.tryPromise({
+    try: () => retention.admit(input.version),
+    catch: (cause) =>
+      new PinnedRuntimeInstallError({
+        step: "admitting the runtime within retention limits without stopping the server",
+        cause,
+      }),
+  });
 
   const versionsDir = input.path.dirname(paths.versionDir);
   yield* fs.makeDirectory(versionsDir, { recursive: true }).pipe(
@@ -445,7 +530,15 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
   };
 
   return yield* Effect.gen(function* () {
-    yield* installFromArchive(input, stagingDir);
+    yield* Effect.tryPromise({
+      try: () => retention.reserve(input.version, stagingDir),
+      catch: (cause) =>
+        new PinnedRuntimeInstallError({
+          step: "reserving the bounded runtime transaction slot",
+          cause,
+        }),
+    });
+    yield* installFromArchive(input, stagingDir, retention);
 
     input.onProgress?.({ stage: "validate" });
     yield* input.validate(stagingPaths);
@@ -505,12 +598,23 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
     if (!published) yield* input.validate(paths);
     return paths;
   }).pipe(
+    Effect.onError(() => Effect.tryPromise(() => retention.cancel(stagingDir)).pipe(Effect.ignore)),
     Effect.ensuring(fs.remove(stagingDir, { recursive: true, force: true }).pipe(Effect.ignore)),
   );
 });
 
 export const ensurePinnedRuntimeInstalled = (input: PinnedRuntimeInstallInput) =>
-  pinnedRuntimeInstallLock.withPermit(installPinnedRuntime(input));
+  pinnedRuntimeInstallLock.withPermit(
+    Effect.acquireUseRelease(
+      Effect.tryPromise({
+        try: () => acquireServerRuntimeRetention(input.baseDir),
+        catch: (cause) =>
+          new PinnedRuntimeInstallError({ step: "locking runtime retention admission", cause }),
+      }),
+      (retention) => installPinnedRuntime(input, retention),
+      (retention) => Effect.sync(retention.release),
+    ),
+  );
 
 const PINNED_RUNTIME_PRUNED_PREFIX = ".pruned-";
 /**
@@ -673,12 +777,7 @@ const selectUnusedRuntimes = Effect.fn("cloud.pinned_runtime.select_unused")(fun
   const path = yield* Path.Path;
   const versionsDir = pinnedRuntimeVersionsDir(path, input.baseDir);
   const entries = yield* fs.readDirectory(versionsDir).pipe(Effect.orElseSucceed(() => []));
-  // An interrupted prune has already renamed its runtime out of the way.
-  const pruned = new Set(
-    entries
-      .filter((entry) => entry.startsWith(PINNED_RUNTIME_PRUNED_PREFIX))
-      .map((entry) => path.join(versionsDir, entry)),
-  );
+  const pruned = new Set<string>();
 
   const settledBefore =
     (yield* Clock.currentTimeMillis) - Duration.toMillis(PINNED_RUNTIME_PRUNE_GRACE);
@@ -703,9 +802,12 @@ const selectUnusedRuntimes = Effect.fn("cloud.pinned_runtime.select_unused")(fun
       completed.push(version);
     }
   }
-  if (completed.length === 0) return pruned;
-
   const keep = new Set(input.keep);
+  const candidate = yield* Effect.tryPromise(() => readServerRuntimeCandidate(input.baseDir)).pipe(
+    Effect.option,
+  );
+  if (Option.isNone(candidate)) return pruned;
+  if (candidate.value !== undefined) keep.add(candidate.value.version);
   const stateText = yield* fs
     .readFileString(path.join(input.baseDir, PINNED_RUNTIME_DIR, SERVICE_STATE_FILE))
     .pipe(
@@ -751,6 +853,27 @@ const selectUnusedRuntimes = Effect.fn("cloud.pinned_runtime.select_unused")(fun
     .realPath(versionsDir)
     .pipe(Effect.orElseSucceed(() => versionsDir));
 
+  for (const entry of entries.filter((name) => name.startsWith(PINNED_RUNTIME_PRUNED_PREFIX))) {
+    const version = entry.slice(PINNED_RUNTIME_PRUNED_PREFIX.length);
+    const directory = path.join(versionsDir, entry);
+    const sentinel = yield* fs
+      .readFileString(path.join(directory, ".install-complete"))
+      .pipe(Effect.option);
+    if (
+      !isExactServiceVersion(version) ||
+      keep.has(version) ||
+      Option.isNone(sentinel) ||
+      ![version, entry].includes(sentinel.value.trim()) ||
+      references.some((reference) =>
+        [directory, path.join(realVersionsDir, entry)].some((prefix) =>
+          reference.includes(foldCase(prefix + path.sep)),
+        ),
+      )
+    )
+      continue;
+    pruned.add(directory);
+  }
+
   for (const version of completed) {
     const versionDir = path.join(versionsDir, version);
     const prefixes = [versionDir, path.join(realVersionsDir, version)].map((dir) =>
@@ -763,10 +886,10 @@ const selectUnusedRuntimes = Effect.fn("cloud.pinned_runtime.select_unused")(fun
       continue;
     }
     const target = path.join(versionsDir, `${PINNED_RUNTIME_PRUNED_PREFIX}${version}`);
+    if (yield* fs.exists(target).pipe(Effect.orElseSucceed(() => true))) continue;
     // Renaming first means an interrupted removal never leaves a partial tree that still carries
     // its sentinel and would pass for a complete install.
-    yield* fs.remove(target, { recursive: true, force: true }).pipe(
-      Effect.andThen(fs.rename(versionDir, target)),
+    yield* fs.rename(versionDir, target).pipe(
       Effect.andThen(Effect.sync(() => pruned.add(target))),
       Effect.catch((cause) =>
         Effect.logWarning("Could not remove an unused t3 runtime.", { version, cause }),
@@ -788,22 +911,28 @@ export const prunePinnedRuntimes = Effect.fn("cloud.pinned_runtime.prune")(funct
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  // Only selection and the renames race an install; deleting renamed trees can take a while.
-  const pruned = yield* pinnedRuntimeInstallLock.withPermit(
-    selectUnusedRuntimes({ ...input, references: input.references ?? [] }),
-  );
-  const removed: Array<string> = [];
-  for (const target of pruned) {
-    yield* fs.remove(target, { recursive: true, force: true }).pipe(
-      Effect.andThen(
-        Effect.sync(() =>
-          removed.push(path.basename(target).slice(PINNED_RUNTIME_PRUNED_PREFIX.length)),
-        ),
-      ),
-      Effect.catch((cause) =>
-        Effect.logWarning("Could not remove an unused t3 runtime.", { target, cause }),
-      ),
+  const retention = yield* Effect.tryPromise(() =>
+    acquireServerRuntimeRetention(input.baseDir),
+  ).pipe(Effect.option);
+  if (Option.isNone(retention)) return [];
+  return yield* Effect.gen(function* () {
+    // Only selection and the renames race an install; deleting renamed trees can take a while.
+    const pruned = yield* pinnedRuntimeInstallLock.withPermit(
+      selectUnusedRuntimes({ ...input, references: input.references ?? [] }),
     );
-  }
-  return removed;
+    const removed: Array<string> = [];
+    for (const target of pruned) {
+      yield* fs.remove(target, { recursive: true, force: true }).pipe(
+        Effect.andThen(
+          Effect.sync(() =>
+            removed.push(path.basename(target).slice(PINNED_RUNTIME_PRUNED_PREFIX.length)),
+          ),
+        ),
+        Effect.catch((cause) =>
+          Effect.logWarning("Could not remove an unused t3 runtime.", { target, cause }),
+        ),
+      );
+    }
+    return removed;
+  }).pipe(Effect.ensuring(Effect.sync(retention.value.release)));
 });

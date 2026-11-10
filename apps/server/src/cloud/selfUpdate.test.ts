@@ -21,7 +21,12 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
 import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 import * as ServerSelfUpdate from "./selfUpdate.ts";
-import { writeServerUpdateHold } from "./serverRestoreManifest.ts";
+import {
+  SERVER_RESTORE_MANIFEST,
+  SERVER_RESTORE_PROFILE_CONTRACT,
+  serverRestoreHash,
+  writeServerUpdateHold,
+} from "./serverRestoreManifest.ts";
 
 interface HarnessOptions {
   readonly mode?: "web" | "desktop";
@@ -63,16 +68,33 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
   if (options.updateHold !== undefined)
     yield* Effect.promise(() => writeServerUpdateHold(baseDir, options.updateHold!));
   const order: string[] = [];
+  const executable = "#!/bin/sh\n";
+  const manifest = JSON.stringify({
+    format: 1,
+    version: "1.1.0",
+    sourceSha: "a".repeat(40),
+    launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+    profileContract: `${SERVER_RESTORE_PROFILE_CONTRACT}:${"c".repeat(64)}`,
+    eventContract: "b".repeat(64),
+    migrations: [{ id: 1, name: "Base" }],
+    files: [{ path: "t3", sizeBytes: executable.length, sha256: serverRestoreHash(executable) }],
+  });
   const runner = ProcessRunner.ProcessRunner.of({
     run: (input) =>
       Effect.gen(function* () {
         if (input.command === "tar") {
-          order.push("extract");
-          const stagingDir = input.args[input.args.indexOf("-C") + 1];
-          if (stagingDir === undefined) return yield* Effect.die("missing tar target");
-          yield* fs.writeFileString(path.join(stagingDir, "t3"), "#!/bin/sh\n").pipe(Effect.orDie);
+          if (!input.args.includes("-xOf")) {
+            order.push("extract");
+            const targetIndex = input.args.indexOf("-C");
+            const stagingDir = targetIndex >= 0 ? input.args[targetIndex + 1] : undefined;
+            if (stagingDir === undefined) return yield* Effect.die("missing tar target");
+            yield* fs.writeFileString(path.join(stagingDir, "t3"), executable).pipe(Effect.orDie);
+            yield* fs
+              .writeFileString(path.join(stagingDir, SERVER_RESTORE_MANIFEST), manifest)
+              .pipe(Effect.orDie);
+          }
           return {
-            stdout: "",
+            stdout: input.args.includes("-xOf") ? manifest : "",
             stderr: "",
             code: ChildProcessSpawner.ExitCode(0),
             timedOut: false,

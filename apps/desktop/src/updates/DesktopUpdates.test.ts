@@ -367,6 +367,68 @@ describe("DesktopUpdates", () => {
     }).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
 
+  it.effect("blocks updates on a hold or read failure until explicitly released", () =>
+    Effect.gen(function* () {
+      for (const blocked of [Effect.succeed(true), Effect.fail(new Error("Hold is unreadable"))]) {
+        const hold = yield* Ref.make<Effect.Effect<boolean, unknown>>(blocked);
+        const harness = makeHarness({
+          clientOnlyInventory: [],
+          restoreHold: Ref.get(hold).pipe(Effect.flatMap((read) => read)),
+        });
+
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const updates = yield* DesktopUpdates.DesktopUpdates;
+            yield* updates.configure;
+            yield* TestClock.adjust(Duration.seconds(15));
+            assert.equal(harness.checkCount(), 0);
+            assert.isFalse((yield* updates.check("manual")).checked);
+
+            const available = yield* updates.subscribe;
+            harness.emit("update-available", { version: "1.2.4" });
+            yield* available.changes.pipe(
+              Stream.filter((state) => state.status === "available"),
+              Stream.runHead,
+            );
+            assert.isFalse((yield* updates.download).accepted);
+            assert.equal(harness.downloadCount(), 0);
+
+            yield* Ref.set(hold, Effect.succeed(false));
+            assert.isTrue((yield* updates.download).accepted);
+            assert.equal(harness.downloadCount(), 1);
+            yield* Ref.set(hold, blocked);
+
+            const downloaded = yield* updates.subscribe;
+            harness.emit("update-downloaded", { version: "1.2.4" });
+            yield* downloaded.changes.pipe(
+              Stream.filter((state) => state.status === "downloaded"),
+              Stream.runHead,
+            );
+            assert.isFalse((yield* updates.install).accepted);
+            assert.isFalse((yield* updates.installPrepared("1.2.4")).accepted);
+            yield* TestClock.adjust(Duration.seconds(225));
+            assert.equal(harness.checkCount(), 0);
+            assert.equal(harness.quitAndInstalls(), 0);
+            assert.equal(harness.stopCount(), 0);
+
+            yield* Ref.set(hold, Effect.succeed(false));
+            assert.isTrue((yield* updates.check("manual")).checked);
+            assert.equal(harness.checkCount(), 1);
+            const checked = yield* updates.subscribe;
+            harness.emit("update-not-available");
+            yield* checked.changes.pipe(
+              Stream.filter((state) => state.status === "downloaded"),
+              Stream.runHead,
+            );
+            yield* TestClock.adjust(Duration.minutes(1));
+            assert.equal(harness.quitAndInstalls(), 1);
+            assert.deepEqual(harness.installSteps, ["quitAndInstall"]);
+          }),
+        ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+      }
+    }),
+  );
+
   it.effect("updates Linux .deb installs and leaves other non-AppImage installs off", () =>
     Effect.gen(function* () {
       const linuxState = (packageType: string | undefined) =>

@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off -- Surviving installer controller must work without Electron services or a GUI.
+// @effect-diagnostics nodeBuiltinImport:off globalTimers:off -- Surviving installer controller must work without Electron services or a GUI.
 import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeFS from "node:fs";
@@ -20,8 +20,14 @@ import {
   verifyDesktopRestoreArtifact,
   type DesktopRestoreRegistry,
   type DesktopRestoreTransaction,
+  type DesktopRestoreProcess,
 } from "./desktopRestore.ts";
 import { readNixRestoreClosure, switchNixRestore } from "./desktopRestoreNix.ts";
+import {
+  desktopRestoreLaunchEnvironment,
+  readDesktopRestoreLaunchContext,
+  saveDesktopRestoreLaunchContext,
+} from "./desktopRestoreGraphics.ts";
 
 const Session = Schema.Struct({
   pid: Schema.Number,
@@ -40,9 +46,17 @@ const missing = (cause: unknown) =>
 
 async function readSession(baseDir: string) {
   try {
-    return decodeSession(
-      JSON.parse(await NodeFSP.readFile(directoryFile(baseDir, "session.json"), "utf8")),
-    );
+    const file = directoryFile(baseDir, "session.json");
+    const stat = await NodeFSP.lstat(file);
+    if (
+      !stat.isFile() ||
+      stat.isSymbolicLink() ||
+      stat.uid !== process.getuid?.() ||
+      (stat.mode & 0o077) !== 0 ||
+      stat.size > 16 * 1024
+    )
+      throw new Error("Desktop restore session is not a private owned file.");
+    return decodeSession(JSON.parse(await NodeFSP.readFile(file, "utf8")));
   } catch (cause) {
     if (missing(cause)) return null;
     throw cause;
@@ -51,6 +65,7 @@ async function readSession(baseDir: string) {
 
 export async function startDesktopRestoreSession(input: {
   readonly baseDir: string;
+  readonly appDataDirectory?: string;
   readonly quiesce: () => Promise<void>;
   readonly quit: () => void;
 }) {
@@ -121,6 +136,16 @@ export async function startDesktopRestoreSession(input: {
     server.listen(address.address, resolve);
   });
   await NodeFSP.chmod(address.address, 0o600);
+  await saveDesktopRestoreLaunchContext({
+    baseDir: input.baseDir,
+    installationId: registry.installationId,
+    environment: process.env,
+    appDataDirectory: input.appDataDirectory ?? NodePath.dirname(registry.identity.userDataDir),
+  }).catch(async (cause) => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await NodeFSP.rm(address.address, { force: true });
+    throw cause;
+  });
   await writeDesktopRestoreJson(directoryFile(input.baseDir, "session.json"), {
     pid: process.pid,
     processIdentity,
@@ -145,11 +170,89 @@ function delay(milliseconds: number) {
 }
 
 async function quiesceDesktop(baseDir: string, transaction: DesktopRestoreTransaction) {
+  const latest = await readDesktopRestoreTransaction(baseDir);
+  if (latest === null || latest.id !== transaction.id)
+    throw new Error("Desktop restore shutdown transaction changed.");
+  const expected = latest.launchedProcess ?? latest.originalProcess;
+  if (expected === undefined) throw new Error("Desktop shutdown has no verified process identity.");
   const session = await readSession(baseDir);
-  if (session === null) return;
-  if (session.installationId !== transaction.installationId)
+  if (session !== null && session.installationId !== transaction.installationId)
     throw new Error("Desktop shutdown belongs to another installation.");
-  if ((await desktopRestoreProcessIdentity(session.pid)) !== session.processIdentity) return;
+  const sessionAlive =
+    session !== null &&
+    (await desktopRestoreProcessIdentity(session.pid)) === session.processIdentity;
+  if (sessionAlive && !(await belongsToLaunch(session, expected)))
+    throw new Error("A different desktop session is active; restore cannot stop it.");
+  await verifySingletonOwner(baseDir, expected, sessionAlive ? session : null);
+  if (sessionAlive) {
+    try {
+      await requestShutdown(session, transaction);
+      await waitForExit(session);
+      await waitForExit(expected);
+    } catch (cause) {
+      if (latest.launchedProcess?.processIdentity !== session.processIdentity) throw cause;
+      await stopOwnedDesktop(latest.launchedProcess);
+    }
+  }
+  if ((await desktopRestoreProcessIdentity(expected.pid)) === expected.processIdentity) {
+    if (latest.launchedProcess?.processIdentity !== expected.processIdentity)
+      throw new Error("The registered desktop has no usable graceful shutdown endpoint.");
+    await stopOwnedDesktop(expected);
+  }
+  await verifySingletonOwner(baseDir, expected, null);
+}
+
+async function belongsToLaunch(session: DesktopRestoreProcess, expected: DesktopRestoreProcess) {
+  let pid = session.pid;
+  for (let depth = 0; depth < 64 && pid > 1; depth += 1) {
+    if (pid === expected.pid)
+      return (await desktopRestoreProcessIdentity(pid)) === expected.processIdentity;
+    try {
+      const stat = await NodeFSP.readFile(`/proc/${pid}/stat`, "utf8");
+      const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+      pid = Number(fields[1]);
+    } catch (cause) {
+      if (missing(cause)) return false;
+      throw cause;
+    }
+  }
+  return false;
+}
+
+async function verifySingletonOwner(
+  baseDir: string,
+  expected: DesktopRestoreProcess,
+  session: DesktopRestoreProcess | null,
+) {
+  const registry = await readDesktopRestoreRegistry(baseDir);
+  try {
+    const link = await NodeFSP.readlink(
+      NodePath.join(registry.identity.userDataDir, "SingletonLock"),
+    );
+    const separator = link.lastIndexOf("-");
+    const pid = Number(link.slice(separator + 1));
+    if (
+      separator === -1 ||
+      link.slice(0, separator) !== NodeOS.hostname() ||
+      !Number.isSafeInteger(pid)
+    )
+      throw new Error("Desktop single-instance owner cannot be safely verified.");
+    const identity = await desktopRestoreProcessIdentity(pid);
+    if (
+      identity !== null &&
+      identity !== expected.processIdentity &&
+      identity !== session?.processIdentity
+    )
+      throw new Error("An untracked desktop process still owns this profile.");
+  } catch (cause) {
+    if (!missing(cause)) throw cause;
+  }
+}
+
+async function requestShutdown(
+  session: typeof Session.Type,
+  transaction: DesktopRestoreTransaction,
+) {
   await new Promise<void>((resolve, reject) => {
     const socket = NodeNet.createConnection(session.address);
     socket.setTimeout(35_000, () =>
@@ -170,12 +273,21 @@ async function quiesceDesktop(baseDir: string, transaction: DesktopRestoreTransa
     );
     socket.once("error", reject);
   });
-  // The controller observes only the exact registered process, never a process-name match.
+}
+
+async function waitForExit(owner: DesktopRestoreProcess) {
+  // Only an exact registered or spawn-captured process is observed.
   for (let attempt = 0; attempt < 300; attempt += 1) {
-    if ((await desktopRestoreProcessIdentity(session.pid)) !== session.processIdentity) return;
+    if ((await desktopRestoreProcessIdentity(owner.pid)) !== owner.processIdentity) return;
     await delay(100);
   }
   throw new Error("The exact desktop process did not exit gracefully.");
+}
+
+async function stopOwnedDesktop(owner: DesktopRestoreProcess) {
+  if ((await desktopRestoreProcessIdentity(owner.pid)) !== owner.processIdentity) return;
+  process.kill(owner.pid, "SIGTERM");
+  await waitForExit(owner);
 }
 
 async function waitForHealth(
@@ -235,28 +347,104 @@ async function waitForHealth(
   });
 }
 
-async function launchDesktop(registry: DesktopRestoreRegistry) {
-  const child = NodeChildProcess.spawn(registry.identity.launcherPath, [], {
-    detached: true,
-    stdio: "ignore",
-    env: {
-      ...process.env,
-      ELECTRON_RUN_AS_NODE: undefined,
-      APPIMAGE_EXTRACT_AND_RUN: undefined,
-      T3CODE_HOME: registry.identity.baseDir,
-      T3CODE_DESKTOP_PROFILE: registry.identity.profileId ?? undefined,
+async function prepareDesktop(
+  registry: DesktopRestoreRegistry,
+  transaction: DesktopRestoreTransaction,
+) {
+  const graphics = await readDesktopRestoreLaunchContext(
+    registry.identity.baseDir,
+    registry.installationId,
+  );
+  const profileDirectory = NodePath.join(
+    graphics.environment.XDG_CONFIG_HOME!,
+    registry.identity.profileId === null ? "t3code-v2" : `t3code-${registry.identity.profileId}`,
+  );
+  if ((await NodeFSP.realpath(profileDirectory)) !== registry.identity.userDataDir)
+    throw new Error("The desktop graphical context resolves to a different profile directory.");
+  const expected = transaction.launchedProcess ?? transaction.originalProcess;
+  if (expected === undefined)
+    throw new Error("Desktop restore has no verified original process identity.");
+  const session = await readSession(registry.identity.baseDir);
+  if (
+    session !== null &&
+    (await desktopRestoreProcessIdentity(session.pid)) === session.processIdentity
+  ) {
+    if (
+      session.installationId !== registry.installationId ||
+      !(await belongsToLaunch(session, expected))
+    )
+      throw new Error("The desktop session changed before restore; refresh the version list.");
+  } else if (
+    transaction.launchedProcess === undefined &&
+    graphics.owner.processIdentity !== expected.processIdentity
+  )
+    throw new Error("The desktop graphical session changed before restore.");
+  await verifySingletonOwner(registry.identity.baseDir, expected, session);
+}
+
+async function launchDesktop(
+  registry: DesktopRestoreRegistry,
+  transaction: DesktopRestoreTransaction,
+) {
+  const graphics = await readDesktopRestoreLaunchContext(
+    registry.identity.baseDir,
+    registry.installationId,
+  );
+  // The launcher cannot run until its exact process identity has been durably recorded.
+  const child = NodeChildProcess.spawn(
+    "/bin/sh",
+    [
+      "-c",
+      'read -r start || exit 1; [ "$start" = launch ] || exit 1; exec "$@"',
+      "desktop-restore",
+      registry.identity.launcherPath,
+    ],
+    {
+      detached: true,
+      stdio: ["pipe", "ignore", "ignore"],
+      env: {
+        ...desktopRestoreLaunchEnvironment(graphics),
+        ELECTRON_RUN_AS_NODE: undefined,
+        APPIMAGE_EXTRACT_AND_RUN: undefined,
+        T3CODE_HOME: registry.identity.baseDir,
+        T3CODE_DESKTOP_PROFILE: registry.identity.profileId ?? undefined,
+      },
     },
-  });
+  );
   await new Promise<void>((resolve, reject) => {
     child.once("spawn", resolve);
     child.once("error", reject);
   });
+  try {
+    const processIdentity =
+      child.pid === undefined ? null : await desktopRestoreProcessIdentity(child.pid);
+    if (processIdentity === null || child.pid === undefined)
+      throw new Error("Cannot prove the launched desktop process identity.");
+    await writeDesktopRestoreJson(directoryFile(registry.identity.baseDir, "transaction.json"), {
+      ...transaction,
+      launchedProcess: { pid: child.pid, processIdentity },
+    });
+    await new Promise<void>((resolve, reject) => {
+      child.stdin.once("error", reject);
+      child.stdin.end("launch\n", resolve);
+    });
+  } catch (cause) {
+    child.stdin.destroy();
+    throw cause;
+  }
   child.unref();
 }
 
 export interface DesktopRestoreControllerRuntime {
+  readonly prepare: (
+    registry: DesktopRestoreRegistry,
+    transaction: DesktopRestoreTransaction,
+  ) => Promise<void>;
   readonly quiesce: (baseDir: string, transaction: DesktopRestoreTransaction) => Promise<void>;
-  readonly launch: (registry: DesktopRestoreRegistry) => Promise<void>;
+  readonly launch: (
+    registry: DesktopRestoreRegistry,
+    transaction: DesktopRestoreTransaction,
+  ) => Promise<void>;
   readonly health: (
     baseDir: string,
     transaction: DesktopRestoreTransaction,
@@ -265,7 +453,8 @@ export interface DesktopRestoreControllerRuntime {
   ) => Promise<void>;
 }
 
-const runtime: DesktopRestoreControllerRuntime = {
+export const desktopRestoreControllerRuntime: DesktopRestoreControllerRuntime = {
+  prepare: prepareDesktop,
   quiesce: quiesceDesktop,
   launch: launchDesktop,
   health: waitForHealth,
@@ -341,7 +530,7 @@ async function replaceFromArtifact(
 
 export async function runDesktopRestoreController(
   input: { readonly baseDir: string; readonly transactionId: string },
-  controller = runtime,
+  controller = desktopRestoreControllerRuntime,
 ) {
   const registry = await readDesktopRestoreRegistry(input.baseDir);
   const transaction = await readDesktopRestoreTransaction(input.baseDir);
@@ -357,9 +546,12 @@ export async function runDesktopRestoreController(
   let desktopStopped = false;
   let switchAttempted = false;
   try {
-    await handle.writeFile(String(process.pid));
+    const processIdentity = await desktopRestoreProcessIdentity(process.pid);
+    if (processIdentity === null) throw new Error("Cannot prove the restore controller identity.");
+    await handle.writeFile(processIdentity);
     if (transaction.phase !== "prepared")
       return await recoverTransaction(input.baseDir, registry, transaction, controller);
+    await controller.prepare(registry, transaction);
     await controller.quiesce(input.baseDir, transaction);
     desktopStopped = true;
     const beforeSwitch =
@@ -387,7 +579,7 @@ export async function runDesktopRestoreController(
       ...registry,
       updateHold: true,
     });
-    await controller.launch(registry);
+    await controller.launch(registry, starting);
     await controller.health(input.baseDir, starting, transaction.to.version, transaction.to.sha256);
     const installed =
       registry.identity.kind === "nix"
@@ -403,6 +595,7 @@ export async function runDesktopRestoreController(
     });
     await finishTransaction(input.baseDir, transaction);
   } catch (cause) {
+    if (transaction.phase !== "prepared") throw cause;
     if (transaction.phase === "prepared" && !switchAttempted) {
       if (!desktopStopped) {
         await finishTransaction(input.baseDir, transaction);
@@ -437,11 +630,17 @@ async function recoverTransaction(
   transaction: DesktopRestoreTransaction,
   controller: DesktopRestoreControllerRuntime,
 ) {
+  const latest = await readDesktopRestoreTransaction(baseDir);
+  if (latest === null || latest.id !== transaction.id)
+    throw new Error("Desktop restore recovery transaction changed.");
+  transaction = latest;
+  await controller.prepare(registry, transaction);
   await controller.quiesce(baseDir, transaction);
-  await writeDesktopRestoreJson(directoryFile(baseDir, "transaction.json"), {
+  const recovering = {
     ...transaction,
     phase: "recovering",
-  });
+  } as const;
+  await writeDesktopRestoreJson(directoryFile(baseDir, "transaction.json"), recovering);
   await NodeFSP.rm(directoryFile(baseDir, `health-${transaction.id}.json`), { force: true });
   let originalSelected = false;
   try {
@@ -460,7 +659,7 @@ async function recoverTransaction(
     currentHash: transaction.from.sha256,
     updateHold: true,
   });
-  await controller.launch(registry);
+  await controller.launch(registry, recovering);
   await controller.health(baseDir, transaction, transaction.from.version, transaction.from.sha256);
   await finishTransaction(baseDir, transaction);
 }
@@ -474,9 +673,12 @@ export async function recoverDesktopRestoreBeforeStartup({
   if (transaction === null) return false;
   const controllerLock = directoryFile(baseDir, "controller.lock");
   try {
-    const pid = Number(await NodeFSP.readFile(controllerLock, "utf8"));
-    if (Number.isSafeInteger(pid) && (await desktopRestoreProcessIdentity(pid)) !== null)
-      return false;
+    const owner = (await NodeFSP.readFile(controllerLock, "utf8")).split(":");
+    const pid = Number(owner[0]);
+    if (Number.isSafeInteger(pid)) {
+      const identity = await desktopRestoreProcessIdentity(pid);
+      if (identity !== null && (owner.length === 1 || identity === owner.join(":"))) return false;
+    }
     await NodeFSP.unlink(controllerLock);
   } catch (cause) {
     if (!missing(cause)) throw cause;

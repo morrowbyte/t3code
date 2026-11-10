@@ -32,6 +32,11 @@ import {
 import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 import { prunePinnedRuntimes } from "./pinnedRuntime.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import {
+  acquireServerRuntimeRetention,
+  assertServerRuntimeCommitFits,
+  cleanupServerRuntimeRetention,
+} from "./serverRuntimeRetention.ts";
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof NodeChildProcess>();
@@ -76,8 +81,8 @@ async function fixture(baseDir: string, behavior: "ready" | "crash" = "ready") {
   );
   db.close();
   const identity = await serverRestoreIdentity(baseDir);
-  const manifest = async (version: string) => {
-    const directory = NodePath.join(baseDir, "runtime", "versions", version);
+  const manifest = async (version: string, stagingDirectory?: string) => {
+    const directory = stagingDirectory ?? NodePath.join(baseDir, "runtime", "versions", version);
     await NodeFSP.mkdir(directory, { recursive: true });
     const executable = NodePath.join(directory, process.platform === "win32" ? "t3.exe" : "t3");
     const source = `const fs = require("node:fs");
@@ -113,7 +118,7 @@ process.on("message", () => {});
       }),
     );
     await NodeFSP.writeFile(NodePath.join(directory, ".install-complete"), `${version}\n`);
-    await qualifyServerRestoreRuntime(identity, version);
+    if (stagingDirectory === undefined) await qualifyServerRestoreRuntime(identity, version);
   };
   await manifest("1.0.0");
   await manifest("2.0.0");
@@ -124,6 +129,7 @@ process.on("message", () => {});
   });
   const candidate = (await inspectServerRestore(baseDir)).candidates[0]!;
   return {
+    installRuntime: manifest,
     dbPath,
     statePath,
     identity,
@@ -137,8 +143,8 @@ process.on("message", () => {});
   };
 }
 
-it.layer(NodeServices.layer)("offline server restore", (it) => {
-  it.live(
+it.layer(NodeServices.layer, { excludeTestServices: true })("offline server restore", (it) => {
+  it.effect(
     "restores a retained runtime through trial readiness while keeping profile and hold",
     () =>
       Effect.gen(function* () {
@@ -179,7 +185,7 @@ it.layer(NodeServices.layer)("offline server restore", (it) => {
       }),
   );
 
-  it.live("returns to the original runtime and database after a failing trial", () =>
+  it.effect("returns to the original runtime and database after a failing trial", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-restore-failed-" });
@@ -206,13 +212,13 @@ it.layer(NodeServices.layer)("offline server restore", (it) => {
     }),
   );
 
-  it.live(
+  it.effect(
     "recovers a durably pending restore after interruption without replacing its backup",
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-restore-recovery-" });
-        const setup = yield* Effect.promise(() => fixture(baseDir, "crash"));
+        const setup = yield* Effect.promise(() => fixture(baseDir));
         const backup = NodePath.join(baseDir, "runtime", "db-backup", "interrupted-restore");
         yield* fs.makeDirectory(backup, { recursive: true });
         yield* fs.copyFile(setup.dbPath, NodePath.join(backup, "database"));
@@ -248,6 +254,7 @@ it.layer(NodeServices.layer)("offline server restore", (it) => {
         assert.equal(result.version, "2.0.0");
         assert.isFalse(yield* fs.exists(backup));
         assert.isFalse((yield* listServerRestore({ baseDir })).updateHold);
+        assert.isFalse(yield* fs.exists(NodePath.join(baseDir, "trial-identity")));
         yield* Effect.sync(() => {
           const db = new NodeSqlite.DatabaseSync(setup.dbPath, { readOnly: true });
           try {
@@ -262,7 +269,7 @@ it.layer(NodeServices.layer)("offline server restore", (it) => {
       }),
   );
 
-  it.live(
+  it.effect(
     "fails closed before handoff for a changed hash, ledger name, event version or capacity",
     () =>
       Effect.gen(function* () {
@@ -330,7 +337,7 @@ it.layer(NodeServices.layer)("offline server restore", (it) => {
       }),
   );
 
-  it.live("detects modified retained files and never takes over a live launcher lock", () =>
+  it.effect("detects modified retained files and never takes over a live launcher lock", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-restore-tampered-" });
@@ -353,7 +360,7 @@ it.layer(NodeServices.layer)("offline server restore", (it) => {
     }),
   );
 
-  it.live("keeps the qualified predecessor while pruning an older unused runtime", () =>
+  it.effect("keeps the qualified predecessor while pruning an older unused runtime", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-restore-retention-" });
@@ -377,5 +384,198 @@ it.layer(NodeServices.layer)("offline server restore", (it) => {
       assert.deepEqual(removed, ["0.5.0"]);
       assert.isTrue(yield* fs.exists(NodePath.join(versions, "1.0.0")));
     }),
+  );
+
+  it.effect("retains the current runtime and predecessor immediately after repeated commits", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-restore-hard-retention-" });
+      const setup = yield* Effect.promise(() => fixture(baseDir));
+      yield* Effect.promise(async () => {
+        const versions = NodePath.join(baseDir, "runtime", "versions");
+        const maxBytes = (await inspectServerRestore(baseDir)).totalBytes * 4;
+        await NodeFSP.writeFile(
+          NodePath.join(baseDir, "runtime", "restore-limits.json"),
+          JSON.stringify({ maxVersions: 2, maxBytes }),
+        );
+        for (const target of [3, 4, 5, 6]) {
+          const version = `${target}.0.0`;
+          const nextState = {
+            protocol: SERVICE_LAUNCHER_PROTOCOL,
+            activeVersion: version,
+            update: {
+              id: `update-${target}`,
+              fromVersion: `${target - 1}.0.0`,
+              targetVersion: version,
+              status: "committed",
+            },
+          } as const;
+          const retention = await acquireServerRuntimeRetention(baseDir);
+          try {
+            await retention.admit(version);
+            const staging = await NodeFSP.mkdtemp(NodePath.join(versions, ".staging-"));
+            await retention.reserve(version, staging);
+            await setup.installRuntime(version, staging);
+            await retention.check(0);
+            const during = await inspectServerRestore(baseDir);
+            assert.isAtMost(during.totalBytes, maxBytes);
+            assert.include(during.unavailableReason ?? "", "limit");
+            await NodeFSP.rename(staging, NodePath.join(versions, version));
+          } finally {
+            retention.release();
+          }
+          await assertServerRuntimeCommitFits(baseDir, nextState);
+          await writeServiceState(setup.statePath, nextState);
+          await qualifyServerRestoreRuntime(setup.identity, version);
+          await cleanupServerRuntimeRetention(baseDir);
+          const inventory = await inspectServerRestore(baseDir);
+          assert.equal(inventory.currentVersion, version);
+          assert.equal(inventory.unavailableReason, null);
+          assert.isAtMost(inventory.totalBytes, maxBytes);
+          assert.deepEqual(await NodeFSP.readdir(versions), [`${target - 1}.0.0`, version]);
+          assert.equal(inventory.candidates[0]?.version, `${target - 1}.0.0`);
+          assert.equal(inventory.candidates[0]?.blockedReason, null);
+        }
+      });
+    }),
+  );
+
+  it.effect("counts archive and unknown staging bytes and refuses a second transaction slot", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-restore-peak-" });
+      yield* Effect.promise(() => fixture(baseDir));
+      yield* Effect.promise(async () => {
+        const initial = await inspectServerRestore(baseDir);
+        const maxBytes = initial.totalBytes + 1024;
+        await NodeFSP.writeFile(
+          NodePath.join(baseDir, "runtime", "restore-limits.json"),
+          JSON.stringify({ maxVersions: 2, maxBytes }),
+        );
+        const retention = await acquireServerRuntimeRetention(baseDir);
+        try {
+          await expect(acquireServerRuntimeRetention(baseDir)).rejects.toThrow();
+          await retention.admit("3.0.0");
+          const staging = await NodeFSP.mkdtemp(
+            NodePath.join(baseDir, "runtime", "versions", ".staging-"),
+          );
+          await retention.reserve("3.0.0", staging);
+          await NodeFSP.writeFile(NodePath.join(staging, "t3-runtime-archive"), Buffer.alloc(1024));
+          assert.equal((await inspectServerRestore(baseDir)).totalBytes, maxBytes);
+          await expect(retention.check(1)).rejects.toThrow(/limit/);
+          await expect(retention.admit("4.0.0")).rejects.toThrow(/reserved/);
+          const unknown = NodePath.join(baseDir, "runtime", "versions", ".staging-unknown");
+          await NodeFSP.mkdir(unknown);
+          await expect(retention.check(0)).rejects.toThrow(/limit/);
+          assert.isTrue((await NodeFSP.stat(unknown)).isDirectory());
+        } finally {
+          retention.release();
+        }
+      });
+    }),
+  );
+
+  it.effect("reclaims only recorded abandoned staging and verified orphan runtimes", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-restore-orphans-" });
+      const setup = yield* Effect.promise(() => fixture(baseDir));
+      yield* Effect.promise(async () => {
+        const versions = NodePath.join(baseDir, "runtime", "versions");
+        await setup.installRuntime("0.5.0");
+        const owned = await NodeFSP.mkdtemp(NodePath.join(versions, ".staging-"));
+        await NodeFSP.writeFile(NodePath.join(owned, "t3-runtime-archive"), "owned archive");
+        await NodeFSP.writeFile(
+          NodePath.join(baseDir, "runtime", "install-candidate.json"),
+          JSON.stringify({ version: "3.0.0", directory: owned, pid: 2_147_483_647 }),
+        );
+        const unknown = NodePath.join(versions, ".staging-unknown");
+        await NodeFSP.mkdir(unknown);
+        await NodeFSP.writeFile(NodePath.join(unknown, "uncertain"), "preserved");
+        const retention = await acquireServerRuntimeRetention(baseDir);
+        try {
+          await expect(retention.admit("4.0.0")).rejects.toThrow(/limit/);
+          assert.deepEqual((await NodeFSP.readdir(versions)).sort(), [
+            ".staging-unknown",
+            "1.0.0",
+            "2.0.0",
+          ]);
+          assert.equal(
+            await NodeFSP.readFile(NodePath.join(unknown, "uncertain"), "utf8"),
+            "preserved",
+          );
+        } finally {
+          retention.release();
+        }
+      });
+    }),
+  );
+
+  it.effect.each(["process", "launcher", "pending"] as const)(
+    "preserves %s references before refusing an update",
+    (reference) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-restore-references-" });
+        const setup = yield* Effect.promise(() => fixture(baseDir));
+        yield* Effect.promise(async () => {
+          const versions = NodePath.join(baseDir, "runtime", "versions");
+          const executable = NodePath.join(
+            versions,
+            "1.0.0",
+            process.platform === "win32" ? "t3.exe" : "t3",
+          );
+          const originalReadlink = NodeFSP.readlink;
+          using _processReference =
+            reference === "process" && process.platform === "linux"
+              ? vi
+                  .spyOn(NodeFSP, "readlink")
+                  .mockImplementation((async (path: Parameters<typeof NodeFSP.readlink>[0]) =>
+                    path === `/proc/${process.pid}/exe`
+                      ? executable
+                      : originalReadlink(path)) as typeof NodeFSP.readlink)
+              : undefined;
+          if (
+            reference === "launcher" ||
+            (reference === "process" && process.platform !== "linux")
+          ) {
+            const launcher = NodePath.join(
+              baseDir,
+              process.platform === "win32" ? "retained.cmd" : "retained",
+            );
+            if (process.platform === "win32")
+              await NodeFSP.writeFile(launcher, `@echo off\r\n"${executable}" %*`);
+            else await NodeFSP.symlink(executable, launcher);
+            await NodeFSP.writeFile(
+              NodePath.join(baseDir, "runtime", "launchers"),
+              `${launcher}\n`,
+            );
+          }
+          if (reference === "pending") {
+            await setup.installRuntime("3.0.0");
+            await writeServiceState(setup.statePath, {
+              protocol: SERVICE_LAUNCHER_PROTOCOL,
+              activeVersion: "2.0.0",
+              update: {
+                id: "pending",
+                fromVersion: "2.0.0",
+                targetVersion: "3.0.0",
+                dbPath: setup.dbPath,
+                status: "pending",
+              },
+            });
+          }
+          const retention = await acquireServerRuntimeRetention(baseDir);
+          try {
+            await expect(retention.admit("4.0.0")).rejects.toThrow(/slot|transaction/);
+            assert.deepEqual(
+              (await NodeFSP.readdir(versions)).sort(),
+              reference === "pending" ? ["1.0.0", "2.0.0", "3.0.0"] : ["1.0.0", "2.0.0"],
+            );
+          } finally {
+            retention.release();
+          }
+        });
+      }),
   );
 });
