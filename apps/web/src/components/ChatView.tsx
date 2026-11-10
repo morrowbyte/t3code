@@ -3785,6 +3785,9 @@ function ChatViewContent(props: ChatViewProps) {
                           ) : null}
                           {!composerMounted ? null : (
                             <ChatComposer
+                              voiceControlsAvailable={
+                                !rightPanelMaximized && !queuedRunEdit.isSaving
+                              }
                               canOperateThread={canOperateThread}
                               reportedModelSelection={reportedModelSelection}
                               multipleModelSelections={multipleModelSelections}

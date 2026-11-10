@@ -11,10 +11,9 @@ export function VoiceBubbleViewToggle() {
   const [enabled, setEnabled] = useVoiceBubbleView();
   const id = useId();
   return (
-    <div className="flex flex-wrap items-center gap-2 py-2 text-xs text-muted-foreground">
+    <div className="flex items-center justify-between gap-3 text-sm">
+      <label htmlFor={id}>Speech bubbles</label>
       <Switch id={id} size="sm" checked={enabled} onCheckedChange={setEnabled} />
-      <label htmlFor={id}>Speech bubbles · Experimental</label>
-      <span>{enabled ? "On" : "Off · Original transcript"}</span>
     </div>
   );
 }

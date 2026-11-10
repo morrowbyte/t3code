@@ -77,7 +77,8 @@ import {
   resolveLiveVoiceControlGate,
   createLiveVoiceDiagnosticProducer,
 } from "./LiveVoiceControl";
-import { WebLiveVoiceSessionProvider } from "./sessionContext";
+import { WebLiveVoiceSessionProvider, useWebLiveVoiceControlsHost } from "./sessionContext";
+import { VoiceActivityBubbles } from "./VoiceActivityBubbles";
 import { TooltipProvider } from "~/components/ui/tooltip";
 import { unwrapLiveVoiceCommand } from "./LiveVoiceCommands";
 import type {
@@ -525,6 +526,23 @@ function ContextFixture({ input }: { input: AvailabilityInput }) {
       state={state}
     />
   ) : null;
+}
+
+function VoiceControlsHostFixture({
+  original = true,
+  enabled = true,
+}: {
+  readonly original?: boolean;
+  readonly enabled?: boolean;
+}) {
+  const ref = useWebLiveVoiceControlsHost(
+    {
+      environmentId: environmentA,
+      threadId: original ? thread : ThreadId.make("other-thread"),
+    },
+    enabled,
+  );
+  return <div ref={ref} data-testid={original ? "original-call-host" : "other-call-host"} />;
 }
 
 async function setupControl(contextOnly = false) {
@@ -1267,6 +1285,81 @@ describe("LiveVoiceControl passive availability", () => {
     });
     expect(commands.stop).not.toHaveBeenCalled();
     expect(document.body.textContent).toContain("Settings");
+  });
+  it("docks only in the original composer and restores it after closing Settings", async () => {
+    using _environment = setupEnvironment();
+    await using control = await setupControl();
+    let finishSaving!: () => void;
+    const saving = new Promise<void>((resolve) => {
+      finishSaving = resolve;
+    });
+    await control.render(loaded, environmentA, { beforePrepare: () => saving });
+    await act(async () => control.startButton().click());
+    const hosts = (settings: boolean, enabled = true) => (
+      <>
+        <VoiceControlsHostFixture enabled={enabled} />
+        <VoiceControlsHostFixture original={false} />
+        {settings ? (
+          <AppRouteModal label="Settings">
+            <main>Settings</main>
+          </AppRouteModal>
+        ) : null}
+      </>
+    );
+    await control.rerender(hosts(false));
+    const original = control.container.querySelector('[data-testid="original-call-host"]')!;
+    const other = control.container.querySelector('[data-testid="other-call-host"]')!;
+    expect(original.querySelector('[aria-label="Voice call"]')).not.toBeNull();
+    expect(other.querySelector('[aria-label="Voice call"]')).toBeNull();
+    await control.rerender(hosts(true));
+    expect(document.querySelector('[role="dialog"] [aria-label="Voice call"]')).not.toBeNull();
+    expect(original.querySelector('[aria-label="Voice call"]')).toBeNull();
+    await control.rerender(hosts(false));
+    expect(original.querySelector('[aria-label="Voice call"]')).not.toBeNull();
+    expect(document.querySelectorAll('section[aria-label="Voice call"]')).toHaveLength(1);
+    await control.rerender(hosts(false, false));
+    expect(original.querySelector('[aria-label="Voice call"]')).toBeNull();
+    expect(document.querySelectorAll('section[aria-label="Voice call"]')).toHaveLength(1);
+    await control.rerender(hosts(false));
+    expect(original.querySelector('[aria-label="Voice call"]')).not.toBeNull();
+    expect(commands.stop).not.toHaveBeenCalled();
+    await act(async () => {
+      finishSaving();
+      await saving;
+    });
+  });
+  it("removes a finished status check from current call activity", async () => {
+    using _environment = setupEnvironment();
+    const activity = {
+      id: "status-check",
+      action: "read-work" as const,
+      status: "running" as const,
+      revision: 1,
+      occurredAt: "2026-11-10T12:00:00.000Z",
+      updatedAt: "2026-11-10T12:00:00.000Z",
+    };
+    const threadRef = { environmentId: environmentA, threadId: thread };
+    await using screen = await renderUi(
+      <VoiceActivityBubbles threadRef={threadRef} liveActivities={[activity]} />,
+    );
+    expect(screen.container.textContent).toContain("Check task status and available results");
+    await screen.rerender(
+      <VoiceActivityBubbles
+        threadRef={threadRef}
+        liveActivities={[{ ...activity, status: "completed", revision: 2 }]}
+      />,
+    );
+    expect(screen.container.textContent).not.toContain("Check task status and available results");
+    expect(screen.container.textContent).toContain("No active tasks");
+    await screen.rerender(
+      <VoiceActivityBubbles
+        threadRef={threadRef}
+        liveActivities={[{ ...activity, status: "failed", revision: 3 }]}
+      />,
+    );
+    expect(screen.container.textContent).toContain("Check task status and available results");
+    expect(screen.container.textContent).toContain("Failed");
+    expect(screen.container.textContent).not.toContain("No active tasks");
   });
   it.each([
     "unsupported_provider",

@@ -1,7 +1,4 @@
-import {
-  LIVE_VOICE_ACTIVITY_LIMIT,
-  liveVoiceActivityLabel,
-} from "@t3tools/shared/liveVoiceActivity";
+import { liveVoiceActivityLabel } from "@t3tools/shared/liveVoiceActivity";
 import type { LiveVoiceActivity, ScopedThreadRef } from "@t3tools/contracts";
 import { activeVoiceToolActivities } from "@t3tools/client-runtime/live-voice/activity";
 import { useQuietThreadVisibleTurnItems } from "~/state/entities";
@@ -15,64 +12,50 @@ export function VoiceActivityBubbles({
 }) {
   const rows = useQuietThreadVisibleTurnItems(threadRef);
   const activities = activeVoiceToolActivities(rows, threadRef);
-  if (!activities.length && !liveActivities.length) return null;
+  const live = liveActivities.filter((activity) => activity.status !== "completed");
   return (
-    <section aria-label="Voice call activity" className="min-w-0 basis-full py-2">
-      <div className="max-h-40 space-y-2 overflow-y-auto">
-        {liveActivities.length > 0 ? (
-          <>
-            <p className="text-xs text-muted-foreground">
-              GPT Live · Recent tool activity (up to {LIVE_VOICE_ACTIVITY_LIMIT})
-            </p>
-            <div className="space-y-2">
-              {liveActivities.map((activity) => (
-                <div
-                  key={activity.id}
-                  className="rounded-xl border border-border bg-muted/40 px-3 py-2"
-                >
-                  <p className="text-xs text-muted-foreground">
-                    {
-                      {
-                        started: "Started",
-                        running: "Running",
-                        waiting: "Waiting",
-                        completed: "Completed",
-                        failed: "Failed",
-                        interrupted: "Interrupted",
-                      }[activity.status]
-                    }
-                  </p>
-                  <p className="text-sm wrap-anywhere">{liveVoiceActivityLabel(activity.action)}</p>
-                </div>
-              ))}
-            </div>
-          </>
-        ) : null}
-        {activities.length > 0 ? (
-          <>
-            <p className="text-xs text-muted-foreground">
-              Thread activity · Results and requests in chat
-            </p>
-            <div className="space-y-2">
-              {activities.map((activity) => (
-                <div
-                  key={activity.id}
-                  className="rounded-xl border border-border bg-muted/40 px-3 py-2"
-                >
-                  <p className="text-xs text-muted-foreground">
-                    {activity.status === "pending"
-                      ? "Queued"
-                      : activity.status === "waiting"
-                        ? "Waiting"
-                        : "Running"}
-                  </p>
-                  <p className="text-sm wrap-anywhere">{activity.label}</p>
-                </div>
-              ))}
-            </div>
-          </>
-        ) : null}
-      </div>
+    <section aria-label="Voice call activity" className="min-w-0 border-t border-border pt-3">
+      <p className="mb-2 text-xs font-medium text-muted-foreground">Activity</p>
+      {live.length || activities.length ? (
+        <ul className="max-h-40 space-y-2 overflow-y-auto text-xs">
+          {live.map((activity) => (
+            <li key={activity.id} className="flex items-start justify-between gap-3">
+              <span className="min-w-0 wrap-anywhere">
+                {liveVoiceActivityLabel(activity.action)}
+              </span>
+              <span
+                className={
+                  activity.status === "failed"
+                    ? "shrink-0 text-destructive"
+                    : "shrink-0 text-muted-foreground"
+                }
+              >
+                {activity.status === "failed"
+                  ? "Failed"
+                  : activity.status === "interrupted"
+                    ? "Interrupted"
+                    : activity.status === "waiting"
+                      ? "Waiting"
+                      : "Running"}
+              </span>
+            </li>
+          ))}
+          {activities.map((activity) => (
+            <li key={activity.id} className="flex items-start justify-between gap-3">
+              <span className="min-w-0 wrap-anywhere">{activity.label}</span>
+              <span className="shrink-0 text-muted-foreground">
+                {activity.status === "pending"
+                  ? "Queued"
+                  : activity.status === "waiting"
+                    ? "Waiting"
+                    : "Running"}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-xs text-muted-foreground">No active tasks</p>
+      )}
     </section>
   );
 }

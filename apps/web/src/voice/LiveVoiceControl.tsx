@@ -23,6 +23,7 @@ import {
   PhoneCallIcon,
   Volume2Icon,
   VolumeXIcon,
+  EllipsisIcon,
 } from "lucide-react";
 import { useAtomMount, useAtomSubscribe } from "@effect/atom-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
@@ -53,7 +54,8 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { Button } from "~/components/ui/button";
 import { toastManager } from "~/components/ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
-import { randomUUID } from "~/lib/utils";
+import { Popover, PopoverPopup, PopoverTitle, PopoverTrigger } from "~/components/ui/popover";
+import { cn, randomUUID } from "~/lib/utils";
 import { useThreadPreviewSelection } from "~/previewSelectionStore";
 import {
   previewAnnotationContextRecord,
@@ -61,7 +63,7 @@ import {
 } from "~/lib/composerContextRecords";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import { formatInlineContextReference } from "~/lib/composerContextReferences";
-import { VoiceBubbleViewToggle, useVoiceBubbleView } from "./VoiceBubbleViewToggle";
+import { VoiceBubbleViewToggle } from "./VoiceBubbleViewToggle";
 import { VoiceActivityBubbles } from "./VoiceActivityBubbles";
 import { useWebLiveVoiceSession } from "./sessionContext";
 import { Link } from "@tanstack/react-router";
@@ -1023,7 +1025,6 @@ export function GlobalLiveVoiceControl() {
     : null;
   const thread = useThreadShell(threadRef);
   const environment = useEnvironment(threadRef?.environmentId ?? null);
-  const [bubbles] = useVoiceBubbleView();
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- The app root owns media cleanup, independent of route and composer lifetimes.
   useEffect(
     () => () => {
@@ -1051,6 +1052,7 @@ export function GlobalLiveVoiceControl() {
   });
   if (!target || !value || !controller) return null;
   const active = ["live", "reconnecting", "playback-blocked"].includes(state.phase);
+  const actionFailed = state.activities?.some((activity) => activity.status === "failed");
   const statusText = state.inputIssue
     ? "Microphone interrupted"
     : {
@@ -1085,73 +1087,173 @@ export function GlobalLiveVoiceControl() {
           <section
             aria-label="Voice call"
             data-live-voice-phase={state.phase}
-            className="fixed right-3 bottom-3 z-50 flex max-w-[calc(100vw-1.5rem)] flex-wrap items-center gap-1 rounded-xl border border-border bg-popover p-2 shadow-lg"
+            className={cn(
+              "flex min-w-0 flex-wrap items-center gap-2 rounded-xl border border-border/60 bg-card p-2",
+              controlsContainer
+                ? "mb-2 w-full"
+                : "fixed right-3 bottom-3 z-50 w-[min(26rem,calc(100vw-1.5rem))] bg-popover shadow-lg",
+            )}
           >
+            <span
+              aria-hidden="true"
+              className={cn(
+                "ml-1 size-2 shrink-0 rounded-full",
+                actionFailed
+                  ? "bg-error"
+                  : state.inputIssue ||
+                      state.phase === "reconnecting" ||
+                      state.phase === "playback-blocked"
+                    ? "bg-warning"
+                    : state.phase === "live"
+                      ? "bg-success"
+                      : "bg-muted-foreground",
+              )}
+            />
             <Link
               to="/$environmentId/$threadId"
               params={{ environmentId: target.environmentId, threadId: target.threadId }}
-              className="min-w-0 max-w-52 px-2 text-sm"
+              className="min-w-0 flex-1 rounded-sm text-sm outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
               aria-label="Open original voice thread"
             >
-              <span className="block truncate font-medium">{thread?.title || target.threadId}</span>
+              <span className="flex min-w-0 items-center gap-2 font-medium">
+                <span className="truncate">{thread?.title || "Voice call"}</span>
+                {recordingState.status === "recording" ? (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <span
+                          aria-label="Recording call"
+                          className="size-1.5 shrink-0 rounded-full bg-destructive"
+                        />
+                      }
+                    />
+                    <TooltipPopup>Recording call</TooltipPopup>
+                  </Tooltip>
+                ) : null}
+              </span>
               <span role="status" className="block truncate text-xs text-muted-foreground">
-                {environment?.label || target.environmentId} · {statusText}
+                {statusText}
+                {actionFailed ? " · Action failed" : ""}
+                {state.localMuted ? " · Mic off" : ""}
+                {state.outputMuted ? " · Audio off" : ""}
               </span>
             </Link>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              disabled={!active}
-              onClick={() => controller.setLocalMuted(!state.localMuted)}
-              aria-label={state.localMuted ? "Unmute microphone" : "Mute microphone"}
-            >
-              {state.localMuted ? <MicOffIcon /> : <MicIcon />}
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              disabled={!active}
-              onClick={() => void controller.setOutputMuted(!state.outputMuted)}
-              aria-label={state.outputMuted ? "Unmute Live audio" : "Mute Live audio"}
-            >
-              {state.outputMuted ? <VolumeXIcon /> : <Volume2Icon />}
-            </Button>
-            {state.phase === "playback-blocked" ? (
-              <Button variant="secondary" size="sm" onClick={() => void controller.retryPlayback()}>
-                Enable audio
-              </Button>
-            ) : null}
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              disabled={state.phase === "stopping"}
-              onClick={() => void owner.end()}
-              aria-label="End Live voice"
-            >
-              <PhoneOffIcon />
-            </Button>
-            {state.error ? (
-              <span role="alert" className="basis-full px-2 text-xs text-destructive">
-                {state.error}
-              </span>
-            ) : null}
-            {recordingState.status !== "off" ? (
-              <span role="status" className="basis-full px-2 text-xs text-muted-foreground">
-                {recordingState.status === "error"
-                  ? recordingState.error
-                  : `Recording: ${recordingState.status}`}
-              </span>
-            ) : null}
-            {state.lease ? (
-              <>
-                <VoiceBubbleViewToggle />
-                {bubbles ? (
-                  <VoiceActivityBubbles
-                    threadRef={state.lease}
-                    liveActivities={state.activities ?? []}
-                  />
-                ) : null}
-              </>
+            <div className="flex shrink-0 items-center gap-1">
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      type="button"
+                      variant={state.localMuted ? "secondary" : "ghost"}
+                      size="icon"
+                      disabled={!active}
+                      onClick={() => controller.setLocalMuted(!state.localMuted)}
+                      aria-pressed={state.localMuted}
+                      aria-label={state.localMuted ? "Unmute microphone" : "Mute microphone"}
+                    />
+                  }
+                >
+                  {state.localMuted ? <MicOffIcon /> : <MicIcon />}
+                </TooltipTrigger>
+                <TooltipPopup>
+                  {state.localMuted ? "Unmute microphone" : "Mute microphone"}
+                </TooltipPopup>
+              </Tooltip>
+              {state.phase === "playback-blocked" ? (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="icon"
+                        aria-label="Enable audio"
+                        onClick={() => void controller.retryPlayback()}
+                      />
+                    }
+                  >
+                    <Volume2Icon />
+                  </TooltipTrigger>
+                  <TooltipPopup>Enable audio</TooltipPopup>
+                </Tooltip>
+              ) : (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        type="button"
+                        variant={state.outputMuted ? "secondary" : "ghost"}
+                        size="icon"
+                        disabled={!active}
+                        onClick={() => void controller.setOutputMuted(!state.outputMuted)}
+                        aria-pressed={state.outputMuted}
+                        aria-label={state.outputMuted ? "Unmute Live audio" : "Mute Live audio"}
+                      />
+                    }
+                  >
+                    {state.outputMuted ? <VolumeXIcon /> : <Volume2Icon />}
+                  </TooltipTrigger>
+                  <TooltipPopup>{state.outputMuted ? "Unmute audio" : "Mute audio"}</TooltipPopup>
+                </Tooltip>
+              )}
+              <Popover>
+                <PopoverTrigger
+                  render={
+                    <Button type="button" variant="ghost" size="icon" aria-label="Call details" />
+                  }
+                >
+                  <EllipsisIcon />
+                </PopoverTrigger>
+                <PopoverPopup side="top" align="end" width="md" padding="compact">
+                  <div className="space-y-3">
+                    <div>
+                      <PopoverTitle>Voice call</PopoverTitle>
+                      <p className="mt-1 truncate text-xs text-muted-foreground">
+                        {environment?.label || "Connected environment"}
+                      </p>
+                    </div>
+                    <VoiceBubbleViewToggle />
+                    {recordingState.status !== "off" ? (
+                      <p
+                        role={recordingState.status === "error" ? "alert" : undefined}
+                        className="text-xs text-muted-foreground"
+                      >
+                        {recordingState.status === "error"
+                          ? recordingState.error
+                          : `Recording: ${recordingState.status}`}
+                      </p>
+                    ) : null}
+                    {state.lease ? (
+                      <VoiceActivityBubbles
+                        threadRef={state.lease}
+                        liveActivities={state.activities ?? []}
+                      />
+                    ) : null}
+                  </div>
+                </PopoverPopup>
+              </Popover>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      size="icon"
+                      disabled={state.phase === "stopping"}
+                      onClick={() => void owner.end()}
+                      aria-label="End Live voice"
+                    />
+                  }
+                >
+                  <PhoneOffIcon />
+                </TooltipTrigger>
+                <TooltipPopup>End call</TooltipPopup>
+              </Tooltip>
+            </div>
+            {state.error || recordingState.status === "error" ? (
+              <p role="alert" className="basis-full px-1 text-xs text-destructive">
+                {state.error || (recordingState.status === "error" ? recordingState.error : null)}
+              </p>
             ) : null}
           </section>
         ) : null}
