@@ -213,6 +213,8 @@ Architecture and its constraints: `docs/internals/overview.md`. Glossary: `docs/
 - Don't verify with browsers or computer use unless the user explicitly agrees or requests it.
 - Security is important, but should not be over-indexed on, especially for dev mode/maintainer-only features.
 
-## Current CI backend (2026-10-15 owner instruction)
+## Ausführungsorte und Prüfläufe (Owner-Anweisung 2026-11-10)
 
-Run routine development checks locally when possible. Ask before starting additional paid CI runners. Release builds use the configured Blacksmith runners unless the maintainer chooses otherwise. The Morrowbyte fork targets Windows x64 and Linux x64 desktop, with Android ARM64 APK packaging in the release workflow. Do not enable desktop ARM64 or macOS builds for this fork; Android device ABIs are not subject to that desktop restriction. Keep checks proportionate and preserve existing successful evidence. See the existing CI operations guide for exact runner labels and acceptance boundaries.
+Agenten wählen passende Ausführungsorte und notwendige Prüf-, Build- und CI-Läufe selbst. Kein Anbieter oder Runner ist fest vorgeschrieben; zusätzliche manuelle Prüfläufe sind nicht pauschal verpflichtend. Boat.dev ist ausdrücklich als abonnierte Ausführungsumgebung freigegeben und darf innerhalb vorhandener Kapazitäten und Budgets ohne zusätzliche Rückfrage genutzt werden. Konfigurierte Repository-Gates und aufgabenspezifische Abnahmekriterien einhalten, geeignete erfolgreiche Nachweise wiederverwenden und redundante Läufe vermeiden. Diese Vorgabe ersetzt frühere feste Runnerbindungen und pauschale Rückfragepflichten für zusätzliche Runner innerhalb vorhandener Abonnements. Abonnements, Budgets und Berechtigungen nicht eigenmächtig erweitern.
+
+The Morrowbyte fork targets Windows x64 and Linux x64 desktop, with Android ARM64 APK packaging in the release workflow. Do not enable desktop ARM64 or macOS builds for this fork; Android device ABIs are not subject to that desktop restriction. See the existing CI operations guide for runner labels and acceptance boundaries.
