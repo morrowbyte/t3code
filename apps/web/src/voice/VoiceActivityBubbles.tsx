@@ -1,4 +1,7 @@
-import { liveVoiceActivityLabel } from "@t3tools/shared/liveVoiceActivity";
+import {
+  liveVoiceActivityIsTerminal,
+  liveVoiceActivityLabel,
+} from "@t3tools/shared/liveVoiceActivity";
 import type { LiveVoiceActivity, ScopedThreadRef } from "@t3tools/contracts";
 import { activeVoiceToolActivities } from "@t3tools/client-runtime/live-voice/activity";
 import { useQuietThreadVisibleTurnItems } from "~/state/entities";
@@ -12,7 +15,9 @@ export function VoiceActivityBubbles({
 }) {
   const rows = useQuietThreadVisibleTurnItems(threadRef);
   const activities = activeVoiceToolActivities(rows, threadRef);
-  const live = liveActivities.filter((activity) => activity.status !== "completed");
+  const live = liveActivities.filter(
+    (activity) => activity.status === "failed" || !liveVoiceActivityIsTerminal(activity),
+  );
   return (
     <section aria-label="Voice call activity" className="min-w-0 border-t border-border pt-3">
       <p className="mb-2 text-xs font-medium text-muted-foreground">Activity</p>
@@ -32,11 +37,9 @@ export function VoiceActivityBubbles({
               >
                 {activity.status === "failed"
                   ? "Failed"
-                  : activity.status === "interrupted"
-                    ? "Interrupted"
-                    : activity.status === "waiting"
-                      ? "Waiting"
-                      : "Running"}
+                  : activity.status === "waiting"
+                    ? "Waiting"
+                    : "Running"}
               </span>
             </li>
           ))}

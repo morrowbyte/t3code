@@ -1343,14 +1343,16 @@ describe("LiveVoiceControl passive availability", () => {
       <VoiceActivityBubbles threadRef={threadRef} liveActivities={[activity]} />,
     );
     expect(screen.container.textContent).toContain("Check task status and available results");
-    await screen.rerender(
-      <VoiceActivityBubbles
-        threadRef={threadRef}
-        liveActivities={[{ ...activity, status: "completed", revision: 2 }]}
-      />,
-    );
-    expect(screen.container.textContent).not.toContain("Check task status and available results");
-    expect(screen.container.textContent).toContain("No active tasks");
+    for (const status of ["completed", "interrupted"] as const) {
+      await screen.rerender(
+        <VoiceActivityBubbles
+          threadRef={threadRef}
+          liveActivities={[{ ...activity, status, revision: 2 }]}
+        />,
+      );
+      expect(screen.container.textContent).not.toContain("Check task status and available results");
+      expect(screen.container.textContent).toContain("No active tasks");
+    }
     await screen.rerender(
       <VoiceActivityBubbles
         threadRef={threadRef}
