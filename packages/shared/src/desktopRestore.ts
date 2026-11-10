@@ -106,6 +106,9 @@ const decodeBuild = Schema.decodeUnknownSync(DesktopRestoreBuild);
 const decodeIdentity = Schema.decodeUnknownSync(Identity);
 const decodeRegistry = Schema.decodeUnknownSync(Registry);
 const decodeTransaction = Schema.decodeUnknownSync(Transaction);
+const decodeHomeBinding = Schema.decodeUnknownSync(
+  Schema.Struct({ format: Schema.Literal(1), baseDir: Schema.String }),
+);
 const DEFAULT_MAX_BYTES = 2 * 1024 ** 3;
 const RESERVE_BYTES = 64 * 1024 ** 2;
 
@@ -333,9 +336,7 @@ async function bindNixRestoreHome(identity: DesktopRestoreIdentity) {
   const file = NodePath.join(identity.nixDataDir, "restore-home.json");
   try {
     const stat = await NodeFSP.lstat(file);
-    const binding = Schema.decodeUnknownSync(
-      Schema.Struct({ format: Schema.Literal(1), baseDir: Schema.String }),
-    )(await readJson(file));
+    const binding = decodeHomeBinding(await readJson(file));
     if (
       stat.uid !== process.getuid?.() ||
       (stat.mode & 0o022) !== 0 ||

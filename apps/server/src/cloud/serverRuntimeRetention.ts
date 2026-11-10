@@ -6,7 +6,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
-import { setTimeout as wait } from "node:timers/promises";
+import * as NodeTimersPromises from "node:timers/promises";
 
 import {
   inspectServerRestore,
@@ -460,7 +460,7 @@ export async function acquireServerRuntimeRetention(
         if (code !== 5 && code !== 6) throw cause;
         if (attempt === 1_200) throw new ServerRuntimeRetentionBusyError({ cause });
         // A synchronous busy timeout would block this process's asynchronous lock owner.
-        await wait(25, undefined, { signal: options.signal });
+        await NodeTimersPromises.setTimeout(25, undefined, { signal: options.signal });
       }
     }
     await cleanupPruneRecords(baseDir);
