@@ -14,6 +14,7 @@ export * from "./relayClient.ts";
 export * from "./desktopBootstrap.ts";
 export * from "./desktopBrowser.ts";
 export * from "./desktopAppActivation.ts";
+export * from "./desktopPet.ts";
 export * from "./desktopResultConversation.ts";
 export * from "./nativeAuthor.ts";
 export * from "./remoteAccess.ts";

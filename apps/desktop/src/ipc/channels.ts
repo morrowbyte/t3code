@@ -1,4 +1,11 @@
 export const PICK_FOLDER_CHANNEL = "desktop:pick-folder";
+export const PET_GET_STATUS_CHANNEL = "desktop:pet-status";
+export const PET_SET_SETTINGS_CHANNEL = "desktop:pet-settings";
+export const PET_SET_PROJECTION_CHANNEL = "desktop:pet-projection";
+export const PET_TOGGLE_CHANNEL = "desktop:pet-toggle";
+export const PET_IMPORT_CHANNEL = "desktop:pet-import";
+export const PET_RESET_CHANNEL = "desktop:pet-reset";
+export const PET_EVENT_CHANNEL = "desktop:pet-event";
 export const SET_NOTIFICATION_BADGE_CHANNEL = "desktop:set-notification-badge";
 export const PICK_PROJECT_FAVICON_CHANNEL = "desktop:pick-project-favicon";
 export const PICK_THEME_FILES_CHANNEL = "desktop:pick-theme-files";

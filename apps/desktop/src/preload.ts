@@ -84,6 +84,21 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   getRelayTelemetryEnabled: () =>
     ipcRenderer.sendSync(IpcChannels.GET_RELAY_TELEMETRY_ENABLED_CHANNEL) === true,
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
+  getPetStatus: () => ipcRenderer.invoke(IpcChannels.PET_GET_STATUS_CHANNEL),
+  setPetSettings: (settings) => ipcRenderer.invoke(IpcChannels.PET_SET_SETTINGS_CHANNEL, settings),
+  setPetProjection: (projection) =>
+    ipcRenderer.invoke(IpcChannels.PET_SET_PROJECTION_CHANNEL, projection),
+  togglePet: () => ipcRenderer.invoke(IpcChannels.PET_TOGGLE_CHANNEL),
+  importPet: () => ipcRenderer.invoke(IpcChannels.PET_IMPORT_CHANNEL),
+  resetPet: () => ipcRenderer.invoke(IpcChannels.PET_RESET_CHANNEL),
+  onPetEvent: (listener) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      event: import("@t3tools/contracts").DesktopPetEvent,
+    ) => listener(event);
+    ipcRenderer.on(IpcChannels.PET_EVENT_CHANNEL, handler);
+    return () => ipcRenderer.removeListener(IpcChannels.PET_EVENT_CHANNEL, handler);
+  },
   getClientPlatform: () => clientPlatform,
   setNotificationBadge: (badge) =>
     ipcRenderer.invoke(IpcChannels.SET_NOTIFICATION_BADGE_CHANNEL, badge),

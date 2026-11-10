@@ -21,6 +21,18 @@ Android uses **Material You Layout** by default unless you have turned it off in
 It changes shapes, spacing, and controls independently
 of the selected theme.
 
+## Desktop pet
+
+On Linux with Niri, open **Settings → General → Desktop pet** to connect the native companion,
+choose an animated pet, or assign a global shortcut. **Always show pet** is off by default;
+Computer Use can still show its task-bound pet. The screen-access status reflects the confirmed
+Computer Use session, including whether screenshots and accessibility capture are disabled.
+
+The pet brings approvals, questions, and completed responses from connected environments together.
+Open an item to continue in its original thread. Dismissing a pet reminder does not approve or
+answer the request. **Create with agent** prepares a draft using your normal model and image tools;
+import the resulting pet folder when it is ready.
+
 ## Agent identity
 
 On web, desktop, and mobile, open **Settings → Appearance → Agent identity**, select an
