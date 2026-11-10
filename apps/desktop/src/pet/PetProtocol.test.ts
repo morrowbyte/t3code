@@ -1,5 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { createPetDecoder, MAX_PET_LINE_BYTES } from "./PetProtocol.ts";
+import { DesktopPetProjection } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 
 describe("native pet protocol", () => {
   it("decodes fragmented events and rejects unknown authority fields", () => {
@@ -42,6 +44,27 @@ describe("native pet protocol", () => {
           }) + "\n",
         ),
       ),
+    ).toThrow();
+  });
+  it("accepts bounded concrete summaries without accepting extra payload or control fields", () => {
+    const decode = Schema.decodeUnknownSync(DesktopPetProjection, { onExcessProperty: "error" });
+    const projection = {
+      v: 1,
+      type: "projection",
+      revision: 2,
+      workingCount: 1,
+      items: [
+        { id: "opaque", kind: "question", summary: "Thread 2 · Question: Use the dark theme?" },
+      ],
+    };
+    expect(decode(projection)).toEqual(projection);
+    for (const summary of ["", " ", "x".repeat(241), "hidden\ntext", "hidden\u202etext"])
+      expect(() =>
+        decode({ ...projection, items: [{ ...projection.items[0], summary }] }),
+      ).toThrow();
+    expect(() => decode({ ...projection, observationActive: true })).toThrow();
+    expect(() =>
+      decode({ ...projection, items: [{ ...projection.items[0], payload: "secret" }] }),
     ).toThrow();
   });
 });

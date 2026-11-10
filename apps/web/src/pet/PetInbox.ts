@@ -1,14 +1,16 @@
 import {
-  DESKTOP_PET_SUMMARIES,
   type DesktopPetItemKind,
   type DesktopPetProjection,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
+import { petSummary } from "./PetSummary";
 
 export interface PetCandidate {
   readonly key: string;
   readonly kind: DesktopPetItemKind;
   readonly ref: ScopedThreadRef;
+  readonly threadNumber: number;
+  readonly publicText?: string | undefined;
 }
 const priority = { approval: 0, question: 1, result: 2 };
 
@@ -50,7 +52,7 @@ export class PetInbox {
     const items = selected.map(({ id, candidate }) => ({
       id,
       kind: candidate.kind,
-      summary: DESKTOP_PET_SUMMARIES[candidate.kind],
+      summary: petSummary(candidate.kind, candidate.threadNumber, candidate.publicText),
     }));
     const signature = JSON.stringify({ workingCount, items });
     if (signature === this.signature) return null;

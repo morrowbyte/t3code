@@ -27,6 +27,13 @@ export const DESKTOP_PET_SUMMARIES = {
 } as const;
 export const DesktopPetItemKind = Schema.Literals(["approval", "question", "result"]);
 export type DesktopPetItemKind = typeof DesktopPetItemKind.Type;
+export const MAX_DESKTOP_PET_SUMMARY_LENGTH = 240;
+const PetSummary = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isPattern(/\S/),
+  Schema.isMaxLength(MAX_DESKTOP_PET_SUMMARY_LENGTH),
+  Schema.isPattern(/^[^\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]+$/),
+);
 export const DesktopPetProjection = Schema.Struct({
   v: Schema.Literal(1),
   type: Schema.Literal("projection"),
@@ -36,7 +43,7 @@ export const DesktopPetProjection = Schema.Struct({
     Schema.Struct({
       id: Token,
       kind: DesktopPetItemKind,
-      summary: Schema.Literals(Object.values(DESKTOP_PET_SUMMARIES)),
+      summary: PetSummary,
     }).annotate(strict),
   ).check(Schema.isMaxLength(20)),
 }).annotate(strict);

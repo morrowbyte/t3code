@@ -19,6 +19,7 @@ interface WatchedEnvironment {
   threads: readonly OrchestrationV2ThreadShell[];
   live: boolean;
   seenRuns: Map<ThreadId, string | null>;
+  threadNumbers: Map<ThreadId, number>;
   results: Set<ThreadId>;
   working: Set<ThreadId>;
   details: Map<ThreadId, () => void>;
@@ -30,6 +31,7 @@ export function startDesktopPet(registry: AtomRegistry.AtomRegistry, router: Any
   if (!bridge?.setPetProjection || !bridge.onPetEvent) return () => {};
   const inbox = new PetInbox(randomUUID);
   const watched = new Map<EnvironmentId, WatchedEnvironment>();
+  let nextThreadNumber = 0;
   let scheduled = false;
   let stopped = false;
   const schedule = () => {
@@ -60,10 +62,21 @@ export function startDesktopPet(registry: AtomRegistry.AtomRegistry, router: Any
         const pending = entry.details.has(shell.id)
           ? registry.get(environmentThreadDetails.pendingRequestsAtom(ref))
           : null;
-        const add = (kind: PetCandidate["kind"], id: string) =>
-          candidates.push({ key: JSON.stringify([environmentId, shell.id, kind, id]), kind, ref });
+        const add = (kind: PetCandidate["kind"], id: string, publicText?: string) =>
+          candidates.push({
+            key: JSON.stringify([environmentId, shell.id, kind, id]),
+            kind,
+            ref,
+            threadNumber: entry.threadNumbers.get(shell.id)!,
+            publicText,
+          });
         for (const approval of pending?.approvals ?? []) add("approval", approval.requestId);
-        for (const question of pending?.userInputs ?? []) add("question", question.requestId);
+        for (const question of pending?.userInputs ?? [])
+          add(
+            "question",
+            question.requestId,
+            question.questions.map((item) => item.question).join(" "),
+          );
         if (
           request &&
           !pending?.approvals.some((item) => item.requestId === request.id) &&
@@ -75,7 +88,8 @@ export function startDesktopPet(registry: AtomRegistry.AtomRegistry, router: Any
           entry.results.has(shell.id) &&
           registry.get(environmentThreadDetails.statusAtom(ref)) === "live"
         ) {
-          const detail = registry.get(environmentThreadDetails.quietThreadAtom(ref));
+          // The quiet subscription schedules this full-text read only on structural changes.
+          const detail = registry.get(environmentThreadDetails.threadAtom(ref));
           const answer = detail?.projection.turnItems.findLast(
             (item) =>
               item.runId === shell.latestRunId &&
@@ -85,11 +99,12 @@ export function startDesktopPet(registry: AtomRegistry.AtomRegistry, router: Any
           );
           if (
             answer &&
+            answer.type === "assistant_message" &&
             presented.latestRun?.status === "completed" &&
             !shell.activityRunStatus &&
             !shell.latestRunStopRequested
           )
-            add("result", answer.id);
+            add("result", answer.id, answer.text);
         }
       }
     }
@@ -111,6 +126,8 @@ export function startDesktopPet(registry: AtomRegistry.AtomRegistry, router: Any
     const retained = new Set<ThreadId>();
     for (const thread of entry.threads) {
       if (thread.archivedAt !== null || thread.deletedAt !== null) continue;
+      if (!entry.threadNumbers.has(thread.id))
+        entry.threadNumbers.set(thread.id, ++nextThreadNumber);
       const priorRun = entry.seenRuns.get(thread.id);
       if (priorRun !== undefined && priorRun !== thread.latestRunId) {
         entry.results.delete(thread.id);
@@ -152,6 +169,7 @@ export function startDesktopPet(registry: AtomRegistry.AtomRegistry, router: Any
     for (const id of entry.seenRuns.keys())
       if (!ids.has(id)) {
         entry.seenRuns.delete(id);
+        entry.threadNumbers.delete(id);
         entry.results.delete(id);
       }
     schedule();
@@ -169,6 +187,7 @@ export function startDesktopPet(registry: AtomRegistry.AtomRegistry, router: Any
           threads: [],
           live: false,
           seenRuns: new Map(),
+          threadNumbers: new Map(),
           results: new Set(),
           working: new Set(),
           details: new Map(),
