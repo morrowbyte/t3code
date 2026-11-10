@@ -63,6 +63,12 @@ describe("Nix desktop restore closure", () => {
       ]),
     ).toBe(150);
     expect(retainedDesktopBytes([{ sizeBytes: 100 }, { sizeBytes: 110 }])).toBe(210);
+    expect(() =>
+      retainedDesktopBytes([
+        { sizeBytes: 100, nixClosure: closure.members },
+        { sizeBytes: 101, nixClosure: [member(first, 41), member(dependency, 60)] },
+      ]),
+    ).toThrow("Shared Nix closure member identity changed");
     await NodeFSP.writeFile(fixture.corrupt, "corrupt fixture");
     await expect(readNixRestoreClosure(first, true)).rejects.toThrow();
   });

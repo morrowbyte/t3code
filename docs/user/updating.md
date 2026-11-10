@@ -66,9 +66,10 @@ restore and health contract; older installed builds cannot be qualified retroact
 A separate server also needs launcher protocol 4; update its managed launcher
 before using restore if the CLI reports an older protocol.
 
-The default retention is two versions: up to 2 GiB for desktop artifacts and
-1 GiB for separate server runtimes. Shared Nix closure paths count once. Server
-updates use at most one additional candidate slot within the byte limit. If the
+Desktop retains two versions within 2 GiB. A separate server retains up to
+three versions within 1 GiB: current, a verified predecessor and a persistent
+launcher when needed. Shared Nix closure paths count once. Nix imports and server updates use
+at most one additional candidate slot within the byte limit. If the
 protected versions and the switch cannot fit, the operation stops before shutdown.
 Configure desktop limits with `T3CODE_DESKTOP_RESTORE_MAX_VERSIONS` and
 `T3CODE_DESKTOP_RESTORE_MAX_BYTES`; for a separate server, set `maxVersions` and

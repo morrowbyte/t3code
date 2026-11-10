@@ -28,6 +28,11 @@ import {
   SERVICE_RESTART_PENDING_FILE,
 } from "./cloud/serviceProtocol.ts";
 import { SERVICE_STOP_MARKER_FILE } from "./cloud/serviceProtocol.ts";
+import {
+  SERVER_RESTORE_PROFILE_CONTRACT,
+  serverRestoreFiles,
+  verifyServerRestoreRuntime,
+} from "./cloud/serverRestoreManifest.ts";
 
 const spawnedChildren = vi.hoisted((): Array<NodeChildProcess.ChildProcess> => []);
 
@@ -214,23 +219,63 @@ it.layer(NodeServices.layer)("service state persistence", (it) => {
       }),
   );
 
-  it.effect("a fresh launcher clears a restart deferred by t3 update", () =>
+  it.effect("reconciles committed candidates before active startup across restarts", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-restart-" });
       const statePath = path.join(root, "runtime", "service-state.json");
       const restartPending = path.join(root, "runtime", SERVICE_RESTART_PENDING_FILE);
+      const candidatePath = path.join(root, "runtime", "install-candidate.json");
+      const observationsPath = path.join(root, "starts.jsonl");
+      const versionDir = path.join(root, "runtime", "versions", "1.0.0");
       yield* writeFakeRuntime(
         fs,
         path,
-        path.join(root, "runtime", "versions", "1.0.0"),
-        "setInterval(() => {}, 1_000);\n",
+        versionDir,
+        `
+import { appendFileSync, existsSync } from "node:fs";
+const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
+appendFileSync(${JSON.stringify(observationsPath)}, JSON.stringify({
+  version: context.childVersion,
+  status: context.update?.status,
+  candidateExists: existsSync(${JSON.stringify(candidatePath)}),
+}) + "\\n");
+process.exit(0);
+`,
       );
+      const previousVersionDir = path.join(root, "runtime", "versions", "0.9.0");
+      yield* writeFakeRuntime(fs, path, previousVersionDir, "process.exit(0);\n");
+      yield* fs.writeFileString(
+        candidatePath,
+        JSON.stringify({ version: "1.0.0", directory: versionDir, pid: process.pid }),
+      );
+      yield* fs.writeFileString(
+        path.join(versionDir, "restore-manifest.json"),
+        JSON.stringify({
+          format: 1,
+          version: "1.0.0",
+          sourceSha: "a".repeat(40),
+          launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+          profileContract: `${SERVER_RESTORE_PROFILE_CONTRACT}:${"b".repeat(64)}`,
+          eventContract: "b".repeat(64),
+          migrations: [{ id: 1, name: "Fixture" }],
+          files: yield* Effect.promise(() => serverRestoreFiles(versionDir)),
+        }),
+      );
+      const originalHash = (yield* Effect.promise(() =>
+        verifyServerRestoreRuntime(versionDir, "1.0.0"),
+      )).sha256;
       yield* Effect.promise(() =>
         writeServiceState(statePath, {
           protocol: SERVICE_LAUNCHER_PROTOCOL,
           activeVersion: "1.0.0",
+          update: {
+            id: "committed-before-cleanup",
+            fromVersion: "0.9.0",
+            targetVersion: "1.0.0",
+            status: "committed",
+          },
         }),
       );
       const run = () =>
@@ -239,9 +284,16 @@ it.layer(NodeServices.layer)("service state persistence", (it) => {
             root,
             yield* Effect.promise(() => readServiceState(statePath)),
           );
-          const running = launcher.run();
-          yield* Effect.promise(() => launcher.stop("SIGTERM"));
-          yield* Effect.promise(() => running);
+          const failure = yield* Effect.promise(() =>
+            launcher.run().then(
+              () => new Error("launcher unexpectedly completed"),
+              (cause: unknown) => cause as Error,
+            ),
+          );
+          assert.include(failure.message, "Active child exited unexpectedly (0)");
+          assert.isFalse(yield* fs.exists(candidatePath));
+          assert.isTrue(yield* fs.exists(path.join(versionDir, ".install-complete")));
+          assert.isTrue(yield* fs.exists(path.join(previousVersionDir, ".install-complete")));
         });
 
       yield* fs.writeFileString(restartPending, "1.0.1\n");
@@ -251,6 +303,36 @@ it.layer(NodeServices.layer)("service state persistence", (it) => {
       yield* fs.writeFileString(restartPending, "1.0.0\n");
       yield* run();
       assert.isFalse(yield* fs.exists(restartPending));
+      const observations = (yield* fs.readFileString(observationsPath))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      assert.deepEqual(observations, [
+        { version: "1.0.0", status: "committed", candidateExists: false },
+        { version: "1.0.0", status: "committed", candidateExists: false },
+      ]);
+      yield* Effect.promise(() =>
+        writeServiceState(statePath, {
+          protocol: SERVICE_LAUNCHER_PROTOCOL,
+          activeVersion: "1.0.0",
+          update: {
+            id: "restore-already-recovered",
+            fromVersion: "1.0.0",
+            targetVersion: "0.9.0",
+            status: "rolled-back",
+            restore: {
+              installationId: "a".repeat(64),
+              expectedHash: "b".repeat(64),
+              originalHash,
+              previousHold: true,
+            },
+          },
+        }),
+      );
+      const holdPath = path.join(root, "runtime", "update-hold.json");
+      yield* fs.writeFileString(holdPath, JSON.stringify({ hold: false }));
+      yield* run();
+      assert.deepEqual(JSON.parse(yield* fs.readFileString(holdPath)), { hold: false });
     }),
   );
 
@@ -417,6 +499,7 @@ process.exit(${SERVER_EXIT_CODE_STATE_DIR_OWNED});
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-flow-" });
       const statePath = path.join(root, "runtime", "service-state.json");
       const databasePath = path.join(root, "userdata", "state.sqlite");
+      assert.isFalse(yield* fs.exists(path.join(root, "userdata", "statev2.sqlite")));
       yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
       yield* fs.writeFileString(databasePath, "before trial");
       const encodedDatabasePath = JSON.stringify(databasePath);
@@ -449,6 +532,10 @@ if (context.update?.status === "pending") {
         }),
       );
 
+      const cleanupErrors = yield* Effect.acquireRelease(
+        Effect.sync(() => vi.spyOn(console, "error")),
+        (spy) => Effect.sync(() => spy.mockRestore()),
+      );
       const launcher = new Launcher(root, yield* Effect.promise(() => readServiceState(statePath)));
       yield* Effect.promise(() =>
         launcher.run().then(
@@ -460,6 +547,7 @@ if (context.update?.status === "pending") {
       const state = yield* Effect.promise(() => readServiceState(statePath));
       assert.equal(state.activeVersion, "1.1.0");
       assert.equal(state.update?.status, "committed");
+      assert.isEmpty(cleanupErrors.mock.calls);
     }),
   );
 

@@ -343,7 +343,13 @@ if (restoreControllerIndex !== -1) {
   const baseDir = NodePath.resolve(
     process.env.T3CODE_HOME?.trim() || NodePath.join(NodeOS.homedir(), ".t3"),
   );
-  void recoverDesktopRestoreBeforeStartup({ baseDir }).then(
+  void recoverDesktopRestoreBeforeStartup({
+    baseDir,
+    appDataDirectory: Electron.app.getPath("appData"),
+    passwordStore: Electron.app.commandLine.hasSwitch("password-store")
+      ? Electron.app.commandLine.getSwitchValue("password-store")
+      : null,
+  }).then(
     (recovering) => {
       if (recovering) Electron.app.exit(0);
       else DesktopApp.program.pipe(Effect.provide(layerDesktopRuntime), NodeRuntime.runMain);

@@ -1,10 +1,12 @@
 // @effect-diagnostics nodeBuiltinImport:off -- The standalone launcher also enforces runtime storage limits.
 // oxlint-disable t3code/no-global-process-runtime -- Process references protect native runtimes before server startup.
 import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
+import { setTimeout as wait } from "node:timers/promises";
 
 import {
   inspectServerRestore,
@@ -39,6 +41,166 @@ const readOptional = async (file: string) =>
     if (cause.code === "ENOENT") return undefined;
     throw cause;
   });
+
+const pruneRecordFile = (baseDir: string, version: string) =>
+  NodePath.join(baseDir, "runtime", `.prune-owner-${version}.json`);
+
+interface RuntimePruneRecord {
+  readonly version: string;
+  readonly versionsDir: string;
+  readonly device: string;
+  readonly inode: string;
+}
+
+async function syncPruneDirectory(directory: string) {
+  if (process.platform === "win32") return;
+  const handle = await NodeFSP.open(directory, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readPruneRecord(baseDir: string, version: string) {
+  if (!isExactServiceVersion(version)) throw new Error("Runtime prune version is unsupported.");
+  const file = pruneRecordFile(baseDir, version);
+  const stat = await NodeFSP.lstat(file).catch((cause: NodeJS.ErrnoException) => {
+    if (cause.code === "ENOENT") return undefined;
+    throw cause;
+  });
+  if (stat === undefined) return undefined;
+  if (!stat.isFile() || stat.size > 16_384)
+    throw new Error("Runtime prune ownership record is unsupported.");
+  const value = JSON.parse(await NodeFSP.readFile(file, "utf8")) as Partial<RuntimePruneRecord>;
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    value.version !== version ||
+    value.versionsDir !== (await NodeFSP.realpath(NodePath.join(baseDir, "runtime", "versions"))) ||
+    typeof value.device !== "string" ||
+    !/^\d+$/.test(value.device) ||
+    typeof value.inode !== "string" ||
+    !/^\d+$/.test(value.inode)
+  )
+    throw new Error("Runtime prune ownership record is unsupported.");
+  return value as RuntimePruneRecord;
+}
+
+export async function serverRuntimePruneRecorded(baseDir: string, version: string) {
+  return (await readPruneRecord(baseDir, version)) !== undefined;
+}
+
+async function verifyPruneDirectory(directory: string, record: RuntimePruneRecord) {
+  const stat = await NodeFSP.lstat(directory, { bigint: true });
+  if (
+    !stat.isDirectory() ||
+    stat.dev.toString() !== record.device ||
+    stat.ino.toString() !== record.inode
+  )
+    throw new Error("The owned runtime cleanup path was redirected or replaced.");
+}
+
+export async function retireServerRuntime(baseDir: string, version: string, directory: string) {
+  if (!isExactServiceVersion(version)) throw new Error("Runtime prune version is unsupported.");
+  const versionsDir = NodePath.resolve(baseDir, "runtime", "versions");
+  const retired = NodePath.join(versionsDir, `.pruned-${version}`);
+  if (directory !== NodePath.join(versionsDir, version) && directory !== retired)
+    throw new Error("Runtime prune path is unsupported.");
+  let record = await readPruneRecord(baseDir, version);
+  if (record === undefined) {
+    const stat = await NodeFSP.lstat(directory, { bigint: true });
+    if (!stat.isDirectory()) throw new Error("The owned runtime cleanup path was redirected.");
+    record = {
+      version,
+      versionsDir: await NodeFSP.realpath(versionsDir),
+      device: stat.dev.toString(),
+      inode: stat.ino.toString(),
+    };
+    const text = JSON.stringify(record);
+    if (Buffer.byteLength(text) > 16_384)
+      throw new Error("Runtime prune ownership record is unsupported.");
+    const recordFile = pruneRecordFile(baseDir, version);
+    const temporary = `${recordFile}.${process.pid}.${NodeCrypto.randomUUID()}.tmp`;
+    let file: NodeFSP.FileHandle | undefined;
+    try {
+      file = await NodeFSP.open(temporary, "wx", 0o600);
+      await file.writeFile(text);
+      await file.sync();
+      await file.close();
+      file = undefined;
+      await NodeFSP.rename(temporary, recordFile);
+      await syncPruneDirectory(NodePath.dirname(recordFile));
+    } finally {
+      await file?.close();
+      await NodeFSP.rm(temporary, { force: true });
+    }
+  }
+  await verifyPruneDirectory(directory, record);
+  if (directory !== retired) {
+    const target = await NodeFSP.lstat(retired).catch((cause: NodeJS.ErrnoException) => {
+      if (cause.code === "ENOENT") return undefined;
+      throw cause;
+    });
+    if (target !== undefined) throw new Error("An earlier runtime cleanup needs recovery.");
+    await NodeFSP.rename(directory, retired);
+    await syncPruneDirectory(versionsDir);
+  }
+  return retired;
+}
+
+export async function removeRetiredServerRuntime(baseDir: string, version: string) {
+  const record = await readPruneRecord(baseDir, version);
+  if (record === undefined) throw new Error("Runtime cleanup has no ownership record.");
+  const retired = NodePath.join(baseDir, "runtime", "versions", `.pruned-${version}`);
+  try {
+    await verifyPruneDirectory(retired, record);
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
+    await NodeFSP.rm(pruneRecordFile(baseDir, version));
+    return;
+  }
+  await NodeFSP.rm(retired, { recursive: true });
+  await syncPruneDirectory(NodePath.dirname(retired));
+  await NodeFSP.rm(pruneRecordFile(baseDir, version));
+  await syncPruneDirectory(NodePath.join(baseDir, "runtime"));
+}
+
+async function cleanupPruneRecords(baseDir: string) {
+  for (const entry of await NodeFSP.readdir(NodePath.join(baseDir, "runtime"))) {
+    const temporary = /^\.prune-owner-(.+)\.json\.(\d+)\.(.+)\.tmp$/.exec(entry);
+    if (temporary !== null) {
+      const pid = Number(temporary[2]);
+      if (
+        !isExactServiceVersion(temporary[1]!) ||
+        !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(temporary[3]!) ||
+        !Number.isSafeInteger(pid) ||
+        pid <= 0 ||
+        processExists(pid)
+      )
+        continue;
+      const file = NodePath.join(baseDir, "runtime", entry);
+      const stat = await NodeFSP.lstat(file);
+      if (
+        stat.isFile() &&
+        stat.size <= 16_384 &&
+        (process.getuid === undefined || stat.uid === process.getuid())
+      )
+        await NodeFSP.rm(file);
+      continue;
+    }
+    if (!entry.startsWith(".prune-owner-") || !entry.endsWith(".json")) continue;
+    const version = entry.slice(".prune-owner-".length, -".json".length);
+    if (!isExactServiceVersion(version)) continue;
+    const retired = NodePath.join(baseDir, "runtime", "versions", `.pruned-${version}`);
+    const exists = await NodeFSP.lstat(retired).catch((cause: NodeJS.ErrnoException) => {
+      if (cause.code === "ENOENT") return undefined;
+      throw cause;
+    });
+    if (exists === undefined && (await readPruneRecord(baseDir, version)) !== undefined)
+      await NodeFSP.rm(pruneRecordFile(baseDir, version));
+  }
+}
 
 export async function readServerRuntimeCandidate(
   baseDir: string,
@@ -156,14 +318,23 @@ async function retentionSnapshot(baseDir: string, nextState?: ServiceState) {
   const keep = new Set<string>();
   if (state !== undefined) {
     keep.add(state.activeVersion);
-    if (state.update?.status === "pending" || state.update?.restore !== undefined) {
+    if (state.update?.status === "pending") {
       keep.add(state.update.fromVersion);
       keep.add(state.update.targetVersion);
     }
-    const inventory = await inspectServerRestore(baseDir, state);
-    const predecessor = inventory.candidates.find((candidate) => candidate.blockedReason === null);
+    const inventory = await inspectServerRestore(baseDir, state).catch(
+      (cause: NodeJS.ErrnoException) => {
+        if (cause.code === "ENOENT") return undefined;
+        throw cause;
+      },
+    );
+    // Legacy homes cannot qualify a predecessor until their profile has initialized.
+    if (inventory === undefined)
+      for (const version of (await serverRuntimeStorage(baseDir)).entries) keep.add(version);
+    const predecessor = inventory?.candidates.find((candidate) => candidate.blockedReason === null);
     if (predecessor !== undefined) keep.add(predecessor.version);
-    else if (state.update?.status === "committed") keep.add(state.update.fromVersion);
+    else if (state.update?.status === "committed" && state.update.restore === undefined)
+      keep.add(state.update.fromVersion);
   }
   const references = await runtimeReferences(baseDir);
   const fold = (value: string) => (process.platform === "win32" ? value.toLowerCase() : value);
@@ -216,6 +387,10 @@ async function cleanUnused(baseDir: string, reuseVersion?: string) {
     )
       continue;
     if ((await NodeFSP.lstat(directory)).isSymbolicLink()) continue;
+    if (name.startsWith(".pruned-") && (await serverRuntimePruneRecorded(baseDir, version))) {
+      await removeRetiredServerRuntime(baseDir, version);
+      continue;
+    }
     if ((await readOptional(NodePath.join(directory, ".install-complete")))?.trim() !== version)
       continue;
     if (
@@ -225,17 +400,8 @@ async function cleanUnused(baseDir: string, reuseVersion?: string) {
       )
     )
       continue;
-    const retired = NodePath.join(snapshot.versionsDir, `.pruned-${version}`);
-    if (retired !== directory) {
-      try {
-        await NodeFSP.lstat(retired);
-        throw new Error("An earlier runtime cleanup needs recovery.");
-      } catch (cause) {
-        if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
-      }
-      await NodeFSP.rename(directory, retired);
-    }
-    await NodeFSP.rm(retired, { recursive: true });
+    await retireServerRuntime(baseDir, version, directory);
+    await removeRetiredServerRuntime(baseDir, version);
   }
   if (settledCandidate) {
     const limits = await serverRestoreLimits(baseDir);
@@ -246,7 +412,24 @@ async function cleanUnused(baseDir: string, reuseVersion?: string) {
   return { ...snapshot, candidate };
 }
 
-export async function acquireServerRuntimeRetention(baseDir: string) {
+export class ServerRuntimeRetentionBusyError extends Error {
+  constructor(options: ErrorOptions) {
+    super(
+      "Runtime retention is busy with another operation; no storage limit was exceeded.",
+      options,
+    );
+    this.name = "ServerRuntimeRetentionBusyError";
+  }
+}
+
+export class ServerRuntimeRetentionLimitError extends Error {
+  override name = "ServerRuntimeRetentionLimitError";
+}
+
+export async function acquireServerRuntimeRetention(
+  baseDir: string,
+  options: { readonly signal?: AbortSignal } = {},
+) {
   await NodeFSP.mkdir(NodePath.join(baseDir, "runtime", "versions"), { recursive: true });
   const canonicalBaseDir = await NodeFSP.realpath(baseDir);
   const metadataBytes = (version: string) =>
@@ -266,7 +449,21 @@ export async function acquireServerRuntimeRetention(baseDir: string) {
     NodePath.join(baseDir, "runtime", "retention-owner.sqlite"),
   );
   try {
-    db.exec("PRAGMA busy_timeout=0; BEGIN EXCLUSIVE");
+    db.exec("PRAGMA busy_timeout=0");
+    for (let attempt = 0; ; attempt++) {
+      options.signal?.throwIfAborted();
+      try {
+        db.exec("BEGIN EXCLUSIVE");
+        break;
+      } catch (cause) {
+        const code = (cause as { errcode?: number }).errcode;
+        if (code !== 5 && code !== 6) throw cause;
+        if (attempt === 1_200) throw new ServerRuntimeRetentionBusyError({ cause });
+        // A synchronous busy timeout would block this process's asynchronous lock owner.
+        await wait(25, undefined, { signal: options.signal });
+      }
+    }
+    await cleanupPruneRecords(baseDir);
   } catch (cause) {
     db.close();
     throw cause;
@@ -280,13 +477,15 @@ export async function acquireServerRuntimeRetention(baseDir: string) {
       storage.entries.length > limits.maxVersions + Number(temporarySlot) ||
       storage.totalBytes + additionalBytes > limits.maxBytes
     ) {
-      throw new Error("Runtime retention limit would be exceeded; no server was stopped.");
+      throw new ServerRuntimeRetentionLimitError(
+        "Runtime retention limit would be exceeded; no server was stopped.",
+      );
     }
     const disk = await NodeFSP.statfs(NodePath.join(baseDir, "runtime", "versions"), {
       bigint: true,
     });
     if (disk.bavail * disk.bsize < BigInt(additionalBytes))
-      throw new Error(
+      throw new ServerRuntimeRetentionLimitError(
         "Insufficient free space for the runtime transaction; no server was stopped.",
       );
     return limits;
@@ -322,7 +521,7 @@ export async function acquireServerRuntimeRetention(baseDir: string) {
         const directory = NodePath.join(versionsDir, name);
         if (
           name === state?.activeVersion ||
-          (state?.update?.restore !== undefined && name === state.update.fromVersion) ||
+          (state?.update?.status === "pending" && name === state.update.fromVersion) ||
           referenced(directory) ||
           !isExactServiceVersion(name)
         ) {
@@ -339,7 +538,7 @@ export async function acquireServerRuntimeRetention(baseDir: string) {
         if (!verified) committedCount++;
       }
       if (committedCount > limits.maxVersions)
-        throw new Error(
+        throw new ServerRuntimeRetentionLimitError(
           "Protected runtime references leave no committed version slot; no server was stopped.",
         );
       if (cached && candidate === undefined) {
@@ -369,8 +568,11 @@ export async function acquireServerRuntimeRetention(baseDir: string) {
   };
 }
 
-export async function cleanupServerRuntimeRetention(baseDir: string) {
-  const retention = await acquireServerRuntimeRetention(baseDir);
+export async function cleanupServerRuntimeRetention(
+  baseDir: string,
+  options: { readonly signal?: AbortSignal } = {},
+) {
+  const retention = await acquireServerRuntimeRetention(baseDir, options);
   try {
     await retention.clean();
   } finally {
@@ -378,10 +580,14 @@ export async function cleanupServerRuntimeRetention(baseDir: string) {
   }
 }
 
-export async function assertServerRuntimeCommitFits(baseDir: string, nextState: ServiceState) {
+export async function assertServerRuntimeCommitFits(
+  baseDir: string,
+  nextState: ServiceState,
+  options: { readonly signal?: AbortSignal } = {},
+) {
   const candidate = await readServerRuntimeCandidate(baseDir);
   if (candidate === undefined) return;
-  const retention = await acquireServerRuntimeRetention(baseDir);
+  const retention = await acquireServerRuntimeRetention(baseDir, options);
   try {
     const limits = await retention.check(retention.metadataBytes(nextState.activeVersion));
     const { versionsDir, keep, referenced } = await retentionSnapshot(baseDir, nextState);
@@ -404,7 +610,9 @@ export async function assertServerRuntimeCommitFits(baseDir: string, nextState: 
       if (!verified) committedCount++;
     }
     if (committedCount > limits.maxVersions)
-      throw new Error("Protected runtime references exceed the committed retention limit.");
+      throw new ServerRuntimeRetentionLimitError(
+        "Protected runtime references exceed the committed retention limit.",
+      );
   } finally {
     retention.release();
   }

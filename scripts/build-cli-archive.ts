@@ -591,13 +591,13 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   }
   yield* fs.writeFileString(
     path.join(contentDir, SERVER_RESTORE_MANIFEST),
-    `${JSON.stringify({
+    `${yield* encodeJsonString({
       format: 1,
       version: input.version,
       sourceSha,
       launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
-      profileContract: `${SERVER_RESTORE_PROFILE_CONTRACT}:${serverRestoreHash(JSON.stringify(profileSources))}`,
-      eventContract: serverRestoreHash(JSON.stringify(contractSources)),
+      profileContract: `${SERVER_RESTORE_PROFILE_CONTRACT}:${serverRestoreHash(yield* encodeJsonString(profileSources))}`,
+      eventContract: serverRestoreHash(yield* encodeJsonString(contractSources)),
       migrations: migrationManifest.map(([id, name]) => ({ id, name })),
       files: yield* Effect.tryPromise(() => serverRestoreFiles(contentDir)),
     })}\n`,

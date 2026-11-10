@@ -95,6 +95,9 @@ export const observe = Effect.fn("DesktopRestore.observe")(function* () {
       session = await DesktopRestoreStore.startDesktopRestoreSession({
         baseDir,
         appDataDirectory: environment.appDataDirectory,
+        passwordStore: Electron.app.commandLine.hasSwitch("password-store")
+          ? Electron.app.commandLine.getSwitchValue("password-store")
+          : null,
         quiesce: () =>
           Effect.runPromiseWith(context)(
             Effect.gen(function* () {

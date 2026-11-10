@@ -369,8 +369,16 @@ describe("DesktopUpdates", () => {
 
   it.effect("blocks updates on a hold or read failure until explicitly released", () =>
     Effect.gen(function* () {
-      for (const blocked of [Effect.succeed(true), Effect.fail(new Error("Hold is unreadable"))]) {
-        const hold = yield* Ref.make<Effect.Effect<boolean, unknown>>(blocked);
+      for (const blocked of [
+        Effect.succeed(true),
+        Effect.fail(
+          new DesktopUpdates.DesktopUpdateRestoreHoldError({ cause: "Hold is unreadable" }),
+        ),
+      ]) {
+        const hold =
+          yield* Ref.make<Effect.Effect<boolean, DesktopUpdates.DesktopUpdateRestoreHoldError>>(
+            blocked,
+          );
         const harness = makeHarness({
           clientOnlyInventory: [],
           restoreHold: Ref.get(hold).pipe(Effect.flatMap((read) => read)),

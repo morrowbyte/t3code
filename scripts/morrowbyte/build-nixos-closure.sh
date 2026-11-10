@@ -30,14 +30,30 @@ store_path="$(cat "$work_dir/store-path")"
 [[ "$store_path" == /nix/store/* && "$store_path" != *$'\n'* ]]
 nix store ls --json "$store_path/bin/t3code-morrowbyte" |
   jq -e '.type == "regular" and .executable == true' >/dev/null
-mapfile -t closure_paths < <(nix-store --query --requisites "$store_path")
+nix --extra-experimental-features nix-command path-info --recursive --json "$store_path" >"$work_dir/path-info.json"
+bash scripts/morrowbyte/verify-nixos-closure.sh --normalize "$store_path" "$work_dir/path-info.json" >"$work_dir/members.json"
+# For B >= max(filesystem fragment, 4096), narSize + B*(2*N + 2*D + 1)
+# uses N = fileCount + directoryCount + symlinkCount and D = directoryCount;
+# covers NAR payload/names, node rounding, entries, dots and the store-root entry;
+# filesystem metadata headroom still requires its own admission check.
+bash scripts/morrowbyte/verify-nixos-closure.sh --allocation "$work_dir/members.json" >"$work_dir/allocation.json"
+jq -r '.[].path' "$work_dir/members.json" >"$work_dir/closure-paths"
+mapfile -t closure_paths <"$work_dir/closure-paths"
 [[ ${#closure_paths[@]} -gt 0 ]]
 nix-store --export "${closure_paths[@]}" | zstd -T0 -3 > "$output_dir/$asset"
 zstd --test "$output_dir/$asset"
+zstd --decompress --stdout --memory=64MB "$output_dir/$asset" | wc -c >"$work_dir/export-bytes"
 # Import validation belongs to the consumer; the builder need not be a trusted Nix user.
 sha256="$(sha256sum "$output_dir/$asset" | cut -d ' ' -f 1)"
+source_sha="$(git rev-parse HEAD)"
+[[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
 jq -n --arg version "$version" --arg storePath "$store_path" \
   --arg asset "$asset" --arg sha256 "$sha256" \
-  '{schemaVersion:1,version:$version,system:"x86_64-linux",storePath:$storePath,asset:$asset,sha256:$sha256,compression:"zstd"}' \
+  --arg sourceSha "$source_sha" --argjson archiveBytes "$(stat -c '%s' "$output_dir/$asset")" \
+  --argjson exportBytes "$(cat "$work_dir/export-bytes")" --slurpfile closure "$work_dir/members.json" \
+  --slurpfile allocationEntries "$work_dir/allocation.json" \
+  '{schemaVersion:1,version:$version,sourceSha:$sourceSha,system:"x86_64-linux",storePath:$storePath,
+    asset:$asset,sha256:$sha256,compression:"zstd",archiveBytes:$archiveBytes,exportBytes:$exportBytes,
+    closure:$closure[0],allocationEntries:$allocationEntries[0]}' \
   > "$output_dir/$manifest"
 bash scripts/morrowbyte/verify-nixos-closure.sh "$version" "$output_dir"

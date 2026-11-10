@@ -16,6 +16,7 @@ import {
   desktopRestoreSchemaDigest,
   readDesktopRestoreRegistry,
   readDesktopRestoreTransaction,
+  recoverDesktopRestoreStaging,
   writeDesktopRestoreJson,
   verifyDesktopRestoreArtifact,
   type DesktopRestoreRegistry,
@@ -66,6 +67,7 @@ async function readSession(baseDir: string) {
 export async function startDesktopRestoreSession(input: {
   readonly baseDir: string;
   readonly appDataDirectory?: string;
+  readonly passwordStore?: string | null;
   readonly quiesce: () => Promise<void>;
   readonly quit: () => void;
 }) {
@@ -141,6 +143,7 @@ export async function startDesktopRestoreSession(input: {
     installationId: registry.installationId,
     environment: process.env,
     appDataDirectory: input.appDataDirectory ?? NodePath.dirname(registry.identity.userDataDir),
+    passwordStore: input.passwordStore,
   }).catch(async (cause) => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await NodeFSP.rm(address.address, { force: true });
@@ -376,6 +379,7 @@ async function prepareDesktop(
       throw new Error("The desktop session changed before restore; refresh the version list.");
   } else if (
     transaction.launchedProcess === undefined &&
+    (await desktopRestoreProcessIdentity(expected.pid)) === expected.processIdentity &&
     graphics.owner.processIdentity !== expected.processIdentity
   )
     throw new Error("The desktop graphical session changed before restore.");
@@ -398,6 +402,7 @@ async function launchDesktop(
       'read -r start || exit 1; [ "$start" = launch ] || exit 1; exec "$@"',
       "desktop-restore",
       registry.identity.launcherPath,
+      ...(graphics.passwordStore === null ? [] : [`--password-store=${graphics.passwordStore}`]),
     ],
     {
       detached: true,
@@ -408,6 +413,9 @@ async function launchDesktop(
         APPIMAGE_EXTRACT_AND_RUN: undefined,
         T3CODE_HOME: registry.identity.baseDir,
         T3CODE_DESKTOP_PROFILE: registry.identity.profileId ?? undefined,
+        T3CODE_NIX_DATA_DIR: registry.identity.nixDataDir ?? undefined,
+        T3CODE_NIX_LAUNCHER:
+          registry.identity.kind === "nix" ? registry.identity.launcherPath : undefined,
       },
     },
   );
@@ -496,6 +504,16 @@ async function replaceFromArtifact(
   if (!recover && transaction.stagePath !== stage)
     throw new Error("Desktop restore staging identity changed.");
   if (recover) {
+    try {
+      const stat = await NodeFSP.lstat(stage);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid?.())
+        throw new Error("Desktop recovery staging ownership changed.");
+      const previous = await desktopRestoreFileDigest(stage);
+      if (previous.sha256 !== artifact.sha256 || previous.sizeBytes !== artifact.sizeBytes)
+        await NodeFSP.unlink(stage);
+    } catch (cause) {
+      if (!missing(cause)) throw cause;
+    }
     try {
       await NodeFSP.copyFile(
         retained,
@@ -634,7 +652,7 @@ async function recoverTransaction(
   if (latest === null || latest.id !== transaction.id)
     throw new Error("Desktop restore recovery transaction changed.");
   transaction = latest;
-  await controller.prepare(registry, transaction);
+  await verifyRecoveryProfile(registry);
   await controller.quiesce(baseDir, transaction);
   const recovering = {
     ...transaction,
@@ -652,6 +670,11 @@ async function recoverTransaction(
   } catch {
     /* A missing or corrupt target still has a verified retained original. */
   }
+  if (transaction.stagePath !== null) {
+    if (transaction.stagePath !== `${registry.identity.installPath}.crew-restore-${transaction.id}`)
+      throw new Error("Desktop recovery target staging identity changed.");
+    await NodeFSP.rm(transaction.stagePath, { force: true });
+  }
   if (!originalSelected) await replaceFromArtifact(baseDir, registry, transaction, true);
   await writeDesktopRestoreJson(directoryFile(baseDir, "registry.json"), {
     ...registry,
@@ -659,18 +682,54 @@ async function recoverTransaction(
     currentHash: transaction.from.sha256,
     updateHold: true,
   });
+  try {
+    await readDesktopRestoreLaunchContext(baseDir, registry.installationId);
+  } catch {
+    await writeDesktopRestoreJson(directoryFile(baseDir, "transaction.json"), {
+      ...recovering,
+      pendingHealth: true,
+    });
+    throw new Error(
+      "Original desktop bytes restored; pendingHealth requires a verified graphical start.",
+    );
+  }
+  if (
+    (await desktopRestoreSchemaDigest(registry.identity.stateDir)) !== transaction.from.schemaDigest
+  )
+    throw new Error("Original desktop bytes restored, but its database schema is incompatible.");
+  await controller.prepare(registry, recovering);
   await controller.launch(registry, recovering);
   await controller.health(baseDir, transaction, transaction.from.version, transaction.from.sha256);
   await finishTransaction(baseDir, transaction);
 }
 
+async function verifyRecoveryProfile(registry: DesktopRestoreRegistry) {
+  const identity = registry.identity;
+  for (const directory of [identity.baseDir, identity.stateDir, identity.userDataDir])
+    if ((await NodeFSP.realpath(directory)) !== directory)
+      throw new Error("Desktop recovery home or profile binding changed.");
+  if (
+    (await NodeFSP.readFile(NodePath.join(identity.stateDir, "environment-id"), "utf8")).trim() !==
+    identity.environmentId
+  )
+    throw new Error("Desktop recovery environment binding changed.");
+}
+
 export async function recoverDesktopRestoreBeforeStartup({
   baseDir,
+  appDataDirectory,
+  passwordStore,
 }: {
   readonly baseDir: string;
+  readonly appDataDirectory?: string;
+  readonly passwordStore?: string | null;
 }) {
   const transaction = await readDesktopRestoreTransaction(baseDir);
   if (transaction === null) return false;
+  if (transaction.phase === "staging") {
+    await recoverDesktopRestoreStaging(baseDir);
+    return false;
+  }
   const controllerLock = directoryFile(baseDir, "controller.lock");
   try {
     const owner = (await NodeFSP.readFile(controllerLock, "utf8")).split(":");
@@ -683,7 +742,35 @@ export async function recoverDesktopRestoreBeforeStartup({
   } catch (cause) {
     if (!missing(cause)) throw cause;
   }
-  await readDesktopRestoreRegistry(baseDir);
+  const registry = await readDesktopRestoreRegistry(baseDir);
+  if (transaction.installationId !== registry.installationId)
+    throw new Error("Desktop recovery installation binding changed.");
+  await verifyRecoveryProfile(registry);
+  if (appDataDirectory !== undefined && (process.env.DISPLAY || process.env.WAYLAND_DISPLAY)) {
+    const profile = NodePath.join(
+      appDataDirectory,
+      registry.identity.profileId === null ? "t3code-v2" : `t3code-${registry.identity.profileId}`,
+    );
+    if ((await NodeFSP.realpath(profile)) !== registry.identity.userDataDir)
+      throw new Error("Desktop recovery graphical profile binding changed.");
+    const installed =
+      registry.identity.kind === "nix"
+        ? await readNixRestoreClosure(await NodeFSP.realpath(registry.identity.installPath), true)
+        : await desktopRestoreFileDigest(registry.identity.installPath);
+    if (![transaction.from.sha256, transaction.to.sha256].includes(installed.sha256))
+      throw new Error("Desktop recovery installed artifact binding changed.");
+    await saveDesktopRestoreLaunchContext({
+      baseDir,
+      installationId: registry.installationId,
+      appDataDirectory,
+      passwordStore,
+      environment: process.env,
+    });
+  } else if (transaction.pendingHealth) {
+    throw new Error(
+      "Original desktop bytes restored; pendingHealth requires a verified graphical start.",
+    );
+  }
   await writeDesktopRestoreJson(directoryFile(baseDir, "transaction.json"), {
     ...transaction,
     phase: "recovering",

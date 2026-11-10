@@ -32,6 +32,9 @@ import {
 import {
   acquireServerRuntimeRetention,
   readServerRuntimeCandidate,
+  removeRetiredServerRuntime,
+  retireServerRuntime,
+  serverRuntimePruneRecorded,
 } from "./serverRuntimeRetention.ts";
 
 const PINNED_RUNTIME_DIR = "runtime";
@@ -607,7 +610,7 @@ export const ensurePinnedRuntimeInstalled = (input: PinnedRuntimeInstallInput) =
   pinnedRuntimeInstallLock.withPermit(
     Effect.acquireUseRelease(
       Effect.tryPromise({
-        try: () => acquireServerRuntimeRetention(input.baseDir),
+        try: (signal) => acquireServerRuntimeRetention(input.baseDir, { signal }),
         catch: (cause) =>
           new PinnedRuntimeInstallError({ step: "locking runtime retention admission", cause }),
       }),
@@ -822,7 +825,10 @@ const selectUnusedRuntimes = Effect.fn("cloud.pinned_runtime.select_unused")(fun
     const state = parseServiceState(stateText.value);
     if (state === undefined) return pruned;
     keep.add(state.activeVersion);
-    if (state.update !== undefined) {
+    if (
+      state.update !== undefined &&
+      (state.update.restore === undefined || state.update.status === "pending")
+    ) {
       keep.add(state.update.fromVersion);
       keep.add(state.update.targetVersion);
     }
@@ -855,15 +861,18 @@ const selectUnusedRuntimes = Effect.fn("cloud.pinned_runtime.select_unused")(fun
 
   for (const entry of entries.filter((name) => name.startsWith(PINNED_RUNTIME_PRUNED_PREFIX))) {
     const version = entry.slice(PINNED_RUNTIME_PRUNED_PREFIX.length);
+    if (!isExactServiceVersion(version)) continue;
     const directory = path.join(versionsDir, entry);
     const sentinel = yield* fs
       .readFileString(path.join(directory, ".install-complete"))
       .pipe(Effect.option);
+    const recorded = yield* Effect.tryPromise(() =>
+      serverRuntimePruneRecorded(input.baseDir, version),
+    ).pipe(Effect.orElseSucceed(() => false));
     if (
-      !isExactServiceVersion(version) ||
       keep.has(version) ||
-      Option.isNone(sentinel) ||
-      ![version, entry].includes(sentinel.value.trim()) ||
+      (!recorded &&
+        (Option.isNone(sentinel) || ![version, entry].includes(sentinel.value.trim()))) ||
       references.some((reference) =>
         [directory, path.join(realVersionsDir, entry)].some((prefix) =>
           reference.includes(foldCase(prefix + path.sep)),
@@ -871,7 +880,12 @@ const selectUnusedRuntimes = Effect.fn("cloud.pinned_runtime.select_unused")(fun
       )
     )
       continue;
-    pruned.add(directory);
+    yield* Effect.tryPromise(() => retireServerRuntime(input.baseDir, version, directory)).pipe(
+      Effect.andThen(Effect.sync(() => pruned.add(directory))),
+      Effect.catch((cause) =>
+        Effect.logWarning("Could not resume an unused t3 runtime cleanup.", { version, cause }),
+      ),
+    );
   }
 
   for (const version of completed) {
@@ -887,9 +901,7 @@ const selectUnusedRuntimes = Effect.fn("cloud.pinned_runtime.select_unused")(fun
     }
     const target = path.join(versionsDir, `${PINNED_RUNTIME_PRUNED_PREFIX}${version}`);
     if (yield* fs.exists(target).pipe(Effect.orElseSucceed(() => true))) continue;
-    // Renaming first means an interrupted removal never leaves a partial tree that still carries
-    // its sentinel and would pass for a complete install.
-    yield* fs.rename(versionDir, target).pipe(
+    yield* Effect.tryPromise(() => retireServerRuntime(input.baseDir, version, versionDir)).pipe(
       Effect.andThen(Effect.sync(() => pruned.add(target))),
       Effect.catch((cause) =>
         Effect.logWarning("Could not remove an unused t3 runtime.", { version, cause }),
@@ -909,30 +921,36 @@ export const prunePinnedRuntimes = Effect.fn("cloud.pinned_runtime.prune")(funct
   readonly keep: ReadonlyArray<string>;
   readonly references?: ReadonlyArray<string>;
 }) {
-  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const retention = yield* Effect.tryPromise(() =>
-    acquireServerRuntimeRetention(input.baseDir),
-  ).pipe(Effect.option);
-  if (Option.isNone(retention)) return [];
-  return yield* Effect.gen(function* () {
-    // Only selection and the renames race an install; deleting renamed trees can take a while.
-    const pruned = yield* pinnedRuntimeInstallLock.withPermit(
-      selectUnusedRuntimes({ ...input, references: input.references ?? [] }),
-    );
-    const removed: Array<string> = [];
-    for (const target of pruned) {
-      yield* fs.remove(target, { recursive: true, force: true }).pipe(
-        Effect.andThen(
-          Effect.sync(() =>
-            removed.push(path.basename(target).slice(PINNED_RUNTIME_PRUNED_PREFIX.length)),
-          ),
-        ),
-        Effect.catch((cause) =>
-          Effect.logWarning("Could not remove an unused t3 runtime.", { target, cause }),
-        ),
-      );
-    }
-    return removed;
-  }).pipe(Effect.ensuring(Effect.sync(retention.value.release)));
+  return yield* pinnedRuntimeInstallLock.withPermit(
+    Effect.acquireUseRelease(
+      Effect.tryPromise((signal) => acquireServerRuntimeRetention(input.baseDir, { signal })).pipe(
+        Effect.option,
+      ),
+      (retention) =>
+        Option.isNone(retention)
+          ? Effect.succeed([])
+          : Effect.gen(function* () {
+              const pruned = yield* selectUnusedRuntimes({
+                ...input,
+                references: input.references ?? [],
+              });
+              const removed: Array<string> = [];
+              for (const target of pruned) {
+                const version = path.basename(target).slice(PINNED_RUNTIME_PRUNED_PREFIX.length);
+                yield* Effect.tryPromise(() =>
+                  removeRetiredServerRuntime(input.baseDir, version),
+                ).pipe(
+                  Effect.andThen(Effect.sync(() => removed.push(version))),
+                  Effect.catch((cause) =>
+                    Effect.logWarning("Could not remove an unused t3 runtime.", { target, cause }),
+                  ),
+                );
+              }
+              return removed;
+            }),
+      (retention) =>
+        Option.isNone(retention) ? Effect.void : Effect.sync(retention.value.release),
+    ),
+  );
 });

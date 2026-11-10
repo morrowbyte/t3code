@@ -24,6 +24,8 @@ const GraphicsEnvironment = Schema.Struct({
   DBUS_SESSION_BUS_ADDRESS: Schema.optionalKey(Schema.String),
   NIXOS_OZONE_WL: Schema.optionalKey(Schema.String),
   ELECTRON_OZONE_PLATFORM_HINT: Schema.optionalKey(Schema.String),
+  XDG_CURRENT_DESKTOP: Schema.optionalKey(Schema.String),
+  KDE_SESSION_VERSION: Schema.optionalKey(Schema.String),
 });
 const Endpoint = Schema.Struct({
   path: Schema.String,
@@ -39,6 +41,7 @@ const GraphicsContext = Schema.Struct({
   bootId: Schema.String,
   owner: DesktopRestoreProcess,
   environment: GraphicsEnvironment,
+  passwordStore: Schema.NullOr(Schema.String),
   endpoints: Schema.Array(Endpoint),
 });
 const decodeContext = Schema.decodeUnknownSync(GraphicsContext);
@@ -133,12 +136,15 @@ export async function saveDesktopRestoreLaunchContext(input: {
   readonly installationId: string;
   readonly environment: NodeJS.ProcessEnv;
   readonly appDataDirectory?: string;
+  readonly passwordStore?: string | null | undefined;
 }) {
   const processIdentity = await desktopRestoreProcessIdentity(process.pid);
   if (processIdentity === null) throw new Error("Cannot prove the desktop process identity.");
   const environment = decodeEnvironment({
     ...Object.fromEntries(
-      keys.flatMap((key) => (input.environment[key] ? [[key, input.environment[key]]] : [])),
+      keys.flatMap((key) =>
+        input.environment[key] === undefined ? [] : [[key, input.environment[key]]],
+      ),
     ),
     ...(input.appDataDirectory === undefined ? {} : { XDG_CONFIG_HOME: input.appDataDirectory }),
   });
@@ -147,6 +153,7 @@ export async function saveDesktopRestoreLaunchContext(input: {
     bootId: (await NodeFSP.readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim(),
     owner: { pid: process.pid, processIdentity },
     environment,
+    passwordStore: input.passwordStore ?? null,
     endpoints: await inspectEnvironment(environment),
   });
   await writeDesktopRestoreJson(

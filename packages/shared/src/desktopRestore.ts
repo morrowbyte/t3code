@@ -65,6 +65,15 @@ const Artifact = Schema.Struct({
 });
 type Artifact = typeof Artifact.Type;
 
+const Retention = Schema.Struct({
+  format: Schema.Literal(1),
+  installationId: HASH,
+  inventory: Schema.Array(Artifact),
+  evict: Schema.Array(Artifact),
+  copying: Schema.NullOr(Artifact),
+});
+const decodeRetention = Schema.decodeUnknownSync(Retention);
+
 const Registry = Schema.Struct({
   format: Schema.Literal(1),
   installationId: HASH,
@@ -83,11 +92,12 @@ const Transaction = Schema.Struct({
   installationId: HASH,
   from: Artifact,
   to: Artifact,
-  phase: Schema.Literals(["prepared", "switching", "starting", "recovering"]),
+  phase: Schema.Literals(["staging", "prepared", "switching", "starting", "recovering"]),
   stagePath: Schema.NullOr(Schema.String),
   originalHold: Schema.Boolean,
   originalProcess: Schema.optionalKey(DesktopRestoreProcess),
   launchedProcess: Schema.optionalKey(DesktopRestoreProcess),
+  pendingHealth: Schema.optionalKey(Schema.Boolean),
 });
 export type DesktopRestoreTransaction = typeof Transaction.Type;
 
@@ -179,6 +189,171 @@ async function readJson(file: string): Promise<unknown> {
   return JSON.parse(await NodeFSP.readFile(file, "utf8"));
 }
 
+async function removeOwnedArtifact(
+  baseDir: string,
+  identity: DesktopRestoreIdentity,
+  item: Artifact,
+) {
+  if (
+    item.nixStorePath !== null &&
+    identity.nixDataDir !== null &&
+    (await NodeFSP.realpath(NodePath.join(identity.nixDataDir, "current"))) === item.nixStorePath
+  )
+    throw new Error("Cannot evict the selected Nix installation.");
+  const file =
+    item.nixStorePath === null
+      ? desktopRestoreArtifactPath(baseDir, item)
+      : NodePath.join(paths(baseDir).directory, "nix-roots", item.sha256);
+  try {
+    const stat = await NodeFSP.lstat(file);
+    if (
+      stat.uid !== process.getuid?.() ||
+      (item.nixStorePath === null
+        ? !stat.isFile() || stat.isSymbolicLink()
+        : !stat.isSymbolicLink() || (await NodeFSP.realpath(file)) !== item.nixStorePath)
+    )
+      throw new Error("Owned desktop restore inventory changed.");
+    await NodeFSP.unlink(file);
+  } catch (cause) {
+    if (!isMissing(cause)) throw cause;
+  }
+  if (item.nixStorePath !== null && identity.nixDataDir !== null) {
+    const root = NodePath.join(
+      identity.nixDataDir,
+      ".gcroots",
+      NodePath.basename(item.nixStorePath),
+    );
+    try {
+      const stat = await NodeFSP.lstat(root);
+      const provenance = await readNixRestoreProvenance(identity.nixDataDir, item.version);
+      if (
+        !stat.isSymbolicLink() ||
+        stat.uid !== process.getuid?.() ||
+        provenance.storePath !== item.nixStorePath ||
+        (await NodeFSP.realpath(root)) !== item.nixStorePath
+      )
+        throw new Error("Owned Nix installer root changed.");
+      await NodeFSP.unlink(root);
+    } catch (cause) {
+      if (!isMissing(cause)) throw cause;
+    }
+  }
+}
+
+async function reconcileRetention(
+  baseDir: string,
+  identity: DesktopRestoreIdentity,
+  installationId: string,
+) {
+  const file = NodePath.join(paths(baseDir).directory, "retention.json");
+  let retention;
+  try {
+    retention = decodeRetention(await readJson(file));
+  } catch (cause) {
+    if (isMissing(cause)) return null;
+    throw cause;
+  }
+  if (retention.installationId !== installationId)
+    throw new Error("Desktop retention inventory belongs to another installation.");
+  for (const item of retention.evict) await removeOwnedArtifact(baseDir, identity, item);
+  if (retention.copying !== null) {
+    const copying = retention.copying;
+    try {
+      await verifyDesktopRestoreArtifact(baseDir, copying);
+    } catch {
+      await removeOwnedArtifact(baseDir, identity, copying);
+      retention = {
+        ...retention,
+        inventory: retention.inventory.filter((item) => item.sha256 !== copying.sha256),
+      };
+    }
+  }
+  const next = { ...retention, evict: [], copying: null };
+  await writeDesktopRestoreJson(file, next);
+  return next;
+}
+
+async function physicalRetention(baseDir: string, identity: DesktopRestoreIdentity) {
+  const files: { sizeBytes: number; nixClosure?: readonly NixClosureMember[] }[] = [];
+  let count = 0;
+  const directory =
+    identity.kind === "nix"
+      ? NodePath.join(paths(baseDir).directory, "nix-roots")
+      : paths(baseDir).artifacts;
+  const roots = new Set<string>();
+  const directories =
+    identity.kind === "nix" && identity.nixDataDir !== null
+      ? [directory, NodePath.join(identity.nixDataDir, ".gcroots")]
+      : [directory];
+  for (const parent of directories) {
+    let entries;
+    try {
+      entries = await NodeFSP.readdir(parent);
+    } catch (cause) {
+      if (isMissing(cause)) continue;
+      throw cause;
+    }
+    if (entries.length > 100) throw new Error("Desktop physical inventory exceeds its size bound.");
+    for (const name of entries) {
+      const file = NodePath.join(parent, name);
+      const stat = await NodeFSP.lstat(file);
+      if (identity.kind === "nix") {
+        if (!stat.isSymbolicLink()) throw new Error("Unrecognized Nix restore inventory entry.");
+        const storePath = await NodeFSP.realpath(file);
+        if (roots.has(storePath)) continue;
+        roots.add(storePath);
+        const closure = await readNixRestoreClosure(storePath, false);
+        files.push({ sizeBytes: closure.sizeBytes, nixClosure: closure.members });
+      } else {
+        if (!stat.isFile() || stat.isSymbolicLink())
+          throw new Error("Unrecognized desktop restore inventory entry.");
+        files.push({ sizeBytes: stat.size });
+      }
+      count += 1;
+    }
+  }
+  const transaction = await readDesktopRestoreTransaction(baseDir);
+  if (transaction?.stagePath !== null && transaction?.stagePath !== undefined) {
+    if (transaction.stagePath !== `${identity.installPath}.crew-restore-${transaction.id}`)
+      throw new Error("Desktop staging identity changed.");
+    try {
+      const stat = await NodeFSP.lstat(transaction.stagePath);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid?.())
+        throw new Error("Desktop staging ownership changed.");
+      files.push({ sizeBytes: stat.size });
+    } catch (cause) {
+      if (!isMissing(cause)) throw cause;
+    }
+  }
+  return { count, bytes: retainedDesktopBytes(files), roots, files };
+}
+
+async function bindNixRestoreHome(identity: DesktopRestoreIdentity) {
+  if (identity.nixDataDir === null) return;
+  const file = NodePath.join(identity.nixDataDir, "restore-home.json");
+  try {
+    const stat = await NodeFSP.lstat(file);
+    const binding = Schema.decodeUnknownSync(
+      Schema.Struct({ format: Schema.Literal(1), baseDir: Schema.String }),
+    )(await readJson(file));
+    if (
+      stat.uid !== process.getuid?.() ||
+      (stat.mode & 0o022) !== 0 ||
+      binding.baseDir !== identity.baseDir
+    )
+      throw new Error("Nix installation is bound to another app home.");
+  } catch (cause) {
+    if (!isMissing(cause)) throw cause;
+    const handle = await NodeFSP.open(file, "wx", 0o600);
+    try {
+      await handle.writeFile(`${JSON.stringify({ format: 1, baseDir: identity.baseDir })}\n`);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  }
+}
+
 export async function readDesktopRestoreRegistry(baseDir: string) {
   const registry = decodeRegistry(await readJson(paths(baseDir).registry));
   if (
@@ -214,7 +389,11 @@ export async function desktopRestoreProcessIdentity(pid: number): Promise<string
     const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
     return fields[0] === "Z" ? null : `${pid}:${fields[19]}`;
   } catch (cause) {
-    if (isMissing(cause)) return null;
+    if (
+      isMissing(cause) ||
+      (typeof cause === "object" && cause !== null && "code" in cause && cause.code === "ESRCH")
+    )
+      return null;
     throw cause;
   }
 }
@@ -252,11 +431,47 @@ async function withLock<A>(baseDir: string, operation: () => Promise<A>): Promis
   }
   try {
     await handle.writeFile(identity ?? "unavailable");
+    await discardUnfinishedStaging(baseDir);
     return await operation();
   } finally {
     await handle.close();
     await NodeFSP.unlink(lock);
   }
+}
+
+async function discardUnfinishedStaging(baseDir: string) {
+  const transaction = await readDesktopRestoreTransaction(baseDir);
+  if (transaction?.phase !== "staging") return;
+  const registry = await readDesktopRestoreRegistry(baseDir);
+  const expectedStage =
+    registry.identity.kind === "nix"
+      ? null
+      : `${registry.identity.installPath}.crew-restore-${transaction.id}`;
+  if (
+    transaction.installationId !== registry.installationId ||
+    transaction.stagePath !== expectedStage
+  )
+    throw new Error("Desktop staging installation binding changed.");
+  for (const file of [
+    transaction.stagePath,
+    NodePath.join(paths(baseDir).directory, `controller.sh.${transaction.id}.tmp`),
+  ]) {
+    if (file === null) continue;
+    try {
+      const stat = await NodeFSP.lstat(file);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid?.())
+        throw new Error("Desktop staging ownership changed.");
+      await NodeFSP.unlink(file);
+    } catch (cause) {
+      if (!isMissing(cause)) throw cause;
+    }
+  }
+  await NodeFSP.unlink(paths(baseDir).transaction);
+}
+
+export async function recoverDesktopRestoreStaging(baseDir: string) {
+  if ((await readDesktopRestoreTransaction(baseDir))?.phase !== "staging") return false;
+  return withLock(baseDir, async () => true);
 }
 
 export async function desktopRestoreSchemaDigest(stateDir: string) {
@@ -383,6 +598,7 @@ export async function listDesktopRestores({
   }
   const current = registry.artifacts.find((item) => item.sha256 === registry.currentHash);
   const transaction = await readDesktopRestoreTransaction(baseDir);
+  const physical = await physicalRetention(baseDir, registry.identity);
   const candidates = await Promise.all(
     registry.artifacts
       .filter((item) => item.sha256 !== registry.currentHash)
@@ -414,12 +630,16 @@ export async function listDesktopRestores({
     updateHold: registry.updateHold,
     maxVersions: registry.maxVersions,
     maxBytes: registry.maxBytes,
-    totalBytes: retainedDesktopBytes(registry.artifacts),
+    totalBytes: physical.bytes,
     candidates,
     unavailableReason:
       transaction === null
-        ? null
-        : "An interrupted or active desktop restore must finish recovering first.",
+        ? physical.count > registry.maxVersions || physical.bytes > registry.maxBytes
+          ? "Physical desktop restore inventory exceeds its storage bounds."
+          : null
+        : transaction.pendingHealth
+          ? "Original desktop bytes restored; pendingHealth requires a verified graphical start."
+          : "An interrupted or active desktop restore must finish recovering first.",
   };
 }
 
@@ -510,7 +730,12 @@ export async function registerDesktopRestoreBuild(input: RegisterDesktopRestoreI
       maxBytes <= 0
     )
       throw new Error("Invalid desktop restore storage limits.");
-    const retained = previous?.artifacts.filter((item) => item.sha256 !== artifact.sha256) ?? [];
+    await bindNixRestoreHome(identity);
+    const reconciled = await reconcileRetention(input.baseDir, identity, installationId);
+    const inventory = (reconciled?.inventory ?? previous?.artifacts ?? []).map(
+      (item) => previous?.artifacts.find((registered) => registered.sha256 === item.sha256) ?? item,
+    );
+    const retained = inventory.filter((item) => item.sha256 !== artifact.sha256);
     const predecessor = retained.find((item) => item.sha256 === previous?.currentHash);
     const keep =
       predecessor === undefined
@@ -522,6 +747,7 @@ export async function registerDesktopRestoreBuild(input: RegisterDesktopRestoreI
               .slice(0, maxVersions - 2),
             predecessor,
           ];
+    for (const item of keep) await verifyDesktopRestoreArtifact(input.baseDir, item);
     const totalBytes = retainedDesktopBytes([
       ...keep,
       { ...artifact, ...(closure === null ? {} : { nixClosure: closure.members }) },
@@ -530,36 +756,7 @@ export async function registerDesktopRestoreBuild(input: RegisterDesktopRestoreI
       throw new Error(
         "Desktop restore storage cap cannot retain the current build and its predecessor.",
       );
-    await admitStorage([input.baseDir], closure === null ? artifact.sizeBytes : 0);
     const fileName = `${artifact.sha256}.${closure === null ? "AppImage" : "nix"}`;
-    if (provenance !== null) {
-      await retainNixRestoreRoot(
-        NodePath.join(paths(input.baseDir).directory, "nix-roots", artifact.sha256),
-        provenance.storePath,
-      );
-    } else {
-      const destination = NodePath.join(paths(input.baseDir).artifacts, fileName);
-      await NodeFSP.mkdir(paths(input.baseDir).artifacts, { recursive: true, mode: 0o700 });
-      try {
-        await NodeFSP.copyFile(
-          identity.installPath,
-          destination,
-          NodeFS.constants.COPYFILE_EXCL | NodeFS.constants.COPYFILE_FICLONE,
-        );
-        await NodeFSP.chmod(destination, 0o500);
-        await syncFile(destination);
-      } catch (cause) {
-        if (
-          !(
-            typeof cause === "object" &&
-            cause !== null &&
-            "code" in cause &&
-            cause.code === "EEXIST"
-          )
-        )
-          throw cause;
-      }
-    }
     const next: Artifact = {
       sha256: artifact.sha256,
       sizeBytes: artifact.sizeBytes,
@@ -572,6 +769,66 @@ export async function registerDesktopRestoreBuild(input: RegisterDesktopRestoreI
       nixStorePath: provenance?.storePath ?? null,
       ...(closure === null ? {} : { nixClosure: closure.members }),
     };
+    const retentionFile = NodePath.join(paths(input.baseDir).directory, "retention.json");
+    const evict = retained.filter((item) => !keep.includes(item));
+    const cached = inventory.find((item) => item.sha256 === next.sha256);
+    const destination = desktopRestoreArtifactPath(input.baseDir, next);
+    if (closure === null && cached === undefined) {
+      try {
+        await NodeFSP.lstat(destination);
+        throw new Error("An unowned desktop artifact occupies the retained path.");
+      } catch (cause) {
+        if (!isMissing(cause)) throw cause;
+      }
+    }
+    const retention = {
+      format: 1,
+      installationId,
+      inventory: cached === undefined ? keep : [...keep, cached],
+      evict,
+      copying: null,
+    };
+    await writeDesktopRestoreJson(retentionFile, retention);
+    for (const old of evict) await removeOwnedArtifact(input.baseDir, identity, old);
+    const physical = await physicalRetention(input.baseDir, identity);
+    let exists = false;
+    if (closure === null) {
+      try {
+        await NodeFSP.lstat(destination);
+        exists = true;
+      } catch (cause) {
+        if (!isMissing(cause)) throw cause;
+      }
+      if (exists && cached === undefined)
+        throw new Error("An unowned desktop artifact occupies the retained path.");
+    } else exists = physical.roots.has(provenance!.storePath);
+    const peakBytes =
+      closure === null
+        ? physical.bytes + (exists ? 0 : next.sizeBytes)
+        : retainedDesktopBytes([...physical.files, next]);
+    if (physical.count + (exists ? 0 : 1) > maxVersions || peakBytes > maxBytes)
+      throw new Error("Physical desktop restore inventory and copy peak exceed the storage cap.");
+    await admitStorage([input.baseDir], closure === null && !exists ? artifact.sizeBytes : 0);
+    await writeDesktopRestoreJson(retentionFile, {
+      ...retention,
+      inventory: [...keep, cached ?? next],
+      copying: cached === undefined ? next : null,
+    });
+    if (provenance !== null) {
+      await retainNixRestoreRoot(
+        NodePath.join(paths(input.baseDir).directory, "nix-roots", artifact.sha256),
+        provenance.storePath,
+      );
+    } else if (!exists) {
+      await NodeFSP.mkdir(paths(input.baseDir).artifacts, { recursive: true, mode: 0o700 });
+      await NodeFSP.copyFile(
+        identity.installPath,
+        destination,
+        NodeFS.constants.COPYFILE_EXCL | NodeFS.constants.COPYFILE_FICLONE,
+      );
+      await NodeFSP.chmod(destination, 0o500);
+      await syncFile(destination);
+    }
     await verifyDesktopRestoreArtifact(input.baseDir, next);
     const alreadyHealthy = previous?.artifacts.find((item) => item.sha256 === artifact.sha256);
     const artifacts = [...keep, alreadyHealthy ?? next];
@@ -586,50 +843,12 @@ export async function registerDesktopRestoreBuild(input: RegisterDesktopRestoreI
       maxBytes,
       artifacts,
     });
-    for (const old of retained.filter((item) => !keep.includes(item))) {
-      if (old.nixStorePath === null)
-        await NodeFSP.rm(desktopRestoreArtifactPath(input.baseDir, old), { force: true });
-      else {
-        const root = NodePath.join(paths(input.baseDir).directory, "nix-roots", old.sha256);
-        try {
-          if ((await NodeFSP.realpath(root)) === old.nixStorePath) await NodeFSP.unlink(root);
-        } catch (cause) {
-          if (!isMissing(cause)) throw cause;
-        }
-        if (identity.nixDataDir !== null) {
-          const provenance = await readNixRestoreProvenance(identity.nixDataDir, old.version);
-          const selected = await NodeFSP.realpath(NodePath.join(identity.nixDataDir, "current"));
-          let previousSelected: string | null = null;
-          try {
-            previousSelected = await NodeFSP.realpath(
-              NodePath.join(identity.nixDataDir, "previous"),
-            );
-          } catch (cause) {
-            if (!isMissing(cause)) throw cause;
-          }
-          if (
-            selected !== old.nixStorePath &&
-            previousSelected !== old.nixStorePath &&
-            provenance.storePath === old.nixStorePath
-          ) {
-            const updaterRoot = NodePath.join(
-              identity.nixDataDir,
-              ".gcroots",
-              NodePath.basename(old.nixStorePath),
-            );
-            try {
-              if (
-                (await NodeFSP.lstat(updaterRoot)).isSymbolicLink() &&
-                (await NodeFSP.realpath(updaterRoot)) === old.nixStorePath
-              )
-                await NodeFSP.unlink(updaterRoot);
-            } catch (cause) {
-              if (!isMissing(cause)) throw cause;
-            }
-          }
-        }
-      }
-    }
+    await writeDesktopRestoreJson(retentionFile, {
+      ...retention,
+      inventory: artifacts,
+      evict: [],
+      copying: null,
+    });
   });
 }
 
@@ -739,15 +958,49 @@ export async function restoreDesktopVersion(
         retainedDesktopBytes([from, to]) > registry.maxBytes
       )
         throw new Error("Desktop restore exceeds its storage bounds.");
+      const physical = await physicalRetention(input.baseDir, registry.identity);
+      if (
+        physical.count > registry.maxVersions ||
+        physical.bytes +
+          (registry.identity.kind === "nix" ? 0 : Math.max(from.sizeBytes, to.sizeBytes)) >
+          registry.maxBytes
+      )
+        throw new Error("Desktop restore staging peak exceeds its storage bounds.");
       await admitStorage(
         [input.baseDir, NodePath.dirname(registry.identity.installPath)],
-        registry.identity.kind === "nix" ? 0 : to.sizeBytes,
+        registry.identity.kind === "nix" ? 0 : Math.max(from.sizeBytes, to.sizeBytes),
       );
       const id = NodeCrypto.randomUUID();
       const stagePath =
         registry.identity.kind === "nix"
           ? null
           : `${registry.identity.installPath}.crew-restore-${id}`;
+      const transaction: DesktopRestoreTransaction = {
+        id,
+        installationId: registry.installationId,
+        from,
+        to,
+        phase: "staging",
+        stagePath,
+        originalHold: registry.updateHold,
+        originalProcess: graphics.owner,
+      };
+      await writeDesktopRestoreJson(paths(input.baseDir).transaction, transaction);
+      const controllerPath = NodePath.join(paths(input.baseDir).directory, "controller.sh");
+      const controllerSource = renderDesktopRestoreLauncher({
+        artifactPath: desktopRestoreArtifactPath(input.baseDir, from),
+        baseDir: input.baseDir,
+        nixStorePath: from.nixStorePath,
+      });
+      const temporaryController = `${controllerPath}.${id}.tmp`;
+      const controllerFile = await NodeFSP.open(temporaryController, "wx", 0o700);
+      try {
+        await controllerFile.writeFile(controllerSource);
+        await controllerFile.sync();
+      } finally {
+        await controllerFile.close();
+      }
+      await NodeFSP.rename(temporaryController, controllerPath);
       if (stagePath !== null) {
         await NodeFSP.copyFile(
           desktopRestoreArtifactPath(input.baseDir, to),
@@ -773,32 +1026,10 @@ export async function restoreDesktopVersion(
             throw new Error("Retained Nix provenance changed before stopping.");
         }
       }
-      const transaction: DesktopRestoreTransaction = {
-        id,
-        installationId: registry.installationId,
-        from,
-        to,
+      await writeDesktopRestoreJson(paths(input.baseDir).transaction, {
+        ...transaction,
         phase: "prepared",
-        stagePath,
-        originalHold: registry.updateHold,
-        originalProcess: graphics.owner,
-      };
-      const controllerPath = NodePath.join(paths(input.baseDir).directory, "controller.sh");
-      const controllerSource = renderDesktopRestoreLauncher({
-        artifactPath: desktopRestoreArtifactPath(input.baseDir, from),
-        baseDir: input.baseDir,
-        nixStorePath: from.nixStorePath,
       });
-      const temporaryController = `${controllerPath}.${id}.tmp`;
-      const controllerFile = await NodeFSP.open(temporaryController, "wx", 0o700);
-      try {
-        await controllerFile.writeFile(controllerSource);
-        await controllerFile.sync();
-      } finally {
-        await controllerFile.close();
-      }
-      await NodeFSP.rename(temporaryController, controllerPath);
-      await writeDesktopRestoreJson(paths(input.baseDir).transaction, transaction);
       const child = NodeChildProcess.spawn(
         controllerPath,
         ["--crew-desktop-restore-controller", input.baseDir, id],

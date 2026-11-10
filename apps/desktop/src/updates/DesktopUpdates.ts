@@ -187,9 +187,14 @@ export class DesktopUpdateInstallQualification extends Context.Service<
   { readonly completeRuntimeCreationFence: boolean }
 >()("@t3tools/desktop/updates/DesktopUpdates/DesktopUpdateInstallQualification") {}
 
+export class DesktopUpdateRestoreHoldError extends Schema.TaggedError<DesktopUpdateRestoreHoldError>()(
+  "DesktopUpdateRestoreHoldError",
+  { cause: Schema.Unknown },
+) {}
+
 export class DesktopUpdateRestoreHold extends Context.Service<
   DesktopUpdateRestoreHold,
-  { readonly isHeld: Effect.Effect<boolean, unknown> }
+  { readonly isHeld: Effect.Effect<boolean, DesktopUpdateRestoreHoldError> }
 >()("@t3tools/desktop/updates/DesktopUpdates/DesktopUpdateRestoreHold") {}
 
 export class DesktopUpdateChannelManagedError extends Schema.TaggedError<DesktopUpdateChannelManagedError>()(
@@ -409,9 +414,14 @@ export const make = Effect.gen(function* () {
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
   const qualification = yield* Effect.serviceOption(DesktopUpdateInstallQualification);
   const restoreHoldReader = yield* Effect.serviceOption(DesktopUpdateRestoreHold);
-  const restoreHold = Option.getOrElse(restoreHoldReader, () => ({
-    isHeld: Effect.tryPromise(() => isDesktopUpdateHeld({ baseDir: environment.baseDir })),
-  })).isHeld.pipe(Effect.orElseSucceed(() => true));
+  const restoreHold = Option.match(restoreHoldReader, {
+    onNone: () =>
+      Effect.tryPromise({
+        try: () => isDesktopUpdateHeld({ baseDir: environment.baseDir }),
+        catch: (cause) => new DesktopUpdateRestoreHoldError({ cause }),
+      }),
+    onSome: ({ isHeld }) => isHeld,
+  }).pipe(Effect.orElseSucceed(() => true));
   const history = yield* makeUpdateHistory(
     environment.path.join(environment.baseDir, "runtime", DESKTOP_UPDATE_HISTORY_FILE),
   );

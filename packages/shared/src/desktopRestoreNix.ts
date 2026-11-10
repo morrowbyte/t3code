@@ -153,11 +153,20 @@ export function retainedDesktopBytes(
     readonly nixClosure?: readonly NixClosureMember[];
   }[],
 ) {
-  const members = new Map<string, number>();
+  const members = new Map<string, NixClosureMember>();
   let files = 0;
   for (const artifact of artifacts) {
     if (artifact.nixClosure === undefined) files += artifact.sizeBytes;
-    else for (const member of artifact.nixClosure) members.set(member.path, member.narSize);
+    else
+      for (const member of artifact.nixClosure) {
+        const previous = members.get(member.path);
+        if (
+          previous !== undefined &&
+          (previous.narSize !== member.narSize || previous.narHash !== member.narHash)
+        )
+          throw new Error("Shared Nix closure member identity changed.");
+        members.set(member.path, member);
+      }
   }
-  return files + [...members.values()].reduce((total, size) => total + size, 0);
+  return files + [...members.values()].reduce((total, member) => total + member.narSize, 0);
 }

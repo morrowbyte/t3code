@@ -73,8 +73,9 @@ export async function serverRestoreLimits(baseDir: string) {
   try {
     text = await NodeFSP.readFile(NodePath.join(baseDir, "runtime", "restore-limits.json"), "utf8");
   } catch (cause) {
+    // A long-lived original launcher can still need a third runtime after two updates.
     if ((cause as NodeJS.ErrnoException).code === "ENOENT")
-      return { maxVersions: 2, maxBytes: SERVER_RESTORE_DEFAULT_MAX_BYTES };
+      return { maxVersions: 3, maxBytes: SERVER_RESTORE_DEFAULT_MAX_BYTES };
     throw cause;
   }
   const value: unknown = JSON.parse(text);

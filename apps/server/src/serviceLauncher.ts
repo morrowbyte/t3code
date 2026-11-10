@@ -27,6 +27,8 @@ import {
   assertServerRuntimeCommitFits,
   cleanupServerRuntimeRetention,
   readServerRuntimeCandidate,
+  ServerRuntimeRetentionBusyError,
+  ServerRuntimeRetentionLimitError,
 } from "./cloud/serverRuntimeRetention.ts";
 
 import type {
@@ -463,6 +465,7 @@ export class Launcher {
   #child: ManagedChild | null = null;
   #timer: NodeJS.Timeout | undefined;
   #transitions: Promise<void> = Promise.resolve();
+  readonly #retentionController = new AbortController();
   #stopRequested = false;
   #stopping = false;
   #done = false;
@@ -642,6 +645,7 @@ export class Launcher {
 
   async #fatal(error: Error): Promise<void> {
     if (this.#done) return;
+    this.#retentionController.abort();
     this.#done = true;
     this.#stopping = true;
     this.#clearTimer();
@@ -652,6 +656,7 @@ export class Launcher {
   }
 
   async stop(signal: NodeJS.Signals): Promise<void> {
+    this.#retentionController.abort();
     // Write synchronously on signal receipt; a terminating child needs the marker in its finalizer.
     try {
       NodeFS.writeFileSync(stopMarkerPath(this.#baseDir), "", { mode: 0o600 });
@@ -690,10 +695,15 @@ export class Launcher {
     const update = this.#state.update;
     if (update?.status !== "pending") {
       if (update !== undefined) {
-        if (update.restore !== undefined && update.status !== "committed")
-          await writeServerUpdateHold(this.#baseDir, update.restore.previousHold);
         await discardDatabaseBackup(this.#baseDir, update.id).catch(() => undefined);
       }
+      await cleanupServerRuntimeRetention(this.#baseDir, {
+        signal: this.#retentionController.signal,
+      }).catch((cause: unknown) => {
+        if (!this.#retentionController.signal.aborted)
+          console.error("Runtime retention recovery could not complete.", cause);
+      });
+      if (this.#stopRequested) return;
       await this.#startChild(this.#state.activeVersion, "active", update);
       return;
     }
@@ -940,9 +950,30 @@ export class Launcher {
       update: committed,
     };
     try {
-      await assertServerRuntimeCommitFits(this.#baseDir, next);
-    } catch {
-      await this.#returnToPrevious(pending, "rolled-back", "runtime-retention-limit", child);
+      await assertServerRuntimeCommitFits(this.#baseDir, next, {
+        signal: this.#retentionController.signal,
+      });
+    } catch (cause) {
+      if (this.#retentionController.signal.aborted) return;
+      await this.#returnToPrevious(
+        pending,
+        "rolled-back",
+        cause instanceof ServerRuntimeRetentionBusyError
+          ? "runtime-retention-busy"
+          : cause instanceof ServerRuntimeRetentionLimitError
+            ? "runtime-retention-limit"
+            : "runtime-retention-check-failed",
+        child,
+      );
+      return;
+    }
+    if (this.#retentionController.signal.aborted) return;
+    if (
+      !child.process.connected ||
+      child.process.exitCode !== null ||
+      child.process.signalCode !== null
+    ) {
+      await this.#returnToPrevious(pending, "rolled-back", "candidate-exited-before-commit", child);
       return;
     }
     await writeServiceState(this.#statePath, next);
@@ -952,8 +983,11 @@ export class Launcher {
     await serverRestoreIdentity(this.#baseDir)
       .then((identity) => qualifyServerRestoreRuntime(identity, child.version))
       .catch(() => undefined);
-    await cleanupServerRuntimeRetention(this.#baseDir).catch((cause: unknown) => {
-      console.error("Committed runtime retention cleanup could not complete.", cause);
+    await cleanupServerRuntimeRetention(this.#baseDir, {
+      signal: this.#retentionController.signal,
+    }).catch((cause: unknown) => {
+      if (!this.#retentionController.signal.aborted)
+        console.error("Committed runtime retention cleanup could not complete.", cause);
     });
     await sendMessage(child.process, { type: "committed", updateId: committed.id });
     if (this.#initialRestore !== undefined) void this.stop("SIGTERM");
@@ -1055,10 +1089,9 @@ export class Launcher {
       activeVersion: pending.fromVersion,
       update: outcome,
     };
+    if (pending.restore !== undefined) await writeServerUpdateHold(this.#baseDir, true);
     await writeServiceState(this.#statePath, next);
     this.#state = next;
-    if (pending.restore !== undefined)
-      await writeServerUpdateHold(this.#baseDir, pending.restore.previousHold);
     await discardDatabaseBackup(this.#baseDir, pending.id).catch(() => undefined);
     await this.#startChild(next.activeVersion, "active", outcome);
     if (this.#initialRestore !== undefined) void this.stop("SIGTERM");

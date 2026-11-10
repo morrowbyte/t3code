@@ -12,7 +12,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { vi } from "vite-plus/test";
 
-import { readServiceState, writeServiceState } from "../serviceLauncher.ts";
+import { Launcher, readServiceState, writeServiceState } from "../serviceLauncher.ts";
 import { acquireServiceLauncherLock } from "./serverRestoreControl.ts";
 import {
   SERVER_RESTORE_MANIFEST,
@@ -36,7 +36,14 @@ import {
   acquireServerRuntimeRetention,
   assertServerRuntimeCommitFits,
   cleanupServerRuntimeRetention,
+  retireServerRuntime,
+  serverRuntimePruneRecorded,
 } from "./serverRuntimeRetention.ts";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof NodeFSP>();
+  return { ...actual, readlink: vi.fn(actual.readlink), rm: vi.fn(actual.rm) };
+});
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof NodeChildProcess>();
@@ -99,8 +106,12 @@ if (context.update?.status === "pending") {
   }
   fs.writeFileSync(${JSON.stringify(NodePath.join(baseDir, "trial-identity"))}, JSON.stringify({ home: process.env.T3CODE_HOME, token: process.env.RESTORE_TEST_VALUE }));
   process.send({ type: "prepared", updateId: context.update.id, restore: { installationId: ${JSON.stringify(identity.installationId)}, version: ${JSON.stringify(version)} } });
+} else if (process.env.RESTORE_TEST_FORWARD === "1" && ${JSON.stringify(version)} === "1.0.0") {
+  process.send({ type: "request-update", targetVersion: "3.0.0", dbPath: ${JSON.stringify(dbPath)} });
 }
-process.on("message", () => {});
+process.on("message", (message) => {
+  if (process.env.RESTORE_TEST_FORWARD === "1" && message.type === "committed") process.exit(0);
+});
 `;
     await NodeFSP.writeFile(executable, `#!${process.execPath}\n${source}`, { mode: 0o755 });
     if (process.platform === "win32") await NodeFSP.writeFile(`${executable}.cjs`, source);
@@ -182,6 +193,38 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("offline server rest
           yield* fs.readDirectory(NodePath.join(baseDir, "runtime", "db-backup")),
           [],
         );
+        yield* Effect.promise(async () => {
+          await NodeFSP.writeFile(
+            NodePath.join(baseDir, "runtime", "restore-limits.json"),
+            JSON.stringify({ maxVersions: 2, maxBytes: 1024 ** 3 }),
+          );
+          const retention = await acquireServerRuntimeRetention(baseDir);
+          try {
+            await retention.admit("3.0.0");
+            const versions = NodePath.join(baseDir, "runtime", "versions");
+            const staging = await NodeFSP.mkdtemp(NodePath.join(versions, ".staging-"));
+            await retention.reserve("3.0.0", staging);
+            await setup.installRuntime("3.0.0", staging);
+            await NodeFSP.rename(staging, NodePath.join(versions, "3.0.0"));
+          } finally {
+            retention.release();
+          }
+          const launcher = new Launcher(baseDir, await readServiceState(setup.statePath), {
+            environment: { ...process.env, RESTORE_TEST_FORWARD: "1" },
+          });
+          await expect(launcher.run()).rejects.toThrow(/Active child exited unexpectedly/);
+          const updated = await inspectServerRestore(baseDir);
+          assert.equal(updated.currentVersion, "3.0.0");
+          assert.equal(updated.updateHold, false);
+          assert.equal(updated.unavailableReason, null);
+          assert.equal(updated.candidates[0]?.version, "1.0.0");
+          assert.equal(updated.candidates[0]?.blockedReason, null);
+          assert.equal((await readServiceState(setup.statePath)).update?.status, "committed");
+          assert.deepEqual(await NodeFSP.readdir(NodePath.join(baseDir, "runtime", "versions")), [
+            "1.0.0",
+            "3.0.0",
+          ]);
+        });
       }),
   );
 
@@ -193,7 +236,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("offline server rest
       const result = yield* restoreServerVersion({ baseDir, ...setup.input });
       assert.equal(result.status, "failed");
       assert.equal(result.version, "2.0.0");
-      assert.isFalse(yield* Effect.promise(() => serverUpdateHold(baseDir)));
+      assert.isTrue(yield* Effect.promise(() => serverUpdateHold(baseDir)));
       yield* Effect.sync(() => {
         const db = new NodeSqlite.DatabaseSync(setup.dbPath, { readOnly: true });
         try {
@@ -253,7 +296,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("offline server rest
         assert.equal(result.status, "failed");
         assert.equal(result.version, "2.0.0");
         assert.isFalse(yield* fs.exists(backup));
-        assert.isFalse((yield* listServerRestore({ baseDir })).updateHold);
+        assert.isTrue((yield* listServerRestore({ baseDir })).updateHold);
         assert.isFalse(yield* fs.exists(NodePath.join(baseDir, "trial-identity")));
         yield* Effect.sync(() => {
           const db = new NodeSqlite.DatabaseSync(setup.dbPath, { readOnly: true });
@@ -386,7 +429,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("offline server rest
     }),
   );
 
-  it.effect("retains the current runtime and predecessor immediately after repeated commits", () =>
+  it.effect("retains a persistent original launcher through repeated updates", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-restore-hard-retention-" });
@@ -394,10 +437,17 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("offline server rest
       yield* Effect.promise(async () => {
         const versions = NodePath.join(baseDir, "runtime", "versions");
         const maxBytes = (await inspectServerRestore(baseDir)).totalBytes * 4;
-        await NodeFSP.writeFile(
-          NodePath.join(baseDir, "runtime", "restore-limits.json"),
-          JSON.stringify({ maxVersions: 2, maxBytes }),
+        const original = NodePath.join(
+          versions,
+          "1.0.0",
+          process.platform === "win32" ? "t3.exe" : "t3",
         );
+        const launcher = NodePath.join(baseDir, process.platform === "win32" ? "t3.cmd" : "t3");
+        if (process.platform === "win32")
+          await NodeFSP.writeFile(launcher, `@echo off\r\n"${original}" %*`);
+        else await NodeFSP.symlink(original, launcher);
+        await NodeFSP.writeFile(NodePath.join(baseDir, "runtime", "launchers"), `${launcher}\n`);
+        assert.equal((await inspectServerRestore(baseDir)).maxVersions, 3);
         for (const target of [3, 4, 5, 6]) {
           const version = `${target}.0.0`;
           const nextState = {
@@ -432,7 +482,11 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("offline server rest
           assert.equal(inventory.currentVersion, version);
           assert.equal(inventory.unavailableReason, null);
           assert.isAtMost(inventory.totalBytes, maxBytes);
-          assert.deepEqual(await NodeFSP.readdir(versions), [`${target - 1}.0.0`, version]);
+          assert.deepEqual(await NodeFSP.readdir(versions), [
+            "1.0.0",
+            `${target - 1}.0.0`,
+            version,
+          ]);
           assert.equal(inventory.candidates[0]?.version, `${target - 1}.0.0`);
           assert.equal(inventory.candidates[0]?.blockedReason, null);
         }
@@ -454,7 +508,6 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("offline server rest
         );
         const retention = await acquireServerRuntimeRetention(baseDir);
         try {
-          await expect(acquireServerRuntimeRetention(baseDir)).rejects.toThrow();
           await retention.admit("3.0.0");
           const staging = await NodeFSP.mkdtemp(
             NodePath.join(baseDir, "runtime", "versions", ".staging-"),
@@ -475,6 +528,56 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("offline server rest
     }),
   );
 
+  it.effect("waits for a real SQLite owner and releases canceled admission handles", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-retention-lock-" });
+      yield* Effect.promise(() => fixture(baseDir));
+      yield* Effect.promise(async () => {
+        for (const cancel of [false, true]) {
+          const owner = new NodeSqlite.DatabaseSync(
+            NodePath.join(baseDir, "runtime", "retention-owner.sqlite"),
+          );
+          owner.exec("BEGIN EXCLUSIVE");
+          const busy = Promise.withResolvers<void>();
+          const originalExec = NodeSqlite.DatabaseSync.prototype.exec;
+          using _exec = vi
+            .spyOn(NodeSqlite.DatabaseSync.prototype, "exec")
+            .mockImplementation(function (this: NodeSqlite.DatabaseSync, sql: string) {
+              try {
+                return originalExec.call(this, sql);
+              } catch (cause) {
+                if ((cause as { errcode?: number }).errcode === 5) busy.resolve();
+                throw cause;
+              }
+            });
+          const controller = new AbortController();
+          const admission = acquireServerRuntimeRetention(baseDir, { signal: controller.signal });
+          const outcome = admission.then(
+            (retention) => ({ retention }),
+            (cause: unknown) => ({ cause }),
+          );
+          try {
+            await busy.promise;
+            if (cancel) controller.abort();
+          } finally {
+            owner.close();
+          }
+          const result = await outcome;
+          if ("retention" in result) {
+            result.retention.release();
+            assert.isFalse(cancel);
+          } else {
+            assert.isTrue(cancel);
+            assert.equal((result.cause as Error).name, "AbortError");
+          }
+          const next = await acquireServerRuntimeRetention(baseDir);
+          next.release();
+        }
+      });
+    }),
+  );
+
   it.effect("reclaims only recorded abandoned staging and verified orphan runtimes", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -482,6 +585,10 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("offline server rest
       const setup = yield* Effect.promise(() => fixture(baseDir));
       yield* Effect.promise(async () => {
         const versions = NodePath.join(baseDir, "runtime", "versions");
+        await NodeFSP.writeFile(
+          NodePath.join(baseDir, "runtime", "restore-limits.json"),
+          JSON.stringify({ maxVersions: 2, maxBytes: 1024 ** 3 }),
+        );
         await setup.installRuntime("0.5.0");
         const owned = await NodeFSP.mkdtemp(NodePath.join(versions, ".staging-"));
         await NodeFSP.writeFile(NodePath.join(owned, "t3-runtime-archive"), "owned archive");
@@ -492,8 +599,18 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("offline server rest
         const unknown = NodePath.join(versions, ".staging-unknown");
         await NodeFSP.mkdir(unknown);
         await NodeFSP.writeFile(NodePath.join(unknown, "uncertain"), "preserved");
+        const recordPrefix = NodePath.join(baseDir, "runtime", ".prune-owner-0.5.0.json.");
+        const uuid = "00000000-0000-4000-8000-000000000000";
+        const interruptedRecord = `${recordPrefix}2147483647.${uuid}.tmp`;
+        const liveRecord = `${recordPrefix}${process.pid}.${uuid}.tmp`;
+        const foreignRecord = `${recordPrefix}foreign.tmp`;
+        for (const file of [interruptedRecord, liveRecord, foreignRecord])
+          await NodeFSP.writeFile(file, "{partial");
         const retention = await acquireServerRuntimeRetention(baseDir);
         try {
+          await expect(NodeFSP.stat(interruptedRecord)).rejects.toThrow();
+          assert.equal(await NodeFSP.readFile(liveRecord, "utf8"), "{partial");
+          assert.equal(await NodeFSP.readFile(foreignRecord, "utf8"), "{partial");
           await expect(retention.admit("4.0.0")).rejects.toThrow(/limit/);
           assert.deepEqual((await NodeFSP.readdir(versions)).sort(), [
             ".staging-unknown",
@@ -506,6 +623,61 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("offline server rest
           );
         } finally {
           retention.release();
+        }
+        await NodeFSP.rm(unknown, { recursive: true });
+        await setup.installRuntime("0.5.0");
+        const retired = NodePath.join(versions, ".pruned-0.5.0");
+        const remove = vi.mocked(NodeFSP.rm);
+        const originalRemove = remove.getMockImplementation()!;
+        remove.mockImplementation(async (path, options) => {
+          if (path === retired) {
+            await originalRemove(NodePath.join(retired, ".install-complete"));
+            await originalRemove(NodePath.join(retired, SERVER_RESTORE_MANIFEST));
+            throw new Error("Interrupted partial runtime cleanup");
+          }
+          return originalRemove(path, options);
+        });
+        try {
+          await expect(cleanupServerRuntimeRetention(baseDir)).rejects.toThrow(/partial/);
+        } finally {
+          remove.mockImplementation(originalRemove);
+        }
+        assert.isTrue(await serverRuntimePruneRecorded(baseDir, "0.5.0"));
+        await expect(NodeFSP.stat(NodePath.join(retired, ".install-complete"))).rejects.toThrow();
+        await cleanupServerRuntimeRetention(baseDir);
+        assert.isFalse(await serverRuntimePruneRecorded(baseDir, "0.5.0"));
+        await expect(NodeFSP.stat(retired)).rejects.toThrow();
+        for (const redirect of ["symlink", "directory"] as const) {
+          await setup.installRuntime("0.5.0");
+          await retireServerRuntime(baseDir, "0.5.0", NodePath.join(versions, "0.5.0"));
+          const foreign = NodePath.join(baseDir, `foreign-${redirect}`);
+          await NodeFSP.rename(retired, foreign);
+          if (redirect === "symlink") {
+            await NodeFSP.symlink(
+              foreign,
+              retired,
+              process.platform === "win32" ? "junction" : "dir",
+            );
+          } else {
+            await NodeFSP.mkdir(retired);
+            await NodeFSP.writeFile(NodePath.join(retired, "foreign"), "preserved");
+          }
+          await expect(cleanupServerRuntimeRetention(baseDir)).rejects.toThrow(
+            redirect === "symlink" ? /limit/ : /redirected|replaced/,
+          );
+          assert.isTrue(
+            (await NodeFSP.stat(NodePath.join(foreign, SERVER_RESTORE_MANIFEST))).isFile(),
+          );
+          if (redirect === "symlink") await NodeFSP.unlink(retired);
+          else {
+            assert.equal(
+              await NodeFSP.readFile(NodePath.join(retired, "foreign"), "utf8"),
+              "preserved",
+            );
+            await NodeFSP.rm(retired, { recursive: true });
+          }
+          await NodeFSP.rename(foreign, retired);
+          await cleanupServerRuntimeRetention(baseDir);
         }
       });
     }),
@@ -520,21 +692,30 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("offline server rest
         const setup = yield* Effect.promise(() => fixture(baseDir));
         yield* Effect.promise(async () => {
           const versions = NodePath.join(baseDir, "runtime", "versions");
+          await NodeFSP.writeFile(
+            NodePath.join(baseDir, "runtime", "restore-limits.json"),
+            JSON.stringify({
+              maxVersions: 2,
+              maxBytes: (await inspectServerRestore(baseDir)).totalBytes * 4,
+            }),
+          );
           const executable = NodePath.join(
             versions,
             "1.0.0",
             process.platform === "win32" ? "t3.exe" : "t3",
           );
-          const originalReadlink = NodeFSP.readlink;
-          using _processReference =
-            reference === "process" && process.platform === "linux"
-              ? vi
-                  .spyOn(NodeFSP, "readlink")
-                  .mockImplementation((async (path: Parameters<typeof NodeFSP.readlink>[0]) =>
-                    path === `/proc/${process.pid}/exe`
-                      ? executable
-                      : originalReadlink(path)) as typeof NodeFSP.readlink)
-              : undefined;
+          const readlink = vi.mocked(NodeFSP.readlink);
+          const originalReadlink = readlink.getMockImplementation()!;
+          using _processReference = {
+            [Symbol.dispose]() {
+              readlink.mockImplementation(originalReadlink);
+            },
+          };
+          if (reference === "process" && process.platform === "linux")
+            readlink.mockImplementation((async (path: Parameters<typeof NodeFSP.readlink>[0]) =>
+              path === `/proc/${process.pid}/exe`
+                ? executable
+                : originalReadlink(path)) as typeof NodeFSP.readlink);
           if (
             reference === "launcher" ||
             (reference === "process" && process.platform !== "linux")

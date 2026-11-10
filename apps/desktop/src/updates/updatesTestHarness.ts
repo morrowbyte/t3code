@@ -19,7 +19,7 @@ import * as DesktopUpdates from "./DesktopUpdates.ts";
 export const flushCallbacks = Effect.yieldNow;
 
 export interface UpdatesHarnessOptions {
-  readonly restoreHold?: Effect.Effect<boolean, unknown>;
+  readonly restoreHold?: Effect.Effect<boolean, DesktopUpdates.DesktopUpdateRestoreHoldError>;
   readonly checkForUpdates?: Effect.Effect<
     void,
     ElectronUpdater.ElectronUpdaterCheckForUpdatesError
