@@ -3291,11 +3291,28 @@ describe("OrchestratorMcpService provider resolution", () => {
       }),
     );
 
-    it.effect("steps an inherited mode down to the broadest one the provider offers", () =>
-      Effect.gen(function* () {
-        assert.equal(yield* resolveRuntimeMode("full-access", "inherit", muse), "full-access");
-        assert.equal(yield* resolveRuntimeMode("auto", undefined, muse), "approval-required");
-      }),
+    it.effect(
+      "preserves inherited modes or reports an unsupported mode before creating a child",
+      () =>
+        Effect.gen(function* () {
+          assert.equal(yield* resolveRuntimeMode("full-access", "inherit", muse), "full-access");
+          for (const requested of [undefined, "inherit"] as const) {
+            const error = yield* resolveRuntimeMode("auto", requested, muse).pipe(Effect.flip);
+            assert.equal(error.code, "invalid_request");
+            assert.include(error.message, "auto");
+            assert.include(error.message, "approval-required, full-access");
+            const fullAccessError = yield* resolveRuntimeMode("full-access", requested, {
+              ...muse,
+              supportedRuntimeModes: ["approval-required"],
+            }).pipe(Effect.flip);
+            assert.equal(fullAccessError.code, "invalid_request");
+            assert.include(fullAccessError.message, "full-access");
+          }
+          assert.equal(
+            yield* resolveRuntimeMode("auto", "approval-required", muse),
+            "approval-required",
+          );
+        }),
     );
   });
 });

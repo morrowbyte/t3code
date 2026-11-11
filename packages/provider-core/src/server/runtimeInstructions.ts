@@ -2,6 +2,7 @@ import {
   T3_CODE_THREAD_REFERENCE_INSTRUCTIONS,
   T3_CODE_VISUAL_INSTRUCTIONS,
 } from "./orchestrationInstructions.ts";
+import { TASK_AUTHORIZATION_INSTRUCTIONS } from "./taskAuthorizationInstructions.ts";
 
 const TOOL_ACTIVITY_LABEL_INSTRUCTIONS = `<tool_activity_labels>
 Supply a concise semantic activity label with every executable shell, Python or JavaScript tool call, so the user understands its purpose as soon as it appears. Use a concrete action in the user's language, at most 90 characters, describing only what that call intends to do. Keep code available for inspection. Do not claim success or copy credentials, command output or unrelated commentary into a label.
@@ -68,7 +69,7 @@ export function buildRuntimeInstructions(runtime: {
   const modelInfo = model && model !== "auto" && model !== "default" ? `, as ${modelLabel}` : "";
   const effortInfo = effort ? ` with ${effort} reasoning effort` : "";
   const visuals = runtime.visualProtocolAttached ? "" : `\n\n${T3_CODE_VISUAL_INSTRUCTIONS}`;
-  return `<runtime_info>In case you're asked: you are running in T3 Code through the ${harness} harness${modelInfo}${effortInfo}. No need to mention this otherwise. You can embed images, video, and audio in your response using Markdown image syntax with absolute file paths. Link any other file you produce using its absolute path so the user can open it in T3 Code's files viewer.</runtime_info>\n\n${TOOL_ACTIVITY_LABEL_INSTRUCTIONS}\n\n${PRIVILEGED_COMMAND_INSTRUCTIONS}\n\n${PULL_REQUEST_LINKING_INSTRUCTIONS}\n\n${TOOL_OUTPUT_SELECTION_INSTRUCTIONS}\n\n${AGENT_MESSAGE_INSTRUCTIONS}\n\n${RESPONSE_AUDIENCE_INSTRUCTIONS}${visuals}`;
+  return `<runtime_info>In case you're asked: you are running in T3 Code through the ${harness} harness${modelInfo}${effortInfo}. No need to mention this otherwise. You can embed images, video, and audio in your response using Markdown image syntax with absolute file paths. Link any other file you produce using its absolute path so the user can open it in T3 Code's files viewer.</runtime_info>\n\n${TASK_AUTHORIZATION_INSTRUCTIONS}\n\n${TOOL_ACTIVITY_LABEL_INSTRUCTIONS}\n\n${PRIVILEGED_COMMAND_INSTRUCTIONS}\n\n${PULL_REQUEST_LINKING_INSTRUCTIONS}\n\n${TOOL_OUTPUT_SELECTION_INSTRUCTIONS}\n\n${AGENT_MESSAGE_INSTRUCTIONS}\n\n${RESPONSE_AUDIENCE_INSTRUCTIONS}${visuals}`;
 }
 
 function toSingleLine(value: string): string {

@@ -55,6 +55,10 @@
       "types": "./src/server/instanceIdentity.ts",
       "import": "./src/server/instanceIdentity.ts"
     },
+    "./server/messageProvenance": {
+      "types": "./src/server/messageProvenance.ts",
+      "import": "./src/server/messageProvenance.ts"
+    },
     "./server/maintenance": {
       "types": "./src/server/maintenance.ts",
       "import": "./src/server/maintenance.ts"

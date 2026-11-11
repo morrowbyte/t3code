@@ -157,6 +157,13 @@ export function historicalMessage(
   }
   return {
     role: item.type === "user_message" ? "user" : "assistant",
+    ...(item.type === "user_message"
+      ? {
+          createdBy: item.createdBy,
+          creationSource: item.creationSource,
+          ...(item.senderThreadId === undefined ? {} : { senderThreadId: item.senderThreadId }),
+        }
+      : { createdBy: "agent" as const }),
     text,
     threadId: item.threadId,
     runId: item.runId,
@@ -168,7 +175,7 @@ export function historicalMessage(
 }
 
 function renderHistoricalMessage(message: OrchestrationV2HistoricalMessage): string {
-  return `[Historical ${message.role}; ${message.kind}; thread=${message.threadId}; run=${message.runId ?? "imported"}; item=${message.itemId}; provider-thread=${message.providerThreadId ?? "none"}; status=${message.status}${message.runStatus === undefined ? "" : `; run-status=${message.runStatus}`}]\n${message.text}`;
+  return `[Historical ${message.role}; author=${message.createdBy ?? "unknown"}${message.creationSource === undefined ? "" : `; source=${message.creationSource}`}${message.senderThreadId === undefined ? "" : `; sender-thread=${JSON.stringify(message.senderThreadId)}`}; ${message.kind}; thread=${message.threadId}; run=${message.runId ?? "imported"}; item=${message.itemId}; provider-thread=${message.providerThreadId ?? "none"}; status=${message.status}${message.runStatus === undefined ? "" : `; run-status=${message.runStatus}`}]\n${message.text}`;
 }
 
 export function historyResponseItems(
@@ -239,9 +246,13 @@ export function selectHistory(input: {
     selected.add(index);
     remaining -= cost;
   };
-  tryAdd(messages.findLastIndex((message) => message.role === "user"));
+  const isUserRequest = (message: OrchestrationV2HistoricalMessage) =>
+    message.role === "user" &&
+    message.createdBy !== "agent" &&
+    message.senderThreadId === undefined;
+  tryAdd(messages.findLastIndex(isUserRequest));
+  tryAdd(messages.findIndex(isUserRequest));
   tryAdd(messages.findLastIndex((message) => message.role === "assistant"));
-  tryAdd(messages.findIndex((message) => message.role === "user"));
   for (let index = messages.length - 1; index >= 0; index--) tryAdd(index);
   return {
     messages: messages.filter((_, index) => selected.has(index)),
