@@ -74,6 +74,7 @@ import {
   useState,
 } from "react";
 import { flushSync } from "react-dom";
+import { useWebLiveVoiceControlsHost } from "../../voice/sessionContext";
 import {
   clampCollapsedComposerCursor,
   type ComposerTrigger,
@@ -564,6 +565,7 @@ export interface ChatComposerProps {
   isSendBusy: boolean;
   canResume: boolean;
   isRevertingCheckpoint?: boolean;
+  voiceControlsAvailable?: boolean;
   sendDisabledReason: string | null;
   isPreparingWorktree: boolean;
   isCompacting: boolean;
@@ -696,6 +698,10 @@ const NO_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const NO_PROVIDER_SLASH_COMMANDS: ServerProvider["slashCommands"] = [];
 
 export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps) {
+  const voiceControlsHost = useWebLiveVoiceControlsHost(
+    props.routeThreadRef ?? undefined,
+    props.voiceControlsAvailable !== false && !props.isRevertingCheckpoint,
+  );
   const {
     composerDraftTarget,
     environmentId,
@@ -3759,6 +3765,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       data-chat-composer-form="true"
       {...threadContextDropTargetProps()}
     >
+      {routeThreadRef ? <div ref={voiceControlsHost} data-voice-composer-host="" /> : null}
       {keyboardPicker && keyboardPicker.targetKey === composerDraftTargetKey ? (
         <ComposerChoiceDialog
           key={`${keyboardPicker.kind}:${keyboardPicker.targetKey}`}
