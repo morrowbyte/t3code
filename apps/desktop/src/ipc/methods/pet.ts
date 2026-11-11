@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- The native companion keeps its imported assets beside desktop settings.
 import * as NodePath from "node:path";
+import * as NodeProcess from "node:process";
 import * as Electron from "electron";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -10,6 +11,7 @@ import * as DesktopEnvironment from "../../app/DesktopEnvironment.ts";
 import * as ElectronWindow from "../../electron/ElectronWindow.ts";
 import { PetCompanion } from "../../pet/PetCompanion.ts";
 import { importPetPack } from "../../pet/PetPack.ts";
+import { hasGlobalShortcutsPortal } from "../../pet/PetShortcut.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
 import * as Channels from "../channels.ts";
 
@@ -23,13 +25,24 @@ export const installPet = Effect.fn("desktop.pet.install")(function* () {
   const directory = NodePath.join(environment.stateDir, "pet");
   let renderer: Electron.WebContents | null = null;
   let shortcut = "";
+  let stopped = false;
   const pet = new PetCompanion(directory, (event) => {
     if (renderer && !renderer.isDestroyed()) renderer.send(Channels.PET_EVENT_CHANNEL, event);
   });
-  const syncShortcut = () => {
+  const syncShortcut = async () => {
+    const requested = pet.status.settings.shortcut;
+    if (requested && requested === shortcut) return;
     if (shortcut) Electron.globalShortcut.unregister(shortcut);
     shortcut = "";
-    const requested = pet.status.settings.shortcut;
+    pet.setShortcutRegistered(false);
+    if (
+      requested &&
+      NodeProcess.platform === "linux" &&
+      (NodeProcess.env.WAYLAND_DISPLAY || NodeProcess.env.XDG_SESSION_TYPE === "wayland") &&
+      !(await hasGlobalShortcutsPortal().catch(() => false))
+    )
+      return;
+    if (stopped) return;
     let registered = false;
     if (requested) {
       try {
@@ -67,9 +80,10 @@ export const installPet = Effect.fn("desktop.pet.install")(function* () {
   });
   const initialize = () => Effect.tryPromise(() => pet.load()).pipe(Effect.orDie);
   yield* initialize();
-  syncShortcut();
+  yield* Effect.promise(syncShortcut);
   yield* Effect.addFinalizer(() =>
     Effect.sync(() => {
+      stopped = true;
       if (shortcut) Electron.globalShortcut.unregister(shortcut);
       pet.stop();
     }),
@@ -97,10 +111,21 @@ export const installPet = Effect.fn("desktop.pet.install")(function* () {
         return yield* mutex.withPermits(1)(
           Effect.tryPromise(async () => {
             await pet.configure(settings);
-            syncShortcut();
+            await syncShortcut();
             return pet.status;
           }),
         );
+      }),
+    }),
+  );
+  yield* ipc.handle(
+    DesktopIpc.makeIpcMethod({
+      channel: Channels.PET_RECONNECT_CHANNEL,
+      payload: Schema.Void,
+      result: DesktopPetStatus,
+      handler: Effect.fn("desktop.pet.reconnect")(function* (_input, event) {
+        yield* authorize(event);
+        return yield* mutex.withPermits(1)(Effect.tryPromise(() => pet.reconnect()));
       }),
     }),
   );

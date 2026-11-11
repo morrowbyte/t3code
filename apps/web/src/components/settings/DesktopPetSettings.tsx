@@ -99,7 +99,7 @@ export function DesktopPetSettings() {
             size="sm"
             variant="outline"
             disabled={!status || pending}
-            onClick={() => run(() => bridge.setPetSettings(status!.settings))}
+            onClick={() => run(() => bridge.reconnectPet())}
           >
             Reconnect
           </Button>
@@ -124,7 +124,7 @@ export function DesktopPetSettings() {
         title="Global shortcut"
         description={
           status?.settings.shortcut && !status.shortcutRegistered
-            ? "Shortcut unavailable. Choose another combination."
+            ? "Global shortcut unavailable on this desktop or already in use."
             : "Unassigned by default."
         }
         control={

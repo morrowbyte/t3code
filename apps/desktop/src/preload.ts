@@ -86,6 +86,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   getPetStatus: () => ipcRenderer.invoke(IpcChannels.PET_GET_STATUS_CHANNEL),
   setPetSettings: (settings) => ipcRenderer.invoke(IpcChannels.PET_SET_SETTINGS_CHANNEL, settings),
+  reconnectPet: () => ipcRenderer.invoke(IpcChannels.PET_RECONNECT_CHANNEL),
   setPetProjection: (projection) =>
     ipcRenderer.invoke(IpcChannels.PET_SET_PROJECTION_CHANNEL, projection),
   togglePet: () => ipcRenderer.invoke(IpcChannels.PET_TOGGLE_CHANNEL),

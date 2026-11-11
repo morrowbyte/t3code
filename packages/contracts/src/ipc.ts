@@ -1221,6 +1221,7 @@ export interface DesktopBridge {
   setPetSettings: (
     settings: import("./desktopPet.ts").DesktopPetSettings,
   ) => Promise<import("./desktopPet.ts").DesktopPetStatus>;
+  reconnectPet: () => Promise<import("./desktopPet.ts").DesktopPetStatus>;
   setPetProjection: (projection: import("./desktopPet.ts").DesktopPetProjection) => Promise<void>;
   togglePet: () => Promise<void>;
   importPet: () => Promise<import("./desktopPet.ts").DesktopPetStatus>;

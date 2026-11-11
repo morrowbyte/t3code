@@ -115,9 +115,25 @@ export class PetCompanion {
     const changedExecutable = next.executable !== this.state.settings.executable;
     this.publish({ settings: next });
     if (changedExecutable || !this.child) {
-      this.stop();
-      this.start();
+      await this.reconnect();
     } else this.sendConfiguration();
+    return this.state;
+  }
+
+  async reconnect() {
+    const child = this.child;
+    if (child) {
+      await new Promise<void>((resolve) => {
+        const deadline = setTimeout(() => child.kill("SIGKILL"), 2_000);
+        deadline.unref();
+        child.once("close", () => {
+          clearTimeout(deadline);
+          resolve();
+        });
+        this.stop();
+      });
+    }
+    this.start();
     return this.state;
   }
 
@@ -238,6 +254,7 @@ export class PetCompanion {
       if (this.child === child) this.fail("write-failed");
     });
     child.stdin.on("drain", () => {
+      if (this.child !== child) return;
       this.blocked = false;
       const pending = this.pendingProjection;
       this.pendingProjection = null;
