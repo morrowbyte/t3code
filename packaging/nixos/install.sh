@@ -23,6 +23,7 @@ declare -A owned_roots=() evicted_roots=()
 candidate_version="" candidate_store=""
 import_ledger='[]'
 pending_import='null'
+needs_import=1
 desktop_lock="" lock_owner="" lock_recovery="" lock_observed="" work_dir=""
 lock_recovery_open=0
 cleanup() {
@@ -249,6 +250,18 @@ read_allocation() {
   done <"$work_dir/closure-sizes"
   jq -sc 'sort_by(.path)' "$work_dir/actual-allocation"
 }
+verify_bound_closure() {
+  local closure_source="$1" path
+  read_closure "$store_path" >"$work_dir/actual-closure.json"
+  jq -e --slurpfile actual "$work_dir/actual-closure.json" '.closure == $actual[0]' "$work_dir/manifest.json" >/dev/null || die "$closure_source closure membership, NAR hash or size differs from manifest"
+  jq -r '.[].path' "$work_dir/actual-closure.json" >"$work_dir/closure-paths"
+  while IFS= read -r path; do
+    nix-store --verify-path "$path" || die "$closure_source closure integrity verification failed for $path"
+  done <"$work_dir/closure-paths"
+  read_allocation >"$work_dir/actual-allocation.json"
+  jq -e --slurpfile actual "$work_dir/actual-allocation.json" '.allocationEntries == $actual[0]' "$work_dir/manifest.json" >/dev/null || die "$closure_source closure allocation differs from manifest"
+  [[ -x "$store_path/bin/t3code-morrowbyte" ]] || die "$closure_source closure lacks the declared launcher"
+}
 assert_desktop_lock_owner_dead() {
   local owner="$1" owner_pid owner_start process_stat
   local -a fields
@@ -324,7 +337,7 @@ lock_desktop_retention() {
 }
 admit_import() {
   local registry="$restore_home/runtime/desktop-restore/registry.json" root path entry members previous
-  local max_versions=2 max_bytes=6442450944 archive_bytes export_bytes need_archive=0 candidate_slot=1
+  local max_versions=2 max_bytes=6442450944 archive_bytes export_bytes candidate_slot=1
   local -A roots=()
   if [[ "$pending_import" != null ]]; then
     jq -e --arg manifest "$manifest_digest" --arg root "$store_path" '
@@ -344,6 +357,12 @@ admit_import() {
     [[ "$(jq -cj '.identity' "$registry" | sha256sum | cut -d ' ' -f 1)" == "$(jq -r '.installationId' "$registry")" ]] || die 'desktop retention installation identity changed'
     max_versions="$(jq -r .maxVersions "$registry")" max_bytes="$(jq -r .maxBytes "$registry")"
   fi
+  needs_import=0
+  jq -r '.closure[].path' "$work_dir/manifest.json" >"$work_dir/candidate-paths"
+  while IFS= read -r path; do
+    if [[ ! -e "$path" && ! -L "$path" ]] || ! nix-store --check-validity "$path" >/dev/null 2>&1; then needs_import=1; fi
+  done <"$work_dir/candidate-paths"
+  if (( !needs_import )); then verify_bound_closure existing; fi
   for path in "$current_link" "$base_dir/previous"; do
     [[ -L "$path" ]] || continue
     root="$(readlink -m -- "$path")" || die 'installed selection cannot be resolved'
@@ -402,10 +421,9 @@ admit_import() {
   ' "$work_dir/retained-members" >"$work_dir/retained-bytes" || die 'retained closure identity changed'
   archive_bytes="$(jq -r .archiveBytes "$work_dir/manifest.json")"
   export_bytes="$(jq -r .exportBytes "$work_dir/manifest.json")"
-  if ! valid_install "$version"; then need_archive=1; fi
   # The importer may spool the stream as well as materialize it, even for shared paths.
   previous="$(cat "$work_dir/retained-bytes")"
-  (( previous <= max_bytes && (!need_archive || archive_bytes + 2 * export_bytes <= max_bytes - previous) )) || die 'archive and import peak exceed the byte cap before download/import'
+  (( previous <= max_bytes && (!needs_import || archive_bytes + 2 * export_bytes <= max_bytes - previous) )) || die 'archive and import peak exceed the byte cap before download/import'
   local work_device store_device state_device device directory available fragment reserve=67108864 required filesystem filesystem_type allocation spool
   work_device="$(stat -c '%d' "$work_dir")" || die 'cannot prove work filesystem placement'
   store_device="$(stat -c '%d' /nix/store)" || die 'cannot prove store filesystem placement'
@@ -416,7 +434,7 @@ admit_import() {
     read -r available fragment <<<"$filesystem"
     [[ "$available" =~ ^[0-9]+$ && "$fragment" =~ ^[1-9][0-9]*$ ]] || die 'cannot prove free space for import peak'
     required="$reserve"
-    if (( need_archive )); then
+    if (( needs_import )); then
       (( fragment >= 4096 )) || fragment=4096
       # NAR bytes include payload and names; fragments cover nodes, directory entries and dot entries.
       allocation="$(jq -er --argjson block "$fragment" '
@@ -444,7 +462,7 @@ admit_import() {
       weasel-btrfs-health check --target "$directory" >/dev/null || die 'insufficient verified Btrfs metadata headroom for import'
     fi
   done
-  if (( need_archive )); then
+  if (( needs_import )); then
     jq -c '.closure[]' "$work_dir/manifest.json" >"$work_dir/candidate-members"
     : >"$work_dir/new-members"
     while IFS= read -r members; do
@@ -630,7 +648,7 @@ lock_desktop_retention
 reconcile_roots
 admit_import
 select_candidate_root "$version" "$store_path"
-if ! valid_install "$version" || [[ "$(readlink -f "$install_dir/$version")" != "$store_path" ]]; then
+if (( needs_import )); then
   fetch_exact "$archive_url" "$work_dir/closure.nar.zst" "$archive_bytes"
   [[ "$(sha256sum "$work_dir/closure.nar.zst" | cut -d ' ' -f 1)" == "$archive_digest" ]] || die 'closure download does not match SHA-256'
   export_bytes="$(jq -r .exportBytes "$work_dir/manifest.json")"
@@ -645,15 +663,8 @@ if ! valid_install "$version" || [[ "$(readlink -f "$install_dir/$version")" != 
   LC_ALL=C sort "$work_dir/imported" >"$work_dir/imported-sorted"
   jq -r '.closure[].path' "$work_dir/manifest.json" >"$work_dir/expected-paths"
   cmp -s "$work_dir/imported-sorted" "$work_dir/expected-paths" || die 'imported path set differs from bound closure manifest'
-  [[ -x "$store_path/bin/t3code-morrowbyte" ]] || die 'imported closure lacks the declared launcher'
+  verify_bound_closure imported
 fi
-# Verify even a previously imported version before claiming it is prepared.
-read_closure "$store_path" >"$work_dir/actual-closure.json"
-jq -e --slurpfile actual "$work_dir/actual-closure.json" '.closure == $actual[0]' "$work_dir/manifest.json" >/dev/null || die 'imported closure membership, NAR hash or size differs from manifest'
-jq -r '.[].path' "$work_dir/actual-closure.json" >"$work_dir/closure-paths"
-while IFS= read -r path; do nix-store --verify-path "$path"; done <"$work_dir/closure-paths"
-read_allocation >"$work_dir/actual-allocation.json"
-jq -e --slurpfile actual "$work_dir/actual-allocation.json" '.allocationEntries == $actual[0]' "$work_dir/manifest.json" >/dev/null || die 'imported closure allocation differs from manifest'
 pending_import='null'
 write_inventory
 # --realise only registers an already imported root. Disable both builders and

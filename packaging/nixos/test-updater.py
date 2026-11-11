@@ -54,6 +54,9 @@ class UpdaterTests(unittest.TestCase):
         self.download_log = self.root / 'downloads.log'
         self.closures = self.root / 'closures.json'
         self.closures.write_text('{}')
+        # setUpClass registers real paths; their availability to the updater starts cold.
+        self.store_state = self.root / 'store-state.json'
+        self.store_state.write_text('[]')
         self.write_release()
         self.stub('curl', '''#!/usr/bin/env python3
 import os,sys,shutil
@@ -102,17 +105,22 @@ if args[:2] == ['-c','%d']:
 elif args[:3] == ['-f','-c','%a %S']:
  key='TEST_STORE_FREE_BYTES' if args[-1].startswith('/nix/') else 'TEST_WORK_FREE_BYTES'
  print(str(int(os.environ.get(key, str(4*1024**4)))//4096)+' 4096')
-elif args[:3] == ['-f','-c','%T']: print('ext2/ext3')
+elif args[:3] == ['-f','-c','%T']: print(os.environ.get('TEST_FILESYSTEM_TYPE', 'ext2/ext3'))
 else: os.execv(os.environ['TEST_REAL_STAT'], ['stat', *args])
 ''')
+        self.stub('weasel-btrfs-health', '#!/bin/sh\n[ -z "${TEST_BTRFS_FAIL:-}" ]\n')
         self.stub('nix-store', '''#!/usr/bin/env python3
 import json,os,sys
 args=sys.argv[1:]
+if '--check-validity' in args:
+ sys.exit(0 if args[-1] in json.load(open(os.environ['TEST_STORE_STATE'])) else 1)
 with open(os.environ['TEST_NIX_LOG'],'a') as f: f.write(' '.join(args)+'\\n')
 if '--import' in args:
  sys.stdin.buffer.read()
  if os.environ.get('TEST_IMPORT_FAIL'): sys.exit(7)
- for member in json.load(open(os.environ['TEST_MANIFEST']))['closure']: print(member['path'])
+ paths=[member['path'] for member in json.load(open(os.environ['TEST_MANIFEST']))['closure']]
+ with open(os.environ['TEST_STORE_STATE'], 'w') as state: json.dump(paths, state)
+ for path in paths: print(path)
  if os.environ.get('TEST_EXTRA_IMPORTED_PATH'): print(os.environ['TEST_EXTRA_IMPORTED_PATH'])
 elif '--requisites' in args: print(args[args.index('--requisites')+1])
 elif '--add-root' in args:
@@ -120,7 +128,7 @@ elif '--add-root' in args:
  if os.environ.get('TEST_ROOT_FAIL'): sys.exit(9)
  if not os.path.lexists(root): os.symlink(args[args.index('--realise')+1],root)
 elif '--verify-path' in args:
- if os.environ.get('TEST_VERIFY_FAIL'): sys.exit(8)
+ if os.environ.get('TEST_VERIFY_FAIL') or os.environ.get('TEST_VERIFY_FAIL_PATH') == args[-1]: sys.exit(8)
 else: sys.exit(88)
 ''')
         self.env = {**os.environ, 'PATH': str(self.bin)+':'+os.environ['PATH'],
@@ -131,6 +139,7 @@ else: sys.exit(88)
                     'TEST_RELEASES': str(self.releases), 'TEST_ASSET': str(self.asset),
                     'TEST_MANIFEST': str(self.manifest), 'TEST_PACKAGE': self.package,
                     'TEST_NIX_LOG': str(self.log), 'TEST_DOWNLOAD_LOG': str(self.download_log),
+                    'TEST_STORE_STATE': str(self.store_state),
                     'TEST_CLOSURES': str(self.closures), 'TEST_REAL_STAT': shutil.which('stat')}
         for key in ['T3CODE_HOME', 'NIX_REMOTE', 'NIX_STORE_DIR', 'NIX_STATE_DIR']:
             self.env.pop(key, None)
@@ -179,6 +188,10 @@ else: sys.exit(88)
             self.assertFalse(any(line.endswith('.nar.zst') for line in self.download_log.read_text().splitlines()))
         if self.log.exists():
             self.assertNotIn('--import', self.log.read_text())
+
+    def warm_store(self):
+        self.store_state.write_text(json.dumps([member['path']
+            for member in json.loads(self.manifest.read_text())['closure']]))
 
     def stub(self, name, content):
         p=self.bin/name; p.write_text(content); p.chmod(0o755)
@@ -329,14 +342,17 @@ else: sys.exit(88)
         (self.data/'installer-roots.json').write_text(json.dumps(dict(format=1,
             candidate=dict(version='candidate', storePath=candidate),
             ownedRoots=[first, second, candidate], pendingEvictions=[])))
-        result = self.run_update('--prepare', VERSION)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('another journaled candidate', result.stderr)
-        self.assert_no_archive_or_import()
-        self.assertEqual(os.readlink(self.data/'current'), str(current))
-        self.assertEqual(os.readlink(self.data/'previous'), str(previous))
-        self.assertEqual(json.loads((self.data/'installer-roots.json').read_text())['candidate'],
-                         dict(version='candidate', storePath=candidate))
+        for warm in [False, True]:
+            with self.subTest(warm=warm):
+                if warm: self.warm_store()
+                result = self.run_update('--prepare', VERSION)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('another journaled candidate', result.stderr)
+                self.assert_no_archive_or_import()
+                self.assertEqual(os.readlink(self.data/'current'), str(current))
+                self.assertEqual(os.readlink(self.data/'previous'), str(previous))
+                self.assertEqual(json.loads((self.data/'installer-roots.json').read_text())['candidate'],
+                                 dict(version='candidate', storePath=candidate))
         for package in [first, second, candidate]:
             self.assertTrue((self.data/'.gcroots'/Path(package).name).is_symlink())
 
@@ -357,10 +373,140 @@ else: sys.exit(88)
         self.limits(max_bytes=peak)
         for shape in ['array', 'map']:
             with self.subTest(shape=shape):
+                self.store_state.write_text('[]')
+                self.log.unlink(missing_ok=True)
                 self.env['TEST_INFO_FORMAT'] = shape
                 result = self.run_update('--prepare', VERSION)
                 self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('--import', self.log.read_text())
         self.assertEqual(os.readlink(self.data/'current'), old)
+
+    def test_warm_closure_without_version_link_or_receipt_uses_only_deduplicated_nar_bytes(self):
+        if not self.real_store: self.skipTest('Nix fixture needed for Store path validation')
+        old = self.previous()
+        (self.data/'previous').symlink_to(old)
+        manifest = json.loads(self.manifest.read_text())
+        member = dict(manifest['closure'][0], path=self.retention_packages[0])
+        manifest['closure'] = sorted([*manifest['closure'], member], key=lambda item: item['path'])
+        manifest['allocationEntries'] = [dict(manifest['allocationEntries'][0], path=item['path'])
+            for item in manifest['closure']]
+        self.publish_manifest(manifest)
+        self.closures.write_text(json.dumps({self.package: manifest['closure']}))
+        self.warm_store()
+        version_link = self.data/'versions'/VERSION
+        receipt = self.data/'prepared'/f'{VERSION}.json'
+        self.assertFalse(version_link.is_symlink())
+        self.assertFalse(receipt.exists())
+        self.env['TEST_IMPORT_FAIL'] = '1'
+        self.env['TEST_WORK_FREE_BYTES'] = self.env['TEST_STORE_FREE_BYTES'] = str(64 * 1024**2)
+        total = sum(item['narSize'] for item in manifest['closure'])
+        self.limits(max_bytes=total)
+        for overrides, diagnostic in [
+                ({'TEST_WORK_FREE_BYTES': str(64 * 1024**2 - 4096)}, 'insufficient free space'),
+                ({'TEST_STAT_FAIL': '1'}, 'cannot prove free space'),
+                ({'TEST_FILESYSTEM_TYPE': 'btrfs', 'TEST_BTRFS_FAIL': '1'}, 'Btrfs metadata')]:
+            with self.subTest(gate=diagnostic):
+                before = {key: self.env.get(key) for key in overrides}
+                self.env.update(overrides)
+                result = self.run_update('--prepare', VERSION)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(diagnostic, result.stderr)
+                self.assert_no_archive_or_import()
+                for key, value in before.items():
+                    if value is None: self.env.pop(key)
+                    else: self.env[key] = value
+        for cap in [total-1, total]:
+            with self.subTest(cap=cap):
+                self.limits(max_bytes=cap)
+                result = self.run_update('--prepare', VERSION)
+                if cap < total:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('byte cap before download/import', result.stderr)
+                    self.assertFalse(version_link.is_symlink())
+                    self.assertFalse(receipt.exists())
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                self.assert_no_archive_or_import()
+                self.assertEqual(os.readlink(self.data/'current'), old)
+                self.assertEqual(os.readlink(self.data/'previous'), old)
+        self.assertEqual(os.readlink(version_link), self.package)
+        self.assertEqual(os.readlink(self.data/'.gcroots'/Path(self.package).name), self.package)
+        prepared = json.loads(receipt.read_text())
+        self.assertEqual(prepared['storePath'], self.package)
+        self.assertEqual(prepared['manifestSha256'], hashlib.sha256(self.manifest.read_bytes()).hexdigest())
+        self.assertEqual(prepared['allocationEntries'], manifest['allocationEntries'])
+        inventory = json.loads((self.data/'installer-roots.json').read_text())
+        self.assertEqual(inventory['ownedRoots'], [self.package])
+        self.assertEqual(inventory['imports'], [])
+        self.assertIsNone(inventory['pendingImport'])
+        for item in manifest['closure']:
+            self.assertIn('--verify-path '+item['path'], self.log.read_text().splitlines())
+
+    def test_warm_root_with_a_missing_member_requires_the_full_import_allowance(self):
+        if not self.real_store: self.skipTest('Nix fixture needed for Store path validation')
+        old = self.previous()
+        dependency = '/nix/store/'+'9'*32+'-missing-dependency'
+        self.assertFalse(Path(dependency).exists())
+        manifest = json.loads(self.manifest.read_text())
+        manifest['closure'] = sorted([*manifest['closure'], dict(manifest['closure'][0], path=dependency)],
+            key=lambda item: item['path'])
+        manifest['allocationEntries'] = [dict(manifest['allocationEntries'][0], path=item['path'])
+            for item in manifest['closure']]
+        self.publish_manifest(manifest)
+        self.closures.write_text(json.dumps({self.package: manifest['closure']}))
+        self.warm_store()
+        self.env['TEST_IMPORT_FAIL'] = '1'
+        total = sum(item['narSize'] for item in manifest['closure'])
+        peak = total + manifest['archiveBytes'] + 2 * manifest['exportBytes']
+        for cap in [total, peak]:
+            with self.subTest(cap=cap):
+                self.limits(max_bytes=cap)
+                result = self.run_update('--prepare', VERSION)
+                if cap < peak:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('byte cap before download/import', result.stderr)
+                    self.assert_no_archive_or_import()
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('bounded closure import failed', result.stderr)
+                    self.assertIn('--import', self.log.read_text())
+                    self.assertTrue(any(line.endswith('.nar.zst')
+                        for line in self.download_log.read_text().splitlines()))
+                self.assertEqual(os.readlink(self.data/'current'), old)
+        inventory = json.loads((self.data/'installer-roots.json').read_text())
+        self.assertEqual(inventory['imports'], [dict(storePath=self.package,
+            members=[item for item in manifest['closure'] if item['path'] == dependency])])
+        self.assertFalse((self.data/'prepared'/f'{VERSION}.json').exists())
+
+    def test_warm_integrity_and_declared_launcher_failures_never_import(self):
+        if not self.real_store: self.skipTest('Nix fixture needed for Store path validation')
+        old = self.previous()
+        manifest = json.loads(self.manifest.read_text())
+        dependency = self.retention_packages[0]
+        manifest['closure'] = sorted([*manifest['closure'], dict(manifest['closure'][0], path=dependency)],
+            key=lambda item: item['path'])
+        manifest['allocationEntries'] = [dict(manifest['allocationEntries'][0], path=item['path'])
+            for item in manifest['closure']]
+        self.publish_manifest(manifest)
+        self.closures.write_text(json.dumps({self.package: manifest['closure']}))
+        for failure in [self.package, dependency, 'launcher']:
+            with self.subTest(failure=failure):
+                self.log.unlink(missing_ok=True); self.download_log.unlink(missing_ok=True)
+                if failure == 'launcher':
+                    self.env.pop('TEST_VERIFY_FAIL_PATH')
+                    self.package = self.legacy_package
+                    self.write_release()
+                else:
+                    self.env['TEST_VERIFY_FAIL_PATH'] = failure
+                self.warm_store()
+                result = self.run_update('--prepare', VERSION)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('existing closure', result.stderr)
+                if failure == 'launcher': self.assertIn('lacks the declared launcher', result.stderr)
+                else: self.assertIn('integrity verification failed for '+failure, result.stderr)
+                self.assert_no_archive_or_import()
+                self.assertFalse((self.data/'prepared'/f'{VERSION}.json').exists())
+                self.assertEqual(os.readlink(self.data/'current'), old)
 
     def test_free_space_and_shared_mutation_lock_are_checked_before_download(self):
         self.bind_home(self.data)
@@ -469,29 +615,48 @@ else: sys.exit(88)
         original = json.loads(self.manifest.read_text())
         member = original['closure'][0]
         other = '/nix/store/'+'1'*32+'-unexpected-member'
-        for members in [[member, {**member, 'path': other}],
-                        [{**member, 'narHash': 'sha256-'+'B'*43+'='}],
-                        [{**member, 'narSize': 9}]]:
-            with self.subTest(members=members):
-                self.closures.write_text(json.dumps({self.package: members}))
-                result = self.run_update('--prepare', VERSION)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn('differs from manifest', result.stderr)
-                self.assertFalse((self.data/'prepared'/f'{VERSION}.json').exists())
-                self.assertFalse((self.data/'current').is_symlink())
+        for warm in [False, True]:
+            for members in [[member, {**member, 'path': other}],
+                            [{**member, 'narHash': 'sha256-'+'B'*43+'='}],
+                            [{**member, 'narSize': 9}]]:
+                with self.subTest(warm=warm, members=members):
+                    self.store_state.write_text('[]')
+                    if warm: self.warm_store()
+                    self.log.unlink(missing_ok=True); self.download_log.unlink(missing_ok=True)
+                    self.closures.write_text(json.dumps({self.package: members}))
+                    result = self.run_update('--prepare', VERSION)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('differs from manifest', result.stderr)
+                    if warm:
+                        self.assertIn('existing closure', result.stderr)
+                        self.assert_no_archive_or_import()
+                    else:
+                        self.assertIn('--import', self.log.read_text())
+                    self.assertFalse((self.data/'prepared'/f'{VERSION}.json').exists())
+                    self.assertFalse((self.data/'current').is_symlink())
 
     def test_imported_allocation_must_match_bound_manifest_before_preparation(self):
         if not self.real_store: self.skipTest('Nix fixture needed for Store path validation')
         self.env['TEST_ALLOCATION_CHANGED'] = '1'
-        result = self.run_update('--prepare', VERSION)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('allocation differs from manifest', result.stderr)
-        self.assertFalse((self.data/'prepared'/f'{VERSION}.json').exists())
-        inventory = json.loads((self.data/'installer-roots.json').read_text())
-        self.assertIsNotNone(inventory['pendingImport'])
+        for warm in [False, True]:
+            with self.subTest(warm=warm):
+                self.store_state.write_text('[]')
+                if warm: self.warm_store()
+                self.log.unlink(missing_ok=True); self.download_log.unlink(missing_ok=True)
+                result = self.run_update('--prepare', VERSION)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('allocation differs from manifest', result.stderr)
+                self.assertFalse((self.data/'prepared'/f'{VERSION}.json').exists())
+                inventory = json.loads((self.data/'installer-roots.json').read_text())
+                self.assertIsNotNone(inventory['pendingImport'])
+                if warm: self.assert_no_archive_or_import()
+                else: self.assertIn('--import', self.log.read_text())
         del self.env['TEST_ALLOCATION_CHANGED']
+        self.log.unlink(); self.download_log.unlink()
         result = self.run_update('--prepare', VERSION)
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_no_archive_or_import()
+        self.assertIsNone(json.loads((self.data/'installer-roots.json').read_text())['pendingImport'])
 
     def test_residual_newly_imported_paths_remain_in_the_physical_cap(self):
         if not self.real_store: self.skipTest('Nix fixture needed for Store path validation')
@@ -629,11 +794,17 @@ else: sys.exit(88)
         self.assertFalse((self.data/'prepared'/f'{VERSION}.json').exists())
         original = json.loads(self.manifest.read_text())
         self.publish_manifest({**original, 'sourceSha': 'c'*40})
-        self.download_log.unlink(); self.log.unlink()
-        result = self.run_update('--prepare', VERSION)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('unverified import is pending', result.stderr)
-        self.assert_no_archive_or_import()
+        for warm in [False, True]:
+            with self.subTest(warm=warm):
+                self.store_state.write_text('[]')
+                if warm: self.warm_store()
+                self.download_log.unlink(missing_ok=True); self.log.unlink(missing_ok=True)
+                result = self.run_update('--prepare', VERSION)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('unverified import is pending', result.stderr)
+                self.assert_no_archive_or_import()
+                self.assertEqual(json.loads((self.data/'installer-roots.json').read_text())['pendingImport'],
+                                 inventory['pendingImport'])
 
     def test_missing_closure_never_falls_back_to_appimage_or_build(self):
         releases=json.loads(self.releases.read_text()); releases[0]['assets']=[]
@@ -726,18 +897,20 @@ else: sys.exit(88)
         restore = app_home/'runtime'/'desktop-restore'; restore.mkdir(parents=True)
         decoy = self.data/'runtime'/'desktop-restore'; decoy.mkdir(parents=True)
         (decoy/'registry.json').write_text(json.dumps(dict(format=1, updateHold=False)))
-        for name, value in [('registry.json', dict(format=1, updateHold=True)),
-                            ('registry.json', dict(format=1)),
-                            ('registry.json', dict(format=2, updateHold=False)),
-                            ('transaction.json', dict(format=1))]:
-            with self.subTest(state=name, value=value):
-                path = restore/name; path.write_text(json.dumps(value))
-                result = self.run_update('--update')
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn('held', result.stderr)
-                self.assertEqual(os.readlink(self.data/'current'), old)
-                self.assertFalse(self.log.exists())
-                path.unlink()
+        for warm in [False, True]:
+            if warm: self.warm_store()
+            for name, value in [('registry.json', dict(format=1, updateHold=True)),
+                                ('registry.json', dict(format=1)),
+                                ('registry.json', dict(format=2, updateHold=False)),
+                                ('transaction.json', dict(format=1))]:
+                with self.subTest(warm=warm, state=name, value=value):
+                    path = restore/name; path.write_text(json.dumps(value))
+                    result = self.run_update('--update')
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('held', result.stderr)
+                    self.assertEqual(os.readlink(self.data/'current'), old)
+                    self.assertFalse(self.log.exists())
+                    path.unlink()
 
     def test_bound_home_cannot_be_overridden_to_bypass_hold(self):
         old = self.previous()
