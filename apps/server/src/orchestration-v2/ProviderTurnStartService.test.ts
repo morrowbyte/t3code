@@ -1294,11 +1294,11 @@ effectIt.effect.each([
     message: "Cannot check storage capacity. Capacity is unknown. (spawn findmnt EAGAIN)",
     title: "Cannot measure storage capacity to start work",
   },
-])("refuses provider startup with $code for the work and data paths", (failure) =>
+])("starts diagnosis independently of $code on the work and data paths", (failure) =>
   Effect.gen(function* () {
     const check = vi.fn(async () => ({ code: failure.code, message: failure.message }));
     const harness = makeLocalCommandHarness({
-      text: "Continue",
+      text: "Inspect storage and clean up only this task's disposable output",
       storageGuard: {
         check,
         checkRunning: async () => null,
@@ -1306,16 +1306,9 @@ effectIt.effect.each([
       },
     });
     yield* harness.start;
-    expect(check).toHaveBeenCalledWith(["/tmp/t3-data", "/tmp/native-account-command"]);
-    expect(harness.open).not.toHaveBeenCalled();
-    const item = harness.events.find((event) => event.type === "turn-item.updated")?.payload;
-    expect(item?.type).toBe("error");
-    if (item?.type === "error") {
-      expect(item.title).toBe(failure.title);
-      expect(item.failure.class).toBe("validation_error");
-      expect(item.failure.code).toBe(failure.code);
-      expect(item.failure.message).toBe(failure.message);
-    }
+    expect(check).not.toHaveBeenCalled();
+    expect(harness.open).toHaveBeenCalledTimes(1);
+    expect(harness.startTurn).toHaveBeenCalledTimes(1);
   }),
 );
 

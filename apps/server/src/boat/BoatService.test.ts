@@ -2237,6 +2237,7 @@ it.effect.each(["ttl", "budget"] as const)("stops active owners at the hard %s l
     yield* boat.configureDefaults({ ttlMinutes: 1, retentionDays: 14 });
     yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: true, budgetUsd: 0.1 });
     yield* boat.operate({ action: "start", projectId, requestId: "limit" }, ownerThreadId);
+    yield* boat.operate({ action: "prepare", projectId, requestId: "limit" }, ownerThreadId);
     if (limit === "ttl") yield* TestClock.adjust("61 seconds");
     else test.setCost(0.1);
     yield* boat.reconcile();
@@ -2245,7 +2246,7 @@ it.effect.each(["ttl", "budget"] as const)("stops active owners at the hard %s l
   }).pipe(Effect.scoped, Effect.provide(test.services));
 });
 
-it.effect("stops a completed setup preview when the last agent finishes", () => {
+it.effect("retains a prepared preview between turns until its owner explicitly settles", () => {
   const threadId = ThreadId.make(`boat-setup:${projectId}`);
   const test = setup(undefined, threadId);
   return Effect.gen(function* () {
@@ -2262,8 +2263,38 @@ it.effect("stops a completed setup preview when the last agent finishes", () => 
     yield* boat.operate({ action: "start", projectId, requestId }, threadId);
     yield* boat.operate({ action: "prepare", projectId, requestId }, threadId);
     yield* boat.operate({ action: "preview", projectId, requestId }, threadId);
+    const before = (yield* boat.read(projectId)).instances[0]!;
     test.setOwnerActive(false);
     yield* boat.reconcile();
+    assert.notInclude(test.calls, "POST /sandboxes/bx_23456789/stop");
+    const reopened = yield* make;
+    const target = { requestId, sandboxId: before.sandboxId! };
+    for (const status of ["completed", "interrupted", "failed"] as const) {
+      test.setThread(threadId, { status });
+      yield* reopened.reconcile();
+      yield* (yield* reopened.assertActiveLease(target, threadId)).check;
+      const retained = (yield* reopened.read(projectId)).instances[0]!;
+      assert.equal(retained.sandboxId, before.sandboxId);
+      assert.equal(retained.processId, before.processId);
+      assert.equal(retained.previewUrl, before.previewUrl);
+      assert.equal(retained.expiresAt, before.expiresAt);
+    }
+    const childThreadId = ThreadId.make("preview-reviewer");
+    test.setThread(childThreadId, { activeRunId: RunId.make("review-run") });
+    test.setSubagents(threadId, [
+      { threadId, childThreadId, status: "running" } as OrchestrationV2Subagent,
+    ]);
+    yield* reopened.reconcile();
+    const childLease = yield* reopened.assertActiveLease(target, childThreadId);
+    test.setThread(childThreadId, { activeRunId: null });
+    test.setSubagents(threadId, [
+      { threadId, childThreadId, status: "completed" } as OrchestrationV2Subagent,
+    ]);
+    yield* reopened.reconcile();
+    assert.isTrue(Exit.isFailure(yield* childLease.check.pipe(Effect.exit)));
+    yield* (yield* reopened.assertActiveLease(target, threadId)).check;
+    test.setThread(threadId, { settledOverride: "settled" });
+    yield* reopened.reconcile();
     assert.include(test.calls, "POST /sandboxes/bx_23456789/stop");
     assert.notInclude(test.calls, "PATCH /sandboxes/bx_23456789");
   }).pipe(Effect.scoped, Effect.provide(test.services));
@@ -2680,6 +2711,10 @@ it.effect("treats an active resume retry as success without clearing the process
     assert.equal(result.instances[0]?.processId, 123);
     assert.deepEqual(result.instances[0]?.leases, [ownerThreadId]);
     test.setOwnerActive(false);
+    yield* boat.reconcile();
+    assert.equal((yield* boat.read(projectId)).instances[0]?.processId, 123);
+    assert.equal(test.calls.filter((call) => call.endsWith("/stop")).length, 1);
+    test.setThread(ownerThreadId, { settledOverride: "settled" });
     yield* boat.reconcile();
     assert.equal((yield* boat.read(projectId)).instances[0]?.state, "archived");
     assert.equal(test.calls.filter((call) => call.endsWith("/stop")).length, 2);

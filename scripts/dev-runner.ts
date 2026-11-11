@@ -20,6 +20,7 @@ import * as Schema from "effect/Schema";
 import { Argument, Command, Flag } from "effect/cli";
 import { ChildProcess } from "effect/process";
 
+import * as DevRunnerControl from "@t3tools/shared/node/devRunnerControl";
 import { type DevShareError, shareDevServer, unshareDevServer } from "./lib/dev-share.ts";
 import { loadRepoEnv } from "./lib/public-config.ts";
 
@@ -864,6 +865,35 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
   });
 
   const args = [...(built ? BUILT_DEV_ARGS : MODE_ARGS[input.mode]), ...input.runArgs];
+  const ownerThreadId = hostEnvironment.T3CODE_THREAD_ID;
+  const control =
+    ownerThreadId && worktreePath
+      ? yield* DevRunnerControl.registerDevRunner({
+          threadId: ownerThreadId,
+          workspacePath: worktreePath,
+          reuseKey: JSON.stringify([
+            input.mode,
+            portOffset,
+            devInstance,
+            input.t3Home,
+            input.host,
+            input.port,
+            input.devUrl?.href,
+            input.built,
+            input.share,
+            args,
+            hostEnvironment.T3CODE_PORT,
+            hostEnvironment.PORT,
+            hostEnvironment.T3CODE_HOME,
+            input.logWebSocketEvents,
+            input.autoBootstrapProjectFromCwd,
+          ]),
+        })
+      : undefined;
+  if (control?.reused) {
+    yield* Effect.logInfo(`[dev-runner] reusing this task's ${input.mode} process`);
+    return;
+  }
   const spawnCommand = yield* resolveSpawnCommand("vp", args, { env });
   const processContext = {
     mode: input.mode,
@@ -878,10 +908,8 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
     env,
     extendEnv: false,
     shell: spawnCommand.shell,
-    // Keep Vite+ in the same process group so terminal signals (Ctrl+C)
-    // reach it directly. Effect defaults to detached: true on non-Windows,
-    // which would put the runner in a new group and require manual forwarding.
-    detached: false,
+    // Task-owned groups let the captured handle stop descendants; manual runs keep terminal signals.
+    detached: control !== undefined && (yield* HostProcess.Platform) !== "win32",
     forceKillAfter: "1500 millis",
   }).pipe(
     Effect.mapError(
@@ -894,7 +922,7 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
     ),
   );
 
-  const exitCode = yield* child.exitCode.pipe(
+  const waitForExit = child.exitCode.pipe(
     Effect.mapError(
       (cause) =>
         new DevRunnerProcessError({
@@ -904,6 +932,26 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
         }),
     ),
   );
+  const outcome = control
+    ? yield* Effect.raceFirst(
+        waitForExit.pipe(Effect.map((exitCode) => ({ kind: "exited" as const, exitCode }))),
+        control.stopRequested.pipe(Effect.as({ kind: "stop" as const, control })),
+      )
+    : { kind: "exited" as const, exitCode: yield* waitForExit };
+  if (outcome.kind === "stop") {
+    const stopped = yield* child
+      .kill({ killSignal: "SIGTERM", forceKillAfter: "1500 millis" })
+      .pipe(Effect.timeoutOption("5 seconds"), Effect.option);
+    const verified =
+      Option.isSome(stopped) && Option.isSome(stopped.value) && !(yield* child.isRunning);
+    yield* outcome.control.confirmStopped(verified);
+    if (verified) return;
+    return yield* new DevRunnerControl.DevRunnerControlError({
+      operation: "stop",
+      cause: "Child exit was not confirmed",
+    });
+  }
+  const exitCode = outcome.exitCode;
   if (exitCode !== 0) {
     return yield* new DevRunnerProcessExitError({
       ...processContext,

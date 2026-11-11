@@ -2691,6 +2691,27 @@ ${action.command}`,
     );
   });
 
+  const retainedRuntimeOwner = Effect.fn("BoatService.retainedRuntimeOwner")(function* (
+    instance: StoredInstance,
+  ) {
+    const source = work[instance.requestId];
+    if (
+      !source?.source.threadId ||
+      source.source.projectId !== instance.projectId ||
+      !source.sourceTree ||
+      (instance.processId === null && instance.previewUrl === null && !instance.previewTabId)
+    )
+      return null;
+    const owner = yield* projections.getThreadShell(source.source.threadId);
+    return owner &&
+      owner.projectId === instance.projectId &&
+      owner.deletedAt === null &&
+      owner.archivedAt === null &&
+      owner.settledOverride !== "settled"
+      ? owner.id
+      : null;
+  }, Effect.mapError(storageError));
+
   const activeLeaseOwners = Effect.fn("BoatService.activeLeaseOwners")(function* (
     threadId: ThreadId,
     projectId: ProjectId,
@@ -2767,7 +2788,8 @@ ${action.command}`,
       if (!Number.isFinite(Date.parse(instance.expiresAt)) || Date.parse(instance.expiresAt) <= now)
         return yield* new BoatError({ category: "conflict" });
       const owners = yield* activeLeaseOwners(source.threadId, caller.projectId, target.requestId);
-      if (!owners.has(callerThreadId)) return yield* new BoatError({ category: "conflict" });
+      if (!owners.has(callerThreadId) && (yield* retainedRuntimeOwner(instance)) !== callerThreadId)
+        return yield* new BoatError({ category: "conflict" });
       const latest = ledger.instances.find((item) => item.requestId === target.requestId);
       if (
         latest?.sandboxId !== target.sandboxId ||
@@ -2869,7 +2891,8 @@ ${action.command}`,
         expiresAt: item.expiresAt,
       });
     const commands = work[item.requestId]?.commands ?? [];
-    if (item.leases.length === 0 && commands.length === 0) return;
+    if (item.leases.length === 0 && commands.length === 0 && !work[item.requestId]?.source.threadId)
+      return;
     const token = yield* key;
     const finishedCommands = new Set<number>();
     for (const command of commands) {
@@ -2915,6 +2938,8 @@ ${action.command}`,
       for (const active of yield* activeLeaseOwners(threadId, item.projectId, item.requestId))
         liveOwners.add(active);
     }
+    const retainedOwner = yield* retainedRuntimeOwner(item);
+    if (retainedOwner !== null) liveOwners.add(retainedOwner);
     const finishedOwners = new Set(item.leases.filter((threadId) => !liveOwners.has(threadId)));
     const newOwners = [...liveOwners].filter((threadId) => !item.leases.includes(threadId));
     const current =

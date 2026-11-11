@@ -359,6 +359,10 @@
       "types": "./src/nodeRuntime.ts",
       "import": "./src/nodeRuntime.ts"
     },
+    "./node/devRunnerControl": {
+      "types": "./src/node/devRunnerControl.ts",
+      "import": "./src/node/devRunnerControl.ts"
+    },
     "./node/storagePressure": {
       "types": "./src/node/storagePressure.ts",
       "import": "./src/node/storagePressure.ts"

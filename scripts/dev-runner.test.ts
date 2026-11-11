@@ -8,7 +8,9 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { assert, describe, it } from "@effect/vitest";
 import * as ByteSize from "effect/ByteSize";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
@@ -18,6 +20,7 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/process";
 
+import { stopDevRunners } from "@t3tools/shared/node/devRunnerControl";
 import {
   checkPortAvailabilityOnHosts,
   createDevRunnerEnv,
@@ -69,7 +72,8 @@ const devServerInput = {
   runArgs: ["--inspect", "secret-token-value"],
 } as const;
 
-it.layer(NodeServices.layer)("dev-runner", (it) => {
+const devRunnerLayer = Layer.merge(NodeServices.layer, Layer.succeed(HostProcess.Environment, {}));
+it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
   describe("createDevRunnerEnv", () => {
     it.effect("forwards the reusable auth token to web dev and removes it for desktop", () =>
       Effect.gen(function* () {
@@ -361,6 +365,99 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
   });
 
   describe("runDevRunnerWithInput", () => {
+    it.effect.each(["manual", "settlement", "interruption", "unconfirmed exit"] as const)(
+      "preserves the distinction between %s and a normal child exit",
+      (kind) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const workspacePath = yield* fs.makeTempDirectoryScoped();
+            yield* fs.writeFileString(
+              path.join(workspacePath, ".git"),
+              "gitdir: /repo/.git/worktrees/task\n",
+            );
+            const spawned = yield* Deferred.make<void>();
+            const exited = yield* Deferred.make<
+              ChildProcessSpawner.ExitCode,
+              PlatformError.PlatformError
+            >();
+            let running = true;
+            let kills = 0;
+            const spawnerLayer = Layer.succeed(
+              ChildProcessSpawner.ChildProcessSpawner,
+              ChildProcessSpawner.make(() =>
+                Deferred.succeed(spawned, undefined).pipe(
+                  Effect.as(
+                    ChildProcessSpawner.makeHandle({
+                      ...mockProcess(0),
+                      exitCode: Deferred.await(exited),
+                      isRunning: Effect.sync(() => running),
+                      kill: () =>
+                        Effect.sync(() => {
+                          kills += 1;
+                          if (kind !== "unconfirmed exit") running = false;
+                        }).pipe(
+                          Effect.andThen(
+                            Deferred.fail(
+                              exited,
+                              PlatformError.systemError({
+                                _tag: "Unknown",
+                                module: "ChildProcess",
+                                method: "exitCode",
+                                description: "SIGTERM",
+                              }),
+                            ),
+                          ),
+                          Effect.asVoid,
+                        ),
+                    }),
+                  ),
+                ),
+              ),
+            );
+            const runner = yield* runDevRunnerWithInput({ ...devServerInput, seed: false }).pipe(
+              Effect.scoped,
+              Effect.provide([emptyConfigLayer, netServiceLayer, spawnerLayer]),
+              Effect.provideService(HostProcess.WorkingDirectory, workspacePath),
+              Effect.provideService(
+                HostProcess.Environment,
+                kind === "manual" ? {} : { T3CODE_THREAD_ID: "task-owner" },
+              ),
+              Effect.provideService(HostProcess.Platform, "linux"),
+              Effect.exit,
+              Effect.forkChild,
+            );
+            yield* Deferred.await(spawned);
+            const directory = path.join(workspacePath, ".t3", "dev-runners");
+            if (kind === "manual") {
+              assert.isFalse(yield* fs.exists(directory));
+              running = false;
+              yield* Deferred.succeed(exited, ChildProcessSpawner.ExitCode(0));
+              assert.strictEqual((yield* Fiber.join(runner))._tag, "Success");
+              assert.strictEqual(kills, 0);
+              return;
+            }
+            assert.lengthOf(yield* fs.readDirectory(directory), 1);
+            if (kind === "interruption") {
+              yield* Fiber.interrupt(runner);
+              assert.strictEqual(kills, 0);
+            } else {
+              const stopped = yield* stopDevRunners({
+                threadId: "task-owner",
+                workspacePath,
+                canStop: Effect.succeed(true),
+              });
+              assert.strictEqual(stopped, kind === "settlement");
+              const result = yield* Fiber.join(runner);
+              assert.strictEqual(result._tag, kind === "settlement" ? "Success" : "Failure");
+              assert.strictEqual(kills, 1);
+            }
+            assert.deepEqual(yield* fs.readDirectory(directory), []);
+          }),
+        ),
+    );
+
     it.effect("preserves process spawn context and the exact platform cause", () => {
       const cause = PlatformError.systemError({
         _tag: "NotFound",

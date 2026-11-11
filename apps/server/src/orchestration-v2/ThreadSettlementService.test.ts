@@ -590,6 +590,9 @@ interface HarnessOptions {
     input: ProjectSetupScriptRunner.ProjectSetupScriptRunnerInput,
   ) => Effect.Effect<void>;
   readonly onCloseIdle?: () => Effect.Effect<void>;
+  readonly realWorktreePaths?: Readonly<Record<string, string>>;
+  readonly runnerReceiptNames?: Readonly<Record<string, ReadonlyArray<string>>>;
+  readonly onRunnerRead?: (path: string) => Effect.Effect<void>;
   readonly currentThreads?: ReadonlyArray<OrchestrationV2AppThread>;
 }
 
@@ -752,6 +755,11 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
     Layer.succeed(Crypto.Crypto, testCrypto),
     FileSystem.layerNoop({
       exists: (path) => Effect.succeed(options.existingWorktreePaths?.includes(path) ?? false),
+      realPath: (path) => Effect.succeed(options.realWorktreePaths?.[path] ?? path),
+      readDirectory: (path) =>
+        (options.onRunnerRead?.(path) ?? Effect.void).pipe(
+          Effect.as([...(options.runnerReceiptNames?.[path] ?? [])]),
+        ),
     }),
   );
 
@@ -1435,41 +1443,50 @@ describe("ThreadSettlementServiceV2 terminals", () => {
     ),
   );
 
-  it.effect.each(["own run", "shared thread", "background command"] as const)(
-    "does not run cleanup scripts while %s still uses the worktree",
-    (kind) =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const worktree = appThread("cleanup-owner", "settled", "/worktrees/busy");
-          const peer = appThread("busy-peer", "active", "/worktrees/busy");
-          const marker = appThread("marker-thread", "settled", "/worktrees/marker");
-          const active = shell({
-            id: kind === "shared thread" ? peer.id : worktree.id,
-            worktreePath: "/worktrees/busy",
-            settledAt: worktree.settledAt,
-            settledOverride: "settled",
-            status: kind === "background command" ? "completed" : "running",
-            activeRunId: kind === "background command" ? null : RunId.make("active-run"),
-            pendingBackgroundTasks:
-              kind === "background command"
-                ? [{ taskId: "preview", kind: "command", description: "dev server" }]
-                : [],
-          });
-          const fixture = yield* makeHarness({
-            snapshot: makeSnapshot([active]),
-            currentThreads:
-              kind === "shared thread" ? [worktree, peer, marker] : [worktree, marker],
-            existingWorktreePaths: ["/worktrees/busy", "/worktrees/marker"],
-          });
-          yield* Effect.gen(function* () {
-            const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
-            yield* startHarness(service, fixture.activation, fixture.snapshotReads);
-            yield* fixture.publishEvent(settledEvent(worktree));
-            yield* fixture.publishEvent(settledEvent(marker));
-            assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, marker.id);
-          }).pipe(Effect.provide(fixture.layer));
-        }),
-      ),
+  it.effect.each([
+    "own run",
+    "shared thread",
+    "aliased shared thread",
+    "background command",
+  ] as const)("does not run cleanup scripts while %s still uses the worktree", (kind) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const worktree = appThread("cleanup-owner", "settled", "/worktrees/busy");
+        const sharedPeer = kind === "shared thread" || kind === "aliased shared thread";
+        const peerPath = kind === "aliased shared thread" ? "/worktrees/alias" : "/worktrees/busy";
+        const peer = appThread("busy-peer", "active", peerPath);
+        const marker = appThread("marker-thread", "settled", "/worktrees/marker");
+        const active = shell({
+          id: sharedPeer ? peer.id : worktree.id,
+          worktreePath: sharedPeer ? peerPath : "/worktrees/busy",
+          settledAt: worktree.settledAt,
+          settledOverride: "settled",
+          status: kind === "background command" ? "completed" : "running",
+          activeRunId: kind === "background command" ? null : RunId.make("active-run"),
+          pendingBackgroundTasks:
+            kind === "background command"
+              ? [{ taskId: "preview", kind: "command", description: "dev server" }]
+              : [],
+        });
+        const fixture = yield* makeHarness({
+          snapshot: makeSnapshot([active]),
+          currentThreads: sharedPeer ? [worktree, peer, marker] : [worktree, marker],
+          existingWorktreePaths: ["/worktrees/busy", "/worktrees/marker"],
+          realWorktreePaths: { "/worktrees/alias": "/worktrees/busy" },
+          onRunnerRead: (path) =>
+            Effect.sync(() => {
+              if (kind !== "background command") assert.notInclude(path, "/worktrees/busy/");
+            }),
+        });
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+          yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+          yield* fixture.publishEvent(settledEvent(worktree));
+          yield* fixture.publishEvent(settledEvent(marker));
+          assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, marker.id);
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
   );
 
   it.effect("retries deferred cleanup when the settled thread's active run finishes", () =>
@@ -1533,26 +1550,58 @@ describe("ThreadSettlementServiceV2 terminals", () => {
     ),
   );
 
-  it.effect("skips the settle script for a thread re-engaged while its shells close", () =>
+  it.effect.each(["shells close", "runner receipts are read"] as const)(
+    "skips the settle script for a thread re-engaged while its %s",
+    (stage) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const settled = appThread("reengaging-thread", "settled", "/worktrees/reengaging");
+          const marker = appThread("marker-thread", "settled", "/worktrees/marker");
+          const currentThreads = [settled, marker];
+          const fixture = yield* makeHarness({
+            snapshot: makeSnapshot([]),
+            currentThreads,
+            existingWorktreePaths: ["/worktrees/reengaging", "/worktrees/marker"],
+            onCloseIdle: () =>
+              stage === "shells close"
+                ? Effect.sync(() => {
+                    currentThreads[0] = { ...settled, settledOverride: "active" };
+                  })
+                : Effect.void,
+            onRunnerRead: () =>
+              stage === "runner receipts are read"
+                ? Effect.sync(() => {
+                    currentThreads[0] = { ...settled, settledOverride: "active" };
+                  })
+                : Effect.void,
+          });
+
+          yield* Effect.gen(function* () {
+            const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+            yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+            yield* fixture.publishEvent(settledEvent(settled));
+            yield* fixture.publishEvent(settledEvent(marker));
+            assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, marker.id);
+          }).pipe(Effect.provide(fixture.layer));
+        }),
+      ),
+  );
+
+  it.effect("keeps dependencies when a runner ownership receipt cannot be validated", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const settled = appThread("reengaging-thread", "settled", "/worktrees/reengaging");
+        const owner = appThread("unverified-runner", "settled", "/worktrees/unverified");
         const marker = appThread("marker-thread", "settled", "/worktrees/marker");
-        const currentThreads = [settled, marker];
         const fixture = yield* makeHarness({
           snapshot: makeSnapshot([]),
-          currentThreads,
-          existingWorktreePaths: ["/worktrees/reengaging", "/worktrees/marker"],
-          onCloseIdle: () =>
-            Effect.sync(() => {
-              currentThreads[0] = { ...settled, settledOverride: "active" };
-            }),
+          currentThreads: [owner, marker],
+          existingWorktreePaths: ["/worktrees/unverified", "/worktrees/marker"],
+          runnerReceiptNames: { "/worktrees/unverified/.t3/dev-runners": ["unknown.json"] },
         });
-
         yield* Effect.gen(function* () {
           const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
           yield* startHarness(service, fixture.activation, fixture.snapshotReads);
-          yield* fixture.publishEvent(settledEvent(settled));
+          yield* fixture.publishEvent(settledEvent(owner));
           yield* fixture.publishEvent(settledEvent(marker));
           assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, marker.id);
         }).pipe(Effect.provide(fixture.layer));

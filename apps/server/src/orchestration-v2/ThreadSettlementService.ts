@@ -19,11 +19,13 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FiberSet from "effect/FiberSet";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
+import * as DevRunnerControl from "@t3tools/shared/node/devRunnerControl";
 import * as GitManager from "../git/GitManager.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
@@ -595,28 +597,67 @@ export const make = Effect.gen(function* () {
       // Recheck after closing and worktree I/O; re-engaged threads must not be cleaned up.
       const thread = yield* projections.getThread(threadId);
       if (thread.settledOverride !== "settled") return;
-      const worktreeThreads = yield* projections.getThreadWorktreePaths({ includeArchived: true });
-      const peers = new Set([
-        threadId,
-        ...worktreeThreads
-          .filter((peer) => peer.worktreePath === worktreePath)
-          .map((peer) => peer.threadId),
-      ]);
-      for (const peerId of peers) {
-        const current = yield* projections.getThreadShell(peerId);
-        if (
-          current === null ||
-          current.settledAt === null ||
-          current.activeRunId !== null ||
-          (current.pendingBackgroundTasks?.length ?? 0) > 0 ||
-          !["idle", "completed", "interrupted", "failed", "cancelled", "rolled_back"].includes(
-            current.status,
+      const canCleanUp = Effect.fn("ThreadSettlementServiceV2.canCleanUpWorktree")(
+        function* (stoppingRunner = false) {
+          const owner = yield* projections.getThread(threadId);
+          if (
+            owner.settledOverride !== "settled" ||
+            owner.worktreePath !== worktreePath ||
+            toMillis(owner.settledAt) !== toMillis(thread.settledAt)
           )
-        )
-          return;
-      }
+            return false;
+          const canonicalPath = yield* fileSystem.realPath(worktreePath);
+          const worktreeThreads = yield* projections.getThreadWorktreePaths({
+            includeArchived: true,
+          });
+          const peers = new Set([threadId]);
+          for (const peer of worktreeThreads) {
+            const peerPath = yield* fileSystem.realPath(peer.worktreePath).pipe(
+              Effect.map(Option.some),
+              Effect.catchIf(
+                (error) => error.reason._tag === "NotFound",
+                () => Effect.succeed(Option.none<string>()),
+              ),
+            );
+            if (
+              peer.worktreePath === worktreePath ||
+              (Option.isSome(peerPath) && peerPath.value === canonicalPath)
+            )
+              peers.add(peer.threadId);
+          }
+          for (const peerId of peers) {
+            const current = yield* projections.getThreadShell(peerId);
+            if (
+              current === null ||
+              current.settledAt === null ||
+              current.settledOverride === "active" ||
+              current.activeRunId !== null ||
+              (current.pendingBackgroundTasks ?? []).some(
+                (task) => !(stoppingRunner && peerId === threadId && task.kind === "command"),
+              ) ||
+              !["idle", "completed", "interrupted", "failed", "cancelled", "rolled_back"].includes(
+                current.status,
+              )
+            )
+              return false;
+          }
+          return true;
+        },
+        Effect.orElseSucceed(() => false),
+      );
+      if (!(yield* canCleanUp(true))) return;
       const settledAtMs = toMillis(thread.settledAt);
       if (settledAtMs === null || settleActionRunAt.get(threadId) === settledAtMs) return;
+      const runnersStopped = yield* DevRunnerControl.stopDevRunners({
+        threadId,
+        workspacePath: worktreePath,
+        canStop: canCleanUp(true),
+      }).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
+      if (!runnersStopped) return;
+      // Stop confirmation only covers the captured child; the prune script still checks process refs.
+      if (!(yield* canCleanUp())) return;
+      yield* terminals.closeIdle({ threadId });
+      if (!(yield* canCleanUp())) return;
       const run = yield* projectScripts.runForThread({
         threadId,
         projectId: thread.projectId,

@@ -488,6 +488,31 @@ it.effect.each([
   },
 );
 
+it.effect.each([
+  ["root", "storage_pressure"],
+  ["root", "storage_measurement_failed"],
+  ["existing_worktree", "storage_pressure"],
+  ["existing_worktree", "storage_measurement_failed"],
+] as const)("prepares recovery in %s despite %s without workspace admission", ([type, code]) => {
+  const storageCheck = vi.fn(async () => ({ code, message: "Storage unavailable" }));
+  const harness = makeHarness({ storageCheck });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const launched = yield* launches.launch({
+      ...launchInput({ command: `recovery-${type}-${code}`, thread: `recovery-${type}-${code}` }),
+      workspaceStrategy:
+        type === "root"
+          ? { type }
+          : { type, worktreePath: "/tmp/existing-recovery", branch: "main" },
+    });
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const current = yield* threads.getThreadProjection(launched.threadId);
+    assert.strictEqual(current.thread.id, launched.threadId);
+    assert.strictEqual(storageCheck.mock.calls.length, 0);
+    assert.strictEqual(harness.createWorktree.mock.calls.length, 0);
+  }).pipe(Effect.provide(harness.layer));
+});
+
 it.effect.each(["storage_pressure", "storage_measurement_failed"] as const)(
   "checks state storage before creating a worktree (%s)",
   (code) => {
