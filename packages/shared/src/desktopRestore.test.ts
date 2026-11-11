@@ -1058,6 +1058,34 @@ describe("bounded desktop restore", () => {
     },
   );
 
+  it.each([2, 3, 4])(
+    "retains the newest versions within a count limit of %s",
+    async (maxVersions) => {
+      await using fixture = await setup();
+      await registerDesktopRestoreBuild({
+        baseDir: fixture.baseDir,
+        identity: fixture.identity,
+        build: build("1.0.1"),
+        maxVersions,
+      });
+      const versions = ["1.0.0", "1.0.1"];
+      for (const version of ["1.0.2", "1.0.3", "1.0.4"]) {
+        await fixture.install(version);
+        versions.push(version);
+        const registry = await readDesktopRestoreRegistry(fixture.baseDir);
+        expect(registry.artifacts.map((item) => item.version)).toEqual(
+          versions.slice(-maxVersions),
+        );
+        expect(registry.currentVersion).toBe(version);
+        expect(registry.artifacts.every((item) => item.healthy)).toBe(true);
+        const files = await NodeFSP.readdir(
+          NodePath.join(desktopRestoreDirectory(fixture.baseDir), "artifacts"),
+        );
+        expect(files.sort()).toEqual(registry.artifacts.map((item) => item.fileName).sort());
+      }
+    },
+  );
+
   it("rejects registration that cannot keep the current artifact and a predecessor within the cap", async () => {
     await using fixture = await setup();
     const registry = await readDesktopRestoreRegistry(fixture.baseDir);

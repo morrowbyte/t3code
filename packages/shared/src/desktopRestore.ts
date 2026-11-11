@@ -966,16 +966,11 @@ export async function registerDesktopRestoreBuild(input: RegisterDesktopRestoreI
     );
     const retained = inventory.filter((item) => item.sha256 !== artifact.sha256);
     const predecessor = retained.find((item) => item.sha256 === previous?.currentHash);
-    const keep =
+    const keep = (
       predecessor === undefined
-        ? retained.slice(-(maxVersions - 1))
-        : [
-            ...retained
-              .filter((item) => item !== predecessor)
-              .slice(-(maxVersions - 1))
-              .slice(0, maxVersions - 2),
-            predecessor,
-          ];
+        ? retained
+        : [...retained.filter((item) => item !== predecessor), predecessor]
+    ).slice(-(maxVersions - 1));
     for (const item of keep) await verifyDesktopRestoreArtifact(input.baseDir, item);
     const totalBytes = retainedDesktopBytes([
       ...keep,
