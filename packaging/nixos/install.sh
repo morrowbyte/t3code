@@ -324,7 +324,7 @@ lock_desktop_retention() {
 }
 admit_import() {
   local registry="$restore_home/runtime/desktop-restore/registry.json" root path entry members previous
-  local max_versions=2 max_bytes=2147483648 archive_bytes export_bytes need_archive=0 candidate_slot=1
+  local max_versions=2 max_bytes=6442450944 archive_bytes export_bytes need_archive=0 candidate_slot=1
   local -A roots=()
   if [[ "$pending_import" != null ]]; then
     jq -e --arg manifest "$manifest_digest" --arg root "$store_path" '

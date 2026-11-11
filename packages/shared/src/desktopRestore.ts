@@ -110,6 +110,7 @@ const decodeHomeBinding = Schema.decodeUnknownSync(
   Schema.Struct({ format: Schema.Literal(1), baseDir: Schema.String }),
 );
 const DEFAULT_MAX_BYTES = 2 * 1024 ** 3;
+const DEFAULT_NIX_MAX_BYTES = 6 * 1024 ** 3;
 const RESERVE_BYTES = 64 * 1024 ** 2;
 
 async function admitStorage(directories: readonly string[], bytes: number) {
@@ -878,7 +879,10 @@ export async function registerDesktopRestoreBuild(input: RegisterDesktopRestoreI
       provenance === null ? null : await readNixRestoreClosure(provenance.storePath, true);
     const artifact = closure ?? (await desktopRestoreFileDigest(identity.installPath));
     const maxVersions = input.maxVersions ?? previous?.maxVersions ?? 2;
-    const maxBytes = input.maxBytes ?? previous?.maxBytes ?? DEFAULT_MAX_BYTES;
+    const maxBytes =
+      input.maxBytes ??
+      previous?.maxBytes ??
+      (identity.kind === "nix" ? DEFAULT_NIX_MAX_BYTES : DEFAULT_MAX_BYTES);
     if (
       !Number.isSafeInteger(maxVersions) ||
       maxVersions < 2 ||
@@ -1014,14 +1018,15 @@ export async function markDesktopRestoreHealthy(input: {
   readonly build: DesktopRestoreBuild;
   readonly identity: DesktopRestoreIdentity;
 }) {
+  const identity = decodeIdentity(input.identity);
   const registry = await readDesktopRestoreRegistry(input.baseDir);
-  if (registry.installationId !== digest(JSON.stringify(input.identity)))
+  if (registry.installationId !== digest(JSON.stringify(identity)))
     throw new Error("Restored desktop started with a different identity.");
-  const schemaDigest = await desktopRestoreSchemaDigest(input.identity.stateDir);
+  const schemaDigest = await desktopRestoreSchemaDigest(identity.stateDir);
   const actual =
-    input.identity.kind === "nix"
-      ? await readNixRestoreClosure(await NodeFSP.realpath(input.identity.installPath), true)
-      : await desktopRestoreFileDigest(input.identity.installPath);
+    identity.kind === "nix"
+      ? await readNixRestoreClosure(await NodeFSP.realpath(identity.installPath), true)
+      : await desktopRestoreFileDigest(identity.installPath);
   const transaction = await readDesktopRestoreTransaction(input.baseDir);
   if (transaction !== null) {
     const expected = transaction.phase === "recovering" ? transaction.from : transaction.to;

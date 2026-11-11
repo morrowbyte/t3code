@@ -66,7 +66,8 @@ restore and health contract; older installed builds cannot be qualified retroact
 A separate server also needs launcher protocol 4; update its managed launcher
 before using restore if the CLI reports an older protocol.
 
-Desktop retains two versions within 2 GiB. A separate server retains up to
+Desktop retains two versions. AppImage uses a 2-GiB limit; Nix uses 6 GiB,
+including its bounded archive and import workspace. A separate server retains up to
 three versions within 1 GiB: current, a verified predecessor and a persistent
 launcher when needed. Shared Nix closure paths count once. Nix imports and server updates use
 at most one additional candidate slot within the byte limit. If the

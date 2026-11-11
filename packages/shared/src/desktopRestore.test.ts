@@ -236,7 +236,8 @@ process.once("SIGTERM", () => server.close(() => {
       { mode: 0o755 },
     );
     await registerDesktopRestoreBuild({ baseDir, identity, build: metadata });
-    await markDesktopRestoreHealthy({ baseDir, identity, build: metadata });
+    const { kind, ...fields } = identity;
+    await markDesktopRestoreHealthy({ baseDir, identity: { ...fields, kind }, build: metadata });
   };
   await install("1.0.0");
   await install("1.0.1");

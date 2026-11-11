@@ -864,7 +864,7 @@ const spawnAndCollectOutput = Effect.fn("spawnAndCollectOutput")(function* (
 
 const resolveGitCommitHash = Effect.fn("resolveGitCommitHash")(function* (repoRoot: string) {
   const result = yield* spawnAndCollectOutput(
-    ChildProcess.make("git", ["rev-parse", "--short=12", "HEAD"], {
+    ChildProcess.make("git", ["rev-parse", "HEAD"], {
       cwd: repoRoot,
     }),
   ).pipe(
@@ -3794,7 +3794,8 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
 
   const appVersion = options.version ?? serverPackageJson.version;
   const iconAssets = resolveDesktopBuildIconAssets();
-  const commitHash = yield* resolveGitCommitHash(repoRoot);
+  const sourceSha = yield* resolveGitCommitHash(repoRoot);
+  const commitHash = sourceSha.slice(0, 12);
   const mkdir = options.keepStage ? fs.makeTempDirectory : fs.makeTempDirectoryScoped;
   const stageRoot = yield* mkdir({
     prefix: `t3code-desktop-${options.platform}-stage-`,
@@ -4070,7 +4071,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     t3codeRestore: {
       protocol: 1,
       version: appVersion,
-      sourceSha: commitHash,
+      sourceSha,
       ...restoreCompatibility,
       updateHold: true,
     },
