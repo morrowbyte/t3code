@@ -109,6 +109,8 @@ export const DesktopPetStatus = Schema.Struct({
   native: Schema.NullOr(DesktopPetNativeState),
   error: Schema.NullOr(StableCode),
   shortcutRegistered: Schema.Boolean,
+  shortcutBackend: Schema.NullOr(Schema.Literals(["global", "niri"])),
+  shortcutError: Schema.NullOr(StableCode),
   customPet: Schema.NullOr(Schema.String.check(Schema.isMaxLength(80))),
 });
 export type DesktopPetStatus = typeof DesktopPetStatus.Type;

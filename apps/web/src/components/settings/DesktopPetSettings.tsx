@@ -8,6 +8,17 @@ import { Input } from "../ui/input";
 import { Switch } from "../ui/switch";
 import { SettingsRow, SettingsSection } from "./settingsLayout";
 
+const shortcutErrors: Readonly<Record<string, string>> = {
+  "niri-shortcut-invalid": "Use a letter, number or function key with Ctrl, Alt or Super.",
+  "niri-config-unavailable": "Could not check the Niri configuration and its includes.",
+  "niri-include-missing": "Niri must include crew-pet.kdl before this shortcut can be enabled.",
+  "niri-shortcut-conflict": "This shortcut is already used in the Niri configuration.",
+  "niri-file-not-owned": "The Niri pet include belongs to another profile or was edited manually.",
+  "niri-config-changed": "The Niri configuration changed. Try saving the shortcut again.",
+  "niri-validation-failed":
+    "Niri could not validate the shortcut. The previous binding was preserved.",
+};
+
 export function DesktopPetSettings() {
   const bridge = window.desktopBridge;
   const [status, setStatus] = useState<DesktopPetStatus | null>(null);
@@ -45,7 +56,13 @@ export function DesktopPetSettings() {
     setError(null);
     void action()
       .then(setStatus)
-      .catch(() => setError("Could not update the pet. Check the companion or selected pet pack."))
+      .catch((cause: unknown) => {
+        const message = cause instanceof Error ? cause.message : "";
+        setError(
+          Object.entries(shortcutErrors).find(([code]) => message.includes(code))?.[1] ??
+            "Could not update the pet. Check the companion or selected pet pack.",
+        );
+      })
       .finally(() => setPending(false));
   };
   const change = (patch: Partial<PetSettings>) => {
@@ -123,9 +140,13 @@ export function DesktopPetSettings() {
       <SettingsRow
         title="Global shortcut"
         description={
-          status?.settings.shortcut && !status.shortcutRegistered
-            ? "Global shortcut unavailable on this desktop or already in use."
-            : "Unassigned by default."
+          status?.shortcutError && shortcutErrors[status.shortcutError]
+            ? shortcutErrors[status.shortcutError]
+            : status?.settings.shortcut && !status.shortcutRegistered
+              ? "Global shortcut unavailable on this desktop or already in use."
+              : status?.shortcutBackend === "niri"
+                ? "Managed by Niri."
+                : "Unassigned by default."
         }
         control={
           <DraftInput

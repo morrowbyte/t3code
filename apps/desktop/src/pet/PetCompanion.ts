@@ -56,6 +56,8 @@ export class PetCompanion {
     native: null,
     error: null,
     shortcutRegistered: false,
+    shortcutBackend: null,
+    shortcutError: null,
     customPet: null,
   };
 
@@ -159,8 +161,12 @@ export class PetCompanion {
       await NodeFSP.rm(previous, { recursive: true, force: true });
   }
 
-  setShortcutRegistered(shortcutRegistered: boolean) {
-    this.publish({ shortcutRegistered });
+  setShortcutRegistered(
+    shortcutRegistered: boolean,
+    shortcutBackend: DesktopPetStatus["shortcutBackend"] = null,
+    shortcutError: string | null = null,
+  ) {
+    this.publish({ shortcutRegistered, shortcutBackend, shortcutError });
   }
 
   setProjection(projection: DesktopPetProjection) {
