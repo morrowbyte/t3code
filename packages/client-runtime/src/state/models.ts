@@ -260,12 +260,24 @@ export function scopeProject(
 
 export type PendingSubagentRequest = "approval" | "user_input";
 
+export function threadAttentionRequests(
+  thread: Pick<OrchestrationV2ThreadShell, "pendingRuntimeRequest" | "pendingRuntimeRequests">,
+) {
+  const requests =
+    thread.pendingRuntimeRequests ??
+    (thread.pendingRuntimeRequest === null ? [] : [thread.pendingRuntimeRequest]);
+  return requests.filter(
+    (request) => request.kind !== "auth_refresh" && request.kind !== "dynamic_tool_call",
+  );
+}
+
 export function presentThreadShell(
   environmentId: EnvironmentId,
   thread: OrchestrationV2ThreadShell,
   pendingSubagentRequest: PendingSubagentRequest | null = null,
 ): EnvironmentThreadShell {
   const updatedAt = iso(thread.updatedAt);
+  const attentionRequests = threadAttentionRequests(thread);
   const latestRun =
     thread.latestRunId === null
       ? null
@@ -315,11 +327,10 @@ export function presentThreadShell(
       : { latestUserAuthoredMessageAt: nullableIso(thread.latestUserAuthoredMessageAt) }),
     hasPendingApprovals:
       thread.settledOverride !== "settled" &&
-      thread.pendingRuntimeRequest !== null &&
-      thread.pendingRuntimeRequest.kind !== "user_input" &&
-      thread.pendingRuntimeRequest.kind !== "auth_refresh",
+      attentionRequests.some((request) => request.kind !== "user_input"),
     hasPendingUserInput:
-      thread.settledOverride !== "settled" && thread.pendingRuntimeRequest?.kind === "user_input",
+      thread.settledOverride !== "settled" &&
+      attentionRequests.some((request) => request.kind === "user_input"),
     pendingSubagentRequest: thread.settledOverride === "settled" ? null : pendingSubagentRequest,
     pendingGuestMessageCount: thread.pendingGuestMessageCount ?? 0,
     hasActionableProposedPlan: thread.hasActionableProposedPlan,

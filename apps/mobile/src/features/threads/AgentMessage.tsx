@@ -1,4 +1,9 @@
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  ThreadId,
+  OrchestrationV2ConversationMessage,
+} from "@t3tools/contracts";
+import { AgentReplyReference } from "./AgentReplyReference";
 import { useOpenLinkedThread } from "./useOpenLinkedThread";
 import { memo, useRef, useState, type ComponentRef, type ReactNode } from "react";
 import { Pressable, View } from "react-native";
@@ -19,6 +24,8 @@ export const AgentMessage = memo(function AgentMessage(
     readonly previewText?: string;
     readonly environmentId: EnvironmentId;
     readonly senderThreadId?: ThreadId;
+    readonly replyTo?: OrchestrationV2ConversationMessage["replyTo"];
+    readonly originalUnavailableText?: string;
     readonly senderEnvironmentId?: EnvironmentId;
     readonly direction?: "incoming" | "outgoing";
     readonly deliveryLabel?: string;
@@ -162,6 +169,7 @@ export const AgentMessage = memo(function AgentMessage(
         ) : null}
         {expanded ? (
           <View className="gap-4 pt-3">
+            {props.replyTo ? <AgentReplyReference reply={props.replyTo} /> : null}
             {props.attachments}
             {originalOrder ? (
               <Text selectable className="text-base leading-6 text-foreground">
@@ -238,7 +246,7 @@ export const AgentMessage = memo(function AgentMessage(
             selectable
             className="mt-3 rounded-lg border border-border p-3 font-t3-mono text-sm leading-6 text-foreground"
           >
-            {props.text}
+            {props.text || props.originalUnavailableText || "Original nicht verfügbar."}
           </Text>
         ) : null}
       </View>

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   agentMessagePreview,
+  agentDelegationText,
   collapsedAgentMessageSummary,
   parseAgentMessage,
   readAgentSend,
@@ -176,6 +177,106 @@ function tool(overrides: Partial<DynamicTool> = {}): DynamicTool {
 }
 
 describe("readAgentSend", () => {
+  it("retains a cross-thread reply without moving the original question into the destination", () => {
+    const replyTo = {
+      environmentId: "remote",
+      threadId: "source-question-thread",
+      messageId: "question",
+    };
+    expect(
+      readAgentSend(tool({ input: { threadId: "target", message: "Kurz: Antwort.", replyTo } })),
+    ).toMatchObject({ replyTo });
+    for (const invalid of [
+      "question",
+      { messageId: "question" },
+      { ...replyTo, environmentId: " " },
+    ]) {
+      expect(
+        readAgentSend(
+          tool({ input: { threadId: "target", message: "Kurz: Antwort.", replyTo: invalid } }),
+        ).replyTo,
+      ).toBeNull();
+    }
+  });
+
+  it.each([
+    { threadId: "target", message: "Kurz: Antwort.", environmentId: "remote" },
+    JSON.stringify({
+      toolName: "t3_thread_send",
+      args: { threadId: "target", message: "Kurz: Antwort.", environmentId: "remote" },
+    }),
+  ])("retains the explicit destination environment for ordinary remote sends", (input) => {
+    expect(readAgentSend(tool({ input }))).toMatchObject({
+      targetThreadId: "target",
+      targetEnvironmentId: "remote",
+      targetScope: "explicit",
+      accepted: true,
+    });
+  });
+
+  it("keeps legacy local sends local and summarized destinations unknown", () => {
+    expect(readAgentSend(tool())).toMatchObject({
+      targetEnvironmentId: null,
+      targetScope: "local",
+    });
+    expect(
+      readAgentSend(tool({ input: { summary: "Large tool input", truncated: true } })),
+    ).toMatchObject({ targetThreadId: "target", targetScope: "unknown" });
+  });
+
+  it.each([
+    { threadId: "target", messageId: "message-1", environmentId: "remote" },
+    {
+      type: "relay",
+      result: {
+        type: "send",
+        result: { threadId: "target", messageId: "message-1", environmentId: "remote" },
+      },
+    },
+    { threadId: "target", messageId: "message-1", link: "<t3-thread://v2/remote/target>" },
+    { threadId: "target", messageId: "message-1", link: "https://crew.example/remote/target" },
+    {
+      type: "send",
+      result: {
+        threadId: "target",
+        messageId: "message-1",
+        link: "<t3-thread://v2/remote/target>",
+      },
+    },
+  ])("recovers exact remote destinations from bounded send receipts", (output) => {
+    expect(
+      readAgentSend(tool({ input: { summary: "Large tool input", truncated: true }, output })),
+    ).toMatchObject({
+      targetThreadId: "target",
+      targetEnvironmentId: "remote",
+      targetScope: "explicit",
+      accepted: true,
+      text: null,
+    });
+  });
+
+  it("rejects conflicting environments and does not guess from malformed provenance", () => {
+    expect(
+      readAgentSend(
+        tool({
+          input: { threadId: "target", environmentId: "remote", message: "Kurz: Antwort." },
+          output: {
+            threadId: "target",
+            messageId: "message-1",
+            link: "<t3-thread://v2/other/target>",
+          },
+        }),
+      ),
+    ).toMatchObject({ targetEnvironmentId: "remote", accepted: false, failed: true });
+    expect(
+      readAgentSend(
+        tool({
+          input: { threadId: "target", environmentId: " ", message: "Kurz: Antwort." },
+        }),
+      ),
+    ).toMatchObject({ targetScope: "unknown" });
+  });
+
   it.each(["accepted", "steered"])(
     "reads %s receipts and preserves the exact outbound text",
     (delivery) => {
@@ -186,6 +287,9 @@ describe("readAgentSend", () => {
       });
       expect(readAgentSend(item)).toEqual({
         targetThreadId: "target",
+        targetEnvironmentId: null,
+        targetScope: "local",
+        replyTo: null,
         text,
         delivery,
         accepted: true,
@@ -240,6 +344,9 @@ describe("readAgentSend", () => {
       ),
     ).toEqual({
       targetThreadId: null,
+      targetEnvironmentId: null,
+      targetScope: "unknown",
+      replyTo: null,
       text: null,
       delivery: null,
       accepted: false,
@@ -315,9 +422,19 @@ describe("readAgentSend", () => {
 
   it("does not expose a summarized input as the original message", () => {
     expect(
+      readAgentSend(
+        tool({
+          input: { threadId: "target", message: "prefix\n… output truncated for transport" },
+        }),
+      ),
+    ).toMatchObject({ text: null, truncated: true });
+    expect(
       readAgentSend(tool({ input: { summary: "Large tool input", truncated: true } })),
     ).toEqual({
       targetThreadId: "target",
+      targetEnvironmentId: null,
+      targetScope: "unknown",
+      replyTo: null,
       text: null,
       delivery: "steered",
       accepted: true,
@@ -341,5 +458,36 @@ describe("readAgentSend", () => {
       accepted: false,
       delivery: null,
     });
+  });
+});
+
+describe("agentDelegationText", () => {
+  it("keeps the complete initial task instead of substituting its preview", () => {
+    const prompt =
+      "Kurz: Prüfe den Auftrag.\r\n\r\nTechnik:\r\n- Vollständige Abnahme\r\n- Rückweg prüfen\r\n";
+    const item = {
+      ...tool(),
+      type: "subagent" as const,
+      subagentId: "task" as Extract<OrchestrationV2TurnItem, { type: "subagent" }>["subagentId"],
+      origin: "app_owned" as const,
+      driver: "codex" as const,
+      providerInstanceId: "codex" as Extract<
+        OrchestrationV2TurnItem,
+        { type: "subagent" }
+      >["providerInstanceId"],
+      childThreadId: null,
+      prompt,
+      result: null,
+      delegationMessage: {
+        messageId: "initial" as import("@t3tools/contracts").MessageId,
+        firstParagraph: "Kurz: Prüfe den Auftrag.",
+      },
+    };
+    expect(agentDelegationText(item)).toBe(prompt);
+    expect(agentDelegationText({ ...item, promptOmitted: true })).toBeNull();
+    expect(agentDelegationText({ ...item, prompt: "" })).toBeNull();
+    expect(
+      agentDelegationText({ ...item, prompt: "prefix\n… output truncated for transport" }),
+    ).toBeNull();
   });
 });

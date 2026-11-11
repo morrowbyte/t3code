@@ -363,11 +363,8 @@ export function revealThreadListV2RouteAncestors(
   threads: readonly ThreadListV2FamilyThread[],
   routeKey: string | null,
 ): ThreadListV2FamilyDisclosure {
-  if (previous.routeKey === routeKey) return previous;
   const byKey = new Map(threads.map((thread) => [`${thread.environmentId}:${thread.id}`, thread]));
   if (routeKey !== null && !byKey.has(routeKey)) return previous;
-  const expandedKeys = new Set(previous.expandedKeys);
-  const closedKeys = new Set(previous.closedKeys);
   const seen = new Set<string>();
   let thread = routeKey === null ? undefined : byKey.get(routeKey);
   let familyRoot: string | null = null;
@@ -380,6 +377,16 @@ export function revealThreadListV2RouteAncestors(
     familyRoot = key;
     thread = parent;
   }
+  if (
+    previous.routeKey === routeKey &&
+    (familyRoot === null ||
+      previous.expandedKeys.has(familyRoot) ||
+      previous.closedKeys.has(familyRoot))
+  ) {
+    return previous;
+  }
+  const expandedKeys = new Set(previous.expandedKeys);
+  const closedKeys = new Set(previous.closedKeys);
   if (familyRoot !== null) {
     expandedKeys.add(familyRoot);
     closedKeys.delete(familyRoot);
@@ -527,12 +534,12 @@ export function buildThreadListV2FamilyRows(input: {
     );
     if (visible.length === 0) return [];
     const anchor = visible[0]!;
-    const displaySection: ThreadListV2FamilySection = family.some((key) => workingKeys.has(key))
-      ? input.workingShelfEnabled
-        ? "working"
-        : "active"
-      : family.some((key) => inputKeys.has(key))
-        ? "active"
+    const displaySection: ThreadListV2FamilySection = family.some((key) => inputKeys.has(key))
+      ? "active"
+      : family.some((key) => workingKeys.has(key))
+        ? input.workingShelfEnabled
+          ? "working"
+          : "active"
         : sectionOf(byKey.get(anchor)!);
     return [{ root, displaySection, rank: Math.min(...visible.map((key) => rank.get(key)!)) }];
   });
@@ -640,6 +647,24 @@ export type ThreadListV2ListItem =
   | ThreadListV2WorkingShelfListItem
   | ThreadListV2SnoozedShelfListItem
   | ThreadListV2SettledShelfListItem;
+
+export type ThreadListV2FamilyListItem = ThreadListV2ListItem & {
+  readonly family?: ThreadListV2FamilyRow;
+};
+
+export function threadListV2FamilyListItemsAreEqual(
+  previous: ThreadListV2FamilyListItem,
+  item: ThreadListV2FamilyListItem,
+): boolean {
+  return (
+    threadListV2ListItemsAreEqual(previous, item) &&
+    previous.family?.depth === item.family?.depth &&
+    previous.family?.hasChildren === item.family?.hasChildren &&
+    previous.family?.expanded === item.family?.expanded &&
+    previous.family?.descendantCount === item.family?.descendantCount &&
+    previous.family?.activeDescendantCount === item.family?.activeDescendantCount
+  );
+}
 
 export function isThreadListV2ListItem(value: {
   readonly type: string;
@@ -965,7 +990,11 @@ export function buildThreadListV2Items(input: {
       settled.push(thread);
     } else if (thread.pinnedAt != null) {
       pinned.push(thread);
-    } else if (workingShelfEnabled && (input.isWorking ?? isThreadWorking)(thread)) {
+    } else if (
+      workingShelfEnabled &&
+      !isThreadAwaitingInput(thread) &&
+      (input.isWorking ?? isThreadWorking)(thread)
+    ) {
       working.push(thread);
     } else {
       active.push(thread);

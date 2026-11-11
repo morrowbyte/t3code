@@ -3,7 +3,9 @@ import {
   EnvironmentId,
   ProjectId,
   ProviderInstanceId,
+  RuntimeRequestId,
   ThreadId,
+  TurnItemId,
   type OrchestrationV2ShellSnapshot,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
@@ -215,7 +217,17 @@ describe("cooperative shell cache encoding", () => {
         snapshot: {
           ...stored.snapshot,
           threads: [
-            { ...first!, title: "Renamed", itemCount: 9 },
+            {
+              ...first!,
+              title: "Renamed",
+              itemCount: 9,
+              requestDeliveryFailure: {
+                requestId: RuntimeRequestId.make("answered-question"),
+                itemId: TurnItemId.make("turn-item:runtime-request-delivery-failure:answered-question"),
+                message: "Answer delivery not confirmed",
+                occurredAt: NOW,
+              },
+            },
             ...rest,
             { ...first!, id: ThreadId.make("thread-new"), branch: "  feature  " },
           ],
@@ -229,6 +241,7 @@ describe("cooperative shell cache encoding", () => {
       expect(actual).toBe(yield* encodeOriginal(next));
       const parsed = JSON.parse(actual);
       expect(parsed.snapshot.threads[0].title).toBe("Renamed");
+      expect(parsed.snapshot.threads[0].requestDeliveryFailure.occurredAt).toBe(DateTime.formatIso(NOW));
       expect(parsed.snapshot.threads.at(-1).branch).toBe("feature");
       expect(parsed.snapshot.archivedThreads).toHaveLength(2);
     }),

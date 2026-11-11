@@ -184,6 +184,9 @@ describe("readAgentSend", () => {
       });
       expect(readAgentSend(item)).toEqual({
         targetThreadId: "target",
+        targetEnvironmentId: null,
+        targetScope: "local",
+        replyTo: null,
         text,
         delivery,
         accepted: true,
@@ -238,6 +241,9 @@ describe("readAgentSend", () => {
       ),
     ).toEqual({
       targetThreadId: null,
+      targetEnvironmentId: null,
+      targetScope: "unknown",
+      replyTo: null,
       text: null,
       delivery: null,
       accepted: false,
@@ -316,6 +322,9 @@ describe("readAgentSend", () => {
       readAgentSend(tool({ input: { summary: "Large tool input", truncated: true } })),
     ).toEqual({
       targetThreadId: "target",
+      targetEnvironmentId: null,
+      targetScope: "unknown",
+      replyTo: null,
       text: null,
       delivery: "steered",
       accepted: true,

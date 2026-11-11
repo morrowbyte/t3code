@@ -1,6 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigate, useParams } from "@tanstack/react-router";
-import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
+import type { EnvironmentId, RuntimeRequestId, ScopedThreadRef } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { InboxIcon } from "lucide-react";
 import { useState } from "react";
@@ -38,9 +38,13 @@ function EnvironmentAttention({
   const navigate = useNavigate();
   const { isMobile, setOpenMobile } = useSidebar();
   const [navigationError, setNavigationError] = useState<string | null>(null);
-  const openThread = (ref: ScopedThreadRef) => {
+  const openThread = (ref: ScopedThreadRef, requestId?: RuntimeRequestId) => {
     setNavigationError(null);
-    void navigate({ to: "/$environmentId/$threadId", params: buildThreadRouteParams(ref) })
+    void navigate({
+      to: "/$environmentId/$threadId",
+      params: buildThreadRouteParams(ref),
+      search: { requestId },
+    })
       .then(() => {
         onClose();
         if (isMobile) setOpenMobile(false);

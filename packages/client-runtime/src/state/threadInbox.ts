@@ -33,7 +33,7 @@ export function isThreadAwaitingInput(
 export function isThreadWorking(thread: WorkingThreadInput): boolean {
   // A new admitted run clears this override canonically; stale run/request
   // summaries must never undo an explicit settlement on their own.
-  if (thread.settledOverride === "settled" || isThreadAwaitingInput(thread)) return false;
+  if (thread.settledOverride === "settled") return false;
   if (
     !threadRuntimeIsActive(thread.runtime) &&
     !(

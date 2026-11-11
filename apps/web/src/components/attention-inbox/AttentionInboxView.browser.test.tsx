@@ -76,10 +76,14 @@ describe("attention inbox user workflow", () => {
         screen.container.querySelectorAll('ul[aria-label="Attention items"] > li'),
       ).toHaveLength(1),
     );
-    await screen
-      .getByRole("button", { name: `Open source conversation: ${pending.title}` })
-      .click();
-    expect(open).toHaveBeenCalledWith({ environmentId, threadId: pending.id });
+    await screen.getByRole("link", { name: `Open source conversation: ${pending.title}` }).click();
+    await expect
+      .element(screen.getByRole("link", { name: `Open source conversation: ${pending.title}` }))
+      .toHaveAttribute("href", "/luna/question?requestId=request-question");
+    expect(open).toHaveBeenCalledWith(
+      { environmentId, threadId: pending.id },
+      pending.pendingRuntimeRequest!.id,
+    );
     await expect
       .element(screen.getByRole("button", { name: "Questions (1)", exact: true }))
       .toBeVisible();

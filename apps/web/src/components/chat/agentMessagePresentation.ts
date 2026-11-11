@@ -1,5 +1,6 @@
 import { t3ToolResultIndicatesFailure } from "@t3tools/client-runtime/t3ToolSummary";
 import type { OrchestrationV2TurnItem } from "@t3tools/contracts";
+import { parseThreadLinkHref } from "@t3tools/shared/threadLinks";
 import { resolveT3McpToolId } from "@t3tools/shared/t3McpToolPresentation";
 
 type MessageStatus = "info" | "fertig" | "blockiert" | "frage" | "entscheidung";
@@ -144,6 +145,14 @@ export function parseAgentMessage(text: string): AgentMessagePresentation {
   return { kind: "structured", summary, status, sections };
 }
 
+export function agentDelegationText(item: Extract<OrchestrationV2TurnItem, { type: "subagent" }>) {
+  return item.promptOmitted ||
+    !item.prompt.trim() ||
+    item.prompt.endsWith("\n… output truncated for transport")
+    ? null
+    : item.prompt;
+}
+
 const MAX_ENVELOPE_BYTES = 256 * 1024;
 const MAX_ENVELOPE_DEPTH = 6;
 const MAX_ENVELOPE_NODES = 128;
@@ -202,7 +211,10 @@ function readEnvelope(value: unknown, budget: EnvelopeBudget, depth = 0): Envelo
     _tag: data._tag,
     error: data.error,
   });
-  const content = data.structuredContent ?? data.content;
+  const content =
+    data.structuredContent ??
+    data.content ??
+    (data.type === "send" || data.type === "relay" ? data.result : undefined);
   if (content !== undefined) {
     const nested = readEnvelope(content, budget, depth + 1);
     return { ...nested, failed: failed || nested.failed };
@@ -231,8 +243,37 @@ function deliveryMode(value: unknown): Delivery | null {
   }
 }
 
+export function readAgentReply(value: unknown) {
+  const data = record(value);
+  const environmentId = identifier(data?.environmentId);
+  const threadId = identifier(data?.threadId);
+  const messageId = identifier(data?.messageId);
+  return environmentId && threadId && messageId ? { environmentId, threadId, messageId } : null;
+}
+
+function receiptThreadLink(value: unknown) {
+  if (typeof value !== "string") return null;
+  const href = value.startsWith("<") && value.endsWith(">") ? value.slice(1, -1) : value;
+  const canonical = parseThreadLinkHref(href);
+  if (canonical) return canonical;
+  try {
+    const url = new URL(href);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    const parts = url.pathname.split("/");
+    if (parts.length !== 3) return null;
+    const environmentId = identifier(decodeURIComponent(parts[1]!));
+    const threadId = identifier(decodeURIComponent(parts[2]!));
+    return environmentId && threadId ? { environmentId, threadId } : null;
+  } catch {
+    return null;
+  }
+}
+
 export function readAgentSend(item: Extract<OrchestrationV2TurnItem, { type: "dynamic_tool" }>): {
   targetThreadId: string | null;
+  targetEnvironmentId: string | null;
+  targetScope: "local" | "explicit" | "unknown";
+  replyTo: { environmentId: string; threadId: string; messageId: string } | null;
   text: string | null;
   delivery: Delivery | null;
   accepted: boolean;
@@ -241,6 +282,9 @@ export function readAgentSend(item: Extract<OrchestrationV2TurnItem, { type: "dy
 } {
   const unknown = {
     targetThreadId: null,
+    targetEnvironmentId: null,
+    targetScope: "unknown" as const,
+    replyTo: null,
     text: null,
     delivery: null,
     accepted: false,
@@ -255,9 +299,31 @@ export function readAgentSend(item: Extract<OrchestrationV2TurnItem, { type: "dy
   }
   const output = readToolValue(item.output);
   const summarized = input.data?.truncated === true && typeof input.data.summary === "string";
-  const inputTarget = identifier(input.data?.threadId);
+  const message =
+    !summarized && typeof input.data?.message === "string" ? input.data.message : null;
+  const messageTruncated = message?.endsWith("\n… output truncated for transport") === true;
+  const inputTarget = summarized || input.truncated ? null : identifier(input.data?.threadId);
   const outputTarget = identifier(output.data?.threadId);
-  const mismatch = inputTarget !== null && outputTarget !== null && inputTarget !== outputTarget;
+  const inputEnvironment =
+    summarized || input.truncated ? null : identifier(input.data?.environmentId);
+  const link = receiptThreadLink(output.data?.link);
+  const outputEnvironment = identifier(output.data?.environmentId) ?? link?.environmentId ?? null;
+  const mismatch =
+    (inputTarget !== null && outputTarget !== null && inputTarget !== outputTarget) ||
+    (link !== null && outputTarget !== null && link.threadId !== outputTarget) ||
+    (inputEnvironment !== null &&
+      outputEnvironment !== null &&
+      inputEnvironment !== outputEnvironment) ||
+    (identifier(output.data?.environmentId) !== null &&
+      link?.environmentId != null &&
+      output.data?.environmentId !== link.environmentId);
+  const targetEnvironmentId = inputEnvironment ?? outputEnvironment;
+  const local =
+    !summarized &&
+    !input.truncated &&
+    inputTarget !== null &&
+    input.data !== null &&
+    !("environmentId" in input.data);
   const failed =
     ["failed", "cancelled", "interrupted", "rolled_back"].includes(item.status) ||
     output.failed ||
@@ -270,10 +336,13 @@ export function readAgentSend(item: Extract<OrchestrationV2TurnItem, { type: "dy
     identifier(output.data?.messageId) !== null;
   return {
     targetThreadId: inputTarget ?? outputTarget,
-    text: !summarized && typeof input.data?.message === "string" ? input.data.message : null,
+    targetEnvironmentId,
+    targetScope: targetEnvironmentId !== null ? "explicit" : local ? "local" : "unknown",
+    replyTo: readAgentReply(input.data?.replyTo),
+    text: messageTruncated ? null : message,
     delivery: accepted ? deliveryMode(output.data?.delivery) : null,
     accepted,
     failed,
-    truncated: summarized || input.truncated || output.truncated,
+    truncated: summarized || messageTruncated || input.truncated || output.truncated,
   };
 }

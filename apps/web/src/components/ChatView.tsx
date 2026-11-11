@@ -50,6 +50,11 @@ import type { CreateThreadInput } from "@t3tools/client-runtime/operations";
 import { useProjectScriptEditing } from "./chat/useProjectScriptEditing";
 import { RightPanelSurfaceContent } from "./chat/RightPanelSurfaceContent";
 import { usePendingThreadRequests } from "./chat/usePendingThreadRequests";
+import { AttentionRequestTarget } from "./attention-inbox/AttentionRequestTarget";
+import {
+  attentionRequestFromLocation,
+  resolveAttentionRequestTarget,
+} from "./attention-inbox/attentionRequestTarget";
 import { ChildThreadRequests } from "./chat/ChildThreadRequests";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
@@ -583,6 +588,17 @@ function ChatViewContent(props: ChatViewProps) {
   const clientSettingsHydrated = useClientSettingsHydrated();
   const timestampFormat = settings.timestampFormat;
   const navigate = useNavigate();
+  const targetRequestId = useLocation({
+    select: (location) => attentionRequestFromLocation(location.href, routeThreadRef),
+  });
+  const attentionRequestTarget = targetRequestId
+    ? resolveAttentionRequestTarget(
+        serverProjection,
+        targetRequestId,
+        serverThreadShell?.source.pendingRuntimeRequests,
+        serverThreadShell?.source.requestDeliveryFailure,
+      )
+    : null;
   // Selects primitives: an object here is new on every router store update, which
   // re-renders ChatView on unrelated navigation state changes.
   const citationHref = useLocation({ select: (location) => location.href });
@@ -1331,6 +1347,18 @@ function ChatViewContent(props: ChatViewProps) {
   const conversationProviderStatus =
     providerStatuses.find((status) => status.instanceId === activeRuntime?.providerInstanceId) ??
     activeProviderStatus;
+  const targetRequestProviderSession =
+    attentionRequestTarget?.kind === "runtime" &&
+    attentionRequestTarget.request.responseCapability.type === "live"
+      ? attentionRequestTarget.request.responseCapability.providerSessionId
+      : null;
+  const targetRequestProviderInstance = serverProjection?.providerSessions.find(
+    (session) => session.id === targetRequestProviderSession,
+  )?.providerInstanceId;
+  const attentionRequestProvider = targetRequestProviderInstance
+    ? (providerStatuses.find((provider) => provider.instanceId === targetRequestProviderInstance) ??
+      null)
+    : conversationProviderStatus;
   const supportsConversationRollback =
     canOperateThread &&
     conversationProviderStatus !== null &&
@@ -1352,6 +1380,8 @@ function ChatViewContent(props: ChatViewProps) {
   const {
     pendingApprovals,
     pendingUserInputs,
+    selectedPendingApprovals,
+    selectedPendingUserInputs,
     activePendingApproval,
     activePendingUserInput,
     activePendingDraftAnswers,
@@ -1370,6 +1400,10 @@ function ChatViewContent(props: ChatViewProps) {
   } = usePendingThreadRequests({
     environmentId,
     activeThreadId,
+    targetRequestId,
+    targetRequestReady:
+      targetRequestId === null ||
+      (threadStatus === "live" && attentionRequestTarget?.kind === "runtime"),
     serverProjection,
     supportsQuestionAttachments,
     composerDraftTarget,
@@ -3784,6 +3818,25 @@ function ChatViewContent(props: ChatViewProps) {
                           {activeThreadRef ? (
                             <ChildThreadRequests parent={activeThreadRef} />
                           ) : null}
+                          {targetRequestId ? (
+                            <AttentionRequestTarget
+                              requestId={targetRequestId}
+                              environmentId={environmentId}
+                              projection={serverProjection}
+                              summaries={serverThreadShell?.source.pendingRuntimeRequests}
+                              deliveryFailure={serverThreadShell?.source.requestDeliveryFailure}
+                              live={threadStatus === "live"}
+                              provider={attentionRequestProvider}
+                              onOpenProviderSetup={openProviderSetupStable}
+                              onShowPending={() => {
+                                void navigate({
+                                  to: "/$environmentId/$threadId",
+                                  params: buildThreadRouteParams(routeThreadRef),
+                                  search: { requestId: undefined },
+                                });
+                              }}
+                            />
+                          ) : null}
                           {!composerMounted ? null : (
                             <ChatComposer
                               voiceControlsAvailable={
@@ -3864,9 +3917,9 @@ function ChatViewContent(props: ChatViewProps) {
                               }
                               environmentUnavailable={activeEnvironmentUnavailableState}
                               activePendingApproval={activePendingApproval}
-                              pendingApprovals={pendingApprovals}
+                              pendingApprovals={selectedPendingApprovals}
                               onHeldRequestIdsChange={onHeldRequestIdsChange}
-                              pendingUserInputs={pendingUserInputs}
+                              pendingUserInputs={selectedPendingUserInputs}
                               activePendingProgress={activePendingProgress}
                               activePendingResolvedAnswers={activePendingResolvedAnswers}
                               activePendingIsResponding={activePendingIsResponding}

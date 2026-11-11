@@ -1053,6 +1053,7 @@ type ShellThreadRow = {
   readonly blocking_run_stop_requested: number;
   readonly blocking_failure_payload_json: string | null;
   readonly pending_request_payload_json: string | null;
+  readonly request_delivery_failure_payload_json: string | null;
   readonly pending_secret_request_payload_json: string | null;
   readonly pending_link_request_payload_json: string | null;
   readonly latest_user_message_at: string | null;
@@ -1181,6 +1182,12 @@ const decodeProviderTurnPayload = Schema.decodeUnknownEffect(
 );
 const decodeRuntimeRequestPayload = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2RuntimeRequestJsonSchema),
+);
+const decodeRuntimeRequestPayloads = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Array(OrchestrationV2RuntimeRequestJsonSchema)),
+);
+const decodeTurnItemPayloads = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Array(OrchestrationV2TurnItemJsonSchema)),
 );
 const decodeMessagePayload = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2ConversationMessageJsonSchema),
@@ -1499,6 +1506,25 @@ function pendingRuntimeRequestSummary(
   };
 }
 
+const REQUEST_DELIVERY_FAILURE_PREFIX = "turn-item:runtime-request-delivery-failure:";
+
+function requestDeliveryFailureSummary(item: OrchestrationV2TurnItem | null) {
+  if (
+    item?.type !== "error" ||
+    item.status !== "failed" ||
+    item.title !== "Answer delivery not confirmed" ||
+    item.failure.class !== "transport_error" ||
+    !item.id.startsWith(REQUEST_DELIVERY_FAILURE_PREFIX)
+  )
+    return null;
+  return {
+    requestId: RuntimeRequestId.make(item.id.slice(REQUEST_DELIVERY_FAILURE_PREFIX.length)),
+    itemId: item.id,
+    message: item.failure.message,
+    occurredAt: item.updatedAt,
+  };
+}
+
 function secretRequestAsPendingInput(
   item: OrchestrationV2TurnItem | null,
 ): OrchestrationV2PendingRuntimeRequestSummary | null {
@@ -1570,14 +1596,14 @@ export function threadShellFromProjection(
           )[0] ?? null)
       : null;
   const liveRunIds = new Set(runs.filter(isActivityRunForShell).map((run) => run.id));
-  let pendingRuntimeRequest = pendingRuntimeRequestSummary(
-    projection.runtimeRequests
-      .filter((request) => request.status === "pending")
-      .toSorted(
-        (left, right) =>
-          DateTime.toEpochMillis(right.createdAt) - DateTime.toEpochMillis(left.createdAt),
-      )[0] ?? null,
-  );
+  const runtimeRequests = projection.runtimeRequests
+    .filter((request) => request.status === "pending")
+    .toSorted(
+      (left, right) =>
+        DateTime.toEpochMillis(right.createdAt) - DateTime.toEpochMillis(left.createdAt) ||
+        right.id.localeCompare(left.id),
+    );
+  let pendingRuntimeRequest = pendingRuntimeRequestSummary(runtimeRequests[0] ?? null);
   const userMessages = projection.messages
     .filter((message) => message.role === "user" && idleCompactionOf(message) === undefined)
     .toSorted(
@@ -1586,21 +1612,38 @@ export function threadShellFromProjection(
     );
   const latestUserAuthoredMessageAt =
     userMessages.find((message) => message.createdBy === "user")?.updatedAt ?? null;
+  const waitingCards = projection.turnItems
+    .filter(
+      (item) =>
+        item.status === "waiting" && waitsOnUser(item, liveRunIds, latestUserAuthoredMessageAt),
+    )
+    .toSorted(
+      (left, right) =>
+        DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt) ||
+        right.id.localeCompare(left.id),
+    );
+  const pendingRuntimeRequests = [
+    ...runtimeRequests.flatMap((request) => pendingRuntimeRequestSummary(request) ?? []),
+    ...waitingCards.flatMap((item) => secretRequestAsPendingInput(item) ?? []),
+  ];
   if (pendingRuntimeRequest === null || pendingRuntimeRequest.blocking === false) {
     pendingRuntimeRequest =
-      secretRequestAsPendingInput(
-        projection.turnItems
-          .filter(
-            (item) =>
-              item.status === "waiting" &&
-              waitsOnUser(item, liveRunIds, latestUserAuthoredMessageAt),
-          )
-          .toSorted(
-            (left, right) =>
-              DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt),
-          )[0] ?? null,
-      ) ?? pendingRuntimeRequest;
+      secretRequestAsPendingInput(waitingCards[0] ?? null) ?? pendingRuntimeRequest;
   }
+  const requestById = new Map(projection.runtimeRequests.map((request) => [request.id, request]));
+  const requestDeliveryFailure =
+    projection.turnItems
+      .flatMap((item) => {
+        const failure = requestDeliveryFailureSummary(item);
+        return failure && requestById.get(failure.requestId)?.nodeId === item.nodeId
+          ? [failure]
+          : [];
+      })
+      .toSorted(
+        (left, right) =>
+          DateTime.toEpochMillis(right.occurredAt) - DateTime.toEpochMillis(left.occurredAt) ||
+          right.itemId.localeCompare(left.itemId),
+      )[0] ?? null;
   const latestUserMessage = userMessages[0] ?? null;
   const pendingBackgroundTasks = derivePendingBackgroundWork({
     latestRun,
@@ -1673,6 +1716,8 @@ export function threadShellFromProjection(
       providerSession?.lastError ?? null,
     ),
     pendingRuntimeRequest,
+    pendingRuntimeRequests,
+    ...(requestDeliveryFailure === null ? {} : { requestDeliveryFailure }),
     pendingGuestMessageCount: pendingGuestMessageCount(projection.thread.guestShare),
     // Thread detail owns message bodies. Keeping them out of shell rows makes
     // initial hydration and streaming updates independent of transcript size.
@@ -1787,6 +1832,8 @@ type ShellThreadState = {
   readonly lastErrorCode: OrchestrationV2ThreadShell["lastErrorCode"];
   readonly usageLimitResetAt: OrchestrationV2ThreadShell["usageLimitResetAt"];
   readonly pendingRuntimeRequest: OrchestrationV2PendingRuntimeRequestSummary | null;
+  readonly pendingRuntimeRequests: ReadonlyArray<OrchestrationV2PendingRuntimeRequestSummary>;
+  readonly requestDeliveryFailure: OrchestrationV2ThreadShell["requestDeliveryFailure"];
   readonly latestUserMessageAt: DateTime.Utc | null;
   readonly latestUserAuthoredMessageAt: DateTime.Utc | null;
   readonly hasActionableProposedPlan: boolean;
@@ -1954,6 +2001,10 @@ function shellFromState(input: {
     lastErrorCode: input.state.lastErrorCode,
     usageLimitResetAt: input.state.usageLimitResetAt,
     pendingRuntimeRequest: input.state.pendingRuntimeRequest,
+    pendingRuntimeRequests: input.state.pendingRuntimeRequests,
+    ...(input.state.requestDeliveryFailure === undefined
+      ? {}
+      : { requestDeliveryFailure: input.state.requestDeliveryFailure }),
     pendingGuestMessageCount: pendingGuestMessageCount(input.state.thread.guestShare),
     latestVisibleMessage: null,
     latestUserMessageAt: input.state.latestUserMessageAt,
@@ -3113,6 +3164,35 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     AND pending.status = 'pending'
                     AND question.thread_id = ${threadId}
                     AND question.type IN ('user_input_request', 'approval_request')
+                    AND ${window.rowLimit} > 0
+                    AND ${window.anchorItemId ?? null} IS NULL
+                    AND ${window.requiredRunId ?? null} IS NULL
+                  UNION
+                  SELECT secret.rowid AS item_rowid, secret.ordinal, secret.turn_item_id
+                  FROM orchestration_v2_projection_runs active
+                  CROSS JOIN orchestration_v2_projection_turn_items secret
+                    INDEXED BY orchestration_v2_projection_turn_items_thread_run_idx
+                  WHERE active.thread_id = ${threadId}
+                    AND active.status IN ('preparing', 'starting', 'running', 'waiting')
+                    AND secret.thread_id = ${threadId} AND secret.run_id = active.run_id
+                    AND secret.type = 'secret_request' AND secret.status = 'waiting'
+                    AND ${window.rowLimit} > 0
+                    AND ${window.anchorItemId ?? null} IS NULL
+                    AND ${window.requiredRunId ?? null} IS NULL
+                  UNION
+                  SELECT link.rowid AS item_rowid, link.ordinal, link.turn_item_id
+                  FROM orchestration_v2_projection_turn_items link
+                    INDEXED BY orchestration_v2_projection_turn_items_waiting_link_idx
+                  WHERE link.thread_id = ${threadId}
+                    AND link.type = 'link_request' AND link.status = 'waiting'
+                    AND NOT EXISTS (
+                      SELECT 1 FROM orchestration_v2_projection_messages message
+                      WHERE message.thread_id = ${threadId}
+                        AND message.role = 'user'
+                        AND json_extract(message.payload_json, '$.createdBy') = 'user'
+                        AND NOT ${isIdleCompactionMessage("message")}
+                        AND message.updated_at > COALESCE(json_extract(link.payload_json, '$.startedAt'), link.updated_at)
+                    )
                     AND ${window.rowLimit} > 0
                     AND ${window.anchorItemId ?? null} IS NULL
                     AND ${window.requiredRunId ?? null} IS NULL
@@ -6256,14 +6336,31 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 LIMIT 1
               ) AS blocking_failure_payload_json,
               (
+                SELECT failure.payload_json
+                FROM orchestration_v2_projection_turn_items failure
+                  INDEXED BY orchestration_v2_projection_turn_items_failed_error_idx
+                CROSS JOIN orchestration_v2_projection_runtime_requests request
+                WHERE failure.thread_id = t.thread_id
+                  AND failure.type = 'error' AND failure.status = 'failed'
+                  AND request.runtime_request_id = substr(failure.turn_item_id, length('turn-item:runtime-request-delivery-failure:') + 1)
+                  AND failure.turn_item_id = 'turn-item:runtime-request-delivery-failure:' || request.runtime_request_id
+                  AND request.thread_id = failure.thread_id AND request.node_id = failure.node_id
+                  AND json_extract(failure.payload_json, '$.title') = 'Answer delivery not confirmed'
+                  AND json_extract(failure.payload_json, '$.failure.class') = 'transport_error'
+                ORDER BY failure.updated_at DESC, failure.turn_item_id DESC
+                LIMIT 1
+              ) AS request_delivery_failure_payload_json,
+              (
+                SELECT json_group_array(json(payload_json)) FROM (
                 SELECT request.payload_json
                 FROM orchestration_v2_projection_runtime_requests request
                 WHERE request.thread_id = t.thread_id
                   AND request.status = 'pending'
                 ORDER BY request.created_at DESC, request.runtime_request_id DESC
-                LIMIT 1
+                )
               ) AS pending_request_payload_json,
               (
+                SELECT json_group_array(json(payload_json)) FROM (
                 SELECT secret.payload_json
                 -- Keep runs outermost so completed history is never scanned for a pending secret.
                 FROM orchestration_v2_projection_runs r
@@ -6274,16 +6371,17 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   AND secret.thread_id = t.thread_id AND secret.run_id = r.run_id
                   AND secret.type = 'secret_request' AND secret.status = 'waiting'
                 ORDER BY secret.updated_at DESC, secret.turn_item_id DESC
-                LIMIT 1
+                )
               ) AS pending_secret_request_payload_json,
               (
+                SELECT json_group_array(json(payload_json)) FROM (
                 SELECT link.payload_json
                 FROM orchestration_v2_projection_turn_items link
                   INDEXED BY orchestration_v2_projection_turn_items_waiting_link_idx
                 WHERE link.thread_id = t.thread_id
                   AND link.type = 'link_request' AND link.status = 'waiting'
                 ORDER BY link.updated_at DESC, link.turn_item_id DESC
-                LIMIT 1
+                )
               ) AS pending_link_request_payload_json,
               (
                 SELECT message.updated_at
@@ -6763,35 +6861,35 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             ? null
             : DateTime.makeUnsafe(row.latest_user_authored_message_at);
         const waitingCards = [
-          row.pending_secret_request_payload_json === null
-            ? null
-            : yield* decodeTurnItemPayload(row.pending_secret_request_payload_json),
-          row.pending_link_request_payload_json === null
-            ? null
-            : yield* decodeTurnItemPayload(row.pending_link_request_payload_json),
+          ...(yield* decodeTurnItemPayloads(row.pending_secret_request_payload_json ?? "[]")),
+          ...(yield* decodeTurnItemPayloads(row.pending_link_request_payload_json ?? "[]")),
         ]
-          .filter((item) => item !== null)
           .filter(
             (item) =>
               item.type !== "link_request" || linkCardStillAsks(item, latestUserAuthoredMessageAt),
+          )
+          .toSorted(
+            (left, right) =>
+              DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt) ||
+              right.id.localeCompare(left.id),
           );
-        let pendingRuntimeRequest =
-          row.pending_request_payload_json !== null
-            ? pendingRuntimeRequestSummary(
-                yield* decodeRuntimeRequestPayload(row.pending_request_payload_json),
-              )
-            : null;
-        if (
-          (pendingRuntimeRequest === null || pendingRuntimeRequest.blocking === false) &&
-          waitingCards.length > 0
-        ) {
+        const requestDeliveryFailure =
+          requestDeliveryFailureSummary(
+            row.request_delivery_failure_payload_json === null
+              ? null
+              : yield* decodeTurnItemPayload(row.request_delivery_failure_payload_json),
+          ) ?? undefined;
+        const runtimeRequests = yield* decodeRuntimeRequestPayloads(
+          row.pending_request_payload_json ?? "[]",
+        );
+        const pendingRuntimeRequests = [
+          ...runtimeRequests.flatMap((request) => pendingRuntimeRequestSummary(request) ?? []),
+          ...waitingCards.flatMap((item) => secretRequestAsPendingInput(item) ?? []),
+        ];
+        let pendingRuntimeRequest = pendingRuntimeRequestSummary(runtimeRequests[0] ?? null);
+        if (pendingRuntimeRequest === null || pendingRuntimeRequest.blocking === false) {
           pendingRuntimeRequest =
-            secretRequestAsPendingInput(
-              waitingCards.toSorted(
-                (left, right) =>
-                  DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt),
-              )[0] ?? null,
-            ) ?? pendingRuntimeRequest;
+            secretRequestAsPendingInput(waitingCards[0] ?? null) ?? pendingRuntimeRequest;
         }
         let terminalFailureItem =
           row.terminal_failure_payload_json === null
@@ -6897,6 +6995,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             row.last_error,
           ),
           pendingRuntimeRequest,
+          pendingRuntimeRequests,
+          requestDeliveryFailure,
           latestUserMessageAt:
             row.latest_user_message_at === null
               ? null

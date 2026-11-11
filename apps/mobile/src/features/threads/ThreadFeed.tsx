@@ -2114,6 +2114,7 @@ function renderFeedEntry(
             environmentId={props.environmentId}
             senderThreadId={message.remoteSender?.threadId ?? message.senderThreadId}
             senderEnvironmentId={message.remoteSender?.environmentId}
+            replyTo={message.replyTo}
             attachments={attachmentContent}
             timestampLabel={timestampLabel}
             streaming={message.streaming}

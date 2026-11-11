@@ -35,6 +35,7 @@ import {
 import { hasOnlyPairedSurrogates } from "./threadMetadataMcp.ts";
 import { ThreadTitleRegeneration } from "./threadTitle.ts";
 import {
+  OrchestrationV2ConversationMessage,
   OrchestrationV2NewWorktreeStrategy,
   OrchestrationV2Actor,
   OrchestrationV2CreationSource,
@@ -443,6 +444,19 @@ export const OrchestratorMcpThreadListItem = Schema.Struct({
 export type OrchestratorMcpThreadListItem = typeof OrchestratorMcpThreadListItem.Type;
 
 export const OrchestratorMcpThreadListResult = Schema.Struct({
+  coverage: Schema.Struct({
+    environmentId: EnvironmentId,
+    includesSubagents: Schema.Boolean,
+    includesArchived: Schema.Literal(false),
+    includesSideChats: Schema.Literal(false),
+    linkedEnvironments: Schema.Literal("not_read"),
+    filters: Schema.Struct({
+      statuses: Schema.NullOr(Schema.Array(OrchestratorMcpThreadStatus)),
+      settled: Schema.NullOr(Schema.Boolean),
+      snoozed: Schema.NullOr(Schema.Boolean),
+      titleContains: Schema.NullOr(Schema.String),
+    }),
+  }),
   /** null with `allProjects`. */
   projectId: Schema.NullOr(ProjectId),
   currentThreadId: Schema.NullOr(ThreadId),
@@ -544,6 +558,7 @@ export const OrchestratorMcpThreadTimelineItem = Schema.Struct({
   creationSource: Schema.NullOr(OrchestrationV2CreationSource),
   senderThreadId: Schema.optional(ThreadId),
   remoteSender: Schema.optional(OrchestrationV2RemoteSender),
+  replyTo: OrchestrationV2ConversationMessage.fields.replyTo,
   type: Schema.String,
   status: OrchestrationV2TurnItemStatus,
   title: Schema.NullOr(Schema.String),
@@ -576,6 +591,7 @@ export const OrchestratorMcpConversationDelegation = Schema.Struct({
 });
 
 export const OrchestratorMcpThreadSendInput = Schema.Struct({
+  replyTo: OrchestrationV2ConversationMessage.fields.replyTo,
   environmentId: OrchestratorMcpEnvironmentTarget,
   threadId: ThreadId,
   message: OrchestratorMcpPrompt,

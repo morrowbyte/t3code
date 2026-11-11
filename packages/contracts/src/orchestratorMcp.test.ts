@@ -32,6 +32,11 @@ describe("orchestrator MCP contracts", () => {
     expect(
       decodeInput({ threadId: "conversation", message: "A direct answer" }).delegation,
     ).toBeUndefined();
+    const replyTo = { environmentId: "source", threadId: "question-thread", messageId: "question" };
+    expect(decodeInput({ ...input, replyTo }).replyTo).toEqual(replyTo);
+    for (const invalid of ["question", { messageId: "question" }, { ...replyTo, messageId: "" }]) {
+      expect(() => decodeInput({ ...input, replyTo: invalid })).toThrow();
+    }
     expect(
       decodeResult({
         threadId: "conversation",

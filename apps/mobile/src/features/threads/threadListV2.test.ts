@@ -388,12 +388,12 @@ describe("native thread families", () => {
       settledShelfExpanded: true,
     };
     const layout = buildThreadListV2Items(input);
-    expect(layout.workingCount).toBe(1);
+    expect(layout.workingCount).toBe(2);
     expect(resolveThreadListV2Status(settled)).toBe("ready");
     expect(resolveThreadListV2Status(idle)).toBe("ready");
     expect(
       buildThreadListV2Items({ ...input, environmentId: parent.environmentId }).workingCount,
-    ).toBe(0);
+    ).toBe(1);
     const items = itemsFor([parent, idle, settled, asking]);
     const familyInput = {
       items,
@@ -403,7 +403,7 @@ describe("native thread families", () => {
     };
     const folded = buildThreadListV2FamilyRows(familyInput);
     expect(folded.every((row) => row.displaySection === "active")).toBe(true);
-    expect(folded[0]?.activeDescendantCount).toBe(0);
+    expect(folded[0]?.activeDescendantCount).toBe(1);
     expect(folded.map((row) => row.key)).not.toContain(grandchildKey);
     const reopened = {
       ...settled,
@@ -421,6 +421,48 @@ describe("native thread families", () => {
     expect(activeRows[0]).toMatchObject({ displaySection: "working", activeDescendantCount: 1 });
     expect(settled.runtime).toBe(working.runtime);
   });
+
+  it.each(["parent", "sibling"] as const)(
+    "keeps a running question outside collapsed Working while its %s also works",
+    (worker) => {
+      const asking = makeThread({
+        ...grandchild,
+        runtime: working.runtime,
+        hasPendingUserInput: true,
+      });
+      const other = makeThread({
+        ...child,
+        id: ThreadId.make("sibling"),
+        runtime: working.runtime,
+      });
+      const threads = [
+        worker === "parent" ? { ...parent, runtime: working.runtime } : parent,
+        child,
+        asking,
+        ...(worker === "sibling" ? [other] : []),
+      ];
+      const visible = buildThreadListV2Items({
+        threads,
+        environmentId: null,
+        searchQuery: "",
+        now: NOW,
+        includeSubagents: true,
+        workingShelfEnabled: true,
+        workingShelfExpanded: false,
+      });
+      expect(visible.workingCount).toBe(2);
+      expect(visible.items.map((item) => keyOf(item.thread))).toContain(grandchildKey);
+      const rows = buildThreadListV2FamilyRows({
+        items: itemsFor(threads),
+        visibleKeys: new Set(visible.items.map((item) => keyOf(item.thread))),
+        disclosure,
+        workingShelfEnabled: true,
+      });
+      expect(rows.every((row) => row.displaySection === "active")).toBe(true);
+      expect(rows.find((row) => row.key === grandchildKey)?.depth).toBe(2);
+      expect(rows[0]?.activeDescendantCount).toBe(worker === "parent" ? 1 : 2);
+    },
+  );
 
   it.each(["approval", "user_input", "active_run", "route"] as const)(
     "retains a %s descendant while omitting inactive historical siblings",
@@ -509,6 +551,30 @@ describe("native thread families", () => {
     const navigated = revealThreadListV2RouteAncestors(closed, unpromoted, grandchildKey);
     expect(navigated.closedKeys.size).toBe(0);
     expect([...navigated.expandedKeys]).toEqual([parentKey]);
+  });
+
+  it("reveals ancestors loaded after the selected child reconnects without reopening a manual collapse", () => {
+    const initial: ThreadListV2FamilyDisclosure = {
+      routeKey: null,
+      expandedKeys: new Set(),
+      closedKeys: new Set(),
+    };
+    const orphan = revealThreadListV2RouteAncestors(initial, [grandchild], grandchildKey);
+    expect(orphan.routeKey).toBe(grandchildKey);
+    expect(orphan.expandedKeys.size).toBe(0);
+    const loaded = revealThreadListV2RouteAncestors(
+      orphan,
+      [parent, child, grandchild],
+      grandchildKey,
+    );
+    expect(loaded.expandedKeys.has(parentKey)).toBe(true);
+    expect(
+      revealThreadListV2RouteAncestors(loaded, [parent, child, grandchild], grandchildKey),
+    ).toBe(loaded);
+    const closed = toggleThreadListV2Family(loaded, parentKey);
+    expect(
+      revealThreadListV2RouteAncestors(closed, [parent, child, grandchild], grandchildKey),
+    ).toBe(closed);
   });
 
   it("leaves foreign, missing and cyclic ancestry reachable without rewriting lineage", () => {
@@ -2161,8 +2227,15 @@ describe("Working section beta", () => {
       "asks-approval",
       "finished-early",
     ]);
-    expect(layout.workingCount).toBe(2);
+    expect(layout.workingCount).toBe(3);
     expect(layout.workingShelfHeaderIndex).toBe(4);
+
+    const answered = build({
+      threads: threads.map((thread) => ({ ...thread, hasPendingApprovals: false })),
+    });
+    expect(ids(answered)).not.toContain("asks-approval");
+    expect(answered.workingCount).toBe(3);
+    expect(answered.workingShelfHeaderIndex).toBe(3);
 
     const off = build({ workingShelfEnabled: false });
     expect(ids(off)).toContain("working");

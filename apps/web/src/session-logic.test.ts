@@ -691,6 +691,11 @@ describe("V2 session presentation", () => {
         environmentId: EnvironmentId.make("environment-agent-origin"),
         threadId: ThreadId.make("thread-remote-agent-sender"),
       },
+      replyTo: {
+        environmentId: EnvironmentId.make("environment-agent-origin"),
+        threadId: ThreadId.make("thread-remote-agent-sender"),
+        messageId: MessageId.make("question-in-origin-thread"),
+      },
     } satisfies OrchestrationV2TurnItem;
     for (const inputIntent of [
       "queued_turn",
@@ -731,6 +736,7 @@ describe("V2 session presentation", () => {
       expect(promotedEntries[0].message.inputIntent).toBe("turn_start");
       expect(promotedEntries[0].message.scheduledTaskId).toBe("task-queued");
       expect(promotedEntries[0].message.senderThreadId).toBe("thread-agent-sender");
+      expect(promotedEntries[0].message.replyTo).toEqual(dispatchedItem.replyTo);
       expect(promotedEntries[0].message).toHaveProperty(
         "remoteSender",
         dispatchedItem.remoteSender,

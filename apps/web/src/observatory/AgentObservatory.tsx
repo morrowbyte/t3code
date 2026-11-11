@@ -165,6 +165,19 @@ function TaskCard({
       <p className="line-clamp-3 whitespace-pre-line text-sm">
         {task.objective ?? "No goal recorded"}
       </p>
+      {task.interruption && (task.status === "paused" || task.status === "blocked") && (
+        <div className="space-y-1 text-sm">
+          <p>{task.interruption.reason}</p>
+          {task.lastError && <p className="break-words">Last error: {task.lastError}</p>}
+          {task.lastUpdate && (
+            <details>
+              <summary className="cursor-pointer">Latest agent update</summary>
+              <p className="mt-2 whitespace-pre-wrap">{task.lastUpdate}</p>
+            </details>
+          )}
+          <p className="text-muted-foreground">{task.interruption.nextStep}</p>
+        </div>
+      )}
       <p className="text-xs text-muted-foreground">
         {node.shell.providerInstanceId} · {node.shell.modelSelection.model}
         {node.shell.archivedAt !== null && " · Archived"}
@@ -265,7 +278,9 @@ function TaskCard({
       )}
       <div className="flex flex-wrap gap-2">
         <Button variant="outline" size="sm" onClick={() => onOpenThread(node.ref)}>
-          Open task
+          {task.status === "paused" || task.status === "blocked"
+            ? "Review and continue"
+            : "Open task"}
         </Button>
       </div>
     </article>
@@ -437,6 +452,23 @@ function Dashboard({
       {selection.task.objective && (
         <p className="max-w-3xl whitespace-pre-line text-sm">{selection.task.objective}</p>
       )}
+      {selection.task.interruption &&
+        (selection.task.status === "paused" || selection.task.status === "blocked") && (
+          <section aria-label="Task interruption" className="space-y-2 break-words text-sm">
+            <p>{selection.task.interruption.reason}</p>
+            {selection.task.lastError && <p>Last error: {selection.task.lastError}</p>}
+            {selection.task.lastUpdate && (
+              <details>
+                <summary className="cursor-pointer">Latest agent update</summary>
+                <p className="mt-2 whitespace-pre-wrap">{selection.task.lastUpdate}</p>
+              </details>
+            )}
+            <p>{selection.task.interruption.nextStep}</p>
+            <Button variant="outline" size="sm" onClick={() => onOpenThread(selection.node.ref)}>
+              Review and continue
+            </Button>
+          </section>
+        )}
       <details className="text-sm text-muted-foreground">
         <summary>
           {authored

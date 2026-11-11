@@ -5698,7 +5698,12 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       const runId = RunId.make(`run:${suffix}:rolled-back`);
       const nodeId = NodeId.make(`node:${suffix}:rolled-back`);
       const now = yield* DateTime.now;
-      const addSecret = (id: string, ordinal: number, status: "waiting" | "completed") =>
+      const addRequestCard = (
+        id: string,
+        ordinal: number,
+        status: "waiting" | "completed",
+        type: "secret_request" | "link_request" = "secret_request",
+      ) =>
         projectionStore.apply({
           id: EventId.make(`event:${id}`),
           type: "turn-item.updated",
@@ -5722,15 +5727,23 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
             startedAt: now,
             completedAt: null,
             updatedAt: DateTime.add(now, { seconds: ordinal }),
-            type: "secret_request",
-            label: "Test credential",
-            reason: "Test pending input",
-            secretStatus: status === "waiting" ? "pending" : "saved",
+            ...(type === "secret_request"
+              ? {
+                  type: "secret_request" as const,
+                  label: "Test credential",
+                  reason: "Test pending input",
+                  secretStatus: status === "waiting" ? ("pending" as const) : ("saved" as const),
+                }
+              : {
+                  type: "link_request" as const,
+                  reason: "Link the test environment",
+                  linkStatus: status === "waiting" ? ("pending" as const) : ("linked" as const),
+                }),
           },
         });
-      yield* addSecret("secret:a", 2, "waiting");
-      yield* addSecret("secret:b", 3, "waiting");
-      yield* addSecret("secret:c", 4, "completed");
+      yield* addRequestCard("secret:a", 2, "waiting");
+      yield* addRequestCard("secret:b", 3, "waiting");
+      yield* addRequestCard("secret:c", 4, "completed");
 
       yield* sql`
         UPDATE orchestration_v2_projection_runs
@@ -5748,8 +5761,14 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       ]) {
         assert.equal(shell?.pendingRuntimeRequest?.id, "secret:b");
         assert.isTrue(shell?.pendingRuntimeRequest?.blocking);
+        assert.deepEqual(shell?.pendingRuntimeRequests?.map((request) => request.id).sort(), [
+          "secret:a",
+          "secret:b",
+        ]);
       }
 
+      yield* addRequestCard("link:a", 0, "waiting", "link_request");
+      yield* addRequestCard("link:b", 1, "waiting", "link_request");
       const requestId = RuntimeRequestId.make(`request:${suffix}:async`);
       yield* projectionStore.apply({
         id: EventId.make(`event:${suffix}:async`),
@@ -5807,14 +5826,117 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         const projection = yield* projectionStore.getThreadProjection(threadId);
         const memoryShell = ProjectionStore.threadShellFromProjection(projection);
         const terminal = status === "completed" || status === "rolled_back";
+        const snapshot = yield* projectionStore.getThreadSnapshotWindow(threadId, { rowLimit: 1 });
+        const bounded = buildBoundedThreadProjection({
+          projection: snapshot.projection,
+          snapshotSequence: snapshot.snapshotSequence,
+          policy: { maxItems: 1, maxEncodedBytes: 10_000_000 },
+        });
+        const retained = new Set(bounded.projection.turnItems.map((item) => String(item.id)));
+        for (const id of terminal
+          ? ["link:a", "link:b"]
+          : ["link:a", "link:b", "secret:a", "secret:b"]) {
+          assert.isTrue(retained.has(id));
+        }
+        for (const candidate of [thread, memoryShell]) {
+          assert.deepEqual(
+            candidate?.pendingRuntimeRequests?.map((request) => request.id).sort(),
+            terminal
+              ? [requestId, "link:a", "link:b"].sort()
+              : [requestId, "secret:a", "secret:b", "link:a", "link:b"].sort(),
+          );
+        }
         assert.deepEqual(
           [thread?.pendingRuntimeRequest?.id, memoryShell.pendingRuntimeRequest?.id],
-          terminal ? [requestId, requestId] : ["secret:b", "secret:b"],
+          terminal ? ["link:b", "link:b"] : ["secret:b", "secret:b"],
         );
         assert.deepEqual(
           [thread?.pendingRuntimeRequest?.blocking, memoryShell.pendingRuntimeRequest?.blocking],
-          terminal ? [false, false] : [true, true],
+          [true, true],
         );
+      }
+      yield* projectionStore.apply({
+        id: EventId.make(`event:${suffix}:answer-resolved`),
+        type: "runtime-request.updated",
+        threadId,
+        runId,
+        nodeId,
+        driver,
+        occurredAt: now,
+        payload: { ...pendingRequests.runtimeRequests[0]!, status: "resolved", resolvedAt: now },
+      });
+      for (const kind of ["user_input", "command", "auth_refresh"] as const) {
+        yield* projectionStore.apply({
+          id: EventId.make(`event:${suffix}:second:${kind}`),
+          type: "runtime-request.updated",
+          threadId,
+          runId,
+          nodeId,
+          driver,
+          occurredAt: now,
+          payload: {
+            ...pendingRequests.runtimeRequests[0]!,
+            id: RuntimeRequestId.make(`second:${kind}`),
+            kind,
+          },
+        });
+      }
+      const failureItemId = TurnItemId.make(
+        `turn-item:runtime-request-delivery-failure:${requestId}`,
+      );
+      yield* projectionStore.apply({
+        id: EventId.make(`event:${suffix}:delivery-failure`),
+        type: "turn-item.updated",
+        threadId,
+        runId,
+        nodeId,
+        driver,
+        occurredAt: now,
+        payload: {
+          id: failureItemId,
+          threadId,
+          runId,
+          nodeId,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 5,
+          status: "failed",
+          title: "Answer delivery not confirmed",
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          type: "error",
+          failure: {
+            class: "transport_error",
+            message: "The provider did not receive the answer.",
+            code: null,
+            retryable: null,
+          },
+        },
+      });
+      const failedShell = (yield* projectionStore.getShellSnapshot()).threads.find(
+        (candidate) => candidate.id === threadId,
+      );
+      const failedProjection = yield* projectionStore.getThreadProjection(threadId);
+      for (const candidate of [
+        failedShell,
+        ProjectionStore.threadShellFromProjection(failedProjection),
+      ]) {
+        assert.deepEqual(candidate?.pendingRuntimeRequests?.map((request) => request.id).sort(), [
+          "link:a",
+          "link:b",
+          "second:auth_refresh",
+          "second:command",
+          "second:user_input",
+        ]);
+        assert.deepEqual(candidate?.requestDeliveryFailure, {
+          requestId,
+          itemId: failureItemId,
+          message: "The provider did not receive the answer.",
+          occurredAt: now,
+        });
       }
       for (const state of ["pending", "approved", "claimed"] as const) {
         yield* projectionStore.apply({
