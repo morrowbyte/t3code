@@ -1,9 +1,41 @@
 import {
   type DesktopPetItemKind,
   type DesktopPetProjection,
+  type OrchestrationV2PendingRuntimeRequestSummary,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
+import type { PendingThreadRequests } from "@t3tools/client-runtime/state/thread-requests";
 import { petSummary } from "./PetSummary";
+
+export function petPendingRequests(
+  pending: PendingThreadRequests | null,
+  summary: Pick<OrchestrationV2PendingRuntimeRequestSummary, "id" | "kind"> | null,
+  turnItems: readonly { id: string; type: string; status: string }[],
+) {
+  const requests: { id: string; kind: "approval" | "question"; publicText?: string }[] = [];
+  for (const approval of pending?.approvals ?? [])
+    if (approval.responseCapability !== "not_resumable")
+      requests.push({ id: approval.requestId, kind: "approval" });
+  for (const question of pending?.userInputs ?? [])
+    if (question.responseCapability !== "not_resumable")
+      requests.push({
+        id: question.requestId,
+        kind: "question",
+        publicText: question.questions.map((item) => item.question).join(" "),
+      });
+  if (
+    summary &&
+    !requests.some((request) => request.id === summary.id) &&
+    turnItems.some(
+      (item) =>
+        item.id === summary.id &&
+        item.status === "waiting" &&
+        (item.type === "secret_request" || item.type === "link_request"),
+    )
+  )
+    requests.push({ id: summary.id, kind: "question" });
+  return requests;
+}
 
 export interface PetCandidate {
   readonly key: string;

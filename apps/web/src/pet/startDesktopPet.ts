@@ -13,7 +13,7 @@ import { environmentShell } from "../state/shell";
 import { environmentThreadDetails } from "../state/threads";
 import { buildThreadRouteParams } from "../threadRoutes";
 import { randomUUID } from "../lib/utils";
-import { PetInbox, type PetCandidate } from "./PetInbox";
+import { PetInbox, petPendingRequests, type PetCandidate } from "./PetInbox";
 
 interface WatchedEnvironment {
   threads: readonly OrchestrationV2ThreadShell[];
@@ -59,7 +59,12 @@ export function startDesktopPet(registry: AtomRegistry.AtomRegistry, router: Any
         )
           workingCount++;
         const request = shell.pendingRuntimeRequest;
-        const pending = entry.details.has(shell.id)
+        const liveDetail =
+          entry.details.has(shell.id) &&
+          registry.get(environmentThreadDetails.statusAtom(ref)) === "live"
+            ? registry.get(environmentThreadDetails.quietThreadAtom(ref))
+            : null;
+        const pending = liveDetail
           ? registry.get(environmentThreadDetails.pendingRequestsAtom(ref))
           : null;
         const add = (kind: PetCandidate["kind"], id: string, publicText?: string) =>
@@ -70,20 +75,12 @@ export function startDesktopPet(registry: AtomRegistry.AtomRegistry, router: Any
             threadNumber: entry.threadNumbers.get(shell.id)!,
             publicText,
           });
-        for (const approval of pending?.approvals ?? []) add("approval", approval.requestId);
-        for (const question of pending?.userInputs ?? [])
-          add(
-            "question",
-            question.requestId,
-            question.questions.map((item) => item.question).join(" "),
-          );
-        if (
-          request &&
-          !pending?.approvals.some((item) => item.requestId === request.id) &&
-          !pending?.userInputs.some((item) => item.requestId === request.id)
-        ) {
-          add(request.kind === "user_input" ? "question" : "approval", request.id);
-        }
+        for (const item of petPendingRequests(
+          pending,
+          request,
+          liveDetail?.projection.turnItems ?? [],
+        ))
+          add(item.kind, item.id, item.publicText);
         if (
           entry.results.has(shell.id) &&
           registry.get(environmentThreadDetails.statusAtom(ref)) === "live"

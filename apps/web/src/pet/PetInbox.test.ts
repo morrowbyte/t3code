@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
-import { type EnvironmentId, type ThreadId } from "@t3tools/contracts";
-import { PetInbox, type PetCandidate } from "./PetInbox";
+import { type EnvironmentId, RuntimeRequestId, type ThreadId } from "@t3tools/contracts";
+import { PetInbox, petPendingRequests, type PetCandidate } from "./PetInbox";
 
 const candidate = (
   key: string,
@@ -15,6 +15,59 @@ const candidate = (
   ref: { environmentId: "environment" as EnvironmentId, threadId: key as ThreadId },
 });
 describe("pet inbox", () => {
+  it("omits unavailable requests while retaining answerable asynchronous questions and cards", () => {
+    const stale = RuntimeRequestId.make("stale");
+    const live = RuntimeRequestId.make("live");
+    const async = RuntimeRequestId.make("async");
+    const card = RuntimeRequestId.make("card");
+    const pending = {
+      approvals: [
+        {
+          requestId: stale,
+          requestKind: "command" as const,
+          createdAt: "",
+          responseCapability: "not_resumable" as const,
+        },
+        {
+          requestId: live,
+          requestKind: "permission" as const,
+          createdAt: "",
+          responseCapability: "external" as const,
+        },
+      ],
+      userInputs: [
+        {
+          requestId: stale,
+          createdAt: "",
+          questions: [],
+          responseCapability: "not_resumable" as const,
+          dismissible: false,
+        },
+        {
+          requestId: async,
+          createdAt: "",
+          questions: [],
+          responseCapability: "message" as const,
+          dismissible: true,
+        },
+      ],
+    };
+    expect(petPendingRequests(pending, { id: stale, kind: "user_input" }, [])).toEqual([
+      { id: live, kind: "approval" },
+      { id: async, kind: "question", publicText: "" },
+    ]);
+    expect(
+      petPendingRequests(pending, { id: card, kind: "user_input" }, [
+        { id: card, type: "link_request", status: "waiting" },
+      ]).at(-1),
+    ).toEqual({ id: card, kind: "question" });
+    expect(petPendingRequests(null, { id: card, kind: "user_input" }, [])).toEqual([]);
+    expect(
+      petPendingRequests(null, { id: card, kind: "user_input" }, [
+        { id: card, type: "secret_request", status: "completed" },
+      ]),
+    ).toEqual([]);
+  });
   it("prioritizes requests across threads, bounds the projection and does not leak identities", () => {
     let next = 0;
     const inbox = new PetInbox(() => `opaque-${++next}`);
