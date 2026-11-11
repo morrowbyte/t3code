@@ -1,11 +1,28 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { DesktopPetSettings as PetSettings, DesktopPetStatus } from "@t3tools/contracts";
+import {
+  ChevronDownIcon,
+  CircleCheckIcon,
+  CircleAlertIcon,
+  EyeIcon,
+  EyeOffIcon,
+  KeyboardIcon,
+  PawPrintIcon,
+  RefreshCwIcon,
+  RotateCcwIcon,
+  ScanEyeIcon,
+  SparklesIcon,
+  UploadIcon,
+} from "lucide-react";
 import { useHandleNewThread } from "../../hooks/useHandleNewThread";
 import { resolveThreadActionProjectRef } from "../../lib/chatThreadActions";
 import { Button } from "../ui/button";
+import { Badge } from "../ui/badge";
+import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { DraftInput } from "../ui/draft-input";
 import { Input } from "../ui/input";
 import { Switch } from "../ui/switch";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SettingsRow, SettingsSection } from "./settingsLayout";
 
 const shortcutErrors: Readonly<Record<string, string>> = {
@@ -19,12 +36,44 @@ const shortcutErrors: Readonly<Record<string, string>> = {
     "Niri could not validate the shortcut. The previous binding was preserved.",
 };
 
+function PetIconButton({
+  label,
+  disabled,
+  onClick,
+  children,
+}: {
+  label: string;
+  disabled?: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            aria-label={label}
+            disabled={disabled}
+            onClick={onClick}
+          >
+            {children}
+          </Button>
+        }
+      />
+      <TooltipPopup>{label}</TooltipPopup>
+    </Tooltip>
+  );
+}
+
 export function DesktopPetSettings() {
   const bridge = window.desktopBridge;
   const [status, setStatus] = useState<DesktopPetStatus | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [idea, setIdea] = useState("");
+  const [advanced, setAdvanced] = useState(false);
   const threadContext = useHandleNewThread();
   const project = resolveThreadActionProjectRef({
     ...threadContext,
@@ -88,65 +137,137 @@ export function DesktopPetSettings() {
         ? "Screenshots and AT-SPI active"
         : "Screenshots and AT-SPI allowed; not capturing"
     : "No confirmed Computer Use session";
+  const privacyLabel = cu
+    ? cu.observationMode === "disabled"
+      ? "Off"
+      : cu.observationActive
+        ? "Capturing"
+        : "Allowed · idle"
+    : "Not confirmed";
   const create = () => {
     if (!project || !idea.trim()) return;
     const prompt = `Create an animated desktop pet: ${idea.trim()}\nFirst verify that image-generation tools are available. If unavailable, report that limitation instead of fabricating an image. Use the existing image-generation workflow. Create a crew-pet/v1 folder containing only pet.json and pet.png. PNG must be 8-bit RGBA, 4 columns by 8 rows, square frames from 64 to 512 pixels. pet.json: schema=1, name (1–60 characters, no control characters), frameWidth, frameHeight, sheet="pet.png", states idle, working, reading, lookingAway, waiting, attention, success, error. Each state: unique row 0–7, frames=4, fps=6, loop=false. LookingAway covers the eyes with paws/hands and contains no text. Keep the same character across frames. Save both files and return the folder path for Settings > General > Desktop pet > Import. Do not install anything or enter credentials.`;
     void threadContext.handleNewThread(project, { prompt });
   };
   return (
-    <SettingsSection id="desktop-pet" title="Desktop pet">
-      <SettingsRow
-        title="Always show pet"
-        description="Off by default. Computer Use can still show its task-bound pet."
-        control={
-          <Switch
-            aria-label="Always show pet"
-            checked={status?.settings.persistent ?? false}
-            disabled={!status || pending}
-            onCheckedChange={(persistent) => change({ persistent })}
-          />
-        }
-      />
-      <SettingsRow
-        title="Companion"
-        description={connection}
-        status={status?.error && status.error !== "companion-not-found" ? status.error : undefined}
-        control={
-          <Button
-            size="sm"
-            variant="outline"
+    <SettingsSection
+      id="desktop-pet"
+      title="Desktop pet"
+      icon={<PawPrintIcon aria-hidden className="size-4" />}
+      headerAction={
+        <div className="flex items-center gap-1">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <span tabIndex={0} role="status" aria-label={connection}>
+                  <Badge variant={status?.connection === "ready" ? "success" : "secondary"}>
+                    {status?.connection === "ready" ? (
+                      <CircleCheckIcon aria-hidden />
+                    ) : (
+                      <CircleAlertIcon aria-hidden />
+                    )}
+                    {status?.connection === "ready" ? "Connected" : connection}
+                  </Badge>
+                </span>
+              }
+            />
+            <TooltipPopup>{status?.error ?? connection}</TooltipPopup>
+          </Tooltip>
+          <PetIconButton
+            label="Reconnect companion"
             disabled={!status || pending}
             onClick={() => run(() => bridge.reconnectPet())}
           >
-            Reconnect
-          </Button>
-        }
-      />
-      <SettingsRow title="Screen access" description={privacy} />
+            <RefreshCwIcon aria-hidden />
+          </PetIconButton>
+        </div>
+      }
+    >
       <SettingsRow
-        title="Show or hide"
-        description="The task-bound Computer Use privacy indicator stays visible."
+        title="Character"
+        description={status?.customPet ?? "Built-in"}
         control={
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={status?.connection !== "ready"}
-            onClick={() => void bridge.togglePet()}
-          >
-            Toggle pet
-          </Button>
+          <div className="flex items-center gap-1">
+            <PetIconButton
+              label="Import animated pet"
+              disabled={pending || !status}
+              onClick={() => run(() => bridge.importPet())}
+            >
+              <UploadIcon aria-hidden />
+            </PetIconButton>
+            <PetIconButton
+              label="Use built-in pet"
+              disabled={pending || !status?.customPet}
+              onClick={() => run(() => bridge.resetPet())}
+            >
+              <RotateCcwIcon aria-hidden />
+            </PetIconButton>
+          </div>
         }
       />
       <SettingsRow
-        title="Global shortcut"
+        title="Always show pet"
+        control={
+          <div className="flex items-center gap-3">
+            <PetIconButton
+              label={
+                status?.settings.visible
+                  ? "Hide reminders (Computer Use stays visible)"
+                  : "Show reminders"
+              }
+              disabled={status?.connection !== "ready" || !status.settings.persistent}
+              onClick={() => void bridge.togglePet()}
+            >
+              {status?.settings.visible ? <EyeOffIcon aria-hidden /> : <EyeIcon aria-hidden />}
+            </PetIconButton>
+            <Switch
+              aria-label="Always show pet"
+              checked={status?.settings.persistent ?? false}
+              disabled={!status || pending}
+              onCheckedChange={(persistent) => change({ persistent })}
+            />
+          </div>
+        }
+      />
+      <SettingsRow
+        title="Screen access"
+        control={
+          <Tooltip>
+            <TooltipTrigger render={<span tabIndex={0} aria-label={privacy} />}>
+              <Badge
+                variant={
+                  cu?.observationMode === "disabled"
+                    ? "secondary"
+                    : cu?.observationActive
+                      ? "warning"
+                      : "outline"
+                }
+              >
+                {cu?.observationMode === "disabled" ? (
+                  <EyeOffIcon aria-hidden />
+                ) : (
+                  <ScanEyeIcon aria-hidden />
+                )}
+                {privacyLabel}
+              </Badge>
+            </TooltipTrigger>
+            <TooltipPopup>{privacy}</TooltipPopup>
+          </Tooltip>
+        }
+      />
+      <SettingsRow
+        title={
+          <span className="flex items-center gap-2">
+            <KeyboardIcon aria-hidden className="size-4" />
+            Shortcut
+          </span>
+        }
         description={
           status?.shortcutError && shortcutErrors[status.shortcutError]
             ? shortcutErrors[status.shortcutError]
             : status?.settings.shortcut && !status.shortcutRegistered
               ? "Global shortcut unavailable on this desktop or already in use."
-              : status?.shortcutBackend === "niri"
-                ? "Managed by Niri."
-                : "Unassigned by default."
+              : undefined
         }
         control={
           <DraftInput
@@ -170,62 +291,49 @@ export function DesktopPetSettings() {
         }
       />
       <SettingsRow
-        title="Pet"
-        description={status?.customPet ?? "Built-in pet"}
-        control={
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={pending || !status}
-              onClick={() => run(() => bridge.importPet())}
-            >
-              Import…
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={pending || !status?.customPet}
-              onClick={() => run(() => bridge.resetPet())}
-            >
-              Use built-in
-            </Button>
-          </div>
-        }
-      />
-      <SettingsRow
         title="Create a pet"
-        description="Prepare an agent draft using your chosen model and available image tools."
         control={
           <div className="flex gap-2">
             <Input
               aria-label="Pet description"
-              placeholder="Describe your pet"
+              placeholder="A sleepy little fox…"
               value={idea}
               onChange={(event) => setIdea(event.target.value)}
             />
             <Button
               size="sm"
-              variant="outline"
+              variant="secondary"
+              aria-label="Create pet with agent"
               disabled={!project || !idea.trim()}
               onClick={create}
             >
-              Create with agent…
+              <SparklesIcon aria-hidden />
+              Create draft
             </Button>
           </div>
         }
       />
-      <SettingsRow
-        title="Companion executable"
-        control={
-          <DraftInput
-            aria-label="Pet companion executable"
-            value={status?.settings.executable ?? "weasel-desktop-pet"}
-            disabled={!status || pending}
-            onCommit={(executable) => change({ executable })}
+      <Collapsible open={advanced} onOpenChange={setAdvanced}>
+        <div className="px-3 py-2 sm:px-4">
+          <CollapsibleTrigger render={<Button size="xs" variant="ghost-muted" />}>
+            Advanced
+            <ChevronDownIcon aria-hidden className={advanced ? "rotate-180" : undefined} />
+          </CollapsibleTrigger>
+        </div>
+        <CollapsiblePanel animate={false}>
+          <SettingsRow
+            title="Companion executable"
+            control={
+              <DraftInput
+                aria-label="Pet companion executable"
+                value={status?.settings.executable ?? "weasel-desktop-pet"}
+                disabled={!status || pending}
+                onCommit={(executable) => change({ executable })}
+              />
+            }
           />
-        }
-      />
+        </CollapsiblePanel>
+      </Collapsible>
       {error ? (
         <p role="alert" className="px-4 text-sm text-destructive">
           {error}
