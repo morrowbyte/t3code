@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import type { AppRestoreInput, AppRestoreResult, AppRestoreState } from "./appRestore.ts";
 import type { PreviewCaptureFailureEncoded } from "./previewCapture.ts";
 
 import { SnapShotSource } from "./chatAttachment.ts";
@@ -1321,6 +1322,11 @@ export interface DesktopBridge {
   onWindowFullscreenStateChange: (listener: (fullscreen: boolean) => void) => () => void;
   getWindowZoomFactor: () => number;
   getUpdateState: () => Promise<DesktopUpdateState>;
+  appRestore?: {
+    list: () => Promise<AppRestoreState>;
+    restore: (input: AppRestoreInput) => Promise<AppRestoreResult>;
+    resumeUpdates: () => Promise<AppRestoreState>;
+  };
   /** `minimumVersion` is a track switch's checked release; nothing older is offered after. */
   setUpdateChannel: (
     channel: DesktopUpdateChannel,

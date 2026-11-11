@@ -84,6 +84,7 @@
               --add-flags "--force-renderer-accessibility" \
               --set-default T3CODE_DISABLE_AUTO_UPDATE false \
               --set T3CODE_NIX_UPDATER "$out/libexec/t3code-morrowbyte-update" \
+              --run 'export T3CODE_NIX_DATA_DIR="''${T3CODE_NIX_DATA_DIR:-''${T3_MORROWBYTE_DATA_DIR:-''${XDG_DATA_HOME:-$HOME/.local/share}/t3code-morrowbyte}}"' \
               --run 'export T3CODE_NIX_LAUNCHER="''${T3CODE_NIX_LAUNCHER:-''${T3CODE_DESKTOP_LINUX_URL_HANDLER_LAUNCHER:-$HOME/.local/bin/t3code-morrowbyte}}"'
           '';
 

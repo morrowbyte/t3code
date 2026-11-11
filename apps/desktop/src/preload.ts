@@ -269,6 +269,11 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     };
   },
   getUpdateState: () => ipcRenderer.invoke(IpcChannels.UPDATE_GET_STATE_CHANNEL),
+  appRestore: {
+    list: () => ipcRenderer.invoke(IpcChannels.RESTORE_LIST_CHANNEL),
+    restore: (input) => ipcRenderer.invoke(IpcChannels.RESTORE_VERSION_CHANNEL, input),
+    resumeUpdates: () => ipcRenderer.invoke(IpcChannels.RESTORE_RESUME_UPDATES_CHANNEL),
+  },
   setUpdateChannel: (channel, minimumVersion) =>
     ipcRenderer.invoke(IpcChannels.UPDATE_SET_CHANNEL_CHANNEL, { channel, minimumVersion }),
   checkForUpdate: () => ipcRenderer.invoke(IpcChannels.UPDATE_CHECK_CHANNEL),

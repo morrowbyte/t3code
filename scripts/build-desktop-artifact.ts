@@ -864,7 +864,7 @@ const spawnAndCollectOutput = Effect.fn("spawnAndCollectOutput")(function* (
 
 const resolveGitCommitHash = Effect.fn("resolveGitCommitHash")(function* (repoRoot: string) {
   const result = yield* spawnAndCollectOutput(
-    ChildProcess.make("git", ["rev-parse", "--short=12", "HEAD"], {
+    ChildProcess.make("git", ["rev-parse", "HEAD"], {
       cwd: repoRoot,
     }),
   ).pipe(
@@ -965,6 +965,15 @@ interface StagePackageJson {
   readonly version: string;
   readonly buildVersion: string;
   readonly t3codeCommitHash: string;
+  readonly t3codeRestore: {
+    readonly protocol: 1;
+    readonly version: string;
+    readonly sourceSha: string;
+    readonly database: string;
+    readonly events: string;
+    readonly profile: string;
+    readonly updateHold: true;
+  };
   readonly t3codeWebAuthn?: MacWebAuthnEntitlements;
   readonly private: true;
   readonly packageManager: string;
@@ -3785,7 +3794,8 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
 
   const appVersion = options.version ?? serverPackageJson.version;
   const iconAssets = resolveDesktopBuildIconAssets();
-  const commitHash = yield* resolveGitCommitHash(repoRoot);
+  const sourceSha = yield* resolveGitCommitHash(repoRoot);
+  const commitHash = sourceSha.slice(0, 12);
   const mkdir = options.keepStage ? fs.makeTempDirectory : fs.makeTempDirectoryScoped;
   const stageRoot = yield* mkdir({
     prefix: `t3code-desktop-${options.platform}-stage-`,
@@ -4011,11 +4021,60 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     options.platform === "win"
       ? path.join(stageAppDir, WINDOWS_SERVER_RESOURCE_SOURCE_DIR, WINDOWS_SERVER_ASAR_RESOURCE)
       : undefined;
+  const restoreFingerprint = async (entries: readonly string[]) => {
+    const hash = NodeCrypto.createHash("sha256");
+    const visit = async (entry: string): Promise<void> => {
+      const absolute = path.join(repoRoot, entry);
+      const stat = await NodeFSP.stat(absolute);
+      if (stat.isDirectory()) {
+        for (const child of (await NodeFSP.readdir(absolute)).sort()) {
+          if (!/\.(?:test|spec)\./.test(child)) await visit(`${entry}/${child}`);
+        }
+      } else {
+        hash
+          .update(entry)
+          .update("\0")
+          .update(await NodeFSP.readFile(absolute))
+          .update("\0");
+      }
+    };
+    for (const entry of entries) await visit(entry);
+    return hash.digest("hex");
+  };
+  const restoreCompatibility = yield* Effect.tryPromise(async () => ({
+    database: await restoreFingerprint([
+      "apps/server/src/persistence/Migrations.ts",
+      "apps/server/src/persistence/Migrations",
+    ]),
+    events: await restoreFingerprint([
+      "packages/contracts/src/orchestrationV2.ts",
+      "apps/server/src/persistence/OrchestrationEventStore.ts",
+    ]),
+    profile: NodeCrypto.createHash("sha256")
+      .update(electronVersion)
+      .update("\0")
+      .update(
+        await restoreFingerprint([
+          "apps/desktop/src/app/DesktopUserData.ts",
+          "apps/desktop/src/app/ClerkTokenStore.ts",
+          "apps/desktop/src/app/DesktopWindowsProfileBinding.ts",
+          "apps/desktop/src/settings",
+        ]),
+      )
+      .digest("hex"),
+  }));
   const stagePackageJson: StagePackageJson = {
     name: "t3code",
     version: appVersion,
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,
+    t3codeRestore: {
+      protocol: 1,
+      version: appVersion,
+      sourceSha,
+      ...restoreCompatibility,
+      updateHold: true,
+    },
     // Read by apps/desktop/src/preview/Passkeys.ts; must match the signed entitlements.
     ...(macWebAuthn ? { t3codeWebAuthn: macWebAuthn } : {}),
     private: true,

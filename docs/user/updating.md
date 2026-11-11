@@ -36,6 +36,58 @@ The confirmation counts the running threads that the restarts will interrupt,
 and how many can resume afterwards. See **Continue threads after restarts**
 below.
 
+## Restore a retained Crew version
+
+In the desktop app, open the command palette with **Ctrl+K** and choose
+**Restore Crew version…**, or open **Settings → About → Previous versions…**.
+Choose a retained version and confirm **Restore and restart**. Crew checks the
+artifact and database compatibility before stopping. If the selected version
+does not pass startup checks, its controller restores the previous app version.
+Chats, login and profile stay in place; restore never selects an old database
+backup to discard newer chats.
+
+The bundled command is named `t3`. It also works when the Crew GUI cannot start:
+
+```sh
+t3 restore --list
+t3 restore
+t3 restore 0.1.6 --dry-run
+t3 restore 0.1.6 --yes
+```
+
+Run it on the machine that owns the installation. For a separate background
+server, add `--component server`. Use `--base-dir PATH` to select an explicit
+installation home. Restore affects that installation only. Legacy versions
+without verified compatibility and health metadata cannot be selected.
+
+Desktop restore supports Linux AppImage (with FUSE) and managed Nix installs.
+Windows installers are not supported. A retained build must already include the
+restore and health contract; older installed builds cannot be qualified retroactively.
+A separate server also needs launcher protocol 4; update its managed launcher
+before using restore if the CLI reports an older protocol.
+
+Desktop retains two versions. AppImage uses a 2-GiB limit; Nix uses 6 GiB,
+including its bounded archive and import workspace. A separate server retains up to
+three versions within 1 GiB: current, a verified predecessor and a persistent
+launcher when needed. Shared Nix closure paths count once. Nix imports and server updates use
+at most one additional candidate slot within the byte limit. If the
+protected versions and the switch cannot fit, the operation stops before shutdown.
+Configure desktop limits with `T3CODE_DESKTOP_RESTORE_MAX_VERSIONS` and
+`T3CODE_DESKTOP_RESTORE_MAX_BYTES`; for a separate server, set `maxVersions` and
+`maxBytes` in `runtime/restore-limits.json` below its T3 home.
+
+Automatic updates stay on hold after a restore. Resume them from the restore
+dialog, or run `t3 restore --resume-updates --yes` (add `--component server` for
+the separate server).
+
+For scripts, `--list --json` reports versions, hashes, sizes and blocking
+reasons. Select an exact version with `--yes --json`; optionally require
+`--expected-current-version VERSION --expected-hash SHA256` to reject stale
+plans. `--dry-run --json` validates and prints the plan without switching.
+Exit code 0 means the reported operation succeeded or was scheduled, 2 means
+confirmation or arguments are missing, and 3 means validation or restore failed.
+A scheduled result still needs its controller's health check.
+
 ## Switch between Stable and Nightly
 
 In the desktop app, change **Settings → About → Update track**. T3 Code shows each

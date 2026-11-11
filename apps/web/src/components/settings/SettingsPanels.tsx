@@ -30,6 +30,7 @@ import * as Equal from "effect/Equal";
 import * as Schema from "effect/Schema";
 import { APP_VERSION, HOSTED_APP_CHANNEL, HOSTED_APP_CHANNEL_LABEL } from "../../branding";
 import { AboutVersionTitle } from "./AboutVersionTitle";
+import { openAppRestore } from "../appRestoreState";
 import { CliCommandSettingsRow } from "./CliCommandSettingsRow";
 import { MobileAppSettingsRow } from "./MobileAppSettingsRow";
 import {
@@ -2074,6 +2075,20 @@ export function AboutSettingsPanel() {
           </>
         )}
         <MobileAppSettingsRow />
+        <SettingsRow
+          title="Restore Crew"
+          control={
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                void openAppRestore();
+              }}
+            >
+              Previous versions…
+            </Button>
+          }
+        />
       </SettingsSection>
 
       <SettingsSection id="legal" title="Legal">
@@ -2127,6 +2142,20 @@ export function VersionSettingsSection() {
           <SettingsRow id={searchableSetting("app-version").id} title={<AboutVersionTitle />} />
         </>
       )}
+      <SettingsRow
+        title="Restore Crew"
+        control={
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              void openAppRestore();
+            }}
+          >
+            Previous versions…
+          </Button>
+        }
+      />
     </SettingsSection>
   );
 }

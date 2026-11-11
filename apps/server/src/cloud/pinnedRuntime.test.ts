@@ -23,6 +23,10 @@ import {
   prunePinnedRuntimes,
 } from "./pinnedRuntime.ts";
 import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
+import {
+  SERVER_RESTORE_MANIFEST,
+  SERVER_RESTORE_PROFILE_CONTRACT,
+} from "./serverRestoreManifest.ts";
 
 const version = "1.2.3";
 const archiveName = `t3-${version}-linux-x64.tar.gz`;
@@ -47,29 +51,48 @@ const extractingRunner = (
   path: Path.Path,
   commands: string[] = [],
   platform: NodeJS.Platform = "linux",
+  advertisedBytes?: number,
 ) =>
   ProcessRunner.ProcessRunner.of({
     run: (input) =>
       Effect.gen(function* () {
         commands.push(input.command);
+        const executable = platform === "win32" ? "t3.exe" : "t3";
+        const contents = "#!/bin/sh\n";
+        const manifest = JSON.stringify({
+          format: 1,
+          version,
+          sourceSha: "a".repeat(40),
+          launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+          profileContract: `${SERVER_RESTORE_PROFILE_CONTRACT}:${"c".repeat(64)}`,
+          eventContract: "b".repeat(64),
+          migrations: [{ id: 1, name: "Base" }],
+          files: [
+            {
+              path: executable,
+              sizeBytes: advertisedBytes ?? contents.length,
+              sha256: yield* archiveHex(new TextEncoder().encode(contents)),
+            },
+          ],
+        });
         const targetIndex = input.args.indexOf("-C");
-        const stagingDir = input.args[targetIndex + 1];
+        const stagingDir = targetIndex >= 0 ? input.args[targetIndex + 1] : undefined;
         if (
           (platform === "win32"
             ? !input.command.endsWith("\\System32\\tar.exe")
             : input.command !== "tar") ||
-          stagingDir === undefined
+          (stagingDir === undefined && !input.args.includes("-xOf"))
         ) {
           return yield* Effect.die(`unexpected command ${input.command}`);
         }
-        yield* fs
-          .writeFileString(
-            path.join(stagingDir, platform === "win32" ? "t3.exe" : "t3"),
-            "#!/bin/sh\n",
-          )
-          .pipe(Effect.orDie);
+        if (stagingDir !== undefined) {
+          yield* fs.writeFileString(path.join(stagingDir, executable), contents).pipe(Effect.orDie);
+          yield* fs
+            .writeFileString(path.join(stagingDir, SERVER_RESTORE_MANIFEST), manifest)
+            .pipe(Effect.orDie);
+        }
         return {
-          stdout: "",
+          stdout: input.args.includes("-xOf") ? manifest : "",
           stderr: "",
           code: ChildProcessSpawner.ExitCode(0),
           timedOut: false,
@@ -111,7 +134,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         `https://releases.example/download/v${version}/SHA256SUMS`,
         `https://releases.example/download/v${version}/${archiveName}`,
       ]);
-      assert.deepEqual(commands, ["tar"]);
+      assert.deepEqual(commands, ["tar", "tar"]);
       assert.equal(yield* fs.readFileString(paths.sentinelPath), `${version}\n`);
       assert.isFalse(yield* fs.exists(path.join(paths.versionDir, "t3-runtime-archive")));
     }),
@@ -206,7 +229,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
       if (scenario === "valid" || scenario === "preferred") {
         const installed = yield* install;
         assert.equal(yield* fs.readFileString(installed.sentinelPath), `${version}\n`);
-        assert.lengthOf(commands, 1);
+        assert.lengthOf(commands, 2);
       } else {
         const error = yield* install.pipe(Effect.flip);
         assert.instanceOf(error, PinnedRuntimeInstallError);
@@ -317,6 +340,37 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
     }),
   );
 
+  it.effect("refuses a manifest-sized extraction before writing files beyond the byte cap", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pinned-cap-" });
+      yield* fs.makeDirectory(path.join(baseDir, "runtime"));
+      yield* fs.writeFileString(
+        path.join(baseDir, "runtime", "restore-limits.json"),
+        JSON.stringify({ maxVersions: 2, maxBytes: 32_768 }),
+      );
+      const commands: string[] = [];
+      const progress: PinnedRuntimeProgress[] = [];
+      const error = yield* ensurePinnedRuntimeInstalled({
+        baseDir,
+        version,
+        fs,
+        path,
+        platform: "linux",
+        arch: "x64",
+        httpClient: releaseHttpClient(yield* validChecksums),
+        runner: extractingRunner(fs, path, commands, "linux", 32_768),
+        validate: () => Effect.die("must not validate a runtime over the byte cap"),
+        onProgress: (event) => progress.push(event),
+      }).pipe(Effect.flip);
+      assert.include(error.step, "admitting archive extraction");
+      assert.deepEqual(commands, ["tar"]);
+      assert.isFalse(progress.some((event) => event.stage === "extract"));
+      assert.deepEqual(yield* fs.readDirectory(path.join(baseDir, "runtime", "versions")), []);
+    }),
+  );
+
   it.effect("validates a staging tree before atomically publishing it", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -379,7 +433,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
     }),
   );
 
-  it.effect("replaces an incomplete pinned runtime", () =>
+  it.effect("preserves an existing unverified runtime instead of deleting uncertain data", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -388,7 +442,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
       yield* fs.makeDirectory(finalPaths.versionDir, { recursive: true });
       yield* fs.writeFileString(path.join(finalPaths.versionDir, "partial"), "incomplete\n");
 
-      yield* ensurePinnedRuntimeInstalled({
+      const error = yield* ensurePinnedRuntimeInstalled({
         baseDir,
         version,
         fs,
@@ -398,10 +452,14 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         httpClient: releaseHttpClient(yield* validChecksums),
         runner: extractingRunner(fs, path),
         validate: () => Effect.void,
-      });
+      }).pipe(Effect.flip);
 
-      assert.isFalse(yield* fs.exists(path.join(finalPaths.versionDir, "partial")));
-      assert.isTrue(yield* fs.exists(finalPaths.entryPath));
+      assert.include(error.step, "refusing an existing unverified runtime");
+      assert.equal(
+        yield* fs.readFileString(path.join(finalPaths.versionDir, "partial")),
+        "incomplete\n",
+      );
+      assert.isFalse(yield* fs.exists(finalPaths.entryPath));
     }),
   );
 

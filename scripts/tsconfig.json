@@ -5,5 +5,15 @@
     "types": ["node"],
     "lib": ["ESNext", "esnext.disposable"]
   },
-  "include": ["**/*.ts", "../packages/shared/src/node/storagePressure.ts"]
+  "exclude": ["../apps/server/src/persistence/Migrations/**/*.test.ts"],
+  "include": [
+    "**/*.ts",
+    "../packages/shared/src/node/storagePressure.ts",
+    "../apps/server/src/cloud/serverRestoreManifest.ts",
+    "../apps/server/src/cloud/serviceProtocol.ts",
+    "../apps/server/src/persistence/Migrations.ts",
+    "../apps/server/src/persistence/Migrations/**/*.ts",
+    "../apps/server/src/persistence/reconcileV2PreviewMigration.ts",
+    "../apps/server/src/orchestration-v2/messageSearchIndex.ts"
+  ]
 }

@@ -7,9 +7,12 @@ Destination machines never evaluate this flake or compile a package during updat
 
 The release publishes `T3-Code-<version>-x86_64-linux-nix-closure.nar.zst` and a
 matching `.json` manifest. The manifest binds the version, system, root Store path,
-archive name and SHA-256. The installer verifies both assets against their GitHub
-release digests, imports the complete prebuilt closure, checks Store contents and
-registers a GC root. An import denied by local Nix permissions fails; there is no
+archive name and SHA-256. The installer verifies the manifest against its GitHub
+release digest and reuses a complete local closure only after checking every member's
+NAR hash, size and Store integrity, the allocation entries and the declared launcher.
+Missing Store members require verifying and importing the prebuilt archive followed
+by the same closure checks; inconsistent existing closures fail. The verified root
+receives a GC root. An import denied by local Nix permissions fails; there is no
 local-build or unsigned-download fallback. Keep the pinned nixpkgs revision aligned
 with the host configuration when intentionally changing the package runtime.
 
@@ -47,10 +50,14 @@ bash packaging/nixos/install.sh --rollback <installed-version>
 ```
 
 `--check` only reads release metadata and verifies its manifest; it does not change
-installation state. `--prepare` imports and roots the exact version without switching
-`current`. `--activate` only selects a prepared version, without network access.
-`--rollback` selects a retained version. Previous versions remain rooted; none are
-automatically deleted. Concurrent installation/activation is serialized.
+installation state. `--prepare` imports or verifies and reuses the exact version,
+then roots it without switching `current`. `--activate` only selects a prepared
+version, without network access.
+`--rollback` selects a retained version. Installer roots are bounded to current,
+previous and one candidate, subject to the retained version and byte caps. Shared
+closure members count once; verified local reuse needs no archive, import spool or
+materialization allowance. Unneeded owned roots are released without deleting shared
+Store paths. Concurrent installation/activation is serialized.
 
 `T3_MORROWBYTE_CHANNEL=stable` requires fork-owned `Morrowbyte Stable` releases and never
 falls back to nightly. Nightly is the default. `T3_MORROWBYTE_MANAGED=1` suppresses new

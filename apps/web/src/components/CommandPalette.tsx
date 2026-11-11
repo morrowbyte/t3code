@@ -246,6 +246,8 @@ import { ProjectFilePicker } from "./files/ProjectFilePicker";
 import { openLinkPullRequestDialog } from "./pullRequest/LinkPullRequestDialog";
 import { canShareWithGuestAtom } from "./chat/guestShareAvailability";
 import { openGuestShareDialog } from "./chat/guestShareDialogState";
+import { AppRestoreDialog } from "./AppRestoreDialog";
+import { openAppRestore } from "./appRestoreState";
 import { ProjectContentSearchDialog } from "./search/ProjectContentSearchDialog";
 import { settingsForThisPlatform, SETTINGS_SECTION_LABELS } from "./settings/settingsSearch";
 import { primaryServerKeybindingsAtom } from "../state/server";
@@ -331,6 +333,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
           initialContext={state.restoredSearch}
         />
       </CommandDialog>
+      <AppRestoreDialog />
     </ComposerHandleContext>
   );
 }
@@ -1233,6 +1236,14 @@ function OpenCommandPaletteDialog(props: {
   };
 
   const actionItems: Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> = [];
+  actionItems.push({
+    kind: "action",
+    value: "action:restore-crew",
+    title: "Restore Crew version…",
+    searchTerms: ["restore", "rollback", "recovery", "previous version", "oh shit", "zurück"],
+    icon: <RotateCcwIcon className={ITEM_ICON_CLASS} />,
+    run: openAppRestore,
+  });
   actionItems.push({
     kind: "action",
     value: "action:keyboard-navigation",

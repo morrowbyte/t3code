@@ -22,6 +22,7 @@ import { projectCommand } from "./cli/project.ts";
 import { threadCommand } from "./cli/thread.ts";
 import { runDefaultServerCommand, serveCommand, startCommand } from "./cli/server.ts";
 import { updateCommand } from "./cli/update.ts";
+import { restoreCommand } from "./cli/restore.ts";
 import { uninstallCommand } from "./cli/uninstall.ts";
 import { serviceLauncherCommand } from "./cli/serviceLauncher.ts";
 import { claudeHistoryCommand } from "./cli/claudeHistory.ts";
@@ -88,6 +89,7 @@ export const makeCli = ({ cloudEnabled = hasCloudPublicConfig } = {}) =>
       statusCommand,
       serviceCommand,
       updateCommand,
+      restoreCommand,
       uninstallCommand,
       serviceLauncherCommand,
       claudeHistoryCommand,
