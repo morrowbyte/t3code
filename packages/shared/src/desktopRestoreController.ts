@@ -13,9 +13,13 @@ import {
   desktopRestoreArtifactPath,
   desktopRestoreFileDigest,
   desktopRestoreProcessIdentity,
+  desktopRestoreProcessIdentitySync,
+  desktopRestoreProcessOwner,
   desktopRestoreSchemaDigest,
   readDesktopRestoreRegistry,
+  readDesktopRestoreRegistrySync,
   readDesktopRestoreTransaction,
+  readDesktopRestoreTransactionSync,
   recoverDesktopRestoreStaging,
   writeDesktopRestoreJson,
   verifyDesktopRestoreArtifact,
@@ -652,7 +656,7 @@ async function recoverTransaction(
   if (latest === null || latest.id !== transaction.id)
     throw new Error("Desktop restore recovery transaction changed.");
   transaction = latest;
-  await verifyRecoveryProfile(registry);
+  verifyRecoveryProfile(registry);
   await controller.quiesce(baseDir, transaction);
   const recovering = {
     ...transaction,
@@ -703,49 +707,132 @@ async function recoverTransaction(
   await finishTransaction(baseDir, transaction);
 }
 
-async function verifyRecoveryProfile(registry: DesktopRestoreRegistry) {
+function verifyRecoveryProfile(registry: DesktopRestoreRegistry) {
   const identity = registry.identity;
   for (const directory of [identity.baseDir, identity.stateDir, identity.userDataDir])
-    if ((await NodeFSP.realpath(directory)) !== directory)
+    if (NodeFS.realpathSync(directory) !== directory)
       throw new Error("Desktop recovery home or profile binding changed.");
   if (
-    (await NodeFSP.readFile(NodePath.join(identity.stateDir, "environment-id"), "utf8")).trim() !==
+    readBoundedIdentityFile(NodePath.join(identity.stateDir, "environment-id"), 128).trim() !==
     identity.environmentId
   )
     throw new Error("Desktop recovery environment binding changed.");
 }
 
-export async function recoverDesktopRestoreBeforeStartup({
-  baseDir,
-  appDataDirectory,
-  passwordStore,
-}: {
+function readBoundedIdentityFile(file: string, limit: number) {
+  const descriptor = NodeFS.openSync(
+    file,
+    NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_NONBLOCK,
+  );
+  try {
+    const stat = NodeFS.fstatSync(descriptor);
+    if (
+      !stat.isFile() ||
+      stat.size > limit ||
+      stat.uid !== process.getuid?.() ||
+      (stat.mode & 0o022) !== 0
+    )
+      throw new Error("Desktop recovery identity file is invalid.");
+    const buffer = Buffer.alloc(limit + 1);
+    const bytes = NodeFS.readSync(descriptor, buffer, 0, buffer.length, 0);
+    if (bytes > limit) throw new Error("Desktop recovery identity file exceeds its limit.");
+    return buffer.toString("utf8", 0, bytes);
+  } finally {
+    NodeFS.closeSync(descriptor);
+  }
+}
+
+function verifyStartupProfile(
+  registry: DesktopRestoreRegistry,
+  input: { readonly appDataDirectory?: string; readonly profileId?: string | null },
+) {
+  if (input.appDataDirectory === undefined) return;
+  const identity = registry.identity;
+  const profileId = input.profileId ?? null;
+  const configDirectory = NodeFS.realpathSync(input.appDataDirectory);
+  const profile = NodePath.join(
+    configDirectory,
+    profileId === null ? "t3code-v2" : `t3code-${profileId}`,
+  );
+  if (profileId !== identity.profileId || NodeFS.realpathSync(profile) !== identity.userDataDir)
+    throw new Error("Desktop recovery graphical profile binding changed.");
+  return configDirectory;
+}
+
+interface DesktopRestoreStartupInput {
   readonly baseDir: string;
   readonly appDataDirectory?: string;
+  readonly profileId?: string | null;
   readonly passwordStore?: string | null;
-}) {
+}
+
+function readControllerOwnerSync(baseDir: string) {
+  const file = directoryFile(baseDir, "controller.lock");
+  let stat: NodeFS.Stats;
+  try {
+    stat = NodeFS.lstatSync(file);
+  } catch (cause) {
+    if (missing(cause)) return null;
+    throw cause;
+  }
+  if (
+    !stat.isFile() ||
+    stat.isSymbolicLink() ||
+    stat.uid !== process.getuid?.() ||
+    (stat.mode & 0o077) !== 0 ||
+    stat.size > 128
+  )
+    throw new Error("Desktop restore controller ownership is invalid.");
+  return desktopRestoreProcessOwner(readBoundedIdentityFile(file, 128));
+}
+
+export function recoverDesktopRestoreBeforeStartup(
+  input: DesktopRestoreStartupInput,
+): false | Promise<boolean> {
+  try {
+    const transaction = readDesktopRestoreTransactionSync(input.baseDir);
+    if (transaction === null) return false;
+    if (transaction.phase !== "staging") {
+      const registry = readDesktopRestoreRegistrySync(input.baseDir);
+      if (transaction.installationId !== registry.installationId)
+        throw new Error("Desktop recovery installation binding changed.");
+      verifyRecoveryProfile(registry);
+      verifyStartupProfile(registry, input);
+      const owner = readControllerOwnerSync(input.baseDir);
+      if (owner !== null && desktopRestoreProcessIdentitySync(owner.pid) === owner.processIdentity)
+        return false;
+    }
+    return recoverDesktopRestoreStartupAsync(input);
+  } catch (cause) {
+    // A transaction removed after lstat still needs a fresh process after the async recheck.
+    if (missing(cause)) return recoverDesktopRestoreStartupAsync(input);
+    return Promise.reject(cause);
+  }
+}
+
+async function recoverDesktopRestoreStartupAsync({
+  baseDir,
+  appDataDirectory,
+  profileId,
+  passwordStore,
+}: DesktopRestoreStartupInput) {
   const transaction = await readDesktopRestoreTransaction(baseDir);
   if (transaction === null) return false;
   if (transaction.phase === "staging") {
     await recoverDesktopRestoreStaging(baseDir);
     return false;
   }
-  const controllerLock = directoryFile(baseDir, "controller.lock");
-  try {
-    const owner = (await NodeFSP.readFile(controllerLock, "utf8")).split(":");
-    const pid = Number(owner[0]);
-    if (Number.isSafeInteger(pid)) {
-      const identity = await desktopRestoreProcessIdentity(pid);
-      if (identity !== null && (owner.length === 1 || identity === owner.join(":"))) return false;
-    }
-    await NodeFSP.unlink(controllerLock);
-  } catch (cause) {
-    if (!missing(cause)) throw cause;
-  }
   const registry = await readDesktopRestoreRegistry(baseDir);
   if (transaction.installationId !== registry.installationId)
     throw new Error("Desktop recovery installation binding changed.");
-  await verifyRecoveryProfile(registry);
+  verifyRecoveryProfile(registry);
+  if (appDataDirectory !== undefined)
+    verifyStartupProfile(registry, { appDataDirectory, profileId: profileId ?? null });
+  const owner = readControllerOwnerSync(baseDir);
+  if (owner !== null) {
+    if (desktopRestoreProcessIdentitySync(owner.pid) === owner.processIdentity) return false;
+    NodeFS.unlinkSync(directoryFile(baseDir, "controller.lock"));
+  }
   if (appDataDirectory !== undefined && (process.env.DISPLAY || process.env.WAYLAND_DISPLAY)) {
     const profile = NodePath.join(
       appDataDirectory,
@@ -771,15 +858,25 @@ export async function recoverDesktopRestoreBeforeStartup({
       "Original desktop bytes restored; pendingHealth requires a verified graphical start.",
     );
   }
-  await writeDesktopRestoreJson(directoryFile(baseDir, "transaction.json"), {
-    ...transaction,
-    phase: "recovering",
-  });
   await verifyDesktopRestoreArtifact(baseDir, transaction.from);
   const controllerPath = directoryFile(baseDir, "controller.sh");
   const stat = await NodeFSP.lstat(controllerPath);
   if (!stat.isFile() || stat.isSymbolicLink())
     throw new Error("The independent desktop restore controller is unavailable.");
+  const latest = await readDesktopRestoreTransaction(baseDir);
+  if (latest === null) return false;
+  if (JSON.stringify(latest) !== JSON.stringify(transaction))
+    throw new Error("Desktop recovery transaction changed during startup.");
+  const currentOwner = readControllerOwnerSync(baseDir);
+  if (currentOwner !== null) {
+    if (desktopRestoreProcessIdentitySync(currentOwner.pid) === currentOwner.processIdentity)
+      return false;
+    throw new Error("Desktop recovery controller changed during startup.");
+  }
+  await writeDesktopRestoreJson(directoryFile(baseDir, "transaction.json"), {
+    ...transaction,
+    phase: "recovering",
+  });
   const child = NodeChildProcess.spawn(
     controllerPath,
     ["--crew-desktop-restore-controller", baseDir, transaction.id],
@@ -800,4 +897,58 @@ export async function recoverDesktopRestoreBeforeStartup({
   });
   child.unref();
   return true;
+}
+
+export async function restartDesktopAfterRestoreCleanup(input: {
+  readonly baseDir: string;
+  readonly args: readonly string[];
+  readonly appDataDirectory: string;
+  readonly profileId: string | null;
+}) {
+  const registry = await readDesktopRestoreRegistry(input.baseDir);
+  verifyRecoveryProfile(registry);
+  const configDirectory = verifyStartupProfile(registry, input)!;
+  const identity = registry.identity;
+  let launcher: string;
+  if (identity.kind === "appimage") {
+    if (
+      identity.launcherPath !== identity.installPath ||
+      (await NodeFSP.realpath(identity.installPath)) !== identity.installPath ||
+      (await desktopRestoreFileDigest(identity.installPath)).sha256 !== registry.currentHash
+    )
+      throw new Error("Desktop restore restart AppImage binding changed.");
+    launcher = identity.installPath;
+  } else if (identity.kind === "nix") {
+    const storePath = await NodeFSP.realpath(identity.installPath);
+    if ((await readNixRestoreClosure(storePath, true)).sha256 !== registry.currentHash)
+      throw new Error("Desktop restore restart Nix binding changed.");
+    launcher = NodePath.join(storePath, "bin", "t3code-morrowbyte");
+  } else {
+    throw new Error("Desktop restore restart requires a verified Linux launcher.");
+  }
+  const stat = await NodeFSP.lstat(launcher);
+  if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o111) === 0)
+    throw new Error("Desktop restore restart launcher is unavailable.");
+  const child = NodeChildProcess.spawn(launcher, [...input.args], {
+    detached: true,
+    stdio: ["ignore", "ignore", "inherit"],
+    env: {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: undefined,
+      APPIMAGE_EXTRACT_AND_RUN: undefined,
+      APPDIR: undefined,
+      APPIMAGE: identity.kind === "appimage" ? launcher : undefined,
+      T3CODE_HOME: identity.baseDir,
+      XDG_CONFIG_HOME: configDirectory,
+      T3CODE_DESKTOP_PROFILE: identity.profileId ?? undefined,
+      T3CODE_DESKTOP_LAUNCHER_PATH: identity.launcherPath,
+      T3CODE_NIX_DATA_DIR: identity.nixDataDir ?? undefined,
+      T3CODE_NIX_LAUNCHER: identity.kind === "nix" ? identity.launcherPath : undefined,
+    },
+  });
+  await new Promise<void>((resolve, reject) => {
+    child.once("spawn", resolve);
+    child.once("error", reject);
+  });
+  child.unref();
 }

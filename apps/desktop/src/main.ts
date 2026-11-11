@@ -23,6 +23,7 @@ import * as NetService from "@t3tools/shared/Net";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   recoverDesktopRestoreBeforeStartup,
+  restartDesktopAfterRestoreCleanup,
   runDesktopRestoreController,
 } from "@t3tools/shared/desktopRestore";
 import type { RemoteT3RunnerOptions } from "@t3tools/ssh/tunnel";
@@ -87,6 +88,7 @@ import * as DesktopWslBackend from "./wsl/DesktopWslBackend.ts";
 import * as DesktopWslEnvironment from "./wsl/DesktopWslEnvironment.ts";
 import * as DesktopWslServerTree from "./wsl/DesktopWslServerTree.ts";
 import { resolveWindowsProfileBinding } from "./app/DesktopWindowsProfileBinding.ts";
+import { startDesktopAfterRestore } from "./app/DesktopStartupGate.ts";
 
 const restoreProbeRequested = process.argv.includes("--crew-desktop-restore-probe");
 const restoreControllerIndex = process.argv.indexOf("--crew-desktop-restore-controller");
@@ -328,6 +330,26 @@ const layerDesktopRuntime = layerDesktopClerk.pipe(
   Layer.provideMerge(DesktopPreReadyPlatform.layer),
 );
 
+function reportRestoreStartupError(cause: unknown) {
+  const code =
+    cause instanceof Error &&
+    "code" in cause &&
+    typeof cause.code === "string" &&
+    /^E[A-Z]{2,24}$/.test(cause.code)
+      ? ` (${cause.code})`
+      : "";
+  const message =
+    cause instanceof Error &&
+    /^(Desktop (restore|recovery)|Invalid (desktop restore|restore transaction)|Another desktop restore|Original desktop|The independent desktop restore|Cannot prove)/.test(
+      cause.message,
+    )
+      ? cause.message.split(/[\r\n]/, 1)[0]!.slice(0, 300)
+      : cause instanceof SyntaxError
+        ? "Invalid desktop restore JSON metadata."
+        : `Recovery failed${code}; the desktop was not started.`;
+  NodeFS.writeSync(process.stderr.fd, `Desktop restore startup: ${message}\n`);
+}
+
 if (restoreControllerIndex !== -1) {
   const baseDir = process.argv[restoreControllerIndex + 1];
   const transactionId = process.argv[restoreControllerIndex + 2];
@@ -336,24 +358,37 @@ if (restoreControllerIndex !== -1) {
   } else {
     void runDesktopRestoreController({ baseDir, transactionId }).then(
       () => Electron.app.exit(0),
-      () => Electron.app.exit(1),
+      (cause) => {
+        reportRestoreStartupError(cause);
+        Electron.app.exit(1);
+      },
     );
   }
 } else if (!restoreProbeRequested) {
   const baseDir = NodePath.resolve(
     process.env.T3CODE_HOME?.trim() || NodePath.join(NodeOS.homedir(), ".t3"),
   );
-  void recoverDesktopRestoreBeforeStartup({
-    baseDir,
-    appDataDirectory: Electron.app.getPath("appData"),
-    passwordStore: Electron.app.commandLine.hasSwitch("password-store")
-      ? Electron.app.commandLine.getSwitchValue("password-store")
-      : null,
-  }).then(
-    (recovering) => {
-      if (recovering) Electron.app.exit(0);
-      else DesktopApp.program.pipe(Effect.provide(layerDesktopRuntime), NodeRuntime.runMain);
-    },
-    () => Electron.app.exit(1),
-  );
+  const appDataDirectory = Electron.app.getPath("appData");
+  const profileId = process.env.T3CODE_DESKTOP_PROFILE?.trim() || null;
+  void startDesktopAfterRestore({
+    recover: () =>
+      recoverDesktopRestoreBeforeStartup({
+        baseDir,
+        appDataDirectory,
+        profileId,
+        passwordStore: Electron.app.commandLine.hasSwitch("password-store")
+          ? Electron.app.commandLine.getSwitchValue("password-store")
+          : null,
+      }),
+    start: () => DesktopApp.program.pipe(Effect.provide(layerDesktopRuntime), NodeRuntime.runMain),
+    restart: () =>
+      restartDesktopAfterRestoreCleanup({
+        baseDir,
+        appDataDirectory,
+        profileId,
+        args: process.argv.slice(1),
+      }),
+    exit: (code) => Electron.app.exit(code),
+    reportError: reportRestoreStartupError,
+  });
 }

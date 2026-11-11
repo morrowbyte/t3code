@@ -185,12 +185,20 @@ function isMissing(cause: unknown) {
   return typeof cause === "object" && cause !== null && "code" in cause && cause.code === "ENOENT";
 }
 
-async function readJson(file: string): Promise<unknown> {
-  const stat = await NodeFSP.lstat(file);
+function verifyMetadataFile(stat: NodeFS.Stats) {
   if (!stat.isFile() || stat.size > 1024 * 1024 || stat.isSymbolicLink()) {
     throw new Error("Invalid desktop restore metadata.");
   }
+}
+
+async function readJson(file: string): Promise<unknown> {
+  verifyMetadataFile(await NodeFSP.lstat(file));
   return JSON.parse(await NodeFSP.readFile(file, "utf8"));
+}
+
+function readJsonSync(file: string): unknown {
+  verifyMetadataFile(NodeFS.lstatSync(file));
+  return JSON.parse(NodeFS.readFileSync(file, "utf8"));
 }
 
 async function removeOwnedArtifact(
@@ -356,8 +364,8 @@ async function bindNixRestoreHome(identity: DesktopRestoreIdentity) {
   }
 }
 
-export async function readDesktopRestoreRegistry(baseDir: string) {
-  const registry = decodeRegistry(await readJson(paths(baseDir).registry));
+function validateRegistry(baseDir: string, value: unknown) {
+  const registry = decodeRegistry(value);
   if (
     registry.identity.baseDir !== NodePath.resolve(baseDir) ||
     registry.installationId !== digest(JSON.stringify(registry.identity)) ||
@@ -374,30 +382,92 @@ export async function readDesktopRestoreRegistry(baseDir: string) {
   return registry;
 }
 
+export async function readDesktopRestoreRegistry(baseDir: string) {
+  return validateRegistry(baseDir, await readJson(paths(baseDir).registry));
+}
+
+export function readDesktopRestoreRegistrySync(baseDir: string) {
+  return validateRegistry(baseDir, readJsonSync(paths(baseDir).registry));
+}
+
+function validateTransaction(value: unknown) {
+  const transaction = decodeTransaction(value);
+  if (!/^[0-9a-f-]{36}$/.test(transaction.id)) throw new Error("Invalid restore transaction.");
+  return transaction;
+}
+
 export async function readDesktopRestoreTransaction(baseDir: string) {
+  const file = paths(baseDir).transaction;
+  let stat: NodeFS.Stats;
   try {
-    const transaction = decodeTransaction(await readJson(paths(baseDir).transaction));
-    if (!/^[0-9a-f-]{36}$/.test(transaction.id)) throw new Error("Invalid restore transaction.");
-    return transaction;
+    stat = await NodeFSP.lstat(file);
+  } catch (cause) {
+    if (isMissing(cause)) return null;
+    throw cause;
+  }
+  verifyMetadataFile(stat);
+  try {
+    return validateTransaction(JSON.parse(await NodeFSP.readFile(file, "utf8")));
   } catch (cause) {
     if (isMissing(cause)) return null;
     throw cause;
   }
 }
 
-export async function desktopRestoreProcessIdentity(pid: number): Promise<string | null> {
+export function readDesktopRestoreTransactionSync(baseDir: string) {
+  const file = paths(baseDir).transaction;
+  let stat: NodeFS.Stats;
   try {
-    const stat = await NodeFSP.readFile(`/proc/${pid}/stat`, "utf8");
-    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-    return fields[0] === "Z" ? null : `${pid}:${fields[19]}`;
+    stat = NodeFS.lstatSync(file);
   } catch (cause) {
-    if (
-      isMissing(cause) ||
-      (typeof cause === "object" && cause !== null && "code" in cause && cause.code === "ESRCH")
-    )
-      return null;
+    if (isMissing(cause)) return null;
     throw cause;
   }
+  verifyMetadataFile(stat);
+  return validateTransaction(JSON.parse(NodeFS.readFileSync(file, "utf8")));
+}
+
+function processIdentityFromStat(pid: number, stat: string) {
+  const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+  if (
+    stat.slice(0, stat.indexOf(" ")) !== String(pid) ||
+    !/^[A-Z]$/.test(fields[0] ?? "") ||
+    !/^[0-9]+$/.test(fields[19] ?? "")
+  )
+    throw new Error("Desktop restore process identity is invalid.");
+  return fields[0] === "Z" ? null : `${pid}:${fields[19]}`;
+}
+
+function processIsMissing(cause: unknown) {
+  return (
+    isMissing(cause) ||
+    (typeof cause === "object" && cause !== null && "code" in cause && cause.code === "ESRCH")
+  );
+}
+
+export async function desktopRestoreProcessIdentity(pid: number): Promise<string | null> {
+  try {
+    return processIdentityFromStat(pid, await NodeFSP.readFile(`/proc/${pid}/stat`, "utf8"));
+  } catch (cause) {
+    if (processIsMissing(cause)) return null;
+    throw cause;
+  }
+}
+
+export function desktopRestoreProcessIdentitySync(pid: number): string | null {
+  try {
+    return processIdentityFromStat(pid, NodeFS.readFileSync(`/proc/${pid}/stat`, "utf8"));
+  } catch (cause) {
+    if (processIsMissing(cause)) return null;
+    throw cause;
+  }
+}
+
+export function desktopRestoreProcessOwner(owner: string) {
+  const match = /^([1-9][0-9]*):([0-9]+)$/.exec(owner);
+  if (match === null || match[0] !== owner || !Number.isSafeInteger(Number(match[1])))
+    throw new Error("Another desktop restore operation has an unknown owner.");
+  return { pid: Number(match[1]), processIdentity: owner };
 }
 
 async function verifyDesktopRestoreLock(
@@ -431,10 +501,8 @@ async function readDesktopRestoreLockOwner(handle: NodeFSP.FileHandle) {
 }
 
 async function assertDesktopRestoreOwnerDead(owner: string) {
-  const match = /^([1-9][0-9]*):([0-9]+)$/.exec(owner);
-  if (match === null || match[0] !== owner || !Number.isSafeInteger(Number(match[1])))
-    throw new Error("Another desktop restore operation has an unknown owner.");
-  const current = await desktopRestoreProcessIdentity(Number(match[1]));
+  const { pid } = desktopRestoreProcessOwner(owner);
+  const current = await desktopRestoreProcessIdentity(pid);
   if (current !== null && (!/^[1-9][0-9]*:[0-9]+$/.test(current) || current === owner))
     throw new Error("Another desktop restore operation is active.");
 }
@@ -1234,4 +1302,5 @@ export {
   runDesktopRestoreController,
   startDesktopRestoreSession,
   recoverDesktopRestoreBeforeStartup,
+  restartDesktopAfterRestoreCleanup,
 } from "./desktopRestoreController.ts";

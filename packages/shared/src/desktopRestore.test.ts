@@ -294,6 +294,7 @@ process.once("SIGTERM", () => server.close(() => {
 describe("bounded desktop restore", () => {
   it("restores the actual retained artifact and retains profile, chats and the update hold", async () => {
     await using fixture = await setup();
+    expect(recoverDesktopRestoreBeforeStartup({ baseDir: fixture.baseDir })).toBe(false);
     const initial = await listDesktopRestores(fixture.input);
     expect(initial.candidates[0]!.blockedReason).toBeNull();
     expect(initial.maxVersions).toBe(2);
@@ -407,6 +408,7 @@ describe("bounded desktop restore", () => {
     "unpublishedOwner",
     "orphanRecovery",
     "heldRecovery",
+    "vanished",
   ] as const)("cleans interrupted staging before normal startup: %s", async (phase) => {
     await using fixture = await setup();
     const registry = await readDesktopRestoreRegistry(fixture.baseDir);
@@ -489,7 +491,15 @@ describe("bounded desktop restore", () => {
     const bytes =
       phase === "partial" || phase === "copied" ? (await NodeFSP.stat(stagePath)).size : 0;
     expect((await listDesktopRestores(fixture.input)).totalBytes).toBe(before.totalBytes + bytes);
-    expect(await recoverDesktopRestoreBeforeStartup({ baseDir: fixture.baseDir })).toBe(false);
+    const recovery = recoverDesktopRestoreBeforeStartup({ baseDir: fixture.baseDir });
+    if (phase === "vanished") {
+      expect(recovery).toBeInstanceOf(Promise);
+      NodeFS.unlinkSync(controllerTemporary);
+      NodeFS.unlinkSync(
+        NodePath.join(desktopRestoreDirectory(fixture.baseDir), "transaction.json"),
+      );
+    }
+    expect(await recovery).toBe(false);
     expect(await readDesktopRestoreTransaction(fixture.baseDir)).toBeNull();
     await expect(NodeFSP.lstat(stagePath)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(NodeFSP.lstat(controllerTemporary)).rejects.toMatchObject({ code: "ENOENT" });
@@ -500,6 +510,78 @@ describe("bounded desktop restore", () => {
     expect(fixture.quiesce).not.toHaveBeenCalled();
     expect(fixture.launch).not.toHaveBeenCalled();
   });
+
+  it.each([
+    "pid-only",
+    "newline",
+    "dangling",
+    "mode",
+    "installation",
+    "profile",
+    "config",
+    "environment-fifo",
+    "environment-link",
+    "environment-size",
+  ] as const)("never bypasses recovery for an unverified live controller: %s", async (kind) => {
+    await using fixture = await setup();
+    await restoreDesktopVersion(fixture.input);
+    const file = NodePath.join(desktopRestoreDirectory(fixture.baseDir), "controller.lock");
+    const owner = (await desktopRestoreProcessIdentity(process.pid))!;
+    if (kind === "dangling") await NodeFSP.symlink(`${file}.missing`, file);
+    else
+      await NodeFSP.writeFile(
+        file,
+        kind === "pid-only" ? String(process.pid) : kind === "newline" ? `${owner}\n` : owner,
+        { mode: kind === "mode" ? 0o644 : 0o600 },
+      );
+    if (kind === "mode") await NodeFSP.chmod(file, 0o644);
+    if (kind === "installation") {
+      const transaction = (await readDesktopRestoreTransaction(fixture.baseDir))!;
+      await writeDesktopRestoreJson(
+        NodePath.join(desktopRestoreDirectory(fixture.baseDir), "transaction.json"),
+        { ...transaction, installationId: "c".repeat(64) },
+      );
+    }
+    let appDataDirectory = NodePath.dirname(fixture.identity.userDataDir);
+    if (kind === "config") {
+      appDataDirectory = NodePath.join(fixture.baseDir, "other-config");
+      await NodeFSP.mkdir(NodePath.join(appDataDirectory, "t3code-nightly"), { recursive: true });
+    }
+    if (kind.startsWith("environment-")) {
+      const environmentFile = NodePath.join(fixture.identity.stateDir, "environment-id");
+      await NodeFSP.unlink(environmentFile);
+      if (kind === "environment-fifo") NodeChildProcess.execFileSync("mkfifo", [environmentFile]);
+      else if (kind === "environment-link") {
+        await NodeFSP.writeFile(`${environmentFile}.target`, fixture.identity.environmentId);
+        await NodeFSP.symlink(`${environmentFile}.target`, environmentFile);
+      } else await NodeFSP.writeFile(environmentFile, "x".repeat(129));
+    }
+    const recovery = recoverDesktopRestoreBeforeStartup({
+      baseDir: fixture.baseDir,
+      appDataDirectory,
+      profileId: kind === "profile" ? "different" : fixture.identity.profileId,
+    });
+    expect(recovery).toBeInstanceOf(Promise);
+    await expect(recovery).rejects.toThrow();
+    expect(fixture.quiesce).not.toHaveBeenCalled();
+    expect(fixture.launch).not.toHaveBeenCalled();
+    expect((await NodeFSP.lstat(file)).isSymbolicLink()).toBe(kind === "dangling");
+  });
+
+  it.each(["malformed", "dangling"] as const)(
+    "fails closed for invalid transaction metadata: %s",
+    async (kind) => {
+      await using fixture = await setup();
+      const file = NodePath.join(desktopRestoreDirectory(fixture.baseDir), "transaction.json");
+      if (kind === "dangling") await NodeFSP.symlink(`${file}.missing`, file);
+      else await NodeFSP.writeFile(file, '{"phase":"unknown"}', { mode: 0o600 });
+      const recovery = recoverDesktopRestoreBeforeStartup({ baseDir: fixture.baseDir });
+      expect(recovery).toBeInstanceOf(Promise);
+      await expect(recovery).rejects.toThrow();
+      expect(fixture.quiesce).not.toHaveBeenCalled();
+      expect(fixture.launch).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(["mutation.lock", "mutation.lock.recovery"] as const)(
     "preserves an untrusted %s symlink and its target",
@@ -574,6 +656,7 @@ describe("bounded desktop restore", () => {
     await restoreDesktopVersion(fixture.input);
     const transaction = (await readDesktopRestoreTransaction(fixture.baseDir))!;
     fixture.health.mockImplementation(async (_baseDir, _transaction, version) => {
+      expect(recoverDesktopRestoreBeforeStartup({ baseDir: fixture.baseDir })).toBe(false);
       if (version === "1.0.0") throw new Error("fixture health failure");
     });
     await expect(
@@ -846,6 +929,7 @@ describe("bounded desktop restore", () => {
             expect(
               await recoverDesktopRestoreBeforeStartup({
                 baseDir: fixture.baseDir,
+                profileId: fixture.identity.profileId,
                 appDataDirectory: NodePath.dirname(fixture.identity.userDataDir),
                 passwordStore: null,
               }),
