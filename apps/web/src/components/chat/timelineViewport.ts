@@ -47,6 +47,7 @@ export type TimelineNavigation =
 
 export interface TimelineViewport {
   readonly scrollNode: HTMLElement;
+  readonly jumpToMessage?: (number: number) => void;
   /** Every consumer hears the same navigation, in subscription order. */
   readonly subscribe: (listener: (navigation: TimelineNavigation) => void) => () => void;
   readonly navigate: (options: { readonly releasesFollow: boolean }) => void;
@@ -67,7 +68,10 @@ const DOWN_KEYS = new Set(["PageDown", "End", "ArrowDown", " "]);
  * Owns the timeline scroll node's input listeners for as long as the node is
  * mounted, and turns them into one navigation signal.
  */
-export function attachTimelineViewport(scrollNode: HTMLElement): TimelineViewport & {
+export function attachTimelineViewport(
+  scrollNode: HTMLElement,
+  jumpToMessage?: (number: number) => void,
+): TimelineViewport & {
   readonly dispose: () => void;
 } {
   const listeners = new Set<(navigation: TimelineNavigation) => void>();
@@ -141,6 +145,7 @@ export function attachTimelineViewport(scrollNode: HTMLElement): TimelineViewpor
   const unregisterKeyDown = registerCommands({}, { observe: handleKeyDown });
   return {
     scrollNode,
+    ...(jumpToMessage ? { jumpToMessage } : {}),
     subscribe: (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);

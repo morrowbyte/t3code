@@ -2,6 +2,7 @@ import { Dialog, DialogHeader, DialogPanel, DialogPopup, DialogTitle } from "../
 import { Kbd } from "../ui/kbd";
 import { Button } from "../ui/button";
 import { keyboardContextRoot, keyboardContextName } from "./regionNavigation";
+import { timelineKeyboardScrollTarget } from "../chat/timelineKeyboardScroll";
 
 export function KeyboardContextHelp({
   target,
@@ -21,6 +22,8 @@ export function KeyboardContextHelp({
         target?.closest<HTMLElement>("[data-keyboard-help]")?.dataset.keyboardHelp)
       : undefined;
   const name = keyboardContextName(target);
+  const scrollsTimeline =
+    !target?.closest("[data-keyboard-local]") && timelineKeyboardScrollTarget(target) !== null;
   const keys = [
     ["Esc", "Return one level"],
     ["Space a c", `${name} actions`],
@@ -34,7 +37,17 @@ export function KeyboardContextHelp({
     (root.matches("[data-keyboard-object],[data-message-id],[data-thread-item]") ||
       root.querySelector("[data-keyboard-object]"))
   )
-    keys.unshift(["J / K", "Next / previous object"], ["Enter", "Primary action"]);
+    keys.unshift(...(scrollsTimeline ? [] : [["J / K", "Next / previous object"]]), [
+      "Enter",
+      "Primary action",
+    ]);
+  if (scrollsTimeline)
+    keys.unshift(
+      ["j / k", "Scroll down / up one line"],
+      ["Ctrl+D / Ctrl+U", "Scroll down / up half a page"],
+      ["g / Shift+G", "Start / end of thread"],
+      ["12gg", "Go to message 12 (counting from 1)"],
+    );
   return (
     <Dialog
       open

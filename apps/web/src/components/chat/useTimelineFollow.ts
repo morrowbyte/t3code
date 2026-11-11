@@ -18,6 +18,7 @@ import {
   type TimelineRunObservation,
 } from "./timelineScrollAnchoring";
 import { createPageScrollController, type PageScrollKey } from "./pageScrollController";
+import { registerTimelineKeyboardScroll } from "./timelineKeyboardScroll";
 import {
   FOLLOWING,
   initialTimelineFollow,
@@ -304,8 +305,12 @@ export function useTimelineFollow(input: TimelineFollowInput) {
   const pageScrollControllerRef = useRef<ReturnType<typeof createPageScrollController> | null>(
     null,
   );
+  const scrollDirectionReleasesFollow = useStableCallback(
+    (direction: -1 | 1) =>
+      (direction < 0 && timelineRealContentOverflowsViewport()) || !isTimelineAtLogicalEnd(),
+  );
   const handlePageScrollStart = useStableCallback((key: PageScrollKey) => {
-    if ((key === "PageUp" && timelineRealContentOverflowsViewport()) || !isTimelineAtLogicalEnd()) {
+    if (scrollDirectionReleasesFollow(key === "PageUp" ? -1 : 1)) {
       // Through the viewport, so a running position restore stops too.
       viewportRef.current?.navigate({ releasesFollow: true });
     }
@@ -374,6 +379,11 @@ export function useTimelineFollow(input: TimelineFollowInput) {
   const attachTimelineViewport = (viewport: TimelineViewport) => {
     viewportRef.current = viewport;
     const unsubscribe = viewport.subscribe(handleNavigationStable);
+    const unregisterKeyboardScroll = registerTimelineKeyboardScroll(viewport, {
+      scrollToEnd: scrollToEndStable,
+      getScrollPaddingBottomPx: followStore.readComposerOverlayHeight,
+      releasesFollow: scrollDirectionReleasesFollow,
+    });
     const controller = createPageScrollController({
       getContainer: () => viewport.scrollNode,
       getScrollPaddingBottomPx: followStore.readComposerOverlayHeight,
@@ -381,6 +391,7 @@ export function useTimelineFollow(input: TimelineFollowInput) {
     });
     pageScrollControllerRef.current = controller;
     return () => {
+      unregisterKeyboardScroll();
       unsubscribe();
       controller.dispose();
       if (pageScrollControllerRef.current === controller) pageScrollControllerRef.current = null;

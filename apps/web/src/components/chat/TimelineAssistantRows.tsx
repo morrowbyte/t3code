@@ -48,7 +48,7 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
         data-keyboard-object="Message"
         tabIndex={-1}
         aria-label={`Assistant message: ${messageText.slice(0, 120)}`}
-        data-keyboard-help={`C: copy this response${ctx.onCiteAssistantText && ctx.threadRef && !row.message.streaming ? " · S: select response text · Shift arrows: refine selection · Q: quote selected text" : ""} · J/K: messages · H/L: actions`}
+        data-keyboard-help={`C: copy this response${ctx.onCiteAssistantText && ctx.threadRef && !row.message.streaming ? " · S: select response text · Shift arrows: refine selection · Q: quote selected text" : ""} · J/K: scroll · H/L: actions`}
         onKeyDown={(event) =>
           handleObjectActionKey(event, {
             c: "copy",

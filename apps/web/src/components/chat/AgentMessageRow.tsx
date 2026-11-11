@@ -119,7 +119,7 @@ export function AgentMessageRow({
       data-keyboard-object="Message"
       tabIndex={-1}
       aria-label={`${human ? "Original order" : "Agent message"}: ${summary}`}
-      data-keyboard-help="C: copy this message · D: toggle details · J/K: messages · H/L: actions"
+      data-keyboard-help="C: copy this message · D: toggle details · J/K: scroll · H/L: actions"
       onKeyDown={(event) => handleObjectActionKey(event, { c: "copy", d: "details" })}
       className={`min-w-0 px-3 py-2.5 ${human ? "border border-border/60 bg-muted/20" : "border-l-2 border-border/60 bg-muted/10"}`}
       style={{ borderRadius: "calc(var(--radius-2xl) / 4)" }}

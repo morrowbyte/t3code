@@ -213,6 +213,7 @@ const TIMELINE_MAINTAIN_SCROLL_AT_END_SMOOTH = {
 const CITED_HISTORY_LOADING: CitedHistory = { _tag: "loading" };
 
 export interface MessagesTimelineHistoryControls {
+  readonly cursor?: string | null;
   readonly hasMoreHistory: boolean;
   readonly loading: boolean;
   readonly error: string | null;
@@ -482,6 +483,24 @@ const ConversationTimeline = memo(function ConversationTimeline({
   const disclosureSettleSecondFrameRef = useRef<number | null>(null);
   const normalizedFindQuery = findQuery.trim();
   const findActive = findExpanded;
+  const [keyboardJump, setKeyboardJump] = useState<{
+    identity: string;
+    number: number;
+  } | null>(null);
+  const activeKeyboardJump = keyboardJump?.identity === listIdentityKey ? keyboardJump : null;
+  const numberedMessages =
+    activeKeyboardJump && !historyControls?.hasMoreHistory
+      ? timelineEntries.filter(
+          (entry) => entry.kind === "message" && entry.message.role !== "system",
+        )
+      : [];
+  const keyboardJumpEntry = activeKeyboardJump
+    ? numberedMessages[Math.min(activeKeyboardJump.number, numberedMessages.length) - 1]
+    : undefined;
+  const requestedJumpHistory = useRef<{
+    jump: NonNullable<typeof keyboardJump>;
+    cursor: string | null | undefined;
+  } | null>(null);
 
   const disclosurePinsEndRef = useRef(false);
   const pinDisclosureToEnd = () => {
@@ -598,15 +617,27 @@ const ConversationTimeline = memo(function ConversationTimeline({
   }
 
   // Imported turns and post-steer work fold under synthetic keys, not the entries' run ids.
-  const findFoldRunIds = findActive
-    ? timelineTurnFoldRunIdsByEntryId({
-        timelineEntries,
-        latestRun,
-        runningRunId,
-        isWorking,
-        runlessWorkActive,
-      })
-    : null;
+  const findFoldRunIds =
+    findActive || keyboardJumpEntry
+      ? timelineTurnFoldRunIdsByEntryId({
+          timelineEntries,
+          latestRun,
+          runningRunId,
+          isWorking,
+          runlessWorkActive,
+        })
+      : null;
+  const keyboardJumpRunId = keyboardJumpEntry
+    ? findFoldRunIds?.get(keyboardJumpEntry.id)
+    : undefined;
+  if (keyboardJumpRunId && !expandedRunIds.has(keyboardJumpRunId))
+    setExpandedRunIds(new Set(expandedRunIds).add(keyboardJumpRunId));
+  const keyboardJumpAttempt = keyboardJumpEntry?.attempt;
+  if (
+    keyboardJumpAttempt?.status === "superseded" &&
+    !expandedAttemptIds.has(keyboardJumpAttempt.id)
+  )
+    setExpandedAttemptIds(new Set(expandedAttemptIds).add(keyboardJumpAttempt.id));
   const activeFindRunId =
     findActive && activeFindMatch ? findFoldRunIds?.get(activeFindMatch.entryId) : undefined;
   const [expandedFindRunId, setExpandedFindRunId] = useState<RunId | undefined>();
@@ -805,6 +836,56 @@ const ConversationTimeline = memo(function ConversationTimeline({
     onManualNavigation: navigateTimeline,
   });
   const [findListReady, setFindListReady] = useState(false);
+  const loadJumpHistory = useEffectEvent(() => historyControls?.onLoadEarlier());
+  const keyboardJumpRowIndex = keyboardJumpEntry
+    ? rows.findIndex((row) => row.id === keyboardJumpEntry.id)
+    : -1;
+  const keyboardJumpViewOffset =
+    activeKeyboardJump && activeKeyboardJump.number >= numberedMessages.length ? 0 : 24;
+  const historyCursor = historyControls?.cursor;
+  const historyLoading = historyControls?.loading ?? false;
+  const historyError = historyControls?.error ?? null;
+  const hasMoreHistory = historyControls?.hasMoreHistory ?? false;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads absolute history and positions the virtual list after its row layout commits
+  useLayoutEffect(() => {
+    if (!activeKeyboardJump || !findListReady || restoringThreadPosition) return;
+    if (historyError) return;
+    if (hasMoreHistory) {
+      if (historyLoading) return;
+      const requested = requestedJumpHistory.current;
+      if (requested?.jump === activeKeyboardJump && requested.cursor === historyCursor) return;
+      requestedJumpHistory.current = { jump: activeKeyboardJump, cursor: historyCursor };
+      loadJumpHistory();
+      return;
+    }
+    const list = listRef.current;
+    if (!list || keyboardJumpRowIndex < 0) return;
+    let cancelled = false;
+    void list
+      .scrollToIndex({
+        index: keyboardJumpRowIndex,
+        animated: false,
+        viewOffset: keyboardJumpViewOffset,
+      })
+      .then(() => {
+        if (!cancelled)
+          setKeyboardJump((current) => (current === activeKeyboardJump ? null : current));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeKeyboardJump,
+    findListReady,
+    restoringThreadPosition,
+    historyError,
+    hasMoreHistory,
+    historyLoading,
+    historyCursor,
+    keyboardJumpRowIndex,
+    keyboardJumpViewOffset,
+    listRef,
+  ]);
   const handleListLoad = () => {
     onCitationListLoad();
     setFindListReady(true);
@@ -1155,15 +1236,21 @@ const ConversationTimeline = memo(function ConversationTimeline({
 
   const canvas = useChatCanvas();
   const registerTimeline = canvas?.registerTimeline;
+  const jumpToMessage = useStableCallback((number: number) => {
+    setKeyboardJump({ identity: listIdentityKey, number });
+  });
   // Stable so the list attaches once per mount, not on every render.
   const setTimelineList = useStableCallback((list: LegendListRef | null) => {
     listRef.current = list;
     const scrollNode: HTMLElement | null = list?.getScrollableNode() ?? null;
     registerTimeline?.(scrollNode);
-    const viewport = scrollNode ? attachTimelineViewport(scrollNode) : null;
+    const viewport = scrollNode ? attachTimelineViewport(scrollNode, jumpToMessage) : null;
     viewportRef.current = viewport;
     const detachViewport = viewport ? onViewportAttach?.(viewport) : undefined;
     const stopRememberingRelease = viewport?.onFollowReleased(rememberReleasedPosition);
+    const stopPendingKeyboardJump = viewport?.subscribe((navigation) => {
+      if (navigation.source !== "scroll") setKeyboardJump(null);
+    });
     let contentSizeFrame: number | null = null;
     // LegendList lays rows out from layout effects; the next frame sees them settled.
     let scheduledData: unknown = null;
@@ -1187,6 +1274,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     return () => {
       stopListeningToContentSize?.();
       stopRememberingRelease?.();
+      stopPendingKeyboardJump?.();
       if (contentSizeFrame !== null) cancelAnimationFrame(contentSizeFrame);
       detachViewport?.();
       viewport?.dispose();

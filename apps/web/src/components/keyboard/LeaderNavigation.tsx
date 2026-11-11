@@ -28,6 +28,12 @@ import {
 } from "./regionNavigation";
 import { KeyboardContextHelp } from "./KeyboardContextHelp";
 import {
+  resolveTimelineScrollCommand,
+  scrollTimelineFromKeyboard,
+  timelineKeyboardScrollTarget,
+  type TimelineScrollCommand,
+} from "../chat/timelineKeyboardScroll";
+import {
   createMessageNavigation,
   composerElement,
   discloseSidebar,
@@ -116,6 +122,12 @@ export function LeaderNavigation({
   const observer = useRef<MutationObserver | null>(null);
   const focusGeneration = useRef(0);
   const pendingFocus = useRef(false);
+  const messageCount = useRef<{
+    target: HTMLElement;
+    route: string;
+    digits: string;
+    awaitingSecondG: boolean;
+  } | null>(null);
   const selectedGroup = groups.find((item) => item.key === group);
   const finishMode = () => {
     messages.clear();
@@ -154,8 +166,10 @@ export function LeaderNavigation({
   };
   const enterMessages = () => {
     void afterSidebar(() => {
-      if (messages.enter()) setMode("messages");
-      else focusComposer();
+      if (messages.enter()) {
+        requestNavigationMode();
+        setMode("messages");
+      } else focusComposer();
     });
   };
   const enterComposer = () => {
@@ -291,11 +305,22 @@ export function LeaderNavigation({
   };
 
   const handleKey = useEffectEvent((event: KeyboardEvent) => {
+    if (
+      event.ctrlKey ||
+      event.metaKey ||
+      event.altKey ||
+      event.shiftKey ||
+      !/^[0-9g]$/.test(event.key)
+    )
+      messageCount.current = null;
     const group = groupState.current;
     const selectedGroup = groups.find((item) => item.key === group);
     if (pendingFocus.current && isEditableFocused(event.target) && !isActivationShortcut(event))
       focusGeneration.current++;
-    if (!isNavigationKeyEvent(event)) return;
+    if (!isNavigationKeyEvent(event)) {
+      messageCount.current = null;
+      return;
+    }
     if (
       event.key === "F6" &&
       !event.ctrlKey &&
@@ -409,6 +434,58 @@ export function LeaderNavigation({
         event.target
           .closest('[role="dialog"]')
           ?.matches('[data-mobile="true"][data-sidebar="sidebar"]') === true);
+    const canScrollTimeline =
+      isNavigationMode() &&
+      !context.editable &&
+      !context.blocked &&
+      !inSidebar &&
+      !hasOpenKeyboardLayer() &&
+      !hasLocalKeyboardNavigation(event);
+    const timeline = canScrollTimeline ? timelineKeyboardScrollTarget(event.target) : null;
+    let scrollCommand: TimelineScrollCommand | null = resolveTimelineScrollCommand(event);
+    const count = messageCount.current;
+    if (
+      timeline &&
+      !isClaimed(event) &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey &&
+      !event.shiftKey
+    ) {
+      const previous = count?.target === timeline && count.route === location.href ? count : null;
+      if (/^[0-9]$/.test(event.key)) {
+        messageCount.current = {
+          target: timeline,
+          route: location.href,
+          digits: `${previous?.awaitingSecondG ? "" : (previous?.digits ?? "")}${event.key}`.slice(
+            0,
+            15,
+          ),
+          awaitingSecondG: false,
+        };
+        consume(event);
+        return;
+      }
+      if (event.key === "g" && previous) {
+        if (!previous.awaitingSecondG) {
+          previous.awaitingSecondG = true;
+          consume(event);
+          return;
+        }
+        scrollCommand = { kind: "message", number: Math.max(1, Number(previous.digits)) };
+      }
+    }
+    messageCount.current = null;
+    if (
+      scrollCommand &&
+      canScrollTimeline &&
+      // In the conversation, Normal-mode half pages take priority over Diff/Usage.
+      (scrollCommand.kind === "page" || !isClaimed(event)) &&
+      scrollTimelineFromKeyboard(event.target, scrollCommand)
+    ) {
+      consume(event);
+      return;
+    }
     if (
       isNavigationMode() &&
       !context.editable &&
@@ -539,6 +616,8 @@ export function LeaderNavigation({
     } else enter();
   });
   const focusChanged = useEffectEvent((event: FocusEvent) => {
+    if (messageCount.current?.target !== timelineKeyboardScrollTarget(event.target))
+      messageCount.current = null;
     if (
       event.target instanceof HTMLElement &&
       !event.target.closest('[data-slot="dialog-popup"],[aria-label="App navigation"]')
@@ -549,12 +628,14 @@ export function LeaderNavigation({
       const inRegion =
         mode === "sidebar"
           ? event.target.closest("[data-app-sidebar],[data-mobile='true'][data-sidebar='sidebar']")
-          : event.target.closest("[data-message-id][data-message-role]");
+          : (event.target.closest("[data-message-id][data-message-role]") ??
+            (timelineKeyboardScrollTarget(event.target) === event.target ? event.target : null));
       if (!inRegion || isEditableFocused(event.target) || hasLocalKeyboardNavigation(event))
         finishMode();
     }
   });
   const lostFocus = useEffectEvent(() => {
+    messageCount.current = null;
     focusGeneration.current++;
     pendingFocus.current = false;
     observer.current?.disconnect();
@@ -565,6 +646,7 @@ export function LeaderNavigation({
     finishMode();
   });
   // Claim explicit navigation before the chat's passive type-to-focus listener.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps global navigation and focus listeners attached for this component's lifetime
   useLayoutEffect(() => {
     const key = (event: KeyboardEvent) => {
       handleKey(event);
@@ -575,6 +657,7 @@ export function LeaderNavigation({
     const blur = () => lostFocus();
     const navigationChanged = () => setNavigation(isNavigationMode());
     const pointer = () => {
+      messageCount.current = null;
       if (pendingFocus.current) focusGeneration.current++;
     };
     window.addEventListener("keydown", key, true);
@@ -660,7 +743,7 @@ export function LeaderNavigation({
               <>
                 <span className="inline-flex items-center gap-1">
                   <Kbd>J/K</Kbd>
-                  {mode === "messages" ? "messages" : "rows"}
+                  {mode === "messages" ? "scroll" : "rows"}
                 </span>
                 <span className="inline-flex items-center gap-1">
                   <Kbd>H/L</Kbd>

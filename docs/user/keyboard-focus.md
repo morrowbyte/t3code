@@ -20,6 +20,15 @@ run its actions. Use `j`/`k` to move between objects and Enter for their primary
 action. Lists also support arrows and Ctrl+N/P. Native editors, terminals and
 embedded browsers keep their own text and navigation keys.
 
+In the conversation, `j`/`k` scroll down/up by a line, including within long
+messages. Ctrl+D/U scroll down/up half the visible page; `g` goes to the start
+and Shift+G to the end of the thread. These keys work in Normal mode; Ctrl+D/U
+keep their Diff/Usage actions outside the conversation or while writing.
+Type a message number followed by `gg`, such as `12gg`, to jump to that message.
+Messages count from 1 and include your messages and assistant responses; older
+history loads as needed. A number beyond the last message goes to the last one.
+Escape cancels an unfinished number.
+
 Use Space, then `a c`, to search controls in the focused region. Space, then
 `a h`, labels visible controls; type a label to focus its control, then press
 Enter to activate it. Space, then `r`, selects right-panel views. Space, then

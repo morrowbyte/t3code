@@ -3,6 +3,7 @@ import { isContextMenuOpen } from "../../contextMenuFallback";
 import { TYPE_TO_FOCUS_FLOATING_LAYER_SELECTOR } from "../chat/composerFocusRedirect";
 import { closeCommandPalette } from "../../commandPaletteBus";
 import { dismissRegisteredKeyboardLayer } from "../ui/keyboardLayer";
+import { timelineKeyboardScrollTarget } from "../chat/timelineKeyboardScroll";
 
 export const LEADER_OPEN_EVENT = "t3code:leader-navigation-open";
 export const requestLeaderNavigation = () => window.dispatchEvent(new Event(LEADER_OPEN_EVENT));
@@ -265,14 +266,26 @@ export function createMessageNavigation() {
       const index = current === null ? -1 : messages.indexOf(current);
       return select(messages[Math.max(0, Math.min(messages.length - 1, index + direction))]);
     },
-    action: (direction: -1 | 1) =>
-      current !== null &&
-      move(
-        elements('button:not([disabled]),a[href],[tabindex="0"]', current).filter(
-          (item) => !isEditableFocused(item),
-        ),
-        direction,
-      ),
+    action: (direction: -1 | 1) => {
+      const viewport = timelineKeyboardScrollTarget(document.activeElement);
+      if (viewport && document.activeElement === viewport) {
+        const bounds = viewport.getBoundingClientRect();
+        const message = elements(MESSAGE, viewport).find((element) => {
+          const rect = element.getBoundingClientRect();
+          return rect.bottom > bounds.top && rect.top < bounds.bottom;
+        });
+        if (!select(message)) return false;
+      }
+      return (
+        current !== null &&
+        move(
+          elements('button:not([disabled]),a[href],[tabindex="0"]', current).filter(
+            (item) => !isEditableFocused(item),
+          ),
+          direction,
+        )
+      );
+    },
     clear,
   };
 }
