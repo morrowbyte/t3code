@@ -39,7 +39,12 @@ import {
 const fingerprint = "a".repeat(64);
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof NodeFSP>();
-  return { ...actual, readFile: vi.fn(actual.readFile) };
+  return {
+    ...actual,
+    readFile: vi.fn(actual.readFile),
+    link: vi.fn(actual.link),
+    unlink: vi.fn(actual.unlink),
+  };
 });
 const build = (version: string): DesktopRestoreBuild => ({
   protocol: 1,
@@ -334,91 +339,166 @@ describe("bounded desktop restore", () => {
     expect(await desktopRestoreProcessIdentity(1)).toBeNull();
   });
 
-  it.each(["reserved", "partial", "copied", "orphanRecovery", "heldRecovery"] as const)(
-    "cleans interrupted staging before normal startup: %s",
+  it.each(["publish", "unlink"] as const)(
+    "retries an interrupted owner %s without retaining its lock",
     async (phase) => {
       await using fixture = await setup();
-      const registry = await readDesktopRestoreRegistry(fixture.baseDir);
-      const before = await listDesktopRestores(fixture.input);
-      const from = registry.artifacts.find((item) => item.sha256 === registry.currentHash)!;
-      const to = registry.artifacts.find((item) => item.sha256 === fixture.input.expectedHash)!;
-      const id = "00000000-0000-4000-8000-000000000001";
-      const stagePath = `${registry.identity.installPath}.crew-restore-${id}`;
-      const controllerTemporary = NodePath.join(
-        desktopRestoreDirectory(fixture.baseDir),
-        `controller.sh.${id}.tmp`,
-      );
-      await writeDesktopRestoreJson(
-        NodePath.join(desktopRestoreDirectory(fixture.baseDir), "transaction.json"),
-        {
-          id,
-          installationId: registry.installationId,
-          from,
-          to,
-          stagePath,
-          phase: "staging",
-          originalHold: false,
-        },
-      );
-      await NodeFSP.writeFile(controllerTemporary, "partial controller");
-      if (phase === "partial") await NodeFSP.writeFile(stagePath, "partial");
-      if (phase === "copied")
-        await NodeFSP.copyFile(desktopRestoreArtifactPath(fixture.baseDir, to), stagePath);
-      if (phase === "orphanRecovery" || phase === "heldRecovery") {
-        const lock = NodePath.join(desktopRestoreDirectory(fixture.baseDir), "mutation.lock");
-        const recovery = `${lock}.recovery`;
-        await using owner = await startRestoreLockOwner();
-        await NodeFSP.writeFile(lock, owner.identity, { mode: 0o600 });
-        await expect(
-          recoverDesktopRestoreBeforeStartup({ baseDir: fixture.baseDir }),
-        ).rejects.toThrow("Another desktop restore operation is active");
-        if (phase === "orphanRecovery") {
-          await NodeFSP.writeFile(lock, `${owner.identity}\n`);
-          await expect(
-            recoverDesktopRestoreBeforeStartup({ baseDir: fixture.baseDir }),
-          ).rejects.toThrow("unknown owner");
-          expect(await NodeFSP.readFile(lock, "utf8")).toBe(`${owner.identity}\n`);
-          await NodeFSP.writeFile(lock, owner.identity);
-        }
-        await NodeFSP.rm(recovery, { force: true });
-        if (phase === "orphanRecovery") await NodeFSP.writeFile(recovery, "", { mode: 0o600 });
-        else await NodeFSP.link(lock, recovery);
-        const before = await NodeFSP.lstat(recovery);
-        const recoveryContent = await NodeFSP.readFile(recovery, "utf8");
-        await expect(
-          recoverDesktopRestoreBeforeStartup({ baseDir: fixture.baseDir }),
-        ).rejects.toThrow();
-        expect(await NodeFSP.readFile(lock, "utf8")).toBe(owner.identity);
-        await owner.stop();
-        if (phase === "heldRecovery") {
-          await using recovering = await startRestoreLockOwner(recovery);
-          await expect(
-            recoverDesktopRestoreBeforeStartup({ baseDir: fixture.baseDir }),
-          ).rejects.toThrow("Another desktop restore operation");
-          expect(await NodeFSP.readFile(lock, "utf8")).toBe(owner.identity);
-          expect((await NodeFSP.lstat(recovery)).ino).toBe(before.ino);
-          await recovering.stop();
-        }
-        expect(await recoverDesktopRestoreBeforeStartup({ baseDir: fixture.baseDir })).toBe(false);
-        expect((await NodeFSP.lstat(recovery)).ino).toBe(before.ino);
-        expect(await NodeFSP.readFile(recovery, "utf8")).toBe(recoveryContent);
-        await expect(NodeFSP.lstat(lock)).rejects.toMatchObject({ code: "ENOENT" });
+      const lock = NodePath.join(desktopRestoreDirectory(fixture.baseDir), "mutation.lock");
+      const identity = await desktopRestoreProcessIdentity(process.pid);
+      let attempted = false;
+      if (phase === "publish") {
+        vi.mocked(NodeFSP.link).mockImplementationOnce(async (source, destination) => {
+          expect(destination).toBe(lock);
+          expect(await NodeFSP.readFile(source, "utf8")).toBe(identity);
+          expect((await NodeFSP.stat(source)).mode & 0o777).toBe(0o600);
+          attempted = true;
+          throw new Error("interrupted owner publication");
+        });
+      } else {
+        vi.mocked(NodeFSP.unlink).mockImplementationOnce(async (file) => {
+          expect(NodePath.basename(String(file))).toMatch(/^\.mutation-owner-/);
+          attempted = true;
+          throw new Error("interrupted owner publication");
+        });
       }
-      const bytes =
-        phase === "partial" || phase === "copied" ? (await NodeFSP.stat(stagePath)).size : 0;
-      expect((await listDesktopRestores(fixture.input)).totalBytes).toBe(before.totalBytes + bytes);
-      expect(await recoverDesktopRestoreBeforeStartup({ baseDir: fixture.baseDir })).toBe(false);
-      expect(await readDesktopRestoreTransaction(fixture.baseDir)).toBeNull();
-      await expect(NodeFSP.lstat(stagePath)).rejects.toMatchObject({ code: "ENOENT" });
-      await expect(NodeFSP.lstat(controllerTemporary)).rejects.toMatchObject({ code: "ENOENT" });
-      expect(await desktopRestoreFileDigest(fixture.identity.installPath)).toMatchObject({
-        sha256: from.sha256,
-      });
-      expect((await listDesktopRestores(fixture.input)).totalBytes).toBe(before.totalBytes);
-      expect(fixture.quiesce).not.toHaveBeenCalled();
-      expect(fixture.launch).not.toHaveBeenCalled();
+      await expect(releaseDesktopUpdateHold(fixture.input)).rejects.toThrow(
+        "interrupted owner publication",
+      );
+      expect(attempted).toBe(true);
+      await expect(NodeFSP.lstat(lock)).rejects.toMatchObject({ code: "ENOENT" });
+      expect((await releaseDesktopUpdateHold(fixture.input)).updateHold).toBe(false);
+      expect(
+        (await NodeFSP.readdir(desktopRestoreDirectory(fixture.baseDir))).filter((name) =>
+          name.startsWith(".mutation-owner-"),
+        ),
+      ).toEqual([]);
     },
   );
+
+  it.each(["contents", "mode", "symlink"] as const)(
+    "preserves an unknown private owner reservation: %s",
+    async (kind) => {
+      await using fixture = await setup();
+      await using owner = await startRestoreLockOwner();
+      const file = NodePath.join(
+        desktopRestoreDirectory(fixture.baseDir),
+        `.mutation-owner-${owner.identity.replace(":", "-")}-00000000-0000-4000-8000-000000000001`,
+      );
+      const target = NodePath.join(fixture.identity.userDataDir, "auth-token");
+      const original = await NodeFSP.readFile(target, "utf8");
+      if (kind === "symlink") await NodeFSP.symlink(target, file);
+      else
+        await NodeFSP.writeFile(file, kind === "contents" ? "unowned" : owner.identity, {
+          mode: kind === "mode" ? 0o640 : 0o600,
+        });
+      const before = await NodeFSP.lstat(file);
+      await owner.stop();
+      expect((await releaseDesktopUpdateHold(fixture.input)).updateHold).toBe(false);
+      expect((await NodeFSP.lstat(file)).ino).toBe(before.ino);
+      expect(await NodeFSP.readFile(target, "utf8")).toBe(original);
+    },
+  );
+
+  it.each([
+    "reserved",
+    "partial",
+    "copied",
+    "unpublishedOwner",
+    "orphanRecovery",
+    "heldRecovery",
+  ] as const)("cleans interrupted staging before normal startup: %s", async (phase) => {
+    await using fixture = await setup();
+    const registry = await readDesktopRestoreRegistry(fixture.baseDir);
+    const before = await listDesktopRestores(fixture.input);
+    const from = registry.artifacts.find((item) => item.sha256 === registry.currentHash)!;
+    const to = registry.artifacts.find((item) => item.sha256 === fixture.input.expectedHash)!;
+    const id = "00000000-0000-4000-8000-000000000001";
+    const stagePath = `${registry.identity.installPath}.crew-restore-${id}`;
+    const controllerTemporary = NodePath.join(
+      desktopRestoreDirectory(fixture.baseDir),
+      `controller.sh.${id}.tmp`,
+    );
+    await writeDesktopRestoreJson(
+      NodePath.join(desktopRestoreDirectory(fixture.baseDir), "transaction.json"),
+      {
+        id,
+        installationId: registry.installationId,
+        from,
+        to,
+        stagePath,
+        phase: "staging",
+        originalHold: false,
+      },
+    );
+    await NodeFSP.writeFile(controllerTemporary, "partial controller");
+    if (phase === "partial") await NodeFSP.writeFile(stagePath, "partial");
+    if (phase === "copied")
+      await NodeFSP.copyFile(desktopRestoreArtifactPath(fixture.baseDir, to), stagePath);
+    if (phase === "unpublishedOwner") {
+      await using owner = await startRestoreLockOwner();
+      const file = NodePath.join(
+        desktopRestoreDirectory(fixture.baseDir),
+        `.mutation-owner-${owner.identity.replace(":", "-")}-${id}`,
+      );
+      await NodeFSP.writeFile(file, "", { mode: 0o600 });
+      await owner.stop();
+      expect(await recoverDesktopRestoreBeforeStartup({ baseDir: fixture.baseDir })).toBe(false);
+      await expect(NodeFSP.lstat(file)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    if (phase === "orphanRecovery" || phase === "heldRecovery") {
+      const lock = NodePath.join(desktopRestoreDirectory(fixture.baseDir), "mutation.lock");
+      const recovery = `${lock}.recovery`;
+      await using owner = await startRestoreLockOwner();
+      await NodeFSP.writeFile(lock, owner.identity, { mode: 0o600 });
+      await expect(
+        recoverDesktopRestoreBeforeStartup({ baseDir: fixture.baseDir }),
+      ).rejects.toThrow("Another desktop restore operation is active");
+      if (phase === "orphanRecovery") {
+        await NodeFSP.writeFile(lock, `${owner.identity}\n`);
+        await expect(
+          recoverDesktopRestoreBeforeStartup({ baseDir: fixture.baseDir }),
+        ).rejects.toThrow("unknown owner");
+        expect(await NodeFSP.readFile(lock, "utf8")).toBe(`${owner.identity}\n`);
+        await NodeFSP.writeFile(lock, owner.identity);
+      }
+      await NodeFSP.rm(recovery, { force: true });
+      if (phase === "orphanRecovery") await NodeFSP.writeFile(recovery, "", { mode: 0o600 });
+      else await NodeFSP.link(lock, recovery);
+      const before = await NodeFSP.lstat(recovery);
+      const recoveryContent = await NodeFSP.readFile(recovery, "utf8");
+      await expect(
+        recoverDesktopRestoreBeforeStartup({ baseDir: fixture.baseDir }),
+      ).rejects.toThrow();
+      expect(await NodeFSP.readFile(lock, "utf8")).toBe(owner.identity);
+      await owner.stop();
+      if (phase === "heldRecovery") {
+        await using recovering = await startRestoreLockOwner(recovery);
+        await expect(
+          recoverDesktopRestoreBeforeStartup({ baseDir: fixture.baseDir }),
+        ).rejects.toThrow("Another desktop restore operation");
+        expect(await NodeFSP.readFile(lock, "utf8")).toBe(owner.identity);
+        expect((await NodeFSP.lstat(recovery)).ino).toBe(before.ino);
+        await recovering.stop();
+      }
+      expect(await recoverDesktopRestoreBeforeStartup({ baseDir: fixture.baseDir })).toBe(false);
+      expect((await NodeFSP.lstat(recovery)).ino).toBe(before.ino);
+      expect(await NodeFSP.readFile(recovery, "utf8")).toBe(recoveryContent);
+      await expect(NodeFSP.lstat(lock)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    const bytes =
+      phase === "partial" || phase === "copied" ? (await NodeFSP.stat(stagePath)).size : 0;
+    expect((await listDesktopRestores(fixture.input)).totalBytes).toBe(before.totalBytes + bytes);
+    expect(await recoverDesktopRestoreBeforeStartup({ baseDir: fixture.baseDir })).toBe(false);
+    expect(await readDesktopRestoreTransaction(fixture.baseDir)).toBeNull();
+    await expect(NodeFSP.lstat(stagePath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(NodeFSP.lstat(controllerTemporary)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await desktopRestoreFileDigest(fixture.identity.installPath)).toMatchObject({
+      sha256: from.sha256,
+    });
+    expect((await listDesktopRestores(fixture.input)).totalBytes).toBe(before.totalBytes);
+    expect(fixture.quiesce).not.toHaveBeenCalled();
+    expect(fixture.launch).not.toHaveBeenCalled();
+  });
 
   it.each(["mutation.lock", "mutation.lock.recovery"] as const)(
     "preserves an untrusted %s symlink and its target",

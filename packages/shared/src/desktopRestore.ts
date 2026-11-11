@@ -498,43 +498,89 @@ async function withLock<A>(baseDir: string, operation: () => Promise<A>): Promis
     throw new Error("Desktop restore directory ownership changed.");
   const lock = NodePath.join(directory, "mutation.lock");
   const handle = await withDesktopRestoreRecoveryMutex(lock, async () => {
-    let handle;
-    try {
-      handle = await NodeFSP.open(lock, "wx", 0o600);
-    } catch (cause) {
-      if (
-        !(typeof cause === "object" && cause !== null && "code" in cause && cause.code === "EEXIST")
-      )
-        throw cause;
-      const observed = await NodeFSP.open(
-        lock,
-        NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_NONBLOCK,
-      );
+    for (const name of await NodeFSP.readdir(directory)) {
+      const match = /^\.mutation-owner-([1-9][0-9]*)-([0-9]+)-[0-9a-f-]{36}$/.exec(name);
+      if (match === null) continue;
+      const owner = `${match[1]}:${match[2]}`;
       try {
-        await verifyDesktopRestoreLock(lock, observed);
-        const owner = await readDesktopRestoreLockOwner(observed);
         await assertDesktopRestoreOwnerDead(owner);
-        if ((await readDesktopRestoreLockOwner(observed)) !== owner)
-          throw new Error("Desktop restore lock changed during recovery.", { cause });
-        await verifyDesktopRestoreLock(lock, observed);
-        await NodeFSP.unlink(lock);
-      } finally {
-        await observed.close();
+      } catch {
+        continue;
       }
-      handle = await NodeFSP.open(lock, "wx", 0o600);
+      const file = NodePath.join(directory, name);
+      const orphan = await NodeFSP.open(
+        file,
+        NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_NONBLOCK,
+      ).catch(() => null);
+      if (orphan === null) continue;
+      try {
+        try {
+          await verifyDesktopRestoreLock(file, orphan, true);
+          if (!owner.startsWith(await readDesktopRestoreLockOwner(orphan))) continue;
+          await verifyDesktopRestoreLock(file, orphan, true);
+        } catch {
+          continue;
+        }
+        await NodeFSP.unlink(file);
+      } finally {
+        await orphan.close();
+      }
     }
+    const ownerFile = NodePath.join(
+      directory,
+      `.mutation-owner-${identity.replace(":", "-")}-${NodeCrypto.randomUUID()}`,
+    );
+    const handle = await NodeFSP.open(ownerFile, "wx", 0o600);
+    let published = false;
     try {
       await handle.writeFile(identity);
+      await handle.sync();
+      try {
+        await NodeFSP.link(ownerFile, lock);
+      } catch (cause) {
+        if (
+          !(
+            typeof cause === "object" &&
+            cause !== null &&
+            "code" in cause &&
+            cause.code === "EEXIST"
+          )
+        )
+          throw cause;
+        const observed = await NodeFSP.open(
+          lock,
+          NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_NONBLOCK,
+        );
+        try {
+          await verifyDesktopRestoreLock(lock, observed);
+          const owner = await readDesktopRestoreLockOwner(observed);
+          await assertDesktopRestoreOwnerDead(owner);
+          if ((await readDesktopRestoreLockOwner(observed)) !== owner)
+            throw new Error("Desktop restore lock changed during recovery.", { cause });
+          await verifyDesktopRestoreLock(lock, observed);
+          await NodeFSP.unlink(lock);
+        } finally {
+          await observed.close();
+        }
+        await NodeFSP.link(ownerFile, lock);
+      }
+      published = true;
       await verifyDesktopRestoreLock(lock, handle);
+      await syncFile(directory);
+      await NodeFSP.unlink(ownerFile);
       return handle;
     } catch (cause) {
       try {
-        await verifyDesktopRestoreLock(lock, handle);
-        await NodeFSP.unlink(lock);
+        if (published) {
+          await verifyDesktopRestoreLock(lock, handle);
+          await NodeFSP.unlink(lock);
+        }
       } finally {
         await handle.close();
       }
       throw cause;
+    } finally {
+      await NodeFSP.rm(ownerFile, { force: true }).catch(() => undefined);
     }
   });
   try {

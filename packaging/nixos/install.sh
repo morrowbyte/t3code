@@ -299,6 +299,7 @@ lock_desktop_retention() {
   fi
   lock_owner="$(mktemp "$directory/.import-owner.XXXXXX")"
   printf '%s:%s' "$$" "${fields[19]}" >"$lock_owner"
+  sync -- "$lock_owner" || die 'cannot persist desktop restore lock owner'
   if ! ln -T -- "$lock_owner" "$desktop_lock" 2>/dev/null; then
     lock_observed="$(mktemp "$directory/.import-observed.XXXXXX")"
     rm -- "$lock_observed"
