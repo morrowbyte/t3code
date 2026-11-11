@@ -10,12 +10,25 @@ type AudioState = {
   readonly busy: boolean;
   readonly error: string | null;
   readonly outputSelectionSupported: boolean;
+  readonly outputPermissionSupported: boolean;
+  readonly outputVolumeSupported: boolean;
   readonly inputIssue: "ended" | "muted" | "suspended" | null;
 };
 type Dependencies = {
   readonly devices: () => MediaDevices | undefined;
   readonly context: () => AudioContext;
   readonly sink: () => HTMLAudioElement;
+};
+type SpeakerDevices = MediaDevices & {
+  selectAudioOutput?: () => Promise<MediaDeviceInfo>;
+};
+
+const supportsVolume = (audio: HTMLAudioElement) => {
+  const original = audio.volume;
+  audio.volume = 0.5;
+  const supported = audio.volume === 0.5;
+  audio.volume = original;
+  return supported;
 };
 
 const stop = (stream: MediaStream | null) => stream?.getTracks().forEach((track) => track.stop());
@@ -37,6 +50,8 @@ export class BrowserVoiceAudio {
     busy: false,
     error: null,
     outputSelectionSupported: false,
+    outputPermissionSupported: false,
+    outputVolumeSupported: false,
     inputIssue: null,
   };
   private readonly listeners = new Set<() => void>();
@@ -75,10 +90,14 @@ export class BrowserVoiceAudio {
   }
   refresh = async () => {
     try {
-      const devices = await this.dependencies.devices()?.enumerateDevices();
+      const mediaDevices: SpeakerDevices | undefined = this.dependencies.devices();
+      const devices = await mediaDevices?.enumerateDevices();
+      const sink = this.dependencies.sink();
       this.update({
         devices: devices ?? [],
-        outputSelectionSupported: typeof this.dependencies.sink().setSinkId === "function",
+        outputSelectionSupported: typeof sink.setSinkId === "function",
+        outputPermissionSupported: typeof mediaDevices?.selectAudioOutput === "function",
+        outputVolumeSupported: supportsVolume(sink),
       });
     } catch (error) {
       this.update({ error: audioError(error) });
@@ -125,7 +144,7 @@ export class BrowserVoiceAudio {
     const update = () =>
       this.update({
         inputIssue:
-          this.context?.state === "suspended"
+          this.context?.state === "suspended" || (this.context?.state as string) === "interrupted"
             ? "suspended"
             : tracks.some((track) => track.readyState === "ended")
               ? "ended"
@@ -226,7 +245,11 @@ export class BrowserVoiceAudio {
     audio.autoplay = true;
     audio.volume = this.state.outputVolume;
     this.audio = audio;
-    this.update({ outputSelectionSupported: typeof audio.setSinkId === "function" });
+    this.update({
+      outputSelectionSupported: typeof audio.setSinkId === "function",
+      outputVolumeSupported: supportsVolume(audio),
+      outputVolume: audio.volume,
+    });
     if (this.state.speaker && audio.setSinkId)
       void audio
         .setSinkId(this.state.speaker)
@@ -247,6 +270,25 @@ export class BrowserVoiceAudio {
         this.update({ error: audioError(error) });
     }
   };
+  requestSpeakerPermission = async () => {
+    const devices: SpeakerDevices | undefined = this.dependencies.devices();
+    if (!devices?.selectAudioOutput) return;
+    const selection = ++this.outputSelection;
+    const operation = this.operation;
+    this.update({ error: null });
+    try {
+      const device = await devices.selectAudioOutput();
+      if (selection !== this.outputSelection || operation !== this.operation) return;
+      await this.selectSpeaker(device.deviceId);
+      await this.refresh();
+    } catch {
+      if (selection === this.outputSelection && operation === this.operation)
+        this.update({
+          error:
+            "Could not select a speaker. Allow speaker access in your browser, then try again.",
+        });
+    }
+  };
   resume = async () => {
     try {
       await this.context?.resume();
@@ -259,8 +301,9 @@ export class BrowserVoiceAudio {
     this.update({ inputGain });
   };
   setOutputVolume = (outputVolume: number) => {
-    if (this.audio) this.audio.volume = outputVolume;
-    this.update({ outputVolume });
+    const audio = this.audio ?? this.dependencies.sink();
+    if (this.state.outputVolumeSupported) audio.volume = outputVolume;
+    this.update({ outputVolume: audio.volume });
   };
   levels = () => {
     const stream = this.audio?.srcObject;

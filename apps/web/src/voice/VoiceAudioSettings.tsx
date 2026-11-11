@@ -156,21 +156,32 @@ export function VoiceAudioSettings({
           </p>
         )}
       </div>
-      <label className="grid gap-1.5 text-xs">
-        <span className="flex justify-between gap-2">
-          <span>Voice volume</span>
-          <span className="tabular-nums">{Math.round(state.outputVolume * 100)}%</span>
-        </span>
-        <input
-          className="w-full accent-primary"
-          type="range"
-          min="0"
-          max="100"
-          step="5"
-          value={Math.round(state.outputVolume * 100)}
-          onChange={(event) => audio.setOutputVolume(Number(event.target.value) / 100)}
-        />
-      </label>
+      {state.outputPermissionSupported && state.outputSelectionSupported ? (
+        <Button size="sm" variant="outline" onClick={() => void audio.requestSpeakerPermission()}>
+          Choose another speaker
+        </Button>
+      ) : null}
+      {state.outputVolumeSupported ? (
+        <label className="grid gap-1.5 text-xs">
+          <span className="flex justify-between gap-2">
+            <span>Voice volume</span>
+            <span className="tabular-nums">{Math.round(state.outputVolume * 100)}%</span>
+          </span>
+          <input
+            className="w-full accent-primary"
+            type="range"
+            min="0"
+            max="100"
+            step="5"
+            value={Math.round(state.outputVolume * 100)}
+            onChange={(event) => audio.setOutputVolume(Number(event.target.value) / 100)}
+          />
+        </label>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          Use system volume controls to adjust voice volume.
+        </p>
+      )}
       <meter
         className="block h-2 w-full"
         min="0"

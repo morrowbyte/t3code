@@ -644,7 +644,7 @@ function LiveVoiceEventFeed(props: {
   return null;
 }
 
-function createLiveVoiceBinding(
+export function createLiveVoiceBinding(
   signaling: LiveVoiceSignalingAdapter,
   beforePrepare: LiveVoiceControllerDependencies["beforePrepare"] | undefined,
   onStateChange: (state: LiveVoiceState) => void,
@@ -671,7 +671,8 @@ function createLiveVoiceBinding(
       return () => window.clearTimeout(handle);
     },
     onStateChange: (state) => {
-      if (state.phase === "ended" || state.phase === "error") audio.release();
+      if (state.phase === "stopping" || state.phase === "ended" || state.phase === "error")
+        audio.release();
       onStateChange(state);
       if (state.phase !== "error") errorNotified = false;
       else if (!errorNotified) {
