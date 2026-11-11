@@ -122,6 +122,7 @@ function Tool(props: {
 export function ImageAnnotationEditor(props: {
   readonly source: ResolvedFilePreviewSource;
   readonly onSend: SendImageAnnotation;
+  readonly submission?: "send" | "apply";
   readonly onRequestClose: () => void;
 }) {
   const insets = useSafeAreaInsets();
@@ -300,6 +301,8 @@ export function ImageAnnotationEditor(props: {
           controller.signal,
         );
         if (sent && mounted.current && !controller.signal.aborted) props.onRequestClose();
+        else if (!sent && mounted.current && !controller.signal.aborted)
+          setError("The image was not saved. Your marks and message are still here.");
       },
       (cause) => {
         if (mounted.current)
@@ -324,7 +327,15 @@ export function ImageAnnotationEditor(props: {
           <View className="flex-row flex-wrap gap-2">
             <Tool label="Cancel" onPress={close} />
             <Tool
-              label={sending ? "Sending…" : "Send annotated image"}
+              label={
+                props.submission === "apply"
+                  ? sending
+                    ? "Applying…"
+                    : "Apply annotation"
+                  : sending
+                    ? "Sending…"
+                    : "Send annotated image"
+              }
               disabled={
                 sending || dictation.blocksSubmission || !imageLoaded || strokes.length === 0
               }

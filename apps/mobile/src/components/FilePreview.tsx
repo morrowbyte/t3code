@@ -104,7 +104,8 @@ export function FilePreview(props: {
 }) {
   if (props.source.kind === "pdf") return <PdfDocumentPreview {...props} />;
   if (props.source.kind !== "image") return <DocumentPreview {...props} />;
-  if (props.source.actionsSource || props.onSendAnnotation) return <MediaImagePreview {...props} />;
+  if (props.source.actionsSource || props.source.onApplyAnnotation || props.onSendAnnotation)
+    return <MediaImagePreview {...props} />;
   return (
     <ImageViewing
       images={

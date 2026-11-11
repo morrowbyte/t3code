@@ -43,6 +43,7 @@ import {
   useCallback,
   useEffect,
   useEffectEvent,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -50,7 +51,8 @@ import {
 } from "react";
 import { I18nManager, Keyboard, Platform, View, type ViewStyle } from "react-native";
 import { composerImageGallery } from "../../lib/composerImageGallery";
-import { filePreviewGallery } from "../../lib/filePreviewGallery";
+import { applyComposerImageAnnotation } from "../../state/apply-image-annotation";
+import { filePreviewGallery, filePreviewKey } from "../../lib/filePreviewGallery";
 import { FilePreviewModal, type FilePreviewSource } from "../../components/FilePreviewModal";
 import {
   composerAttachmentUploadBlockReason,
@@ -616,6 +618,11 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
   });
   const isSubmissionLocked =
     props.interactionLocked === true || queuedEdit?.saving === true || voiceInput.blocksSubmission;
+  const annotationTarget = useRef({ key: composerDraftKey, locked: isSubmissionLocked });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Async image preparation must check the committed draft and submission lock.
+  useLayoutEffect(() => {
+    annotationTarget.current = { key: composerDraftKey, locked: isSubmissionLocked };
+  }, [composerDraftKey, isSubmissionLocked]);
   const voicePresentation = resolveVoiceComposerPresentation(
     voiceInput.state,
     voiceInput.elapsedSeconds,
@@ -663,13 +670,49 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
   useEffect(() => () => disposeSettingsSheetPresentation(), []);
 
   const onPressPreview = (source: FilePreviewSource) => {
+    const gallery = composerImageGallery(draftAttachments).map((item) => {
+      const attachment =
+        "attachment" in item
+          ? item.attachment
+          : draftAttachments.find(
+              (entry) =>
+                entry.type === "image" &&
+                "uri" in item &&
+                (entry.dataUrl ?? entry.previewUri) === item.uri,
+            );
+      return {
+        ...item,
+        ...(attachment
+          ? {
+              onApplyAnnotation: ((image, text, signal) =>
+                applyComposerImageAnnotation({
+                  draftKey: composerDraftKey,
+                  attachmentId: attachment.id,
+                  image,
+                  text,
+                  signal,
+                  isCurrent: () =>
+                    navigation.isFocused() &&
+                    annotationTarget.current.key === composerDraftKey &&
+                    !annotationTarget.current.locked,
+                })) satisfies SendImageAnnotation,
+            }
+          : {}),
+      };
+    });
+    const selected = {
+      ...source,
+      gallery,
+      onApplyAnnotation: gallery.find((item) => filePreviewKey(item) === filePreviewKey(source))
+        ?.onApplyAnnotation,
+    };
     wasExpandedBeforePreviewRef.current = isFocused;
     setPreviewVideo(null);
     setPreviewFile(
       (current) =>
         current ?? {
-          ...source,
-          gallery: filePreviewGallery(source, composerImageGallery(draftAttachments)),
+          ...selected,
+          gallery: filePreviewGallery(selected, gallery),
         },
     );
   };

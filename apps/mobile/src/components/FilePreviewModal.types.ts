@@ -2,6 +2,7 @@ import type { AssetResource, EnvironmentId } from "@t3tools/contracts";
 
 import type { FileBackedComposerAttachment } from "../lib/composerImages";
 import type { MediaActionsSource } from "../lib/mediaActionsSource";
+import type { SendImageAnnotation } from "../lib/imageAnnotation";
 
 interface FilePreviewMetadata {
   readonly kind: "image" | "pdf" | "document";
@@ -10,6 +11,7 @@ interface FilePreviewMetadata {
   readonly sourceIdentifier?: string;
   readonly srcFragment?: string;
   readonly actionsSource?: MediaActionsSource;
+  readonly onApplyAnnotation?: SendImageAnnotation;
 }
 
 export type FilePreviewItem = FilePreviewMetadata &

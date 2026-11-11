@@ -32,7 +32,7 @@ function ImagePreviewHeader(header: { readonly imageIndex: number }) {
         <AppText className="flex-1 text-base text-white" numberOfLines={2}>
           {source.name ?? "Image"}
         </AppText>
-        {props.onAnnotate ? (
+        {props.onAnnotate && (source.onApplyAnnotation || props.onSendAnnotation) ? (
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Annotate image"
@@ -61,6 +61,7 @@ export function MediaImagePreview(props: MediaImagePreviewProps) {
   const [annotating, setAnnotating] = useState<{
     readonly source: ResolvedFilePreviewSource;
     readonly onSend: SendImageAnnotation;
+    readonly submission: "send" | "apply";
   } | null>(null);
   const onSendAnnotation = props.onSendAnnotation;
   const gallery = props.source.gallery ?? [props.source];
@@ -75,7 +76,13 @@ export function MediaImagePreview(props: MediaImagePreviewProps) {
     return (
       <ImageAnnotationEditor
         source={annotating.source}
-        onSend={annotating.onSend}
+        onSend={async (image, text, signal) => {
+          const accepted = await annotating.onSend(image, text, signal);
+          if (accepted && !signal.aborted && annotating.submission === "apply")
+            props.onRequestClose();
+          return accepted;
+        }}
+        submission={annotating.submission}
         onRequestClose={() => setAnnotating(null)}
       />
     );
@@ -83,9 +90,15 @@ export function MediaImagePreview(props: MediaImagePreviewProps) {
     <ImagePreviewContext
       value={{
         ...props,
-        onAnnotate: onSendAnnotation
-          ? (source) => setAnnotating({ source, onSend: onSendAnnotation })
-          : undefined,
+        onAnnotate: (source) => {
+          const onSend = source.onApplyAnnotation ?? onSendAnnotation;
+          if (onSend)
+            setAnnotating({
+              source,
+              onSend,
+              submission: source.onApplyAnnotation ? "apply" : "send",
+            });
+        },
       }}
     >
       <ImageViewing

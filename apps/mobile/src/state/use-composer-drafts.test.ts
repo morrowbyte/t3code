@@ -13,7 +13,6 @@ import {
 } from "../../../../packages/client-runtime/src/state/orchestrationV2TestFixtures";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
-import { afterEach, describe, expect, it } from "@effect/vitest";
 import {
   CommandId,
   ComposerContextId,
@@ -26,7 +25,7 @@ import {
   type OrchestrationV2ShellSnapshot,
   type ModelSelection,
 } from "@t3tools/contracts";
-import { onTestFinished, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vite-plus/test";
 
 const composerDraftFileMocks = vi.hoisted(() => {
   let document = JSON.stringify({ schemaVersion: 1, drafts: {} });
@@ -201,6 +200,7 @@ import {
   releaseUnusedComposerAttachmentFiles,
   removeComposerDraftsForEnvironment,
   replaceComposerDraftAttachments,
+  replaceComposerDraftAttachment,
   resetComposerDraftsLoadState,
   restoreComposerDraftSnapshotState,
   restoreCloudComposerDrafts,
@@ -582,6 +582,44 @@ describe("mobile composer drafts", () => {
     }
     h.update({ modelSelection: { ...pick, options: pick.options!.toReversed() } });
     expect(appAtomRegistry.get(composerDraftsAtom)[key]).toBeUndefined();
+  });
+
+  it("replaces an annotated attachment without losing text, references or other files", () => {
+    const key = "new-task:annotation";
+    const original = {
+      type: "file" as const,
+      id: "original",
+      name: "image.png",
+      mimeType: "image/png",
+      sizeBytes: 1,
+      fileUri: "file:///original.png",
+    };
+    const other = {
+      ...original,
+      id: "other",
+      name: "notes.txt",
+      mimeType: "text/plain",
+      fileUri: "file:///notes.txt",
+    };
+    const replacement = {
+      ...original,
+      id: "annotated",
+      name: "marked.png",
+      fileUri: "file:///marked.png",
+    };
+    appendComposerDraftAttachments(key, [original, other], { appendReference: true });
+    const before = getComposerDraftSnapshot(key);
+    expect(replaceComposerDraftAttachment(key, original.id, replacement, "Look here.")).toBe(true);
+    const after = getComposerDraftSnapshot(key);
+    expect(after.text).toBe(`${before.text}\n\nLook here.`);
+    expect(after.attachments).toEqual([replacement, other]);
+    expect(after.context?.records[0]).toMatchObject({
+      contextId: before.context?.records[0]?.contextId,
+      attachmentId: replacement.id,
+      kind: "image",
+    });
+    expect(replaceComposerDraftAttachment(key, original.id, replacement, "Again")).toBe(false);
+    expect(getComposerDraftSnapshot(key)).toEqual(after);
   });
 
   it("drops chips and records for attachments a replace no longer keeps", () => {
