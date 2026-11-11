@@ -185,23 +185,31 @@ describe("ChatMarkdown math", () => {
     await vi.waitFor(() => expect(container.querySelectorAll("msup")).toHaveLength(2));
     expect(container.querySelectorAll('[data-math-state="pending"]')).toHaveLength(0);
   });
-  it("renders completed inline and display equations and preserves their Markdown for copying", async () => {
-    using _math = setupMath();
-    const inline = "$x^2$";
-    const display = "$$\n\\frac{1}{2} + x = 3\n$$";
-    await using containerScreen = await renderText(`Before ${inline}.\n\n${display}\n\nAfter.`);
-    const container = containerScreen.container;
-    await expect.poll(() => container.querySelectorAll("math").length).toBe(2);
-    expect(container.querySelector("msup")).not.toBeNull();
-    expect(container.querySelector("mfrac")).not.toBeNull();
-    expect(
-      [...container.querySelectorAll("[data-markdown-copy]")].map((node) =>
-        node.getAttribute("data-markdown-copy"),
-      ),
-    ).toEqual([inline, `${display}\n\n`]);
-    expect(container.querySelectorAll("pre, [data-markdown-math] code")).toHaveLength(0);
-    expect(container.textContent).toContain("After.");
-  });
+  it.each([
+    ["$x^2$", "$$\n\\frac{1}{2} + x = 3\n$$"],
+    ["$x^2$", "$$\\frac{1}{2} + x = 3$$"],
+    ["$x^2$", "$$\\frac{1}{2} + x = 3$$  "],
+    ["$x^2$", "$$\\frac{1}{2}\n+ x = 3\n$$  "],
+    ["\\(x^2\\)", "\\[\\frac{1}{2} + x = 3\\]"],
+    ["\\(x^2\\)", "\\[\n\\frac{1}{2} + x = 3\n\\]"],
+  ])(
+    "renders completed equations %s and %s and preserves their Markdown for copying",
+    async (inline, display) => {
+      using _math = setupMath();
+      await using containerScreen = await renderText(`Before ${inline}.\n\n${display}\n\nAfter.`);
+      const container = containerScreen.container;
+      await expect.poll(() => container.querySelectorAll("math").length).toBe(2);
+      expect(container.querySelector("msup")).not.toBeNull();
+      expect(container.querySelector("mfrac")).not.toBeNull();
+      expect(
+        [...container.querySelectorAll("[data-markdown-copy]")].map((node) =>
+          node.getAttribute("data-markdown-copy"),
+        ),
+      ).toEqual([inline, `${display}\n\n`]);
+      expect(container.querySelectorAll("pre, [data-markdown-math] code")).toHaveLength(0);
+      expect(container.textContent).toContain("After.");
+    },
+  );
 
   it("waits for the closing delimiter, keeps cancellation readable, and rehydrates a completed formula", async () => {
     using _math = setupMath();

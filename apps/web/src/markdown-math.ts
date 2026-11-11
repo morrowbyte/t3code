@@ -7,11 +7,16 @@ export function mathSourceIsClosed(source: string, display: boolean): boolean {
   if (fence) {
     return new RegExp(`\\n[ \\t>]*${fence[0]}{${fence.length},}[ \\t]*$`).test(source);
   }
+  const texDelimiter = source.match(/^ {0,3}\\([([])/)?.[1];
+  if (texDelimiter) {
+    return source.trimEnd().endsWith(texDelimiter === "(" ? "\\)" : "\\]");
+  }
   const delimiter = source.match(/^ {0,3}(\$+)/)?.[1];
   if (!delimiter) return false;
-  return display
+  const block = display && /^ {0,3}\$+[ \t]*\r?\n/.test(source);
+  return block
     ? new RegExp(`\\n[ \\t>]*\\${delimiter[0]}{${delimiter.length},}[ \\t]*$`).test(source)
-    : source.length > delimiter.length * 2 && source.endsWith(delimiter);
+    : source.length > delimiter.length * 2 && source.trimEnd().endsWith(delimiter);
 }
 
 // Dollar spans in prose also describe prices and shell variables. Keep those
