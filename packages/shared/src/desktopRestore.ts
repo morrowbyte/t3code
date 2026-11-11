@@ -775,18 +775,18 @@ export async function probeDesktopRestoreBuild(
 
 function compatible(current: Artifact, candidate: Artifact, schemaDigest: string) {
   if (!candidate.healthy || candidate.build === null || candidate.schemaDigest === null)
-    return "This build has no verified restore and health contract.";
+    return "This version doesn't support safe restore.";
   if (current.build === null || !current.healthy)
-    return "The current build has not completed its health check.";
+    return "Crew hasn't finished checking the current version yet.";
   if (
     candidate.build.database !== current.build.database ||
     candidate.schemaDigest !== schemaDigest
   )
-    return "The retained build cannot read this database schema.";
+    return "This version can't open your current app data.";
   if (candidate.build.events !== current.build.events)
-    return "The retained build has a different event format.";
+    return "This version isn't compatible with your current chats.";
   if (candidate.build.profile !== current.build.profile)
-    return "The retained build has a different profile or authentication format.";
+    return "This version isn't compatible with your current settings or sign-in.";
   return null;
 }
 
@@ -812,8 +812,8 @@ export async function listDesktopRestores({
   } catch (cause) {
     return unavailable(
       isMissing(cause)
-        ? "This desktop installation has not registered qualified restore support (Windows NSIS is currently unavailable)."
-        : "Desktop restore metadata is invalid; no installation will be changed.",
+        ? "Restore isn't available for this installation yet."
+        : "Saved versions couldn't be read. Your installation hasn't been changed.",
     );
   }
   let schemaDigest: string | null = null;
@@ -831,14 +831,14 @@ export async function listDesktopRestores({
       .map(async (item) => {
         let blockedReason =
           registry.identity.kind === "nsis"
-            ? "Windows restore requires an independent verified installer controller."
+            ? "Restoring previous versions isn't available on Windows yet."
             : schemaDigest === null || current === undefined
-              ? "Current database compatibility is unknown."
+              ? "Crew couldn't check whether this version can open your data."
               : compatible(current, item, schemaDigest);
         try {
           await verifyDesktopRestoreArtifact(baseDir, item);
         } catch {
-          blockedReason = "The retained artifact or Nix closure failed integrity verification.";
+          blockedReason = "This saved version is incomplete or damaged.";
         }
         return {
           version: item.version,
@@ -861,11 +861,11 @@ export async function listDesktopRestores({
     unavailableReason:
       transaction === null
         ? physical.count > registry.maxVersions || physical.bytes > registry.maxBytes
-          ? "Physical desktop restore inventory exceeds its storage bounds."
+          ? "The saved versions exceed your restore storage limit."
           : null
         : transaction.pendingHealth
-          ? "Original desktop bytes restored; pendingHealth requires a verified graphical start."
-          : "An interrupted or active desktop restore must finish recovering first.",
+          ? "Your previous version is restored and still needs to finish starting."
+          : "An earlier restore needs to finish before you can start another.",
   };
 }
 

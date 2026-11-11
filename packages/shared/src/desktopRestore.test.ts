@@ -909,7 +909,7 @@ describe("bounded desktop restore", () => {
           );
           expect((await readDesktopRestoreTransaction(fixture.baseDir))?.pendingHealth).toBe(true);
           expect((await listDesktopRestores(fixture.input)).unavailableReason).toContain(
-            "pendingHealth",
+            "needs to finish starting",
           );
           const previous = Object.fromEntries(
             [

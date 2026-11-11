@@ -26,7 +26,8 @@ export async function openAppRestore(): Promise<void> {
     if (current.open && current.request === request)
       appAtomRegistry.set(appRestoreDialogAtom, {
         ...current,
-        error: "Could not read retained versions. Try again or run t3 restore --list locally.",
+        error:
+          "Couldn't load previous versions. Try again or run t3 restore --list on this computer.",
       });
   }
 }
