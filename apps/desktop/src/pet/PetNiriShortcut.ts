@@ -49,7 +49,10 @@ export class PetNiriShortcutError extends Error {
 export function petNiriKey(input: string) {
   const parts = input.split("+").map((part) => part.trim());
   const key = parts.pop()?.toUpperCase();
-  const modifiers = parts.map((part) => MODIFIERS[part.toLowerCase()]);
+  const modifiers = parts.map((part) => {
+    const name = part.toLowerCase();
+    return Object.hasOwn(MODIFIERS, name) ? MODIFIERS[name] : undefined;
+  });
   if (
     !key ||
     !/^(?:[A-Z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/.test(key) ||
@@ -152,6 +155,7 @@ type Snapshot = Awaited<ReturnType<typeof readFile>>;
 export class PetNiriShortcut {
   private readonly path: string;
   private readonly owner: string;
+  private claimed = false;
   private readonly options: {
     configHome: string;
     configPath: string;
@@ -166,18 +170,57 @@ export class PetNiriShortcut {
     this.owner = digest(options.identity);
   }
 
-  private async current() {
+  private async current(ignoreUnowned = false) {
     const file = await readFile(this.path, true).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return null;
+      if (error.code === "ENOENT" || ignoreUnowned) return null;
       throw new PetNiriShortcutError("niri-file-not-owned");
     });
     if (file?.text.trim()) {
       const split = file.text.indexOf("\n");
       const body = file.text.slice(split + 1);
-      if (file.text.slice(0, split) !== `// crew-desktop-pet/v1 ${this.owner} ${digest(body)}`)
+      if (file.text.slice(0, split) !== `// crew-desktop-pet/v1 ${this.owner} ${digest(body)}`) {
+        if (ignoreUnowned) return null;
         throw new PetNiriShortcutError("niri-file-not-owned");
+      }
     }
     return file;
+  }
+
+  private async lock() {
+    const path = NodePath.join(NodePath.dirname(this.path), ".crew-pet.lock");
+    const file = await NodeFSP.open(
+      path,
+      NodeFS.constants.O_RDWR |
+        NodeFS.constants.O_CREAT |
+        NodeFS.constants.O_NOFOLLOW |
+        NodeFS.constants.O_NONBLOCK,
+      0o600,
+    ).catch(() => {
+      throw new PetNiriShortcutError("niri-config-unavailable");
+    });
+    try {
+      const stat = await file.stat();
+      if (!stat.isFile() || stat.uid !== NodeProcess.getuid?.() || (stat.mode & 0o077) !== 0)
+        throw new PetNiriShortcutError("niri-config-unavailable");
+      // flock and this handle share the open file description; close releases the kernel lock.
+      await new Promise<void>((resolve, reject) => {
+        const child = NodeChildProcess.spawn("flock", ["--exclusive", "--nonblock", "3"], {
+          stdio: ["ignore", "ignore", "ignore", file.fd],
+          timeout: 2_000,
+        });
+        child.once("error", () => reject(new PetNiriShortcutError("niri-config-unavailable")));
+        child.once("exit", (code) =>
+          code === 0 ? resolve() : reject(new PetNiriShortcutError("niri-config-changed")),
+        );
+      });
+      const current = await NodeFSP.lstat(path);
+      if (current.dev !== stat.dev || current.ino !== stat.ino)
+        throw new PetNiriShortcutError("niri-config-changed");
+      return { [Symbol.asyncDispose]: () => file.close() };
+    } catch (error) {
+      await file.close();
+      throw error;
+    }
   }
 
   private render(shortcut: string) {
@@ -206,6 +249,14 @@ export class PetNiriShortcut {
       total += Buffer.byteLength(file.text);
       if (total > 1_048_576) throw new PetNiriShortcutError("niri-config-unavailable");
       if (conflicts(file.text, shortcut)) throw new PetNiriShortcutError("niri-shortcut-conflict");
+      if (
+        readKdlNodes(file.text).some(
+          (node) =>
+            node.name === "include" &&
+            node.header.some((token) => !token.quoted && token.value === "/-"),
+        )
+      )
+        throw new PetNiriShortcutError("niri-config-unavailable");
       for (const include of niriConfigIncludes(file.text)) {
         if (/[\0$*?[\]]/.test(include.path))
           throw new PetNiriShortcutError("niri-config-unavailable");
@@ -262,10 +313,17 @@ export class PetNiriShortcut {
   async sync(shortcut: string) {
     if (!NodePath.isAbsolute(this.options.configPath))
       throw new PetNiriShortcutError("niri-config-unavailable");
-    const current = await this.current();
+    if (!shortcut && !this.claimed && !(await this.current(true))?.text.trim()) return;
+    await using _lock = await this.lock();
+    await this.syncLocked(shortcut);
+  }
+
+  private async syncLocked(shortcut: string) {
+    const current = await this.current(!shortcut && !this.claimed);
     const next = this.render(shortcut);
     if (!shortcut) {
       if (current?.text.trim()) await this.replace("", current);
+      this.claimed = false;
       return;
     }
     let tree: Awaited<ReturnType<PetNiriShortcut["tree"]>>;
@@ -306,7 +364,10 @@ export class PetNiriShortcut {
       )
         throw new PetNiriShortcutError("niri-config-changed");
     }
-    if (current?.text === next) return;
+    if (current?.text === next) {
+      this.claimed = true;
+      return;
+    }
     await this.replace(next, current);
     try {
       await validate(this.options.configPath);
@@ -315,5 +376,6 @@ export class PetNiriShortcut {
       if (written?.text === next) await this.replace(current?.text ?? "", written);
       throw new PetNiriShortcutError("niri-validation-failed");
     }
+    this.claimed = true;
   }
 }
