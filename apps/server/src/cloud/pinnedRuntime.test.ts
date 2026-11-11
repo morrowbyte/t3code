@@ -364,6 +364,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         validate: () => Effect.die("must not validate a runtime over the byte cap"),
         onProgress: (event) => progress.push(event),
       }).pipe(Effect.flip);
+      assert(error._tag === "PinnedRuntimeInstallError");
       assert.include(error.step, "admitting archive extraction");
       assert.deepEqual(commands, ["tar"]);
       assert.isFalse(progress.some((event) => event.stage === "extract"));
@@ -454,6 +455,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         validate: () => Effect.void,
       }).pipe(Effect.flip);
 
+      assert(error._tag === "PinnedRuntimeInstallError");
       assert.include(error.step, "refusing an existing unverified runtime");
       assert.equal(
         yield* fs.readFileString(path.join(finalPaths.versionDir, "partial")),
