@@ -2771,14 +2771,15 @@ const make = Effect.gen(function* () {
           requestKey: input.clientRequestId,
           operation: "external-task-steer",
         });
+        const commandId = stableCommandId({
+          scope,
+          requestKey: input.clientRequestId,
+          operation: "external-task-steer",
+        });
         yield* threadManagement
           .dispatch({
             type: "message.dispatch",
-            commandId: stableCommandId({
-              scope,
-              requestKey: input.clientRequestId,
-              operation: "external-task-steer",
-            }),
+            commandId,
             threadId: binding.childThreadId,
             senderThreadId: input.parentThreadId,
             messageId,
@@ -2804,12 +2805,25 @@ const make = Effect.gen(function* () {
         const run = updated.runs.find((candidate) => candidate.id === input.childRunId);
         if (run === undefined)
           return yield* failure("run_not_found", "The selected child run was not found.");
+        const messageItem = updated.turnItems.find(
+          (item) => item.type === "user_message" && item.messageId === messageId,
+        );
+        const accepted =
+          messageItem?.status === "completed" &&
+          (yield* threadManagement.hasReceipt(
+            CommandId.make(`${commandId}:steering-delivery-accepted`),
+          ));
         return {
           threadId: binding.childThreadId,
           messageId,
           runId: run.id,
           status: run.status,
-          delivery: "steered" as const,
+          delivery:
+            messageItem?.status === "failed"
+              ? ("failed" as const)
+              : accepted
+                ? ("steered" as const)
+                : ("accepted" as const),
         };
       }),
     ),

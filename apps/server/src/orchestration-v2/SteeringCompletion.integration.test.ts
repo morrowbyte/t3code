@@ -20,6 +20,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
@@ -40,17 +41,22 @@ it.effect.each(
       [false, "during delivery"],
       [false, "before dispatch"],
       [true, "after delivery"],
+      [false, "after delivery"],
       [true, "without native steering"],
       [true, "with interrupting native steering"],
       [true, "settled only"],
       [false, "during continuation"],
+      [false, "rejected while running"],
     ] as const
   ).map(([mailbox, timing]) => ({
     mailbox,
     timing,
-    label: mailbox ? "mailbox notification" : "steering",
+    testName:
+      timing === "rejected while running"
+        ? "reports a correction rejected while running"
+        : `delivers ${mailbox ? "mailbox notification" : "steering"} when completion wins ${timing}`,
   })),
-)("delivers $label when completion wins $timing", ({ mailbox, timing }) =>
+)("$testName", ({ mailbox, timing }) =>
   Effect.scoped(
     Effect.gen(function* () {
       const cwd = yield* checkpointWorkspace(`steering-completion-${timing.replaceAll(" ", "-")}`);
@@ -137,6 +143,14 @@ it.effect.each(
               steerTurn: (turn) =>
                 Effect.gen(function* () {
                   steerCalls += 1;
+                  if (timing === "rejected while running") {
+                    return yield* new ProviderAdapter.ProviderAdapterSteerRunError({
+                      driver,
+                      providerThreadId: turn.providerThread.id,
+                      providerTurnId: turn.providerTurnId,
+                      cause: "activeTurnNotSteerable",
+                    });
+                  }
                   if (timing === "after delivery" || timing === "during continuation") return;
                   yield* Deferred.succeed(steerEntered, undefined);
                   yield* Deferred.await(rejectSteer);
@@ -286,6 +300,52 @@ it.effect.each(
             : {}),
         });
         if (timing !== "before dispatch") yield* dispatchSteer;
+        if (!mailbox && timing !== "before dispatch") {
+          const pending = yield* orchestrator.getThreadProjection(threadId);
+          const item = pending.turnItems.find(
+            (item) => item.type === "user_message" && item.messageId === messageId,
+          );
+          assert.equal(item?.status, "pending");
+          assert.isNull(item?.startedAt);
+          assert.isNull(item?.completedAt);
+        }
+        if (timing === "rejected while running") {
+          yield* worker.drain();
+          const retrying = yield* orchestrator.getThreadProjection(threadId);
+          assert.isFalse(retrying.turnItems.some((item) => item.type === "error"));
+          for (const delay of [100, 200, 400, 800]) {
+            yield* TestClock.adjust(delay);
+            yield* worker.drain();
+          }
+          const failedDelivery = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(steerCalls, 5);
+          assert.equal(started.length, 1);
+          assert.equal(failedDelivery.runs[0]?.status, "running");
+          const errors = failedDelivery.turnItems.filter((item) => item.type === "error");
+          assert.lengthOf(errors, 1);
+          assert.equal(errors[0]?.title, "Correction delivery not confirmed");
+          assert.isNull(errors[0]?.parentItemId);
+          assert.include(String(errors[0]?.id), String(messageId));
+          assert.equal(
+            failedDelivery.turnItems.find(
+              (item) => item.type === "user_message" && item.messageId === messageId,
+            )?.status,
+            "failed",
+          );
+          yield* orchestrator.dispatch({
+            type: "message.steering.settle",
+            commandId: CommandId.make("repeat-delivery-failure"),
+            threadId,
+            messageId,
+            providerTurnId: failedDelivery.providerTurns[0]!.id,
+            status: "failed",
+          });
+          const repeated = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(repeated.turnItems.filter((item) => item.type === "error").length, 1);
+          yield* worker.drain();
+          assert.equal(steerCalls, 5);
+          return;
+        }
         if (timing === "during continuation") {
           const projection = yield* orchestrator.getThreadProjection(threadId);
           const turn = projection.providerTurns[0]!;
@@ -355,6 +415,15 @@ it.effect.each(
         if (timing === "after delivery") {
           assert.equal(steerCalls, 1);
           assert.equal(started.length, 1);
+          if (!mailbox) {
+            const accepted = yield* orchestrator.getThreadProjection(threadId);
+            assert.equal(
+              accepted.turnItems.find(
+                (item) => item.type === "user_message" && item.messageId === messageId,
+              )?.status,
+              "completed",
+            );
+          }
           if (mailbox) {
             const delivered = yield* orchestrator.getThreadProjection(threadId);
             assert.equal(delivered.subagents[0]?.completionDelivery?.state, "delivered");

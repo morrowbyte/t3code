@@ -1361,6 +1361,93 @@ it.effect.each([false, true])(
           "repeated projection updates do not redeliver the first paragraph",
         );
         durableProjection = beforeStreaming;
+        const deliveryFailureItems = [
+          [
+            "turn-item:steering-delivery-failure:correction",
+            "The agent did not confirm this correction.",
+          ],
+          [
+            "turn-item:runtime-request-delivery-failure:answer",
+            "The agent did not confirm this answer.",
+          ],
+        ].map(([id, message], index) => ({
+          ...beforeStreaming.turnItems[0]!,
+          id: id as never,
+          type: "error" as const,
+          status: "failed" as const,
+          ordinal: 100 + index,
+          title: "Delivery not confirmed",
+          parentItemId: null,
+          failure: {
+            class: "transport_error" as const,
+            message: message!,
+            code: null,
+            retryable: null,
+          },
+        }));
+        for (const [index, item] of deliveryFailureItems.entries()) {
+          const progressText = `Delivery handling continues ${index}.`;
+          const originalMessage = beforeStreaming.messages[0]!;
+          const progressMessage = {
+            ...originalMessage,
+            id: `delivery-progress-message-${index}` as never,
+            nodeId: `delivery-progress-node-${index}` as never,
+            text: progressText,
+          };
+          const progressNode = {
+            ...beforeStreaming.nodes.find((node) => node.id === originalMessage.nodeId)!,
+            id: progressMessage.nodeId,
+          };
+          const progressItem = {
+            ...beforeStreaming.turnItems[0]!,
+            id: `delivery-progress-item-${index}` as never,
+            type: "assistant_message" as const,
+            nodeId: progressNode.id,
+            messageId: progressMessage.id,
+            text: progressText,
+            ordinal: 0,
+            streaming: false,
+          };
+          const received = yield* Deferred.make<void>();
+          contextSignals.set(progressText, received);
+          durableProjection = {
+            ...beforeStreaming,
+            messages: [...beforeStreaming.messages, progressMessage],
+            nodes: [...beforeStreaming.nodes, progressNode],
+            turnItems: [
+              ...beforeStreaming.turnItems,
+              ...deliveryFailureItems.slice(0, index + 1),
+              progressItem,
+            ],
+          };
+          yield* Queue.offer(
+            t3EventQueues.get("turn-item.updated")!,
+            eventFor({
+              type: "turn-item.updated",
+              id: `delivery-failure-event-${index}`,
+              threadId,
+              runId: "durable-run-1",
+              occurredAt: "2026-10-14T00:00:03.000Z",
+              payload: item,
+            } as never),
+          );
+          yield* Deferred.await(received);
+          assert.equal(
+            contexts.filter((message) => message.text.includes("background_task_delivery_failed"))
+              .length,
+            index + 1,
+          );
+        }
+        assert.equal(
+          contexts.filter((message) => message.text.includes("background_task_delivery_failed"))
+            .length,
+          2,
+        );
+        assert.equal(completedWork, 0);
+        assert.equal(durableProjection.runs[0]?.status, "running");
+        assert.equal(spoken.length, 0);
+        contexts.splice(1);
+        durableProjection = beforeStreaming;
         const secondContext = yield* Deferred.make<void>();
         contextSignals.set(question, secondContext);
         const firstMessage = durableProjection.messages[0]!;

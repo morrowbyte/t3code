@@ -288,7 +288,18 @@ export const layerExecutor: Layer.Layer<
                       { messageIds: [effect.request.messageId] },
                     );
                     const message = projection.messages.find((row) => row.id === messageId);
-                    if (message?.delegatedCompletion === undefined) return;
+                    if (message === undefined) return;
+                    if (message.delegatedCompletion === undefined) {
+                      yield* threads.dispatch({
+                        type: "message.steering.settle",
+                        commandId: CommandId.make(`${effect.commandId}:steering-delivery-accepted`),
+                        threadId: effect.threadId,
+                        messageId,
+                        providerTurnId: effect.request.providerTurnId,
+                        status: "completed",
+                      });
+                      return;
+                    }
                     yield* threads.dispatch({
                       type: "notification.delivery.accept",
                       commandId: CommandId.make(`command:mailbox-accepted:${effect.id}`),
@@ -365,6 +376,20 @@ export const layerExecutor: Layer.Layer<
                         }),
                       );
                   }),
+                ),
+                Effect.tapCause((cause) =>
+                  effect.request.type !== "provider-turn.steer" ||
+                  willRetry ||
+                  Cause.hasInterruptsOnly(cause)
+                    ? Effect.void
+                    : threads.dispatch({
+                        type: "message.steering.settle",
+                        commandId: CommandId.make(`${effect.commandId}:steering-delivery-failed`),
+                        threadId: effect.threadId,
+                        messageId: effect.request.messageId,
+                        providerTurnId: effect.request.providerTurnId,
+                        status: "failed",
+                      }),
                 ),
                 Effect.mapError(
                   (cause) =>

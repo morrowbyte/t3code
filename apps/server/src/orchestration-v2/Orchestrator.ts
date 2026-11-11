@@ -614,6 +614,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "runtime-request.respond":
     case "user-form.submit":
     case "runtime-request.delivery.fail":
+    case "message.steering.settle":
     case "thread.user-input.dismiss":
     case "checkpoint.rollback":
     case "checkpoint.rollback.fail":
@@ -4940,10 +4941,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           nativeItemRef: null,
           parentItemId: null,
           ordinal: yield* nextTurnItemOrdinal(input.projection),
-          status: "completed",
+          status: messageInput.providerTurnId === null ? "completed" : "pending",
           title: null,
-          startedAt: now,
-          completedAt: now,
+          startedAt: messageInput.providerTurnId === null ? now : null,
+          completedAt: messageInput.providerTurnId === null ? now : null,
           updatedAt: now,
           type: "user_message",
           messageId: input.messageId,
@@ -9764,6 +9765,80 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     });
   });
 
+  const dispatchSteeringDeliverySettle = Effect.fn("Orchestrator.dispatchSteeringDeliverySettle")(
+    function* (
+      command: Extract<
+        OrchestrationV2InternalCommand,
+        { readonly type: "message.steering.settle" }
+      >,
+      events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    ) {
+      const thread = yield* projectionStore
+        .getThread(command.threadId)
+        .pipe(mapDispatchError(command));
+      if (thread.deletedAt !== null) return;
+      const item = yield* projectionStore
+        .getTurnItem({
+          threadId: command.threadId,
+          itemId: idAllocator.derive.userTurnItem({ messageId: command.messageId }),
+        })
+        .pipe(mapDispatchError(command));
+      if (
+        item?.type !== "user_message" ||
+        item.providerTurnId !== command.providerTurnId ||
+        (item.inputIntent !== "steer" && item.inputIntent !== "promoted_queued_to_steer") ||
+        (item.status !== "pending" && item.status !== "completed") ||
+        item.status === command.status ||
+        (command.status === "completed" && item.status !== "pending")
+      )
+        return;
+      const now = yield* DateTime.now;
+      const emitEvent = emit(events, command);
+      yield* emitEvent({
+        type: "turn-item.updated",
+        threadId: command.threadId,
+        occurredAt: now,
+        payload: {
+          ...item,
+          status: command.status,
+          startedAt: command.status === "completed" ? now : item.startedAt,
+          completedAt: now,
+          updatedAt: now,
+        },
+      });
+      if (command.status === "completed") return;
+      yield* emitEvent({
+        type: "turn-item.updated",
+        threadId: command.threadId,
+        occurredAt: now,
+        payload: {
+          id: TurnItemId.make(`turn-item:steering-delivery-failure:${command.messageId}`),
+          threadId: command.threadId,
+          runId: item.runId,
+          nodeId: item.nodeId,
+          providerThreadId: item.providerThreadId,
+          providerTurnId: item.providerTurnId,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: yield* nextTurnItemOrdinal({ thread }),
+          status: "failed",
+          title: "Correction delivery not confirmed",
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          type: "error",
+          failure: {
+            class: "transport_error",
+            message:
+              "The agent did not confirm this correction. Send it again if it is still needed.",
+            code: null,
+            retryable: null,
+          },
+        },
+      });
+    },
+  );
+
   const dispatchThreadUserInputDismiss = Effect.fn("Orchestrator.dispatchThreadUserInputDismiss")(
     function* (
       command: Extract<OrchestrationV2Command, { readonly type: "thread.user-input.dismiss" }>,
@@ -14024,6 +14099,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "runtime-request.delivery.fail":
         yield* dispatchRuntimeRequestDeliveryFail(command, events);
         break;
+      case "message.steering.settle":
+        yield* dispatchSteeringDeliverySettle(command, events);
+        break;
       case "thread.background-work.settle":
         yield* dispatchBackgroundWorkSettle(command, events, effects);
         break;
@@ -14262,6 +14340,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (planned) =>
           planned.events.length > 0 ||
           command.type === "thread.background-work.settle" ||
+          command.type === "message.steering.settle" ||
           command.type === "thread.interrupt.unresponsive" ||
           command.type === "thread.stop" ||
           command.type === "subagent.stop" ||

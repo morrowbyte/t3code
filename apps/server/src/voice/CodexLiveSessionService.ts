@@ -609,7 +609,38 @@ export const layer: Layer.Layer<
             Math.max(lastOrdinals.get(item.providerTurnId!) ?? -1, item.ordinal),
           );
       }
-      return items.flatMap((item) => {
+      const deliveryFailures = projection.turnItems.flatMap((item) => {
+        if (
+          item.type !== "error" ||
+          item.status !== "failed" ||
+          item.failure.class !== "transport_error" ||
+          item.threadId !== projection.thread.id ||
+          item.runId !== runId ||
+          (!item.id.startsWith("turn-item:steering-delivery-failure:") &&
+            !item.id.startsWith("turn-item:runtime-request-delivery-failure:")) ||
+          !projection.nodes.some(
+            (node) =>
+              node.id === item.nodeId &&
+              (node.id === run.rootNodeId || node.rootNodeId === run.rootNodeId),
+          )
+        )
+          return [];
+        return [
+          {
+            attemptId: attempt.id,
+            messageId: run.userMessageId,
+            deliveryId: `delivery-failure:${item.id}`,
+            text: encodeReceipt({
+              type: "background_task_delivery_failed",
+              runId,
+              status: run.status,
+              message: item.failure.message,
+              resultReady: false,
+            }),
+          },
+        ];
+      });
+      const updates = items.flatMap((item) => {
         const turn = turns.get(item.providerTurnId!)!;
         if (
           item.type === "user_input_request" &&
@@ -698,6 +729,7 @@ export const layer: Layer.Layer<
             ]
           : [];
       });
+      return [...deliveryFailures, ...updates];
     };
 
     const inspectReadback = (projection: ReadbackProjection, runId: string) => {
