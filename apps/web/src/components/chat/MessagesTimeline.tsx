@@ -12,6 +12,7 @@ import { ThreadFindTimelineContext } from "./ThreadFindProvider";
 import { MarkdownFindContext } from "./markdownFindContext";
 import { useChatCanvas } from "./ChatCanvasContext";
 import { WorkLogBlock } from "./WorkLog";
+import { ComputerUseStatus } from "./ComputerUseStatus";
 import { TimelinePendingApprovalRow } from "./TimelinePendingApprovalRow";
 import type { WorktreeSetupSnapshot } from "@t3tools/contracts";
 import { deriveTimelineMinimapItems } from "./timelineMinimapItems";
@@ -242,6 +243,7 @@ export interface MessagesTimelineProps {
     sourceAnchor: AssistantCitationSourceAnchor,
   ) => boolean;
   isWorking: boolean;
+  computerUseConfirmed?: boolean;
   runlessWorkActive?: boolean;
   activeTurnStartedAt?: string | null;
   worktreeSetup?: WorktreeSetupSnapshot | null;
@@ -355,6 +357,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   citationHistory = CITED_HISTORY_LOADING,
   onCiteAssistantText,
   isWorking,
+  computerUseConfirmed = false,
   runlessWorkActive = false,
   activeTurnStartedAt = null,
   worktreeSetup = null,
@@ -1565,86 +1568,95 @@ const ConversationTimeline = memo(function ConversationTimeline({
       {activityAnnouncer}
       <MarkdownFindContext value={findActive}>
         <TimelineRowActivityCtx value={activityState}>
-          <TooltipScrollDismissArea
-            ref={attachTimelineViewportElement}
-            className="relative h-full min-h-0"
-            data-assistant-citation-viewport="true"
-          >
-            {onCiteAssistantText && citationThreadRef ? (
-              <AssistantSelectionToolbar
-                viewport={timelineViewportElement}
-                threadRef={citationThreadRef}
-                onCite={onCiteAssistantText}
+          <div className="flex h-full min-h-0 flex-col">
+            <ComputerUseStatus
+              entries={timelineEntries}
+              environmentId={activeThreadEnvironmentId}
+              confirmed={computerUseConfirmed && !detailBehindShell}
+              runId={runningRunId ?? (latestRun?.status === "running" ? latestRun.runId : null)}
+              isWorking={isWorking}
+            />
+            <TooltipScrollDismissArea
+              ref={attachTimelineViewportElement}
+              className="relative min-h-0 flex-1"
+              data-assistant-citation-viewport="true"
+            >
+              {onCiteAssistantText && citationThreadRef ? (
+                <AssistantSelectionToolbar
+                  viewport={timelineViewportElement}
+                  threadRef={citationThreadRef}
+                  onCite={onCiteAssistantText}
+                />
+              ) : null}
+              <LegendList<MessagesTimelineRow>
+                ref={setTimelineList}
+                data={rows}
+                extraData={listExtraData}
+                keyExtractor={keyExtractor}
+                getItemType={getItemType}
+                renderItem={renderItem}
+                estimatedItemSize={90}
+                initialScrollAtEnd={
+                  !findActive &&
+                  !replyPositioning &&
+                  citationRequest === null &&
+                  rememberedPosition?.atEnd !== false
+                }
+                // Legend needs a data refresh to mount new pins without a scroll event.
+                dataVersion={`${readyCitationRequest?.key ?? listIdentityKey}:${alwaysRenderKeys.join(",")}`}
+                {...(alwaysRender ? { alwaysRender } : {})}
+                onLoad={handleListLoad}
+                {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
+                contentInsetEndAdjustment={anchoredEndSpace ? contentInsetEndAdjustment : 0}
+                maintainScrollAtEnd={
+                  replyPositioning ||
+                  citationPositioning ||
+                  (restoringThreadPosition && rememberedPosition?.atEnd === false) ||
+                  anchoredEndSpace ||
+                  !liveFollowEnabled ||
+                  fullscreenAppRowId !== null ||
+                  disclosureToggleSettling
+                    ? false
+                    : isWorking && !prefersReducedMotion && settlingListIdentity === null
+                      ? TIMELINE_MAINTAIN_SCROLL_AT_END_SMOOTH
+                      : TIMELINE_MAINTAIN_SCROLL_AT_END
+                }
+                maintainVisibleContentPosition={
+                  replyPositioning ||
+                  findActive ||
+                  citationPositioning ||
+                  (restoringThreadPosition && rememberedPosition?.atEnd === false)
+                    ? false
+                    : maintainVisibleContentPosition
+                }
+                maintainScrollAtEndThreshold={1}
+                onScroll={handleScroll}
+                onItemSizeChanged={handleItemSizeChanged}
+                className={cn(
+                  "messages-timeline-scroll scrollbar-gutter-both h-full min-h-0 overflow-x-hidden overscroll-y-contain [overflow-anchor:none]",
+                  topFadeEnabled && "topbar-scroll-fade",
+                )}
+                ListHeaderComponent={listHeader}
+                ListFooterComponent={timelineListFooter}
               />
-            ) : null}
-            <LegendList<MessagesTimelineRow>
-              ref={setTimelineList}
-              data={rows}
-              extraData={listExtraData}
-              keyExtractor={keyExtractor}
-              getItemType={getItemType}
-              renderItem={renderItem}
-              estimatedItemSize={90}
-              initialScrollAtEnd={
-                !findActive &&
-                !replyPositioning &&
-                citationRequest === null &&
-                rememberedPosition?.atEnd !== false
-              }
-              // Legend needs a data refresh to mount new pins without a scroll event.
-              dataVersion={`${readyCitationRequest?.key ?? listIdentityKey}:${alwaysRenderKeys.join(",")}`}
-              {...(alwaysRender ? { alwaysRender } : {})}
-              onLoad={handleListLoad}
-              {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
-              contentInsetEndAdjustment={anchoredEndSpace ? contentInsetEndAdjustment : 0}
-              maintainScrollAtEnd={
-                replyPositioning ||
-                citationPositioning ||
-                (restoringThreadPosition && rememberedPosition?.atEnd === false) ||
-                anchoredEndSpace ||
-                !liveFollowEnabled ||
-                fullscreenAppRowId !== null ||
-                disclosureToggleSettling
-                  ? false
-                  : isWorking && !prefersReducedMotion && settlingListIdentity === null
-                    ? TIMELINE_MAINTAIN_SCROLL_AT_END_SMOOTH
-                    : TIMELINE_MAINTAIN_SCROLL_AT_END
-              }
-              maintainVisibleContentPosition={
-                replyPositioning ||
-                findActive ||
-                citationPositioning ||
-                (restoringThreadPosition && rememberedPosition?.atEnd === false)
-                  ? false
-                  : maintainVisibleContentPosition
-              }
-              maintainScrollAtEndThreshold={1}
-              onScroll={handleScroll}
-              onItemSizeChanged={handleItemSizeChanged}
-              className={cn(
-                "messages-timeline-scroll scrollbar-gutter-both h-full min-h-0 overflow-x-hidden overscroll-y-contain [overflow-anchor:none]",
-                topFadeEnabled && "topbar-scroll-fade",
-              )}
-              ListHeaderComponent={listHeader}
-              ListFooterComponent={timelineListFooter}
-            />
-            <TimelineMinimap
-              items={minimapItems}
-              hasPersistentGutter={minimapHasPersistentGutter}
-              hitStripWidth={minimapHitStripWidth}
-              currentIndex={minimapCurrentIndex}
-              stripMap={minimapStripMap}
-              onWheel={forwardMinimapWheel}
-              onSelect={(item) => {
-                navigateTimeline();
-                void listRef.current?.scrollToIndex({
-                  index: item.rowIndex,
-                  animated: !window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-                  viewOffset: 24,
-                });
-              }}
-            />
-          </TooltipScrollDismissArea>
+              <TimelineMinimap
+                items={minimapItems}
+                hasPersistentGutter={minimapHasPersistentGutter}
+                hitStripWidth={minimapHitStripWidth}
+                currentIndex={minimapCurrentIndex}
+                stripMap={minimapStripMap}
+                onWheel={forwardMinimapWheel}
+                onSelect={(item) => {
+                  navigateTimeline();
+                  void listRef.current?.scrollToIndex({
+                    index: item.rowIndex,
+                    animated: !window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+                    viewOffset: 24,
+                  });
+                }}
+              />
+            </TooltipScrollDismissArea>
+          </div>
         </TimelineRowActivityCtx>
       </MarkdownFindContext>
     </>
