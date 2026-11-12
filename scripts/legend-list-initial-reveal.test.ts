@@ -76,6 +76,76 @@ function createList(bundle: string) {
   };
 }
 
+function createInsetFollowList(bundle: string) {
+  const source = NodeFS.readFileSync(
+    new URL(`../apps/mobile/node_modules/@legendapp/list/${bundle}`, import.meta.url),
+    "utf8",
+  );
+  const maintain = source.slice(
+    source.indexOf("function doMaintainScrollAtEnd("),
+    source.indexOf("// src/utils/requestAdjust.ts"),
+  );
+  const imperative = source.slice(
+    source.indexOf("function createImperativeHandle("),
+    source.indexOf("// src/utils/getAlwaysRenderIndices.ts"),
+  );
+  const frames: Array<() => void> = [];
+  const timers: Array<() => void> = [];
+  const scrollTo = vi.fn();
+  const scrollToEnd = vi.fn();
+  const state = {
+    props: {
+      data: ["message", "question"],
+      maintainScrollAtEnd: { animated: false },
+    },
+    didContainersLayout: true,
+    didFinishInitialScroll: true,
+    didLoad: true,
+    scrollLength: 553,
+    scroll: 1661,
+    refScroller: { current: { scrollTo, scrollToEnd } },
+  };
+  const ctx = { state };
+  let inset = 541;
+  let followsEnd = true;
+  const api = NodeVM.runInNewContext(
+    `${maintain}\n${imperative}\n({ maintain: doMaintainScrollAtEnd, list: createImperativeHandle(ctx) })`,
+    {
+      ctx,
+      Platform: { OS: "android" },
+      requestAnimationFrame: (callback: () => void) => frames.push(callback),
+      setTimeout: (callback: () => void) => timers.push(callback),
+      getContentSize: () => 1673 + inset,
+      getContentInsetStartAdjustment: () => 0,
+      peek$: (_ctx: unknown, key: string) =>
+        key === "isWithinMaintainScrollAtEndThreshold" ? followsEnd : undefined,
+      setContentInsetOverride: (_ctx: unknown, value: { bottom: number }) => {
+        const changed = inset !== value.bottom;
+        inset = value.bottom;
+        return changed;
+      },
+      updateScroll: vi.fn(),
+      retargetActiveInitialScrollAtEnd: vi.fn(),
+    },
+  ) as {
+    maintain: (context: typeof ctx) => void;
+    list: { reportContentInset: (value: { bottom: number }) => void };
+  };
+  return {
+    scrollTo,
+    scrollToEnd,
+    maintain: () => api.maintain(ctx),
+    reportInset: (bottom: number) => api.list.reportContentInset({ bottom }),
+    setFollowsEnd: (value: boolean) => {
+      followsEnd = value;
+    },
+    advance() {
+      for (const frame of frames.splice(0)) frame();
+      for (const timer of timers.splice(0)) timer();
+    },
+  };
+}
+
 describe.each(["react-native.js", "react-native.mjs"])(
   "initial inset end reveal (%s)",
   (bundle) => {
@@ -144,6 +214,30 @@ describe.each(["react-native.js", "react-native.mjs"])(
       expect(list.state.didUserDrag).toBe(true);
       expect(list.scrollTo).not.toHaveBeenCalled();
       expect(list.onLoad).toHaveBeenCalledTimes(1);
+    });
+
+    it("uses the current inset after a loaded question collapses and preserves history readers", () => {
+      const list = createInsetFollowList(bundle);
+      list.reportInset(95.5);
+      list.advance();
+      expect(list.scrollTo).toHaveBeenLastCalledWith({ animated: false, x: 0, y: 1215.5 });
+      expect(list.scrollToEnd).not.toHaveBeenCalled();
+
+      list.maintain();
+      list.reportInset(541);
+      list.advance();
+      expect(list.scrollTo).toHaveBeenLastCalledWith({ animated: false, x: 0, y: 1661 });
+      expect(list.scrollToEnd).not.toHaveBeenCalled();
+      list.advance();
+      list.scrollTo.mockClear();
+      list.setFollowsEnd(false);
+      list.reportInset(95.5);
+      list.advance();
+      expect(list.scrollTo).not.toHaveBeenCalled();
+      list.setFollowsEnd(true);
+      list.reportInset(95.5);
+      list.advance();
+      expect(list.scrollTo).not.toHaveBeenCalled();
     });
   },
 );
