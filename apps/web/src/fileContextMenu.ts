@@ -1,5 +1,6 @@
 import {
   EDITORS,
+  buildRemoteOpenUrl,
   type ContextMenuItem,
   type EditorId,
   type EnvironmentId,
@@ -18,6 +19,11 @@ import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
 import { toastManager } from "./components/ui/toast";
 import { useAtomValue } from "@effect/atom-react";
 import { useFileApps } from "./fileApps";
+import {
+  openRemoteEditorUrl,
+  useRemoteCapableEditors,
+  useRemoteOpenResolution,
+} from "./remoteOpen";
 
 export type FileContextMenuAction =
   | "reveal-in-folder"
@@ -31,6 +37,7 @@ export interface FileContextMenuTarget {
   readonly environmentId: EnvironmentId | null;
   /** Repo- or workspace-relative file path, as shown in diffs. */
   readonly filePath: string;
+  readonly isDirectory?: boolean;
   readonly workspaceRoot: string | undefined;
   readonly repositoryRoot?: string | undefined;
 }
@@ -96,12 +103,22 @@ export function useFileContextMenu(environmentId: EnvironmentId | null) {
   const fileApps = useFileApps(environmentId);
   const openInEditor = useAtomCommand(shellEnvironment.openInEditor, { reportFailure: false });
   const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
+  const remote = useRemoteOpenResolution(environmentId);
+  const clientEditors = useRemoteCapableEditors();
+  const isLocal = remote.isResolved && remote.state.mode === "local-exec";
 
-  const availableEditors = serverConfig?.availableEditors ?? [];
+  const availableEditors = !remote.isResolved
+    ? []
+    : isLocal
+      ? (serverConfig?.availableEditors ?? [])
+      : remote.state.mode === "remote-links"
+        ? clientEditors
+        : [];
   const capabilities: FileContextMenuCapabilities = {
     // WSL can reveal in Windows Explorer despite reporting Linux; use server wording.
     revealLabel:
       environmentId !== null &&
+      isLocal &&
       serverConfig?.shellRevealInFileManager === true &&
       serverConfig.availableEditors.includes("file-manager")
         ? serverConfig.shellRevealInFileManagerKind === undefined
@@ -127,10 +144,22 @@ export function useFileContextMenu(environmentId: EnvironmentId | null) {
     }
 
     const reveal = action === "reveal-in-folder";
+    if (reveal && capabilities.revealLabel === undefined) return;
     const editor = reveal
       ? ("file-manager" as const)
       : (action.slice("editor:".length) as EditorId);
     if (!reveal && !capabilities.editorIds.includes(editor)) return;
+
+    if (remote.state.mode === "remote-links") {
+      const url = buildRemoteOpenUrl({
+        editor,
+        ...remote.state.host,
+        absolutePath,
+        isFile: !target.isDirectory,
+      });
+      if (url !== undefined) await openRemoteEditorUrl(url);
+      return;
+    }
 
     const result = await openInEditor({
       environmentId,
