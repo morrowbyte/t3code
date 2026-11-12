@@ -32,7 +32,7 @@ const failure = (reason: string, exitCode = 3) => new RestoreCliError({ reason, 
 const isRestoreCliError = Schema.is(RestoreCliError);
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
-export function selectRestoreTarget(
+function selectRestoreTarget(
   state: AppRestoreState,
   input: {
     version: string;

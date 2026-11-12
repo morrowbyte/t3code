@@ -750,7 +750,7 @@ export async function verifyDesktopRestoreArtifact(baseDir: string, artifact: Ar
     throw new Error("Retained desktop artifact is corrupt.");
 }
 
-export async function probeDesktopRestoreBuild(
+async function probeDesktopRestoreBuild(
   executable: string,
   baseDir: string,
   nixStorePath: string | null = null,
