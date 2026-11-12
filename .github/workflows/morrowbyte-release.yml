@@ -104,6 +104,9 @@ permissions:
 jobs:
   promotion114:
     if: inputs.promote_release114_run_id != '' && github.repository == 'morrowbyte/t3code'
+    permissions:
+      actions: read
+      contents: write
     runs-on: ${{ inputs.runner_backend == 'boat' && (vars.MORROWBYTE_BOAT_RUNNER || 'boat-large') || inputs.runner_backend == 'blacksmith' && 'blacksmith-8vcpu-ubuntu-2404' || fromJSON(format('["self-hosted","{0}"]', vars.MORROWBYTE_LINUX_RUNNER || 'morrowbyte-linux')) }}
     timeout-minutes: 10
     outputs:
@@ -144,6 +147,7 @@ jobs:
         name: Authenticate pinned origin and publication control without rebuilding
         env:
           GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
           CONTROL_SHA: ${{ github.workflow_sha }}
           PROMOTION_INPUTS: ${{ toJSON(inputs) }}
         run: |
@@ -2507,6 +2511,7 @@ jobs:
         if: inputs.promote_release114_run_id != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
           CONTROL_SHA: ${{ github.workflow_sha }}
           PROMOTION_INPUTS: ${{ toJSON(inputs) }}
         run: |
@@ -2777,6 +2782,7 @@ jobs:
       - name: Create fork-only prerelease
         env:
           GH_TOKEN: ${{ secrets.MORROWBYTE_RELEASE_TOKEN || github.token }}
+          GITHUB_TOKEN: ${{ inputs.promote_release114_run_id != '' && github.token || '' }}
           GH_REPO: ${{ vars.MORROWBYTE_RELEASE_REPOSITORY || 'morrowbyte/t3code' }}
           OBSERVATORY_ROUTE_SHA: ${{ (needs.promotion114.outputs.observatory_route_sha256 || needs.preflight.outputs.observatory_route_sha256) }}
           DESKTOP_RUN_ID: ${{ (needs.promotion114.outputs.desktop_run_id || needs.preflight.outputs.desktop_run_id) }}
@@ -2801,7 +2807,7 @@ jobs:
           if [[ -n "$PROMOTION114_RUN_ID" ]]; then
             test "$GH_REPO" = morrowbyte/t3code
             python3 "$RUNNER_TEMP/release114-promotion.py" verify release-assets
-            python3 "$RUNNER_TEMP/release114-promotion.py" boundary release-assets
+            GH_TOKEN="$GITHUB_TOKEN" python3 "$RUNNER_TEMP/release114-promotion.py" boundary release-assets
           fi
           tag="${{ (needs.promotion114.outputs.tag || needs.preflight.outputs.tag) }}"
           source_sha="${{ (needs.promotion114.outputs.source_sha || needs.preflight.outputs.source_sha) }}"
@@ -2820,7 +2826,7 @@ jobs:
               return 1
             fi
             if [[ -n "$PROMOTION114_RUN_ID" ]]; then
-              python3 "$RUNNER_TEMP/release114-promotion.py" boundary release-assets
+              GH_TOKEN="$GITHUB_TOKEN" python3 "$RUNNER_TEMP/release114-promotion.py" boundary release-assets
             fi
           }
           if gh release view "$tag" >/dev/null 2>&1; then

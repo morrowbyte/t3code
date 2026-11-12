@@ -50,21 +50,30 @@ def selection_fixture():
     return {"promote_release114_run_id": r.ORIGIN_RUN, "source_sha": r.SOURCE, "publish": True}
 
 
+def caller_fixture(job="promotion114"):
+    return {"CONTROL_SHA": "c" * 40, "GITHUB_SHA": "c" * 40, "GITHUB_WORKFLOW_SHA": "c" * 40,
+            "GITHUB_REPOSITORY": r.REPO, "GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_WORKFLOW_REF": r.WORKFLOW_REF, "GITHUB_ACTIONS": "true", "GITHUB_JOB": job,
+            "GH_TOKEN": "installation-token-fixture", "GITHUB_TOKEN": "installation-token-fixture"}
+
+
 def boundary_fixture():
     url = f"https://api.github.com/repos/{r.REPO}/releases/123"
     release = {"id": 123, "url": url, "tag_name": r.TAG, "target_commitish": r.SOURCE,
                "prerelease": True, "draft": True, "assets": []}
     view = {"apiUrl": url, "tagName": r.TAG, "targetCommitish": r.SOURCE, "isDraft": True}
     responses = {
+        ("show", "c" * 40 + ":" + r.WORKFLOW): (0, (ROOT / r.WORKFLOW).read_bytes(), b""),
         ("release", "view", r.TAG, "--repo", r.REPO, "--json", "apiUrl,isDraft,targetCommitish,tagName"): (0, view, b""),
         ("api", f"repos/{r.REPO}/releases/123"): (0, release, b""),
         ("api", f"repos/{r.REPO}/releases/tags/{r.TAG}"): (1, {"status": "404"}, b""),
         ("api", f"repos/{r.REPO}/git/ref/tags/{r.TAG}"): (1, {"status": "404"}, b""),
-        ("api", f"repos/{r.REPO}/"): (0, {"id": r.REPO_ID, "full_name": r.REPO, "permissions": {"push": True}}, b""),
+        ("api", f"repos/{r.REPO}/"): (0, {"id": r.REPO_ID, "full_name": r.REPO,
+                                    "permissions": {key: False for key in ["admin", "maintain", "push", "triage", "pull"]}}, b""),
         ("api", f"repos/{r.REPO}/releases?per_page=100&page=1"): (0, [], b""),
     }
     def run(command, **kwargs):
-        assert command[0] == "gh"
+        assert command[0] in {"gh", "git"}
         status, body, error = responses[tuple(command[1:])]
         return subprocess.CompletedProcess(command, status, body if isinstance(body, bytes) else json.dumps(body).encode(), error)
     return release, view, responses, run
@@ -406,7 +415,7 @@ class PromotionFixtures(unittest.TestCase):
                     receipt += b"changed"
                 if case != "receipt-digest":
                     release["assets"][-1].update(size=len(receipt), digest="sha256:" + hashlib.sha256(receipt).hexdigest())
-                with patch.object(r.subprocess, "run", side_effect=run), patch.object(r.subprocess, "check_output", return_value=receipt) as read:
+                with patch.dict(os.environ, caller_fixture("publish_linux_first"), clear=True), patch.object(r.subprocess, "run", side_effect=run), patch.object(r.subprocess, "check_output", return_value=receipt) as read:
                     if case is None:
                         r.release_boundary(assets)
                     else:
@@ -415,7 +424,7 @@ class PromotionFixtures(unittest.TestCase):
                     read.assert_called_once_with(["gh", "api", f"repos/{r.REPO}/releases/assets/456", "-H", "Accept: application/octet-stream"])
 
     def test_boundary_absence_requires_authenticated_complete_release_inventory(self):
-        for case in [None, "paged", "existing-draft", "foreign-repo", "foreign-id", "no-write-access", "missing-permissions",
+        for case in [None, "publisher", "paged", "existing-draft", "foreign-repo", "foreign-id", "missing-permissions",
                      "repository-auth", "inventory-auth", "inventory-404", "inventory-transport", "inventory-json", "inventory-shape", "incomplete"]:
             with self.subTest(case=case):
                 _, _, responses, run = boundary_fixture()
@@ -428,8 +437,6 @@ class PromotionFixtures(unittest.TestCase):
                     repository["full_name"] = "other/t3code"
                 elif case == "foreign-id":
                     repository["id"] += 1
-                elif case == "no-write-access":
-                    repository["permissions"]["push"] = False
                 elif case == "missing-permissions":
                     repository.pop("permissions")
                 elif case == "repository-auth":
@@ -447,13 +454,62 @@ class PromotionFixtures(unittest.TestCase):
                     for page in range(2, 11 if case == "incomplete" else 3):
                         items = full_page if case == "incomplete" else [{"tag_name": r.TAG, "draft": True}] if case == "existing-draft" else []
                         responses[("api", f"repos/{r.REPO}/releases?per_page=100&page={page}")] = (0, items, b"")
-                with patch.object(r.subprocess, "run", side_effect=run), patch.object(r.subprocess, "check_output") as read:
-                    if case in [None, "paged"]:
+                with patch.dict(os.environ, caller_fixture("publish_linux_first" if case == "publisher" else "promotion114"), clear=True), patch.object(r.subprocess, "run", side_effect=run), patch.object(r.subprocess, "check_output") as read:
+                    if case in [None, "publisher", "paged", "missing-permissions"]:
                         r.release_boundary()
                     else:
                         with self.assertRaises((RuntimeError, ValueError)):
                             r.release_boundary()
                     read.assert_not_called()
+
+    def test_boundary_installation_token_requires_pinned_caller_scope_and_credential(self):
+        for job in ["promotion114", "publish_linux_first"]:
+            for case in ["contents-read", "contents-missing", "credential-route", "changed-workflow", "control-read",
+                         "wrong-job", "wrong-ref", "wrong-workflow-ref", "wrong-control", "wrong-workflow-sha", "foreign-repo",
+                         "user-token", "missing-token", "missing-binding", "not-actions"]:
+                with self.subTest(job=job, case=case):
+                    _, _, responses, run = boundary_fixture()
+                    lookup = next(key for key in responses if key[0] == "release")
+                    responses[lookup] = (1, b"", b"release not found\n")
+                    responses[("api", f"repos/{r.REPO}/")][1]["permissions"]["push"] = True
+                    env = caller_fixture(job)
+                    source_key = ("show", env["CONTROL_SHA"] + ":" + r.WORKFLOW)
+                    workflow = responses[source_key][1]
+                    prefix, section = workflow.split(f"  {job}:\n".encode(), 1)
+                    if case in ["contents-read", "contents-missing", "credential-route", "changed-workflow"]:
+                        before, after = {
+                            "contents-read": (b"      contents: write", b"      contents: read"),
+                            "contents-missing": (b"      contents: write\n", b""),
+                            "credential-route": (b"GH_TOKEN: ${{ github.token }}", b"GH_TOKEN: ${{ secrets.MORROWBYTE_RELEASE_TOKEN }}"),
+                            "changed-workflow": (b"    steps:\n", b"    steps: # unqualified control edit\n"),
+                        }[case]
+                        assert before in section
+                        responses[source_key] = (0, prefix + f"  {job}:\n".encode() + section.replace(before, after, 1), b"")
+                    elif case == "control-read":
+                        responses[source_key] = (1, b"", b"missing control object")
+                    elif case == "wrong-job":
+                        env["GITHUB_JOB"] = "preflight"
+                    elif case == "wrong-ref":
+                        env["GITHUB_REF"] = "refs/pull/123/merge"
+                    elif case == "wrong-workflow-ref":
+                        env["GITHUB_WORKFLOW_REF"] = r.WORKFLOW_REF.replace("@refs/heads/main", "@refs/heads/other")
+                    elif case == "wrong-control":
+                        env["CONTROL_SHA"] = "d" * 40
+                    elif case == "wrong-workflow-sha":
+                        env["GITHUB_WORKFLOW_SHA"] = "d" * 40
+                    elif case == "foreign-repo":
+                        env["GITHUB_REPOSITORY"] = "other/t3code"
+                    elif case == "user-token":
+                        env["GH_TOKEN"] = "unknown-user-token-fixture"
+                    elif case == "missing-token":
+                        env.pop("GH_TOKEN")
+                    elif case == "missing-binding":
+                        env.pop("GITHUB_TOKEN")
+                    else:
+                        env["GITHUB_ACTIONS"] = "false"
+                    with patch.dict(os.environ, env, clear=True), patch.object(r.subprocess, "run", side_effect=run):
+                        with self.assertRaises(RuntimeError):
+                            r.release_boundary()
 
     def test_boundary_rejects_lookup_errors_and_inconsistent_canonical_identity(self):
         cases = ["lookup-auth", "lookup-transport", "lookup-json", "lookup-shape", "lookup-tag", "lookup-source", "lookup-draft",
@@ -494,7 +550,7 @@ class PromotionFixtures(unittest.TestCase):
                     release["target_commitish"] = r.CONTROL_BASE
                 else:
                     release.update(draft=False, published_at="2026-11-12T09:00:00Z")
-                with patch.object(r.subprocess, "run", side_effect=run), patch.object(r.subprocess, "check_output") as read:
+                with patch.dict(os.environ, caller_fixture(), clear=True), patch.object(r.subprocess, "run", side_effect=run), patch.object(r.subprocess, "check_output") as read:
                     with self.assertRaises((RuntimeError, ValueError)):
                         r.release_boundary()
                     read.assert_not_called()
@@ -510,6 +566,7 @@ class PromotionFixtures(unittest.TestCase):
 
     def test_workflow_promotion_runs_only_inspection_and_existing_linux_publisher(self):
         workflow = load_workflow()
+        self.assertEqual(hashlib.sha256((ROOT / r.WORKFLOW).read_bytes()).hexdigest(), r.INSTALLATION_CALLER_WORKFLOW_SHA256)
         defaults = {key: value.get("default", "") for key, value in workflow["on"]["workflow_dispatch"]["inputs"].items()}
         inputs = {**defaults, **selection_fixture()}
         needs = {name: {"result": "skipped", "outputs": {}} for name in workflow["jobs"]}
@@ -528,11 +585,23 @@ class PromotionFixtures(unittest.TestCase):
         self.assertEqual(workflow["concurrency"], {"group": "morrowbyte-desktop-nightly", "cancel-in-progress": False})
         inspect = workflow["jobs"]["promotion114"]
         self.assertNotIn("needs", inspect)
+        self.assertEqual(inspect["permissions"], {"actions": "read", "contents": "write"})
+        self.assertEqual(workflow["permissions"], {"actions": "read", "contents": "read"})
         self.assertEqual(inspect["steps"][0]["with"]["ref"], "${{ inputs.source_sha }}")
+        for key in ["GH_TOKEN", "GITHUB_TOKEN"]:
+            self.assertEqual(inspect["steps"][1]["env"][key], "${{ github.token }}")
         self.assertIn("${{ github.workflow_sha }}", inspect["steps"][1]["env"]["CONTROL_SHA"])
         self.assertNotIn("source-proof.cjs", str(inspect))
         publisher = workflow["jobs"]["publish_linux_first"]
+        self.assertEqual(publisher["permissions"], {"actions": "read", "contents": "write"})
         steps = {step.get("name"): step for step in publisher["steps"]}
+        for key in ["GH_TOKEN", "GITHUB_TOKEN"]:
+            self.assertEqual(steps["Recover the pinned .114 bytes and original proofs"]["env"][key], "${{ github.token }}")
+        for name in ["Create fork-only prerelease", "Verify published Linux and Android bytes"]:
+            self.assertEqual(steps[name]["env"]["GH_TOKEN"], "${{ secrets.MORROWBYTE_RELEASE_TOKEN || github.token }}")
+        self.assertEqual(steps["Create fork-only prerelease"]["env"]["GITHUB_TOKEN"], "${{ inputs.promote_release114_run_id != '' && github.token || '' }}")
+        boundary_calls = [line.strip() for line in steps["Create fork-only prerelease"]["run"].splitlines() if " boundary release-assets" in line]
+        self.assertEqual(boundary_calls, ['GH_TOKEN="$GITHUB_TOKEN" python3 "$RUNNER_TEMP/release114-promotion.py" boundary release-assets'] * 2)
         for name in ["Download dedicated release assets", "Download Observatory preflight proof for publication", "Download Observatory build proof for publication"]:
             self.assertIn("inputs.promote_release114_run_id == ''", steps[name]["if"])
         self.assertIn("recover", steps["Recover the pinned .114 bytes and original proofs"]["run"])

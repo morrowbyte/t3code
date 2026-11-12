@@ -21,6 +21,7 @@ REPO_ID = 1175532637
 WORKFLOW = ".github/workflows/morrowbyte-release.yml"
 WORKFLOW_REF = REPO + "/" + WORKFLOW + "@refs/heads/main"
 ORIGIN_WORKFLOW_SHA256 = "6b9e6b5374756ed213781166b01c16b1a480986f0a677b657fa35efc1c2e8cfc"
+INSTALLATION_CALLER_WORKFLOW_SHA256 = "96df59b3a61a2974e0e166a42f8c479855aefc677f9d4d85db69e3e48fe59a67"
 SOURCE_PROOF_RUN = "43159613780"
 SOURCE_PROOF_ID = "13917702448"
 SOURCE_PROOF_DIGEST = "sha256:78b6d44968568496bd09ec43a54fe3ef55d30e8934f472b39ce679b01014b0ec"
@@ -187,7 +188,7 @@ def validate_control_paths(changes):
             <= {path for _, path in changes}, "Incomplete promotion control delta")
 
 
-def validate_control():
+def validate_control_context():
     env = os.environ
     control = env["CONTROL_SHA"]
     require(env["GITHUB_REPOSITORY"] == REPO and env["GITHUB_REF"] == "refs/heads/main"
@@ -195,6 +196,11 @@ def validate_control():
             "Wrong promotion repository/event/ref")
     require(re.fullmatch(r"[0-9a-f]{40}", control) and env["GITHUB_SHA"] == env["GITHUB_WORKFLOW_SHA"] == control
             and control not in {SOURCE, CONTROL_BASE}, "Wrong immutable control source")
+    return control
+
+
+def validate_control():
+    control = validate_control_context()
     require(git("rev-parse", "HEAD") == SOURCE and not git("status", "--porcelain", "--untracked-files=all"), "Product checkout must be exact and clean")
     require(digest(WORKFLOW) == ORIGIN_WORKFLOW_SHA256 and digest("pnpm-lock.yaml") == LOCK_SHA256
             and digest("scripts/morrowbyte/check.sh") == CHECK_SHA256, "Changed original product tooling")
@@ -203,6 +209,18 @@ def validate_control():
     changes = [tuple(line.split("\t")) for line in git("diff", "--no-renames", "--name-status", CONTROL_BASE, control).splitlines()]
     validate_control_paths(changes)
     return changes
+
+
+def validate_installation_caller():
+    control = validate_control_context()
+    env = os.environ
+    require(env.get("GITHUB_ACTIONS") == "true" and env.get("GITHUB_JOB") in {"promotion114", "publish_linux_first"},
+            "Wrong installation-token job")
+    require(env.get("GH_TOKEN") and env["GH_TOKEN"] == env.get("GITHUB_TOKEN"), "Promotion requires the workflow installation token")
+    workflow = subprocess.run(["git", "show", control + ":" + WORKFLOW], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # Pin the actual job scopes and github.token bindings; role flags cannot prove draft visibility for installation tokens.
+    require(workflow.returncode == 0 and hashlib.sha256(workflow.stdout).hexdigest() == INSTALLATION_CALLER_WORKFLOW_SHA256,
+            "Unqualified installation-token workflow permissions or credentials")
 
 
 def validate_release(release, tag_object, assets=None, draft_receipt=None):
@@ -230,13 +248,13 @@ def validate_release(release, tag_object, assets=None, draft_receipt=None):
 
 
 def resolve_release():
+    validate_installation_caller()
     result = subprocess.run(["gh", "release", "view", TAG, "--repo", REPO, "--json", "apiUrl,isDraft,targetCommitish,tagName"],
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode:
         require(result.returncode == 1 and not result.stdout and result.stderr.strip() == b"release not found", "GitHub release lookup failed")
         repository = api("")
-        require(isinstance(repository, dict) and repository.get("id") == REPO_ID and repository.get("full_name") == REPO
-                and isinstance(repository.get("permissions"), dict) and repository["permissions"].get("push") is True,
+        require(isinstance(repository, dict) and repository.get("id") == REPO_ID and repository.get("full_name") == REPO,
                 "Cannot authenticate draft absence")
         # A tag 404 cannot exclude drafts; require a complete inventory with write access.
         for page in range(1, 11):
