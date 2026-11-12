@@ -23,7 +23,7 @@ const spawner = ChildProcessSpawner.make((command) =>
     expect(command.args).toContain("-G");
     const target = command.args.at(-1);
     const configs: Record<string, string> = {
-      "mac-mini": "hostname 100.65.180.100\nport 22\n",
+      "mac-mini": "hostname 192.0.2.10\nport 22\n",
       remote: "hostname 192.0.2.1\nport 22\n",
       loopback: "hostname 127.0.1.1\nport 22\n",
       ipv6: "hostname ::1\nport 22\n",
@@ -52,7 +52,7 @@ const provide = <A, E>(
 ) =>
   effect.pipe(
     Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-    Effect.provideService(LocalDeviceHostAddresses, new Set(["100.65.180.100"])),
+    Effect.provideService(LocalDeviceHostAddresses, new Set(["192.0.2.10"])),
     Effect.provide(NodeServices.layer),
   );
 
