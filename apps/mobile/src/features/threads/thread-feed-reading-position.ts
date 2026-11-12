@@ -76,9 +76,10 @@ export function captureThreadFeedReadingPosition(
   disclosures?: ThreadFeedReadingPosition["disclosures"],
   workGroupScrollPositions?: Map<string, ThreadWorkGroupScrollPosition>,
 ): ThreadFeedReadingPosition | undefined {
+  const readingLine = state.scroll + layout.headerInset - layout.rowsTop;
   const row = resolveWorkGroupScrollAnchor({
     data: state.data,
-    scroll: state.scroll + layout.headerInset - layout.rowsTop,
+    scroll: readingLine,
     positionAtIndex: state.positionAtIndex,
   });
   if (!row) return undefined;
@@ -88,7 +89,7 @@ export function captureThreadFeedReadingPosition(
     following: following && state.isAtEnd,
     anchor: {
       key: row.rowId,
-      offsetWithinRow: row.offsetWithinRow,
+      offsetWithinRow: readingLine < 0 ? readingLine : row.offsetWithinRow,
       size: Math.max(1, state.sizes.get(row.rowId) ?? 180),
     },
     nearbyKeys: [index + 1, index - 1, index + 2, index - 2].flatMap((nearbyIndex) => {

@@ -137,10 +137,17 @@ describe("native thread reading positions", () => {
   });
 
   it("keeps a reader at the first row and clamps an offset after content shrinks", () => {
+    const androidLayout = { ...layout, rowsTop: 12, headerInset: 0 };
+    const original = feedState(["a", "b"], 0);
+    const saved = captureThreadFeedReadingPosition(original, androidLayout, false)!;
+    const restored = resolveThreadFeedReadingScroll(saved, original, androidLayout)!;
+    expect(
+      original.positionAtIndex(restored.index) + androidLayout.rowsTop - restored.viewOffset,
+    ).toBe(original.scroll);
     const top = captureThreadFeedReadingPosition(feedState(["a", "b"], -30), layout, false)!;
     expect(resolveThreadFeedReadingScroll(top, feedState(["a", "b"]), layout)).toEqual({
       index: 0,
-      viewOffset: 30,
+      viewOffset: 50,
     });
     const position = captureThreadFeedReadingPosition(feedState(["a", "b", "c"]), layout, false)!;
     expect(
