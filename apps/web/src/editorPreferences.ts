@@ -4,6 +4,7 @@ import {
   EditorId,
   EnvironmentAuthorizationError,
   EnvironmentId,
+  buildRemoteOpenUrl,
 } from "@t3tools/contracts";
 import {
   mapAtomCommandResult,
@@ -13,10 +14,16 @@ import {
 import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
+import { splitFilePathPosition } from "@t3tools/shared/fileLinks";
 import { getLocalStorageItem, setLocalStorageItem, useLocalStorage } from "./hooks/useLocalStorage";
 import { shellEnvironment } from "./state/shell";
 import { useAtomCommand } from "./state/use-atom-command";
 import { readEnvironmentScope } from "./state/session";
+import {
+  openRemoteEditorUrl,
+  useRemoteCapableEditors,
+  useRemoteOpenResolution,
+} from "./remoteOpen";
 
 const LAST_EDITOR_KEY = "t3code:last-editor";
 
@@ -44,6 +51,20 @@ export class PreferredEditorUnavailableError extends Schema.TaggedError<Preferre
   }
 }
 
+export class PreferredEditorRemoteOpenError extends Schema.TaggedError<PreferredEditorRemoteOpenError>()(
+  "PreferredEditorRemoteOpenError",
+  {
+    environmentId: EnvironmentId,
+    targetPath: Schema.String,
+    editor: EditorId,
+  },
+) {
+  override get message(): string {
+    const label = EDITORS.find((editor) => editor.id === this.editor)?.label ?? this.editor;
+    return `Could not open ${this.targetPath} in ${label}. Check that ${label} is installed and its URL handler is enabled on this device, then try again.`;
+  }
+}
+
 export function usePreferredEditor(availableEditors: ReadonlyArray<EditorId>) {
   const [lastEditor, setLastEditor] = useLocalStorage(LAST_EDITOR_KEY, null, EditorId);
 
@@ -55,15 +76,6 @@ export function usePreferredEditor(availableEditors: ReadonlyArray<EditorId>) {
   return [effectiveEditor, setLastEditor] as const;
 }
 
-function resolveAndPersistPreferredEditor(availableEditors: readonly EditorId[]): EditorId | null {
-  const availableEditorIds = new Set(availableEditors);
-  const stored = getLocalStorageItem(LAST_EDITOR_KEY, EditorId);
-  if (stored && availableEditorIds.has(stored)) return stored;
-  const editor = EDITORS.find((editor) => availableEditorIds.has(editor.id))?.id ?? null;
-  if (editor) setLocalStorageItem(LAST_EDITOR_KEY, editor, EditorId);
-  return editor ?? null;
-}
-
 export function useOpenInPreferredEditor(
   environmentId: EnvironmentId | null,
   availableEditors: readonly EditorId[],
@@ -71,16 +83,27 @@ export function useOpenInPreferredEditor(
   const openInEditor = useAtomCommand(shellEnvironment.openInEditor, {
     reportFailure: false,
   });
+  const remote = useRemoteOpenResolution(environmentId);
+  const clientEditors = useRemoteCapableEditors();
+  const effectiveEditors = !remote.isResolved
+    ? []
+    : remote.state.mode === "local-exec"
+      ? availableEditors
+      : remote.state.mode === "remote-links"
+        ? clientEditors
+        : [];
   type OpenInEditorError = AtomCommandFailure<Awaited<ReturnType<typeof openInEditor>>>;
 
   return async (
     targetPath: string,
+    options?: { readonly isFile?: boolean },
   ): Promise<
     AtomCommandResult<
       EditorId,
       | OpenInEditorError
       | PreferredEditorEnvironmentRequiredError
       | PreferredEditorUnavailableError
+      | PreferredEditorRemoteOpenError
       | EnvironmentAuthorizationError
     >
   > => {
@@ -103,18 +126,41 @@ export function useOpenInPreferredEditor(
         ),
       );
     }
-    const editor = resolveAndPersistPreferredEditor(availableEditors);
+    const storedEditor = getLocalStorageItem(LAST_EDITOR_KEY, EditorId);
+    const editor =
+      storedEditor && effectiveEditors.includes(storedEditor)
+        ? storedEditor
+        : (EDITORS.find((candidate) => effectiveEditors.includes(candidate.id))?.id ?? null);
     if (!editor) {
       return AsyncResult.failure(
         Cause.fail(
           new PreferredEditorUnavailableError({
             environmentId,
             targetPath,
-            availableEditorIds: availableEditors,
+            availableEditorIds: effectiveEditors,
           }),
         ),
       );
     }
+    if (remote.state.mode === "remote-links") {
+      const position = splitFilePathPosition(targetPath);
+      const url = buildRemoteOpenUrl({
+        editor,
+        ...remote.state.host,
+        absolutePath: position.path,
+        isFile: options?.isFile ?? true,
+        ...(position.line === undefined ? {} : { line: position.line }),
+        ...(position.column === undefined ? {} : { column: position.column }),
+      });
+      if (url !== undefined && (await openRemoteEditorUrl(url))) {
+        if (editor !== storedEditor) setLocalStorageItem(LAST_EDITOR_KEY, editor, EditorId);
+        return AsyncResult.success(editor);
+      }
+      return AsyncResult.failure(
+        Cause.fail(new PreferredEditorRemoteOpenError({ environmentId, targetPath, editor })),
+      );
+    }
+    if (editor !== storedEditor) setLocalStorageItem(LAST_EDITOR_KEY, editor, EditorId);
     const result = await openInEditor({
       environmentId,
       input: {

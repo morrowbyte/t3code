@@ -228,6 +228,7 @@ import * as CursorAccountReader from "@t3tools/provider-cursor/server/CursorAcco
 import * as CursorKeychain from "@t3tools/provider-cursor/server/CursorKeychain";
 import * as CursorUsageAccounts from "@t3tools/provider-cursor/server/CursorUsageAccounts";
 import * as UsageService from "./usage/UsageService.ts";
+import * as ExecutionUsage from "./usage/ExecutionUsage.ts";
 import * as CodexUsageHistory from "./usage/CodexUsageHistory.ts";
 import * as RuntimeLayer from "./orchestration-v2/runtimeLayer.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
@@ -791,6 +792,7 @@ const layerRuntimeDependencies = BoatSetupService.layer.pipe(
   Layer.provideMerge(AgentAvatarService.layer.pipe(Layer.provide(CodexAvatarGenerator.layer))),
   Layer.provideMerge(layerRuntimeCoreDependencies),
   Layer.provideMerge(layerUsage),
+  Layer.provideMerge(ExecutionUsage.layer.pipe(Layer.provide(layerPersistence))),
   Layer.provideMerge(layerBackground),
   Layer.provideMerge(layerResourceDiagnostics),
   Layer.provideMerge(TraceDiagnostics.layer),

@@ -35,6 +35,12 @@ export const OPENCODE2_HTTP_PROTOCOL = "opencode2-http.sse" as const;
 const BASE_URL = "http://opencode2.replay";
 const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodeSessionEnvironment = Schema.decodeUnknownSync(
+  Schema.Struct({
+    sessionID: Schema.String,
+    variables: Schema.Record(Schema.String, Schema.String),
+  }),
+);
 
 const OpenCode2ReplayTranscript = Schema.Struct({
   provider: Schema.Literal(OPENCODE_PROVIDER),
@@ -87,6 +93,7 @@ const operationOf = (
     if (method === "GET" && rest === "") return { type: "session.get", input };
     if (method === "DELETE" && rest === "") return { type: "session.remove", input };
     if (method === "PATCH" && rest === "") return { type: "session.update", input };
+    if (method === "PUT" && rest === "/environment") return { type: "session.environment", input };
     if (method === "POST" && rest === "/prompt") return { type: "session.prompt", input };
     if (method === "POST" && rest === "/command") return { type: "session.command", input };
     if (method === "POST" && rest === "/compact") return { type: "session.compact", input };
@@ -131,6 +138,7 @@ const replayHttpClient = (
   controller: OpenCodeReplayController,
   replayGate: ProviderReplayGate | undefined,
   onPrompt: ((input: unknown) => void) | undefined,
+  sessionEnvironments: Map<string, Readonly<Record<string, string>>>,
 ) =>
   HttpClient.make((request, url) =>
     Effect.tryPromise({
@@ -149,6 +157,14 @@ const replayHttpClient = (
           query,
           raw === undefined ? undefined : decodeJson(raw),
         );
+        if (operation.type === "session.environment") {
+          const input = decodeSessionEnvironment(operation.input);
+          sessionEnvironments.set(input.sessionID, {
+            ...sessionEnvironments.get(input.sessionID),
+            ...input.variables,
+          });
+          return new Response(null, { status: 204 });
+        }
         // HTTP streams and requests use separate connections; deliver prior recorded inbound data before matching requests.
         if (operation.type !== "event.subscribe") await controller.untilInboundDelivered();
         if (operation.type === "session.prompt") onPrompt?.(operation.input);
@@ -194,6 +210,7 @@ export const replayServer = (
     readonly onPrompt?: (input: unknown) => void;
     readonly replayGate?: ProviderReplayGate;
     readonly borrowers?: { current: number };
+    readonly sessionEnvironments?: Map<string, Readonly<Record<string, string>>>;
   },
 ) =>
   Effect.gen(function* () {
@@ -207,7 +224,12 @@ export const replayServer = (
     const opencode = yield* OpenCode2Client.make.pipe(
       Effect.provideService(
         HttpClient.HttpClient,
-        replayHttpClient(controller, options?.replayGate, options?.onPrompt),
+        replayHttpClient(
+          controller,
+          options?.replayGate,
+          options?.onPrompt,
+          options?.sessionEnvironments ?? new Map(),
+        ),
       ),
     );
     const connection = {
@@ -241,6 +263,7 @@ const makeReplayAdapter = (
     readonly onPrompt?: (input: unknown) => void;
     readonly replayGate?: ProviderReplayGate;
     readonly borrowers?: { current: number };
+    readonly sessionEnvironments?: Map<string, Readonly<Record<string, string>>>;
   },
 ) =>
   Effect.gen(function* () {
@@ -286,6 +309,7 @@ export const openCode2ReplayRuntime = (
   options?: {
     readonly external?: boolean;
     readonly onPrompt?: (input: unknown) => void;
+    readonly sessionEnvironments?: Map<string, Readonly<Record<string, string>>>;
     readonly borrowers?: { current: number };
     readonly replayGate?: ProviderReplayGate;
     readonly attachmentsDir?: string;

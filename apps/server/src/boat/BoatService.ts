@@ -1,6 +1,7 @@
 import { parse as parseYaml, stringify as yaml } from "yaml";
 import {
   BoatAction,
+  BoatCommand,
   BoatTransferInput,
   BoatTransferProposal,
   type BoatTransferReceipt,
@@ -177,6 +178,7 @@ const StoredInstance = Schema.Struct({
     }),
   ).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
   revision: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
+  commandGeneration: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
   sourceBinding: Schema.NullOr(
     Schema.Struct({
       revision: Schema.Number,
@@ -268,6 +270,9 @@ const Deletion = Schema.Struct({
 const Process = Schema.Struct({ processId: Schema.Number });
 const ProcessStatus = Schema.Struct({
   processId: Schema.optional(Schema.Number),
+  commandId: Schema.optional(Schema.String),
+  known: Schema.optional(Schema.Boolean),
+  running: Schema.optional(Schema.Boolean),
   exitCode: Schema.optional(
     Schema.NullOr(Schema.Number).pipe(
       Schema.decodeTo(
@@ -282,6 +287,15 @@ const ProcessStatus = Schema.Struct({
   stdout: Schema.optional(Schema.String),
   stderr: Schema.optional(Schema.String),
 });
+const StoredCommand = Schema.Struct({
+  ...BoatCommand.fields,
+  output: Schema.optionalKey(Schema.String),
+});
+type StoredCommand = typeof StoredCommand.Type;
+const processOutput = (output: typeof ProcessStatus.Type) =>
+  `${output.stdout ?? ""}\n${output.stderr ?? ""}`
+    .replace(/(#token=)[^\s]+/g, "$1[private]")
+    .slice(-12000);
 const Work = Schema.Record(
   Schema.String,
   Schema.Struct({
@@ -290,13 +304,7 @@ const Work = Schema.Record(
       threadId: Schema.NullOr(ThreadId),
       workspaceRoot: Schema.String,
     }),
-    commands: Schema.Array(
-      Schema.Struct({
-        processId: Schema.Number,
-        threadId: Schema.NullOr(ThreadId),
-        expiresAt: Schema.String,
-      }),
-    ),
+    commands: Schema.Array(StoredCommand),
     sourceTree: Schema.optionalKey(Schema.String),
     bindingRevision: Schema.optionalKey(Schema.Number),
   }),
@@ -306,6 +314,12 @@ const decodeTransferInput = Schema.decodeEffect(BoatTransferInput);
 const Desktop = Schema.Struct({ desktopUrl: Schema.NullOr(Schema.String) });
 const Hosted = Schema.Struct({ url: Schema.String });
 const inactive = new Set(["archived", "stopped", "deleted", "error"]);
+const commandActive = (command: BoatCommand) =>
+  command.status === "running" || command.status === "unknown";
+const retainCommands = (commands: ReadonlyArray<StoredCommand>) => {
+  const completed = new Set(commands.filter((item) => !commandActive(item)).slice(-20));
+  return commands.filter((item) => commandActive(item) || completed.has(item));
+};
 const storageError = () => new BoatError({ category: "storage" });
 const decode =
   <S extends Schema.Top>(schema: S) =>
@@ -581,18 +595,104 @@ export const make = Effect.gen(function* () {
       .map(
         ({
           revision: _revision,
+          commandGeneration: _commandGeneration,
           sourceBinding: _sourceBinding,
           resumeOperation: _resumeOperation,
           usageThreadIds: _usageThreadIds,
           usageHistoryKnownSince: _usageHistoryKnownSince,
           usageTimeline: _usageTimeline,
           ...item
-        }) => item,
+        }) => ({
+          ...item,
+          commands: (work[item.requestId]?.commands ?? []).map(
+            ({ output: _output, ...command }) => command,
+          ),
+        }),
       );
   const key = Effect.gen(function* () {
     const value = yield* secrets.get(KEY).pipe(Effect.mapError(storageError));
     if (Option.isNone(value)) return yield* new BoatError({ category: "not_configured" });
     return Redacted.make(new TextDecoder().decode(value.value));
+  });
+  const saveCommand = Effect.fn("BoatService.saveCommand")(function* (
+    requestId: string,
+    command: StoredCommand,
+    options?: { readonly expected?: StoredCommand; readonly generation?: number },
+  ) {
+    yield* workLock.withPermits(1)(
+      Effect.gen(function* () {
+        const current = work[requestId]!;
+        const previous = current.commands.find((item) => item.processId === command.processId);
+        if (options?.expected && previous !== options.expected) return;
+        if (
+          commandActive(command) &&
+          options?.generation !== undefined &&
+          options.generation !==
+            ledger.instances.find((item) => item.requestId === requestId)?.commandGeneration
+        )
+          command = { ...command, status: "stop_requested" };
+        if (
+          previous &&
+          Object.keys(command).every(
+            (key) => previous[key as keyof StoredCommand] === command[key as keyof StoredCommand],
+          )
+        )
+          return;
+        const commands = [
+          ...current.commands.filter((item) => item.processId !== command.processId),
+          command,
+        ];
+        yield* saveWork({
+          ...work,
+          [requestId]: {
+            ...current,
+            commands: retainCommands(commands),
+          },
+        });
+      }),
+    );
+  });
+  const refreshCommand = Effect.fn("BoatService.refreshCommand")(function* (
+    target: { requestId: string; sandboxId: string },
+    command: StoredCommand,
+    token: Redacted.Redacted<string>,
+  ) {
+    const output = yield* api
+      .request(
+        token,
+        `/sandboxes/${encodeURIComponent(target.sandboxId)}/commands/${command.processId}`,
+      )
+      .pipe(
+        Effect.flatMap(decode(ProcessStatus)),
+        Effect.catchTags({
+          BoatError: (error) =>
+            error.status === 404
+              ? Effect.succeed<typeof ProcessStatus.Type>({ known: false })
+              : Effect.fail(error),
+        }),
+      );
+    if (output.processId !== undefined && output.processId !== command.processId)
+      return yield* new BoatError({ category: "provider" });
+    yield* saveCommand(
+      target.requestId,
+      {
+        ...command,
+        status:
+          output.known === false
+            ? "missing"
+            : output.exitCode !== undefined || output.running === false
+              ? "exited"
+              : output.running === true
+                ? "running"
+                : "unknown",
+        exitCode: output.exitCode ?? null,
+        ...(output.stdout !== undefined || output.stderr !== undefined
+          ? { output: processOutput(output) }
+          : {}),
+      },
+      { expected: command },
+    );
+    return output;
   });
   const project = Effect.fn("BoatService.project")(function* (projectId: ProjectId) {
     const found = yield* projects
@@ -1864,6 +1964,7 @@ export const make = Effect.gen(function* () {
         requestId: action.requestId,
         projectId: action.projectId,
         revision: 0,
+        commandGeneration: 0,
         sourceBinding: null,
         resumeOperation: null,
         savedSnapshot: null,
@@ -2022,12 +2123,13 @@ export const make = Effect.gen(function* () {
       const result = yield* api
         .request(token, sandboxPath, "DELETE")
         .pipe(Effect.flatMap(decode(Deletion)));
-      yield* updateInstance(action, {
+      yield* updateInstance(action, (current) => ({
         state: "deleting",
+        commandGeneration: current.commandGeneration + 1,
         costUsd: usage.dollars,
         deletionOperationId: result.operation.id,
         previewUrl: null,
-      });
+      }));
     } else if (action.action === "prepare") {
       const preparedInstance = instance;
       yield* Effect.acquireUseRelease(
@@ -2192,40 +2294,41 @@ export const make = Effect.gen(function* () {
         yield* updateInstance(action, (current) => ({
           leases: Array.from(new Set([...current.leases, agentThreadId])),
         }));
-      const output = yield* api
-        .request(token, `${sandboxPath}/commands`, "POST", {
-          command: `mkdir -p /home/user/crew && cd /home/user/crew || exit
+      const script = `mkdir -p /home/user/crew && cd /home/user/crew || exit
 export PATH="$PWD/node_modules/.bin:$PATH"
-${action.command}`,
-          timeoutSeconds: 20,
-        })
-        .pipe(Effect.flatMap(decode(ProcessStatus)));
-      if (output.processId !== undefined && output.exitCode === undefined) {
-        const command = {
-          processId: output.processId,
-          threadId: agentThreadId ?? null,
-          expiresAt: instance.expiresAt,
-        };
-        yield* workLock.withPermits(1)(
-          Effect.gen(function* () {
-            const current = work[action.requestId]!;
-            yield* saveWork({
-              ...work,
-              [action.requestId]: {
-                ...current,
-                commands: [
-                  ...current.commands.filter((item) => item.processId !== command.processId),
-                  command,
-                ],
+${action.command}`;
+      const output = yield* api
+        .request(
+          token,
+          `${sandboxPath}/commands`,
+          "POST",
+          action.backgroundSeconds === undefined
+            ? { command: script, timeoutSeconds: 20 }
+            : {
+                command: `timeout --signal=TERM --kill-after=5s ${action.backgroundSeconds}s bash -c '${script.replaceAll("'", "'\\''")}'`,
+                detached: true,
               },
-            });
-          }),
+        )
+        .pipe(Effect.flatMap(decode(ProcessStatus)));
+      if (action.backgroundSeconds !== undefined && output.processId === undefined)
+        return yield* new BoatError({ category: "provider" });
+      if (output.processId !== undefined) {
+        yield* saveCommand(
+          action.requestId,
+          {
+            processId: output.processId,
+            commandId: output.commandId ?? null,
+            threadId: threadId ?? source?.threadId ?? null,
+            expiresAt: instance.expiresAt,
+            status: output.exitCode === undefined ? "unknown" : "exited",
+            exitCode: output.exitCode ?? null,
+            output: processOutput(output),
+          },
+          { generation: instance.commandGeneration },
         );
       }
       yield* updateInstance(action, {
-        output: `${output.stdout ?? ""}\n${output.stderr ?? ""}`
-          .replace(/(#token=)[^\s]+/g, "$1[private]")
-          .slice(-12000),
+        output: processOutput(output),
       });
     } else if (action.action === "snapshot") {
       const name = `crew-${action.requestId}`
@@ -2269,19 +2372,48 @@ ${action.command}`,
         }),
       );
     } else if (action.action === "logs") {
-      if (instance.processId === null) return yield* new BoatError({ category: "not_found" });
-      const output = yield* api
-        .request(token, `${sandboxPath}/commands/${instance.processId}`)
-        .pipe(Effect.flatMap(decode(ProcessStatus)));
+      const command =
+        action.processId === undefined
+          ? undefined
+          : work[action.requestId]?.commands.find((item) => item.processId === action.processId);
+      if (action.processId !== undefined && !command)
+        return yield* new BoatError({ category: "not_found" });
+      if (command && !commandActive(command)) {
+        yield* updateInstance(action, { output: command.output ?? "" });
+        return yield* read(action.projectId);
+      }
+      if (!command && instance.processId === null)
+        return yield* new BoatError({ category: "not_found" });
+      const output = command
+        ? yield* refreshCommand(
+            { requestId: action.requestId, sandboxId: instance.sandboxId },
+            command,
+            token,
+          )
+        : yield* api
+            .request(token, `${sandboxPath}/commands/${instance.processId}`)
+            .pipe(Effect.flatMap(decode(ProcessStatus)));
       yield* updateInstance(action, {
-        output: `${output.stdout ?? ""}\n${output.stderr ?? ""}`
-          .replace(/(#token=)[^\s]+/g, "$1[private]")
-          .slice(-12000),
+        output: processOutput(output),
       });
     } else if (action.action === "cancel") {
-      if (instance.processId !== null)
+      if (action.processId !== undefined) {
+        const command = work[action.requestId]?.commands.find(
+          (item) => item.processId === action.processId,
+        );
+        if (!command) return yield* new BoatError({ category: "not_found" });
+        if (commandActive(command)) {
+          yield* api.request(token, `${sandboxPath}/commands/${command.processId}`, "DELETE");
+          yield* refreshCommand(
+            { requestId: action.requestId, sandboxId: instance.sandboxId },
+            command,
+            token,
+          );
+        }
+      } else if (instance.processId !== null) {
         yield* api.request(token, `${sandboxPath}/commands/${instance.processId}`, "DELETE");
-      yield* updateInstance(action, { processId: null });
+        yield* updateInstance(action, { processId: null });
+      }
     } else if (action.action === "preview") {
       if (threadId && settings.webAccess !== "private") yield* updateInstance(action, { threadId });
       yield* attachPreview(
@@ -2415,13 +2547,14 @@ ${action.command}`,
         );
       } else {
         yield* api.request(token, `${sandboxPath}/${action.action}`, "POST", {});
-        yield* updateInstance(action, {
+        yield* updateInstance(action, (current) => ({
           state: "stopping",
+          commandGeneration: current.commandGeneration + 1,
           processId: null,
           previewUrl: null,
           leases: [],
           resumeOperation: null,
-        });
+        }));
       }
     }
 
@@ -2435,8 +2568,20 @@ ${action.command}`,
       yield* workLock.withPermits(1)(
         Effect.gen(function* () {
           const current = work[action.requestId];
-          if (current && current.commands.length > 0)
-            yield* saveWork({ ...work, [action.requestId]: { ...current, commands: [] } });
+          if (current && current.commands.some(commandActive))
+            yield* saveWork({
+              ...work,
+              [action.requestId]: {
+                ...current,
+                commands: retainCommands(
+                  current.commands.map((command) =>
+                    commandActive(command)
+                      ? { ...command, status: "stop_requested" as const }
+                      : command,
+                  ),
+                ),
+              },
+            });
         }),
       );
     }
@@ -2497,7 +2642,8 @@ ${action.command}`,
       operationsInFlight.has(input.requestId) ||
       work[input.requestId]?.commands.some(
         (command) =>
-          !Number.isFinite(Date.parse(command.expiresAt)) || Date.parse(command.expiresAt) > now,
+          commandActive(command) &&
+          (!Number.isFinite(Date.parse(command.expiresAt)) || Date.parse(command.expiresAt) > now),
       )
     )
       return yield* new BoatError({ category: "conflict" });
@@ -2691,6 +2837,27 @@ ${action.command}`,
     );
   });
 
+  const retainedRuntimeOwner = Effect.fn("BoatService.retainedRuntimeOwner")(function* (
+    instance: StoredInstance,
+  ) {
+    const source = work[instance.requestId];
+    if (
+      !source?.source.threadId ||
+      source.source.projectId !== instance.projectId ||
+      !source.sourceTree ||
+      (instance.processId === null && instance.previewUrl === null && !instance.previewTabId)
+    )
+      return null;
+    const owner = yield* projections.getThreadShell(source.source.threadId);
+    return owner &&
+      owner.projectId === instance.projectId &&
+      owner.deletedAt === null &&
+      owner.archivedAt === null &&
+      owner.settledOverride !== "settled"
+      ? owner.id
+      : null;
+  }, Effect.mapError(storageError));
+
   const activeLeaseOwners = Effect.fn("BoatService.activeLeaseOwners")(function* (
     threadId: ThreadId,
     projectId: ProjectId,
@@ -2767,7 +2934,8 @@ ${action.command}`,
       if (!Number.isFinite(Date.parse(instance.expiresAt)) || Date.parse(instance.expiresAt) <= now)
         return yield* new BoatError({ category: "conflict" });
       const owners = yield* activeLeaseOwners(source.threadId, caller.projectId, target.requestId);
-      if (!owners.has(callerThreadId)) return yield* new BoatError({ category: "conflict" });
+      if (!owners.has(callerThreadId) && (yield* retainedRuntimeOwner(instance)) !== callerThreadId)
+        return yield* new BoatError({ category: "conflict" });
       const latest = ledger.instances.find((item) => item.requestId === target.requestId);
       if (
         latest?.sandboxId !== target.sandboxId ||
@@ -2868,44 +3036,18 @@ ${action.command}`,
         sandboxId: item.sandboxId,
         expiresAt: item.expiresAt,
       });
-    const commands = work[item.requestId]?.commands ?? [];
-    if (item.leases.length === 0 && commands.length === 0) return;
+    const commands = (work[item.requestId]?.commands ?? []).filter(commandActive);
+    if (item.leases.length === 0 && commands.length === 0 && !work[item.requestId]?.source.threadId)
+      return;
     const token = yield* key;
-    const finishedCommands = new Set<number>();
     for (const command of commands) {
-      if (Date.parse(command.expiresAt) <= now) {
-        finishedCommands.add(command.processId);
-        continue;
-      }
-      const status = yield* api
-        .request(
-          token,
-          `/sandboxes/${encodeURIComponent(item.sandboxId)}/commands/${command.processId}`,
-        )
-        .pipe(
-          Effect.flatMap(decode(ProcessStatus)),
-          Effect.catchTags({
-            BoatError: (error) => Effect.succeed(error.status === 404 ? { exitCode: -1 } : null),
-          }),
-        );
-      if (status?.exitCode !== undefined) finishedCommands.add(command.processId);
+      yield* refreshCommand(
+        { requestId: item.requestId, sandboxId: item.sandboxId },
+        command,
+        token,
+      ).pipe(Effect.orElseSucceed(() => undefined));
     }
-    const liveCommands = commands.filter((command) => !finishedCommands.has(command.processId));
-    if (finishedCommands.size > 0)
-      yield* workLock.withPermits(1)(
-        Effect.gen(function* () {
-          const current = work[item.requestId]!;
-          yield* saveWork({
-            ...work,
-            [item.requestId]: {
-              ...current,
-              commands: current.commands.filter(
-                (command) => !finishedCommands.has(command.processId),
-              ),
-            },
-          });
-        }),
-      );
+    const liveCommands = (work[item.requestId]?.commands ?? []).filter(commandActive);
     const liveOwners = new Set(
       liveCommands.flatMap((command) => (command.threadId ? [command.threadId] : [])),
     );
@@ -2915,6 +3057,8 @@ ${action.command}`,
       for (const active of yield* activeLeaseOwners(threadId, item.projectId, item.requestId))
         liveOwners.add(active);
     }
+    const retainedOwner = yield* retainedRuntimeOwner(item);
+    if (retainedOwner !== null) liveOwners.add(retainedOwner);
     const finishedOwners = new Set(item.leases.filter((threadId) => !liveOwners.has(threadId)));
     const newOwners = [...liveOwners].filter((threadId) => !item.leases.includes(threadId));
     const current =
@@ -2925,14 +3069,16 @@ ${action.command}`,
                 ...latest.leases.filter(
                   (threadId) =>
                     !finishedOwners.has(threadId) ||
-                    work[item.requestId]?.commands.some((command) => command.threadId === threadId),
+                    work[item.requestId]?.commands.some(
+                      (command) => commandActive(command) && command.threadId === threadId,
+                    ),
                 ),
                 ...newOwners,
               ]),
             ],
           }))
         : item;
-    if (current.leases.length === 0 && (work[item.requestId]?.commands.length ?? 0) === 0)
+    if (current.leases.length === 0 && !work[item.requestId]?.commands.some(commandActive))
       yield* operate({ action: "stop", projectId: item.projectId, requestId: item.requestId });
   });
   const reconcile = Effect.fn("BoatService.reconcile")(function* () {

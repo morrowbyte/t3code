@@ -1,4 +1,5 @@
 import { BoatUsagePanel } from "../settings/BoatSettings";
+import { Link } from "@tanstack/react-router";
 import { ChatGptUsageButton } from "../settings/ChatGptUsageButton";
 import { usesChatGptSharing } from "@t3tools/shared/usageLimits";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
@@ -510,6 +511,9 @@ export function UsagePage() {
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="@container/usage-header flex min-h-12 shrink-0 items-center gap-1 border-b ps-5 pe-2">
           {topbarContent}
+          <Button variant="ghost" size="sm" render={<Link to="/usage" />}>
+            Executions
+          </Button>
           <AppRouteModalClose />
         </header>
 

@@ -19,7 +19,7 @@ describe("ssh auth", () => {
       assert.equal(
         isSshAuthFailure(
           new Error(
-            "julius@100.65.180.100: Permission denied (publickey,password,keyboard-interactive).",
+            "developer@192.0.2.10: Permission denied (publickey,password,keyboard-interactive).",
           ),
         ),
         true,
@@ -32,11 +32,11 @@ describe("ssh auth", () => {
 
   it.effect("detects agent signing failures from current and pre-8.2 OpenSSH", () =>
     Effect.sync(() => {
-      const denied = "julius@devbox: Permission denied (publickey,password).";
+      const denied = "developer@devbox: Permission denied (publickey,password).";
       assert.isTrue(
         isSshAgentSigningFailure(
           new Error(
-            `sign_and_send_pubkey: signing failed for ED25519 "/home/julius/.ssh/id_ed25519" from agent: communication with agent failed\r\n${denied}`,
+            `sign_and_send_pubkey: signing failed for ED25519 "/home/developer/.ssh/id_ed25519" from agent: communication with agent failed\r\n${denied}`,
           ),
         ),
       );
@@ -55,7 +55,7 @@ describe("ssh auth", () => {
       assert.isFalse(
         isSshAgentSigningFailure(
           new Error(
-            `sign_and_send_pubkey: signing failed for ED25519-SK "/home/julius/.ssh/id_ed25519_sk": device not found\n${denied}`,
+            `sign_and_send_pubkey: signing failed for ED25519-SK "/home/developer/.ssh/id_ed25519_sk": device not found\n${denied}`,
           ),
         ),
       );

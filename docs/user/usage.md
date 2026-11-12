@@ -8,6 +8,13 @@ On mobile, choose **Usage** in the workspace navigation.
 
 ## Understand your usage
 
+On web and desktop, **Usage** opens execution history. Filter by project or thread to see
+saved model options, token measurements, context reports, and API estimates. A thread includes
+its child executions, including work in another project. **Compare same prompt** places up to
+four saved results beside their duration and usage; open each thread to assess its context.
+Unknown measurements stay unknown. **Compute usage** opens Boat history, while **Provider usage**
+opens the account-wide charts and limits described below.
+
 **Usage** combines Codex, Claude Code, Grok Build, OpenCode, Antigravity, Pi, Muse Code, and Cursor history
 from your connected environments. It shows token use, cache savings, model breakdowns, and estimated API-equivalent
 cost, split by token type and by speed. These estimates are not your subscription bill.

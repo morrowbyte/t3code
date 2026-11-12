@@ -56,7 +56,7 @@ function onUnhandledRejection(reason: unknown): void {
   process.exit(1);
 }
 
-/** Keeps the shell spawn guard armed while in-process agents run. */
+/** Keeps the shell spawn guard armed in the process executing the SDK. */
 export class CursorSdk extends Context.Service<
   CursorSdk,
   {

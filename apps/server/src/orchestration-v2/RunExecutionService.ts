@@ -36,7 +36,6 @@ import {
 import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
-import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -51,7 +50,6 @@ import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
 import * as PreviewAgentActivity from "../preview/PreviewAgentActivity.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import type { StorageFailure, StoragePressureGuard } from "../storagePressure.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -645,15 +643,6 @@ export const makeObservatoryInvocationCallback = (
 };
 
 export interface RunExecutionServiceV2StartRootRunInput {
-  readonly storagePressure?: {
-    readonly guard: StoragePressureGuard;
-    readonly paths: readonly string[];
-    readonly interrupt?: (input: {
-      readonly threadId: ThreadId;
-      readonly runId: OrchestrationV2Run["id"];
-      readonly reason: string;
-    }) => Effect.Effect<void, unknown>;
-  };
   readonly commandId: CommandId;
   readonly appThread: OrchestrationV2AppThread;
   readonly providerSessionId: ProviderSessionId;
@@ -1409,9 +1398,6 @@ export const layer: Layer.Layer<
         // Ends once the root turn and the children it drives settle. Background commands such
         // as a dev server keep this consumer alive afterwards and must not pin preview focus.
         const endPreviewActivity = yield* previewAgentActivity.begin(input.run.threadId);
-        const agentWorkDone = yield* Deferred.make<void>();
-        let storageStartAccepted = false;
-        let releaseStorageLease = () => {};
         const providerEventFiber = yield* eventSubscription.events.pipe(
           Stream.mapEffect((event) =>
             Effect.gen(function* () {
@@ -1604,10 +1590,6 @@ export const layer: Layer.Layer<
             Effect.gen(function* () {
               if (yield* agentTurnsSettled) {
                 yield* endPreviewActivity;
-                if (storageStartAccepted) {
-                  releaseStorageLease();
-                  yield* Deferred.succeed(agentWorkDone, undefined);
-                }
               }
             }),
           ),
@@ -1749,7 +1731,6 @@ export const layer: Layer.Layer<
               }),
           ),
           Effect.ensuring(endPreviewActivity),
-          Effect.ensuring(Deferred.succeed(agentWorkDone, undefined)),
           Effect.ensuring(eventSubscription.close),
           Effect.forkDetach,
         );
@@ -1838,252 +1819,76 @@ export const layer: Layer.Layer<
         const compact =
           input.message.attachments.length === 0 &&
           input.message.text.trim().toLowerCase() === "/compact";
-        yield* Effect.acquireUseRelease(
-          (input.storagePressure === undefined
-            ? Effect.succeed({ failure: null, release: () => {} })
-            : Effect.promise(() =>
-                input.storagePressure!.guard.acquire(input.storagePressure!.paths),
-              )
-          ).pipe(
-            Effect.map((lease) => {
-              let released = false;
-              return {
-                failure: lease.failure,
-                retained: false,
-                release: () => {
-                  if (released) return;
-                  released = true;
-                  lease.release();
-                },
-              };
-            }),
-          ),
-          (storageLease) =>
-            Effect.gen(function* () {
-              releaseStorageLease = storageLease.release;
-              const startTurn = Effect.suspend(() =>
-                compact
-                  ? (input.session.compactThread?.(turnInput) ??
-                    Effect.fail(
-                      new ProviderAdapter.ProviderAdapterTurnStartError({
-                        driver: input.session.driver,
-                        threadId: input.run.threadId,
-                        providerThreadId: input.providerThread.id,
-                        runId: input.run.id,
-                        cause: "This provider does not support context compaction.",
-                      }),
-                    ))
-                  : input.session.startTurn(turnInput),
-              );
-              const guardedStart =
-                storageLease.failure === null
-                  ? startTurn
-                  : Effect.fail(
-                      new ProviderAdapter.ProviderAdapterTurnStartError({
-                        driver: input.providerThread.driver,
-                        threadId: input.run.threadId,
-                        providerThreadId: input.providerThread.id,
-                        runId: input.run.id,
-                        cause: storageLease.failure.message,
-                      }),
-                    );
-              yield* Effect.andThen(shouldStart, guardedStart).pipe(
-                // Wait for acceptance so abandoned startup cannot leave a refresher
-                // on the already-detached ingestion fiber.
-                Effect.tap(() =>
-                  Effect.gen(function* () {
-                    storageStartAccepted = true;
-                    if (yield* agentTurnsSettled) {
-                      storageLease.release();
-                      yield* Deferred.succeed(agentWorkDone, undefined);
-                    }
-                    yield* Fiber.await(providerEventFiber).pipe(
-                      Effect.ensuring(Effect.sync(storageLease.release)),
-                      Effect.raceFirst(
-                        touchMcpCredential.pipe(Effect.delay("1 hour"), Effect.forever),
-                      ),
-                      Effect.forkDetach,
-                    );
-                  }),
-                ),
-                Effect.tap(() => {
-                  const pressure = input.storagePressure;
-                  if (!pressure) return Effect.void;
-                  const monitor = Effect.gen(function* () {
-                    let reported = false;
-                    let interruptRequested = false;
-                    let storageFailure: StorageFailure | null = null;
-                    while (true) {
-                      yield* Effect.sleep("5 seconds");
-                      const failure: StorageFailure | null =
-                        storageFailure ??
-                        (yield* Effect.promise(() => pressure.guard.checkRunning(pressure.paths)));
-                      if (failure === null) continue;
-                      storageFailure = failure;
-                      if (!interruptRequested && pressure.interrupt !== undefined) {
-                        interruptRequested = true;
-                        const interrupt = pressure
-                          .interrupt({
-                            threadId: input.run.threadId,
-                            runId: input.run.id,
-                            reason: failure.message,
-                          })
-                          .pipe(
-                            Effect.catchCause((cause) =>
-                              Effect.logWarning("Could not commit storage pressure interrupt", {
-                                runId: input.run.id,
-                                cause,
-                              }),
-                            ),
-                            Effect.forkDetach,
-                          );
-                        const fiber = yield* interrupt;
-                        // The direct provider stop remains available if dispatch is blocked.
-                        yield* Fiber.await(fiber).pipe(Effect.timeoutOption("1 second"));
-                      }
-                      const turn = yield* Ref.get(latestRootProviderTurn);
-                      if (turn === null) continue;
-                      if (!reported) {
-                        reported = true;
-                        const now = yield* DateTime.now;
-                        const ordinal = yield* Ref.updateAndGet(
-                          latestTurnItemOrdinal,
-                          (value) => value + 1,
-                        );
-                        yield* eventSink
-                          .write({
-                            events: [
-                              {
-                                id: yield* idAllocator.allocate.event({
-                                  threadId: input.run.threadId,
-                                }),
-                                type: "turn-item.updated" as const,
-                                threadId: input.run.threadId,
-                                runId: input.run.id,
-                                nodeId: input.rootNode.id,
-                                providerInstanceId: input.run.providerInstanceId,
-                                occurredAt: now,
-                                payload: {
-                                  ...makeProviderFailureTurnItem({
-                                    driver: input.providerThread.driver,
-                                    threadId: input.run.threadId,
-                                    runId: input.run.id,
-                                    nodeId: input.rootNode.id,
-                                    providerThreadId: input.providerThread.id,
-                                    providerTurnId: turn.id,
-                                    itemOrdinal: ordinal,
-                                    failure: makeProviderFailure({
-                                      class: "validation_error",
-                                      ...failure,
-                                    }),
-                                    occurredAt: now,
-                                  }),
-                                  id: idAllocator.derive.runSignalTurnItem({
-                                    runId: input.run.id,
-                                    signal: "storage-pressure",
-                                  }),
-                                  title:
-                                    failure.code === "storage_measurement_failed"
-                                      ? "Stopping work: storage capacity could not be measured"
-                                      : "Stopping work: low disk space",
-                                },
-                              },
-                            ],
-                          })
-                          .pipe(
-                            Effect.timeoutOption("1 second"),
-                            Effect.catchCause((cause) =>
-                              Effect.logWarning("Could not record storage pressure", { cause }),
-                            ),
-                          );
-                      }
-                      const thread = yield* Ref.get(latestProviderThread);
-                      const stopped = yield* Effect.result(
-                        input.session
-                          .interruptTurn({
-                            providerThread: thread,
-                            providerTurnId: turn.id,
-                            requestRuntimeRestart: true,
-                          })
-                          .pipe(Effect.uninterruptible),
-                      );
-                      if (stopped._tag === "Success") return;
-                      yield* Effect.logWarning("Could not stop turn after storage pressure", {
-                        runId: input.run.id,
-                        cause: stopped.failure,
-                      });
-                    }
-                  });
-                  return Fiber.await(providerEventFiber).pipe(
-                    Effect.raceFirst(monitor.pipe(Effect.raceFirst(Deferred.await(agentWorkDone)))),
-                    Effect.forkDetach,
-                    Effect.asVoid,
-                  );
+        const startTurn = Effect.suspend(() =>
+          compact
+            ? (input.session.compactThread?.(turnInput) ??
+              Effect.fail(
+                new ProviderAdapter.ProviderAdapterTurnStartError({
+                  driver: input.session.driver,
+                  threadId: input.run.threadId,
+                  providerThreadId: input.providerThread.id,
+                  runId: input.run.id,
+                  cause: "This provider does not support context compaction.",
                 }),
-                Effect.catchCause((cause) =>
-                  Effect.logError("orchestration V2 provider turn start failed", {
-                    runId: input.run.id,
-                    cause,
-                  }).pipe(
-                    Effect.andThen(Effect.sync(storageLease.release)),
-                    Effect.andThen(Fiber.interrupt(providerEventFiber)),
-                    Effect.andThen(Ref.get(latestProviderThread)),
-                    Effect.flatMap((providerThread) =>
-                      Ref.get(latestTurnItemOrdinal).pipe(
-                        Effect.flatMap((latestItemOrdinal) =>
-                          Ref.get(openRunOwnedSubagents).pipe(
-                            Effect.flatMap((openSubagents) =>
-                              writeFinalRunEvents({
-                                run: input.run,
-                                rootNode: input.rootNode,
-                                checkpointScope: input.checkpointScope,
-                                providerThread,
-                                attempt: input.attempt,
-                                writeIfRunCurrent: {
-                                  activeAttemptId: input.attempt.id,
-                                  expectedStatus: "running",
-                                },
-                                openRunOwnedSubagents: openSubagents,
-                                terminal: makeFailedTerminalEvent(
-                                  makeProviderFailure({
-                                    cause: Cause.squash(cause),
-                                    ...(storageLease.failure === null ? {} : storageLease.failure),
-                                    class:
-                                      storageLease.failure !== null
-                                        ? "validation_error"
-                                        : Exit.isFailure(shouldStart)
-                                          ? "unknown"
-                                          : "provider_error",
-                                  }),
-                                  latestItemOrdinal + 1,
-                                ),
-                                failureItemPersisted: false,
-                                refreshAfterTurn,
-                              }),
-                            ),
+              ))
+            : input.session.startTurn(turnInput),
+        );
+        yield* Effect.andThen(shouldStart, startTurn).pipe(
+          Effect.tap(() =>
+            Fiber.await(providerEventFiber).pipe(
+              Effect.raceFirst(touchMcpCredential.pipe(Effect.delay("1 hour"), Effect.forever)),
+              Effect.forkDetach,
+            ),
+          ),
+          Effect.catchCause((cause) =>
+            Effect.logError("orchestration V2 provider turn start failed", {
+              runId: input.run.id,
+              cause,
+            }).pipe(
+              Effect.andThen(Fiber.interrupt(providerEventFiber)),
+              Effect.andThen(Ref.get(latestProviderThread)),
+              Effect.flatMap((providerThread) =>
+                Ref.get(latestTurnItemOrdinal).pipe(
+                  Effect.flatMap((latestItemOrdinal) =>
+                    Ref.get(openRunOwnedSubagents).pipe(
+                      Effect.flatMap((openSubagents) =>
+                        writeFinalRunEvents({
+                          run: input.run,
+                          rootNode: input.rootNode,
+                          checkpointScope: input.checkpointScope,
+                          providerThread,
+                          attempt: input.attempt,
+                          writeIfRunCurrent: {
+                            activeAttemptId: input.attempt.id,
+                            expectedStatus: "running",
+                          },
+                          openRunOwnedSubagents: openSubagents,
+                          terminal: makeFailedTerminalEvent(
+                            makeProviderFailure({
+                              cause: Cause.squash(cause),
+                              class: Exit.isFailure(shouldStart) ? "unknown" : "provider_error",
+                            }),
+                            latestItemOrdinal + 1,
                           ),
-                        ),
-                      ),
-                    ),
-                    Effect.mapError(
-                      (writeCause) =>
-                        new RunExecutionStartError({
-                          commandId: input.commandId,
-                          runId: input.run.id,
-                          cause: { start: cause, write: writeCause },
+                          failureItemPersisted: false,
+                          refreshAfterTurn,
                         }),
+                      ),
                     ),
                   ),
                 ),
-              );
-              storageLease.retained = true;
-            }),
-          (storageLease) =>
-            storageLease.retained
-              ? Effect.void
-              : Effect.sync(storageLease.release).pipe(
-                  Effect.andThen(Fiber.interrupt(providerEventFiber)),
-                ),
+              ),
+              Effect.mapError(
+                (writeCause) =>
+                  new RunExecutionStartError({
+                    commandId: input.commandId,
+                    runId: input.run.id,
+                    cause: { start: cause, write: writeCause },
+                  }),
+              ),
+            ),
+          ),
+          Effect.onError(() => Fiber.interrupt(providerEventFiber)),
         );
       }),
     } satisfies RunExecutionServiceV2Shape);

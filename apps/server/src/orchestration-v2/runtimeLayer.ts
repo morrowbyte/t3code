@@ -5,7 +5,6 @@ import * as GuestShareService from "../guest/GuestShareService.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as Layer from "effect/Layer";
-import * as Effect from "effect/Effect";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as OrchestrationCommandReceipts from "../persistence/OrchestrationCommandReceipts.ts";
 import * as OrchestrationEventStore from "../persistence/OrchestrationEventStore.ts";
@@ -258,17 +257,10 @@ const layerOrchestratorProvided = Orchestrator.layer.pipe(
   ),
 );
 
-const layerStorageRunInterrupt = Layer.effect(
-  ProviderTurnStartService.StorageRunInterrupt,
-  Effect.map(Orchestrator.OrchestratorV2, ProviderTurnStartService.storageRunInterrupt),
-).pipe(Layer.provide(layerOrchestratorProvided));
-
 const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
       layerContextHandoffServiceProvided,
-      StoragePressure.layer,
-      layerStorageRunInterrupt,
       layerEventSink,
       IdAllocator.layer,
       ProjectionStore.layer,

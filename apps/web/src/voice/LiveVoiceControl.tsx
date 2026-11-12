@@ -24,9 +24,18 @@ import {
   Volume2Icon,
   VolumeXIcon,
   EllipsisIcon,
+  SlidersHorizontalIcon,
 } from "lucide-react";
 import { useAtomMount, useAtomSubscribe } from "@effect/atom-react";
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 import type {
   EnvironmentId,
@@ -66,6 +75,8 @@ import { formatInlineContextReference } from "~/lib/composerContextReferences";
 import { VoiceBubbleViewToggle } from "./VoiceBubbleViewToggle";
 import { VoiceActivityBubbles } from "./VoiceActivityBubbles";
 import { useWebLiveVoiceSession } from "./sessionContext";
+import { VoiceAudioSettings } from "./VoiceAudioSettings";
+import type { BrowserVoiceAudio } from "./BrowserVoiceAudio";
 import { Link } from "@tanstack/react-router";
 import { useThreadShell } from "~/state/entities";
 import { useEnvironment } from "~/state/environments";
@@ -633,11 +644,12 @@ function LiveVoiceEventFeed(props: {
   return null;
 }
 
-function createLiveVoiceBinding(
+export function createLiveVoiceBinding(
   signaling: LiveVoiceSignalingAdapter,
   beforePrepare: LiveVoiceControllerDependencies["beforePrepare"] | undefined,
   onStateChange: (state: LiveVoiceState) => void,
   setRecordingState: (state: CallRecordingState) => void,
+  audio: BrowserVoiceAudio,
 ) {
   const recording = createBrowserCallRecording(setRecordingState);
   let errorNotified = false;
@@ -649,20 +661,18 @@ function createLiveVoiceBinding(
       return () => window.clearInterval(timer);
     },
     ...(beforePrepare ? { beforePrepare } : {}),
-    getUserMedia: () => navigator.mediaDevices.getUserMedia({ audio: true }),
+    getUserMedia: audio.getUserMedia,
     createPeer: () => new RTCPeerConnection() as unknown as LiveVoicePeer,
     createRemoteStream: (track) => new MediaStream([track]),
-    createAudioSink: () => {
-      const audio = document.createElement("audio");
-      audio.autoplay = true;
-      return audio;
-    },
+    createAudioSink: audio.createAudioSink,
     createRequestId: randomUUID,
     scheduleTimeout: (callback, delayMs) => {
       const handle = window.setTimeout(callback, delayMs);
       return () => window.clearTimeout(handle);
     },
     onStateChange: (state) => {
+      if (state.phase === "stopping" || state.phase === "ended" || state.phase === "error")
+        audio.release();
       onStateChange(state);
       if (state.phase !== "error") errorNotified = false;
       else if (!errorNotified) {
@@ -692,7 +702,7 @@ export function LiveVoiceControl(props: {
 }) {
   const { beforePrepare, onPhaseChange } = props;
   const session = useWebLiveVoiceSession();
-  const { owner, state, controller, busy, setRecordingState } = session;
+  const { owner, state, controller, busy, setRecordingState, audio } = session;
   const hintId = useId();
   const prepare = useAtomCommand(liveVoiceEnvironment.prepare, {
     reportFailure: false,
@@ -832,9 +842,15 @@ export function LiveVoiceControl(props: {
     setRecordingState({ status: "off" });
     void owner.start(target, (onStateChange) => {
       let controller: LiveVoiceController;
-      const binding = createLiveVoiceBinding(signaling, beforePrepare, onStateChange, (next) => {
-        if (owner.getSnapshot().controller === controller) setRecordingState(next);
-      });
+      const binding = createLiveVoiceBinding(
+        signaling,
+        beforePrepare,
+        onStateChange,
+        (next) => {
+          if (owner.getSnapshot().controller === controller) setRecordingState(next);
+        },
+        audio,
+      );
       controller = binding.controller;
       return { controller, value: { bridge, recording: binding.recording } };
     });
@@ -879,6 +895,25 @@ export function LiveVoiceControl(props: {
             {unavailableNotice ?? "Start voice call"}
           </TooltipPopup>
         </Tooltip>
+      ) : null}
+      {!busy ? (
+        <Popover>
+          <PopoverTrigger
+            render={
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Voice audio settings"
+              />
+            }
+          >
+            <SlidersHorizontalIcon />
+          </PopoverTrigger>
+          <PopoverPopup side="top" align="end" width="md" padding="compact">
+            <VoiceAudioSettings audio={audio} />
+          </PopoverPopup>
+        </Popover>
       ) : null}
       {!active && !busy && gate.prepareFailure === "managed_account_required" ? (
         <Button
@@ -1015,8 +1050,18 @@ function VoiceControlsPortal({
 }
 
 export function GlobalLiveVoiceControl() {
-  const { owner, state, controller, target, value, busy, recordingState, controlsContainer } =
-    useWebLiveVoiceSession();
+  const {
+    owner,
+    state,
+    controller,
+    target,
+    value,
+    busy,
+    recordingState,
+    controlsContainer,
+    audio,
+  } = useWebLiveVoiceSession();
+  const audioState = useSyncExternalStore(audio.subscribe, audio.getSnapshot);
   const threadRef = target
     ? {
         environmentId: target.environmentId as EnvironmentId,
@@ -1053,20 +1098,21 @@ export function GlobalLiveVoiceControl() {
   if (!target || !value || !controller) return null;
   const active = ["live", "reconnecting", "playback-blocked"].includes(state.phase);
   const actionFailed = state.activities?.some((activity) => activity.status === "failed");
-  const statusText = state.inputIssue
-    ? "Microphone interrupted"
-    : {
-        idle: "Voice",
-        preparing: "Preparing…",
-        prepared: "Connecting…",
-        connecting: "Connecting…",
-        live: "Connected",
-        reconnecting: "Reconnecting…",
-        "playback-blocked": "Enable audio",
-        stopping: "Ending…",
-        ended: "Call ended",
-        error: "Call failed",
-      }[state.phase];
+  const statusText =
+    state.inputIssue || audioState.inputIssue
+      ? "Microphone interrupted"
+      : {
+          idle: "Voice",
+          preparing: "Preparing…",
+          prepared: "Connecting…",
+          connecting: "Connecting…",
+          live: "Connected",
+          reconnecting: "Reconnecting…",
+          "playback-blocked": "Enable audio",
+          stopping: "Ending…",
+          ended: "Call ended",
+          error: "Call failed",
+        }[state.phase];
   return (
     <>
       {state.lease && busy ? (
@@ -1101,6 +1147,7 @@ export function GlobalLiveVoiceControl() {
                 actionFailed
                   ? "bg-error"
                   : state.inputIssue ||
+                      audioState.inputIssue ||
                       state.phase === "reconnecting" ||
                       state.phase === "playback-blocked"
                     ? "bg-warning"
@@ -1213,6 +1260,7 @@ export function GlobalLiveVoiceControl() {
                       </p>
                     </div>
                     <VoiceBubbleViewToggle />
+                    <VoiceAudioSettings audio={audio} muted={state.localMuted} />
                     {recordingState.status !== "off" ? (
                       <p
                         role={recordingState.status === "error" ? "alert" : undefined}

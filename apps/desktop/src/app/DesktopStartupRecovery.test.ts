@@ -1,8 +1,29 @@
+// @effect-diagnostics nodeBuiltinImport:off -- models Electron navigation events at the recovery shell boundary.
+import { it as effectIt } from "@effect/vitest";
 import type { DesktopUpdateState } from "@t3tools/contracts";
-import { describe, expect, it } from "vite-plus/test";
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
+import * as Ref from "effect/Ref";
+import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
+import type * as Electron from "electron";
+import * as NodeEvents from "node:events";
+import { describe, expect, it, vi } from "vite-plus/test";
 
+vi.mock("electron", () => ({}));
+
+import * as ElectronApp from "../electron/ElectronApp.ts";
+import * as ElectronShell from "../electron/ElectronShell.ts";
+import * as ElectronTheme from "../electron/ElectronTheme.ts";
+import * as ElectronWindow from "../electron/ElectronWindow.ts";
+import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
 import { createInitialDesktopUpdateState } from "../updates/updateMachine.ts";
-import { resolveStartupRecoveryOffer } from "./DesktopStartupRecovery.ts";
+import * as DesktopEnvironment from "./DesktopEnvironment.ts";
+import * as DesktopState from "./DesktopState.ts";
+import { listen, resolveStartupRecoveryOffer } from "./DesktopStartupRecovery.ts";
 
 const updateState = (patch: Partial<DesktopUpdateState>): DesktopUpdateState => ({
   ...createInitialDesktopUpdateState(
@@ -68,3 +89,83 @@ describe("resolveStartupRecoveryOffer", () => {
     });
   });
 });
+
+effectIt.effect.each([
+  {
+    action: "reinstall",
+    lastStartedVersion: "0.1.8-nightly.20261109.109",
+    expected: "https://github.com/morrowbyte/t3code/releases/tag/v0.1.8-nightly.20261109.109",
+  },
+  {
+    action: "releases",
+    lastStartedVersion: null,
+    expected: "https://github.com/morrowbyte/t3code/releases",
+  },
+])("opens $action in the fork's release repository after startup fails", (testCase) =>
+  Effect.gen(function* () {
+    const rendered = yield* Deferred.make<void>();
+    const opened = yield* Deferred.make<unknown>();
+    const webContents = Object.assign(new NodeEvents.EventEmitter(), {
+      setWindowOpenHandler: () => {},
+    });
+    const window = {
+      webContents,
+      isDestroyed: () => false,
+      once: () => {},
+      loadURL: () => {
+        Deferred.doneUnsafe(rendered, Effect.void);
+        return Promise.resolve();
+      },
+    } as unknown as Electron.BrowserWindow;
+    const path = yield* Path.Path.pipe(Effect.provide(Path.layer));
+    const quitting = yield* Ref.make(false);
+    const primaryBackendStartup = yield* SubscriptionRef.make<DesktopState.PrimaryBackendStartup>({
+      _tag: "Failing",
+      reason: "The backend could not start after updating.",
+      output: "Backend startup failed.",
+    });
+    const state = updateState({
+      currentVersion: "0.1.10-nightly.20261112.4580",
+      enabled: false,
+      status: "disabled",
+    });
+    const layer = Layer.mergeAll(
+      Layer.mock(DesktopState.DesktopState)({ primaryBackendStartup, quitting }),
+      Layer.mock(DesktopEnvironment.DesktopEnvironment)({
+        appVersion: state.currentVersion,
+        stateDir: "/qa/profile",
+        logDir: "/qa/logs",
+        platform: "linux",
+        processArch: "x64",
+        path,
+      }),
+      Layer.mock(DesktopUpdates.DesktopUpdates)({
+        subscribe: Effect.succeed({ latest: state, changes: Stream.never }),
+        check: () => Effect.succeed({ checked: false, state }),
+      }),
+      Layer.mock(ElectronApp.ElectronApp)({ on: () => Effect.void }),
+      Layer.mock(ElectronShell.ElectronShell)({
+        openExternal: (url) => Deferred.succeed(opened, url).pipe(Effect.as(true)),
+      }),
+      Layer.mock(ElectronTheme.ElectronTheme)({ shouldUseDarkColors: Effect.succeed(false) }),
+      Layer.mock(ElectronWindow.ElectronWindow)({
+        main: Effect.succeedNone,
+        create: () => Effect.succeed(window),
+      }),
+      FileSystem.layerNoop({
+        readFileString: () => Effect.succeed(testCase.lastStartedVersion ?? ""),
+      }),
+    );
+
+    yield* listen.pipe(Effect.provide(layer));
+    yield* Deferred.await(rendered);
+    const preventDefault = vi.fn();
+    webContents.emit(
+      "will-navigate",
+      { preventDefault },
+      `https://startup-recovery.invalid/${testCase.action}`,
+    );
+    expect(yield* Deferred.await(opened)).toBe(testCase.expected);
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+  }).pipe(Effect.scoped),
+);

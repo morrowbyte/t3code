@@ -67,6 +67,18 @@ export const SavedSnapshot = Schema.Struct({
   status: Schema.Literals(["saving", "ready", "failed"]),
 });
 
+export const BoatCommand = Schema.Struct({
+  processId: Schema.Number,
+  commandId: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+  threadId: Schema.NullOr(ThreadId),
+  expiresAt: Schema.String,
+  status: Schema.Literals(["unknown", "running", "exited", "missing", "stop_requested"]).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed("unknown" as const)),
+  ),
+  exitCode: Schema.NullOr(Schema.Number).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+});
+export type BoatCommand = typeof BoatCommand.Type;
+
 export const BoatInstance = Schema.Struct({
   savedSnapshot: Schema.NullOr(SavedSnapshot).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(null)),
@@ -87,6 +99,7 @@ export const BoatInstance = Schema.Struct({
   costUsd: Schema.Number,
   snapshot: Schema.String,
   processId: Schema.NullOr(Schema.Number),
+  commands: Schema.optionalKey(Schema.Array(BoatCommand)),
   deletionOperationId: Schema.NullOr(Schema.String),
   output: Schema.String,
   previewUrl: Schema.NullOr(Schema.String),
@@ -177,6 +190,9 @@ export const BoatAction = Schema.Union([
     action: Schema.Literal("exec"),
     ...instanceFields,
     command: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(8000)),
+    backgroundSeconds: Schema.optional(
+      Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 86400 })),
+    ),
   }),
   Schema.Struct({
     action: Schema.Literals(["start", "resume", "renew"]),
@@ -184,8 +200,13 @@ export const BoatAction = Schema.Union([
     ttlMinutes: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 1440 }))),
   }),
   Schema.Struct({
-    action: Schema.Literals(["stop", "delete", "preview", "prepare", "logs", "cancel", "snapshot"]),
+    action: Schema.Literals(["stop", "delete", "preview", "prepare", "snapshot"]),
     ...instanceFields,
+  }),
+  Schema.Struct({
+    action: Schema.Literals(["logs", "cancel"]),
+    ...instanceFields,
+    processId: Schema.optional(Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0))),
   }),
 ]);
 export type BoatAction = typeof BoatAction.Type;
