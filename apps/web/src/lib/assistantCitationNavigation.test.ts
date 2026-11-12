@@ -6,6 +6,7 @@ import {
   createRouter,
 } from "@tanstack/react-router";
 import { describe, expect, it } from "vite-plus/test";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 
 import {
   assistantCitationFromLocation,
@@ -34,24 +35,55 @@ function createCitationRouter(initialEntry = "/environment-one/thread-one") {
 }
 
 describe("assistant citation navigation", () => {
-  it("preserves encoded quote whitespace through router navigation and reload", async () => {
-    const router = createCitationRouter();
-    await router.navigate(assistantCitationNavigation(citation));
+  it.each(["same", "other-thread", "other-environment"])(
+    "preserves quote navigation and marks only a thread return (%s)",
+    async (source) => {
+      const router = createCitationRouter();
+      const origin = scopeThreadRef(
+        source === "other-environment"
+          ? EnvironmentId.make("environment-two")
+          : citation.environmentId,
+        source === "other-thread" ? ThreadId.make("thread-two") : citation.threadId,
+      );
+      await router.navigate(assistantCitationNavigation(citation, origin));
+      expect(router.state.location.state.threadLinkOrigin).toBe(source !== "same");
 
-    expect(assistantCitationFromLocation(router.state.location.href)).toEqual(citation);
-    let href = router.history.location.href;
-    for (let reload = 0; reload < 3; reload++) {
-      const reloaded = createCitationRouter(href);
-      await reloaded.load();
-      await reloaded.navigate({
-        to: "/$environmentId/$threadId",
-        params: { environmentId: citation.environmentId, threadId: citation.threadId },
-        hash: true,
-        replace: true,
-      });
-      href = reloaded.history.location.href;
-      expect(assistantCitationFromLocation(href)).toEqual(citation);
-    }
+      expect(assistantCitationFromLocation(router.state.location.href)).toEqual(citation);
+      let href = router.history.location.href;
+      for (let reload = 0; reload < 3; reload++) {
+        const reloaded = createCitationRouter(href);
+        await reloaded.load();
+        await reloaded.navigate({
+          to: "/$environmentId/$threadId",
+          params: { environmentId: citation.environmentId, threadId: citation.threadId },
+          hash: true,
+          replace: true,
+        });
+        href = reloaded.history.location.href;
+        expect(assistantCitationFromLocation(href)).toEqual(citation);
+      }
+    },
+  );
+
+  it("returns directly to the source thread after quoting inside a linked thread", async () => {
+    const router = createCitationRouter("/environment-one/source-thread");
+    await router.navigate({
+      to: "/$environmentId/$threadId",
+      params: { environmentId: citation.environmentId, threadId: citation.threadId },
+      state: { threadLinkOrigin: true },
+    });
+    await router.navigate(
+      assistantCitationNavigation(
+        citation,
+        scopeThreadRef(citation.environmentId, citation.threadId),
+        true,
+      ),
+    );
+    expect(router.state.location.state.threadLinkOrigin).toBe(true);
+    expect(router.history.length).toBe(2);
+    router.history.back();
+    await router.load();
+    expect(router.state.location.pathname).toBe("/environment-one/source-thread");
   });
 
   it("reactivates an identical citation instead of deduplicating its navigation", async () => {

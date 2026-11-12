@@ -437,6 +437,7 @@ export type ServerBrowserViewerOutput =
       readonly canOperate: boolean;
       readonly controller: "agent" | "you" | "another-viewer" | "unclaimed";
       readonly generation: number;
+      readonly ready?: boolean;
       readonly dialog: {
         readonly type: string;
         readonly message: string;
@@ -491,6 +492,7 @@ export class ServerBrowser extends Context.Service<
       readonly maxHeight: number;
       readonly quality: number;
       readonly canOperate: boolean;
+      readonly frames?: boolean;
     }) => Effect.Effect<
       ServerBrowserViewer,
       ServerBrowserTabNotFoundError | ServerBrowserLaunchError,
@@ -528,6 +530,7 @@ interface ViewerState {
   readonly pause: () => Promise<void>;
   readonly resume: () => Promise<void>;
   scrolledAt: number;
+  readyGeneration: number | null;
 
   requestedSize: { width: number; height: number; order: number } | null;
 }
@@ -821,13 +824,22 @@ const make = Effect.gen(function* () {
                 ? "agent"
                 : "unclaimed",
         generation: tab.control.generation,
+        ready:
+          tab.control.controller === viewer.id && viewer.readyGeneration === tab.control.generation,
         dialog: dialogStatus(tab),
       });
   };
 
   const requireHumanForChallenge = (tab: ServerTab) => {
     if (tab.closing || tab.control.requiresHuman) return;
+    const generation = tab.control.generation;
     tab.control.requireHuman();
+    // Challenges invalidate queued input without undraining an established controller.
+    for (const viewer of tab.viewers) {
+      if (tab.control.controller === viewer.id && viewer.readyGeneration === generation) {
+        viewer.readyGeneration = tab.control.generation;
+      }
+    }
     broadcastControl(tab);
     runFork(
       manager
@@ -2844,6 +2856,7 @@ const make = Effect.gen(function* () {
     "ServerBrowser.attachViewer",
   )(function* (input) {
     const tab = yield* findTab(input.threadId, input.tabId);
+    const streamsFrames = input.frames !== false;
     const output = yield* Queue.make<ServerBrowserViewerOutput>({
       capacity: VIEWER_OUTPUT_LIMIT,
       strategy: "dropping",
@@ -2854,13 +2867,10 @@ const make = Effect.gen(function* () {
         catch: (cause) => new ServerBrowserLaunchError({ cause }),
       }),
       (session) =>
-        Effect.promise(() =>
-          session
-            .send("Page.stopScreencast")
-            .catch(constVoid)
-            .then(() => session.detach())
-            .catch(constVoid),
-        ),
+        Effect.promise(async () => {
+          if (streamsFrames) await session.send("Page.stopScreencast").catch(constVoid);
+          await session.detach().catch(constVoid);
+        }),
     );
     const quality = Math.min(100, Math.max(1, Math.round(input.quality)));
     // Chromium may drop the final frame during a burst; send a still when it settles.
@@ -2871,6 +2881,7 @@ const make = Effect.gen(function* () {
     let screencastParams = Promise.resolve();
     let screencastScale = 1;
     const startScreencast = (scale: number) => {
+      if (!streamsFrames) return Promise.resolve();
       screencastScale = scale;
       screencastParams = screencastParams.then(async () => {
         if (tab.capturing > 0) return;
@@ -2889,6 +2900,7 @@ const make = Effect.gen(function* () {
     const viewer: ViewerState = {
       id: NodeCrypto.randomUUID(),
       canOperate: input.canOperate,
+      readyGeneration: null,
       pressedKeys: new Map(),
       pressedButtons: new Map(),
       push: (next) => {
@@ -2918,6 +2930,7 @@ const make = Effect.gen(function* () {
         }
       },
       pause: () => {
+        if (!streamsFrames) return Promise.resolve();
         screencastParams = screencastParams.then(() =>
           session.send("Page.stopScreencast").then(constVoid, constVoid),
         );
@@ -2942,6 +2955,7 @@ const make = Effect.gen(function* () {
     );
     if (input.canOperate && tab.control.agentId === null && tab.control.controller === null) {
       yield* Effect.promise(() => tab.control.take(viewer.id));
+      viewer.readyGeneration = tab.control.generation;
     }
     broadcastControl(tab);
     pushFileChooser(tab);
@@ -2958,55 +2972,57 @@ const make = Effect.gen(function* () {
       }),
     );
     let screencastStarted = false;
-    session.on("Page.screencastFrame", (frame) => {
-      screencastStarted = true;
-      if (framesInFlight > 0) mayHaveDropped = true;
-      framesInFlight += 1;
-      const arrivedAt = Date.now();
-      recentFrames.push(arrivedAt);
-      while (recentFrames[0]! < arrivedAt - SCREENCAST_MOTION_WINDOW_MS) recentFrames.shift();
-      if (
-        !motion &&
-        recentFrames.length >= SCREENCAST_MOTION_FRAMES &&
-        arrivedAt - viewer.scrolledAt < SCREENCAST_MOTION_WINDOW_MS
-      ) {
-        motion = true;
-        void startScreencast(0.5);
-      } else if (motion && arrivedAt - viewer.scrolledAt > SCREENCAST_SETTLE_MS) {
-        motion = false;
-        recentFrames.length = 0;
-        void startScreencast(1);
-      }
-      if (settleTimer !== null) clearTimeout(settleTimer);
-      settleTimer = setTimeout(() => {
-        settleTimer = null;
-        if (!motion && !mayHaveDropped) return;
-        mayHaveDropped = false;
-        if (motion) {
+    if (streamsFrames) {
+      session.on("Page.screencastFrame", (frame) => {
+        screencastStarted = true;
+        if (framesInFlight > 0) mayHaveDropped = true;
+        framesInFlight += 1;
+        const arrivedAt = Date.now();
+        recentFrames.push(arrivedAt);
+        while (recentFrames[0]! < arrivedAt - SCREENCAST_MOTION_WINDOW_MS) recentFrames.shift();
+        if (
+          !motion &&
+          recentFrames.length >= SCREENCAST_MOTION_FRAMES &&
+          arrivedAt - viewer.scrolledAt < SCREENCAST_MOTION_WINDOW_MS
+        ) {
+          motion = true;
+          void startScreencast(0.5);
+        } else if (motion && arrivedAt - viewer.scrolledAt > SCREENCAST_SETTLE_MS) {
           motion = false;
           recentFrames.length = 0;
           void startScreencast(1);
         }
-        void pushStill();
-      }, SCREENCAST_SETTLE_MS);
-      viewer.push({
-        _tag: "frame",
-        data: Buffer.from(frame.data, "base64"),
-        ack: Effect.promise(() =>
-          sleepUntil(arrivedAt + SCREENCAST_ACK_PACE_MS).then(() => {
-            framesInFlight -= 1;
-            return session
-              .send("Page.screencastFrameAck", { sessionId: frame.sessionId })
-              .catch(constVoid);
-          }),
-        ),
+        if (settleTimer !== null) clearTimeout(settleTimer);
+        settleTimer = setTimeout(() => {
+          settleTimer = null;
+          if (!motion && !mayHaveDropped) return;
+          mayHaveDropped = false;
+          if (motion) {
+            motion = false;
+            recentFrames.length = 0;
+            void startScreencast(1);
+          }
+          void pushStill();
+        }, SCREENCAST_SETTLE_MS);
+        viewer.push({
+          _tag: "frame",
+          data: Buffer.from(frame.data, "base64"),
+          ack: Effect.promise(() =>
+            sleepUntil(arrivedAt + SCREENCAST_ACK_PACE_MS).then(() => {
+              framesInFlight -= 1;
+              return session
+                .send("Page.screencastFrameAck", { sessionId: frame.sessionId })
+                .catch(constVoid);
+            }),
+          ),
+        });
       });
-    });
+    }
     void broadcastViewport(tab).catch(constVoid);
-    yield* Effect.promise(() => startScreencast(1));
+    if (streamsFrames) yield* Effect.promise(() => startScreencast(1));
     // An idle page does not repaint for a new screencast, so the viewer
     // starts from a still unless a live frame beat it.
-    if (!screencastStarted) yield* Effect.promise(pushStill);
+    if (streamsFrames && !screencastStarted) yield* Effect.promise(pushStill);
     return {
       output,
       input: (raw: unknown) =>
@@ -3016,9 +3032,32 @@ const make = Effect.gen(function* () {
           if (!message) return;
           try {
             if (message.type === "takeControl") {
+              viewer.readyGeneration = null;
               const taking = tab.control.take(viewer.id);
+              let generation = tab.control.generation;
               broadcastControl(tab);
-              await taking;
+              try {
+                await taking;
+              } catch (error) {
+                if (
+                  tab.control.controller !== viewer.id ||
+                  !tab.control.requiresHuman ||
+                  tab.control.generation === generation
+                )
+                  throw error;
+              }
+              if (
+                tab.control.controller === viewer.id &&
+                tab.control.requiresHuman &&
+                tab.control.generation !== generation
+              ) {
+                generation = tab.control.generation;
+                await tab.control.take(viewer.id);
+              }
+              if (tab.control.controller === viewer.id && tab.control.generation === generation) {
+                viewer.readyGeneration = generation;
+              }
+              broadcastControl(tab);
               pushFileChooser(tab);
             } else if (message.type === "releaseControl") {
               const releasing = tab.control.release(viewer.id, () =>

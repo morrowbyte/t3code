@@ -1,7 +1,5 @@
-import type { AppRestoreInput, AppRestoreResult, AppRestoreState } from "@t3tools/contracts";
-import * as Context from "effect/Context";
+import type { AppRestoreInput } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import { restoreStoppedServer } from "../serviceLauncher.ts";
@@ -71,25 +69,4 @@ export const serverUpdatesOnHold = Effect.fn("ServerRestore.updateHold")(functio
   readonly baseDir: string;
 }) {
   return yield* Effect.promise(() => serverUpdateHold(input.baseDir));
-});
-
-export class ServerRestore extends Context.Service<
-  ServerRestore,
-  {
-    readonly list: (input: {
-      readonly baseDir: string;
-    }) => Effect.Effect<AppRestoreState, ServerRestoreError>;
-    readonly restore: (
-      input: AppRestoreInput & { readonly baseDir: string },
-    ) => Effect.Effect<AppRestoreResult, ServerRestoreError>;
-    readonly releaseHold: (input: {
-      readonly baseDir: string;
-    }) => Effect.Effect<AppRestoreState, ServerRestoreError>;
-  }
->()("t3/cloud/serverRestore") {}
-
-export const layer = Layer.succeed(ServerRestore, {
-  list: listServerRestore,
-  restore: restoreServerVersion,
-  releaseHold: releaseServerUpdateHold,
 });

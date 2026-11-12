@@ -1,7 +1,9 @@
 package expo.modules.t3nativecontrols
 
 import android.content.ClipData
+import android.content.ComponentName
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -22,6 +24,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class T3NativeControlsModule : Module() {
   private val apkInstallerPending = AtomicBoolean(false)
   private var filePreviewPromise: Promise? = null
+  private var fileSharePromise: Promise? = null
   private var voiceSessionId: String? = null
   private val voiceStopped: (String, String) -> Unit = { sessionId, reason ->
     sendEvent("onVoiceSessionStopped", mapOf("sessionId" to sessionId, "reason" to reason))
@@ -34,6 +37,9 @@ class T3NativeControlsModule : Module() {
 
     OnCreate { T3VoiceSessionService.onStopped = voiceStopped }
     OnDestroy {
+      val pendingShare = fileSharePromise
+      fileSharePromise = null
+      pendingShare?.reject("FILE_SHARE_CANCELLED", "The share was interrupted.", null)
       voiceSessionId?.let { T3VoiceSessionService.stop(it) }
       if (T3VoiceSessionService.onStopped === voiceStopped) T3VoiceSessionService.onStopped = null
     }
@@ -117,32 +123,71 @@ class T3NativeControlsModule : Module() {
     }
 
     AsyncFunction("openFile") { uri: String, mimeType: String, promise: Promise ->
-      check(filePreviewPromise == null) { "A document viewer is already open." }
-      val activity = appContext.currentActivity ?: error("The app is not active.")
-      val file = File(URI(uri)).canonicalFile
-      require(file.isFile) { "The file is no longer available." }
-      val contentUri = FileProvider.getUriForFile(
-        activity,
-        "${activity.packageName}.FileSystemFileProvider",
-        file
-      )
-      val intent = Intent(Intent.ACTION_VIEW).apply {
-        setDataAndType(contentUri, mimeType)
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-      }
-      filePreviewPromise = promise
       try {
+        check(filePreviewPromise == null) { "A document viewer is already open." }
+        val activity = appContext.currentActivity ?: error("The app is not active.")
+        val file = File(URI(uri)).canonicalFile
+        require(file.isFile) { "The file is no longer available." }
+        val contentUri = FileProvider.getUriForFile(
+          activity,
+          "${activity.packageName}.FileSystemFileProvider",
+          file
+        )
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+          setDataAndType(contentUri, mimeType)
+          addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        filePreviewPromise = promise
         activity.startActivityForResult(intent, 7343)
       } catch (error: Exception) {
-        filePreviewPromise = null
-        throw error
+        if (filePreviewPromise === promise) filePreviewPromise = null
+        promise.reject("FILE_PREVIEW_FAILED", error.message, error)
       }
     }
+
+    AsyncFunction("shareFile") { uri: String, mimeType: String, title: String, promise: Promise ->
+      try {
+        check(fileSharePromise == null) { "A file share is already open." }
+        val activity = appContext.currentActivity ?: error("The app is not active.")
+        val file = File(URI(uri)).canonicalFile
+        require(file.isFile) { "The file is no longer available." }
+        val contentUri = FileProvider.getUriForFile(
+          activity,
+          "${activity.packageName}.FileSystemFileProvider",
+          file
+        )
+        val sendIntent = Intent(Intent.ACTION_SEND).apply {
+          setTypeAndNormalize(mimeType.ifBlank { "application/octet-stream" })
+          putExtra(Intent.EXTRA_STREAM, contentUri)
+          clipData = ClipData.newRawUri(file.name, contentUri)
+          addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        val ownComponents = activity.packageManager
+          .queryIntentActivities(sendIntent, PackageManager.MATCH_DEFAULT_ONLY)
+          .filter { it.activityInfo.packageName == activity.packageName }
+          .map { ComponentName(it.activityInfo.packageName, it.activityInfo.name) }
+          .distinct()
+          .toTypedArray()
+        val chooser = Intent.createChooser(sendIntent, title.ifBlank { file.name }).apply {
+          putExtra(Intent.EXTRA_EXCLUDE_COMPONENTS, ownComponents)
+        }
+        fileSharePromise = promise
+        activity.startActivityForResult(chooser, 7344)
+      } catch (error: Exception) {
+        if (fileSharePromise === promise) fileSharePromise = null
+        promise.reject("FILE_SHARE_FAILED", error.message, error)
+      }
+    }.runOnQueue(Queues.MAIN)
 
     OnActivityResult { _, (requestCode) ->
       if (requestCode == 7343) {
         filePreviewPromise?.resolve(null)
         filePreviewPromise = null
+      }
+      if (requestCode == 7344) {
+        val pendingShare = fileSharePromise
+        fileSharePromise = null
+        pendingShare?.resolve(null)
       }
     }
 

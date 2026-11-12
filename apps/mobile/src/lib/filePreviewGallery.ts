@@ -9,6 +9,7 @@ export function filePreviewKey(source: FilePreviewItem): string {
         .sort(([a], [b]) => a.localeCompare(b)),
     ]);
   if ("attachment" in source) return `attachment:${source.attachment.id}`;
+  if (source.draftAttachmentId !== undefined) return `attachment:${source.draftAttachmentId}`;
   return source.uri;
 }
 

@@ -1,6 +1,7 @@
 import type { ChatFileAttachment } from "@t3tools/contracts";
 import type { Directory } from "expo-file-system";
 import type { SharingOptions } from "expo-sharing";
+import { Platform } from "react-native";
 
 import { beginForegroundHandoff } from "./foreground-handoff";
 import { uuidv4 } from "./uuid";
@@ -130,12 +131,13 @@ async function createCachedAttachmentFile(attachment: AttachmentFileMetadata) {
             mimeType: attachment.mimeType.split(";", 1)[0]?.trim() || "application/octet-stream",
             dialogTitle: attachment.name,
           };
-          if (sourceIdentifier) {
+          if (!sourceIdentifier && Platform.OS !== "android") {
+            if (signal.aborted || disposed) return;
+            await Sharing.shareAsync(file.uri, options);
+          } else {
             const { shareFileFromSource } = await import("./shareFileFromSource");
             if (signal.aborted || disposed) return;
             await shareFileFromSource(file.uri, options, sourceIdentifier);
-          } else {
-            await Sharing.shareAsync(file.uri, options);
           }
           shared = true;
         } catch (cause) {
@@ -162,7 +164,7 @@ async function createCachedAttachmentFile(attachment: AttachmentFileMetadata) {
 
 export function nativeViewerErrorMessage(cause: unknown): string {
   const text = cause instanceof Error ? cause.message : String(cause);
-  return /ActivityNotFound|cannot be previewed/i.test(text)
+  return /ActivityNotFound|No Activity found to handle Intent|cannot be previewed/i.test(text)
     ? "No app on this device can show this format. Save or share it to open it elsewhere."
     : "The file could not be opened. Check the connection and try again.";
 }
@@ -227,6 +229,68 @@ export async function downloadAttachmentForPreview(input: {
     throw new Error("Could not download the attachment. Check the connection and try again.", {
       cause,
     });
+  }
+}
+
+export async function downloadAndSaveAttachment(input: {
+  readonly url: string;
+  readonly attachment: AttachmentFileMetadata;
+  readonly signal: AbortSignal;
+}): Promise<boolean> {
+  const file = await downloadAttachmentForPreview(input);
+  if (file === null) return false;
+  try {
+    const { Directory, File } = await import("expo-file-system");
+    if (input.signal.aborted) return false;
+    const endHandoff = beginForegroundHandoff();
+    try {
+      let directory: InstanceType<typeof Directory>;
+      try {
+        directory = await Directory.pickDirectoryAsync();
+      } catch (cause) {
+        if (
+          input.signal.aborted ||
+          (typeof cause === "object" &&
+            cause !== null &&
+            "code" in cause &&
+            cause.code === "ERR_PICKER_CANCELLED")
+        ) {
+          return false;
+        }
+        throw cause;
+      }
+      if (input.signal.aborted) return false;
+      const destination = directory.createFile(
+        downloadFileName(input.attachment.name),
+        input.attachment.mimeType.split(";", 1)[0]?.trim() || "application/octet-stream",
+      );
+      try {
+        // SDK copy(overwrite) deletes SAF documents; stream into this newly created file instead.
+        const writable = destination.writableStream();
+        try {
+          await new File(file.uri).readableStream().pipeTo(writable, { signal: input.signal });
+          input.signal.throwIfAborted();
+        } catch (cause) {
+          await writable.abort().catch(() => undefined);
+          throw cause;
+        }
+        return true;
+      } catch (cause) {
+        try {
+          destination.delete();
+        } catch (cleanupError) {
+          console.warn("[attachment-downloads] could not remove an incomplete save", cleanupError);
+        }
+        if (input.signal.aborted) return false;
+        throw new Error("Could not save the attachment. Choose a writable folder and try again.", {
+          cause,
+        });
+      }
+    } finally {
+      endHandoff();
+    }
+  } finally {
+    file.dispose();
   }
 }
 

@@ -1478,6 +1478,40 @@ export function appendComposerDraftAttachments(
   return rejected.length;
 }
 
+export function replaceComposerDraftAttachment(
+  draftKey: string,
+  previousId: string,
+  attachment: DraftComposerAttachment,
+  message: string,
+): boolean {
+  let removed: DraftComposerAttachment | undefined;
+  updateComposerDrafts((current) => {
+    const existing = normalizeDraft(current[draftKey]);
+    removed = existing.attachments.find((entry) => entry.id === previousId);
+    if (!removed) return current;
+    const text = message.trim()
+      ? `${existing.text}${existing.text ? "\n\n" : ""}${message}`
+      : existing.text;
+    return withComposerDraft(current, draftKey, {
+      ...existing,
+      text,
+      attachments: existing.attachments.map((entry) =>
+        entry.id === previousId ? attachment : entry,
+      ),
+      context: existing.context && {
+        ...existing.context,
+        records: existing.context.records.map((record) =>
+          "attachmentId" in record && record.attachmentId === previousId
+            ? attachmentContextRecord(attachment, record.contextId)
+            : record,
+        ),
+      },
+    });
+  });
+  if (removed) scheduleUnusedComposerAttachmentCleanup([removed]);
+  return removed !== undefined;
+}
+
 export function replaceComposerDraftAttachments(
   draftKey: string,
   attachments: ReadonlyArray<DraftComposerAttachment>,

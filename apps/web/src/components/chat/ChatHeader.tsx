@@ -42,6 +42,7 @@ import { cn } from "~/lib/utils";
 import { textDirection } from "~/textDirection";
 import { useClientSettings } from "../../hooks/useSettings";
 import { PinnedWorkTabs } from "../PinnedWorkTabs";
+import { KeyboardModeControl } from "../keyboard/KeyboardModeControl";
 import { ThreadLinkBackButton } from "./ThreadLinkBackButton";
 import { GuestShareIndicator } from "./GuestShareControls";
 
@@ -433,6 +434,7 @@ export const ChatHeader = memo(function ChatHeader({
           ) : null}
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
+      <KeyboardModeControl />
       <PinnedWorkTabs maxRows={2} className="max-w-full flex-[1_1_44rem]" />
       {isServerThread ? <GuestShareIndicator threadRef={activeThreadRef} /> : null}
     </div>

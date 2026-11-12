@@ -101,6 +101,7 @@ import {
   makeComposerMentionDragHandlers,
 } from "./composerMentionDrag";
 import { serializeComposerImages } from "./composerImagePersistence";
+import { applyImageAnnotation } from "./ImageAnnotationSend";
 import {
   isInsideCollapsedComposerControls,
   isInsideRestingComposerControlScope,
@@ -931,11 +932,44 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const openPrLink = useOpenPrLink(routeThreadRef);
   const [previewFileId, setPreviewFileId] = useState<string | null>(null);
   const previewFile = composerFiles.find((file) => file.id === previewFileId);
+  const appendAnnotationComment = useStableCallback((text: string) => {
+    if (questionAttachmentTarget && activePendingProgress?.activeQuestion) {
+      const answer = activePendingProgress.customAnswer ?? "";
+      const next = `${answer}${answer ? "\n\n" : ""}${text}`;
+      onChangeActivePendingUserInputCustomAnswer(
+        activePendingProgress.activeQuestion.id,
+        next,
+        collapseExpandedComposerCursor(next, next.length, isLiteralPendingAnswer),
+        next.length,
+        false,
+      );
+    } else {
+      const store = useComposerDraftStore.getState();
+      const prompt = store.getComposerDraft(attachmentDraftTarget)?.prompt ?? "";
+      store.setPrompt(attachmentDraftTarget, `${prompt}${prompt ? "\n\n" : ""}${text}`);
+    }
+  });
   const composerContextActions = {
     environmentId,
     cwd: gitCwd ?? undefined,
     expandImage: (imageId: string) => {
-      const preview = buildExpandedImagePreview(composerImages, imageId);
+      const preview = buildExpandedImagePreview(
+        composerImages,
+        imageId,
+        (id, file, text, signal) => {
+          const image = composerImages.find((entry) => entry.id === id);
+          if (!image) return Promise.resolve(false);
+          return applyImageAnnotation({
+            file,
+            text,
+            signal,
+            image,
+            onComment: appendAnnotationComment,
+            draftTarget: attachmentDraftTarget,
+            isCurrent: () => attachmentTargetKeyRef.current === attachmentTargetKey,
+          });
+        },
+      );
       if (preview) onExpandImage(preview);
     },
     openFile: setPreviewFileId,
@@ -2642,9 +2676,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     standaloneComposerImages.length > 0 ? (
       <ComposerRestingImagePreviews
         images={standaloneComposerImages}
-        allImages={composerImages}
         resolvedTheme={resolvedTheme}
-        onExpandImage={onExpandImage}
+        onExpandImage={composerContextActions.expandImage}
         onShowMore={expandMobileComposer}
       />
     ) : null;
@@ -3607,7 +3640,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       standaloneComposerImages.length > 0 ||
       preparingComposerImages.length > 0) ? (
       <ComposerAttachmentMediaRow
-        images={composerImages}
         expandedImages={standaloneComposerImages}
         preparingImages={preparingComposerImages}
         videos={composerVideos}
@@ -3622,6 +3654,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         attachmentDraftTarget={attachmentDraftTarget}
         canOperateThread={canOperateThread}
         onExpandImage={onExpandImage}
+        onExpandComposerImage={composerContextActions.expandImage}
         onFileOpen={onFileOpen}
         onRemoveImage={removeComposerImage}
         onRemoveFile={removeComposerFileFromDraft}

@@ -220,7 +220,7 @@ export function PreviewView({
     );
   }, [serverToolbarShown]);
   const [serverControlledTabId, setServerControlledTabId] = useState<string | null>(null);
-  const serverInputDisabled = isServerTab && serverControlledTabId !== runtimeTabId;
+  const serverInputDisabled = serverOwnsRendering && serverControlledTabId !== runtimeTabId;
   const [serverFrameTabId, setServerFrameTabId] = useState<string | null>(null);
   // A desktop page that mounted before its tab went headless leaves its stale state here.
   const desktopOverlay =
@@ -262,8 +262,9 @@ export function PreviewView({
   }, [clearSelection, selectionScope, threadEnvironmentId, threadId]);
 
   const navigateToResolvedUrl = async (resolvedUrl: string) => {
-    if (isServerTab && serverSurfaceRef.current) {
+    if (serverOwnsRendering) {
       if (serverInputDisabled) return false;
+      if (!serverSurfaceRef.current) return false;
       serverSurfaceRef.current.navigate(resolvedUrl);
       rememberPreviewUrl(threadRef, resolvedUrl);
       return true;
@@ -329,7 +330,7 @@ export function PreviewView({
   };
 
   const handleRefresh = () => {
-    if (isServerTab) serverSurfaceRef.current?.reload();
+    if (serverOwnsRendering) serverSurfaceRef.current?.reload();
     else if (previewBridge && runtimeTabId) void previewBridge.refresh(runtimeTabId);
   };
 
@@ -400,12 +401,12 @@ export function PreviewView({
   };
 
   const handleBack = () => {
-    if (isServerTab) serverSurfaceRef.current?.history(-1);
+    if (serverOwnsRendering) serverSurfaceRef.current?.history(-1);
     else if (previewBridge && runtimeTabId) void previewBridge.goBack(runtimeTabId);
   };
 
   const handleForward = () => {
-    if (isServerTab) serverSurfaceRef.current?.history(1);
+    if (serverOwnsRendering) serverSurfaceRef.current?.history(1);
     else if (previewBridge && runtimeTabId) void previewBridge.goForward(runtimeTabId);
   };
 
@@ -1159,14 +1160,45 @@ export function PreviewView({
               />
             </div>
           </>
-        ) : runtimeTabId && snapshot && !showEmptyState ? (
+        ) : runtimeTabId && snapshot && (nativeServerTab || !showEmptyState) ? (
           previewBridge ? (
-            <BrowserSurfaceSlot
-              key={runtimeTabId}
-              tabId={runtimeTabId}
-              visible={visible && !isUnreachable}
-              className="absolute inset-0 h-full w-full"
-            />
+            nativeServerTab ? (
+              <ServerBrowserSurface
+                key={runtimeTabId}
+                ref={serverSurfaceRef}
+                mode="native"
+                environmentId={threadRef.environmentId}
+                threadId={threadRef.threadId}
+                tabId={snapshot.tabId}
+                visible={visible}
+                onControl={(control) => {
+                  const ready =
+                    control?.canOperate === true &&
+                    control.controller === "you" &&
+                    control.ready === true;
+                  setServerControlledTabId(ready ? runtimeTabId : null);
+                  if (!ready) setPickActive(false);
+                }}
+                onPopup={(popupTabId) => showPreviewPopup(threadRef, popupTabId, "panel")}
+                className={cn("absolute inset-0 h-full w-full", showEmptyState && "invisible")}
+              >
+                {(interactive) => (
+                  <BrowserSurfaceSlot
+                    tabId={runtimeTabId}
+                    visible={visible && !showEmptyState && !isUnreachable}
+                    interactive={interactive}
+                    className="absolute inset-0 h-full w-full"
+                  />
+                )}
+              </ServerBrowserSurface>
+            ) : (
+              <BrowserSurfaceSlot
+                key={runtimeTabId}
+                tabId={runtimeTabId}
+                visible={visible && !isUnreachable}
+                className="absolute inset-0 h-full w-full"
+              />
+            )
           ) : (
             <div className="flex h-full items-center justify-center p-8 text-center">
               <p className="max-w-sm text-sm text-muted-foreground">

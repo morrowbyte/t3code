@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import { annotationPoint } from "./ImageAnnotation";
+import { applyImageAnnotation } from "./ImageAnnotationSend";
+import { DraftId, useComposerDraftStore } from "../../composerDraftStore";
 
 describe("annotationPoint", () => {
   it("keeps image-space coordinates through fit, zoom, pan and narrow layouts", () => {
@@ -23,4 +25,80 @@ describe("annotationPoint", () => {
     expect(annotationPoint({ clientX: 10, clientY: 20 }, { ...bounds, width: 0 })).toBeNull();
     expect(annotationPoint({ clientX: NaN, clientY: 20 }, bounds)).toBeNull();
   });
+});
+
+describe("applyImageAnnotation", () => {
+  it.each(["apply", "question", "cancel", "switch", "replace", "unreadable"] as const)(
+    "preserves the draft through %s without sending a message",
+    async (outcome) => {
+      const store = useComposerDraftStore.getState();
+      const target = DraftId.make(`annotation-${outcome}`);
+      const file = new File(["original"], "shot.png", { type: "image/png" });
+      const image = {
+        type: "image" as const,
+        id: "image",
+        file,
+        name: file.name,
+        mimeType: file.type,
+        sizeBytes: file.size,
+        previewUrl: URL.createObjectURL(file),
+      };
+      const other = {
+        ...image,
+        id: "other",
+        name: "other.png",
+        previewUrl: URL.createObjectURL(file),
+      };
+      store.addImages(target, [image, other], { allowDuplicates: true });
+      store.setPrompt(target, "Unsent text\nwith spacing.");
+      const before = store.getComposerDraft(target)!;
+      const controller = new AbortController();
+      if (outcome === "cancel") controller.abort();
+      let reads = 0;
+      let answer = "Existing answer";
+      try {
+        const pending = applyImageAnnotation({
+          draftTarget: target,
+          image,
+          file:
+            outcome === "unreadable"
+              ? new File(["invalid"], "bad.heic", { type: "image/heic" })
+              : new File(["annotated"], "marked.png", { type: "image/png" }),
+          text: "Check the marked area.",
+          signal: controller.signal,
+          isCurrent: () => outcome !== "switch" || ++reads === 1,
+          ...(outcome === "question"
+            ? {
+                onComment: (text: string) => {
+                  answer = `${answer}\n\n${text}`;
+                },
+              }
+            : {}),
+        });
+        if (outcome === "replace") store.removeImage(target, image.id);
+        if (outcome === "unreadable") {
+          await expect(pending).rejects.toThrow("could not be prepared");
+        } else {
+          expect(await pending).toBe(outcome === "apply" || outcome === "question");
+        }
+        const after = store.getComposerDraft(target)!;
+        expect(after.images.at(-1)).toBe(other);
+        expect(after.files).toBe(before.files);
+        if (outcome === "apply" || outcome === "question") {
+          expect(after.prompt).toBe(
+            outcome === "question" ? before.prompt : `${before.prompt}\n\nCheck the marked area.`,
+          );
+          if (outcome === "question")
+            expect(answer).toBe("Existing answer\n\nCheck the marked area.");
+          expect(after.images[0]?.id).toBe(image.id);
+          expect(await after.images[0]?.file?.text()).toBe("annotated");
+        } else {
+          expect(after.prompt).toBe(before.prompt);
+          if (outcome !== "replace") expect(after).toBe(before);
+        }
+      } finally {
+        store.clearDraftThread(target);
+      }
+    },
+  );
 });

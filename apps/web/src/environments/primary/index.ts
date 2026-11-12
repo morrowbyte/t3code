@@ -1,6 +1,5 @@
 export {
   createServerPairingCredential,
-  peekPairingTokenFromUrl,
   PrimaryEnvironmentPairingCredentialRejectedError,
   PrimaryEnvironmentRequestError,
   resolveInitialServerAuthGateState,

@@ -20,7 +20,7 @@ describe("image preview groups", () => {
         name: `${id}.png`,
         mimeType: "image/png",
         sizeBytes: 3,
-        previewUri: `data:image/png;base64,${id}`,
+        previewUri: "data:image/png;base64,YWJj",
         ...(fileBacked ? { fileUri: `file:///documents/${id}.png` } : {}),
       }));
       const delivered = (id: string) =>
@@ -40,6 +40,7 @@ describe("image preview groups", () => {
           context,
         )[0]!;
       const local = composerImageGallery(attachments, environmentId);
+      expect(filePreviewKey(local[0]!)).not.toBe(filePreviewKey(local[1]!));
       const uploading = composerImageGallery(
         [{ ...attachments[0]!, uploadedAttachmentId: "uploaded-a" }, attachments[1]!],
         environmentId,
@@ -53,6 +54,7 @@ describe("image preview groups", () => {
       );
       for (const [selected, gallery] of [
         [local[0]!, local],
+        [local[1]!, local],
         [delivered("a"), uploading],
         [uploading[1]!, uploading],
         [delivered("a"), uploaded],

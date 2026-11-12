@@ -6,6 +6,7 @@ import { observeResize } from "../lib/observeResize";
 export function BrowserSurfaceSlot(props: {
   readonly tabId: string;
   readonly visible: boolean;
+  readonly interactive?: boolean;
   readonly cornerRadius?: number;
   readonly zIndex?: number;
   readonly layoutVersion?: string | number;
@@ -15,13 +16,14 @@ export function BrowserSurfaceSlot(props: {
   const {
     tabId,
     visible,
+    interactive = true,
     cornerRadius = 0,
-    zIndex = 30,
+    zIndex,
     layoutVersion,
     className,
     fitSourceContent = false,
   } = props;
-  const presentationRef = useRef({ visible, cornerRadius, zIndex });
+  const presentationRef = useRef({ visible, interactive, cornerRadius, zIndex });
   const updateRef = useRef<(() => void) | null>(null);
 
   // The lease lives as long as this element for one tab, so the ref callback owns it.
@@ -30,6 +32,11 @@ export function BrowserSurfaceSlot(props: {
     const update = () => {
       const rect = element.getBoundingClientRect();
       const presentation = presentationRef.current;
+      const layer = Number.parseInt(
+        window.getComputedStyle(element).getPropertyValue("--browser-surface-base-layer"),
+        10,
+      );
+      const surfaceZIndex = presentation.zIndex ?? (Number.isFinite(layer) ? layer + 1 : 30);
       const presented = lease.present(
         {
           x: Math.round(rect.x),
@@ -39,7 +46,8 @@ export function BrowserSurfaceSlot(props: {
         },
         presentation.visible && rect.width > 0 && rect.height > 0,
         presentation.cornerRadius,
-        presentation.zIndex,
+        surfaceZIndex,
+        presentation.interactive,
       );
       if (presentation.visible && !presented) {
         lease.release();
@@ -53,7 +61,8 @@ export function BrowserSurfaceSlot(props: {
           },
           rect.width > 0 && rect.height > 0,
           presentation.cornerRadius,
-          presentation.zIndex,
+          surfaceZIndex,
+          presentation.interactive,
         );
       }
     };
@@ -79,10 +88,11 @@ export function BrowserSurfaceSlot(props: {
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- pushes visibility, radius and stacking to the desktop browser surface after layout
   useLayoutEffect(() => {
-    presentationRef.current = { visible, cornerRadius, zIndex };
+    presentationRef.current = { visible, interactive, cornerRadius, zIndex };
     updateRef.current?.();
   }, [
     cornerRadius,
+    interactive,
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A layoutVersion bump means the slot moved without resizing, so it re-presents at the new position.
     layoutVersion,
     visible,

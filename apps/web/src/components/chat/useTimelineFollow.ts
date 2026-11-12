@@ -508,7 +508,7 @@ export function useTimelineFollow(input: TimelineFollowInput) {
     const { before, after } = followStore.dispatch(visit, {
       type: isAtEnd ? "reachedEnd" : "leftEnd",
     });
-    if (after === before) return;
+    if (after === before && (after.mode === "following" || after.atEnd)) return;
     if (after.mode === "following") {
       setTimelineAnchor(releaseChatTimelineAnchor);
       scroll.showScrollDebouncer.cancel();

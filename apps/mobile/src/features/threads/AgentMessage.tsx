@@ -142,6 +142,7 @@ export const AgentMessage = memo(function AgentMessage(
         >
           <Text
             selectable={originalOrder}
+            numberOfLines={expanded || originalOrder ? undefined : 3}
             className="min-w-0 flex-1 text-base font-t3-medium leading-6 text-foreground"
           >
             {props.previewText ??

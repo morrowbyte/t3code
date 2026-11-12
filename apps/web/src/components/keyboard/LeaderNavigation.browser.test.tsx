@@ -11,6 +11,7 @@ import { dismissContextMenu, showContextMenuFallback } from "../../contextMenuFa
 import { isNavigationMode, leaveNavigationMode, requestNavigationMode } from "./navigationMode";
 import { useKeyboardCommands } from "./keyboardCommands";
 import { WorkbenchCommandPicker } from "./WorkbenchCommandPicker";
+import { createWorkspaceFocusController } from "../../lib/workspaceFocus";
 
 function TypeToFocusProbe({
   fixture,
@@ -97,6 +98,52 @@ async function open() {
 }
 
 describe("LeaderNavigation", () => {
+  it("completes practice only through real navigation and preserves the draft", async () => {
+    using context = setup();
+    const { fixture, navigation } = context;
+    fixture.querySelector<HTMLElement>("[data-chat-composer-main-surface]")!.dataset.workspaceArea =
+      "composer";
+    const workspaceFocus = createWorkspaceFocusController(document);
+    using _workspaceFocus = { [Symbol.dispose]: workspaceFocus.dispose };
+    await using _screen = await render(navigation);
+    using _timers = fakeTimers();
+    const composer = fixture.querySelector("textarea")!;
+    composer.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      composer.blur();
+      requestNavigationMode();
+    });
+    composer.value = "Keep this draft";
+    composer.focus();
+    await open();
+    await press("l");
+    expect(document.activeElement).toBe(composer);
+    expect(document.body.textContent).toContain("1/5");
+    await press("?");
+    expect(document.body.textContent).toContain("1/5");
+    await press("Escape");
+    expect(document.body.textContent).toContain("2/5");
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("Keyboard practice");
+    await press(" ");
+    expect(document.body.textContent).toContain("3/5");
+    await press("s");
+    await press("f");
+    expect(fixture.querySelector("nav")!.contains(document.activeElement)).toBe(true);
+    expect(isNavigationMode()).toBe(true);
+    expect(document.body.textContent).toContain("4/5");
+    await press("?");
+    expect(document.querySelector('[aria-label="Thread keyboard help"]')).not.toBeNull();
+    expect(document.body.textContent).toContain("5/5");
+    await press("Escape");
+    expect(document.body.textContent).not.toContain("Keyboard practice complete");
+    await press("i");
+    expect(document.activeElement).toBe(composer);
+    expect(document.body.textContent).toContain("Keyboard practice complete");
+    expect(composer.value).toBe("Keep this draft");
+  });
+
   it("keeps a keyboard-selected context action visible in a long picker", async () => {
     using _context = setup();
     await using _screen = await render(

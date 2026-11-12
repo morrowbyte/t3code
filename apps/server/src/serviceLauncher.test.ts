@@ -133,7 +133,7 @@ it("rejects contradictory service state", () => {
       fromVersion: "1.0.0",
       targetVersion: "0.9.0",
       dbPath: "/tmp/state.sqlite",
-      status: "pending",
+      status: "pending" as const,
       restore,
     },
   };

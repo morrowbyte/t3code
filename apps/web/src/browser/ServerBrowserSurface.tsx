@@ -27,6 +27,7 @@ import {
   type KeyboardEvent,
   type MouseEvent,
   type PointerEvent,
+  type ReactNode,
   type Ref,
   useEffect,
   useEffectEvent,
@@ -147,6 +148,8 @@ export function ServerBrowserSurface(props: {
   readonly threadId: string;
   readonly tabId: string;
   readonly visible: boolean;
+  readonly mode?: "stream" | "native";
+  readonly children?: ReactNode | ((interactive: boolean) => ReactNode);
   readonly followSize?: boolean;
   readonly picking?: boolean;
   readonly selectionScope?: string;
@@ -165,6 +168,8 @@ export function ServerBrowserSurface(props: {
     threadId,
     tabId,
     visible,
+    mode = "stream",
+    children,
     followSize = true,
     controlPosition = "top",
     onFirstFrame,
@@ -175,6 +180,7 @@ export function ServerBrowserSurface(props: {
     pdfUrl = null,
     ref,
   } = props;
+  const native = mode === "native";
   const selectionRequestRef = useRef<{ id: string; scope: string | undefined } | null>(null);
   const selectionReceived = useEffectEvent(
     (requestId: string, annotation: PreviewAnnotationPayload | null, failed = false) => {
@@ -208,6 +214,9 @@ export function ServerBrowserSurface(props: {
   const hasFrameRef = useRef(false);
   const controlRef = useRef<PreviewStreamControl | null>(null);
   const [control, setControl] = useState<PreviewStreamControl | null>(null);
+  const [controlPending, setControlPending] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
+  const [gone, setGone] = useState(false);
   const [promptText, setPromptText] = useState("");
   const [fileChooser, setFileChooser] = useState<PreviewStreamFileChooser | null>(null);
   const [agentCursor, setAgentCursor] = useState<AgentCursorPlacement | null>(null);
@@ -253,7 +262,7 @@ export function ServerBrowserSurface(props: {
 
   // Keep clearInput stable: a new identity reconnects the stream.
   const send = (input: PreviewStreamInput) => {
-    clientRef.current?.send(input);
+    return clientRef.current?.send(input) ?? false;
   };
 
   const clearInput = () => {
@@ -360,6 +369,7 @@ export function ServerBrowserSurface(props: {
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- observes the canvas container's size, sends resizes to the stream and grows the frame cap
   useEffect(() => {
+    if (native) return;
     const element = canvasRef.current?.parentElement;
     if (!element) return;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -402,24 +412,36 @@ export function ServerBrowserSurface(props: {
       if (timer !== null) clearTimeout(timer);
       if (capTimer !== null) clearTimeout(capTimer);
     };
-  }, [followSize]);
+  }, [followSize, native]);
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- opens the preview stream client and paints its frames onto the canvas while visible
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- connects visible browser controls and paints streamed surfaces
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!visible || accessDenied || hostSetup || !access || !cap || !canvas) return;
+    if (!visible || accessDenied || hostSetup || gone || !access || (!native && (!cap || !canvas)))
+      return;
     let refreshTimer: ReturnType<typeof setTimeout> | null = null;
-    const painter = createPreviewFramePainter(canvas, () => {
-      if (hasFrameRef.current) return;
-      hasFrameRef.current = true;
-      firstFrame();
-    });
+    const painter =
+      !native && canvas
+        ? createPreviewFramePainter(canvas, () => {
+            if (hasFrameRef.current) return;
+            hasFrameRef.current = true;
+            firstFrame();
+          })
+        : null;
     const client = createPreviewStreamClient(
-      { access, threadId, tabId, maxWidth: cap.width, maxHeight: cap.height },
+      {
+        access,
+        threadId,
+        tabId,
+        maxWidth: cap?.width ?? 1,
+        maxHeight: cap?.height ?? 1,
+        ...(native ? { frames: false } : {}),
+      },
       {
         onFrame: (jpeg) => {
+          if (native) return;
           unauthorizedRef.current = 0;
-          painter.paint(jpeg);
+          painter?.paint(jpeg);
         },
         onSelection: selectionReceived,
         onProbe: (result) => {
@@ -443,10 +465,13 @@ export function ServerBrowserSurface(props: {
         onPopup: popupOpened,
         onFileChooser: setFileChooser,
         onViewport: (viewport) => {
+          if (native) return;
           viewportRef.current = viewport;
           viewportChanged(viewport);
         },
         onControl: (next) => {
+          unauthorizedRef.current = 0;
+          setControlPending(native && next.controller === "you" && next.ready === false);
           const previous = controlRef.current;
           controlRef.current = next;
           setControl(next);
@@ -460,11 +485,13 @@ export function ServerBrowserSurface(props: {
             clearInput();
           } else if (previous?.controller !== "you") {
             const size = sizeRef.current;
-            if (followSize && size) client.send({ type: "resize", ...size });
+            if (!native && followSize && size) client.send({ type: "resize", ...size });
           }
         },
         onConnectedChange: (connected) => {
+          setReconnecting(!connected);
           if (connected) return;
+          setControlPending(false);
           setFileChooser(null);
           controlRef.current = null;
           setControl(null);
@@ -472,6 +499,7 @@ export function ServerBrowserSurface(props: {
           clearInput();
         },
         onHostSetup: setHostSetup,
+        ...(native ? { onGone: () => setGone(true) } : {}),
         onUnauthorized: () => {
           const refusals = ++unauthorizedRef.current;
           if (refusals >= MAX_UNAUTHORIZED_REFUSALS) {
@@ -488,13 +516,14 @@ export function ServerBrowserSurface(props: {
     );
     clientRef.current = client;
     return () => {
-      painter.stop();
+      painter?.stop();
       if (refreshTimer !== null) clearTimeout(refreshTimer);
       selectionRequestRef.current = null;
       client.stop();
       if (clientRef.current === client) clientRef.current = null;
       controlRef.current = null;
       setControl(null);
+      setControlPending(false);
       controlChanged(null);
       clearInput();
     };
@@ -505,7 +534,9 @@ export function ServerBrowserSurface(props: {
     clearInput,
     environmentId,
     followSize,
+    gone,
     hostSetup,
+    native,
     tabId,
     threadId,
     visible,
@@ -782,10 +813,10 @@ export function ServerBrowserSurface(props: {
   };
 
   const handleInput = (event: FormEvent<HTMLTextAreaElement>) => {
-    const native = event.nativeEvent;
-    if (native instanceof InputEvent && native.isComposing) return;
+    const nativeEvent = event.nativeEvent;
+    if (nativeEvent instanceof InputEvent && nativeEvent.isComposing) return;
     const textarea = event.currentTarget;
-    const inputType = native instanceof InputEvent ? native.inputType : "";
+    const inputType = nativeEvent instanceof InputEvent ? nativeEvent.inputType : "";
     if (keySentRef.current) keySentRef.current = false;
     else if (inputType === "deleteContentBackward") sendKeyPress(BACKSPACE);
     else if (inputType === "deleteContentForward") sendKeyPress(DELETE);
@@ -796,11 +827,30 @@ export function ServerBrowserSurface(props: {
     resetInput(textarea);
   };
 
+  const nativeControlReady =
+    visible &&
+    !controlPending &&
+    control?.canOperate === true &&
+    control.controller === "you" &&
+    control.ready === true;
+  const nativeControlUnsupported = native && control !== null && typeof control.ready !== "boolean";
+  let controlLabel = previewStreamControlLabel(control);
+  if (native) {
+    if (accessDenied) controlLabel = "Browser connection was refused.";
+    else if (hostSetup) controlLabel = previewStreamHostSetupMessage(hostSetup);
+    else if (gone) controlLabel = "Browser tab is no longer available.";
+    else if (reconnecting) controlLabel = "Reconnecting…";
+    else if (nativeControlUnsupported) controlLabel = "Update the server to use native control.";
+    else if (control?.canOperate && control.controller === "you" && !control.ready)
+      controlLabel = "Control reserved…";
+    else if (controlPending && control?.controller === "you") controlLabel = "Releasing control…";
+  }
+
   return (
     <div
       className={cn("relative flex flex-col overflow-hidden", className)}
       data-server-browser-surface={tabId}
-      onMouseUp={handleMouseUp}
+      onMouseUp={native ? undefined : handleMouseUp}
     >
       <div
         className={cn(
@@ -808,82 +858,117 @@ export function ServerBrowserSurface(props: {
           controlPosition === "bottom" ? "order-last border-t" : "border-b",
         )}
       >
-        <span role="status" className="text-xs text-muted-foreground">
-          {previewStreamControlLabel(control)}
+        <span role="status" className="min-w-0 truncate text-xs text-muted-foreground">
+          {controlLabel}
         </span>
-        {control?.canOperate ? (
+        {native && (accessDenied || hostSetup || gone) ? (
           <Button
             variant="outline"
             size="xs"
-            disabled={control.controller === "another-viewer"}
-            onClick={() =>
-              send({ type: control.controller === "you" ? "releaseControl" : "takeControl" })
-            }
+            onClick={() => {
+              unauthorizedRef.current = 0;
+              setAccessDenied(false);
+              setHostSetup(null);
+              setGone(false);
+              refreshPreviewStreamAccess(environmentId);
+            }}
           >
-            {control.controller === "you" ? "Release control" : "Take control"}
+            Reconnect
+          </Button>
+        ) : native || control?.canOperate ? (
+          <Button
+            variant="outline"
+            size="xs"
+            disabled={
+              !control?.canOperate ||
+              control.controller === "another-viewer" ||
+              controlPending ||
+              nativeControlUnsupported
+            }
+            aria-busy={controlPending}
+            onClick={() => {
+              if (
+                send({ type: control?.controller === "you" ? "releaseControl" : "takeControl" }) &&
+                native
+              )
+                setControlPending(true);
+            }}
+          >
+            {control?.controller === "you" ? "Release control" : "Take control"}
           </Button>
         ) : null}
       </div>
-      <div className="relative min-h-0 flex-1">
-        {pdfUrl ? (
-          <embed
-            src={pdfUrl}
-            type="application/pdf"
-            title="PDF document"
-            className="absolute inset-0 z-10 size-full border-0"
-          />
-        ) : null}
-        <canvas
-          ref={canvasRef}
-          className={cn(
-            "block size-full touch-none object-contain",
-            props.picking && "cursor-crosshair",
-          )}
-          onPointerDown={handlePointer}
-          onPointerMove={handlePointer}
-          onPointerUp={handlePointer}
-          onPointerCancel={handlePointer}
-          onMouseDown={(event) => event.preventDefault()}
-          onContextMenu={(event) => event.preventDefault()}
-        />
-        {!pdfUrl && agentCursor && control?.controller !== "you" ? (
-          <AgentCursorMark
-            {...agentCursor}
-            controller={control?.controller === "agent" ? "agent" : "none"}
-          />
-        ) : null}
-        {/* Pin top-left to avoid focus scrolling; 16px prevents iOS focus zoom. */}
-        <textarea
-          ref={inputRef}
-          aria-label="Browser page"
-          aria-description="Press Shift+Escape to leave the browser page."
-          autoCapitalize="off"
-          autoComplete="off"
-          autoCorrect="off"
-          spellCheck={false}
-          disabled={pdfUrl !== null || control?.controller !== "you"}
-          defaultValue={INPUT_SENTINEL}
-          onFocus={(event) => resetInput(event.currentTarget)}
-          className="sr-only top-0 left-0 text-base"
-          onKeyDown={(event) => handleKey("down", event)}
-          onKeyUp={(event) => handleKey("up", event)}
-          onInput={handleInput}
-          onCompositionEnd={(event) => {
-            const text = event.data.replace(/^\u200b/, "");
-            if (text) send({ type: "text", text });
-            resetInput(event.currentTarget);
-          }}
-          onCopy={(event) => handleClipboard(COPY, event)}
-          onCut={(event) => handleClipboard(CUT, event)}
-          onPaste={(event) => {
-            event.preventDefault();
-            const text = event.clipboardData.getData("text/plain");
-            if (text) send({ type: "text", text });
-          }}
-        />
+      <div className={cn("relative min-h-0 flex-1", native && "flex flex-col")}>
+        {native ? (
+          <div className="relative min-h-0 flex-1">
+            {typeof children === "function" ? children(nativeControlReady) : children}
+          </div>
+        ) : (
+          <>
+            {pdfUrl ? (
+              <embed
+                src={pdfUrl}
+                type="application/pdf"
+                title="PDF document"
+                className="absolute inset-0 z-10 size-full border-0"
+              />
+            ) : null}
+            <canvas
+              ref={canvasRef}
+              className={cn(
+                "block size-full touch-none object-contain",
+                props.picking && "cursor-crosshair",
+              )}
+              onPointerDown={handlePointer}
+              onPointerMove={handlePointer}
+              onPointerUp={handlePointer}
+              onPointerCancel={handlePointer}
+              onMouseDown={(event) => event.preventDefault()}
+              onContextMenu={(event) => event.preventDefault()}
+            />
+            {!pdfUrl && agentCursor && control?.controller !== "you" ? (
+              <AgentCursorMark
+                {...agentCursor}
+                controller={control?.controller === "agent" ? "agent" : "none"}
+              />
+            ) : null}
+            {/* Pin top-left to avoid focus scrolling; 16px prevents iOS focus zoom. */}
+            <textarea
+              ref={inputRef}
+              aria-label="Browser page"
+              aria-description="Press Shift+Escape to leave the browser page."
+              autoCapitalize="off"
+              autoComplete="off"
+              autoCorrect="off"
+              spellCheck={false}
+              disabled={pdfUrl !== null || control?.controller !== "you"}
+              defaultValue={INPUT_SENTINEL}
+              onFocus={(event) => resetInput(event.currentTarget)}
+              className="sr-only top-0 left-0 text-base"
+              onKeyDown={(event) => handleKey("down", event)}
+              onKeyUp={(event) => handleKey("up", event)}
+              onInput={handleInput}
+              onCompositionEnd={(event) => {
+                const text = event.data.replace(/^\u200b/, "");
+                if (text) send({ type: "text", text });
+                resetInput(event.currentTarget);
+              }}
+              onCopy={(event) => handleClipboard(COPY, event)}
+              onCut={(event) => handleClipboard(CUT, event)}
+              onPaste={(event) => {
+                event.preventDefault();
+                const text = event.clipboardData.getData("text/plain");
+                if (text) send({ type: "text", text });
+              }}
+            />
+          </>
+        )}
         {fileChooser && control?.controller === "you" ? (
           <div
-            className="absolute inset-x-2 top-2 z-10 flex flex-col gap-2 rounded-lg border border-border bg-background p-3 shadow-lg"
+            className={cn(
+              "z-10 flex flex-col gap-2 rounded-lg border border-border bg-background p-3 shadow-lg",
+              native ? "relative m-2 shrink-0" : "absolute inset-x-2 top-2",
+            )}
             role="dialog"
             aria-label="Choose files for the page"
           >
@@ -914,7 +999,10 @@ export function ServerBrowserSurface(props: {
         ) : null}
         {control?.dialog ? (
           <div
-            className="absolute inset-x-2 top-2 z-10 flex flex-col gap-2 rounded-lg border border-border bg-background p-3 shadow-lg"
+            className={cn(
+              "z-10 flex flex-col gap-2 rounded-lg border border-border bg-background p-3 shadow-lg",
+              native ? "relative m-2 shrink-0" : "absolute inset-x-2 top-2",
+            )}
             role="dialog"
             aria-label="Browser dialog"
           >
@@ -956,7 +1044,7 @@ export function ServerBrowserSurface(props: {
           </div>
         ) : null}
       </div>
-      {visible && hostSetup ? (
+      {visible && hostSetup && !native ? (
         <div className="visible absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-background p-4 text-center">
           <p role="alert" className="max-w-sm text-sm text-muted-foreground">
             {previewStreamHostSetupMessage(hostSetup)}
@@ -967,7 +1055,7 @@ export function ServerBrowserSurface(props: {
           </Button>
         </div>
       ) : null}
-      {visible && accessDenied ? (
+      {visible && accessDenied && !native ? (
         // The page can be invisible beneath an empty or unreachable state; reconnect must remain reachable.
         <div className="visible absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-background p-3 text-center">
           <p role="alert" className="text-xs text-muted-foreground">

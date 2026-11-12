@@ -228,6 +228,12 @@ import {
   type ThreadWorkGroupScrollPosition,
 } from "./thread-feed-live-follow";
 import {
+  captureThreadFeedReadingPosition,
+  resolveThreadFeedReadingScroll,
+  threadFeedReadingPositions,
+  type ThreadFeedReadingPosition,
+} from "./thread-feed-reading-position";
+import {
   collapsedWorkLogHeight,
   ThreadDisclosureChevron,
   THREAD_DISCLOSURE_TRANSITION_MS,
@@ -376,6 +382,7 @@ export interface ThreadFeedProps {
   readonly anchorMessageId: MessageId | null;
   /** A message to scroll to once it is in the feed; see `onJumpedToMessage`. */
   readonly jumpToMessageId?: MessageId | null;
+  readonly hasPendingMessageJump?: boolean;
   readonly onJumpedToMessage?: () => void;
   readonly contentInsetEndAdjustment: SharedValue<number>;
   readonly keyboardOffset: number;
@@ -2791,6 +2798,7 @@ const ThreadFeedContent = memo(function ThreadFeedContent({
   readonly voiceHistoryControls: ReactNode;
 }) {
   const { listRef, onEndFollowEnabledChange, onHeaderMaterialVisibilityChange } = props;
+  const messageJumpPending = props.hasPendingMessageJump === true || !!props.jumpToMessageId;
   const workflowOpening = useWorkflowOpening(props.detailRef);
   const guestShare = useThreadGuestShare(props.detailRef);
   const deviceType = useDeviceType();
@@ -2832,9 +2840,26 @@ const ThreadFeedContent = memo(function ThreadFeedContent({
     settledPaneWidth !== null ? Math.round(settledPaneWidth) : measuredViewportWidth;
   const [viewportHeight, setViewportHeight] = useState(0);
   const [disclosureToggleSettling, setDisclosureToggleSettling] = useState(false);
+  const [initialReadingPosition] = useState(() =>
+    threadFeedReadingPositions.get(props.environmentId, props.threadId),
+  );
+  const [readingPosition, setReadingPosition] = useState(
+    initialReadingPosition?.following === false ? initialReadingPosition : null,
+  );
+  if (messageJumpPending && readingPosition !== null) setReadingPosition(null);
+  const readingRestoreRef = useRef(readingPosition);
+  const setReadingRestore = useCallback((position: ThreadFeedReadingPosition | null) => {
+    readingRestoreRef.current = position;
+    setReadingPosition(position);
+  }, []);
+  const [readingHistoryRequested, setReadingHistoryRequested] = useState(false);
+  const readingHistoryRequestedRef = useRef(false);
+  const pendingEndScrollRef = useRef(false);
   // LegendList's geometric follow threshold can reclaim users reading history when streamed rows grow.
-  const [endFollowEnabled, setEndFollowEnabled] = useState(true);
-  const endFollowEnabledRef = useRef(true);
+  const [endFollowEnabled, setEndFollowEnabled] = useState(
+    !messageJumpPending && (initialReadingPosition?.following ?? true),
+  );
+  const endFollowEnabledRef = useRef(endFollowEnabled);
   // Only user scrolls from drag through momentum break follow; ignore MVCP and programmatic adjustments.
   const userScrollSessionRef = useRef(false);
   const setEndFollow = (enabled: boolean) => {
@@ -2848,6 +2873,14 @@ const ThreadFeedContent = memo(function ThreadFeedContent({
   const transitionEndFollow = (event: ThreadFeedLiveFollowEvent) => {
     setEndFollow(resolveThreadFeedLiveFollow(endFollowEnabledRef.current, event));
   };
+  const pauseForMessageJump = useEffectEvent(() => {
+    readingRestoreRef.current = null;
+    setEndFollow(false);
+  });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a requested message jump pauses native end maintenance while its history is loading
+  useEffect(() => {
+    if (messageJumpPending) pauseForMessageJump();
+  }, [messageJumpPending]);
   // Capture the reader's anchor before width reflow; LegendList thresholds see only new geometry.
   // iOS preserves it during re-measures. Android restores after because following disables MVCP.
   // undefined means no reflow; null means reflow with nothing to restore.
@@ -2869,9 +2902,9 @@ const ThreadFeedContent = memo(function ThreadFeedContent({
     readonly expandedTurnIds: ReadonlySet<RunId>;
   }>({
     copiedRowId: null,
-    expandedWorkGroups: {},
-    expandedWorkRows: {},
-    expandedTurnIds: new Set(),
+    expandedWorkGroups: initialReadingPosition?.disclosures?.expandedWorkGroups ?? {},
+    expandedWorkRows: initialReadingPosition?.disclosures?.expandedWorkRows ?? {},
+    expandedTurnIds: initialReadingPosition?.disclosures?.expandedTurnIds ?? new Set(),
   });
   const { copiedRowId, expandedWorkGroups, expandedWorkRows, expandedTurnIds } = interactionState;
   const markdownLinkRequest = useRef<AbortController | null>(null);
@@ -3199,6 +3232,9 @@ const ThreadFeedContent = memo(function ThreadFeedContent({
         case "save":
           shareFileChip(target);
           return;
+        case "save-file":
+          shareFileChip(target, "save");
+          return;
       }
     },
   };
@@ -3361,76 +3397,24 @@ const ThreadFeedContent = memo(function ThreadFeedContent({
     headerMaterialVisibleRef.current = visible;
     onHeaderMaterialVisibilityChange?.(visible);
   };
-  const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    reportHeaderMaterialVisibility(event.nativeEvent.contentOffset.y + anchorTopInset > 6);
-    // Re-arm follow only at the actual end; the broader threshold can reclaim upward drags during streaming.
-    const listState = listRef.current?.getState();
-    if (listState) {
-      transitionEndFollow({
-        type: "scroll",
-        isAtEnd: listState.isAtEnd,
-        userScrollSessionActive: userScrollSessionRef.current,
-      });
-    }
-  };
   const clearUserScrollSettle = () => {
     if (userScrollSettleTimerRef.current !== null) {
       clearTimeout(userScrollSettleTimerRef.current);
       userScrollSettleTimerRef.current = null;
     }
   };
-  const handleScrollBeginDrag = () => {
-    clearUserScrollSettle();
-    userScrollSessionRef.current = true;
-    cancelReflow();
-    // Pause before the first scroll event. Otherwise a stream update can run
-    // maintainScrollAtEnd between touch-down and the drag leaving its threshold.
-    transitionEndFollow({ type: "user-scroll-begin" });
-  };
-  const finishUserScroll = (releaseIsAtEnd?: boolean) => {
-    clearUserScrollSettle();
-    const userScrollSessionActive = userScrollSessionRef.current;
-    userScrollSessionRef.current = false;
-    transitionEndFollow({
-      type: "user-scroll-end",
-      // Without momentum, retain release position; stream growth during detection must not disable follow.
-      isAtEnd: releaseIsAtEnd ?? listRef.current?.getState().isAtEnd ?? false,
-      userScrollSessionActive,
-    });
-  };
-  // Zero release velocity may still produce momentum; wait for native detection before ending the session.
-  const handleScrollEndDrag = () => {
-    clearUserScrollSettle();
-    const releaseIsAtEnd = listRef.current?.getState().isAtEnd ?? false;
-    userScrollSettleTimerRef.current = setTimeout(() => finishUserScroll(releaseIsAtEnd), 160);
-  };
-  const handleMomentumScrollBegin = () => {
-    if (userScrollSessionRef.current) {
-      clearUserScrollSettle();
-    }
-  };
-  const handleMomentumScrollEnd = () => {
-    finishUserScroll();
-  };
-
   const feedThreadKey = scopedThreadKey(props.environmentId, props.threadId);
-  const workGroupScrollPositions = new Map<string, ThreadWorkGroupScrollPosition>();
-  // ThreadDetailScreen remounts the feed per thread, so only a send resets following.
-  useImperativeHandle(ref, () => ({
-    resetEndFollow: () => {
-      clearUserScrollSettle();
-      userScrollSessionRef.current = false;
-      cancelReflow();
-      transitionEndFollow({ type: "reset" });
-    },
-  }));
-
+  const [workGroupScrollPositions] = useState(
+    () =>
+      initialReadingPosition?.workGroupScrollPositions ??
+      new Map<string, ThreadWorkGroupScrollPosition>(),
+  );
   // Opening at a message: once the filled list has loaded, the render that sees
   // the jump unfolds a run hiding the message and stops following the end, so
   // the committed list holds the target row with end maintenance off.
-  const [loadedListKey, setLoadedListKey] = useState<string | null>(null);
+  const [loadedList, setLoadedList] = useState<{ readonly key: string } | null>(null);
   const { jumpToMessageId } = props;
-  const jumpReady = !!jumpToMessageId && loadedListKey === `${feedThreadKey}:filled`;
+  const jumpReady = !!jumpToMessageId && loadedList?.key === `${feedThreadKey}:filled`;
   const workFeed = appendGuestPendingMessages(
     useThreadFeedPresentation(props, expandedTurnIds, expandedWorkGroups),
     guestShare,
@@ -3442,6 +3426,50 @@ const ThreadFeedContent = memo(function ThreadFeedContent({
     voice,
   }));
   const presentedFeed = interleaveVoiceConversation(workFeed, voiceFeed);
+  const readingRunId =
+    readingPosition &&
+    !messageJumpPending &&
+    !presentedFeed.some((entry) => entry.id === readingPosition.anchor.key)
+      ? messageFoldRunId(props.feed, readingPosition.anchor.key)
+      : null;
+  if (readingRunId && !expandedTurnIds.has(readingRunId)) {
+    setInteractionState((current) => ({
+      ...current,
+      expandedTurnIds: new Set(current.expandedTurnIds).add(readingRunId),
+    }));
+  }
+  const readingHistoryEntryId = readingPosition?.historyEntryId ?? readingPosition?.anchor.key;
+  const readingHistoryMissing =
+    readingHistoryEntryId !== undefined &&
+    !props.feed.some((entry) => entry.id === readingHistoryEntryId);
+  const readingHistory = props.historyControls;
+  const waitingForReadingHistory =
+    readingHistoryMissing &&
+    readingHistory?.hasMoreHistory === true &&
+    readingHistory.error === null &&
+    (!readingHistoryRequested || readingHistory.loading);
+  const loadReadingHistory = useEffectEvent(() => {
+    if (!readingHistoryEntryId || readingHistoryRequestedRef.current) return;
+    readingHistoryRequestedRef.current = true;
+    setReadingHistoryRequested(true);
+    readingHistory?.onLoadThrough(readingHistoryEntryId);
+  });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- restores the saved reader's history page from the environment before positioning the native list
+  useEffect(() => {
+    if (
+      props.contentPresentation.kind !== "ready" ||
+      messageJumpPending ||
+      readingHistory?.loading
+    ) {
+      return;
+    }
+    if (waitingForReadingHistory) loadReadingHistory();
+  }, [
+    props.contentPresentation.kind,
+    messageJumpPending,
+    readingHistory?.loading,
+    waitingForReadingHistory,
+  ]);
   const jumpRunId =
     jumpReady &&
     !presentedFeed.some((entry) => entry.type === "message" && entry.id === jumpToMessageId)
@@ -3468,17 +3496,30 @@ const ThreadFeedContent = memo(function ThreadFeedContent({
   // on Android the declarative contentInset floor covers this same window.
   const listMountKey = `${feedThreadKey}:${presentedFeed.some((entry) => entry.type !== "thinking") ? "filled" : "empty"}`;
   const { contentInsetEndAdjustment } = props;
-  const attachList = (list: LegendListRef | null) => {
-    listRef.current = list;
-    const bottom = contentInsetEndAdjustment.get();
-    if (list && bottom > 0) list.reportContentInset({ bottom });
-  };
+  const attachList = useCallback(
+    (list: LegendListRef | null) => {
+      listRef.current = list;
+      if (!list) {
+        loadedListKeyRef.current = null;
+        return;
+      }
+      if (!endFollowEnabledRef.current && !readingRestoreRef.current) {
+        const position = threadFeedReadingPositions.get(props.environmentId, props.threadId);
+        if (position?.following === false) setReadingRestore(position);
+      }
+      const bottom = contentInsetEndAdjustment.get();
+      if (bottom > 0) list.reportContentInset({ bottom });
+    },
+    [listRef, contentInsetEndAdjustment, props.environmentId, props.threadId, setReadingRestore],
+  );
   const jumpIndex = jumpReady
     ? presentedFeed.findIndex((entry) => entry.type === "message" && entry.id === jumpToMessageId)
     : null;
-  const followsEnd = endFollowEnabled && !jumpReady;
+  const followsEnd = endFollowEnabled && !messageJumpPending;
   const landJump = useEffectEvent((index: number) => {
     if (index !== -1) {
+      readingRestoreRef.current = null;
+      pendingEndScrollRef.current = false;
       setEndFollow(false);
       void listRef.current?.scrollToIndex({ index, viewPosition: 0.2, animated: false });
     }
@@ -3491,12 +3532,203 @@ const ThreadFeedContent = memo(function ThreadFeedContent({
   useEffect(() => {
     if (jumpIndex !== null) landJump(jumpIndex);
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Jumping to a different message whose row index is unchanged must still land the jump.
-  }, [jumpToMessageId, jumpIndex]);
+  }, [jumpToMessageId, jumpIndex, loadedList]);
 
   const reflowLayout = () => ({
     rowsTop: FEED_PADDING_TOP + listHeaderSizeRef.current,
     headerInset: anchorTopInset,
   });
+  const readingLayout = () => ({ ...reflowLayout(), viewportWidth });
+  function rememberReadingPosition(followingLatest = false) {
+    const list = listRef.current;
+    if (
+      !list ||
+      loadedListKeyRef.current !== listMountKey ||
+      readingRestoreRef.current ||
+      disclosureToggleSettling
+    )
+      return;
+    const state = list.getState();
+    if (pendingEndScrollRef.current && !state.isAtEnd && !followingLatest) return;
+    if (state.isAtEnd) pendingEndScrollRef.current = false;
+    const position = captureThreadFeedReadingPosition(
+      state,
+      readingLayout(),
+      endFollowEnabledRef.current,
+      { expandedWorkGroups, expandedWorkRows, expandedTurnIds },
+      workGroupScrollPositions,
+    );
+    if (!position) return;
+    let historyEntryId: string | undefined;
+    for (let index = position.index - 1; index >= 0; index--) {
+      const entry = presentedFeed[index];
+      if (entry?.type === "message") {
+        historyEntryId = entry.id;
+        break;
+      }
+    }
+    threadFeedReadingPositions.set(props.environmentId, props.threadId, {
+      ...position,
+      ...(historyEntryId ? { historyEntryId } : {}),
+      following: followingLatest || position.following,
+    });
+  }
+  const rememberCommittedReadingPosition = useEffectEvent(() => rememberReadingPosition());
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- persists committed disclosures without a scroll and captures the anchor after native layout settles
+  useLayoutEffect(() => {
+    threadFeedReadingPositions.setDisclosures(
+      props.environmentId,
+      props.threadId,
+      { expandedWorkGroups, expandedWorkRows, expandedTurnIds },
+      workGroupScrollPositions,
+    );
+    if (!disclosureToggleSettling && loadedList) rememberCommittedReadingPosition();
+  }, [
+    props.environmentId,
+    props.threadId,
+    expandedWorkGroups,
+    expandedWorkRows,
+    expandedTurnIds,
+    workGroupScrollPositions,
+    disclosureToggleSettling,
+    loadedList,
+  ]);
+  const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    reportHeaderMaterialVisibility(event.nativeEvent.contentOffset.y + anchorTopInset > 6);
+    // Re-arm follow only at the actual end; the broader threshold can reclaim upward drags during streaming.
+    const listState = listRef.current?.getState();
+    if (listState && !readingRestoreRef.current) {
+      transitionEndFollow({
+        type: "scroll",
+        isAtEnd: listState.isAtEnd,
+        userScrollSessionActive: userScrollSessionRef.current,
+      });
+      rememberReadingPosition();
+    }
+  };
+  const handleScrollBeginDrag = () => {
+    clearUserScrollSettle();
+    userScrollSessionRef.current = true;
+    setReadingRestore(null);
+    pendingEndScrollRef.current = false;
+    cancelReflow();
+    // Pause before the first scroll event. Otherwise a stream update can run
+    // maintainScrollAtEnd between touch-down and the drag leaving its threshold.
+    transitionEndFollow({ type: "user-scroll-begin" });
+    rememberReadingPosition();
+  };
+  const finishUserScroll = (releaseIsAtEnd?: boolean) => {
+    clearUserScrollSettle();
+    const userScrollSessionActive = userScrollSessionRef.current;
+    userScrollSessionRef.current = false;
+    transitionEndFollow({
+      type: "user-scroll-end",
+      // Without momentum, retain release position; stream growth during detection must not disable follow.
+      isAtEnd: releaseIsAtEnd ?? listRef.current?.getState().isAtEnd ?? false,
+      userScrollSessionActive,
+    });
+    rememberReadingPosition();
+  };
+  // Zero release velocity may still produce momentum; wait for native detection before ending the session.
+  const handleScrollEndDrag = () => {
+    clearUserScrollSettle();
+    const releaseIsAtEnd = listRef.current?.getState().isAtEnd ?? false;
+    userScrollSettleTimerRef.current = setTimeout(() => finishUserScroll(releaseIsAtEnd), 160);
+  };
+  const handleMomentumScrollBegin = () => {
+    if (userScrollSessionRef.current) {
+      clearUserScrollSettle();
+    }
+  };
+  const handleMomentumScrollEnd = () => {
+    finishUserScroll();
+  };
+
+  // Restoring history must not arm end-follow; only a send or an explicit latest jump does.
+  useImperativeHandle(ref, () => ({
+    resetEndFollow: () => {
+      clearUserScrollSettle();
+      userScrollSessionRef.current = false;
+      setReadingRestore(null);
+      pendingEndScrollRef.current = true;
+      cancelReflow();
+      transitionEndFollow({ type: "reset" });
+      const position = threadFeedReadingPositions.get(props.environmentId, props.threadId);
+      if (position) {
+        threadFeedReadingPositions.set(props.environmentId, props.threadId, {
+          ...position,
+          following: true,
+        });
+      }
+      rememberReadingPosition(true);
+    },
+  }));
+
+  const restoreReadingPosition = useEffectEvent((layout: ReturnType<typeof readingLayout>) => {
+    const position = readingRestoreRef.current;
+    const list = listRef.current;
+    if (
+      !position ||
+      position !== readingPosition ||
+      !list ||
+      waitingForReadingHistory ||
+      messageJumpPending ||
+      userScrollSessionRef.current
+    ) {
+      return;
+    }
+    if (loadedListKeyRef.current !== listMountKey) return;
+    const state = list.getState();
+    const target = resolveThreadFeedReadingScroll(position, state, layout);
+    if (!target) return;
+    const top = state.positionAtIndex(target.index);
+    if (
+      top !== undefined &&
+      Math.abs(state.scroll - (top + layout.rowsTop - target.viewOffset)) < 1
+    ) {
+      return;
+    }
+    void list.scrollToIndex({ ...target, viewPosition: 0, animated: false });
+  });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- applies the saved native scroll after history or a folded anchor becomes available
+  useEffect(() => {
+    if (
+      !readingPosition ||
+      !loadedList ||
+      groupedFeed.length === 0 ||
+      waitingForReadingHistory ||
+      messageJumpPending
+    )
+      return;
+    restoreReadingPosition({
+      rowsTop: FEED_PADDING_TOP + listHeaderSizeRef.current,
+      headerInset: anchorTopInset,
+      viewportWidth,
+    });
+  }, [
+    readingPosition,
+    loadedList,
+    groupedFeed,
+    waitingForReadingHistory,
+    viewportWidth,
+    anchorTopInset,
+    messageJumpPending,
+  ]);
+  const initialReadingScroll =
+    readingPosition && !messageJumpPending
+      ? resolveThreadFeedReadingScroll(
+          readingPosition,
+          {
+            data: groupedFeed,
+            indexByKey: (key) => {
+              const index = groupedFeed.findIndex((entry) => entry.id === key);
+              return index < 0 ? undefined : index;
+            },
+            sizes: new Map<string, number>(),
+          },
+          { rowsTop: FEED_PADDING_TOP, headerInset: anchorTopInset, viewportWidth },
+        )
+      : undefined;
   const settleReflow = () => {
     reflowSettleTimerRef.current = null;
     const anchor = reflowAnchorRef.current;
@@ -3511,6 +3743,7 @@ const ThreadFeedContent = memo(function ThreadFeedContent({
   const beginReflow = () => {
     // Until the list loads, its own initial end positioning owns the offset.
     if (loadedListKeyRef.current !== listMountKey) return;
+    if (readingRestoreRef.current) return;
     if (reflowAnchorRef.current === undefined) {
       const listState = listRef.current?.getState();
       const anchor =
@@ -3534,9 +3767,22 @@ const ThreadFeedContent = memo(function ThreadFeedContent({
   };
 
   const holdReflowAnchor = () => {
+    const position = readingRestoreRef.current;
+    const list = listRef.current;
+    if (
+      position &&
+      position === readingPosition &&
+      list &&
+      !waitingForReadingHistory &&
+      !messageJumpPending
+    ) {
+      const state = list.getState();
+      const target = resolveThreadFeedReadingScroll(position, state, readingLayout());
+      const top = target && state.positionAtIndex(target.index);
+      if (target && top !== undefined) return top + reflowLayout().rowsTop - target.viewOffset;
+    }
     const anchor = reflowAnchorRef.current;
     if (anchor === "end") return Number.POSITIVE_INFINITY;
-    const list = listRef.current;
     return anchor && list
       ? resolveThreadFeedReflowOffset(anchor, list.getState(), reflowLayout())
       : undefined;
@@ -3638,6 +3884,7 @@ const ThreadFeedContent = memo(function ThreadFeedContent({
   // Every measured item-size change restarts it, so end maintenance cannot
   // wake between the data mutation and LegendList's final layout correction.
   const suspendEndScrollMaintenanceForDisclosure = (anchorKey: string | null) => {
+    setReadingRestore(null);
     cancelReflow();
     disclosureAnchorKeyRef.current = anchorKey;
     setDisclosureToggleSettling(true);
@@ -3920,7 +4167,9 @@ const ThreadFeedContent = memo(function ThreadFeedContent({
             // A reflow grows every visible row at once, well past the near-end threshold
             // that otherwise lets a status-bar tap leave the end.
             maintainScrollAtEndThreshold={reflowFollowsEnd ? Number.POSITIVE_INFINITY : undefined}
-            sizeChangeAnchor={reflowAnchorsSizeChanges ? holdReflowAnchor : undefined}
+            sizeChangeAnchor={
+              readingPosition || reflowAnchorsSizeChanges ? holdReflowAnchor : undefined
+            }
             maintainVisibleContentPosition={
               followsEnd && !disclosureToggleSettling ? false : maintainVisibleContentPosition
             }
@@ -3952,16 +4201,27 @@ const ThreadFeedContent = memo(function ThreadFeedContent({
             scrollToOverflowEnabled
             estimatedItemSize={180}
             alignItemsAtEnd
-            initialScrollAtEnd
+            initialScrollAtEnd={endFollowEnabled && !messageJumpPending}
+            initialScrollIndex={initialReadingScroll}
             onLoad={() => {
               loadedListKeyRef.current = listMountKey;
-              setLoadedListKey(listMountKey);
+              if (messageJumpPending) setReadingRestore(null);
+              setLoadedList({ key: listMountKey });
             }}
             // Row positions start below the header; the reflow anchor converts between them.
             onMetricsChange={(metrics) => {
+              const previousHeaderSize = listHeaderSizeRef.current;
               listHeaderSizeRef.current = metrics.headerSize;
+              if (previousHeaderSize !== metrics.headerSize)
+                restoreReadingPosition(readingLayout());
             }}
             onScroll={handleScroll}
+            onScrollToTop={() => {
+              setReadingRestore(null);
+              pendingEndScrollRef.current = false;
+              setEndFollow(false);
+              rememberReadingPosition();
+            }}
             onScrollBeginDrag={handleScrollBeginDrag}
             onScrollEndDrag={handleScrollEndDrag}
             onMomentumScrollBegin={handleMomentumScrollBegin}

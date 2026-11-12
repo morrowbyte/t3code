@@ -172,6 +172,7 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
   };
 
   if (!item) return null;
+  const submitAnnotation = item.onApplyAnnotation ?? onSendAnnotation;
   const mediaLabel = item.type === "video" ? "video" : "image";
   const openOriginalLink =
     item.originalUrl && resolveExternalWebLinkHost(item.originalUrl) !== null ? (
@@ -243,16 +244,17 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
         )}
         <MediaActions source={actionsSource}>
           <div className="relative isolate z-10 flex max-h-full max-w-[var(--media-width)] flex-col items-center">
-            {annotating && item.src && onSendAnnotation ? (
+            {annotating && item.src && submitAnnotation ? (
               <ImageAnnotationEditor
                 key={`${index}:${item.src}`}
                 src={item.src}
                 name={item.name}
+                submission={item.onApplyAnnotation ? "apply" : "send"}
                 dictationTarget={dictationTarget}
                 onCancel={() => setAnnotating(false)}
                 onZoom={(factor) => zoomableImageRef.current?.zoom(factor)}
                 onFit={() => zoomableImageRef.current?.fit()}
-                renderImage={(overlay) => (
+                renderImage={(overlay, drawing) => (
                   <ZoomableImage
                     ref={zoomableImageRef}
                     src={item.src!}
@@ -260,12 +262,13 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
                     mimeType={item.mimeType}
                     onError={() => setFailedImageSrc(item.src)}
                     overlay={overlay}
+                    drawing={drawing}
                     reservedHeight={340}
                   />
                 )}
                 onSend={(file, text, signal) =>
                   sendImageAnnotation(
-                    onSendAnnotation,
+                    submitAnnotation,
                     close,
                     setSendingAnnotation,
                     file,
@@ -311,7 +314,7 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
                 {item.type !== "video" &&
                 item.src &&
                 failedImageSrc !== item.src &&
-                onSendAnnotation ? (
+                submitAnnotation ? (
                   <Button
                     size="xs"
                     variant="overlay"

@@ -7,19 +7,15 @@ import {
   type ProjectCloneSnapshot,
   WS_METHODS,
 } from "@t3tools/contracts";
-import { mediaMimeTypeFromExtension } from "@t3tools/shared/mediaPreview";
-import { isWindowsAbsolutePath } from "@t3tools/shared/path";
 import {
   getProjectFaviconResourceKey,
   isProjectFaviconFallbackUrl,
 } from "@t3tools/shared/projectFavicon";
-import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
-import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 
 import * as EnvironmentRegistry from "../connection/registry.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
@@ -133,10 +129,6 @@ export function assetUrlStateFromResult(
 
 export function createAssetEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, E>,
-  localMediaEnvironment?: Atom.Atom<{
-    readonly environmentId: EnvironmentId;
-    readonly httpBaseUrl: string;
-  } | null>,
 ) {
   // A thread with hundreds of images asks for hundreds of URLs at once. Over a slow remote
   // they would all wait on one socket and read as stalled, so each environment gets a few
@@ -152,32 +144,7 @@ export function createAssetEnvironmentAtoms<R, E>(
   };
   const execute = Effect.fn("assets.createUrl")(function* (input: AssetCreateUrlInput) {
     const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
-    const result = yield* mint(supervisor.target.environmentId, input).pipe(Effect.result);
-    if (Result.isSuccess(result)) return result.success;
-    const error = result.failure;
-    const resource = input.resource;
-    const local = localMediaEnvironment
-      ? (yield* AtomRegistry.AtomRegistry).get(localMediaEnvironment)
-      : null;
-    if (
-      !local ||
-      local.environmentId === supervisor.target.environmentId ||
-      !(
-        error._tag === "AssetWorkspaceAssetNotFoundError" ||
-        error._tag === "AssetWorkspaceAssetInspectionError" ||
-        error._tag === "AssetWorkspaceContextNotFoundError"
-      ) ||
-      resource._tag !== "media-file" ||
-      !(resource.path.startsWith("/") || isWindowsAbsolutePath(resource.path)) ||
-      mediaMimeTypeFromExtension(resource.path.slice(resource.path.lastIndexOf("."))) === null
-    )
-      return yield* error;
-    const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
-    // Map the full cause so retry defects and interruption survive.
-    const asset = yield* registry
-      .run(local.environmentId, mint(local.environmentId, input))
-      .pipe(Effect.catchCause((cause) => Effect.failCause(Cause.map(cause, () => error))));
-    return { ...asset, relativeUrl: new URL(asset.relativeUrl, local.httpBaseUrl).href };
+    return yield* mint(supervisor.target.environmentId, input);
   });
   const createUrl = createEnvironmentQueryAtomFamily(runtime, {
     label: "environment-data:assets:create-url",
@@ -185,8 +152,6 @@ export function createAssetEnvironmentAtoms<R, E>(
     staleTimeMs: ASSET_URL_STALE_TIME_MS,
     idleTtlMs: ASSET_URL_IDLE_TTL_MS,
     refreshIntervalMs: ASSET_URL_REFRESH_INTERVAL_MS,
-    refreshTrigger: ({ input }) =>
-      input.resource._tag === "media-file" ? localMediaEnvironment : undefined,
   });
   const createUrlsFamily = Atom.family((key: string) => {
     const [environmentId, resources] = parseAssetCollectionKey(key);

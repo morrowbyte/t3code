@@ -32,7 +32,7 @@ export interface StorageFailure {
   readonly message: string;
 }
 
-export function storageMeasurementFailure(cause: unknown): StorageFailure {
+function storageMeasurementFailure(cause: unknown): StorageFailure {
   return {
     code: "storage_measurement_failed",
     message: `Cannot check storage capacity. Check that the working directory and T3 data directory are accessible, then try again. (${cause instanceof Error ? cause.message : String(cause)})`,

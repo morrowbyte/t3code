@@ -216,6 +216,7 @@ import { ThreadGuestShareBar } from "./ThreadGuestShareBar";
 import { ThreadSideChatsRow } from "./ThreadSideChatsRow";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
 import { resolveThreadFeedSubmissionAnchor } from "./thread-feed-live-follow";
+import { threadFeedReadingPositions } from "./thread-feed-reading-position";
 import { useOpenLinkedThread } from "./useOpenLinkedThread";
 import { useGlobalVoiceInput } from "../voice-input/VoiceInputProvider";
 
@@ -531,7 +532,12 @@ function ThreadDetailBody(
   };
   const [anchorMessageId, setAnchorMessageId] = useState<MessageId | null>(null);
   const feedRef = useRef<ThreadFeedHandle>(null);
-  const [endFollowEnabled, setEndFollowEnabled] = useState(true);
+  const [endFollowEnabled, setEndFollowEnabled] = useState(
+    () =>
+      pendingThreadMessageJump(selectedThreadKey) === null &&
+      (threadFeedReadingPositions.get(props.environmentId, props.selectedThread.id)?.following ??
+        true),
+  );
   // Keep the bottom padding fixed while the keyboard animates. Changing it at
   // keyboardDidHide makes the composer land low, then jump back above the safe area.
   const bottomBarInset = useDuoBottomBarInset();
@@ -1022,6 +1028,7 @@ function ThreadDetailBody(
   const composerPanelsHeightStyle = useAnimatedStyle(() => ({
     maxHeight: pendingUserInputMaxHeight.value,
     flexGrow: 0,
+    marginBottom: activeUserInputRequestId !== null ? composerBottomInset : 0,
   }));
   // The usage panel stacks with the composer and any approval card, so it gets
   // whatever room they leave below the header. Measured only while it is open
@@ -1082,7 +1089,7 @@ function ThreadDetailBody(
   const reduceMotion = useReducedMotion();
   // Repin timers fire after the render that scheduled them, so they read follow
   // state from the ref the writers below keep in step with it.
-  const endFollowEnabledRef = useRef(true);
+  const endFollowEnabledRef = useRef(endFollowEnabled);
   const overlayRepinTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scheduleOverlayRepin = (delayMs: number) => {
     if (overlayRepinTimerRef.current !== null) {
@@ -1312,6 +1319,7 @@ function ThreadDetailBody(
       queuedMessageCount: props.selectedThreadQueueCount,
       deliveryDeferred: props.connectionStateLabel !== "connected",
     });
+    finishThreadMessageJump(selectedThreadKey);
     feedRef.current?.resetEndFollow();
     setAnchorMessageId(nextAnchorMessageId);
     composerEditorRef.current?.blur();
@@ -1375,6 +1383,8 @@ function ThreadDetailBody(
 
   const handleScrollToEnd = () => {
     void Haptics.selectionAsync();
+    finishThreadMessageJump(selectedThreadKey);
+    feedRef.current?.resetEndFollow();
     void scrollMessageToEnd({ animated: !reduceMotion, closeKeyboard: false }).catch(() => {
       freeze.set(false);
     });
@@ -1484,6 +1494,7 @@ function ThreadDetailBody(
               freeze={freeze}
               anchorMessageId={anchorMessageId}
               jumpToMessageId={jumpMessageLoaded ? jumpMessageId : null}
+              hasPendingMessageJump={jumpMessageId !== null}
               onJumpedToMessage={() => finishThreadMessageJump(selectedThreadKey)}
               ref={feedRef}
               contentInsetEndAdjustment={combinedContentInsetEndAdjustment}
@@ -1703,7 +1714,7 @@ function ThreadDetailBody(
                         className="shrink-0 gap-3 px-4 pb-3"
                         style={
                           activeUserInputRequestId !== null
-                            ? { paddingBottom: composerBottomInset }
+                            ? { paddingBottom: Platform.OS === "android" ? 0 : composerBottomInset }
                             : undefined
                         }
                         entering={FadeInDown.duration(220)}

@@ -27,6 +27,7 @@ import {
   moveKeyboardObject,
 } from "./regionNavigation";
 import { KeyboardContextHelp } from "./KeyboardContextHelp";
+import { KeyboardPractice, type KeyboardPracticeStep } from "./KeyboardPractice";
 import {
   resolveTimelineScrollCommand,
   scrollTimelineFromKeyboard,
@@ -109,6 +110,7 @@ export function LeaderNavigation({
   const [controls, setControls] = useState<readonly WorkbenchCommand[] | null>(null);
   const [controlsName, setControlsName] = useState("App");
   const [help, setHelp] = useState<{ target: HTMLElement | null } | null>(null);
+  const [practice, setPractice] = useState<KeyboardPracticeStep | null>(null);
   const [group, setGroup] = useState<string | null>(null);
   const groupState = useRef<string | null>(null);
   const openState = useRef(false);
@@ -153,6 +155,7 @@ export function LeaderNavigation({
     groupState.current = null;
     openState.current = true;
     setOpen(true);
+    setPractice((step) => (step === "commands" ? "sidebar" : step));
   };
   const select = (action: () => void) => {
     openState.current = false;
@@ -181,7 +184,22 @@ export function LeaderNavigation({
   const enterSidebar = () => {
     showSidebar();
     requestAnimationFrame(() => {
-      if (focusSidebar()) setMode("sidebar");
+      if (focusSidebar()) {
+        requestNavigationMode();
+        setMode("sidebar");
+        setPractice((step) => (step === "sidebar" ? "help" : step));
+      }
+    });
+  };
+  const startPractice = () => {
+    setPractice("escape");
+    enterComposer();
+  };
+  const stopPractice = () => {
+    setPractice(null);
+    requestAnimationFrame(() => {
+      if (isNavigationMode()) navigationStatus.current?.focus({ preventScroll: true });
+      else focusComposer();
     });
   };
   const focusEntry = (direction: -1 | 1) => {
@@ -404,6 +422,9 @@ export function LeaderNavigation({
           } else if (key === "i") {
             consume(event);
             select(enterComposer);
+          } else if (key === "l") {
+            consume(event);
+            select(startPractice);
           }
         }
       }
@@ -498,6 +519,7 @@ export function LeaderNavigation({
       if (event.key === "?") {
         consume(event);
         setHelp({ target });
+        if (inSidebar) setPractice((step) => (step === "help" ? "composer" : step));
         return;
       }
       if (event.key === "F10" && event.shiftKey) {
@@ -623,7 +645,10 @@ export function LeaderNavigation({
       !event.target.closest('[data-slot="dialog-popup"],[aria-label="App navigation"]')
     )
       setRegionName(keyboardContextName(event.target));
-    if (event.target === composerElement()) leaveNavigationMode();
+    if (event.target === composerElement()) {
+      leaveNavigationMode();
+      setPractice((step) => (step === "composer" ? "complete" : step));
+    }
     if (mode && event.target instanceof Element) {
       const inRegion =
         mode === "sidebar"
@@ -655,7 +680,22 @@ export function LeaderNavigation({
     const request = () => requestOpen();
     const focus = (event: FocusEvent) => focusChanged(event);
     const blur = () => lostFocus();
-    const navigationChanged = () => setNavigation(isNavigationMode());
+    const navigationChanged = () => {
+      const active = isNavigationMode();
+      setNavigation(active);
+      if (!active) return;
+      setPractice((step) => (step === "escape" ? "commands" : step));
+      const generation = focusGeneration.current;
+      requestAnimationFrame(() => {
+        if (
+          generation === focusGeneration.current &&
+          isNavigationMode() &&
+          document.activeElement === document.body &&
+          !hasOpenKeyboardLayer()
+        )
+          navigationStatus.current?.focus({ preventScroll: true });
+      });
+    };
     const pointer = () => {
       messageCount.current = null;
       if (pendingFocus.current) focusGeneration.current++;
@@ -719,53 +759,57 @@ export function LeaderNavigation({
           "[data-leader-message-focus], [data-keyboard-object]:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; border-radius: var(--radius); }"
         }
       </style>
-      {mode || navigation ? (
+      {practice || mode || navigation ? (
         <div className="fixed bottom-4 left-1/2 z-40 w-max max-w-[calc(100vw_-_2rem)] -translate-x-1/2">
-          <div
-            ref={navigationStatus}
-            tabIndex={-1}
-            aria-label="App navigation"
-            className="flex flex-wrap items-center justify-center gap-1.5 rounded-md border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-sm"
-          >
-            <span role="status">
-              NORMAL · {mode ? (mode === "messages" ? "Messages" : "Sidebar") : regionName}
-            </span>
-            <span className="inline-flex items-center gap-1">
-              <Kbd>Space</Kbd>actions
-            </span>
-            <span className="inline-flex items-center gap-1">
-              <Kbd>F6</Kbd>regions
-            </span>
-            <span className="inline-flex items-center gap-1">
-              <Kbd>?</Kbd>help
-            </span>
-            {mode ? (
-              <>
-                <span className="inline-flex items-center gap-1">
-                  <Kbd>J/K</Kbd>
-                  {mode === "messages" ? "scroll" : "rows"}
-                </span>
-                <span className="inline-flex items-center gap-1">
-                  <Kbd>H/L</Kbd>
-                  {mode === "messages" ? "actions" : "fold"}
-                </span>
-              </>
-            ) : null}
-            <span className="inline-flex items-center gap-1">
-              <Kbd>I</Kbd>compose
-            </span>
-            <Button
-              size="icon-xs"
-              variant="ghost"
-              onClick={() => {
-                finishMode();
-                enterComposer();
-              }}
-              aria-label="Return to composer"
+          {practice ? (
+            <KeyboardPractice ref={navigationStatus} step={practice} onClose={stopPractice} />
+          ) : (
+            <div
+              ref={navigationStatus}
+              tabIndex={-1}
+              aria-label="App navigation"
+              className="flex flex-wrap items-center justify-center gap-1.5 rounded-md border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-sm focus-visible:outline-2 focus-visible:outline-ring"
             >
-              <span aria-hidden>×</span>
-            </Button>
-          </div>
+              <span role="status">
+                NORMAL · {mode ? (mode === "messages" ? "Messages" : "Sidebar") : regionName}
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <Kbd>Space</Kbd>actions
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <Kbd>F6</Kbd>regions
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <Kbd>?</Kbd>help
+              </span>
+              {mode ? (
+                <>
+                  <span className="inline-flex items-center gap-1">
+                    <Kbd>J/K</Kbd>
+                    {mode === "messages" ? "scroll" : "rows"}
+                  </span>
+                  <span className="inline-flex items-center gap-1">
+                    <Kbd>H/L</Kbd>
+                    {mode === "messages" ? "actions" : "fold"}
+                  </span>
+                </>
+              ) : null}
+              <span className="inline-flex items-center gap-1">
+                <Kbd>I</Kbd>compose
+              </span>
+              <Button
+                size="icon-xs"
+                variant="ghost"
+                onClick={() => {
+                  finishMode();
+                  enterComposer();
+                }}
+                aria-label="Return to composer"
+              >
+                <span aria-hidden>×</span>
+              </Button>
+            </div>
+          )}
         </div>
       ) : null}
       <Dialog
@@ -849,6 +893,11 @@ export function LeaderNavigation({
                   <Button data-leader-key="i" variant="ghost" onClick={() => select(enterComposer)}>
                     <span className="flex w-full items-center gap-3">
                       <Kbd>I</Kbd>Focus composer
+                    </span>
+                  </Button>
+                  <Button data-leader-key="l" variant="ghost" onClick={() => select(startPractice)}>
+                    <span className="flex w-full items-center gap-3">
+                      <Kbd>L</Kbd>Practice keyboard navigation
                     </span>
                   </Button>
                 </>

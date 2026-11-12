@@ -23,6 +23,7 @@ import type { MediaActionsSource } from "./mediaActionsSource";
 
 const DOCUMENT_MIME_TYPES: Readonly<Record<string, string>> = {
   ".pdf": "application/pdf",
+  ".zip": "application/zip",
   ".csv": "text/csv",
   ".tsv": "text/tab-separated-values",
   ".doc": "application/msword",
@@ -74,7 +75,10 @@ export function resolveMarkdownMediaPreview(
         ? "audio"
         : extension === ".pdf"
           ? "pdf"
-          : classified._tag === "WorkspaceFile"
+          : classified._tag === "WorkspaceFile" &&
+              (!Object.hasOwn(DOCUMENT_MIME_TYPES, extension) ||
+                extension === ".csv" ||
+                extension === ".tsv")
             ? "file"
             : "document";
       const mimeType =
@@ -104,7 +108,12 @@ export function resolveMarkdownMediaPreview(
       }
       if (input.captured) return null;
       const resource = input.threadId
-        ? { _tag: "media-file" as const, threadId: input.threadId, path }
+        ? {
+            _tag: "media-file" as const,
+            threadId: input.threadId,
+            path,
+            ...(kind === "document" ? { disposition: "attachment" as const } : {}),
+          }
         : input.workspaceRoot
           ? { _tag: "draft-workspace-file" as const, cwd: input.workspaceRoot, path }
           : null;
