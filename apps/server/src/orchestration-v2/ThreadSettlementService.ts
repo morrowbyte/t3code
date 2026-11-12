@@ -650,7 +650,14 @@ export const make = Effect.gen(function* () {
             if (current === null || !threadAllowsWorktreeCleanup(current, stoppingRunner))
               return false;
           }
-          return true;
+          const currentOwner = yield* projections.getThreadShell(threadId);
+          return (
+            currentOwner !== null &&
+            currentOwner.settledOverride === "settled" &&
+            currentOwner.worktreePath === worktreePath &&
+            toMillis(currentOwner.settledAt) === toMillis(thread.settledAt) &&
+            threadAllowsWorktreeCleanup(currentOwner, stoppingRunner)
+          );
         },
         Effect.orElseSucceed(() => false),
       );

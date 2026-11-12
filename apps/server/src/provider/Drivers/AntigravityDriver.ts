@@ -44,6 +44,7 @@ import {
   type AntigravityAcpRuntimeInput,
 } from "../acp/AntigravityAcpSupport.ts";
 import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
+import type { AcpAdapterV2RuntimeInput } from "@t3tools/provider-acp/server/adapter";
 import type { ServerProviderDraft } from "@t3tools/provider-core/server/snapshotProbe";
 import {
   removeAntigravitySessionFiles,
@@ -173,7 +174,8 @@ export const AntigravityDriver: ProviderDriver<
       );
 
     const makeRuntime = Effect.fn("AntigravityDriver.makeRuntime")(function* (
-      input: Omit<AntigravityAcpRuntimeInput, "spawn" | "childProcessSpawner">,
+      input: Omit<AntigravityAcpRuntimeInput, "spawn" | "childProcessSpawner"> &
+        Pick<AcpAdapterV2RuntimeInput, "processEnvironment">,
     ): Effect.fn.Return<
       AcpSessionRuntime.AcpSessionRuntime["Service"],
       AcpError | ProviderSetupError,
@@ -250,7 +252,7 @@ export const AntigravityDriver: ProviderDriver<
           installation: executable,
           profile,
           cwd: input.cwd,
-          baseEnv: processEnvironment,
+          baseEnv: { ...processEnvironment, ...input.processEnvironment },
           auth,
           runtimeTempDirectory,
         }),

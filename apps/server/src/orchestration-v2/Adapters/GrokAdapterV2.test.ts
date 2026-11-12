@@ -246,7 +246,10 @@ describe("Grok launch permission mode", () => {
     Effect.gen(function* () {
       const launches: Array<ReadonlyArray<string>> = [];
       const childProcessSpawner = ChildProcessSpawner.make((command) => {
-        if (command._tag === "StandardCommand") launches.push(command.args);
+        if (command._tag === "StandardCommand") {
+          launches.push(command.args);
+          assert.equal(command.options.env?.T3CODE_THREAD_ID, "grok-launch-test");
+        }
         return Effect.fail(
           PlatformError.systemError({
             _tag: "NotFound",
@@ -259,7 +262,7 @@ describe("Grok launch permission mode", () => {
       const adapter = yield* makeGrokAdapterV2({
         instanceId,
         settings: LAUNCH_TEST_GROK_SETTINGS,
-        environment: {},
+        environment: { T3CODE_THREAD_ID: "ambient-parent-thread" },
         hostPlatform: "darwin",
         selfInvocation: yield* resolveSelfInvocation(),
       }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner));

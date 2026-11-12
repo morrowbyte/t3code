@@ -46,6 +46,35 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("task dev-runner reu
 });
 
 it.layer(NodeServices.layer, { excludeTestServices: true })("task dev-runner control", (it) => {
+  it.effect("revalidates ownership after the runner prepares a stop", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const workspacePath = yield* fs.makeTempDirectoryScoped();
+        const runner = yield* registerDevRunner({ threadId: "owner", workspacePath });
+        let checks = 0;
+        let stopped = false;
+        const child = yield* Effect.gen(function* () {
+          yield* runner.stopRequested;
+          stopped = true;
+          yield* runner.confirmStopped(true);
+        }).pipe(Effect.forkChild);
+        assert.isFalse(
+          yield* stopDevRunners({
+            threadId: "owner",
+            workspacePath,
+            canStop: Effect.sync(() => ++checks === 1),
+          }),
+        );
+        assert.strictEqual(checks, 2);
+        assert.isFalse(stopped);
+        assert.lengthOf(yield* fs.readDirectory(path.join(workspacePath, ".t3", "dev-runners")), 1);
+        yield* Fiber.interrupt(child);
+      }),
+    ),
+  );
+
   it.effect.each([true, false])("acknowledges stop only after exit confirmation: %s", (stopped) =>
     Effect.scoped(
       Effect.gen(function* () {

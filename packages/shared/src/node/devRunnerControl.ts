@@ -37,7 +37,7 @@ const Receipt = Schema.Struct({
   child: Schema.optionalKey(ProcessIdentity),
 });
 const decodeReceipt = Schema.decodeUnknownOption(Schema.fromJsonString(Receipt));
-const ControlAction = Schema.Literals(["stop", "status"]);
+const ControlAction = Schema.Literals(["prepare-stop", "stop", "status"]);
 const decodeRequest = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ receipt: Receipt, action: ControlAction })),
 );
@@ -316,6 +316,7 @@ export const registerDevRunner = Effect.fn("devRunnerControl.register")(function
     socket.setTimeout(10_000, () => socket.destroy());
     socket.setEncoding("utf8");
     let contents = "";
+    let prepared = false;
     socket.on("data", (chunk: string) => {
       contents += chunk;
       if (contents.length > 4096) {
@@ -323,8 +324,8 @@ export const registerDevRunner = Effect.fn("devRunnerControl.register")(function
         return;
       }
       if (!contents.includes("\n")) return;
-      socket.removeAllListeners("data");
       const raw = decodeRequest(contents.trim());
+      contents = "";
       if (
         Option.isNone(raw) ||
         raw.value.receipt.id !== id ||
@@ -347,6 +348,16 @@ export const registerDevRunner = Effect.fn("devRunnerControl.register")(function
         );
         return;
       }
+      if (raw.value.action === "prepare-stop" && !prepared) {
+        prepared = true;
+        socket.write(`${JSON.stringify({ token, action: "prepare-stop", accepted: true })}\n`);
+        return;
+      }
+      if (raw.value.action !== "stop" || !prepared) {
+        socket.destroy();
+        return;
+      }
+      socket.removeAllListeners("data");
       requests.add(socket);
       stopping = true;
       requestStop();
@@ -474,41 +485,69 @@ export const registerDevRunner = Effect.fn("devRunnerControl.register")(function
 
 const requestControl = Effect.fn("devRunnerControl.request")(function* (
   receipt: typeof Receipt.Type,
-  action: typeof ControlAction.Type,
+  action: "stop" | "status",
+  canStop?: Effect.Effect<boolean>,
 ) {
-  return yield* Effect.callback<Option.Option<typeof ControlResponse.Type>>((resume) => {
-    const socket = NodeNet.createConnection({ host: "127.0.0.1", port: receipt.port });
-    let complete = false;
-    const finish = (response: Option.Option<typeof ControlResponse.Type>) => {
-      if (complete) return;
-      complete = true;
-      socket.destroy();
-      resume(Effect.succeed(response));
-    };
-    socket.setTimeout(10_000, () => finish(Option.none()));
-    socket.once("error", () => finish(Option.none()));
-    socket.once("close", () => finish(Option.none()));
-    socket.once("connect", () => socket.write(`${JSON.stringify({ receipt, action })}\n`));
-    socket.setEncoding("utf8");
-    let contents = "";
-    socket.on("data", (chunk: string) => {
-      contents += chunk;
-      if (contents.length > 4096) {
-        finish(Option.none());
-        return;
-      }
-      if (!contents.includes("\n")) return;
-      const response = decodeResponse(contents.trim());
-      finish(
-        Option.isSome(response) &&
-          response.value.token === receipt.token &&
-          response.value.action === action
-          ? response
-          : Option.none(),
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      const socket = yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          const socket = NodeNet.createConnection({ host: "127.0.0.1", port: receipt.port });
+          socket.on("error", () => socket.destroy());
+          socket.setTimeout(10_000, () => socket.destroy());
+          socket.setEncoding("utf8");
+          return socket;
+        }),
+        (socket) => Effect.sync(() => socket.destroy()),
       );
-    });
-    return Effect.sync(() => socket.destroy());
-  });
+      const exchange = (action: typeof ControlAction.Type) =>
+        Effect.callback<Option.Option<typeof ControlResponse.Type>>((resume) => {
+          let complete = false;
+          let contents = "";
+          const onFailure = () => finish(Option.none());
+          const cleanup = () => {
+            socket.off("error", onFailure);
+            socket.off("close", onFailure);
+            socket.off("data", onData);
+          };
+          const finish = (response: Option.Option<typeof ControlResponse.Type>) => {
+            if (complete) return;
+            complete = true;
+            cleanup();
+            resume(Effect.succeed(response));
+          };
+          const onData = (chunk: string) => {
+            contents += chunk;
+            if (contents.length > 4096) return finish(Option.none());
+            if (!contents.includes("\n")) return;
+            const response = decodeResponse(contents.trim());
+            finish(
+              Option.isSome(response) &&
+                response.value.token === receipt.token &&
+                response.value.action === action
+                ? response
+                : Option.none(),
+            );
+          };
+          if (socket.destroyed) {
+            finish(Option.none());
+            return;
+          }
+          socket.once("error", onFailure);
+          socket.once("close", onFailure);
+          socket.on("data", onData);
+          socket.write(`${JSON.stringify({ receipt, action })}\n`);
+          return Effect.sync(cleanup);
+        });
+      if (action === "stop") {
+        const prepared = yield* exchange("prepare-stop");
+        if (Option.isNone(prepared) || !prepared.value.accepted || canStop === undefined)
+          return Option.none<typeof ControlResponse.Type>();
+        if (!(yield* canStop)) return Option.none<typeof ControlResponse.Type>();
+      }
+      return yield* exchange(action);
+    }),
+  );
 });
 
 export const stopDevRunners = Effect.fn("devRunnerControl.stop")(function* (input: {
@@ -546,7 +585,7 @@ export const stopDevRunners = Effect.fn("devRunnerControl.stop")(function* (inpu
       return false;
     if (receipt.threadId !== input.threadId) continue;
     if (!(yield* input.canStop)) return false;
-    const response = yield* requestControl(receipt, "stop");
+    const response = yield* requestControl(receipt, "stop", input.canStop);
     if (Option.isNone(response) || !response.value.accepted) {
       if (!(yield* receiptProvenStopped(receipt)) || !(yield* input.canStop)) return false;
       yield* mutateReceipt(

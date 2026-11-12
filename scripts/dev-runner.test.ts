@@ -583,6 +583,7 @@ it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
         readonly reuse?: boolean;
         readonly stopUnconfirmed?: boolean;
         readonly naturalExit?: boolean;
+        readonly spawnFailure?: boolean;
       }) =>
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
@@ -612,6 +613,20 @@ it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
                 vpStarts += 1;
                 captured = spawned.options?.env;
                 vpArgs = spawned.args;
+                if (input.spawnFailure) {
+                  return Deferred.succeed(ready, undefined).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        PlatformError.systemError({
+                          _tag: "Unknown",
+                          module: "ChildProcess",
+                          method: "spawn",
+                          description: "Resource temporarily unavailable",
+                        }),
+                      ),
+                    ),
+                  );
+                }
                 return Effect.succeed(
                   input.reuse
                     ? ChildProcessSpawner.makeHandle({
@@ -681,6 +696,23 @@ it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
           if (input.reuse) {
             const first = yield* run.pipe(Effect.scoped, Effect.exit, Effect.forkChild);
             yield* Deferred.await(ready);
+            if (input.spawnFailure) {
+              yield* Effect.gen(function* () {
+                yield* Deferred.await(teardownEntered);
+                assert.lengthOf(
+                  yield* fs.readDirectory(path.join(workspacePath, ".t3", "dev-runners")),
+                  1,
+                );
+                assert.strictEqual((yield* run.pipe(Effect.scoped, Effect.exit))._tag, "Failure");
+                assert.strictEqual(vpStarts, 1);
+              }).pipe(Effect.ensuring(Deferred.succeed(teardownRelease, undefined)));
+              assert.strictEqual((yield* Fiber.join(first))._tag, "Failure");
+              assert.lengthOf(
+                yield* fs.readDirectory(path.join(workspacePath, ".t3", "dev-runners")),
+                0,
+              );
+              return { env: captured, vpArgs, tailscaleCalls };
+            }
             const originalCalls = [...tailscaleCalls];
             const initialOffCount = originalCalls.filter((args) => args.includes("off")).length;
             const messages: string[] = [];
@@ -756,11 +788,12 @@ it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
         });
 
       it.effect.each([
-        { stopUnconfirmed: false, naturalExit: false },
-        { stopUnconfirmed: true, naturalExit: false },
-        { stopUnconfirmed: false, naturalExit: true },
+        { stopUnconfirmed: false, naturalExit: false, spawnFailure: false },
+        { stopUnconfirmed: true, naturalExit: false, spawnFailure: false },
+        { stopUnconfirmed: false, naturalExit: true, spawnFailure: false },
+        { stopUnconfirmed: false, naturalExit: false, spawnFailure: true },
       ])(
-        "keeps shared runner ownership through teardown: unconfirmed=$stopUnconfirmed natural=$naturalExit",
+        "keeps shared runner ownership through teardown: unconfirmed=$stopUnconfirmed natural=$naturalExit spawn=$spawnFailure",
         (ending) => Effect.scoped(shareSpawned({ built: true, reuse: true, ...ending })),
       );
 

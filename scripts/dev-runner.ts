@@ -951,7 +951,10 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
     ),
     Effect.tapError(() => {
       taskChildRunning = Effect.succeed(false);
-      return control ? control.confirmStopped(true) : Effect.void;
+      return (control?.beginTeardown ?? Effect.void).pipe(
+        Effect.andThen(finishShare),
+        Effect.andThen(control ? control.confirmStopped(true) : Effect.void),
+      );
     }),
   );
   if (control) {
