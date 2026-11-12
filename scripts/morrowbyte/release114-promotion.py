@@ -229,8 +229,41 @@ def validate_release(release, tag_object, assets=None, draft_receipt=None):
             require(item["name"] in expected and item["digest"] == expected[item["name"]], "Draft contains different bytes or unknown assets")
 
 
+def resolve_release():
+    result = subprocess.run(["gh", "release", "view", TAG, "--repo", REPO, "--json", "apiUrl,isDraft,targetCommitish,tagName"],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode:
+        require(result.returncode == 1 and not result.stdout and result.stderr.strip() == b"release not found", "GitHub release lookup failed")
+        repository = api("")
+        require(isinstance(repository, dict) and repository.get("id") == REPO_ID and repository.get("full_name") == REPO
+                and isinstance(repository.get("permissions"), dict) and repository["permissions"].get("push") is True,
+                "Cannot authenticate draft absence")
+        # A tag 404 cannot exclude drafts; require a complete inventory with write access.
+        for page in range(1, 11):
+            releases = api(f"releases?per_page=100&page={page}")
+            require(isinstance(releases, list) and len(releases) <= 100
+                    and all(isinstance(item, dict) and isinstance(item.get("tag_name"), str) for item in releases), "Invalid release inventory")
+            require(not any(item["tag_name"] == TAG for item in releases), "Release lookup disagrees with inventory")
+            if len(releases) < 100:
+                return None
+        raise RuntimeError("Incomplete release inventory")
+    view = json.loads(result.stdout)
+    require(isinstance(view, dict) and view.get("tagName") == TAG and view.get("targetCommitish") == SOURCE
+            and type(view.get("isDraft")) is bool, "Wrong release lookup identity")
+    prefix = f"https://api.github.com/repos/{REPO}/releases/"
+    url = view.get("apiUrl")
+    require(isinstance(url, str) and re.fullmatch(re.escape(prefix) + r"[1-9][0-9]*", url), "Release API URL is outside the canonical repository")
+    release_id = int(url[len(prefix):])
+    release = api(f"releases/{release_id}")
+    require(isinstance(release, dict) and type(release.get("id")) is int and release["id"] == release_id
+            and release.get("url") == url and release.get("draft") is view["isDraft"]
+            and release.get("tag_name") == view["tagName"] and release.get("target_commitish") == view["targetCommitish"],
+            "Release changed before asset verification")
+    return release
+
+
 def release_boundary(assets=None):
-    release = api("releases/tags/" + TAG, optional=True)
+    release = resolve_release()
     ref = api("git/ref/tags/" + TAG, optional=True)
     obj = ref["object"] if ref else None
     if obj and obj["type"] == "tag":

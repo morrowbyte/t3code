@@ -50,6 +50,26 @@ def selection_fixture():
     return {"promote_release114_run_id": r.ORIGIN_RUN, "source_sha": r.SOURCE, "publish": True}
 
 
+def boundary_fixture():
+    url = f"https://api.github.com/repos/{r.REPO}/releases/123"
+    release = {"id": 123, "url": url, "tag_name": r.TAG, "target_commitish": r.SOURCE,
+               "prerelease": True, "draft": True, "assets": []}
+    view = {"apiUrl": url, "tagName": r.TAG, "targetCommitish": r.SOURCE, "isDraft": True}
+    responses = {
+        ("release", "view", r.TAG, "--repo", r.REPO, "--json", "apiUrl,isDraft,targetCommitish,tagName"): (0, view, b""),
+        ("api", f"repos/{r.REPO}/releases/123"): (0, release, b""),
+        ("api", f"repos/{r.REPO}/releases/tags/{r.TAG}"): (1, {"status": "404"}, b""),
+        ("api", f"repos/{r.REPO}/git/ref/tags/{r.TAG}"): (1, {"status": "404"}, b""),
+        ("api", f"repos/{r.REPO}/"): (0, {"id": r.REPO_ID, "full_name": r.REPO, "permissions": {"push": True}}, b""),
+        ("api", f"repos/{r.REPO}/releases?per_page=100&page=1"): (0, [], b""),
+    }
+    def run(command, **kwargs):
+        assert command[0] == "gh"
+        status, body, error = responses[tuple(command[1:])]
+        return subprocess.CompletedProcess(command, status, body if isinstance(body, bytes) else json.dumps(body).encode(), error)
+    return release, view, responses, run
+
+
 def archive_fixture(root, members, artifact_id=r.PLATFORM_IDS[0]):
     archive = root / "fixture.zip"
     with zipfile.ZipFile(archive, "w") as output:
@@ -360,6 +380,124 @@ class PromotionFixtures(unittest.TestCase):
                     r.validate_release(current, None, assets, changed)
             with self.assertRaises(RuntimeError):
                 r.validate_release(metadata, None, assets, b"changed")
+
+    def test_boundary_resolves_tag404_draft_before_payload_and_receipt_upload(self):
+        for case in [None, "payload", "promotion", "receipt-source", "receipt-checksums", "receipt-promotion", "receipt-digest"]:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temp:
+                assets = Path(temp)
+                (assets / "original").write_bytes(b"same payload")
+                (assets / "pending").write_bytes(b"not uploaded yet")
+                (assets / r.RECEIPT_NAME).write_bytes(b"same immutable control receipt")
+                (assets / "SHA256SUMS").write_text("fixture checksum block\n")
+                receipt = (f"fork_release={r.TAG}\nsource_sha={r.SOURCE}\npromotion_receipt_sha256={r.digest(assets / r.RECEIPT_NAME)}\n"
+                           "artifact_sha256:\nfixture checksum block\n").encode()
+                release, _, _, run = boundary_fixture()
+                release["assets"] = [{"name": name, "digest": "sha256:" + r.digest(assets / name)} for name in ["original", r.RECEIPT_NAME]]
+                release["assets"].append({"name": "RELEASE-RECEIPT.txt", "id": 456, "size": len(receipt), "digest": "sha256:" + hashlib.sha256(receipt).hexdigest()})
+                if case in ["payload", "promotion"]:
+                    release["assets"][0 if case == "payload" else 1]["digest"] = "sha256:" + "0" * 64
+                elif case == "receipt-source":
+                    receipt = receipt.replace(r.SOURCE.encode(), r.CONTROL_BASE.encode())
+                elif case == "receipt-checksums":
+                    receipt = receipt.replace(b"fixture checksum block", b"different block")
+                elif case == "receipt-promotion":
+                    receipt = receipt.replace(r.digest(assets / r.RECEIPT_NAME).encode(), b"0" * 64)
+                elif case == "receipt-digest":
+                    receipt += b"changed"
+                if case != "receipt-digest":
+                    release["assets"][-1].update(size=len(receipt), digest="sha256:" + hashlib.sha256(receipt).hexdigest())
+                with patch.object(r.subprocess, "run", side_effect=run), patch.object(r.subprocess, "check_output", return_value=receipt) as read:
+                    if case is None:
+                        r.release_boundary(assets)
+                    else:
+                        with self.assertRaises(RuntimeError):
+                            r.release_boundary(assets)
+                    read.assert_called_once_with(["gh", "api", f"repos/{r.REPO}/releases/assets/456", "-H", "Accept: application/octet-stream"])
+
+    def test_boundary_absence_requires_authenticated_complete_release_inventory(self):
+        for case in [None, "paged", "existing-draft", "foreign-repo", "foreign-id", "no-write-access", "missing-permissions",
+                     "repository-auth", "inventory-auth", "inventory-404", "inventory-transport", "inventory-json", "inventory-shape", "incomplete"]:
+            with self.subTest(case=case):
+                _, _, responses, run = boundary_fixture()
+                lookup = next(key for key in responses if key[0] == "release")
+                responses[lookup] = (1, b"", b"release not found\n")
+                repo_key = ("api", f"repos/{r.REPO}/")
+                inventory_key = ("api", f"repos/{r.REPO}/releases?per_page=100&page=1")
+                repository = responses[repo_key][1]
+                if case == "foreign-repo":
+                    repository["full_name"] = "other/t3code"
+                elif case == "foreign-id":
+                    repository["id"] += 1
+                elif case == "no-write-access":
+                    repository["permissions"]["push"] = False
+                elif case == "missing-permissions":
+                    repository.pop("permissions")
+                elif case == "repository-auth":
+                    responses[repo_key] = (1, {"status": "401"}, b"bad credentials")
+                elif case in ["inventory-auth", "inventory-404", "inventory-transport"]:
+                    body = {"status": "403"} if case == "inventory-auth" else {"status": "404"} if case == "inventory-404" else b"transport failed"
+                    responses[inventory_key] = (1, body, b"read failed")
+                elif case == "inventory-json":
+                    responses[inventory_key] = (0, b"{", b"")
+                elif case == "inventory-shape":
+                    responses[inventory_key] = (0, {}, b"")
+                elif case in ["paged", "existing-draft", "incomplete"]:
+                    full_page = [{"tag_name": f"other-{index}"} for index in range(100)]
+                    responses[inventory_key] = (0, full_page, b"")
+                    for page in range(2, 11 if case == "incomplete" else 3):
+                        items = full_page if case == "incomplete" else [{"tag_name": r.TAG, "draft": True}] if case == "existing-draft" else []
+                        responses[("api", f"repos/{r.REPO}/releases?per_page=100&page={page}")] = (0, items, b"")
+                with patch.object(r.subprocess, "run", side_effect=run), patch.object(r.subprocess, "check_output") as read:
+                    if case in [None, "paged"]:
+                        r.release_boundary()
+                    else:
+                        with self.assertRaises((RuntimeError, ValueError)):
+                            r.release_boundary()
+                    read.assert_not_called()
+
+    def test_boundary_rejects_lookup_errors_and_inconsistent_canonical_identity(self):
+        cases = ["lookup-auth", "lookup-transport", "lookup-json", "lookup-shape", "lookup-tag", "lookup-source", "lookup-draft",
+                 "foreign-repo", "foreign-host", "invalid-id", "url-query", "api-auth", "api-404", "api-transport", "api-json",
+                 "api-id", "api-url", "api-tag", "api-source", "published-during-lookup"]
+        for case in cases:
+            with self.subTest(case=case):
+                release, view, responses, run = boundary_fixture()
+                lookup = next(key for key in responses if key[0] == "release")
+                metadata_key = ("api", f"repos/{r.REPO}/releases/123")
+                if case in ["lookup-auth", "lookup-transport"]:
+                    responses[lookup] = (1, b"", b"HTTP 401: bad credentials" if case == "lookup-auth" else b"transport failed")
+                elif case in ["lookup-json", "lookup-shape"]:
+                    responses[lookup] = (0, b"{" if case == "lookup-json" else [], b"")
+                elif case == "lookup-tag":
+                    view["tagName"] = "other"
+                elif case == "lookup-source":
+                    view["targetCommitish"] = r.CONTROL_BASE
+                elif case == "lookup-draft":
+                    view["isDraft"] = "true"
+                elif case in ["foreign-repo", "foreign-host", "invalid-id", "url-query"]:
+                    view["apiUrl"] = {"foreign-repo": "https://api.github.com/repos/other/t3code/releases/123",
+                                      "foreign-host": f"https://example.com/repos/{r.REPO}/releases/123",
+                                      "invalid-id": f"https://api.github.com/repos/{r.REPO}/releases/0",
+                                      "url-query": view["apiUrl"] + "?other=1"}[case]
+                elif case in ["api-auth", "api-404", "api-transport"]:
+                    body = {"status": "403"} if case == "api-auth" else {"status": "404"} if case == "api-404" else b"transport failed"
+                    responses[metadata_key] = (1, body, b"read failed")
+                elif case == "api-json":
+                    responses[metadata_key] = (0, b"{", b"")
+                elif case == "api-id":
+                    release["id"] += 1
+                elif case == "api-url":
+                    release["url"] = f"https://api.github.com/repos/{r.REPO}/releases/124"
+                elif case == "api-tag":
+                    release["tag_name"] = "other"
+                elif case == "api-source":
+                    release["target_commitish"] = r.CONTROL_BASE
+                else:
+                    release.update(draft=False, published_at="2026-11-12T09:00:00Z")
+                with patch.object(r.subprocess, "run", side_effect=run), patch.object(r.subprocess, "check_output") as read:
+                    with self.assertRaises((RuntimeError, ValueError)):
+                        r.release_boundary()
+                    read.assert_not_called()
 
     def test_only_explicit_http404_is_absence(self):
         with patch.object(r.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, b'{"status":"404"}', b"")):
