@@ -496,28 +496,13 @@ export const createDevRunnerOutput = Effect.fn("devRunnerControl.createOutput")(
   const owner = encodeOutputOwner((yield* captureIdentity(process.pid)) ?? null);
   const name = `runner-${NodeCrypto.randomBytes(16).toString("hex")}.log`;
   const path = NodePath.join(input.workspacePath, ".t3", "dev-runner-output", name);
-  const registered = yield* withOutputDatabase(input.workspacePath, (db) => {
-    if (
-      owner === "null" &&
-      Number(
-        db.prepare("SELECT COUNT(*) AS count FROM active_outputs WHERE owner = 'null'").get()
-          ?.count,
-      ) >= 8
-    )
-      return false;
+  yield* withOutputDatabase(input.workspacePath, (db) => {
     db.prepare("INSERT INTO active_outputs (name, thread_id, owner) VALUES (?, ?, ?)").run(
       name,
       input.threadId,
       owner,
     );
-    return true;
   });
-  if (!registered)
-    return yield* new DevRunnerControlError({
-      operation: "register",
-      cause:
-        "Eight output owners cannot be verified; preserve their logs before allocating another output.",
-    });
   // Commit ownership before creating the file so abrupt exit cannot leave an unregistered log.
   yield* Effect.try({
     try: () => NodeFS.writeFileSync(path, new Uint8Array(), { flag: "wx", mode: 0o600 }),
