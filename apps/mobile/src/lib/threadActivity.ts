@@ -280,7 +280,7 @@ function approvalCommandIntent(entry: WorkLogPresentationEntry): string | undefi
     !approval.privilegedCommand &&
     parseApprovalReviewDetail(approval.prompt).kind === "none"
   ) {
-    return authoredCodeIntent(approval.prompt);
+    return authoredCodeIntent(approval.prompt ?? "");
   }
   return undefined;
 }
