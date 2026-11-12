@@ -5,6 +5,10 @@ const mocks = vi.hoisted(() => ({
   deleted: vi.fn(),
   download: vi.fn(),
   copy: vi.fn(),
+  pickDirectory: vi.fn(),
+  createFile: vi.fn(),
+  write: vi.fn(),
+  deleteFile: vi.fn(),
   share: vi.fn(),
   shareFromSource: vi.fn(),
   available: vi.fn(),
@@ -14,6 +18,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("expo-file-system", () => {
   class Directory {
+    static pickDirectoryAsync = mocks.pickDirectory;
     readonly uri: string;
 
     constructor(...parts: Array<string | Directory>) {
@@ -43,6 +48,11 @@ vi.mock("expo-file-system", () => {
       mocks.deleted(this.uri);
       mocks.directories.delete(this.uri);
     }
+
+    createFile(name: string, mimeType: string): File {
+      mocks.createFile(this.uri, name, mimeType);
+      return new File(this, name);
+    }
   }
 
   class File {
@@ -55,6 +65,23 @@ vi.mock("expo-file-system", () => {
 
     async copy(destination: File): Promise<void> {
       await mocks.copy(this.uri, destination.uri);
+    }
+
+    readableStream(): ReadableStream<Uint8Array> {
+      return new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array([0, 255, 17, 0, 42]));
+          controller.close();
+        },
+      });
+    }
+
+    writableStream(): WritableStream<Uint8Array> {
+      return new WritableStream({ write: (chunk) => mocks.write(this.uri, chunk) });
+    }
+
+    delete(): void {
+      mocks.deleteFile(this.uri);
     }
   }
 
@@ -72,11 +99,13 @@ vi.mock("./uuid", () => ({ uuidv4: mocks.uuid }));
 vi.mock("./shareFileFromSource", () => ({ shareFileFromSource: mocks.shareFromSource }));
 
 import {
+  downloadAndSaveAttachment,
   downloadAndShareAttachment,
   downloadAttachmentForPreview,
   shareLocalAttachment,
 } from "./attachmentDownload";
 import { isForegroundHandoffActive } from "./foreground-handoff";
+import { Directory } from "expo-file-system";
 
 const NOW = 1_787_990_400_000;
 const DAY_MS = 24 * 60 * 60_000;
@@ -92,6 +121,12 @@ beforeEach(() => {
   mocks.deleted.mockReset();
   mocks.download.mockReset();
   mocks.copy.mockReset();
+  mocks.pickDirectory.mockReset();
+  mocks.createFile.mockReset();
+  mocks.write.mockReset();
+  mocks.deleteFile.mockReset();
+  mocks.pickDirectory.mockImplementation(async () => new Directory("content://chosen-directory"));
+  mocks.write.mockResolvedValue(undefined);
   mocks.share.mockReset();
   mocks.shareFromSource.mockReset();
   mocks.available.mockReset();
@@ -111,6 +146,101 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   expect(isForegroundHandoffActive()).toBe(false);
+});
+
+describe("downloadAndSaveAttachment", () => {
+  it("saves binary bytes to the chosen directory without requiring a share receiver", async () => {
+    mocks.available.mockResolvedValue(false);
+    mocks.pickDirectory.mockImplementation(async () => {
+      expect(isForegroundHandoffActive()).toBe(true);
+      return new Directory("content://chosen-directory");
+    });
+    await expect(
+      downloadAndSaveAttachment({
+        ...input,
+        attachment: { name: "../../result.bin", mimeType: "application/octet-stream" },
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toBe(true);
+    expect(mocks.download.mock.calls[0]?.[0]).toBe(input.url);
+    expect(mocks.createFile).toHaveBeenCalledWith(
+      "content://chosen-directory",
+      "result.bin",
+      "application/octet-stream",
+    );
+    expect(mocks.write.mock.calls.flatMap(([, chunk]) => Array.from(chunk))).toEqual([
+      0, 255, 17, 0, 42,
+    ]);
+    expect(mocks.available).not.toHaveBeenCalled();
+    expect(mocks.share).not.toHaveBeenCalled();
+    expect(mocks.deleted).toHaveBeenCalledTimes(1);
+    expect(mocks.deleteFile).not.toHaveBeenCalled();
+  });
+
+  it("treats picker cancellation as no saved file and releases the temporary download", async () => {
+    mocks.pickDirectory.mockRejectedValue(
+      Object.assign(new Error("The file picker was cancelled by the user"), {
+        code: "ERR_PICKER_CANCELLED",
+      }),
+    );
+    await expect(
+      downloadAndSaveAttachment({ ...input, signal: new AbortController().signal }),
+    ).resolves.toBe(false);
+    expect(mocks.createFile).not.toHaveBeenCalled();
+    expect(mocks.deleted).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not create a document when its owner unmounts while the picker is open", async () => {
+    const opened = Promise.withResolvers<void>();
+    const picker = Promise.withResolvers<Directory>();
+    mocks.pickDirectory.mockImplementation(() => {
+      opened.resolve();
+      return picker.promise;
+    });
+    const controller = new AbortController();
+    const saving = downloadAndSaveAttachment({ ...input, signal: controller.signal });
+    await opened.promise;
+    controller.abort();
+    expect(mocks.deleted).not.toHaveBeenCalled();
+    picker.resolve(new Directory("content://chosen-directory"));
+    await expect(saving).resolves.toBe(false);
+    expect(mocks.createFile).not.toHaveBeenCalled();
+    expect(mocks.deleted).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["download", "picker", "copy"])(
+    "reports a %s failure and removes only its own incomplete files",
+    async (stage) => {
+      const failure = new Error("Disk or transport failure");
+      if (stage === "download") mocks.download.mockRejectedValue(failure);
+      if (stage === "picker") mocks.pickDirectory.mockRejectedValue(failure);
+      if (stage === "copy") mocks.write.mockRejectedValue(failure);
+      await expect(
+        downloadAndSaveAttachment({ ...input, signal: new AbortController().signal }),
+      ).rejects.toThrow();
+      expect(mocks.deleted).toHaveBeenCalledTimes(1);
+      expect(mocks.deleteFile).toHaveBeenCalledTimes(stage === "copy" ? 1 : 0);
+    },
+  );
+
+  it("settles an interrupted copy before removing its target and temporary download", async () => {
+    const started = Promise.withResolvers<void>();
+    const written = Promise.withResolvers<void>();
+    mocks.write.mockImplementation(() => {
+      started.resolve();
+      return written.promise;
+    });
+    const controller = new AbortController();
+    const saving = downloadAndSaveAttachment({ ...input, signal: controller.signal });
+    await started.promise;
+    controller.abort();
+    expect(mocks.deleted).not.toHaveBeenCalled();
+    expect(mocks.deleteFile).not.toHaveBeenCalled();
+    written.resolve();
+    await expect(saving).resolves.toBe(false);
+    expect(mocks.deleteFile).toHaveBeenCalledTimes(1);
+    expect(mocks.deleted).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("downloadAndShareAttachment", () => {

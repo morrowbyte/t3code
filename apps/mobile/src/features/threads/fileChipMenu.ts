@@ -84,6 +84,10 @@ export function fileChipMenu(target: FileChipTarget): MarkdownFileContextMenu {
       ...(fileChipMetadata(target)
         ? [
             {
+              id: "save-file",
+              title: "Save file",
+            },
+            {
               id: "save",
               title: "Save or share",
             },

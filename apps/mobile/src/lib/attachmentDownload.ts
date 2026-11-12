@@ -230,6 +230,68 @@ export async function downloadAttachmentForPreview(input: {
   }
 }
 
+export async function downloadAndSaveAttachment(input: {
+  readonly url: string;
+  readonly attachment: AttachmentFileMetadata;
+  readonly signal: AbortSignal;
+}): Promise<boolean> {
+  const file = await downloadAttachmentForPreview(input);
+  if (file === null) return false;
+  try {
+    const { Directory, File } = await import("expo-file-system");
+    if (input.signal.aborted) return false;
+    const endHandoff = beginForegroundHandoff();
+    try {
+      let directory: InstanceType<typeof Directory>;
+      try {
+        directory = await Directory.pickDirectoryAsync();
+      } catch (cause) {
+        if (
+          input.signal.aborted ||
+          (typeof cause === "object" &&
+            cause !== null &&
+            "code" in cause &&
+            cause.code === "ERR_PICKER_CANCELLED")
+        ) {
+          return false;
+        }
+        throw cause;
+      }
+      if (input.signal.aborted) return false;
+      const destination = directory.createFile(
+        downloadFileName(input.attachment.name),
+        input.attachment.mimeType.split(";", 1)[0]?.trim() || "application/octet-stream",
+      );
+      try {
+        // SDK copy(overwrite) deletes SAF documents; stream into this newly created file instead.
+        const writable = destination.writableStream();
+        try {
+          await new File(file.uri).readableStream().pipeTo(writable, { signal: input.signal });
+          input.signal.throwIfAborted();
+        } catch (cause) {
+          await writable.abort().catch(() => undefined);
+          throw cause;
+        }
+        return true;
+      } catch (cause) {
+        try {
+          destination.delete();
+        } catch (cleanupError) {
+          console.warn("[attachment-downloads] could not remove an incomplete save", cleanupError);
+        }
+        if (input.signal.aborted) return false;
+        throw new Error("Could not save the attachment. Choose a writable folder and try again.", {
+          cause,
+        });
+      }
+    } finally {
+      endHandoff();
+    }
+  } finally {
+    file.dispose();
+  }
+}
+
 export async function downloadAndShareAttachment(input: {
   readonly url: string;
   readonly attachment: AttachmentFileMetadata;

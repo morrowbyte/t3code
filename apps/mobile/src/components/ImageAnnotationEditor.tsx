@@ -15,6 +15,7 @@ import {
   type SendImageAnnotation,
 } from "../lib/imageAnnotation";
 import { uuidv4 } from "../lib/uuid";
+import { cn } from "../lib/cn";
 import { AppText } from "./ui/AppText";
 import type { ResolvedFilePreviewSource } from "./FilePreviewModal.types";
 import { useThreadSelection } from "../state/use-thread-selection";
@@ -109,10 +110,15 @@ function Tool(props: {
       accessibilityState={{ selected: props.selected, disabled: props.disabled }}
       disabled={props.disabled}
       onPress={props.onPress}
-      className="min-h-12 min-w-12 justify-center rounded-lg border border-border px-3 py-2"
+      className={cn(
+        "min-h-12 min-w-12 justify-center rounded-lg border px-3 py-2",
+        props.selected ? "border-primary bg-primary" : "border-border",
+      )}
       style={{ opacity: props.disabled ? 0.4 : 1, maxWidth: "100%" }}
     >
-      <AppText className={props.selected ? "font-t3-semibold text-accent" : "text-foreground"}>
+      <AppText
+        className={props.selected ? "font-t3-semibold text-primary-foreground" : "text-foreground"}
+      >
         {props.label}
       </AppText>
     </Pressable>
@@ -319,7 +325,7 @@ export function ImageAnnotationEditor(props: {
   return (
     <Modal visible presentationStyle="fullScreen" onRequestClose={close}>
       <View
-        className="flex-1 bg-background"
+        className="flex-1 bg-screen"
         style={{ paddingTop: insets.top, paddingBottom: insets.bottom }}
       >
         <View className="gap-2 p-3">
