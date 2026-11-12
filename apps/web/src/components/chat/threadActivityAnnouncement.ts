@@ -1,5 +1,6 @@
 import type { OrchestrationV2Run, OrchestrationV2RunStatus, RunId } from "@t3tools/contracts";
 import { latestExecutedRun } from "@t3tools/shared/orchestrationV2ThreadError";
+import type { TimelineEntry } from "../../session-logic";
 
 export type ThreadActivityStatus = "working" | "approval" | "input" | "idle";
 
@@ -18,6 +19,12 @@ export interface ThreadActivitySnapshot {
   readonly requestId: string | null;
   readonly runId: RunId | null;
   readonly runStatus: OrchestrationV2RunStatus | null;
+  readonly deliveryFailures?: ReadonlyArray<{
+    readonly id: string;
+    readonly position: number;
+    readonly message: string;
+  }>;
+  readonly latestItemPosition?: number;
 }
 
 export interface ThreadAnnouncementMemory {
@@ -31,6 +38,44 @@ export interface ThreadAnnouncementMemory {
   readonly settledRunId: RunId | null;
   /** The run shown while idle belongs to the last turn, even if it is still settling. */
   readonly idleRunId: RunId | null;
+  readonly latestItemPosition: number;
+}
+
+export function deliveryFailureSnapshot(
+  entries: ReadonlyArray<TimelineEntry>,
+  runId: RunId | null,
+) {
+  let latestItemPosition = -1;
+  const deliveryFailures: Array<NonNullable<ThreadActivitySnapshot["deliveryFailures"]>[number]> =
+    [];
+  for (const entry of entries) {
+    const projected =
+      entry.kind === "work"
+        ? entry.entry.projectedItem
+        : "projectedItem" in entry
+          ? entry.projectedItem
+          : undefined;
+    if (projected === undefined) continue;
+    latestItemPosition = Math.max(latestItemPosition, projected.position);
+    const item = projected.item;
+    if (
+      projected.visibility === "local" &&
+      item.type === "error" &&
+      item.status === "failed" &&
+      item.failure.class === "transport_error" &&
+      runId !== null &&
+      item.runId === runId &&
+      (item.id.startsWith("turn-item:steering-delivery-failure:") ||
+        item.id.startsWith("turn-item:runtime-request-delivery-failure:"))
+    ) {
+      deliveryFailures.push({
+        id: item.id,
+        position: projected.position,
+        message: `${item.title ?? "Delivery not confirmed"}. ${item.failure.message}`,
+      });
+    }
+  }
+  return { deliveryFailures, latestItemPosition };
 }
 
 const ACTIVE_RUN_STATUSES: ReadonlySet<OrchestrationV2RunStatus | null> = new Set([
@@ -96,7 +141,7 @@ export function announcedRun(
  * The first snapshot of a thread is a silent baseline, so opening or switching
  * threads never replays what already happened.
  */
-export function nextThreadAnnouncement(
+function nextThreadStatusAnnouncement(
   previous: ThreadAnnouncementMemory | null,
   next: ThreadActivitySnapshot,
 ): { readonly memory: ThreadAnnouncementMemory; readonly announcement: string | null } {
@@ -118,6 +163,7 @@ export function nextThreadAnnouncement(
         turnRunId: idle ? null : (newRunId ?? "unknown"),
         settledRunId: runOutcomeText(next.runStatus) === null ? null : next.runId,
         idleRunId,
+        latestItemPosition: -1,
       },
       announcement: null,
     };
@@ -171,5 +217,33 @@ export function nextThreadAnnouncement(
   return {
     memory: { ...memory, turnRunId: null, settledRunId: next.runId },
     announcement: outcome,
+  };
+}
+
+export function nextThreadAnnouncement(
+  previous: ThreadAnnouncementMemory | null,
+  next: ThreadActivitySnapshot,
+) {
+  const result = nextThreadStatusAnnouncement(previous, next);
+  const newFailures =
+    previous !== null && next.status !== "idle" && ACTIVE_RUN_STATUSES.has(next.runStatus)
+      ? (next.deliveryFailures ?? []).filter(
+          (failure) => failure.position > previous.latestItemPosition,
+        )
+      : [];
+  return {
+    memory: {
+      ...result.memory,
+      latestItemPosition: Math.max(
+        previous?.latestItemPosition ?? -1,
+        next.latestItemPosition ?? -1,
+      ),
+    },
+    announcement:
+      newFailures.length > 0
+        ? [result.announcement, ...newFailures.map((failure) => failure.message)]
+            .filter((part) => part !== null)
+            .join(". ")
+        : result.announcement,
   };
 }

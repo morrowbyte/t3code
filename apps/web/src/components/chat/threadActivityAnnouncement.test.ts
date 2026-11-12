@@ -41,11 +41,46 @@ function speak(snapshots: ReadonlyArray<ThreadActivitySnapshot>) {
 }
 
 describe("nextThreadAnnouncement", () => {
-  it("follows a turn from start to finish", () => {
-    expect(
-      speak([idle(firstRun, "completed"), busy(), busy(), idle(secondRun, "completed")]),
-    ).toEqual(["Working", "Done"]);
-  });
+  it.each(["steering-delivery-failure", "runtime-request-delivery-failure"])(
+    "follows a turn through one %s announcement to its result",
+    (kind) => {
+      const deliveryFailure = {
+        id: `turn-item:${kind}:message-1`,
+        position: 11,
+        message: "Delivery not confirmed. Send it again if it is still needed.",
+      };
+      const working = { ...busy(), latestItemPosition: 10 };
+      const failed = { ...working, latestItemPosition: 11, deliveryFailures: [deliveryFailure] };
+      const batched = {
+        ...working,
+        latestItemPosition: 13,
+        deliveryFailures: [
+          { ...deliveryFailure, id: "message-2", position: 12, message: "Correction rejected" },
+          { ...deliveryFailure, id: "message-3", position: 13, message: "Answer rejected" },
+        ],
+      };
+      expect(
+        speak([
+          idle(firstRun, "completed"),
+          working,
+          failed,
+          failed,
+          working,
+          failed,
+          { ...failed, deliveryFailures: [{ ...deliveryFailure, id: "historical", position: 3 }] },
+          failed,
+          batched,
+          batched,
+          idle(secondRun, "completed"),
+        ]),
+      ).toEqual([
+        "Working",
+        deliveryFailure.message,
+        "Correction rejected. Answer rejected",
+        "Done",
+      ]);
+    },
+  );
 
   it("says Working once when a send looks idle before its run appears", () => {
     expect(
@@ -119,6 +154,21 @@ describe("nextThreadAnnouncement", () => {
   it("stays silent when a thread opens mid-turn or after one", () => {
     expect(speak([idle(firstRun, "completed"), idle(firstRun, "completed")])).toEqual([]);
     expect(speak([busy(), busy()])).toEqual([]);
+    const historicalFailure = {
+      ...busy(),
+      latestItemPosition: 12,
+      deliveryFailures: [
+        {
+          id: "turn-item:steering-delivery-failure:history",
+          position: 11,
+          message: "Correction delivery not confirmed.",
+        },
+      ],
+    };
+    expect(speak([historicalFailure, historicalFailure])).toEqual([]);
+    expect(
+      speak([{ ...busy(), latestItemPosition: 12 }, historicalFailure, historicalFailure]),
+    ).toEqual([]);
   });
 
   it("announces the end of a turn that was already running when the thread opened", () => {
