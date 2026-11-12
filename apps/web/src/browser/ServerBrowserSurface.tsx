@@ -499,7 +499,7 @@ export function ServerBrowserSurface(props: {
           clearInput();
         },
         onHostSetup: setHostSetup,
-        onGone: native ? () => setGone(true) : undefined,
+        ...(native ? { onGone: () => setGone(true) } : {}),
         onUnauthorized: () => {
           const refusals = ++unauthorizedRef.current;
           if (refusals >= MAX_UNAUTHORIZED_REFUSALS) {
