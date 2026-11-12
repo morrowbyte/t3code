@@ -20,6 +20,7 @@ export function OffscreenBrowserViewport(props: {
   readonly zoomFactor: number;
   readonly visible: boolean;
   readonly interactive: boolean;
+  readonly focusOnly?: boolean;
   readonly fitSourceContent: boolean;
   readonly children: ReactNode;
 }) {
@@ -89,20 +90,22 @@ export function OffscreenBrowserViewport(props: {
         ref={wrapperRef}
         className="absolute inset-0 overflow-hidden bg-muted/35"
         onScroll={syncContentPresentation}
-        inert={!props.interactive}
+        inert={!props.interactive && !props.focusOnly}
       >
         <div
           className="relative"
           style={{ width: layout.canvasWidth, height: layout.canvasHeight }}
         >
           {deviceToolbarVisible && effectiveViewport._tag !== "fill" ? (
-            <BrowserDeviceToolbar
-              setting={effectiveViewport}
-              width={containerSize.width}
-              aspectRatio={aspectRatio}
-              onAspectRatioChange={(ratio) => setAspectRatioLocked(ratio !== null)}
-              onChange={commitViewportChange}
-            />
+            <div inert={!props.interactive}>
+              <BrowserDeviceToolbar
+                setting={effectiveViewport}
+                width={containerSize.width}
+                aspectRatio={aspectRatio}
+                onAspectRatioChange={(ratio) => setAspectRatioLocked(ratio !== null)}
+                onChange={commitViewportChange}
+              />
+            </div>
           ) : null}
           <div
             className="absolute"
@@ -116,7 +119,7 @@ export function OffscreenBrowserViewport(props: {
             {props.children}
           </div>
           {effectiveViewport._tag !== "fill" && !fitSourceContent ? (
-            <>
+            <div inert={!props.interactive}>
               <BrowserViewportResizeHandles
                 layout={layout}
                 activeDirection={activeDrag?.direction ?? null}
@@ -135,7 +138,7 @@ export function OffscreenBrowserViewport(props: {
                   {activeDrag.width} × {activeDrag.height}
                 </div>
               ) : null}
-            </>
+            </div>
           ) : null}
         </div>
       </div>

@@ -1117,9 +1117,9 @@ function ServerBrowserSurfaceConnection(
     ? visible && !controlPending && localReady
     : nativeFocusOnly
       ? false
-    : native
-      ? nativeControlReady && (!offscreen || localReady)
-      : control?.controller === "you";
+      : native
+        ? nativeControlReady && (!offscreen || localReady)
+        : control?.controller === "you";
   const nativeControlUnsupported = native && control !== null && typeof control.ready !== "boolean";
   let controlLabel = previewStreamControlLabel(control);
   if (native) {
@@ -1269,6 +1269,7 @@ function ServerBrowserSurfaceConnection(
             zoomFactor={props.zoomFactor ?? 1}
             visible={visible}
             interactive={renderedInputAllowed}
+            focusOnly={nativeFocusOnly}
             fitSourceContent={props.fitSourceContent ?? false}
           >
             {page}
