@@ -28,6 +28,7 @@ const decodePrivateResponse = Schema.decodeUnknownOption(
   Schema.fromJsonString(DesktopBrowserPrivateEntryResponse),
 );
 const decodeCommand = Schema.decodeUnknownOption(Schema.fromJsonString(DesktopBrowserCommand));
+const decodeViewportSetting = Schema.decodeUnknownSync(PreviewViewportSetting);
 const lineEncoder = new TextEncoder();
 const decodePrivateCdpId = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ id: Schema.Number })),
@@ -616,7 +617,7 @@ export const make = Effect.gen(function* () {
           method === "Emulation.clearDeviceMetricsOverride")
       ) {
         current();
-        const setting = Schema.decodeUnknownSync(PreviewViewportSetting)(
+        const setting = decodeViewportSetting(
           method === "Emulation.clearDeviceMetricsOverride"
             ? { _tag: "fill" }
             : { _tag: "freeform", width: params["width"], height: params["height"] },

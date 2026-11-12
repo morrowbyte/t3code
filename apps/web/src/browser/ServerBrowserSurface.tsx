@@ -169,7 +169,7 @@ function offerDownload(download: PreviewStreamDownload) {
   });
 }
 
-export function ServerBrowserSurface(props: {
+interface ServerBrowserSurfaceProps {
   readonly environmentId: EnvironmentId;
   readonly threadId: string;
   readonly tabId: string;
@@ -192,7 +192,17 @@ export function ServerBrowserSurface(props: {
   readonly className?: string;
   readonly pdfUrl?: string | null;
   readonly ref?: Ref<ServerBrowserHandle>;
-}) {
+}
+
+export function ServerBrowserSurface(props: ServerBrowserSurfaceProps) {
+  const [connection, setConnection] = useState(0);
+  const reconnect = useStableCallback(() => setConnection((current) => current + 1));
+  return <ServerBrowserSurfaceConnection key={connection} {...props} onReconnect={reconnect} />;
+}
+
+function ServerBrowserSurfaceConnection(
+  props: ServerBrowserSurfaceProps & { readonly onReconnect: () => void },
+) {
   const {
     environmentId,
     threadId,
@@ -220,7 +230,6 @@ export function ServerBrowserSurface(props: {
   const localFrameRef = useRef<LocalBrowserFrame | null>(null);
   const localFocusRef = useRef<ReturnType<typeof createLocalBrowserFocusController> | null>(null);
   const [localReady, setLocalReady] = useState(false);
-  const [localAttempt, setLocalAttempt] = useState(0);
   const privateEntryRef = useRef(false);
   const [privateEntry, setPrivateEntry] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -612,15 +621,7 @@ export function ServerBrowserSurface(props: {
       selectionRequestRef.current = null;
       clearInput();
     };
-  }, [
-    offscreen,
-    runtimeTabId,
-    localHost?.webContentsId,
-    surfaceId,
-    visible,
-    clearInput,
-    localAttempt,
-  ]);
+  }, [offscreen, runtimeTabId, localHost?.webContentsId, surfaceId, visible, clearInput]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- observes the canvas container's size, sends resizes to the stream and grows the frame cap
   useEffect(() => {
@@ -1086,6 +1087,11 @@ export function ServerBrowserSurface(props: {
     control?.canOperate === true &&
     control.controller === "you" &&
     control.ready === true;
+  const renderedInputAllowed = privateEntry
+    ? visible && !controlPending && localReady
+    : native
+      ? nativeControlReady && (!offscreen || localReady)
+      : control?.controller === "you";
   const nativeControlUnsupported = native && control !== null && typeof control.ready !== "boolean";
   let controlLabel = previewStreamControlLabel(control);
   if (native) {
@@ -1140,7 +1146,7 @@ export function ServerBrowserSurface(props: {
         autoComplete="off"
         autoCorrect="off"
         spellCheck={false}
-        disabled={pdfUrl !== null || !inputAllowed()}
+        disabled={pdfUrl !== null || !renderedInputAllowed}
         defaultValue={INPUT_SENTINEL}
         onFocus={(event) => resetInput(event.currentTarget)}
         className="sr-only top-0 left-0 text-base"
@@ -1188,9 +1194,9 @@ export function ServerBrowserSurface(props: {
               setHostSetup(null);
               setGone(false);
               setLocalError(null);
-              setLocalAttempt((attempt) => attempt + 1);
               if (runtimeTabId) reconnectDesktopBrowserHost(runtimeTabId);
               refreshPreviewStreamAccess(environmentId);
+              props.onReconnect();
             }}
           >
             Reconnect
@@ -1231,7 +1237,7 @@ export function ServerBrowserSurface(props: {
             viewport={props.viewport ?? FILL_PREVIEW_VIEWPORT}
             zoomFactor={props.zoomFactor ?? 1}
             visible={visible}
-            interactive={inputAllowed()}
+            interactive={renderedInputAllowed}
             fitSourceContent={props.fitSourceContent ?? false}
           >
             {page}

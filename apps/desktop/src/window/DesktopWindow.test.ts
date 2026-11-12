@@ -354,6 +354,7 @@ function layerTest(input: {
           getAutofillTarget: () => Effect.succeed(undefined),
           getBrowserSession: () => Effect.succeed({} as Electron.Session),
           setMainWindow: input.setPreviewMainWindow ?? (() => Effect.void),
+          subscribeHostedContents: () => Effect.addFinalizer(() => Effect.void),
           prepareWebview: () => Effect.void,
           isBrowserPartition: (partition) => partition.startsWith("persist:t3code-preview-"),
           getBrowserPartition: () => Effect.succeed("persist:t3code-preview-test"),
