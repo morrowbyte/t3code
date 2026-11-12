@@ -76,7 +76,7 @@ function createList(bundle: string) {
   };
 }
 
-function createInsetFollowList(bundle: string) {
+function createInsetFollowList(bundle: string, horizontal = false) {
   const source = NodeFS.readFileSync(
     new URL(`../apps/mobile/node_modules/@legendapp/list/${bundle}`, import.meta.url),
     "utf8",
@@ -96,6 +96,7 @@ function createInsetFollowList(bundle: string) {
   const state = {
     props: {
       data: ["message", "question"],
+      horizontal,
       maintainScrollAtEnd: { animated: false },
     },
     didContainersLayout: true,
@@ -117,6 +118,7 @@ function createInsetFollowList(bundle: string) {
       setTimeout: (callback: () => void) => timers.push(callback),
       getContentSize: () => 1673 + inset,
       getContentInsetStartAdjustment: () => 0,
+      isHorizontalRTL: () => false,
       peek$: (_ctx: unknown, key: string) =>
         key === "isWithinMaintainScrollAtEndThreshold" ? followsEnd : undefined,
       setContentInsetOverride: (_ctx: unknown, value: { bottom: number }) => {
@@ -238,6 +240,16 @@ describe.each(["react-native.js", "react-native.mjs"])(
       list.reportInset(95.5);
       list.advance();
       expect(list.scrollTo).not.toHaveBeenCalled();
+
+      const horizontalList = createInsetFollowList(bundle, true);
+      horizontalList.reportInset(95.5);
+      horizontalList.advance();
+      expect(horizontalList.scrollToEnd).not.toHaveBeenCalled();
+      expect(horizontalList.scrollTo).not.toHaveBeenCalled();
+      horizontalList.maintain();
+      horizontalList.advance();
+      expect(horizontalList.scrollToEnd).toHaveBeenCalledWith({ animated: false });
+      expect(horizontalList.scrollTo).not.toHaveBeenCalled();
     });
   },
 );

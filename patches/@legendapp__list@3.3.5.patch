@@ -269,7 +269,7 @@ index ce1fe00001c9e5aee6c6ea8bb2d4757d4586d002..ca6e596aa53327a097a388ffd545a4c6
       * Number of columns to render items in.
       * @default 1
 diff --git a/react-native.js b/react-native.js
-index b3c5a306b293f797a8b338adfca3060c0f6db22b..a8da232e23a7d8a1cea001a067fd8baf798c689e 100644
+index b3c5a306b293f797a8b338adfca3060c0f6db22b..851342d93d0c2f40d2299cd13c8b8239160a5960 100644
 --- a/react-native.js
 +++ b/react-native.js
 @@ -717,6 +717,15 @@ function hasActiveInitialScroll(state) {
@@ -429,7 +429,7 @@ index b3c5a306b293f797a8b338adfca3060c0f6db22b..a8da232e23a7d8a1cea001a067fd8baf
 -              animated: maintainScrollAtEnd.animated
 -            });
 +            const insetStartAdjustment = getContentInsetStartAdjustment(ctx);
-+            if (insetStartAdjustment > 0 || Platform.OS === "android") {
++            if (insetStartAdjustment > 0 || Platform.OS === "android" && !state.props.horizontal) {
 +              scroller == null ? void 0 : scroller.scrollTo({
 +                animated: maintainScrollAtEnd.animated,
 +                x: 0,
@@ -794,7 +794,7 @@ index b3c5a306b293f797a8b338adfca3060c0f6db22b..a8da232e23a7d8a1cea001a067fd8baf
        if (didChange) {
 -        retargetActiveInitialScrollAtEnd(ctx);
 +        const initialScrollRetargeted = retargetActiveInitialScrollAtEnd(ctx);
-+        if (!initialScrollRetargeted && Platform.OS === "android" && state.didLoad) {
++        if (!initialScrollRetargeted && Platform.OS === "android" && !state.props.horizontal && state.didLoad) {
 +          doMaintainScrollAtEnd(ctx);
 +        }
        }
@@ -921,7 +921,7 @@ index b3c5a306b293f797a8b338adfca3060c0f6db22b..a8da232e23a7d8a1cea001a067fd8baf
        recycleItems,
        refreshControl: refreshControlElement ? stylePaddingTopState > 0 ? React2__namespace.cloneElement(refreshControlElement, {
 diff --git a/react-native.mjs b/react-native.mjs
-index 40e87cda8c9bc79a889e5542f29af429a24b24d4..59b4bcd14be23eb5c1dea994e458ffc739c04042 100644
+index 40e87cda8c9bc79a889e5542f29af429a24b24d4..ebb9979679775d33076794f0c3091a99f93e7b09 100644
 --- a/react-native.mjs
 +++ b/react-native.mjs
 @@ -696,6 +696,15 @@ function hasActiveInitialScroll(state) {
@@ -1081,7 +1081,7 @@ index 40e87cda8c9bc79a889e5542f29af429a24b24d4..59b4bcd14be23eb5c1dea994e458ffc7
 -              animated: maintainScrollAtEnd.animated
 -            });
 +            const insetStartAdjustment = getContentInsetStartAdjustment(ctx);
-+            if (insetStartAdjustment > 0 || Platform.OS === "android") {
++            if (insetStartAdjustment > 0 || Platform.OS === "android" && !state.props.horizontal) {
 +              scroller == null ? void 0 : scroller.scrollTo({
 +                animated: maintainScrollAtEnd.animated,
 +                x: 0,
@@ -1446,7 +1446,7 @@ index 40e87cda8c9bc79a889e5542f29af429a24b24d4..59b4bcd14be23eb5c1dea994e458ffc7
        if (didChange) {
 -        retargetActiveInitialScrollAtEnd(ctx);
 +        const initialScrollRetargeted = retargetActiveInitialScrollAtEnd(ctx);
-+        if (!initialScrollRetargeted && Platform.OS === "android" && state.didLoad) {
++        if (!initialScrollRetargeted && Platform.OS === "android" && !state.props.horizontal && state.didLoad) {
 +          doMaintainScrollAtEnd(ctx);
 +        }
        }
