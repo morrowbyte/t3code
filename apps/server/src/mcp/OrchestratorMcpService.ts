@@ -2801,7 +2801,13 @@ const make = Effect.gen(function* () {
             }),
             Effect.mapError(threadManagementFailure),
           );
-        const updated = yield* loadProjection(binding.childThreadId);
+        const updated = yield* threadManagement
+          .getThreadRecords(binding.childThreadId, ["runs", "turnItems"], {
+            runIds: [input.childRunId],
+            turnItemRunId: input.childRunId,
+            turnItemTypes: ["user_message"],
+          })
+          .pipe(Effect.mapError(threadManagementFailure));
         const run = updated.runs.find((candidate) => candidate.id === input.childRunId);
         if (run === undefined)
           return yield* failure("run_not_found", "The selected child run was not found.");

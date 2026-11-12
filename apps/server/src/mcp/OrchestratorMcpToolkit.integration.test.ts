@@ -1625,6 +1625,71 @@ describe("orchestrator MCP toolkit", () => {
             expect(
               yield* outbox.listByCommandId(externalSteerCommand("complete-after-preflight")),
             ).toHaveLength(0);
+
+            const receiptCall = yield* invoke("external_delegate_task", {
+              ...request,
+              clientRequestId: "steering-receipt-target",
+            });
+            const receiptTask = yield* decodeDelegateTaskResult(receiptCall.structuredContent);
+            const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+            yield* worker.drain();
+            const runningChild = yield* waitForProjection(
+              orchestrator,
+              receiptTask.childThreadId,
+              (projection) => projection.providerTurns.some((turn) => turn.status === "running"),
+            );
+            const providerTurn = runningChild.providerTurns.find(
+              (turn) => turn.status === "running",
+            )!;
+            for (const status of ["completed", "failed"] as const) {
+              const key = `steering-receipt-${status}`;
+              const steerInput = {
+                ...binding,
+                taskId: receiptTask.taskId,
+                childRunId: receiptTask.childRunId,
+                clientRequestId: key,
+                message: `Correction with ${status} delivery`,
+              };
+              const pending = yield* invoke("external_task_steer", steerInput);
+              expect(pending.isError).not.toBe(true);
+              expect(pending.structuredContent).toMatchObject({ delivery: "accepted" });
+              const pendingChild = yield* orchestrator.getThreadProjection(
+                receiptTask.childThreadId,
+              );
+              const messageItem = pendingChild.turnItems.findLast(
+                (item) => item.type === "user_message" && item.text === steerInput.message,
+              );
+              if (messageItem?.type !== "user_message")
+                return yield* Effect.die("Missing actual steering message item");
+              expect(messageItem.status).toBe("pending");
+              const expected = {
+                threadId: receiptTask.childThreadId,
+                messageId: messageItem.messageId,
+                runId: receiptTask.childRunId,
+                status: "running",
+                delivery: status === "completed" ? "steered" : "failed",
+              };
+              // This read regression consumes the same persisted settlement and receipt as the worker.
+              yield* orchestrator.dispatch({
+                type: "message.steering.settle",
+                commandId: CommandId.make(
+                  `${externalSteerCommand(key)}:steering-delivery-${status === "completed" ? "accepted" : "failed"}`,
+                ),
+                threadId: receiptTask.childThreadId,
+                messageId: messageItem.messageId,
+                providerTurnId: providerTurn.id,
+                status,
+              });
+              for (const _repeat of [0, 1]) {
+                const replay = yield* invoke("external_task_steer", steerInput);
+                expect(replay.isError).not.toBe(true);
+                expect(replay.structuredContent).toMatchObject(expected);
+              }
+              expect(
+                (yield* orchestrator.getThreadProjection(receiptTask.childThreadId)).runs,
+              ).toHaveLength(1);
+            }
+
             // Stop, a replacement run, and a changed attempt root all happen after
             // the real service's preflight while its Git boundary is awaiting.
             for (const change of ["root", "run", "mode", "interaction", "stop"] as const) {
@@ -1817,8 +1882,9 @@ describe("orchestrator MCP toolkit", () => {
             layerRegistry,
             { projectServiceLayer: layerFixtureProject(cwd) },
           ).pipe(Layer.provide(layerContinuationProbe));
-          const layerOrchestration = Layer.merge(
+          const layerOrchestration = Layer.mergeAll(
             layerOrchestrator,
+            EffectOutbox.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
             ThreadManagementService.layer.pipe(
               Layer.provide(layerOrchestrator),
               Layer.provide(ServerSettings.layerTest()),
@@ -3237,7 +3303,34 @@ describe("orchestrator MCP toolkit", () => {
                 const sent = yield* decodeThreadSendResult(sendCall.structuredContent).pipe(
                   Effect.orDie,
                 );
-                expect(sent).toMatchObject({ runId: run.id, delivery: "steered" });
+                expect(sent.runId).toBe(run.id);
+                expect(["accepted", "steered"]).toContain(sent.delivery);
+                const outbox = yield* EffectOutbox.EffectOutboxV2;
+                const effects = yield* outbox.listByCommandId(
+                  CommandId.make(
+                    `command:mcp:${encodeURIComponent(invocation.requestNamespace)}:thread-send:${name}-steer`,
+                  ),
+                );
+                const steering = effects.find(
+                  (effect) =>
+                    effect.request.type === "provider-turn.steer" ||
+                    effect.request.type === "provider-turn.restart",
+                );
+                if (steering === undefined)
+                  return yield* Effect.die("Missing actual steering delivery effect");
+                yield* outbox.awaitSettled(steering.id);
+                const confirmed = yield* invoke("t3_thread_send", {
+                  threadId: child.childThreadId,
+                  message: childSteerText,
+                  mode: "steer",
+                  clientRequestId: `${name}-steer`,
+                });
+                expect(confirmed.structuredContent).toMatchObject({
+                  runId: run.id,
+                  messageId: sent.messageId,
+                  delivery:
+                    steering.request.type === "provider-turn.steer" ? "steered" : "accepted",
+                });
                 return { child, sent };
               });
             const waitForChildRun = (
@@ -3432,7 +3525,7 @@ describe("orchestrator MCP toolkit", () => {
             expect(activeSteer.isError).not.toBe(true);
             expect(activeSteer.structuredContent).toMatchObject({
               runId: cancellable.childRunId,
-              delivery: "steered",
+              delivery: "accepted",
             });
             const afterActiveSteer = yield* orchestrator.getThreadProjection(
               cancellable.childThreadId,
@@ -3910,7 +4003,7 @@ describe("orchestrator MCP toolkit", () => {
             ).toMatchObject({
               senderThreadId: parentThreadId,
             });
-            expect(sent.delivery).toBe("started");
+            expect(["accepted", "started"]).toContain(sent.delivery);
             const waitCall = yield* invoke("t3_thread_wait", {
               threadId: emptyThread.threadId,
               runId: sent.runId,
@@ -3932,7 +4025,7 @@ describe("orchestrator MCP toolkit", () => {
             const repeatedSend = yield* decodeThreadSendResult(
               repeatedSendCall.structuredContent,
             ).pipe(Effect.orDie);
-            expect(repeatedSend.runId).toBe(sent.runId);
+            expect(repeatedSend).toMatchObject({ runId: sent.runId, delivery: "started" });
             expect(
               (yield* orchestrator.getThreadProjection(emptyThread.threadId)).runs,
             ).toHaveLength(1);
@@ -3992,7 +4085,7 @@ describe("orchestrator MCP toolkit", () => {
             );
             expect(steered).toMatchObject({
               runId: activeRun.id,
-              delivery: "steered",
+              delivery: "accepted",
             });
             const steeredSource = yield* orchestrator.getThreadProjection(activeThread.threadId);
             expect(
