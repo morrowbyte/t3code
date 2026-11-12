@@ -228,6 +228,7 @@ export function OutgoingAgentTimelineRow({
   return (
     <AgentMessageRow
       messageId={row.id}
+      workGroupViewState={ctx.workGroupViewState}
       text={originalText}
       previewText={delegation?.firstParagraph}
       attachments={send?.replyTo ? <AgentReplyReference reply={send.replyTo} /> : undefined}
@@ -1126,6 +1127,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
         <MessageAuthorHeading>{unknownMcpSender ? "MCP" : senderLabel}</MessageAuthorHeading>
         <AgentMessageRow
           messageId={row.message.id}
+          workGroupViewState={ctx.workGroupViewState}
           text={row.message.text}
           peerThreadId={senderThreadId}
           peerTitle={sender?.title ?? null}

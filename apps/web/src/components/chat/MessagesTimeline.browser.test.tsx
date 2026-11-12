@@ -870,7 +870,7 @@ describe("MessagesTimeline citations", () => {
         .mockReturnValue(Atom.make(AsyncResult.initial<never, never>()));
       const sourceEntries = Array.from({ length: 40 }, (_, index) =>
         message(
-          `Source ${index}\n\n${"line\n\n".repeat(8)}`,
+          `${kind === "reply" && index === 20 ? "Kurz: " : ""}Source ${index}\n\n${"line\n\n".repeat(8)}${kind === "reply" && index === 20 ? "\n\nTechnik:\n- Technischer Kontext für den Reply-Rückweg" : ""}`,
           kind === "reply" && index === 20
             ? { createdBy: "agent", creationSource: "mcp", senderThreadId: targetThreadId, replyTo }
             : {},
@@ -994,6 +994,8 @@ describe("MessagesTimeline citations", () => {
         await screen
           .getByRole("button", { name: /^Details öffnen: Agentennachricht: Source 20/ })
           .click();
+        await screen.getByText("Technik", { exact: true }).click();
+        await screen.getByRole("button", { name: "Original", exact: true }).click();
         await screen.getByRole("link", { name: `Nachricht ${targetId}`, exact: true }).click();
         expect(screen.router!.state.location.state.threadLinkOrigin).toBe(true);
       } else {
@@ -1058,6 +1060,20 @@ describe("MessagesTimeline citations", () => {
       }
       await screen.rerender(source());
       await vi.waitFor(() => expectRowAtTop("entry-source-20"));
+      if (kind === "reply") {
+        expect(
+          container.querySelector(
+            '[data-agent-message="source-20"] button[aria-label^="Zuklappen:"]',
+          ),
+        ).not.toBeNull();
+        await expect
+          .element(screen.getByRole("button", { name: "Original", exact: true }))
+          .toHaveAttribute("aria-expanded", "true");
+        expect(
+          container.querySelector<HTMLDetailsElement>('[data-agent-message="source-20"] details')
+            ?.open,
+        ).toBe(true);
+      }
     },
   );
 

@@ -133,7 +133,11 @@ import {
   McpAppTimelineRow,
 } from "./TimelineAssistantRows";
 import { V2EventTimelineRow } from "./TimelineV2EventRow";
-import { startTimelinePositionRestore } from "./useTimelinePositionRestore";
+import {
+  measuredEndOffset,
+  settleListScroll,
+  startTimelinePositionRestore,
+} from "./useTimelinePositionRestore";
 import {
   attachTimelineViewport,
   nextListOpening,
@@ -888,6 +892,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   const [findListReady, setFindListReady] = useState(false);
   const replyNavigatingRef = useRef(false);
   const replyCancelledRef = useRef(false);
+  const replyRowId = replyEntry?.id;
   const replyRowIndex = replyEntry ? rows.findIndex((row) => row.id === replyEntry.id) : -1;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- cancels pending reply navigation when the user navigates the mounted timeline or presses Escape
   useLayoutEffect(() => {
@@ -920,6 +925,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
       !findListReady ||
       restoringThreadPosition ||
       !list ||
+      !replyRowId ||
       replyRowIndex < 0
     ) {
       return;
@@ -933,7 +939,28 @@ const ConversationTimeline = memo(function ConversationTimeline({
     let cancelled = false;
     void list
       .scrollToIndex({ index: replyRowIndex, animated: false, viewOffset: 24 })
-      .then(() => {
+      .then(async () => {
+        if (cancelled || replyCancelledRef.current) return;
+        await settleListScroll(
+          list,
+          (element) => {
+            const state = list.getState();
+            const index = state.indexByKey(replyRowId);
+            const row = index === undefined ? undefined : state.elementAtIndex(index);
+            if (!row) return undefined;
+            return Math.max(
+              0,
+              Math.min(
+                element.scrollTop +
+                  row.getBoundingClientRect().top -
+                  element.getBoundingClientRect().top -
+                  24,
+                measuredEndOffset(element),
+              ),
+            );
+          },
+          () => cancelled || replyCancelledRef.current,
+        );
         if (cancelled || replyCancelledRef.current) return;
         releaseFollow();
         setReplySettlement({ key: replyKey, done: true });
@@ -950,6 +977,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     replyKey,
     replyPositioning,
     replyTarget?.history,
+    replyRowId,
     replyRowIndex,
     findListReady,
     restoringThreadPosition,
