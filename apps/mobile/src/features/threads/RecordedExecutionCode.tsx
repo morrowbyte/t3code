@@ -35,7 +35,7 @@ function RecordedCodeText(props: {
         <View key={index} className="min-w-0 flex-row gap-2">
           <Text
             accessible={false}
-            className="w-7 text-right font-mono text-2xs leading-normal text-foreground-subtle"
+            className="w-7 text-right font-mono text-2xs leading-normal text-foreground-muted"
           >
             {index + 1}
           </Text>
@@ -116,6 +116,7 @@ export function RecordedExecutionCode(props: {
       ) : null}
       {scripts.length > 0 ? (
         <Pressable
+          className="min-h-14 justify-center"
           accessibilityRole="button"
           accessibilityState={{ expanded: originalOpen }}
           onPress={() => setCollapsedInput(originalOpen ? props.code : null)}

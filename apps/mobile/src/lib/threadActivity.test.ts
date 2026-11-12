@@ -2653,6 +2653,36 @@ it.each([false, true])(
     expect(activity.detail).toBe(prompt);
     expect(JSON.parse(activity.getFullDetail()!).item).toMatchObject({ prompt });
     expect(activity.getCopyText()).toContain(prompt);
+    const intent = "Installierte Paketversionen prüfen";
+    const intentFeed = buildThreadFeed([
+      projected({ ...approval, prompt: `# Intent: ${intent}\n${prompt}` }, 0),
+    ]);
+    const intentActivity = intentFeed.flatMap((row) =>
+      row.type === "activity-group" ? row.activities : [],
+    )[0]!;
+    expect(workEntryRowLabel(intentActivity.workEntry)).toBe(intent);
+    expect(workEntryRowLabel(intentActivity.workEntry, true)).toBe(intent);
+    const intentPresented = deriveThreadFeedPresentation(
+      buildThreadFeed([
+        projected(userMessage(), 0),
+        ...(grouped ? [projected(command(), 1)] : []),
+        projected({ ...approval, prompt: `# Intent: ${intent}\n${prompt}` }, 2),
+      ]),
+      { runId, status: "running", startedAt: at, completedAt: null },
+      new Set(),
+      new Set(),
+      at,
+    );
+    const intentHeader = intentPresented.find((row) =>
+      grouped ? row.type === "work-toggle" : row.type === "activity-group",
+    );
+    expect(
+      intentHeader?.type === "work-toggle"
+        ? intentHeader.summary
+        : intentHeader?.type === "activity-group"
+          ? intentHeader.activities[0]?.groupStandIn?.label
+          : undefined,
+    ).toBe(intent);
   },
 );
 

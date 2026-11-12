@@ -294,6 +294,58 @@ describe("AcpRuntimeModel", () => {
         command: "bun run typecheck",
       });
     }
+    const intent = "Die vorhandenen Paketversionen im aktuellen Arbeitsverzeichnis prüfen";
+    const named = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "localized-tool",
+        title: intent,
+        kind: "other",
+        status: "in_progress",
+        rawInput: { action: "inspect" },
+      },
+    } satisfies EffectAcpSchema.SessionNotification).events[0];
+    if (named?._tag !== "ToolCallUpdated") throw new Error("expected named tool call");
+    expect(named.toolCall.title).toBe(intent);
+    for (const content of [
+      undefined,
+      [{ type: "content" as const, content: { type: "text" as const, text: "Finished." } }],
+    ]) {
+      const finished = parseSessionUpdateEvent({
+        sessionId: "session-1",
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "localized-tool",
+          status: "completed",
+          ...(content ? { content } : {}),
+        },
+      } satisfies EffectAcpSchema.SessionNotification).events[0];
+      if (finished?._tag !== "ToolCallUpdated") throw new Error("expected completion update");
+      expect(mergeToolCallState(named.toolCall, finished.toolCall)).toMatchObject({
+        title: intent,
+        status: "completed",
+        data: { rawInput: { action: "inspect" } },
+      });
+      expect(
+        mergeToolCallState(named.toolCall, {
+          ...finished.toolCall,
+          data: { ...finished.toolCall.data, rawInput: { action: "inspect" } },
+        }).title,
+      ).toBe(intent);
+      if (content) {
+        for (const changed of [
+          { data: { ...finished.toolCall.data, rawInput: { action: "change" } } },
+          { data: { ...finished.toolCall.data, name: "another-tool" } },
+          { kind: "execute", command: "node other-check.mjs" },
+          { title: "Andere Paketversionen prüfen", data: { title: "Andere Paketversionen prüfen" } },
+        ]) {
+          expect(
+            mergeToolCallState(named.toolCall, { ...finished.toolCall, ...changed }).title,
+          ).not.toBe(intent);
+        }
+      }
+    }
   });
 
   it("ends a tool call that ACP reports as cancelled", () => {

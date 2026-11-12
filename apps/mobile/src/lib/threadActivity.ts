@@ -3,6 +3,7 @@ import type {
   ThreadPendingUserInput,
 } from "@t3tools/client-runtime/state/thread-requests";
 import { turnItemIsWorkspacePreparation } from "@t3tools/client-runtime/state/turn-item-presentation";
+import { parseApprovalReviewDetail } from "@t3tools/client-runtime/approvalReview";
 import type { ThreadCheckpointSummary } from "@t3tools/client-runtime/state/thread-checkpoints";
 import { formatSubagentDisplayTitle } from "@t3tools/client-runtime/state/subagent-display";
 import { isLiveSubagentTurnItem } from "@t3tools/client-runtime/state/subagentRuntime";
@@ -55,6 +56,7 @@ import type {
 } from "@t3tools/contracts";
 import { idleCompactionOf, isCompactionCommandMessage, RunId, ThreadId } from "@t3tools/contracts";
 import {
+  authoredCodeIntent,
   classifyToolActivity,
   collectToolFilePaths,
   dynamicToolTitle,
@@ -270,6 +272,19 @@ function compactWorkEntryText(value: string): string {
   return truncate(value.replace(/\s+/gu, " "), WORK_LOG_LABEL_MAX_LENGTH);
 }
 
+function approvalCommandIntent(entry: WorkLogPresentationEntry): string | undefined {
+  const approval = entry.structuredPayload;
+  if (
+    approval?.type === "approval_request" &&
+    approval.requestKind === "command" &&
+    !approval.privilegedCommand &&
+    parseApprovalReviewDetail(approval.prompt).kind === "none"
+  ) {
+    return authoredCodeIntent(approval.prompt);
+  }
+  return undefined;
+}
+
 export function workEntryRowLabel(entry: WorkLogPresentationEntry, expanded = false): string {
   if (entry.itemType === "fork") return entry.label;
   if (entry.itemType === "reasoning") {
@@ -278,7 +293,7 @@ export function workEntryRowLabel(entry: WorkLogPresentationEntry, expanded = fa
     if (expanded) return entry.toolLifecycleStatus === "inProgress" ? "Thinking" : "Thought";
     return compactWorkEntryText(entry.detail ?? "") || entry.label;
   }
-  const explicitIntent = workEntryExplicitIntentLabel(entry);
+  const explicitIntent = approvalCommandIntent(entry) ?? workEntryExplicitIntentLabel(entry);
   if (explicitIntent) return compactWorkEntryText(explicitIntent);
   const presentation = resolveWorkEntryToolPresentation(entry);
   if (presentation) return presentation.displayName;
@@ -892,7 +907,8 @@ function singleToolCallLabel(activity: ThreadFeedActivity, expanded: boolean): s
       ? "Thought"
       : compactWorkEntryText(activity.workEntry.detail ?? "") || "Thought";
   }
-  const explicitIntent = workEntryExplicitIntentLabel(activity.workEntry);
+  const explicitIntent =
+    approvalCommandIntent(activity.workEntry) ?? workEntryExplicitIntentLabel(activity.workEntry);
   if (explicitIntent) return compactWorkEntryText(explicitIntent);
   const presentation = resolveWorkEntryToolPresentation(activity.workEntry, "completed");
   if (presentation) return presentation.displayName;
@@ -1968,7 +1984,8 @@ function liveToolActivitySummary(activity: ThreadFeedActivity, presentTense: boo
       activity.workEntry.detail?.trim() || (status === "inProgress" ? "Thinking" : "Thought"),
     );
   }
-  const explicitIntent = workEntryExplicitIntentLabel(activity.workEntry);
+  const explicitIntent =
+    approvalCommandIntent(activity.workEntry) ?? workEntryExplicitIntentLabel(activity.workEntry);
   if (explicitIntent) return compactWorkEntryText(explicitIntent);
   const presentation = resolveWorkEntryToolPresentation({
     ...activity.workEntry,
