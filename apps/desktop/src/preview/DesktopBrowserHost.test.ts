@@ -353,9 +353,25 @@ describe("DesktopBrowserHost", () => {
     () =>
       Effect.gen(function* () {
         const host = yield* DesktopBrowserHost.make;
-        const debuggee = makeDebuggee();
+        const debuggee = makeDebuggee({
+          refuse: (_method, sessionId) => sessionId?.startsWith("t3-preview-browser-") === true,
+        });
         host.attach(key, debuggee.tab);
         const { connection, messages } = yield* connect(host);
+        yield* Queue.take(messages);
+        const browserAttach = yield* connection.dispatchCommandLine!(
+          encodeJson({
+            type: "cdp",
+            ...key,
+            message: encodeJson({ id: 90, method: "Target.attachToBrowserTarget" }),
+          }),
+        );
+        yield* Effect.promise(() => browserAttach!.settled);
+        const browserEvent = yield* Queue.take(messages);
+        if (browserEvent.type !== "cdp") throw new Error("Expected browser attachment");
+        const browser = Schema.decodeUnknownSync(
+          Schema.fromJsonString(Schema.Struct({ result: Schema.Struct({ sessionId: Schema.String }) })),
+        )(browserEvent.message);
         const command = (id: number, method: string) =>
           connection.dispatchCommandLine!(
             encodeJson({
@@ -374,6 +390,19 @@ describe("DesktopBrowserHost", () => {
         yield* connection.handleCommandLine(encodeJson({ type: "release", ...key }));
         expect(host.isPrivateEntry(debuggee.tab.webContents)).toBe(true);
         host.setPrivateEntry(debuggee.tab.webContents, false);
+        const pageAttach = yield* connection.dispatchCommandLine!(
+          encodeJson({
+            type: "cdp",
+            ...key,
+            message: encodeJson({
+              id: 91,
+              method: "Target.attachToTarget",
+              params: { targetId: "GUEST", flatten: true },
+              sessionId: browser.result.sessionId,
+            }),
+          }),
+        );
+        yield* Effect.promise(() => pageAttach!.settled);
         const resumedSent = debuggee.nextSend();
         const resumed = yield* command(3, "DOM.enable");
         yield* Effect.promise(() => resumedSent);
@@ -385,9 +414,16 @@ describe("DesktopBrowserHost", () => {
           yield* Queue.take(messages),
         ];
         expect(
-          events.slice(1).map((entry) => decodeCdpReply((entry as { message: string }).message).id),
-        ).toEqual([2, 3]);
-        const refusal = events[1];
+          events.map((entry) => decodeCdpReply((entry as { message: string }).message).id),
+        ).toEqual([2, 91, 3]);
+        const resumedAttachment = events[1];
+        if (resumedAttachment?.type !== "cdp") throw new Error("Expected resumed page attachment");
+        expect(JSON.parse(resumedAttachment.message)).toMatchObject({
+          id: 91,
+          result: { sessionId: expect.stringMatching(/^t3-preview-page-/) },
+          sessionId: browser.result.sessionId,
+        });
+        const refusal = events[0];
         expect(refusal).toMatchObject({ type: "cdp", ...key });
         if (refusal?.type !== "cdp") throw new Error("Expected private CDP refusal");
         const response = yield* decodePrivateCdpReply(refusal.message);
