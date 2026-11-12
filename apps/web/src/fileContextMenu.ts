@@ -157,7 +157,13 @@ export function useFileContextMenu(environmentId: EnvironmentId | null) {
         absolutePath,
         isFile: !target.isDirectory,
       });
-      if (url !== undefined) await openRemoteEditorUrl(url);
+      if (url !== undefined && (await openRemoteEditorUrl(url))) return;
+      const editorLabel = EDITOR_LABEL_BY_ID.get(editor) ?? editor;
+      toastManager.add({
+        type: "error",
+        title: `Could not open in ${editorLabel}`,
+        description: `Check that ${editorLabel} is installed and its URL handler is enabled on this device, then try again.`,
+      });
       return;
     }
 

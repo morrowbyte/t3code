@@ -7,13 +7,14 @@ const state = vi.hoisted(() => ({
   remote: new Map<string, RemoteOpenResolution>(),
   run: vi.fn(),
   openUrl: vi.fn(),
+  toast: vi.fn(),
 }));
 
 vi.mock("@effect/atom-react", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@effect/atom-react")>()),
   useAtomValue: (value: unknown) => value,
 }));
-vi.mock("./components/ui/toast", () => ({ toastManager: { add: vi.fn() } }));
+vi.mock("./components/ui/toast", () => ({ toastManager: { add: state.toast } }));
 vi.mock("./localApi", () => ({ readLocalApi: vi.fn() }));
 vi.mock("./state/server", () => ({
   serverEnvironment: {
@@ -83,6 +84,7 @@ describe("file context menu environment routing", () => {
     state.remote.clear();
     state.run.mockReset().mockResolvedValue({ _tag: "Success" });
     state.openUrl.mockReset().mockResolvedValue(true);
+    state.toast.mockReset();
   }
 
   it("uses each same-named environment's remote editor host, including a retained menu", async () => {
@@ -123,6 +125,16 @@ describe("file context menu environment routing", () => {
     }
     await firstMenu.activate("editor:vscode", { ...BASE_TARGET, environmentId: second });
     expect(state.openUrl).toHaveBeenCalledTimes(4);
+    expect(state.run).not.toHaveBeenCalled();
+    expect(state.toast).not.toHaveBeenCalled();
+
+    state.openUrl.mockResolvedValueOnce(false);
+    await firstMenu.activate("editor:vscode", { ...BASE_TARGET, environmentId: first });
+    expect(state.toast).toHaveBeenCalledExactlyOnceWith({
+      type: "error",
+      title: expect.stringContaining("VS Code"),
+      description: expect.any(String),
+    });
     expect(state.run).not.toHaveBeenCalled();
   });
 
