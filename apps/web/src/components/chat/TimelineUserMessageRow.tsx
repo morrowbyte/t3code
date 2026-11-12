@@ -29,7 +29,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { resolveUserMessagePresentation } from "@t3tools/client-runtime/user-message";
-import { Link } from "@tanstack/react-router";
+import { Link, useLocation } from "@tanstack/react-router";
 import { useQuietThreadShell } from "../../state/entities";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
@@ -118,6 +118,12 @@ const BUBBLE_CHIP_CLASS_NAME =
   "[&_[data-slot=context-chip]]:[--context-chip-ink:var(--context-chip-message,var(--context-chip-accent))]";
 
 function AgentReplyReference({ reply }: { reply: NonNullable<ReturnType<typeof readAgentReply>> }) {
+  const origin = use(TimelineRowCtx).threadRef;
+  const hasThreadReturn = useLocation({
+    select: (location) => location.state.threadLinkOrigin === true,
+  });
+  const sameThread =
+    origin?.environmentId === reply.environmentId && origin.threadId === reply.threadId;
   const threadRef = scopeThreadRef(
     EnvironmentId.make(reply.environmentId),
     ThreadId.make(reply.threadId),
@@ -136,6 +142,8 @@ function AgentReplyReference({ reply }: { reply: NonNullable<ReturnType<typeof r
         params={threadRef}
         search={{ messageId: reply.messageId }}
         resetScroll={false}
+        replace={sameThread && hasThreadReturn}
+        state={{ threadLinkOrigin: origin !== null && (!sameThread || hasThreadReturn) }}
         title={`${thread?.title ?? reply.threadId} · ${reply.messageId}`}
         className="rounded-sm text-foreground/85 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring [overflow-wrap:anywhere]"
       >

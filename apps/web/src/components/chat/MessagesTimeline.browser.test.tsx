@@ -54,6 +54,7 @@ import type { CitedHistory } from "./citationProcedure";
 import type { TimelineNavigation } from "./timelineViewport";
 import { rememberTimelinePosition } from "./timelineScrollAnchoring";
 import { useTimelineFollow } from "./useTimelineFollow";
+import { ThreadLinkBackButton } from "./ThreadLinkBackButton";
 import {
   COMPOSER_CONTEXT_CLIPBOARD_MIME,
   decodeComposerContextFragment,
@@ -810,9 +811,18 @@ describe("MessagesTimeline citations", () => {
     async (kind, compact) => {
       setup();
       const base = baseProps();
-      const targetThreadId = ThreadId.make(`target-${kind}-restore`);
-      const targetKey = `${ENVIRONMENT_ID}:${targetThreadId}`;
+      const sourceThreadId = ThreadId.make(base.routeThreadKey.slice(ENVIRONMENT_ID.length + 1));
+      const targetEnvironmentId = compact
+        ? EnvironmentId.make("environment-reply-target")
+        : ENVIRONMENT_ID;
+      const targetThreadId = compact ? sourceThreadId : ThreadId.make(`target-${kind}-restore`);
+      const targetKey = `${targetEnvironmentId}:${targetThreadId}`;
       const targetId = MessageId.make("original-message");
+      const replyTo = {
+        environmentId: targetEnvironmentId,
+        threadId: targetThreadId,
+        messageId: targetId,
+      };
       const projected = makeStreamingTimelineFixture().visibleTurnItems.find(
         (row) => row.item.type === (kind === "reply" ? "user_message" : "assistant_message"),
       );
@@ -833,7 +843,7 @@ describe("MessagesTimeline citations", () => {
         },
       };
       const thread = {
-        environmentId: ENVIRONMENT_ID,
+        environmentId: targetEnvironmentId,
         projection: { visibleTurnItems: [original] },
       } as NonNullable<Atom.Type<ReturnType<typeof environmentThreadDetails.quietThreadAtom>>>;
       using _thread = vi
@@ -859,7 +869,13 @@ describe("MessagesTimeline citations", () => {
         .spyOn(environmentCatalog, "stateAtom")
         .mockReturnValue(Atom.make(AsyncResult.initial<never, never>()));
       const sourceEntries = Array.from({ length: 40 }, (_, index) =>
-        message(`Source ${index}\n\n${"line\n\n".repeat(8)}`, {}, `source-${index}`),
+        message(
+          `Source ${index}\n\n${"line\n\n".repeat(8)}`,
+          kind === "reply" && index === 20
+            ? { createdBy: "agent", creationSource: "mcp", senderThreadId: targetThreadId, replyTo }
+            : {},
+          `source-${index}`,
+        ),
       );
       const targetEntries = Array.from({ length: compact ? 7 : 40 }, (_, index) =>
         index === (compact ? 0 : 5)
@@ -873,7 +889,14 @@ describe("MessagesTimeline citations", () => {
             }
           : message(
               `Target ${index}\n\n${"line\n\n".repeat(compact ? 2 : 8)}`,
-              {},
+              compact && index === 1
+                ? {
+                    createdBy: "agent",
+                    creationSource: "mcp",
+                    senderThreadId: targetThreadId,
+                    replyTo,
+                  }
+                : {},
               `target-${index}`,
             ),
       );
@@ -905,13 +928,18 @@ describe("MessagesTimeline citations", () => {
           setTimelineAnchor: () => {},
         });
         return (
-          <MessagesTimeline
-            {...timelineProps}
-            liveFollowEnabled={follow.timelineLiveFollowEnabled}
-            onViewportAttach={follow.attachTimelineViewport}
-            onIsAtEndChange={follow.onIsAtEndChangeStable}
-            onFooterGrow={follow.onTimelineFooterGrowStable}
-          />
+          <>
+            <div style={{ position: "absolute", zIndex: 1 }}>
+              <ThreadLinkBackButton />
+            </div>
+            <MessagesTimeline
+              {...timelineProps}
+              liveFollowEnabled={follow.timelineLiveFollowEnabled}
+              onViewportAttach={follow.attachTimelineViewport}
+              onIsAtEndChange={follow.onIsAtEndChangeStable}
+              onFooterGrow={follow.onTimelineFooterGrowStable}
+            />
+          </>
         );
       }
       const source = () => (
@@ -928,6 +956,7 @@ describe("MessagesTimeline citations", () => {
           timelineProps={{
             ...base,
             routeThreadKey: targetKey,
+            activeThreadEnvironmentId: targetEnvironmentId,
             timelineEntries: entries,
             footer: <div style={{ height: 240 }} />,
             contentInsetEndAdjustment: compact ? 240 : 0,
@@ -947,7 +976,10 @@ describe("MessagesTimeline citations", () => {
           }}
         />
       );
-      await using screen = await render(source(), { container, router: "/source/source" });
+      await using screen = await render(source(), {
+        container,
+        router: `/${ENVIRONMENT_ID}/${sourceThreadId}`,
+      });
       const viewport = base.listRef.current!.getScrollableNode()!;
       const expectRowAtTop = (id: string) => {
         const row = container.querySelector(`[data-timeline-row-id="${id}"]`);
@@ -958,12 +990,19 @@ describe("MessagesTimeline citations", () => {
       };
       await vi.waitFor(() => expectRowAtTop("entry-source-20"));
       using scrollToIndex = vi.spyOn(base.listRef.current!, "scrollToIndex");
-      await act(() =>
-        screen.router!.navigate({
-          to: `/${ENVIRONMENT_ID}/${targetThreadId}`,
-          search: kind === "reply" ? { messageId: targetId } : {},
-        }),
-      );
+      if (kind === "reply") {
+        await screen
+          .getByRole("button", { name: /^Details öffnen: Agentennachricht: Source 20/ })
+          .click();
+        await screen.getByRole("link", { name: `Nachricht ${targetId}`, exact: true }).click();
+        expect(screen.router!.state.location.state.threadLinkOrigin).toBe(true);
+      } else {
+        await act(() =>
+          screen.router!.navigate({
+            to: `/${targetEnvironmentId}/${targetThreadId}`,
+          }),
+        );
+      }
       if (compact) {
         await screen.rerender(target(targetEntries.slice(-5)));
         await vi.waitFor(() => expect(base.listRef.current!.getState().data).toHaveLength(5));
@@ -1001,9 +1040,22 @@ describe("MessagesTimeline citations", () => {
         await screen.rerender(target([message("Older history", {}, "older"), ...targetEntries]));
         await vi.waitFor(expectOriginalInView);
       }
-      await act(() => {
-        screen.router!.history.back();
-      });
+      if (kind === "reply") {
+        if (compact) {
+          const historyLength = screen.router!.history.length;
+          await screen
+            .getByRole("button", { name: /^Details öffnen: Agentennachricht: Target 1/ })
+            .click();
+          await screen.getByRole("link", { name: `Nachricht ${targetId}`, exact: true }).click();
+          expect(screen.router!.state.location.state.threadLinkOrigin).toBe(true);
+          expect(screen.router!.history.length).toBe(historyLength);
+        }
+        await screen.getByRole("button", { name: "Back to previous thread" }).click();
+      } else {
+        await act(() => {
+          screen.router!.history.back();
+        });
+      }
       await screen.rerender(source());
       await vi.waitFor(() => expectRowAtTop("entry-source-20"));
     },
