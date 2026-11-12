@@ -13,6 +13,7 @@ export async function applyComposerImageAnnotation(input: {
   readonly text: string;
   readonly signal: AbortSignal;
   readonly isCurrent: () => boolean;
+  readonly onComment?: (text: string) => void;
 }): Promise<boolean> {
   const isCurrent = () => !input.signal.aborted && input.isCurrent();
   if (!isCurrent()) return false;
@@ -25,7 +26,13 @@ export async function applyComposerImageAnnotation(input: {
   });
   const applied =
     isCurrent() &&
-    replaceComposerDraftAttachment(input.draftKey, input.attachmentId, attachment, input.text);
+    replaceComposerDraftAttachment(
+      input.draftKey,
+      input.attachmentId,
+      attachment,
+      input.onComment ? "" : input.text,
+    );
   if (!applied) await removePersistedComposerAttachmentFile(attachment.fileUri);
+  else if (input.text.trim()) input.onComment?.(input.text);
   return applied;
 }
