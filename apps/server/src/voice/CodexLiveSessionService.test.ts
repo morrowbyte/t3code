@@ -1307,6 +1307,53 @@ it.effect.each([false, true])(
           "native output acknowledgement must not hold work admission",
         );
         assert.isFalse(yield* Deferred.isDone(heldContext));
+        const normalMainSend = mainSend;
+        let rejectedSubmissionCalls = 0;
+        mainSend = () =>
+          Effect.sync(() => {
+            rejectedSubmissionCalls += 1;
+            return {
+              delivery: "failed",
+              run: durableProjection.runs[0]!,
+            } as Effect.Success<ReturnType<NonNullable<typeof mainSend>>>;
+          });
+        for (const loseReceipt of [false, true]) {
+          const turnId = `voice-nack-${loseReceipt ? "lost-receipt" : "stored-receipt"}`;
+          if (loseReceipt)
+            yield* sql.unsafe(`CREATE TEMP TRIGGER reject_nack_receipt BEFORE UPDATE ON codex_live_voice_intents
+              WHEN NEW.planner_turn_id = '${turnId}' AND NEW.dispatch_state = 'admitted'
+              BEGIN SELECT RAISE(FAIL, 'synthetic receipt write failure'); END`);
+          const submitRejected = () =>
+            submitWork!({
+              plannerNativeThreadId: "planner-native-1",
+              plannerTurnId: turnId,
+              callId: turnId,
+              message: "Correct the active task, but this delivery is rejected.",
+            });
+          const rejected = decodeJson(yield* submitRejected());
+          assert.deepEqual(rejected, {
+            accepted: false,
+            delivery: "failed",
+            runId: "durable-run-1",
+          });
+          const callsBeforeReplay = rejectedSubmissionCalls;
+          if (loseReceipt) {
+            const pending = yield* sql<{ dispatch_state: string }>`SELECT dispatch_state
+              FROM codex_live_voice_intents WHERE planner_turn_id = ${turnId}`;
+            assert.equal(pending[0]!.dispatch_state, "reserved");
+            yield* sql.unsafe("DROP TRIGGER reject_nack_receipt");
+          }
+          assert.deepEqual(decodeJson(yield* submitRejected()), rejected);
+          assert.equal(rejectedSubmissionCalls, callsBeforeReplay + (loseReceipt ? 1 : 0));
+          const stored = yield* sql<{ receipt_json: string }>`SELECT receipt_json
+            FROM codex_live_voice_intents WHERE planner_turn_id = ${turnId} AND dispatch_state = 'admitted'`;
+          assert.deepEqual(decodeJson(stored[0]!.receipt_json), rejected);
+          assert.deepEqual(decodeJson(yield* submitRejected()), rejected);
+          assert.equal(rejectedSubmissionCalls, callsBeforeReplay + (loseReceipt ? 1 : 0));
+          assert.equal(durableProjection.runs[0]!.status, "running");
+          assert.equal(durableProjection.runs.length, 1);
+        }
+        mainSend = normalMainSend;
         yield* sql`UPDATE codex_live_voice_intents SET receipt_json = json_set(receipt_json, '$.intakeIntent', json('{"id":"concurrent-intake-marker"}')) WHERE lease_id = ${prepared.leaseId} AND planner_turn_id = 'planner-turn-1'`;
         const progressSettled = waitForDelivery("commentary-message-durable-run-1");
         yield* Deferred.succeed(heldContext, undefined);

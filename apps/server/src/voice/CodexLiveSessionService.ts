@@ -2839,7 +2839,7 @@ export const layer: Layer.Layer<
                   );
           const receipt = encodeReceipt({
             ...reserved,
-            accepted: true,
+            accepted: result.delivery !== "failed",
             ...(input.voiceIntake === undefined ? {} : { voiceIntake: input.voiceIntake }),
             ...(input.requestId === undefined
               ? { delivery: result.delivery, runId: result.runId }
