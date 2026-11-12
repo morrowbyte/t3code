@@ -939,7 +939,7 @@ function CartesianChart({
   );
   const categoryTicks = spacedIndices(
     model.categories.length,
-    Math.floor(plotWidth / (72 * fontScale)),
+    Math.floor(plotWidth / (44 * fontScale)),
   );
   const labelWidth = Math.min(112 * fontScale, plotWidth / Math.max(1, categoryTicks.length));
   const labelHeight = Math.max(
