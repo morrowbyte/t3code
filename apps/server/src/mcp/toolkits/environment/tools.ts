@@ -6,6 +6,8 @@ import {
   OrchestratorMcpFailure,
   ServerSettings,
   ServerSettingsPatch,
+  AgentPreferences,
+  ProjectId,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
@@ -26,6 +28,7 @@ const PreferenceFields = {
     customInstructions: Schema.String,
     truncated: Schema.Boolean,
   }),
+  agentPreferences: AgentPreferences,
 };
 const shared = {
   failure: OrchestratorMcpFailure,
@@ -41,8 +44,11 @@ const shared = {
 const EnvironmentReadTool = Tool.make("t3_environment_read", {
   ...shared,
   description:
-    "Read this server's identity and preferences. Providers and models: `orchestrator_capabilities`.",
-  parameters: Schema.Struct({ environmentId: OrchestratorMcpEnvironmentTarget }),
+    "Read this server's identity and preferences; optional projectId selects project defaults. Providers and models: `orchestrator_capabilities`.",
+  parameters: Schema.Struct({
+    environmentId: OrchestratorMcpEnvironmentTarget,
+    projectId: Schema.optionalKey(ProjectId),
+  }),
   success: Schema.Struct({
     environmentId: ExecutionEnvironmentDescriptor.fields.environmentId,
     label: Schema.String,
@@ -56,7 +62,7 @@ const EnvironmentReadTool = Tool.make("t3_environment_read", {
 const EnvironmentPreferencesTool = Tool.make("t3_environment_preferences_update", {
   ...shared,
   description:
-    "Update environment-wide preferences. Live full-access or default caller thread only. Omitted fields are unchanged; `customInstructions: ''` clears it.",
+    "Update preferences. Live full-access or default caller thread only. Omitted fields are unchanged; `customInstructions: ''` clears it. Save agentPreferences only after explicit user confirmation, with its source; projectId null explicitly selects this environment, otherwise only that project. Task decisions require their own thread and completed ones stay completed. Read the current collection before replacing it.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     defaultThreadEnvMode: ServerSettingsPatch.fields.defaultThreadEnvMode,
@@ -64,6 +70,9 @@ const EnvironmentPreferencesTool = Tool.make("t3_environment_preferences_update"
     enableProviderUpdateChecks: ServerSettingsPatch.fields.enableProviderUpdateChecks,
     backgroundActivity: Schema.optionalKey(Schema.Struct({ profile: BackgroundActivityProfile })),
     sourceControlWritingStyle: ServerSettingsPatch.fields.sourceControlWritingStyle,
+    agentPreferences: Schema.optionalKey(
+      Schema.Struct({ projectId: Schema.NullOr(ProjectId), entries: AgentPreferences }),
+    ),
   }),
   success: Schema.Struct(PreferenceFields),
 }).annotate(Tool.Destructive, true);

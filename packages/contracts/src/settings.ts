@@ -1012,6 +1012,35 @@ export type BackgroundActivitySettings = typeof BackgroundActivitySettings.Type;
 export const ResponseStreamingMode = Schema.Literals(["turn", "paragraph"]);
 export type ResponseStreamingMode = typeof ResponseStreamingMode.Type;
 
+export const MAX_AGENT_PREFERENCES = 8;
+const AgentPreferenceText = TrimmedNonEmptyString.check(Schema.isMaxLength(500));
+const AgentPreferenceSource = TrimmedNonEmptyString.check(Schema.isMaxLength(300));
+export const AgentPreference = Schema.Struct({
+  key: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),
+  text: AgentPreferenceText,
+  source: AgentPreferenceSource,
+  appliesTo: Schema.Union([
+    Schema.Struct({ kind: Schema.Literal("preference") }),
+    Schema.Struct({
+      kind: Schema.Literal("task"),
+      threadId: ThreadId.check(Schema.isMaxLength(512)),
+    }),
+  ]),
+  status: Schema.Literals(["active", "inactive", "completed"]),
+  replaces: Schema.optionalKey(
+    Schema.Struct({ text: AgentPreferenceText, source: AgentPreferenceSource }),
+  ),
+});
+export type AgentPreference = typeof AgentPreference.Type;
+export const AgentPreferences = Schema.Array(AgentPreference).check(
+  Schema.isMaxLength(MAX_AGENT_PREFERENCES),
+  Schema.makeFilter(
+    (entries) =>
+      new Set(entries.map((entry) => entry.key)).size === entries.length ||
+      "Each preference topic must have one current entry.",
+  ),
+);
+
 const StorageRetentionDays = Schema.NullOr(
   Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 3650 })),
 );
@@ -1062,6 +1091,7 @@ export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
   "textGenerationModelSelection",
   "toolActivityLanguage",
   "threadTitleInstructions",
+  "agentPreferences",
   "sourceControlWriterModelSelection",
   "reviewGuideModelSelection",
   "reviewGuideInstructions",
@@ -1100,6 +1130,7 @@ export const ProjectSettingsOverrides = Schema.Struct({
   textGenerationModelSelection: Schema.optionalKey(ModelSelection),
   toolActivityLanguage: Schema.optionalKey(Schema.Literals(["auto", "de", "en"])),
   threadTitleInstructions: Schema.optionalKey(TrimmedString),
+  agentPreferences: Schema.optionalKey(AgentPreferences),
   sourceControlWriterModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   reviewGuideModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   reviewGuideInstructions: Schema.optionalKey(TrimmedString),
@@ -1357,6 +1388,7 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed("auto" as const)),
   ),
   threadTitleInstructions: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  agentPreferences: AgentPreferences.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   branchNamingMode: BranchNamingMode.pipe(
     Schema.withDecodingDefault(Effect.succeed("static" as const)),
   ),
@@ -1710,6 +1742,7 @@ export const ServerSettingsPatch = Schema.Struct({
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
   toolActivityLanguage: Schema.optionalKey(Schema.Literals(["auto", "de", "en"])),
   threadTitleInstructions: Schema.optionalKey(TrimmedString),
+  agentPreferences: Schema.optionalKey(AgentPreferences),
   branchNamingMode: Schema.optionalKey(BranchNamingMode),
   branchNamePrefix: Schema.optionalKey(TrimmedString),
   branchNameInstructions: Schema.optionalKey(TrimmedString),

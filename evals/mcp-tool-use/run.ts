@@ -19,6 +19,7 @@ import {
   DeviceSummary,
   OrchestratorMcpTaskRole,
   ProviderInstanceId,
+  AgentPreferences,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -46,6 +47,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
+import { agentPreferencePrompt } from "@t3tools/shared/agentPreferences";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import { buildCodexAdditionalContext } from "../../apps/server/src/provider/CodexDeveloperInstructions.ts";
 import { makeSideChatContext } from "../../apps/server/src/orchestration-v2/ContextHandoffService.ts";
@@ -287,6 +289,13 @@ export const McpToolUseCase = Schema.Struct({
     ),
   }),
   prompt: Schema.String,
+  agentPreferences: Schema.optional(
+    Schema.Struct({
+      entries: AgentPreferences,
+      threadId: ThreadId,
+      scope: Schema.Literals(["environment", "project"]),
+    }),
+  ),
   computePlacement: Schema.optional(Schema.Literals(["auto-local", "explicit-local"])),
   boatSetupProjectId: Schema.optional(ProjectId),
   /** Records for the context chips `prompt` links, projected as T3 sends them. */
@@ -950,7 +959,9 @@ export const buildMessages = (sample: Sample) => {
   const sideChat = testCase.setup.sideChat;
   const prompt =
     sideChat === undefined
-      ? userText
+      ? testCase.agentPreferences === undefined
+        ? userText
+        : agentPreferencePrompt({ ...testCase.agentPreferences, message: { text: userText } })
       : withInlineContext(
           makeSideChatContext({
             parentThreadId: ThreadId.make(sideChat.parentThreadId),

@@ -3,6 +3,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   ProviderInstanceId,
+  ProjectId,
   ThreadId,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
@@ -25,6 +26,98 @@ import { EnvironmentToolkit } from "./tools.ts";
 
 const environmentId = EnvironmentId.make("environment:preferences");
 const threadId = ThreadId.make("thread:preferences");
+
+it.effect(
+  "updates and reads the selected preference scope without changing environment defaults",
+  () =>
+    Effect.gen(function* () {
+      const projectId = ProjectId.make("project:preferences");
+      const toolkit = yield* EnvironmentToolkit;
+      const settings = yield* Settings.ServerSettingsService;
+      const preference = {
+        key: "answer-format",
+        text: "Answer briefly in German.",
+        source: "thread:confirmation/message:format",
+        appliesTo: { kind: "preference" as const },
+        status: "active" as const,
+      };
+      yield* toolkit
+        .handle("t3_environment_preferences_update", {
+          agentPreferences: { projectId: null, entries: [preference] },
+        })
+        .pipe(Stream.unwrap, Stream.runCollect);
+      yield* toolkit
+        .handle("t3_environment_preferences_update", {
+          agentPreferences: {
+            projectId,
+            entries: [
+              {
+                ...preference,
+                text: "Answer in English.",
+                source: "thread:confirmation/message:correction",
+              },
+            ],
+          },
+        })
+        .pipe(Stream.unwrap, Stream.runCollect);
+      const current = yield* settings.getSettings;
+      expect(current.agentPreferences).toEqual([preference]);
+      expect(current.projectSettingsOverrides[projectId]?.branchNamePrefix).toBe("task");
+      expect(current.projectSettingsOverrides[projectId]?.agentPreferences?.[0]?.replaces).toEqual({
+        text: preference.text,
+        source: preference.source,
+      });
+      const read = yield* toolkit
+        .handle("t3_environment_read", { projectId })
+        .pipe(Stream.unwrap, Stream.runCollect);
+      expect(read.at(-1)?.result).toMatchObject({
+        preferences: {
+          agentPreferences: [
+            { text: "Answer in English.", source: "thread:confirmation/message:correction" },
+          ],
+        },
+      });
+    }).pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(EnvironmentHandlers.layer).pipe(
+          Layer.provideMerge(
+            Layer.mergeAll(
+              ThreadCommandExecutor.layer,
+              Settings.layerTest({
+                projectSettingsOverrides: {
+                  [ProjectId.make("project:preferences")]: { branchNamePrefix: "task" },
+                },
+              }),
+              Layer.succeed(McpInvocationContext.McpInvocationContext, {
+                environmentId,
+                requestNamespace: "provider:preferences",
+                thread: {
+                  threadId,
+                  providerSessionId: "provider:preferences",
+                  providerInstanceId: ProviderInstanceId.make("codex"),
+                },
+                client: undefined,
+                capabilities: new Set(["orchestration" as const]),
+                issuedAt: 0,
+              }),
+              Layer.mock(ThreadManagement.ThreadManagementService)({
+                getThreadShell: () => Effect.succeed(liveThreadShell(threadId)),
+              }),
+              Layer.mock(Environment.ServerEnvironment)({
+                getDescriptor: Effect.succeed({
+                  environmentId,
+                  label: "Test",
+                  platform: { os: "linux", arch: "x64" },
+                  serverVersion: "0.0.0",
+                  capabilities: { repositoryIdentity: false },
+                }),
+              }),
+            ),
+          ),
+        ),
+      ),
+    ),
+);
 
 it.effect("refuses a preferences update when the caller's turn ends while it waits", () =>
   Effect.gen(function* () {

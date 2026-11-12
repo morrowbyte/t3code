@@ -825,7 +825,7 @@ it.effect("rechecks run ownership immediately before calling the provider", () =
   }).pipe(Effect.provide(layerRunExecutionTest)),
 );
 
-it.effect("passes the thread's MCP app context to the provider under a safe key", () =>
+it.effect("passes current preferences and safe MCP app context to the provider", () =>
   Effect.gen(function* () {
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const started = yield* Deferred.make<ProviderAdapter.ProviderAdapterV2TurnInput>();
@@ -870,13 +870,20 @@ it.effect("passes the thread's MCP app context to the provider under a safe key"
         creationSource: "web",
       },
       modelSelection: { instanceId: providerInstanceId, model: "gpt-5.4" },
-      runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: process.cwd() },
+      runtimePolicy: {
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: process.cwd(),
+      },
     });
 
     const input = yield* Deferred.await(started);
     assert.deepEqual(input.appContext, [
       { key: "mcp_app_turn-item_provider_codex_native-item_call-1", text: "2 overdue" },
     ]);
+    assert.include(input.message.text, "Use short German answers.");
+    assert.include(input.message.text, "thread:confirmation/message:format");
+    assert.include(input.message.text, "What is on my list?");
   }).pipe(
     Effect.provide(
       RunExecutionService.layer.pipe(
@@ -903,7 +910,17 @@ it.effect("passes the thread's MCP app context to the provider under a safe key"
             Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
               ingestNormalized: () => Effect.succeed([]),
             }),
-            ServerSettings.layerTest(),
+            ServerSettings.layerTest({
+              agentPreferences: [
+                {
+                  key: "answer-format",
+                  text: "Use short German answers.",
+                  source: "thread:confirmation/message:format",
+                  appliesTo: { kind: "preference" },
+                  status: "active",
+                },
+              ],
+            }),
           ),
         ),
       ),

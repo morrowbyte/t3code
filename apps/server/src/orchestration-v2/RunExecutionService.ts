@@ -8,6 +8,7 @@ import * as Crypto from "effect/Crypto";
 import * as Option from "effect/Option";
 import { makeAssistantStreamingFilter } from "./assistantStreaming.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { agentPreferencePrompt } from "@t3tools/shared/agentPreferences";
 import {
   type AgentObservatoryInvocationResult,
   isOrchestrationV2WorkActive,
@@ -1016,13 +1017,9 @@ export const layer: Layer.Layer<
           failure,
           threadDisposition: "reusable",
         });
-        const responseStreamingMode = yield* Effect.gen(function* () {
-          const responseStreamingMode = yield* serverSettings.getSettings.pipe(
-            Effect.map(
-              (settings) =>
-                resolveProjectSettings(settings, input.appThread.projectId).settings
-                  .responseStreamingMode,
-            ),
+        const resolvedSettings = yield* Effect.gen(function* () {
+          const resolvedSettings = yield* serverSettings.getSettings.pipe(
+            Effect.map((settings) => resolveProjectSettings(settings, input.appThread.projectId)),
           );
           // Side chats share the parent's worktree; a snapshot would capture the parent's edits.
           yield* (
@@ -1049,7 +1046,7 @@ export const layer: Layer.Layer<
           ) {
             return null;
           }
-          return responseStreamingMode;
+          return resolvedSettings;
         }).pipe(
           Effect.catchCause((cause) =>
             Effect.gen(function* () {
@@ -1093,7 +1090,7 @@ export const layer: Layer.Layer<
               }),
           ),
         );
-        if (responseStreamingMode === null) {
+        if (resolvedSettings === null) {
           return;
         }
         const terminalEvent = yield* Ref.make<ProviderTerminalEvent | null>(null);
@@ -1391,7 +1388,9 @@ export const layer: Layer.Layer<
           }
           return true;
         });
-        const filterAssistantEvent = makeAssistantStreamingFilter(responseStreamingMode);
+        const filterAssistantEvent = makeAssistantStreamingFilter(
+          resolvedSettings.settings.responseStreamingMode,
+        );
         // Held text writes nothing, so its item would take a position only
         // when finally written, behind every item that began after it.
         const reservedHeldTurnItemIds = new Set<TurnItemId>();
@@ -1780,6 +1779,9 @@ export const layer: Layer.Layer<
                 observatoryCrypto.value,
               )
             : undefined;
+        const compact =
+          input.message.attachments.length === 0 &&
+          input.message.text.trim().toLowerCase() === "/compact";
         const turnInput = {
           ...(observatoryCallback === undefined
             ? {}
@@ -1800,7 +1802,16 @@ export const layer: Layer.Layer<
           attemptId: input.attemptId,
           rootNodeId: input.rootNode.id,
           providerThread: input.providerThread,
-          message: input.message,
+          message: {
+            ...input.message,
+            text: agentPreferencePrompt({
+              entries: resolvedSettings.settings.agentPreferences,
+              threadId: input.run.threadId,
+              scope:
+                resolvedSettings.sources.agentPreferences === "project" ? "project" : "environment",
+              message: input.message,
+            }),
+          },
           modelSelection: input.modelSelection,
           runtimePolicy: input.runtimePolicy,
           ...(appContext.length === 0 ? {} : { appContext }),
@@ -1816,9 +1827,6 @@ export const layer: Layer.Layer<
           return;
         }
 
-        const compact =
-          input.message.attachments.length === 0 &&
-          input.message.text.trim().toLowerCase() === "/compact";
         const startTurn = Effect.suspend(() =>
           compact
             ? (input.session.compactThread?.(turnInput) ??

@@ -27,6 +27,7 @@ import {
   SettingsEnvironmentFilterHeader,
 } from "./components/SettingsEnvironmentFilterHeader";
 import { BranchNamingSettings } from "./components/BranchNamingSettings";
+import { AgentPreferencesSettings } from "./components/AgentPreferencesSettings";
 import { DatabaseStorageNotice } from "./components/DatabaseStorageNotice";
 import { ListChoiceRow as SettingsChoiceRow } from "../../components/ui/ListChoiceRow";
 import { SettingsSection } from "./components/SettingsSection";
@@ -58,6 +59,7 @@ const PAGE_TITLES: Record<SettingsPage, string> = {
 
 const PAGE_PROJECT_KEYS: Record<SettingsPage, readonly ProjectScopedServerSettingKey[]> = {
   threads: [
+    "agentPreferences",
     "defaultThreadEnvMode",
     "defaultRuntimeMode",
     "responseStreamingMode",
@@ -402,6 +404,20 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                     />
                   </SettingsSection>
                   <AutoSettleSettingsRows write={write} pending={pendingWrites > 0} />
+                  <AgentPreferencesSettings
+                    key={targetsKey}
+                    entries={
+                      displayTargets.every(
+                        (target) =>
+                          JSON.stringify(target.settings.agentPreferences) ===
+                          JSON.stringify(reference.settings.agentPreferences),
+                      )
+                        ? reference.settings.agentPreferences
+                        : null
+                    }
+                    disabled={disabledFor("agentPreferences")}
+                    onChange={(agentPreferences) => write({ agentPreferences })}
+                  />
                 </>
               ) : null}
 

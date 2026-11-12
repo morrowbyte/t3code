@@ -742,6 +742,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["generated thread titles prompt custom style naming rename regenerate"],
   },
   {
+    id: "agent-preferences",
+    title: "Confirmed agent preferences",
+    to: "/settings/threads",
+    scope: "project-defaults",
+    searchTerms: [
+      "feedback memory instructions source scope preference Präferenzen Rückmeldungen Quelle",
+    ],
+  },
+  {
     id: "app-version",
     title: "Version",
     to: "/settings/updates",

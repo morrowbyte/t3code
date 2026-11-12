@@ -6,6 +6,7 @@ import * as Settings from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { readCaller, unavailable } from "../../threadAccess.ts";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { EnvironmentToolkit } from "./tools.ts";
 
 export function preferences(settings: ServerSettings) {
@@ -15,6 +16,7 @@ export function preferences(settings: ServerSettings) {
     enableProviderUpdateChecks,
     backgroundActivity,
     sourceControlWritingStyle,
+    agentPreferences,
   } = settings;
   const characters = Array.from(sourceControlWritingStyle.customInstructions);
   return {
@@ -22,6 +24,7 @@ export function preferences(settings: ServerSettings) {
     newWorktreesStartFromOrigin,
     enableProviderUpdateChecks,
     backgroundActivity: { profile: backgroundActivity.profile },
+    agentPreferences,
     sourceControlWritingStyle: {
       ...sourceControlWritingStyle,
       customInstructions: characters.slice(0, 4000).join(""),
@@ -41,7 +44,7 @@ const access = Effect.gen(function* () {
   return { ...context, descriptor, settings: yield* Settings.ServerSettingsService };
 });
 export const layer = McpToolAccess.toLayer(EnvironmentToolkit, {
-  t3_environment_read: McpToolAccess.reads(() =>
+  t3_environment_read: McpToolAccess.reads(({ projectId }) =>
     Effect.gen(function* () {
       const { descriptor, settings } = yield* access;
       const current = yield* settings.getSettings.pipe(Effect.mapError(unavailable));
@@ -50,7 +53,7 @@ export const layer = McpToolAccess.toLayer(EnvironmentToolkit, {
         label: descriptor.label,
         serverVersion: descriptor.serverVersion,
         platform: descriptor.platform,
-        preferences: preferences(current),
+        preferences: preferences(resolveProjectSettings(current, projectId ?? null).settings),
       };
     }),
   ),
@@ -62,8 +65,26 @@ export const layer = McpToolAccess.toLayer(EnvironmentToolkit, {
         // The turn may have ended, or the thread's modes changed, while this waited for the lock.
         yield* check;
         const { settings } = yield* access;
+        const { agentPreferences, ...environmentPatch } = patch;
+        const current = yield* settings.getSettings.pipe(Effect.mapError(unavailable));
+        const preferencePatch =
+          agentPreferences === undefined
+            ? {}
+            : agentPreferences.projectId === null
+              ? { agentPreferences: agentPreferences.entries }
+              : {
+                  projectSettingsOverrides: {
+                    [agentPreferences.projectId]: {
+                      ...current.projectSettingsOverrides[agentPreferences.projectId],
+                      agentPreferences: agentPreferences.entries,
+                    },
+                  },
+                };
+        const updated = yield* settings
+          .updateSettings({ ...environmentPatch, ...preferencePatch })
+          .pipe(Effect.mapError(unavailable));
         return preferences(
-          yield* settings.updateSettings(patch).pipe(Effect.mapError(unavailable)),
+          resolveProjectSettings(updated, agentPreferences?.projectId ?? null).settings,
         );
       });
       return yield* scope.thread === undefined
