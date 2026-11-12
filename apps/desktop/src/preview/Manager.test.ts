@@ -1096,10 +1096,11 @@ describe("PreviewManager", () => {
           expect(yield* Fiber.join(restoreForResume)).toBe(true);
           const sharingInvalidated = Promise.withResolvers<void>();
           fixture.wc.invalidate.mockImplementationOnce(() => sharingInvalidated.resolve());
+          const run = Effect.runPromiseWith(yield* Effect.context<never>());
           fixture.wc.executeJavaScriptInIsolatedWorld.mockImplementationOnce(async () => {
             fixture.paint("cleared-fields");
             const cleared = { ...fixture.send.mock.calls.at(-1)![1], focused: true };
-            await Effect.runPromise(manager.ackSurface(cleared, 7));
+            await run(manager.ackSurface(cleared, 7));
             expect(target?.current()).toBe(false);
             return true;
           });

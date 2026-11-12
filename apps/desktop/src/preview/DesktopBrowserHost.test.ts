@@ -389,7 +389,7 @@ describe("DesktopBrowserHost", () => {
         const refusal = events[1];
         expect(refusal).toMatchObject({ type: "cdp", ...key });
         if (refusal?.type !== "cdp") throw new Error("Expected private CDP refusal");
-        const response = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))(
+        const response = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(
           refusal.message,
         );
         expect(response).toEqual({
