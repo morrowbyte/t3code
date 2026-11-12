@@ -8,6 +8,7 @@ interface FilePreviewMetadata {
   readonly kind: "image" | "pdf" | "document";
   readonly mimeType?: string;
   readonly name?: string;
+  readonly draftAttachmentId?: string;
   readonly sourceIdentifier?: string;
   readonly srcFragment?: string;
   readonly actionsSource?: MediaActionsSource;

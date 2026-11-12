@@ -79,11 +79,8 @@ export function ReviewCommentComposerSheet(props: ReviewCommentComposerSheetProp
   }, []);
 
   const getImageAnnotation = (item: FilePreviewItem) => {
-    const attachment = attachments.find((entry) =>
-      "attachment" in item
-        ? entry.id === item.attachment.id
-        : "uri" in item && (entry.dataUrl ?? entry.previewUri) === item.uri,
-    );
+    const attachmentId = "attachment" in item ? item.attachment.id : item.draftAttachmentId;
+    const attachment = attachments.find((entry) => entry.id === attachmentId);
     if (!attachment) return undefined;
     return ((image, text, signal) => {
       const scope = annotationScope.current;

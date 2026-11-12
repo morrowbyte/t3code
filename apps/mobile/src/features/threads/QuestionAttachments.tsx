@@ -162,15 +162,8 @@ export function QuestionAttachments(props: {
   const canAttach = capabilities !== undefined;
   const attachments = drafts[key]?.attachments ?? [];
   const getImageAnnotation = (item: FilePreviewItem) => {
-    const attachment =
-      "attachment" in item
-        ? item.attachment
-        : attachments.find(
-            (entry) =>
-              entry.type === "image" &&
-              "uri" in item &&
-              (entry.dataUrl ?? entry.previewUri) === item.uri,
-          );
+    const attachmentId = "attachment" in item ? item.attachment.id : item.draftAttachmentId;
+    const attachment = attachments.find((entry) => entry.id === attachmentId);
     if (!attachment) return undefined;
     return (async (image, text, signal) => {
       const scope = pickerScope.current;

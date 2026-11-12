@@ -157,6 +157,7 @@ export function ComposerContextSheet(props: {
         const preview: FilePreviewItem = {
           kind: record.kind === "image" || previewKind === "image" ? "image" : "pdf",
           name: record.name,
+          draftAttachmentId: localAttachment?.id,
           ...source,
         };
         return (

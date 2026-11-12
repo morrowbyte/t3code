@@ -671,15 +671,8 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
   useEffect(() => () => disposeSettingsSheetPresentation(), []);
 
   const getImageAnnotation = (item: FilePreviewItem) => {
-    const attachment =
-      "attachment" in item
-        ? item.attachment
-        : draftAttachments.find(
-            (entry) =>
-              entry.type === "image" &&
-              "uri" in item &&
-              (entry.dataUrl ?? entry.previewUri) === item.uri,
-          );
+    const attachmentId = "attachment" in item ? item.attachment.id : item.draftAttachmentId;
+    const attachment = draftAttachments.find((entry) => entry.id === attachmentId);
     if (!attachment) return undefined;
     return ((image, text, signal) =>
       applyComposerImageAnnotation({

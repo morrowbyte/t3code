@@ -6,6 +6,7 @@ import ImageViewing from "react-native-image-viewing";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useMediaActions } from "../state/mediaActions";
+import { filePreviewKey } from "../lib/filePreviewGallery";
 import { AppText } from "./ui/AppText";
 import { SymbolView } from "./ui/AppSymbol";
 import type { ResolvedFilePreviewSource } from "./FilePreviewModal.types";
@@ -69,7 +70,7 @@ export function MediaImagePreview(props: MediaImagePreviewProps) {
   const [initialIndex] = useState(() =>
     Math.max(
       0,
-      gallery.findIndex((item) => item.uri === props.source.uri),
+      gallery.findIndex((item) => filePreviewKey(item) === filePreviewKey(props.source)),
     ),
   );
   if (annotating)
@@ -103,6 +104,7 @@ export function MediaImagePreview(props: MediaImagePreviewProps) {
     >
       <ImageViewing
         images={gallery.map((item) => ({ uri: item.uri }))}
+        keyExtractor={(_image, index) => filePreviewKey(gallery[index]!)}
         imageIndex={initialIndex}
         visible
         presentationStyle="fullScreen"
