@@ -85,12 +85,21 @@ export function createLocalBrowserFocusController(input: {
   readonly keyboardInput: () => HTMLTextAreaElement | null;
   readonly frame: () => LocalBrowserFrame | null;
   readonly canFocus: () => boolean;
+  readonly preparePrivateEntry: (signal: AbortSignal) => Promise<void>;
+  readonly onPreparationChange: (active: boolean) => void;
   readonly bridge: DesktopPreviewBridge["surface"];
   readonly tabId: string;
   readonly surfaceId: string;
   readonly webContentsId: number;
 }) {
   let disposed = false;
+  let preparation: {
+    readonly request: DesktopPreviewSurfaceFocusRequest;
+    readonly abort: AbortController;
+    released: boolean;
+    focused: boolean;
+    finishing: boolean;
+  } | null = null;
   const document = input.canvas.ownerDocument;
   const identity = (frame: DesktopPreviewSurfaceAck) => ({
     tabId: frame.tabId,
@@ -103,44 +112,122 @@ export function createLocalBrowserFocusController(input: {
     frame.tabId === input.tabId &&
     frame.surfaceId === input.surfaceId &&
     frame.webContentsId === input.webContentsId;
-  const focused = () => {
+  const finishPreparation = () => {
+    const current = preparation;
+    preparation = null;
+    if (!current) return;
+    current.abort.abort();
+    input.onPreparationChange(false);
+  };
+  const canFocus = () =>
+    input.canFocus() ||
+    (preparation?.released === true &&
+      input.frame()?.generation === preparation.request.generation);
+  const surfaceFocused = () => {
     const keyboard = input.keyboardInput();
     return (
-      !disposed &&
-      input.canFocus() &&
       document.hasFocus() &&
       ((keyboard !== null && document.activeElement === keyboard) ||
         document.activeElement === input.canvas)
     );
   };
+  const focused = () => !disposed && canFocus() && surfaceFocused();
   const report = (blurred = false) => {
     const frame = input.frame();
     if (disposed || !frame || !owns(frame)) return;
+    if (
+      preparation &&
+      (frame.generation !== preparation.request.generation ||
+        (preparation.finishing && frame.privateEntry))
+    )
+      finishPreparation();
     void input.bridge
       .focus({ ...identity(frame), focused: !blurred && focused() })
       .catch(() => undefined);
   };
   const restore = (request: DesktopPreviewSurfaceFocusRequest) => {
     if (disposed || !owns(request)) return;
+    if (request.preparation === "finish") {
+      if (preparation?.request.requestId !== request.requestId) return;
+      if (request.privateEntry && !input.frame()?.privateEntry) preparation.finishing = true;
+      else finishPreparation();
+      return;
+    }
     const frame = input.frame();
     const current =
       frame &&
       owns(frame) &&
       frame.sequence === request.sequence &&
       frame.generation === request.generation;
-    if (current && input.canFocus()) input.keyboardInput()?.focus({ preventScroll: true });
+    if (request.preparation === "begin") {
+      const acknowledge = (prepared: boolean) =>
+        input.bridge.focus({
+          ...identity(request),
+          requestId: request.requestId,
+          prepared,
+          focused: false,
+        });
+      if (!current || preparation || !focused()) {
+        void acknowledge(false).catch(() => undefined);
+        return;
+      }
+      const pending = {
+        request,
+        abort: new AbortController(),
+        released: false,
+        focused: false,
+        finishing: false,
+      };
+      preparation = pending;
+      input.onPreparationChange(true);
+      void input.preparePrivateEntry(pending.abort.signal).then(
+        async () => {
+          const latest = input.frame();
+          if (
+            disposed ||
+            preparation !== pending ||
+            !latest ||
+            !owns(latest) ||
+            latest.generation !== request.generation ||
+            !surfaceFocused()
+          ) {
+            if (preparation === pending) finishPreparation();
+            await acknowledge(false).catch(() => undefined);
+            return;
+          }
+          pending.released = true;
+          await acknowledge(true).catch(finishPreparation);
+        },
+        async () => {
+          if (preparation !== pending) return;
+          finishPreparation();
+          await acknowledge(false).catch(() => undefined);
+        },
+      );
+      return;
+    }
+    if (current && canFocus()) input.keyboardInput()?.focus({ preventScroll: true });
+    const confirmed = Boolean(current && focused());
+    if (preparation && confirmed) preparation.focused = true;
     void input.bridge
       .focus({
         ...identity(request),
         requestId: request.requestId,
-        focused: Boolean(current && focused()),
+        focused: confirmed,
       })
-      .catch(() => undefined);
+      .catch(finishPreparation);
   };
   const changed = () => report();
-  const blurred = () => report(true);
+  const blurred = () => {
+    finishPreparation();
+    report(true);
+  };
   const leftSurface = (event: FocusEvent) => {
-    if (event.target === input.keyboardInput() || event.target === input.canvas) report(true);
+    if (event.target === input.keyboardInput() || event.target === input.canvas) {
+      if (event.relatedTarget !== input.keyboardInput() && event.relatedTarget !== input.canvas)
+        finishPreparation();
+      report(true);
+    }
   };
   const unsubscribe = input.bridge.onFocusRequest(restore);
   document.addEventListener("focusin", changed);
@@ -149,7 +236,11 @@ export function createLocalBrowserFocusController(input: {
   document.defaultView?.addEventListener("blur", blurred);
   return {
     report: changed,
+    connectionLost: () => {
+      if (preparation && !preparation.focused) finishPreparation();
+    },
     stop: () => {
+      finishPreparation();
       report(true);
       disposed = true;
       unsubscribe();

@@ -2694,6 +2694,19 @@ it.live(
       if (!control || control._tag !== "control") throw new Error("Expected viewer control");
       expect(control.controller).toBe("you");
       yield* viewer.input({
+        type: "releaseControl",
+        requestId: "stale-menu-release",
+        expectedGeneration: control.generation - 1,
+        preparePrivateEntry: true,
+      });
+      expect(yield* Queue.clear(viewer.output)).toContainEqual({
+        _tag: "controlReleased",
+        requestId: "stale-menu-release",
+        expectedGeneration: control.generation - 1,
+        generation: control.generation,
+        released: false,
+      });
+      yield* viewer.input({
         type: "key",
         action: "down",
         key: "a",
@@ -2721,6 +2734,7 @@ it.live(
           type: "releaseControl",
           requestId: "native-menu-release",
           expectedGeneration: control.generation,
+          preparePrivateEntry: true,
         })
         .pipe(Effect.forkScoped);
       yield* Effect.promise(() => drainStarted.promise);

@@ -152,6 +152,97 @@ describe("preview stream control", () => {
     expect(client.send({ type: "dialog", accept: false })).toBe(false);
     client.stop();
   });
+
+  it.each([
+    "control-only",
+    "wrong-request",
+    "stale-generation",
+    "close",
+    "stop",
+    "abort",
+    "success",
+    "controller-change",
+    "generation-change",
+    "release-refused",
+    "wrong-completion-generation",
+  ])(
+    "correlates native preparation to one drained release and live socket (%s)",
+    async (outcome) => {
+      vi.useFakeTimers();
+      const client = createPreviewStreamClient(
+        { ...target, frames: false },
+        {
+          onFrame: vi.fn(),
+          onViewport: vi.fn(),
+          onConnectedChange: vi.fn(),
+          onUnauthorized: vi.fn(),
+        },
+      );
+      try {
+        const socket = FakeSocket.current;
+        socket.dispatchEvent(new Event("open"));
+        socket.control({ ...agent, controller: "you", generation: 4, ready: true });
+        const abort = new AbortController();
+        const pending = client.preparePrivateEntry(4, abort.signal);
+        const assertion =
+          outcome === "success"
+            ? expect(pending).resolves.toBeUndefined()
+            : expect(pending).rejects.toThrow();
+        const request = JSON.parse(socket.sent.at(-1)!);
+        expect(request).toEqual({
+          type: "releaseControl",
+          requestId: expect.any(String),
+          expectedGeneration: 4,
+          preparePrivateEntry: true,
+        });
+        expect(client.send({ type: "text", text: "late input" })).toBe(false);
+        socket.control({ ...agent, controller: "unclaimed", generation: 5, ready: false });
+        const receipt = {
+          type: "controlReleased",
+          requestId: request.requestId,
+          expectedGeneration: 4,
+          generation: 5,
+          released: true,
+        };
+        if (outcome === "success") socket.message(JSON.stringify(receipt));
+        else if (outcome === "close") {
+          socket.dispatchEvent(new CloseEvent("close", { code: 1012 }));
+          await vi.advanceTimersByTimeAsync(500);
+          const replacement = FakeSocket.current;
+          expect(replacement).not.toBe(socket);
+          socket.message(JSON.stringify(receipt));
+          expect(replacement.sent).toEqual([]);
+        } else if (outcome === "stop") client.stop();
+        else if (outcome === "controller-change" || outcome === "generation-change") {
+          socket.control({
+            ...agent,
+            controller: outcome === "controller-change" ? "another-viewer" : "unclaimed",
+            generation: outcome === "generation-change" ? 6 : 5,
+            ready: false,
+          });
+          socket.control({ ...agent, controller: "unclaimed", generation: 5, ready: false });
+          socket.message(JSON.stringify(receipt));
+        } else if (outcome === "release-refused") {
+          socket.message(JSON.stringify({ ...receipt, released: false }));
+          socket.message(JSON.stringify(receipt));
+        } else if (outcome === "wrong-completion-generation") {
+          socket.message(JSON.stringify({ ...receipt, generation: 6 }));
+          socket.message(JSON.stringify(receipt));
+        } else {
+          if (outcome === "wrong-request")
+            socket.message(JSON.stringify({ ...receipt, requestId: "another-operation" }));
+          if (outcome === "stale-generation")
+            socket.message(JSON.stringify({ ...receipt, expectedGeneration: 3 }));
+          abort.abort();
+        }
+        await assertion;
+        expect(client.send({ type: "text", text: "unclaimed input" })).toBe(false);
+      } finally {
+        client.stop();
+        vi.useRealTimers();
+      }
+    },
+  );
 });
 
 describe("preview stream downloads", () => {

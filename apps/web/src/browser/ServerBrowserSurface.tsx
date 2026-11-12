@@ -239,6 +239,8 @@ function ServerBrowserSurfaceConnection(
   const [localReady, setLocalReady] = useState(false);
   const privateEntryRef = useRef(false);
   const [privateEntry, setPrivateEntry] = useState(false);
+  const nativeFocusOnlyRef = useRef(false);
+  const [nativeFocusOnly, setNativeFocusOnly] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const selectionRequestRef = useRef<{ id: string; scope: string | undefined } | null>(null);
   const selectionReceived = useEffectEvent(
@@ -336,6 +338,7 @@ function ServerBrowserSurfaceConnection(
     if (privateEntryRef.current) {
       return visible && !controlPending && localReady && localFrameRef.current !== null;
     }
+    if (nativeFocusOnlyRef.current) return false;
     const current = controlRef.current;
     if (!native) return current?.controller === "you";
     return (
@@ -349,6 +352,7 @@ function ServerBrowserSurfaceConnection(
   };
 
   const send = (input: PreviewStreamInput) => {
+    if (nativeFocusOnlyRef.current && !privateEntryRef.current) return false;
     if (
       privateEntryRef.current &&
       input.type !== "takeControl" &&
@@ -546,6 +550,17 @@ function ServerBrowserSurfaceConnection(
     };
   });
   const localCanFocus = useEffectEvent(inputAllowed);
+  const localPreparationChanged = useEffectEvent((active: boolean) => {
+    nativeFocusOnlyRef.current = active;
+    setNativeFocusOnly(active);
+    if (active) clearInput(false);
+  });
+  const localPreparePrivateEntry = useEffectEvent(async (signal: AbortSignal) => {
+    const client = clientRef.current;
+    const current = controlRef.current;
+    if (!client || !current) throw new Error("Browser control is unavailable.");
+    await client.preparePrivateEntry(current.generation, signal);
+  });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- owns one local presenter and acknowledges each PNG only after rendering or dropping it
   useEffect(() => {
     const bridge = previewBridge;
@@ -566,6 +581,8 @@ function ServerBrowserSurfaceConnection(
       keyboardInput: () => inputRef.current,
       frame: () => localFrameRef.current,
       canFocus: localCanFocus,
+      preparePrivateEntry: localPreparePrivateEntry,
+      onPreparationChange: localPreparationChanged,
       bridge: bridge.surface,
       tabId: runtimeTabId,
       surfaceId,
@@ -743,7 +760,7 @@ function ServerBrowserSurfaceConnection(
           )
             setPromptText(next.dialog?.defaultValue ?? "");
           if (next.controller !== "you") {
-            clearInput();
+            clearInput(!nativeFocusOnlyRef.current);
           } else if (previous?.controller !== "you") {
             const size = sizeRef.current;
             if (!native && followSize && size) client.send({ type: "resize", ...size });
@@ -752,12 +769,13 @@ function ServerBrowserSurfaceConnection(
         onConnectedChange: (connected) => {
           setReconnecting(!connected);
           if (connected) return;
+          localFocusRef.current?.connectionLost();
           setControlPending(false);
           setFileChooser(null);
           controlRef.current = null;
           setControl(null);
           controlChanged(null);
-          clearInput();
+          clearInput(!nativeFocusOnlyRef.current && !privateEntryRef.current);
         },
         onHostSetup: setHostSetup,
         ...(native ? { onGone: () => setGone(true) } : {}),
@@ -1097,6 +1115,8 @@ function ServerBrowserSurfaceConnection(
     control.ready === true;
   const renderedInputAllowed = privateEntry
     ? visible && !controlPending && localReady
+    : nativeFocusOnly
+      ? false
     : native
       ? nativeControlReady && (!offscreen || localReady)
       : control?.controller === "you";
@@ -1114,6 +1134,7 @@ function ServerBrowserSurfaceConnection(
   }
 
   if (offscreen && privateEntry) controlLabel = "Private entry";
+  else if (nativeFocusOnly) controlLabel = "Preparing private entry…";
   if (offscreen && localError) controlLabel = localError;
 
   const page = (
@@ -1154,7 +1175,8 @@ function ServerBrowserSurfaceConnection(
         autoComplete="off"
         autoCorrect="off"
         spellCheck={false}
-        disabled={pdfUrl !== null || !renderedInputAllowed}
+        disabled={pdfUrl !== null || (!renderedInputAllowed && !nativeFocusOnly)}
+        readOnly={nativeFocusOnly && !privateEntry}
         defaultValue={INPUT_SENTINEL}
         onFocus={(event) => resetInput(event.currentTarget)}
         className="sr-only top-0 left-0 text-base"
@@ -1217,6 +1239,7 @@ function ServerBrowserSurfaceConnection(
               !control?.canOperate ||
               control.controller === "another-viewer" ||
               controlPending ||
+              nativeFocusOnly ||
               nativeControlUnsupported
             }
             aria-busy={controlPending}

@@ -1030,8 +1030,22 @@ describe("PreviewManager", () => {
           expect(target?.current()).toBe(false);
           const requested = Promise.withResolvers<DesktopPreviewSurfaceFocusRequest>();
           fixture.focusRequest.mockImplementation((request) => requested.resolve(request));
-          const restore = yield* manager.restoreSurfaceFocus(fixture.wc).pipe(Effect.forkScoped);
-          const request = yield* Effect.promise(() => requested.promise);
+          const restore = yield* manager
+            .restoreSurfaceFocus(fixture.wc, "begin-private-entry")
+            .pipe(Effect.forkScoped);
+          const preparation = yield* Effect.promise(() => requested.promise);
+          expect(preparation.preparation).toBe("begin");
+          const focusRequested = Promise.withResolvers<DesktopPreviewSurfaceFocusRequest>();
+          fixture.focusRequest.mockImplementation((request) => focusRequested.resolve(request));
+          yield* manager.focusSurface(
+            { ...preparation, requestId: "stale-preparation", prepared: true, focused: false },
+            7,
+          );
+          expect(fixture.focusRequest).toHaveBeenCalledTimes(1);
+          yield* manager.focusSurface({ ...preparation, prepared: true, focused: false }, 7);
+          expect(target?.current()).toBe(false);
+          const request = yield* Effect.promise(() => focusRequested.promise);
+          expect(request.preparation).toBeUndefined();
           yield* manager.focusSurface({ ...request, requestId: "stale-request", focused: true }, 7);
           expect(target?.current()).toBe(false);
           yield* manager.focusSurface({ ...request, focused: true }, 7);
@@ -1049,6 +1063,11 @@ describe("PreviewManager", () => {
           const privacyInvalidated = Promise.withResolvers<void>();
           fixture.wc.invalidate.mockImplementationOnce(() => privacyInvalidated.resolve());
           yield* Effect.promise(() => target!.enterPrivate());
+          yield* manager.restoreSurfaceFocus(fixture.wc, "finish-private-entry");
+          expect(fixture.focusRequest.mock.calls.at(-1)![0]).toMatchObject({
+            preparation: "finish",
+            privateEntry: true,
+          });
           expect(peer.host.isPrivateEntry(fixture.wc)).toBe(true);
           yield* Effect.promise(() => privacyInvalidated.promise);
           fixture.paint("unchanged");
@@ -1071,6 +1090,7 @@ describe("PreviewManager", () => {
             .restoreSurfaceFocus(fixture.wc)
             .pipe(Effect.forkScoped);
           const resumeRequest = yield* Effect.promise(() => resumeRequested.promise);
+          expect(resumeRequest.preparation).toBeUndefined();
           expect(resumeRequest.requestId).not.toBe(request.requestId);
           yield* manager.focusSurface({ ...resumeRequest, focused: true }, 7);
           expect(yield* Fiber.join(restoreForResume)).toBe(true);

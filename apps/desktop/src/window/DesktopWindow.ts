@@ -654,8 +654,23 @@ export const make = Effect.gen(function* () {
                 ),
               );
               const nativeUi = makeNativeAutofillUi(ownerWindow, contents, Electron);
+              const preparedTarget = {
+                ...target,
+                async enterPrivate() {
+                  await runPromise(
+                    previewManager.restoreSurfaceFocus(contents, "begin-private-entry"),
+                  );
+                  try {
+                    await target.enterPrivate();
+                  } finally {
+                    await runPromise(
+                      previewManager.restoreSurfaceFocus(contents, "finish-private-entry"),
+                    );
+                  }
+                },
+              };
               const items = yield* Effect.tryPromise(() =>
-                makeAutofillMenu(target, protonAutofill!, {
+                makeAutofillMenu(preparedTarget, protonAutofill!, {
                   ...nativeUi,
                   async restoreFocus() {
                     if (!(await runPromise(previewManager.restoreSurfaceFocus(contents)))) {

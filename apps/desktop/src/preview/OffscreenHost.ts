@@ -81,12 +81,40 @@ export const createOffscreenHost = (options: OffscreenHostOptions) => {
         readonly complete: (focused: boolean) => void;
       }
     | undefined;
+  let preparation:
+    | {
+        readonly identity: DesktopPreviewSurfaceFocusRequest;
+        complete: ((prepared: boolean) => void) | undefined;
+      }
+    | undefined;
+
+  const finishPreparation = () => {
+    const current = preparation;
+    preparation = undefined;
+    if (!current) return;
+    const complete = current.complete;
+    current.complete = undefined;
+    complete?.(false);
+    try {
+      options.owner.webContents.send(PREVIEW_LOCAL_SURFACE_FOCUS_REQUEST_CHANNEL, {
+        ...current.identity,
+        preparation: "finish",
+        privateEntry: options.isPrivateEntry(wc),
+      });
+    } catch {
+      // A closed renderer cannot retain the preparation.
+    }
+  };
 
   const clearFocus = () => {
     focusProof = undefined;
     const request = focusRequest;
     focusRequest = undefined;
     request?.complete(false);
+  };
+  const clearSurfaceState = () => {
+    finishPreparation();
+    clearFocus();
   };
 
   const alive = () => !disposed && !unusable && !window.isDestroyed() && !wc.isDestroyed();
@@ -109,7 +137,7 @@ export const createOffscreenHost = (options: OffscreenHostOptions) => {
     if (visible()) wc.invalidate();
   };
   const revise = () => {
-    clearFocus();
+    clearSurfaceState();
     generation += 1;
     presented = undefined;
     lastFingerprint = undefined;
@@ -160,12 +188,12 @@ export const createOffscreenHost = (options: OffscreenHostOptions) => {
   const ownerFocused = () => visible() && options.owner.isFocused();
   const hasFocus = () => {
     if (!ownerFocused()) {
-      clearFocus();
+      clearSurfaceState();
       return false;
     }
     if (focusProof === undefined) return false;
     if (!matchesPresented(focusProof)) {
-      clearFocus();
+      clearSurfaceState();
       return false;
     }
     return true;
@@ -211,7 +239,7 @@ export const createOffscreenHost = (options: OffscreenHostOptions) => {
       surfaceId = undefined;
       pending = undefined;
       presented = undefined;
-      clearFocus();
+      clearSurfaceState();
     }
   };
   const navigation = (event: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>) => {
@@ -239,13 +267,13 @@ export const createOffscreenHost = (options: OffscreenHostOptions) => {
     wc.on("render-process-gone", gone);
     wc.on("destroyed", gone);
     wc.on("zoom-changed", resize);
-    options.owner.on("blur", clearFocus);
-    options.owner.on("hide", clearFocus);
-    options.owner.on("minimize", clearFocus);
-    options.owner.on("closed", clearFocus);
-    options.owner.webContents.on("did-start-navigation", clearFocus);
-    options.owner.webContents.on("render-process-gone", clearFocus);
-    options.owner.webContents.on("destroyed", clearFocus);
+    options.owner.on("blur", clearSurfaceState);
+    options.owner.on("hide", clearSurfaceState);
+    options.owner.on("minimize", clearSurfaceState);
+    options.owner.on("closed", clearSurfaceState);
+    options.owner.webContents.on("did-start-navigation", clearSurfaceState);
+    options.owner.webContents.on("render-process-gone", clearSurfaceState);
+    options.owner.webContents.on("destroyed", clearSurfaceState);
   } catch (error) {
     if (!window.isDestroyed()) window.destroy();
     throw error;
@@ -268,6 +296,21 @@ export const createOffscreenHost = (options: OffscreenHostOptions) => {
         input.surfaceId !== surfaceId
       )
         return;
+      if (input.prepared !== undefined) {
+        const current = preparation;
+        if (
+          !current ||
+          input.requestId !== current.identity.requestId ||
+          input.generation !== generation ||
+          !matches(input, current.identity) ||
+          !ownerFocused()
+        )
+          return;
+        const complete = current.complete;
+        current.complete = undefined;
+        complete?.(input.prepared);
+        return;
+      }
       if (!input.focused) {
         clearFocus();
         return;
@@ -312,6 +355,24 @@ export const createOffscreenHost = (options: OffscreenHostOptions) => {
         if (focusRequest === request) clearFocus();
       };
     },
+    requestPreparation: (
+      identity: DesktopPreviewSurfaceFocusRequest,
+      complete: (prepared: boolean) => void,
+    ) => {
+      if (preparation || !ownerFocused() || !matchesPresented(identity))
+        throw new Error("The local browser surface cannot prepare private entry.");
+      preparation = { identity, complete };
+      try {
+        options.owner.webContents.send(PREVIEW_LOCAL_SURFACE_FOCUS_REQUEST_CHANNEL, {
+          ...identity,
+          preparation: "begin",
+        });
+      } catch (error) {
+        finishPreparation();
+        throw error;
+      }
+    },
+    finishPreparation,
     captureRevision: () => {
       if (alive()) resize();
       return generation;
@@ -325,7 +386,7 @@ export const createOffscreenHost = (options: OffscreenHostOptions) => {
     present: (input: DesktopPreviewSurfacePresentation) => {
       if (!input.visible) {
         if (input.surfaceId !== surfaceId) return;
-        clearFocus();
+        clearSurfaceState();
         surfaceId = undefined;
         pending = undefined;
         presented = undefined;
@@ -334,7 +395,7 @@ export const createOffscreenHost = (options: OffscreenHostOptions) => {
         return;
       }
       if (surfaceId !== input.surfaceId) {
-        clearFocus();
+        clearSurfaceState();
         surfaceId = input.surfaceId;
         pending = undefined;
         presented = undefined;
@@ -394,7 +455,7 @@ export const createOffscreenHost = (options: OffscreenHostOptions) => {
     dispose: () => {
       if (disposed) return;
       disposed = true;
-      clearFocus();
+      clearSurfaceState();
       generation += 1;
       surfaceId = undefined;
       pending = undefined;
@@ -406,13 +467,13 @@ export const createOffscreenHost = (options: OffscreenHostOptions) => {
       wc.off("render-process-gone", gone);
       wc.off("destroyed", gone);
       wc.off("zoom-changed", resize);
-      options.owner.off("blur", clearFocus);
-      options.owner.off("hide", clearFocus);
-      options.owner.off("minimize", clearFocus);
-      options.owner.off("closed", clearFocus);
-      options.owner.webContents.off("did-start-navigation", clearFocus);
-      options.owner.webContents.off("render-process-gone", clearFocus);
-      options.owner.webContents.off("destroyed", clearFocus);
+      options.owner.off("blur", clearSurfaceState);
+      options.owner.off("hide", clearSurfaceState);
+      options.owner.off("minimize", clearSurfaceState);
+      options.owner.off("closed", clearSurfaceState);
+      options.owner.webContents.off("did-start-navigation", clearSurfaceState);
+      options.owner.webContents.off("render-process-gone", clearSurfaceState);
+      options.owner.webContents.off("destroyed", clearSurfaceState);
       if (!wc.isDestroyed()) wc.stopPainting();
       // Timeouts and relay detaches do not settle Chromium's original capture callback.
       destroyWhenDrained();

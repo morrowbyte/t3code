@@ -1047,11 +1047,14 @@ export const DesktopPreviewSurfaceFocusInputSchema = Schema.Struct({
   ...DesktopPreviewSurfaceAckSchema.fields,
   focused: Schema.Boolean,
   requestId: Schema.optional(TrimmedNonEmptyString),
+  prepared: Schema.optional(Schema.Boolean),
 });
 export type DesktopPreviewSurfaceFocusInput = typeof DesktopPreviewSurfaceFocusInputSchema.Type;
 
 export interface DesktopPreviewSurfaceFocusRequest extends DesktopPreviewSurfaceAck {
   readonly requestId: string;
+  readonly preparation?: "begin" | "finish";
+  readonly privateEntry?: boolean;
 }
 
 const DesktopPreviewSurfacePoint = { x: Schema.Finite, y: Schema.Finite };

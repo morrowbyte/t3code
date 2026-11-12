@@ -421,6 +421,13 @@ export class ServerBrowserLaunchError extends Schema.TaggedError<ServerBrowserLa
 
 export type ServerBrowserViewerOutput =
   | {
+      readonly _tag: "controlReleased";
+      readonly requestId: string;
+      readonly expectedGeneration: number;
+      readonly generation: number;
+      readonly released: boolean;
+    }
+  | {
       readonly _tag: "selection";
       readonly requestId: string;
       readonly failed?: boolean;
@@ -2926,7 +2933,7 @@ const make = Effect.gen(function* () {
         if (next._tag === "frame") runFork(next.ack);
         // Preserve the latest control and size when frames fill a slow viewer's queue.
         else if (
-          ["gone", "reconnect", "control", "viewport", "fileChooser", "selection"].includes(
+          ["gone", "reconnect", "control", "controlReleased", "viewport", "fileChooser", "selection"].includes(
             next._tag,
           )
         ) {
@@ -3047,6 +3054,25 @@ const make = Effect.gen(function* () {
           if (!viewer.canOperate) return;
           const message = asRecord(raw);
           if (!message) return;
+          const correlatedRelease =
+            message.type === "releaseControl" &&
+            typeof message.requestId === "string" &&
+            message.requestId.length > 0 &&
+            message.requestId.length <= 128 &&
+            typeof message.expectedGeneration === "number" &&
+            Number.isSafeInteger(message.expectedGeneration) &&
+            message.expectedGeneration >= 0
+              ? { requestId: message.requestId, expectedGeneration: message.expectedGeneration }
+              : null;
+          const released = (success: boolean) => {
+            if (!correlatedRelease || !tab.viewers.has(viewer) || tab.closing) return;
+            viewer.push({
+              _tag: "controlReleased",
+              ...correlatedRelease,
+              generation: tab.control.generation,
+              released: success,
+            });
+          };
           try {
             if (message.type === "takeControl") {
               viewer.readyGeneration = null;
@@ -3077,11 +3103,33 @@ const make = Effect.gen(function* () {
               broadcastControl(tab);
               pushFileChooser(tab);
             } else if (message.type === "releaseControl") {
+              if (
+                !correlatedRelease &&
+                (message.requestId !== undefined ||
+                  message.expectedGeneration !== undefined ||
+                  message.preparePrivateEntry === true)
+              )
+                return;
+              if (
+                correlatedRelease &&
+                (tab.control.generation !== correlatedRelease.expectedGeneration ||
+                  tab.control.controller !== viewer.id ||
+                  (message.preparePrivateEntry === true &&
+                    (tab.control.agentId !== null || tab.control.requiresHuman)))
+              ) {
+                released(false);
+                return;
+              }
               const releasing = tab.control.release(viewer.id, () =>
                 releaseViewerInput(viewer, session),
               );
               broadcastControl(tab);
               await releasing;
+              released(
+                correlatedRelease !== null &&
+                  tab.control.generation === correlatedRelease.expectedGeneration + 1 &&
+                  tab.control.controller === null,
+              );
             } else if (
               message.type === "dialog" &&
               tab.control.controller === viewer.id &&
@@ -3107,6 +3155,7 @@ const make = Effect.gen(function* () {
               }
             }
           } catch {
+            released(false);
             broadcastControl(tab);
           }
         }),

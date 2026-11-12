@@ -1039,6 +1039,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   });
   const restoreSurfaceFocus = Effect.fn("PreviewManager.restoreSurfaceFocus")(function* (
     wc: Electron.WebContents,
+    preparation?: "begin-private-entry" | "finish-private-entry",
   ) {
     if (!ownedOffscreenContents.has(wc)) return false;
     const entry = [...hostedContents].find(([, host]) => host.webContents === wc);
@@ -1050,41 +1051,72 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       });
     if (!entry) return yield* unavailable();
     const [tabId, host] = entry;
-    const requestId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
-    const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
-    const frame = host.presentedFrame();
-    if (
-      !frame ||
-      tab?.webContentsId !== wc.id ||
-      host.owner !== currentMainWindow ||
-      !host.isAlive() ||
-      host.owner.isDestroyed() ||
-      host.owner.webContents.isDestroyed() ||
-      !host.owner.isFocused() ||
-      hostedContents.get(tabId) !== host
-    )
-      return yield* unavailable();
-    yield* Effect.callback<void, PreviewOperationError>((resume) => {
-      try {
-        const cancel = host.requestFocus({ ...frame, requestId }, (focused) => {
-          resume(focused ? Effect.void : Effect.fail(unavailable()));
-        });
-        return Effect.sync(cancel);
-      } catch {
-        resume(Effect.fail(unavailable()));
+    if (preparation === "finish-private-entry") {
+      host.finishPreparation();
+      return true;
+    }
+    const restore = Effect.gen(function* () {
+      if (preparation === "begin-private-entry" && !browserHost.isPrivateEntry(wc)) {
+        const frame = host.presentedFrame();
+        if (!frame || host.owner !== currentMainWindow || !host.owner.isFocused())
+          return yield* unavailable();
+        const requestId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+        yield* Effect.callback<void, PreviewOperationError>((resume) => {
+          try {
+            host.requestPreparation({ ...frame, requestId }, (prepared) => {
+              resume(prepared ? Effect.void : Effect.fail(unavailable()));
+            });
+          } catch {
+            resume(Effect.fail(unavailable()));
+          }
+        }).pipe(
+          Effect.timeout("10 seconds"),
+          Effect.catchTags({ TimeoutError: () => Effect.fail(unavailable()) }),
+        );
       }
-    }).pipe(
-      Effect.timeout(1_000),
-      Effect.catchTags({ TimeoutError: () => Effect.fail(unavailable()) }),
+      const requestId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+      const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+      const frame = host.presentedFrame();
+      if (
+        !frame ||
+        tab?.webContentsId !== wc.id ||
+        host.owner !== currentMainWindow ||
+        !host.isAlive() ||
+        host.owner.isDestroyed() ||
+        host.owner.webContents.isDestroyed() ||
+        !host.owner.isFocused() ||
+        hostedContents.get(tabId) !== host
+      )
+        return yield* unavailable();
+      yield* Effect.callback<void, PreviewOperationError>((resume) => {
+        try {
+          const cancel = host.requestFocus({ ...frame, requestId }, (focused) => {
+            resume(focused ? Effect.void : Effect.fail(unavailable()));
+          });
+          return Effect.sync(cancel);
+        } catch {
+          resume(Effect.fail(unavailable()));
+        }
+      }).pipe(
+        Effect.timeout(1_000),
+        Effect.catchTags({ TimeoutError: () => Effect.fail(unavailable()) }),
+      );
+      const latest = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+      if (
+        latest?.webContentsId !== wc.id ||
+        !host.matchesPresented(frame) ||
+        !documentHasFocus(tabId, wc)
+      )
+        return yield* unavailable();
+      return true;
+    });
+    return yield* restore.pipe(
+      Effect.onError(() =>
+        Effect.sync(() => {
+          if (preparation === "begin-private-entry") host.finishPreparation();
+        }),
+      ),
     );
-    const latest = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
-    if (
-      latest?.webContentsId !== wc.id ||
-      !host.matchesPresented(frame) ||
-      !documentHasFocus(tabId, wc)
-    )
-      return yield* unavailable();
-    return true;
   });
   const sendSurfaceInput = Effect.fn("PreviewManager.sendSurfaceInput")(function* (
     input: DesktopPreviewSurfaceInputRequest,
@@ -4323,6 +4355,7 @@ export class PreviewManager extends Context.Service<
     ) => Effect.Effect<void, PreviewManagerError>;
     readonly restoreSurfaceFocus: (
       wc: Electron.WebContents,
+      preparation?: "begin-private-entry" | "finish-private-entry",
     ) => Effect.Effect<boolean, PreviewManagerError>;
     readonly sendSurfaceInput: (
       input: DesktopPreviewSurfaceInputRequest,

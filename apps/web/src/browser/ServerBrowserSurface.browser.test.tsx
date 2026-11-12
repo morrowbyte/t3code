@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   access: { url: "ws://preview.test", token: "test" },
   painted: null as (() => void) | null,
   stopClient: vi.fn(),
+  preparePrivateEntry: vi.fn<(generation: number, signal: AbortSignal) => Promise<void>>(),
   present: vi.fn<DesktopPreviewBridge["surface"]["present"]>(),
   ack: vi.fn<DesktopPreviewBridge["surface"]["ack"]>(),
   focus: vi.fn<DesktopPreviewBridge["surface"]["focus"]>(),
@@ -76,6 +77,7 @@ function setup() {
   mocks.sent.length = 0;
   mocks.painted = null;
   mocks.stopClient.mockReset();
+  mocks.preparePrivateEntry.mockReset().mockResolvedValue(undefined);
   mocks.frameListeners.clear();
   mocks.focusListeners.clear();
   mocks.present
@@ -90,6 +92,7 @@ function setup() {
       return true;
     },
     stop: mocks.stopClient,
+    preparePrivateEntry: mocks.preparePrivateEntry,
   }));
 }
 
@@ -390,6 +393,7 @@ describe("ServerBrowserSurface native controls", () => {
       });
     };
     await requestFocus("menu-focus");
+    expect(mocks.preparePrivateEntry).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(input);
     expect(mocks.focus).toHaveBeenCalledWith(
       expect.objectContaining({ requestId: "menu-focus", focused: true }),
@@ -412,6 +416,54 @@ describe("ServerBrowserSurface native controls", () => {
     await requestFocus("returned-focus");
     mocks.sent.length = 0;
 
+    let releaseViewer!: () => void;
+    const released = new Promise<void>((resolve) => {
+      releaseViewer = resolve;
+    });
+    mocks.preparePrivateEntry.mockReturnValueOnce(released);
+    await requestFocus("prepare-entry", { preparation: "begin" });
+    expect(mocks.preparePrivateEntry).toHaveBeenCalledExactlyOnceWith(1, expect.any(AbortSignal));
+    expect(input.disabled).toBe(false);
+    expect(input.readOnly).toBe(true);
+    await enterText("must not enter before the native grant");
+    expect(mocks.sent).toEqual([]);
+    expect(mocks.input).not.toHaveBeenCalled();
+    await act(() =>
+      handlers.onControl?.({
+        controller: "unclaimed",
+        canOperate: true,
+        ready: false,
+        generation: 2,
+        dialog: null,
+      }),
+    );
+    expect(document.activeElement).toBe(input);
+    expect(mocks.focus).not.toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: "prepare-entry", prepared: true }),
+    );
+    releaseViewer();
+    await vi.waitFor(() =>
+      expect(mocks.focus).toHaveBeenCalledWith(
+        expect.objectContaining({ requestId: "prepare-entry", prepared: true, focused: false }),
+      ),
+    );
+    await requestFocus("focus-after-drain");
+    expect(mocks.focus).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: "focus-after-drain", focused: true }),
+    );
+    await act(() =>
+      handlers.onControl?.({
+        controller: "another-viewer",
+        canOperate: true,
+        ready: false,
+        generation: 3,
+        dialog: null,
+      }),
+    );
+    expect(document.activeElement).toBe(input);
+    await requestFocus("prepare-entry", { preparation: "finish", privateEntry: true });
+    expect(input.readOnly).toBe(true);
+
     await emitFrame(frame(2, 2, true));
     await vi.waitFor(() =>
       expect(mocks.focus).toHaveBeenCalledWith(
@@ -419,6 +471,7 @@ describe("ServerBrowserSurface native controls", () => {
       ),
     );
     expect(document.activeElement).toBe(input);
+    await vi.waitFor(() => expect(input.readOnly).toBe(false));
     expect(handle.current?.canvas()).toBeNull();
     expect(handle.current?.screenshot()).toBeNull();
     expect(onSelection).toHaveBeenCalledWith(null);

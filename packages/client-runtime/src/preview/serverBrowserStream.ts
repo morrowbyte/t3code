@@ -59,7 +59,12 @@ const isPreviewStreamDialog = (value: unknown): value is PreviewStreamControl["d
 export type PreviewStreamInput =
   | { readonly type: "inspect"; readonly requestId: string; readonly x: number; readonly y: number }
   | { readonly type: "takeControl" }
-  | { readonly type: "releaseControl" }
+  | {
+      readonly type: "releaseControl";
+      readonly requestId?: string;
+      readonly expectedGeneration?: number;
+      readonly preparePrivateEntry?: boolean;
+    }
   | { readonly type: "dialog"; readonly accept: boolean; readonly promptText?: string }
   | { readonly type: "viewport"; readonly setting: PreviewViewportSetting }
   | {
@@ -214,6 +219,7 @@ export interface PreviewStreamEvents {
 
 export interface PreviewStreamClient {
   readonly send: (input: PreviewStreamInput) => boolean;
+  readonly preparePrivateEntry: (generation: number, signal: AbortSignal) => Promise<void>;
   readonly stop: () => void;
 }
 
@@ -237,6 +243,14 @@ export function createPreviewStreamClient(
   let failures = 0;
   let control: PreviewStreamControl | null = null;
   let fileChooser: string | null = null;
+  let releasing: {
+    readonly socket: WebSocket;
+    readonly requestId: string;
+    readonly generation: number;
+    readonly complete: (error?: Error) => void;
+  } | null = null;
+
+  const cancelRelease = () => releasing?.complete(new Error("Browser control changed."));
 
   const connect = () => {
     if (stopped) return;
@@ -346,6 +360,24 @@ export function createPreviewStreamClient(
         typeof editable === "boolean"
       ) {
         events.onProbe?.({ x, y, editable });
+      } else if (type === "controlReleased") {
+        const pending = releasing;
+        const receipt = message as Record<string, unknown>;
+        if (
+          !pending ||
+          pending.socket !== ws ||
+          receipt.requestId !== pending.requestId ||
+          receipt.expectedGeneration !== pending.generation
+        )
+          return;
+        if (
+          receipt.released === true &&
+          receipt.generation === pending.generation + 1 &&
+          control?.controller === "unclaimed" &&
+          control.generation === receipt.generation
+        )
+          pending.complete();
+        else pending.complete(new Error("The browser viewer was not released."));
       } else if (
         type === "control" &&
         typeof canOperate === "boolean" &&
@@ -364,11 +396,21 @@ export function createPreviewStreamClient(
           dialog,
         };
         control = nextControl;
+        if (
+          releasing &&
+          !(
+            (nextControl.controller === "you" && nextControl.generation === releasing.generation) ||
+            (nextControl.controller === "unclaimed" &&
+              nextControl.generation === releasing.generation + 1)
+          )
+        )
+          cancelRelease();
         events.onControl?.(nextControl);
       }
     });
     ws.addEventListener("close", (event) => {
       if (socket !== ws) return;
+      cancelRelease();
       socket = null;
       control = null;
       if (opened) events.onConnectedChange(false);
@@ -397,7 +439,48 @@ export function createPreviewStreamClient(
   connect();
 
   return {
+    preparePrivateEntry: (generation, signal) => {
+      const ws = socket;
+      if (
+        stopped ||
+        signal.aborted ||
+        releasing ||
+        target.frames !== false ||
+        ws?.readyState !== WebSocket.OPEN ||
+        !control?.canOperate ||
+        control.controller !== "you" ||
+        control.ready !== true ||
+        control.generation !== generation
+      )
+        return Promise.reject(new Error("The local browser viewer cannot be released."));
+      return new Promise<void>((resolve, reject) => {
+        const requestId = crypto.randomUUID();
+        const abort = () => complete(new Error("Browser control preparation was cancelled."));
+        const complete = (error?: Error) => {
+          if (releasing?.requestId !== requestId) return;
+          releasing = null;
+          signal.removeEventListener("abort", abort);
+          if (error) reject(error);
+          else resolve();
+        };
+        releasing = { socket: ws, requestId, generation, complete };
+        signal.addEventListener("abort", abort, { once: true });
+        try {
+          ws.send(
+            JSON.stringify({
+              type: "releaseControl",
+              requestId,
+              expectedGeneration: generation,
+              preparePrivateEntry: true,
+            }),
+          );
+        } catch {
+          cancelRelease();
+        }
+      });
+    },
     send: (input) => {
+      if (releasing) return false;
       if (socket?.readyState !== WebSocket.OPEN) return false;
       if (!control?.canOperate) return false;
       if (input.type !== "takeControl" && control.controller !== "you") return false;
@@ -406,6 +489,7 @@ export function createPreviewStreamClient(
     },
     stop: () => {
       stopped = true;
+      cancelRelease();
       if (retryTimer !== null) clearTimeout(retryTimer);
       const ws = socket;
       socket = null;
