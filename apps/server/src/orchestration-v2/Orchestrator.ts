@@ -9789,9 +9789,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (item.type === "user_message" &&
           item.inputIntent !== "steer" &&
           item.inputIntent !== "promoted_queued_to_steer") ||
-        (item.status !== "pending" && item.status !== "completed") ||
-        item.status === command.status ||
-        (command.status === "completed" && item.status !== "pending")
+        (item.status !== "pending" &&
+          item.status !== "completed" &&
+          !(item.status === "cancelled" && command.status === "completed")) ||
+        item.status === command.status
       )
         return;
       const now = yield* DateTime.now;

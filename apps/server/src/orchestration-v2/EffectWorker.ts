@@ -9,6 +9,7 @@ import * as Layer from "effect/Layer";
 import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Schedule from "effect/Schedule";
 
 import {
   increment,
@@ -61,10 +62,7 @@ export interface OrchestrationEffectExecutorV2Shape {
   readonly execute: (
     effect: EffectOutbox.OrchestrationEffectV2,
     options?: { readonly willRetry: boolean },
-  ) => Effect.Effect<
-    void | { readonly settle: Effect.Effect<void, OrchestrationEffectExecutionError> },
-    OrchestrationEffectExecutionError
-  >;
+  ) => Effect.Effect<void | { readonly steeringAccepted: true }, OrchestrationEffectExecutionError>;
 }
 
 export class OrchestrationEffectExecutorV2 extends Context.Service<
@@ -271,6 +269,42 @@ export const layerExecutor: Layer.Layer<
                 ),
               );
           }
+          case "steering-delivery.settle":
+            return Effect.gen(function* () {
+              if (effect.request.type !== "steering-delivery.settle") return;
+              const { messageId, providerTurnId } = effect.request;
+              const projection = yield* threads.getThreadRecords(
+                effect.threadId,
+                ["messages", "runs"],
+                { messageIds: [messageId] },
+              );
+              const message = projection.messages.find((row) => row.id === messageId);
+              if (message === undefined) return;
+              yield* threads.dispatch({
+                type: "message.steering.settle",
+                commandId: CommandId.make(`${effect.commandId}:steering-delivery-accepted`),
+                threadId: effect.threadId,
+                messageId,
+                providerTurnId,
+                status: "completed",
+              });
+              if (message.delegatedCompletion !== undefined)
+                yield* threads.dispatch({
+                  type: "notification.delivery.accept",
+                  commandId: CommandId.make(`command:mailbox-accepted:${effect.id}`),
+                  threadId: effect.threadId,
+                  messageId,
+                });
+            }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationEffectExecutionError({
+                    effectId: effect.id,
+                    effectType: effect.request.type,
+                    cause,
+                  }),
+              ),
+            );
           case "provider-turn.steer":
             return providerTurnControl
               .steer({
@@ -281,43 +315,7 @@ export const layerExecutor: Layer.Layer<
                 messageId: effect.request.messageId,
               })
               .pipe(
-                Effect.map(() => ({
-                  settle: Effect.gen(function* () {
-                    if (effect.request.type !== "provider-turn.steer") return;
-                    const messageId = effect.request.messageId;
-                    const projection = yield* threads.getThreadRecords(
-                      effect.threadId,
-                      ["messages", "runs"],
-                      { messageIds: [effect.request.messageId] },
-                    );
-                    const message = projection.messages.find((row) => row.id === messageId);
-                    if (message === undefined) return;
-                    yield* threads.dispatch({
-                      type: "message.steering.settle",
-                      commandId: CommandId.make(`${effect.commandId}:steering-delivery-accepted`),
-                      threadId: effect.threadId,
-                      messageId,
-                      providerTurnId: effect.request.providerTurnId,
-                      status: "completed",
-                    });
-                    if (message.delegatedCompletion === undefined) return;
-                    yield* threads.dispatch({
-                      type: "notification.delivery.accept",
-                      commandId: CommandId.make(`command:mailbox-accepted:${effect.id}`),
-                      threadId: effect.threadId,
-                      messageId: message.id,
-                    });
-                  }).pipe(
-                    Effect.mapError(
-                      (cause) =>
-                        new OrchestrationEffectExecutionError({
-                          effectId: effect.id,
-                          effectType: effect.request.type,
-                          cause,
-                        }),
-                    ),
-                  ),
-                })),
+                Effect.as({ steeringAccepted: true } as const),
                 Effect.catch((error) =>
                   Effect.gen(function* () {
                     if (
@@ -842,9 +840,10 @@ export const layerWithOptions = (
           }
           const effect = claimed.value;
           // Arm cancellation before rereading durable state to close the read-to-registration race.
-          const cancellation = outbox
-            .awaitCancellation(effect.id)
-            .pipe(Effect.as("cancelled" as const));
+          const cancellation =
+            effect.request.type === "steering-delivery.settle"
+              ? Effect.never
+              : outbox.awaitCancellation(effect.id).pipe(Effect.as("cancelled" as const));
           const cancelledBeforeExecution = yield* Effect.gen(function* () {
             const claimedAt = DateTime.toEpochMillis(yield* DateTime.now);
             const eligibleAt = Math.max(
@@ -870,23 +869,47 @@ export const layerWithOptions = (
           // Checkpoint capture is the only transition out of waiting; do not abandon it after an outage.
           const willRetry =
             effect.attemptCount < maxAttempts ||
+            effect.request.type === "steering-delivery.settle" ||
             effect.request.type === "checkpoint.capture" ||
             effect.request.type === "privileged-command.cleanup";
-          const execution = executor.execute(effect, { willRetry }).pipe(
-            boundExecution(effect),
-            Effect.flatMap((result) =>
-              effect.request.type !== "provider-turn.steer" || result === undefined
-                ? Effect.succeed({ settlementFailure: null })
-                : result.settle.pipe(
-                    Effect.retry({ times: Math.max(0, maxAttempts - 1) }),
-                    boundExecution(effect),
-                    Effect.matchCause({
-                      onFailure: (cause) => ({ settlementFailure: cause }),
-                      onSuccess: () => ({ settlementFailure: null }),
-                    }),
+          const nativeExecution = executor
+            .execute(effect, { willRetry })
+            .pipe(boundExecution(effect));
+          const steering = effect.request.type === "provider-turn.steer" ? effect.request : null;
+          const execution =
+            steering === null
+              ? nativeExecution.pipe(Effect.as({ handedOff: false, settlementFailure: null }))
+              : Effect.uninterruptibleMask((restore) =>
+                  restore(nativeExecution).pipe(
+                    Effect.flatMap((result) =>
+                      result === undefined
+                        ? Effect.succeed({ handedOff: false, settlementFailure: null })
+                        : outbox
+                            .recordSteeringAcceptance({
+                              effectId: effect.id,
+                              workerId,
+                              messageId: steering.messageId,
+                              providerTurnId: steering.providerTurnId,
+                            })
+                            .pipe(
+                              Effect.retry({
+                                schedule: Schedule.exponential("100 millis").pipe(
+                                  Schedule.modifyDelay(({ duration }) =>
+                                    Effect.succeed(Duration.min(duration, Duration.seconds(30))),
+                                  ),
+                                ),
+                              }),
+                              Effect.matchCause({
+                                onFailure: (cause) => ({
+                                  handedOff: false,
+                                  settlementFailure: cause,
+                                }),
+                                onSuccess: (handedOff) => ({ handedOff, settlementFailure: null }),
+                              }),
+                            ),
+                    ),
                   ),
-            ),
-          );
+                );
           const exit = yield* Effect.exit(Effect.raceFirst(execution, cancellation)).pipe(
             Effect.ensuring(outbox.clearCancellation(effect.id)),
           );
@@ -898,6 +921,7 @@ export const layerWithOptions = (
           }
           if (Exit.isSuccess(exit)) {
             return yield* Effect.gen(function* () {
+              if (exit.value !== "cancelled" && exit.value.handedOff) return true;
               if (exit.value !== "cancelled" && exit.value.settlementFailure !== null) {
                 return yield* new OrchestrationEffectWorkerError({
                   operation: "complete",

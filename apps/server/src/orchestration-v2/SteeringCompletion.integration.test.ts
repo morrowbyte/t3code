@@ -25,6 +25,8 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EffectWorker from "./EffectWorker.ts";
+import * as EffectOutbox from "./EffectOutbox.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
 import * as EventSink from "./EventSink.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -49,6 +51,11 @@ it.effect.each(
       [false, "after ACK commit failure"],
       [true, "after ACK commit failure"],
       [true, "after notification commit failure"],
+      [false, "after repeated ACK commit failure"],
+      [true, "after repeated ACK commit failure"],
+      [true, "after repeated notification commit failure"],
+      [false, "after provider cancellation"],
+      [true, "after provider cancellation"],
       [true, "without native steering"],
       [true, "with interrupting native steering"],
       [true, "settled only"],
@@ -76,11 +83,18 @@ it.effect.each(
       const acceptedBeforeCompletion =
         timing === "after delivery" ||
         timing === "after ACK commit failure" ||
-        timing === "after notification commit failure";
+        timing === "after notification commit failure" ||
+        timing === "after repeated ACK commit failure" ||
+        timing === "after repeated notification commit failure" ||
+        timing === "after provider cancellation";
+      const repeatedFailure = timing.startsWith("after repeated");
       const faultCommand =
-        timing === "after ACK commit failure"
+        timing === "after ACK commit failure" ||
+        timing === "after repeated ACK commit failure" ||
+        timing === "after provider cancellation"
           ? "message.steering.settle"
-          : timing === "after notification commit failure"
+          : timing === "after notification commit failure" ||
+              timing === "after repeated notification commit failure"
             ? "notification.delivery.accept"
             : undefined;
       const commitEntered = yield* Deferred.make<void>();
@@ -193,6 +207,7 @@ it.effect.each(
       yield* Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
         const threadId = ThreadId.make("thread:steering-completion");
         const watch = (predicate: (event: OrchestrationV2DomainEvent) => boolean) =>
           orchestrator.streamDomainEvents.pipe(
@@ -412,7 +427,10 @@ it.effect.each(
           const commit = sink.commitCommand;
           let faults = 0;
           const spy = vi.spyOn(sink, "commitCommand").mockImplementation((input, options) =>
-            input.threadId === threadId && input.commandType === faultCommand && faults++ === 0
+            timing !== "after provider cancellation" &&
+            input.threadId === threadId &&
+            input.commandType === faultCommand &&
+            faults++ < (repeatedFailure ? 6 : 1)
               ? Effect.gen(function* () {
                   yield* Deferred.succeed(commitEntered, undefined);
                   yield* Deferred.await(releaseCommit);
@@ -425,6 +443,27 @@ it.effect.each(
               : commit(input, options),
           );
           yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()));
+          if (timing === "after provider cancellation") {
+            const store = yield* ProjectionStore.ProjectionStoreV2;
+            const getTurnItem = store.getTurnItem;
+            const projection = yield* orchestrator.getThreadProjection(threadId);
+            const item = projection.turnItems.find((candidate) =>
+              mailbox
+                ? candidate.type === "notification"
+                : candidate.type === "user_message" && candidate.messageId === messageId,
+            )!;
+            const readSpy = vi.spyOn(store, "getTurnItem").mockImplementation((input) =>
+              input.threadId === threadId && input.itemId === item.id && steerCalls === 1
+                ? Effect.gen(function* () {
+                    faults += 1;
+                    yield* Deferred.succeed(commitEntered, undefined);
+                    yield* Deferred.await(releaseCommit);
+                    return yield* getTurnItem(input);
+                  })
+                : getTurnItem(input),
+            );
+            yield* Effect.addFinalizer(() => Effect.sync(() => readSpy.mockRestore()));
+          }
           const delivering = yield* worker.drain().pipe(Effect.forkScoped);
           const ackCommandId = CommandId.make("steer:steering-delivery-accepted");
           if (faultCommand !== undefined) {
@@ -446,17 +485,71 @@ it.effect.each(
               faultCommand === "notification.delivery.accept",
             );
             if (mailbox) assert.equal(pending.subagents[0]?.completionDelivery?.state, "claimed");
+            if (timing === "after provider cancellation") {
+              const local = (yield* outbox.listByCommandId(CommandId.make("steer")))[0]!;
+              const cancelled = yield* outbox.cancelUnsettled({
+                threadId,
+                effectTypes: ["provider-turn.steer", "steering-delivery.settle"],
+                reason: "Provider runtime recovery after native acceptance",
+              });
+              assert.deepEqual(cancelled, []);
+              assert.equal(local.request.type, "steering-delivery.settle");
+              const item = pending.turnItems.find((candidate) =>
+                mailbox
+                  ? candidate.type === "notification"
+                  : candidate.type === "user_message" && candidate.messageId === messageId,
+              )!;
+              const now = yield* DateTime.now;
+              yield* sink.write({
+                events: [
+                  {
+                    id: EventId.make("runtime-recovery:cancel-item"),
+                    type: "turn-item.updated",
+                    threadId,
+                    occurredAt: now,
+                    payload: { ...item, status: "cancelled", completedAt: now, updatedAt: now },
+                  },
+                ],
+              });
+              yield* outbox.signalCancellations([local.id]);
+            }
             yield* Deferred.succeed(releaseCommit, undefined);
           }
           yield* Fiber.join(delivering);
           if (faultCommand !== undefined) {
-            yield* TestClock.adjust("100 millis");
-            yield* worker.drain();
-            assert.equal(faults, 2);
+            if (repeatedFailure) {
+              for (const delay of [100, 200, 400, 800, 1600]) {
+                yield* TestClock.adjust(delay);
+                yield* worker.drain();
+              }
+              assert.equal(faults, 6);
+              const local = (yield* outbox.listByCommandId(CommandId.make("steer")))[0]!;
+              assert.equal(local.request.type, "steering-delivery.settle");
+              assert.equal(local.status, "pending");
+              assert.equal(local.attemptCount, 6);
+              yield* TestClock.adjust("3200 millis");
+              const claimed = yield* outbox.claimNext({ workerId: "interrupted-local-ack" });
+              assert.isTrue(Option.isSome(claimed));
+              if (Option.isSome(claimed)) assert.equal(claimed.value.id, local.id);
+              assert.deepEqual(yield* outbox.reconcileAfterProcessLoss, {
+                cancelled: 0,
+                requeued: 1,
+              });
+              yield* worker.drain();
+            } else if (timing !== "after provider cancellation") {
+              yield* TestClock.adjust("100 millis");
+              yield* worker.drain();
+            }
+            assert.equal(
+              faults,
+              repeatedFailure ? 7 : timing === "after provider cancellation" ? 1 : 2,
+            );
             assert.equal(steerCalls, 1);
             assert.isTrue(Option.isSome(yield* receipts.getByCommandId(ackCommandId)));
             const accepted = yield* orchestrator.getThreadProjection(threadId);
             assert.isFalse(accepted.turnItems.some((item) => item.type === "error"));
+            if (mailbox)
+              assert.notEqual(accepted.subagents[0]?.completionDelivery?.state, "claimed");
           }
         }
         const delivery =
@@ -633,7 +726,7 @@ it.effect.each(
         }
       }).pipe(
         Effect.provide(
-          Layer.merge(
+          Layer.mergeAll(
             ProviderReplayHarness.layerWithRegistry(
               { name: `steering-completion-${timing}` },
               ProviderAdapterRegistry.layerSingle(adapter),
@@ -648,6 +741,8 @@ it.effect.each(
               },
             ),
             CommandReceiptStore.layer.pipe(Layer.provide(databaseLayer)),
+            EffectOutbox.layer.pipe(Layer.provide(databaseLayer)),
+            ProjectionStore.layer.pipe(Layer.provide(databaseLayer)),
           ),
         ),
       );

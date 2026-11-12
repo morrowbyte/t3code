@@ -219,8 +219,29 @@ const make = Effect.gen(function* () {
       yield* threads
         .hasReceipt(commandId)
         .pipe(Effect.mapError(() => new LinearIntegrationError({ reason: "target_unavailable" })))
-    )
-      return yield* updateDelivery(delivery.id, { outcome: "delivered" });
+    ) {
+      const projection = yield* threads
+        .getProjectThreadRecords(binding, ["turnItems"])
+        .pipe(Effect.mapError(() => new LinearIntegrationError({ reason: "target_unavailable" })));
+      const item = projection.turnItems.find(
+        (candidate) =>
+          candidate.type === "user_message" &&
+          candidate.messageId === MessageId.make(`linear-message:${delivery.id}`),
+      );
+      const failed = delivery.dispatch === "failed" || item?.status === "failed";
+      const steered =
+        item?.status === "completed" &&
+        (yield* threads
+          .hasReceipt(CommandId.make(`${commandId}:steering-delivery-accepted`))
+          .pipe(
+            Effect.mapError(() => new LinearIntegrationError({ reason: "target_unavailable" })),
+          ));
+      return yield* updateDelivery(delivery.id, {
+        outcome: failed ? "failed" : "delivered",
+        dispatch: failed ? "failed" : (delivery.dispatch ?? (steered ? "steered" : "accepted")),
+        runId: delivery.runId ?? item?.runId ?? null,
+      });
+    }
     const target = yield* boundThread(binding);
     const latest = target.runs.toSorted((a, b) => b.ordinal - a.ordinal)[0];
     const owner = target.providerThreads.find((item) => item.id === latest?.providerThreadId);

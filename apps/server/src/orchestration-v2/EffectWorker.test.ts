@@ -556,7 +556,7 @@ it.effect("arms cancellation before the durable pre-execution check", () =>
   }),
 );
 
-it.effect.each(["provider-turn.start", "provider-turn.steer", "steering-ack"] as const)(
+it.effect.each(["provider-turn.start", "provider-turn.steer"] as const)(
   "terminalizes a process-bound claim when success settlement fails (%s)",
   (kind) =>
     Effect.gen(function* () {
@@ -592,11 +592,7 @@ it.effect.each(["provider-turn.start", "provider-turn.steer", "steering-ack"] as
       const retries = yield* Ref.make(0);
       const terminalErrors = yield* Ref.make<ReadonlyArray<string>>([]);
       const executionCount = yield* Ref.make(0);
-      const acknowledgementAttempts = yield* Ref.make(0);
-      const failureDetail =
-        kind === "steering-ack"
-          ? "simulated acknowledgement persistence failure"
-          : "simulated success settlement failure";
+      const failureDetail = "simulated success settlement failure";
       const layerOutbox = Layer.mock(EffectOutbox.EffectOutboxV2)({
         claimNext: () => Effect.succeedSome(claimedEffect),
         get: () => Effect.succeedSome(claimedEffect),
@@ -617,24 +613,7 @@ it.effect.each(["provider-turn.start", "provider-turn.steer", "steering-ack"] as
       const layerExecutor = Layer.succeed(
         EffectWorker.OrchestrationEffectExecutorV2,
         EffectWorker.OrchestrationEffectExecutorV2.of({
-          execute: () =>
-            Ref.update(executionCount, (count) => count + 1).pipe(
-              Effect.as(
-                kind === "steering-ack"
-                  ? {
-                      settle: Ref.update(acknowledgementAttempts, (count) => count + 1).pipe(
-                        Effect.andThen(
-                          new EffectWorker.OrchestrationEffectExecutionError({
-                            effectId,
-                            effectType: "provider-turn.steer",
-                            cause: failureDetail,
-                          }),
-                        ),
-                      ),
-                    }
-                  : undefined,
-              ),
-            ),
+          execute: () => Ref.update(executionCount, (count) => count + 1),
         }),
       );
       const layerWorker = EffectWorker.layerWithOptions({ workerId }).pipe(
@@ -650,7 +629,6 @@ it.effect.each(["provider-turn.start", "provider-turn.steer", "steering-ack"] as
       assert.isTrue(Exit.isFailure(exit));
       assert.equal(yield* Ref.get(executionCount), 1);
       assert.equal(yield* Ref.get(retries), 0);
-      assert.equal(yield* Ref.get(acknowledgementAttempts), kind === "steering-ack" ? 5 : 0);
       const terminalError = (yield* Ref.get(terminalErrors))[0];
       assert.isDefined(terminalError);
       assert.include(terminalError, "after execution started");
