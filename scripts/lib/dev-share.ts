@@ -77,6 +77,8 @@ export class DevServeFailedError extends Schema.TaggedError<DevServeFailedError>
   }
 }
 
+const isDevServeFailedError = Schema.is(DevServeFailedError);
+
 export type DevShareError =
   | TailscaleUnavailableError
   | TailnetNameMissingError
@@ -191,7 +193,7 @@ export const shareDevServer = Effect.fn("devShare.shareDevServer")(function* (in
     }),
   }).pipe(
     Effect.mapError((cause) =>
-      cause instanceof DevServeFailedError
+      isDevServeFailedError(cause)
         ? cause
         : new DevServeFailedError({
             stage: "clear-existing",

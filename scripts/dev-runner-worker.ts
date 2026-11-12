@@ -3,7 +3,10 @@ import * as NodeFS from "node:fs";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NetService from "@t3tools/shared/Net";
-import { createDevRunnerOutput } from "@t3tools/shared/node/devRunnerControl";
+import {
+  createDevRunnerOutput,
+  DevRunnerControlError,
+} from "@t3tools/shared/node/devRunnerControl";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -18,10 +21,17 @@ const decodeInput = Schema.decodeUnknownEffect(DevRunnerWorkerInput);
 let failureOutputPath: string | undefined;
 
 const program = Effect.gen(function* () {
-  const raw = yield* Effect.callback<unknown, Error>((resume) => {
+  const raw = yield* Effect.callback<unknown, DevRunnerControlError>((resume) => {
     const message = (value: unknown) => resume(Effect.succeed(value));
     const disconnected = () =>
-      resume(Effect.fail(new Error("Caller disconnected before task input")));
+      resume(
+        Effect.fail(
+          new DevRunnerControlError({
+            operation: "register",
+            cause: "Caller disconnected before task input",
+          }),
+        ),
+      );
     process.once("message", message);
     process.once("disconnect", disconnected);
     if (process.connected) process.send?.({ type: "input" }, () => {});
@@ -34,12 +44,12 @@ const program = Effect.gen(function* () {
   const input = yield* decodeInput(raw);
   const workspace = yield* resolveTaskWorkspace(process.cwd());
   if (!workspace || !process.env.T3CODE_THREAD_ID)
-    return yield* Effect.fail(new Error("Missing task owner"));
+    return yield* new DevRunnerControlError({ operation: "register", cause: "Missing task owner" });
   const fs = yield* FileSystem.FileSystem;
   let retained = false;
   const log = yield* Effect.acquireRelease(
     createDevRunnerOutput({ workspacePath: workspace, threadId: process.env.T3CODE_THREAD_ID }),
-    (log) => (retained ? Effect.void : log.remove),
+    (log) => (retained ? Effect.void : log.remove.pipe(Effect.orDie)),
   );
   const logPath = log.path;
   yield* fs.chmod(logPath, 0o600);

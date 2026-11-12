@@ -681,16 +681,16 @@ const prepareFirstStart = Effect.fn("dev-runner.prepareFirstStart")(function* (i
 
 export const DevRunnerWorkerInput = Schema.Struct({
   mode: Schema.Literals(DEV_RUNNER_MODES),
-  t3Home: Schema.optionalKey(Schema.String),
-  browser: Schema.optionalKey(Schema.Boolean),
-  autoBootstrapProjectFromCwd: Schema.optionalKey(Schema.Boolean),
-  logWebSocketEvents: Schema.optionalKey(Schema.Boolean),
-  host: Schema.optionalKey(Schema.String),
-  port: Schema.optionalKey(Schema.Number),
-  devUrl: Schema.optionalKey(Schema.URLFromString),
+  t3Home: Schema.optional(Schema.String),
+  browser: Schema.optional(Schema.Boolean),
+  autoBootstrapProjectFromCwd: Schema.optional(Schema.Boolean),
+  logWebSocketEvents: Schema.optional(Schema.Boolean),
+  host: Schema.optional(Schema.String),
+  port: Schema.optional(Schema.Number),
+  devUrl: Schema.optional(Schema.URLFromString),
   dryRun: Schema.Boolean,
   share: Schema.Boolean,
-  seed: Schema.optionalKey(Schema.Boolean),
+  seed: Schema.optional(Schema.Boolean),
   built: Schema.Boolean,
   runArgs: Schema.Array(Schema.String),
 });
@@ -714,6 +714,7 @@ const WorkerFailure = Schema.Struct({
 });
 const decodeWorkerFailure = Schema.decodeUnknownOption(WorkerFailure);
 const decodeWorkerReady = Schema.decodeUnknownOption(WorkerReady);
+const encodeReuseKey = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 export const resolveTaskWorkspace = DevRunnerControl.resolveTaskWorkspace;
 
@@ -760,7 +761,7 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
               Effect.map((result) => result.cleared),
               Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
             ),
-          reuseKey: JSON.stringify([
+          reuseKey: encodeReuseKey([
             input.mode,
             portOffset,
             devInstance,
@@ -1016,12 +1017,12 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
   const outputDrain =
     output === undefined
       ? undefined
-      : yield* Effect.all(
-          [child.stdout, child.stderr].map((stream, index) =>
+      : yield* Effect.forEach(
+          [child.stdout, child.stderr],
+          (stream, index) =>
             Stream.runForEach(stream, (chunk) =>
               Effect.sync(() => output(chunk, index === 0 ? "stdout" : "stderr")),
             ),
-          ),
           { concurrency: "unbounded" },
         ).pipe(Effect.forkScoped);
   const finishOutput =
@@ -1143,6 +1144,7 @@ const runTaskDevRunnerWithInput = Effect.fn("dev-runner.runTaskDevRunnerWithInpu
         child.unref();
       }),
   );
+  const runSync = Effect.runSyncWith(yield* Effect.context<never>());
   yield* Effect.callback<void, DevRunnerControl.DevRunnerControlError>((resume) => {
     const fail = (cause: unknown) =>
       resume(
@@ -1175,15 +1177,15 @@ const runTaskDevRunnerWithInput = Effect.fn("dev-runner.runTaskDevRunnerWithInpu
       const ready = decodeWorkerReady(raw);
       if (Option.isNone(ready)) return;
       const { connection, reused } = ready.value;
-      Effect.runSync(
+      runSync(
         Effect.logInfo(
           `[dev-runner] ${reused ? "reusing" : "task controller owns"} ${input.mode} serverPort=${connection.serverPort} webPort=${connection.webPort} baseDir=${connection.baseDir}`,
         ),
       );
       if (connection.sharedUrl)
-        Effect.runSync(Effect.logInfo(`[dev-runner] shared on tailnet: ${connection.sharedUrl}`));
+        runSync(Effect.logInfo(`[dev-runner] shared on tailnet: ${connection.sharedUrl}`));
       if (ready.value.outputPath)
-        Effect.runSync(
+        runSync(
           Effect.logInfo(`[dev-runner] task output (up to 2 MiB): ${ready.value.outputPath}`),
         );
       onReady?.(ready.value);

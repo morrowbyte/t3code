@@ -2,7 +2,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeFS from "node:fs";
 import * as NodeChildProcess from "node:child_process";
-import * as NodeEvents from "node:events";
 import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -81,6 +80,24 @@ function mockProcess(exit: number | PlatformError.PlatformError) {
     getOutputFd: () => Stream.empty,
   });
 }
+
+const onceWorkerEvent = (worker: NodeChildProcess.ChildProcess, event: "message" | "exit") =>
+  new Promise<ReadonlyArray<unknown>>((resolve, reject) => {
+    const cleanup = () => {
+      worker.off(event, success);
+      worker.off("error", failure);
+    };
+    const success = (...values: ReadonlyArray<unknown>) => {
+      cleanup();
+      resolve(values);
+    };
+    const failure = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    worker.once(event, success);
+    worker.once("error", failure);
+  });
 
 const devServerInput = {
   mode: "dev:server",
@@ -423,13 +440,13 @@ it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
             threadId: "other-active-owner",
           });
           NodeFS.writeFileSync(active.path, "other active output");
-          yield* Effect.addFinalizer(() => active.remove);
+          yield* Effect.addFinalizer(() => active.remove.pipe(Effect.orDie));
           const sameOwnerActive = yield* createDevRunnerOutput({
             workspacePath: workspace,
             threadId: "failed-worker-owner",
           });
           NodeFS.writeFileSync(sameOwnerActive.path, "same thread active output");
-          yield* Effect.addFinalizer(() => sameOwnerActive.remove);
+          yield* Effect.addFinalizer(() => sameOwnerActive.remove.pipe(Effect.orDie));
           const connected = yield* Deferred.make<NodeNet.Socket>();
           const sockets = new Set<NodeNet.Socket>();
           const server = NodeNet.createServer((socket) => {
@@ -439,9 +456,9 @@ it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
             socket.once("data", () => Deferred.doneUnsafe(connected, Effect.succeed(socket)));
           });
           yield* Effect.acquireRelease(
-            Effect.callback<void>((resume) =>
-              server.listen(0, "127.0.0.1", () => resume(Effect.void)),
-            ),
+            Effect.callback<void>((resume) => {
+              server.listen(0, "127.0.0.1", () => resume(Effect.void));
+            }),
             () =>
               Effect.promise(
                 () =>
@@ -487,15 +504,15 @@ socket.on("end", () => process.exit(0));
                 if (worker.exitCode === null && worker.signalCode === null) worker.kill("SIGTERM");
               }),
           );
-          const exit = NodeEvents.once(worker, "exit");
-          yield* Effect.promise(() => NodeEvents.once(worker, "message"));
+          const exit = onceWorkerEvent(worker, "exit");
+          yield* Effect.promise(() => onceWorkerEvent(worker, "message"));
           worker.send({ ...devServerInput, t3Home: path.join(root, "state"), seed: false });
-          const [raw] = yield* Effect.promise(() => NodeEvents.once(worker, "message"));
+          const [raw] = yield* Effect.promise(() => onceWorkerEvent(worker, "message"));
           const ready = decodeReady(raw);
           const socket = yield* Deferred.await(connected);
           yield* Effect.addFinalizer(() => Effect.sync(() => socket.destroy()));
           if (detached) worker.disconnect();
-          const failure = detached ? undefined : NodeEvents.once(worker, "message");
+          const failure = detached ? undefined : onceWorkerEvent(worker, "message");
           if (crashed) {
             const logged = yield* Deferred.make<void>();
             yield* Effect.acquireRelease(
@@ -621,9 +638,9 @@ socket.on("end", () => process.exit(0));
               });
             });
             yield* Effect.acquireRelease(
-              Effect.callback<void>((resume) =>
-                server.listen(0, "127.0.0.1", () => resume(Effect.void)),
-              ),
+              Effect.callback<void>((resume) => {
+                server.listen(0, "127.0.0.1", () => resume(Effect.void));
+              }),
               () =>
                 Effect.promise(
                   () =>
@@ -680,10 +697,10 @@ process.on("SIGTERM", () => socket.end());
                     if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
                   }),
               );
-              const exit = NodeEvents.once(child, "exit");
+              const exit = onceWorkerEvent(child, "exit");
               const ready = yield* Effect.promise(async () => {
                 const [raw] = await Promise.race([
-                  NodeEvents.once(child, "message"),
+                  onceWorkerEvent(child, "message"),
                   exit.then(() => {
                     throw new Error("Runner exited before its ready receipt");
                   }),
