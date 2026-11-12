@@ -1037,6 +1037,12 @@ function ServerBrowserSurfaceConnection(
   };
 
   const handleKey = (action: "down" | "up", event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Escape" && event.shiftKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (action === "down") event.currentTarget.blur();
+      return;
+    }
     if (!inputAllowed()) return;
     keySentRef.current = false;
     if (
@@ -1045,12 +1051,6 @@ function ServerBrowserSurfaceConnection(
       event.key === "Process" ||
       event.key === "Unidentified"
     ) {
-      return;
-    }
-    if (event.key === "Escape" && event.shiftKey) {
-      event.preventDefault();
-      event.stopPropagation();
-      if (action === "down") event.currentTarget.blur();
       return;
     }
     const shortcut = event.ctrlKey || event.metaKey;

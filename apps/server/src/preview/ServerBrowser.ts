@@ -2690,24 +2690,40 @@ const make = Effect.gen(function* () {
       }
     });
 
-  const releaseViewerInput = async (viewer: ViewerState, session: CDPSession) => {
-    for (const { key, code } of viewer.pressedKeys.values()) {
-      await session.send("Input.dispatchKeyEvent", { type: "keyUp", key, code }).catch(constVoid);
+  const releaseViewerInput = async (
+    viewer: ViewerState,
+    session: CDPSession,
+    requireReleased = false,
+  ) => {
+    const errors: unknown[] = [];
+    for (const [id, { key, code }] of viewer.pressedKeys) {
+      try {
+        await session.send("Input.dispatchKeyEvent", { type: "keyUp", key, code });
+        viewer.pressedKeys.delete(id);
+      } catch (error) {
+        errors.push(error);
+        if (!requireReleased) viewer.pressedKeys.delete(id);
+      }
     }
-    viewer.pressedKeys.clear();
     for (const [button, point] of viewer.pressedButtons) {
-      await session
-        .send("Input.dispatchMouseEvent", {
+      try {
+        await session.send("Input.dispatchMouseEvent", {
           type: "mouseReleased",
           button,
           ...point,
           buttons: 0,
           clickCount: 1,
-        })
-        .catch(constVoid);
+        });
+        viewer.pressedButtons.delete(button);
+      } catch (error) {
+        errors.push(error);
+        if (!requireReleased) viewer.pressedButtons.delete(button);
+      }
     }
-    viewer.pressedButtons.clear();
     viewer.requestedSize = null;
+    if (requireReleased && errors.length > 0) {
+      throw new AggregateError(errors, "Browser input could not be released.");
+    }
   };
 
   const dispatchViewerInput = async (
@@ -3127,7 +3143,7 @@ const make = Effect.gen(function* () {
                 return;
               }
               const releasing = tab.control.release(viewer.id, () =>
-                releaseViewerInput(viewer, session),
+                releaseViewerInput(viewer, session, message.preparePrivateEntry === true),
               );
               broadcastControl(tab);
               await releasing;
