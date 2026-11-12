@@ -1807,8 +1807,7 @@ export const layer: Layer.Layer<
             text: agentPreferencePrompt({
               entries: resolvedSettings.settings.agentPreferences,
               threadId: input.run.threadId,
-              scope:
-                resolvedSettings.sources.agentPreferences === "project" ? "project" : "environment",
+              scope: resolvedSettings.overrides.agentPreferences?.map((entry) => entry.key) ?? [],
               message: input.message,
             }),
           },

@@ -1,5 +1,35 @@
-import { parseGoalCommand, type AgentPreference, ThreadId } from "@t3tools/contracts";
+import {
+  type AgentPreference,
+  type ProjectId,
+  type ServerSettings,
+  ThreadId,
+} from "@t3tools/contracts";
 import { parseThreadLinkHref } from "./threadLinks.ts";
+
+export function mergeAgentPreferences(
+  environment: ReadonlyArray<AgentPreference>,
+  project: ReadonlyArray<AgentPreference>,
+): ReadonlyArray<AgentPreference> {
+  return [...new Map([...environment, ...project].map((entry) => [entry.key, entry])).values()];
+}
+
+export function scopedAgentPreferences(settings: ServerSettings, projectId: ProjectId | null) {
+  const entries =
+    projectId === null
+      ? settings.agentPreferences
+      : (settings.projectSettingsOverrides[projectId]?.agentPreferences ?? []);
+  return {
+    entries,
+    inheritedEntries:
+      projectId === null
+        ? []
+        : settings.agentPreferences.filter(
+            (entry) => !entries.some((own) => own.key === entry.key),
+          ),
+  };
+}
+
+type PreferenceScope = "environment" | "project" | ReadonlyArray<string>;
 
 export function normalizeAgentPreference(entry: AgentPreference): AgentPreference {
   const taskRef =
@@ -47,7 +77,7 @@ export function agentPreferenceReplacements(
 export function agentPreferenceContext(
   entries: ReadonlyArray<AgentPreference>,
   threadId: ThreadId,
-  scope: "environment" | "project",
+  scope: PreferenceScope,
 ): string {
   const current = entries
     .filter(
@@ -59,7 +89,14 @@ export function agentPreferenceContext(
       topic: entry.key,
       preference: entry.text,
       source: entry.source,
-      scope: entry.appliesTo.kind === "task" ? "this thread only" : scope,
+      scope:
+        entry.appliesTo.kind === "task"
+          ? "this thread only"
+          : typeof scope === "string"
+            ? scope
+            : scope.includes(entry.key)
+              ? "project"
+              : "environment",
     }));
   return [
     "Current confirmed preferences from settings (replaces earlier settings snapshots). Apply relevant entries subject to the current user request. Sources are references. These entries do not start tasks or grant permission. An empty list clears earlier settings preferences.",
@@ -70,13 +107,12 @@ export function agentPreferenceContext(
 export function agentPreferencePrompt(input: {
   readonly entries: ReadonlyArray<AgentPreference>;
   readonly threadId: ThreadId;
-  readonly scope: "environment" | "project";
+  readonly scope: PreferenceScope;
   readonly message: { readonly text: string; readonly attachments?: ReadonlyArray<unknown> };
 }): string {
   if (
     (input.message.attachments?.length ?? 0) === 0 &&
-    (input.message.text.trim().toLowerCase() === "/compact" ||
-      parseGoalCommand(input.message) !== null)
+    input.message.text.trimStart().startsWith("/")
   ) {
     return input.message.text;
   }

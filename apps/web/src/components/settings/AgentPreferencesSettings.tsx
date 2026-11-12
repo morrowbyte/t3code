@@ -5,7 +5,11 @@ import {
   ThreadId,
   type AgentPreference,
 } from "@t3tools/contracts";
-import { normalizeAgentPreference, replaceAgentPreference } from "@t3tools/shared/agentPreferences";
+import {
+  normalizeAgentPreference,
+  replaceAgentPreference,
+  scopedAgentPreferences,
+} from "@t3tools/shared/agentPreferences";
 import * as Schema from "effect/Schema";
 
 import { Button } from "../ui/button";
@@ -16,18 +20,22 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { SettingsRow } from "./settingsLayout";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { searchableSetting } from "./settingsSearch";
-import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
+import { useUpdateScopedSettings } from "./useScopedSettings";
 
 const STATUS_LABELS = { active: "Active", inactive: "Inactive", completed: "Completed" } as const;
 const isAgentPreferences = Schema.is(AgentPreferences);
 
 export function AgentPreferencesSettings() {
-  const { agentPreferences } = useScopedSettings();
-  const { targets } = useSettingsScope();
+  const { targets, target } = useSettingsScope();
+  const collection =
+    target === null
+      ? { entries: [], inheritedEntries: [] }
+      : scopedAgentPreferences(target.settings, target.projectId);
   const update = useUpdateScopedSettings();
   const mixed = targets.some(
     (target) =>
-      JSON.stringify(target.settings.agentPreferences) !== JSON.stringify(agentPreferences),
+      JSON.stringify(scopedAgentPreferences(target.settings, target.projectId)) !==
+      JSON.stringify(collection),
   );
   const scopeKey = targets.map((target) => `${target.environmentId}:${target.projectId}`).join(",");
   return (
@@ -44,7 +52,9 @@ export function AgentPreferencesSettings() {
         ) : (
           <PreferenceEditor
             key={scopeKey}
-            entries={agentPreferences}
+            entries={collection.entries}
+            inheritedEntries={collection.inheritedEntries}
+            projectSelected={target !== null && target.projectId !== null}
             onChange={(entries) => update({ agentPreferences: entries })}
           />
         )}
@@ -55,9 +65,13 @@ export function AgentPreferencesSettings() {
 
 function PreferenceEditor({
   entries,
+  inheritedEntries,
+  projectSelected,
   onChange,
 }: {
   entries: ReadonlyArray<AgentPreference>;
+  inheritedEntries: ReadonlyArray<AgentPreference>;
+  projectSelected: boolean;
   onChange: (entries: ReadonlyArray<AgentPreference>) => void;
 }) {
   const id = useId();
@@ -69,28 +83,35 @@ function PreferenceEditor({
     setError("");
   };
   const existing = entries.find((entry) => entry.key === draft?.key);
+  const displayed = [...entries, ...inheritedEntries];
   return (
     <div className="space-y-3">
-      {entries.length === 0 ? (
+      {displayed.length === 0 ? (
         <p className="text-sm text-muted-foreground">No confirmed preferences.</p>
       ) : (
         <ul className="divide-y divide-border">
-          {entries.map((entry) => (
+          {displayed.map((entry) => (
             <li key={entry.key} className="space-y-1 py-3 first:pt-0">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-sm font-medium">{entry.key}</span>
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-xs text-muted-foreground">
-                    {STATUS_LABELS[entry.status]} ·{" "}
+                    {projectSelected && entries.some((own) => own.key === entry.key)
+                      ? "Project"
+                      : "Environment"}{" "}
+                    · {STATUS_LABELS[entry.status]} ·{" "}
                     {entry.appliesTo.kind === "task" ? "One task" : "Ongoing"}
                   </span>
                   <Button
                     size="sm"
                     variant="ghost"
-                    aria-label={`Edit ${entry.key}`}
+                    aria-label={`${inheritedEntries.includes(entry) ? "Override" : "Edit"} ${entry.key}`}
+                    disabled={
+                      inheritedEntries.includes(entry) && entries.length >= MAX_AGENT_PREFERENCES
+                    }
                     onClick={() => edit(entry)}
                   >
-                    Edit
+                    {inheritedEntries.includes(entry) ? "Override" : "Edit"}
                   </Button>
                 </div>
               </div>

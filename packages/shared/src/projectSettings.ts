@@ -14,6 +14,7 @@ import {
   type WorktreeCleanupRules,
 } from "@t3tools/contracts";
 import { normalizeProjectPathForComparison } from "./path.ts";
+import { mergeAgentPreferences } from "./agentPreferences.ts";
 import { fallbackTextGenerationModelSelection } from "./serverSettings.ts";
 
 export type ProjectSettingSource = "environment" | "project" | "t3.json";
@@ -147,7 +148,10 @@ function resolveProjectOverrides(
     ) {
       continue;
     }
-    effective[key] = value;
+    effective[key] =
+      key === "agentPreferences"
+        ? mergeAgentPreferences(settings.agentPreferences, overrides.agentPreferences ?? [])
+        : value;
     sources[key] = "project";
   }
   const textGeneration = effective.textGenerationModelSelection as ModelSelection;

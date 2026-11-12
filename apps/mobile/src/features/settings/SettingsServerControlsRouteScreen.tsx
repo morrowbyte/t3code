@@ -4,6 +4,7 @@ import { AuthSettingsWriteScope } from "@t3tools/contracts";
 import { readEnvironmentScope, useEnvironmentsWithScope } from "../../state/session";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { AppText as Text } from "../../components/ui/AppText";
+import { scopedAgentPreferences } from "@t3tools/shared/agentPreferences";
 import {
   type ResponseStreamingMode,
   type ServerSettings,
@@ -205,6 +206,10 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
   const displayTargets = pendingWrites > 0 && pendingTargets !== null ? pendingTargets : targets;
   const hasConnectedSelection = targets.length > 0;
   const reference = displayTargets[0] ?? null;
+  const preferenceCollections = displayTargets.map((target) =>
+    scopedAgentPreferences(target.settings, target.projectId),
+  );
+  const preferenceCollection = preferenceCollections[0];
   const uniform = <K extends keyof ServerSettings>(key: K) =>
     uniformMobileSetting(displayTargets, key);
   // `uniform` folds a real null into "mixed"; nullable keys need the distinction.
@@ -407,14 +412,15 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                   <AgentPreferencesSettings
                     key={targetsKey}
                     entries={
-                      displayTargets.every(
-                        (target) =>
-                          JSON.stringify(target.settings.agentPreferences) ===
-                          JSON.stringify(reference.settings.agentPreferences),
+                      preferenceCollections.every(
+                        (collection) =>
+                          JSON.stringify(collection) === JSON.stringify(preferenceCollection),
                       )
-                        ? reference.settings.agentPreferences
+                        ? (preferenceCollection?.entries ?? [])
                         : null
                     }
+                    inheritedEntries={preferenceCollection?.inheritedEntries ?? []}
+                    projectSelected={projectSelected}
                     disabled={disabledFor("agentPreferences")}
                     onChange={(agentPreferences) => write({ agentPreferences })}
                   />

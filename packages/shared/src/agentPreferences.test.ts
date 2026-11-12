@@ -103,13 +103,17 @@ describe("confirmed agent preferences", () => {
     expect(accepts([{ ...preference, text: "x".repeat(501) }])).toBe(false);
   });
 
-  it("preserves native goal and compaction controls while attachments remain ordinary prompts", () => {
+  it("preserves native provider commands while attachments remain ordinary prompts", () => {
     for (const text of [
       "/compact",
       "/goal",
       "/goal pause",
       "/goal resume",
       "/goal Ship the feature",
+      "/compress",
+      "/review changes",
+      "/custom-project-command argument",
+      "/skill:writing",
     ]) {
       expect(
         agentPreferencePrompt({

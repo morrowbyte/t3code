@@ -29,6 +29,7 @@ const PreferenceFields = {
     truncated: Schema.Boolean,
   }),
   agentPreferences: AgentPreferences,
+  inheritedAgentPreferences: AgentPreferences,
 };
 const shared = {
   failure: OrchestratorMcpFailure,
@@ -62,7 +63,7 @@ const EnvironmentReadTool = Tool.make("t3_environment_read", {
 const EnvironmentPreferencesTool = Tool.make("t3_environment_preferences_update", {
   ...shared,
   description:
-    "Update preferences. Live full-access or default caller thread only. Omitted fields are unchanged; `customInstructions: ''` clears it. Save agentPreferences only after explicit user confirmation, with its source; projectId null explicitly selects this environment, otherwise only that project. Task decisions require their own thread and completed ones stay completed. Read the current collection before replacing it.",
+    "Update preferences. Live full-access or default caller thread only. Omitted fields are unchanged; `customInstructions: ''` clears it. Save agentPreferences only after explicit user confirmation, with its source; projectId null selects this environment, otherwise only that project. Project entries override inherited topics; inactive entries suppress them. Task decisions require their own thread and completed ones stay completed. Read first; replace only agentPreferences, never copy inheritedAgentPreferences.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     defaultThreadEnvMode: ServerSettingsPatch.fields.defaultThreadEnvMode,

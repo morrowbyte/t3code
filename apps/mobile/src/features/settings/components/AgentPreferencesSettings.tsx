@@ -20,6 +20,8 @@ const isAgentPreferences = Schema.is(AgentPreferences);
 
 export function AgentPreferencesSettings(props: {
   entries: ReadonlyArray<AgentPreference> | null;
+  inheritedEntries: ReadonlyArray<AgentPreference>;
+  projectSelected: boolean;
   disabled: boolean;
   onChange: (entries: ReadonlyArray<AgentPreference>) => void;
 }) {
@@ -27,6 +29,7 @@ export function AgentPreferencesSettings(props: {
   const [removed, setRemoved] = useState<AgentPreference | null>(null);
   const [error, setError] = useState("");
   const entries = props.entries;
+  const displayed = entries === null ? [] : [...entries, ...props.inheritedEntries];
   const existing = entries?.find((entry) => entry.key === draft?.key);
   return (
     <SettingsSection title="Confirmed agent preferences">
@@ -36,17 +39,21 @@ export function AgentPreferencesSettings(props: {
         </Text>
       ) : (
         <View className="gap-3 pb-4">
-          {entries.length === 0 ? (
+          {displayed.length === 0 ? (
             <Text className="px-4 pt-3 text-foreground-muted">No confirmed preferences.</Text>
           ) : (
-            entries.map((entry) => (
+            displayed.map((entry) => (
               <View key={entry.key}>
                 <SettingsRow
                   icon={undefined}
-                  label={entry.key}
-                  value={`${entry.text}\nSource: ${entry.source}\n${STATUS_LABELS[entry.status]} · ${entry.appliesTo.kind === "task" ? `Thread: ${entry.appliesTo.threadId}` : "Ongoing"}`}
+                  label={`${props.inheritedEntries.includes(entry) ? "Override: " : ""}${entry.key}`}
+                  value={`${entry.text}\nSource: ${entry.source}\n${props.projectSelected && entries.some((own) => own.key === entry.key) ? "Project" : "Environment"} · ${STATUS_LABELS[entry.status]} · ${entry.appliesTo.kind === "task" ? `Thread: ${entry.appliesTo.threadId}` : "Ongoing"}`}
                   valuePosition="below"
-                  disabled={props.disabled}
+                  disabled={
+                    props.disabled ||
+                    (props.inheritedEntries.includes(entry) &&
+                      entries.length >= MAX_AGENT_PREFERENCES)
+                  }
                   onPress={() => {
                     setDraft(entry);
                     setError("");

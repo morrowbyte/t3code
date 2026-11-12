@@ -67,6 +67,12 @@ it.effect(
         text: preference.text,
         source: preference.source,
       });
+      const inherited = { ...preference, key: "terminology", text: "Use the project glossary." };
+      yield* toolkit
+        .handle("t3_environment_preferences_update", {
+          agentPreferences: { projectId: null, entries: [preference, inherited] },
+        })
+        .pipe(Stream.unwrap, Stream.runCollect);
       const read = yield* toolkit
         .handle("t3_environment_read", { projectId })
         .pipe(Stream.unwrap, Stream.runCollect);
@@ -75,6 +81,7 @@ it.effect(
           agentPreferences: [
             { text: "Answer in English.", source: "thread:confirmation/message:correction" },
           ],
+          inheritedAgentPreferences: [inherited],
         },
       });
     }).pipe(

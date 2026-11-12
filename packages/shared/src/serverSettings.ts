@@ -26,7 +26,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { deepMerge } from "./Struct.ts";
 import { fromLenientJson } from "./schemaJson.ts";
-import { agentPreferenceReplacements } from "./agentPreferences.ts";
+import { agentPreferenceReplacements, mergeAgentPreferences } from "./agentPreferences.ts";
 import { createModelSelection, readCustomModelEntries } from "./model.ts";
 import {
   getBackgroundActivityBaseProfile,
@@ -377,8 +377,10 @@ export function applyServerSettingsPatch(
                 : {
                     ...overrides,
                     agentPreferences: agentPreferenceReplacements(
-                      current.projectSettingsOverrides[projectId]?.agentPreferences ??
+                      mergeAgentPreferences(
                         current.agentPreferences,
+                        current.projectSettingsOverrides[projectId]?.agentPreferences ?? [],
+                      ),
                       overrides.agentPreferences,
                     ),
                   },

@@ -1,4 +1,5 @@
-import { OrchestratorMcpFailure, type ServerSettings } from "@t3tools/contracts";
+import { OrchestratorMcpFailure, type ProjectId, type ServerSettings } from "@t3tools/contracts";
+import { scopedAgentPreferences } from "@t3tools/shared/agentPreferences";
 import * as Effect from "effect/Effect";
 import * as Environment from "../../../environment/ServerEnvironment.ts";
 import * as ThreadCommandExecutor from "../../../orchestration-v2/ThreadCommandExecutor.ts";
@@ -9,22 +10,23 @@ import { readCaller, unavailable } from "../../threadAccess.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { EnvironmentToolkit } from "./tools.ts";
 
-export function preferences(settings: ServerSettings) {
+export function preferences(settings: ServerSettings, projectId: ProjectId | null = null) {
   const {
     defaultThreadEnvMode,
     newWorktreesStartFromOrigin,
     enableProviderUpdateChecks,
     backgroundActivity,
     sourceControlWritingStyle,
-    agentPreferences,
   } = settings;
+  const { entries, inheritedEntries } = scopedAgentPreferences(settings, projectId);
   const characters = Array.from(sourceControlWritingStyle.customInstructions);
   return {
     defaultThreadEnvMode,
     newWorktreesStartFromOrigin,
     enableProviderUpdateChecks,
     backgroundActivity: { profile: backgroundActivity.profile },
-    agentPreferences,
+    agentPreferences: entries,
+    inheritedAgentPreferences: inheritedEntries,
     sourceControlWritingStyle: {
       ...sourceControlWritingStyle,
       customInstructions: characters.slice(0, 4000).join(""),
@@ -53,7 +55,10 @@ export const layer = McpToolAccess.toLayer(EnvironmentToolkit, {
         label: descriptor.label,
         serverVersion: descriptor.serverVersion,
         platform: descriptor.platform,
-        preferences: preferences(resolveProjectSettings(current, projectId ?? null).settings),
+        preferences: preferences(
+          resolveProjectSettings(current, projectId ?? null).settings,
+          projectId ?? null,
+        ),
       };
     }),
   ),
@@ -85,6 +90,7 @@ export const layer = McpToolAccess.toLayer(EnvironmentToolkit, {
           .pipe(Effect.mapError(unavailable));
         return preferences(
           resolveProjectSettings(updated, agentPreferences?.projectId ?? null).settings,
+          agentPreferences?.projectId ?? null,
         );
       });
       return yield* scope.thread === undefined
