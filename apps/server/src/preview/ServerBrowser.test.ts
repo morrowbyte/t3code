@@ -1124,6 +1124,12 @@ it.live("inspects the existing controlled page without clicking and refuses othe
       yield* Queue.clear(viewer.output);
       const session = contexts[0]!.sessions.at(-1)!;
       session.send.mockClear();
+      const retiredSession = contexts[0]!.sessions[0]!;
+      const retiredSend = retiredSession.send.getMockImplementation()!;
+      retiredSession.send.mockImplementation(async (method, input) => {
+        if (method === "Page.getFrameTree") throw new Error("Session with given id not found.");
+        return retiredSend(method, input);
+      });
       yield* viewer.input({ type: "inspect", requestId: "selected", x: 15, y: 25 });
       const outputs = yield* Queue.takeAll(viewer.output);
       expect(outputs).toContainEqual(
